@@ -34,7 +34,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": ["app"],
     "category": "Productivity",
     "shortDescription": "Local dictation with history — Wispr Flow alternative",
     "longDescription": "Wilson Voice is a native macOS dictation app: menubar tray, floating Dictate control, global hotkeys, local MLX Whisper ASR, SQLite transcript history with FTS search, dictionary, insights, and automatic paste.",
