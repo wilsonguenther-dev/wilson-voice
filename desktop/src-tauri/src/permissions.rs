@@ -60,78 +60,37 @@ mod macos {
     }
 }
 
-/// Probe whether ffmpeg can see the default avfoundation audio device.
-/// First real capture by the .app binary is what creates the TCC Microphone row.
+/// Probe default input device via cpal (same stack as recording).
+/// First successful capture creates the TCC Microphone row for Wilson Voice.
 pub fn microphone_probe() -> (bool, String) {
-    let ffmpeg = which_ffmpeg();
-    if ffmpeg.is_none() {
-        return (
-            false,
-            "ffmpeg not found (brew install ffmpeg). Required for mic capture.".into(),
-        );
-    }
-    let ffmpeg = ffmpeg.unwrap();
-    // List devices — does not always need mic permission; actual capture does.
-    let out = Command::new(&ffmpeg)
-        .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
-        .output();
-    match out {
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            // avfoundation prints devices to stderr
-            let has_audio = stderr.to_lowercase().contains("audio")
-                || stderr.contains("MacBook")
-                || stderr.contains("Microphone")
-                || stderr.contains(":0");
-            if has_audio {
-                (
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    match host.default_input_device() {
+        Some(dev) => {
+            let name = dev
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "default mic".into());
+            match dev.default_input_config() {
+                Ok(cfg) => (
                     true,
-                    "Mic device visible. First Record may prompt for Microphone permission for Wilson Voice.".into(),
-                )
-            } else {
-                (
+                    format!(
+                        "Mic ready: {name} ({} Hz). If Wilson Voice is missing from System Settings → Microphone, click Dictate once to trigger the prompt.",
+                        cfg.sample_rate()
+                    ),
+                ),
+                Err(e) => (
                     false,
-                    format!("No audio device listed by ffmpeg. stderr: {}", truncate(&stderr, 200)),
-                )
+                    format!(
+                        "Mic found ({name}) but config failed: {e}. Toggle Microphone for Wilson Voice in System Settings."
+                    ),
+                ),
             }
         }
-        Err(e) => (false, format!("ffmpeg probe failed: {e}")),
-    }
-}
-
-fn which_ffmpeg() -> Option<String> {
-    if let Ok(p) = which_path("ffmpeg") {
-        return Some(p);
-    }
-    for candidate in [
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-    ] {
-        if std::path::Path::new(candidate).is_file() {
-            return Some(candidate.into());
-        }
-    }
-    None
-}
-
-fn which_path(bin: &str) -> Result<String, ()> {
-    let o = Command::new("/usr/bin/which").arg(bin).output().map_err(|_| ())?;
-    if !o.status.success() {
-        return Err(());
-    }
-    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-    if s.is_empty() {
-        Err(())
-    } else {
-        Ok(s)
-    }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..n])
+        None => (
+            false,
+            "No input device. Click Dictate once so macOS prompts for Microphone, then enable Wilson Voice in System Settings → Privacy → Microphone.".into(),
+        ),
     }
 }
 
@@ -158,7 +117,7 @@ pub fn report(
 ) -> PermissionReport {
     let accessibility = macos::accessibility_trusted(prompt_accessibility);
     let (microphone, mic_detail) = microphone_probe();
-    let ffmpeg_ok = which_ffmpeg().is_some();
+    let ffmpeg_ok = true; // no longer required — cpal in-process
     let (asr_ok, asr_detail) = asr_probe(python, worker);
 
     let mut parts = Vec::new();
@@ -171,11 +130,8 @@ pub fn report(
     if !asr_ok {
         parts.push("ASR not ready");
     }
-    if !ffmpeg_ok {
-        parts.push("ffmpeg missing");
-    }
 
-    let all_critical_ok = accessibility && microphone && asr_ok && ffmpeg_ok;
+    let all_critical_ok = accessibility && microphone && asr_ok;
     let summary = if all_critical_ok {
         "All critical permissions look good for Wilson Voice.".into()
     } else if parts.is_empty() {

@@ -4,7 +4,7 @@
 //! 0 Hygiene — single /Applications install, no DMG litter
 //! 1 Permissions — AX + mic probes, System Settings deep-links
 //! 2 Hotkeys — ⌘⇧V hold via Carbon on main thread (deferred)
-//! 3 Record + paste — ffmpeg + enigo only when trusted
+//! 3 Record + paste — cpal in-process mic + CGEvent paste on main thread
 //! 4 Product UI — Home / Insights / Dictionary / Scratchpad / Permissions
 
 mod asr;

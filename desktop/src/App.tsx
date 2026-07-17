@@ -489,11 +489,14 @@ export default function App() {
                     </p>
                   </div>
                 </li>
-                <li className={perms?.ffmpegOk ? "ok" : "bad"}>
-                  <StatusDot ok={!!perms?.ffmpegOk} />
+                <li className="ok">
+                  <StatusDot ok={true} />
                   <div>
-                    <strong>ffmpeg</strong>
-                    <p>Mic capture backend. Install: brew install ffmpeg</p>
+                    <strong>Mic capture</strong>
+                    <p>
+                      In-process audio (cpal) so TCC lists <strong>Wilson Voice</strong>, not
+                      Python or ffmpeg. Click Dictate once to trigger the system prompt.
+                    </p>
                   </div>
                 </li>
                 <li className={perms?.asrOk ? "ok" : "bad"}>
