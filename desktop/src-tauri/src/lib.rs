@@ -9,6 +9,8 @@
 
 mod asr;
 mod db;
+mod float_pill;
+mod mic_auth;
 mod paste;
 mod permissions;
 mod record;
@@ -34,15 +36,18 @@ pub struct AppSettings {
     pub language: String,
     pub auto_paste: bool,
     pub hotkey_label: String,
+    pub show_floating_pill: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            // large-v3-turbo is the best speed/accuracy balance on Apple Silicon MLX
             model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "⌘⇧V hold".into(),
+            show_floating_pill: true,
         }
     }
 }
@@ -229,11 +234,20 @@ fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, Arc<AppState>>, settings: AppSettings) -> Result<(), String> {
+fn save_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    settings: AppSettings,
+) -> Result<(), String> {
     *state.settings.lock() = settings.clone();
     let path = data_dir().join("settings.json");
     let s = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
+    if settings.show_floating_pill {
+        float_pill::show_float(&app)?;
+    } else {
+        float_pill::hide_float(&app);
+    }
     Ok(())
 }
 
@@ -269,6 +283,21 @@ fn get_permissions(state: State<'_, Arc<AppState>>) -> PermissionReport {
 #[tauri::command]
 fn request_accessibility() -> bool {
     permissions::request_accessibility_prompt()
+}
+
+#[tauri::command]
+fn request_microphone() -> bool {
+    mic_auth::request_microphone_access()
+}
+
+#[tauri::command]
+fn show_float_pill(app: AppHandle) -> Result<(), String> {
+    float_pill::show_float(&app)
+}
+
+#[tauri::command]
+fn hide_float_pill(app: AppHandle) {
+    float_pill::hide_float(&app);
 }
 
 #[tauri::command]
@@ -437,6 +466,9 @@ pub fn run() {
             get_status,
             get_permissions,
             request_accessibility,
+            request_microphone,
+            show_float_pill,
+            hide_float_pill,
             get_insights,
             list_dictionary,
             add_dictionary_term,
@@ -520,6 +552,18 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
+            // Floating pill (opt-in via settings; default on)
+            if state.settings.lock().show_floating_pill {
+                if let Err(e) = float_pill::show_float(app.handle()) {
+                    log::warn!("float pill: {e}");
+                }
+            }
+
+            // Soft AX prompt once if not trusted (does not block)
+            if !permissions::is_accessibility_trusted() {
+                log::info!("Accessibility not trusted yet — user should enable Wilson Voice");
+            }
+
             // Phase 2: register ⌘⇧V on main thread AFTER event loop is live
             let handle = app.handle().clone();
             let state_hk = state.clone();
@@ -528,7 +572,6 @@ pub fn run() {
                 let h = handle.clone();
                 let st = state_hk.clone();
                 let _ = handle.run_on_main_thread(move || {
-                    // Primary product hotkey — Carbon RegisterEventHotKey via Tauri
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
                     match h.global_shortcut().register(sc) {
                         Ok(()) => {
@@ -548,7 +591,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.4 setup complete");
+            log::info!("Wilson Voice v0.4.1 setup complete");
             Ok(())
         })
         .run(tauri::generate_context!())

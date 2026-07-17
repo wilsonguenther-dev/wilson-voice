@@ -16,6 +16,7 @@ interface AppSettings {
   language: string;
   autoPaste: boolean;
   hotkeyLabel: string;
+  showFloatingPill: boolean;
 }
 
 interface AppStatus {
@@ -432,6 +433,14 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
+                      await invoke("request_microphone");
+                      setTimeout(refreshPerms, 1000);
+                    }}
+                  >
+                    Request Microphone
+                  </button>
+                  <button
+                    onClick={async () => {
                       await invoke("request_accessibility");
                       setTimeout(refreshPerms, 800);
                     }}
@@ -439,6 +448,11 @@ export default function App() {
                     Prompt Accessibility
                   </button>
                 </div>
+                <p className="muted tiny" style={{ marginTop: 10 }}>
+                  After each reinstall, toggle Wilson Voice OFF→ON in Accessibility
+                  (ad-hoc code signature changes). Mic may be authorized even if the
+                  list UI is slow to show the app name.
+                </p>
               </div>
 
               <ul className="perm-list">
@@ -447,9 +461,10 @@ export default function App() {
                   <div>
                     <strong>Microphone</strong>
                     <p>
-                      Required so ffmpeg can capture audio for Whisper. First
-                      Record may show the system dialog — click Allow for
-                      Wilson Voice.
+                      In-process capture (Apple Silicon / cpal). Click{" "}
+                      <strong>Request Microphone</strong> or Dictate so macOS
+                      prompts — then enable <strong>Wilson Voice</strong> in
+                      Privacy → Microphone.
                     </p>
                     <button
                       onClick={() =>
@@ -465,8 +480,9 @@ export default function App() {
                   <div>
                     <strong>Accessibility</strong>
                     <p>
-                      Required to simulate ⌘V into the frontmost app (Wispr-style
-                      paste). Without it, text is still copied to the clipboard.
+                      Required to simulate ⌘V paste (Wispr-style). You already
+                      enabled Wilson Voice.app — if status still says copy-only,
+                      toggle it off/on after this install, then click Re-check.
                     </p>
                     <button
                       onClick={() =>
@@ -850,12 +866,27 @@ export default function App() {
                   Auto-paste after transcription (needs Accessibility)
                 </span>
               </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.showFloatingPill ?? true}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      showFloatingPill: e.target.checked,
+                    })
+                  }
+                />
+                <span>
+                  Floating Dictate pill (follows cursor across screens)
+                </span>
+              </label>
               <div className="panel">
-                <h3>Hotkey</h3>
+                <h3>Hotkey + speed</h3>
                 <p>
                   <strong>{settings.hotkeyLabel}</strong> — hold to talk,
-                  release to transcribe. Also works from the Dictate button and
-                  menu bar.
+                  release to transcribe. ASR is local MLX on Apple Silicon
+                  (turbo by default). Smaller models = lower latency.
                 </p>
               </div>
               <div className="actions wrap">
