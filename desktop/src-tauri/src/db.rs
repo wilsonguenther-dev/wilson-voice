@@ -18,7 +18,11 @@ pub struct TranscriptEntry {
     pub id: String,
     pub text: String,
     pub backend: String,
+    /// Model inference wall time (seconds).
     pub asr_seconds: f64,
+    /// How long the user held the mic (seconds) — used for real WPM.
+    #[serde(default)]
+    pub speech_seconds: f64,
     pub word_count: i64,
     pub created_at: DateTime<Utc>,
     pub source_app: Option<String>,
@@ -189,6 +193,16 @@ impl Database {
         )
         .map_err(|e| format!("schema: {e}"))?;
 
+        // Migrations (idempotent)
+        let _ = conn.execute(
+            "ALTER TABLE transcripts ADD COLUMN speech_seconds REAL NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+
         // Seed default dictionary terms useful for Wilson
         {
             let defaults = [
@@ -212,9 +226,83 @@ impl Database {
             }
         }
 
-        Ok(Self {
+        let db = Self {
             conn: Mutex::new(conn),
-        })
+        };
+        // Always rebuild daily rollups from transcripts (source of truth)
+        if let Err(e) = db.recompute_daily_stats() {
+            log::warn!("daily_stats recompute on open: {e}");
+        }
+        Ok(db)
+    }
+
+    /// Rebuild `daily_stats` from `transcripts`. Call after insert/delete/clear.
+    pub fn recompute_daily_stats(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM daily_stats", [])
+            .map_err(|e| e.to_string())?;
+        // Group by local calendar day derived from created_at (ISO stored as UTC).
+        // We convert in SQL-ish via application: load rows then bucket.
+        let mut stmt = conn
+            .prepare(
+                "SELECT created_at, word_count, asr_seconds, COALESCE(speech_seconds,0)
+                 FROM transcripts",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, f64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        use std::collections::HashMap;
+        struct Acc {
+            words: i64,
+            sessions: i64,
+            asr_ms: i64,
+            speech_ms: i64,
+        }
+        let mut map: HashMap<String, Acc> = HashMap::new();
+        for row in rows {
+            let (created, words, asr_s, speech_s) = row.map_err(|e| e.to_string())?;
+            let day = parse_dt(created)
+                .with_timezone(&Local)
+                .date_naive()
+                .to_string();
+            let e = map.entry(day).or_insert(Acc {
+                words: 0,
+                sessions: 0,
+                asr_ms: 0,
+                speech_ms: 0,
+            });
+            e.words += words;
+            e.sessions += 1;
+            e.asr_ms += (asr_s * 1000.0) as i64;
+            // Prefer real hold time; fall back to asr time if legacy row
+            let speech = if speech_s > 0.05 { speech_s } else { asr_s };
+            e.speech_ms += (speech * 1000.0) as i64;
+        }
+        drop(stmt);
+
+        for (day, a) in map {
+            conn.execute(
+                "INSERT INTO daily_stats (day, words, sessions, asr_ms, speech_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(day) DO UPDATE SET
+                   words = excluded.words,
+                   sessions = excluded.sessions,
+                   asr_ms = excluded.asr_ms,
+                   speech_ms = excluded.speech_ms",
+                params![day, a.words, a.sessions, a.asr_ms, a.speech_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn insert_transcript(
@@ -222,6 +310,7 @@ impl Database {
         text: String,
         backend: String,
         asr_seconds: f64,
+        speech_seconds: f64,
         source_app: Option<String>,
     ) -> Result<TranscriptEntry, String> {
         let entry = TranscriptEntry {
@@ -230,42 +319,32 @@ impl Database {
             text,
             backend,
             asr_seconds,
+            speech_seconds: speech_seconds.max(0.0),
             created_at: Utc::now(),
             source_app,
         };
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // Background vocab learning (local) — before insert uses entry.text
-        drop(conn);
         let _ = self.learn_from_transcript(&entry.text);
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO transcripts (id, text, backend, asr_seconds, word_count, source_app, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                entry.id,
-                entry.text,
-                entry.backend,
-                entry.asr_seconds,
-                entry.word_count,
-                entry.source_app,
-                entry.created_at.to_rfc3339(),
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-        let day = Local::now().date_naive().to_string();
-        let asr_ms = (entry.asr_seconds * 1000.0) as i64;
-        conn.execute(
-            "INSERT INTO daily_stats (day, words, sessions, asr_ms)
-             VALUES (?1, ?2, 1, ?3)
-             ON CONFLICT(day) DO UPDATE SET
-               words = words + excluded.words,
-               sessions = sessions + 1,
-               asr_ms = asr_ms + excluded.asr_ms",
-            params![day, entry.word_count, asr_ms],
-        )
-        .map_err(|e| e.to_string())?;
-
+        {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO transcripts
+                 (id, text, backend, asr_seconds, speech_seconds, word_count, source_app, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    entry.id,
+                    entry.text,
+                    entry.backend,
+                    entry.asr_seconds,
+                    entry.speech_seconds,
+                    entry.word_count,
+                    entry.source_app,
+                    entry.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // Source-of-truth rollup (never trust incremental counters alone)
+        self.recompute_daily_stats()?;
         Ok(entry)
     }
 
@@ -298,7 +377,8 @@ impl Database {
         if q.is_empty() {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, text, backend, asr_seconds, word_count, source_app, created_at
+                    "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
+                            word_count, source_app, created_at
                      FROM transcripts ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -317,7 +397,8 @@ impl Database {
                 .join(" ");
             let mut stmt = conn
                 .prepare(
-                    "SELECT t.id, t.text, t.backend, t.asr_seconds, t.word_count, t.source_app, t.created_at
+                    "SELECT t.id, t.text, t.backend, t.asr_seconds, COALESCE(t.speech_seconds,0),
+                            t.word_count, t.source_app, t.created_at
                      FROM transcripts_fts f
                      JOIN transcripts t ON t.rowid = f.rowid
                      WHERE transcripts_fts MATCH ?1
@@ -331,7 +412,8 @@ impl Database {
                     // Fallback substring if FTS query invalid
                     let mut stmt2 = conn
                         .prepare(
-                            "SELECT id, text, backend, asr_seconds, word_count, source_app, created_at
+                            "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
+                                    word_count, source_app, created_at
                              FROM transcripts
                              WHERE text LIKE ?1
                              ORDER BY created_at DESC LIMIT ?2",
@@ -355,16 +437,22 @@ impl Database {
     }
 
     pub fn delete_transcript(&self, id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM transcripts WHERE id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM transcripts WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+        self.recompute_daily_stats()
     }
 
     pub fn clear_transcripts(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM transcripts", [])
-            .map_err(|e| e.to_string())?;
+        {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM transcripts", [])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM daily_stats", [])
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -575,16 +663,45 @@ impl Database {
             .map_err(|e| e.to_string())?
             .unwrap_or((0, 0));
 
-        // Approx WPM: words / (sum asr seconds / 60) — dictation pace
-        let total_asr: f64 = conn
+        // Fallback: if daily_stats empty but we have transcripts today, sum live
+        let (words_today, sessions_today) = if words_today == 0 && total_sessions > 0 {
+            // recompute from transcripts for local today
+            let mut w = 0i64;
+            let mut s = 0i64;
+            let mut stmt = conn
+                .prepare("SELECT created_at, word_count FROM transcripts")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (created, wc) = row.map_err(|e| e.to_string())?;
+                let day = parse_dt(created)
+                    .with_timezone(&Local)
+                    .date_naive()
+                    .to_string();
+                if day == today {
+                    w += wc;
+                    s += 1;
+                }
+            }
+            (w, s)
+        } else {
+            (words_today, sessions_today)
+        };
+
+        // Real speaking WPM = words / (hold time minutes). Never use model latency.
+        let total_speech: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(asr_seconds),0) FROM transcripts",
+                "SELECT COALESCE(SUM(
+                    CASE WHEN speech_seconds > 0.05 THEN speech_seconds ELSE asr_seconds END
+                 ),0) FROM transcripts",
                 [],
                 |r| r.get(0),
             )
             .unwrap_or(0.0);
-        let avg_wpm = if total_asr > 0.5 {
-            (total_words as f64) / (total_asr / 60.0)
+        let avg_wpm = if total_speech > 0.5 {
+            (total_words as f64) / (total_speech / 60.0)
         } else {
             0.0
         };
@@ -687,7 +804,7 @@ impl Database {
         let legacy: Legacy = serde_json::from_str(&s).map_err(|e| e.to_string())?;
         let mut n = 0;
         for e in legacy.entries {
-            let _ = self.insert_transcript(e.text, e.backend, e.asr_seconds, None)?;
+            let _ = self.insert_transcript(e.text, e.backend, e.asr_seconds, 0.0, None)?;
             n += 1;
         }
         let _ = std::fs::rename(&json_path, json_path.with_extension("json.migrated"));
@@ -696,14 +813,16 @@ impl Database {
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {
+    // id, text, backend, asr_seconds, speech_seconds, word_count, source_app, created_at
     Ok(TranscriptEntry {
         id: row.get(0)?,
         text: row.get(1)?,
         backend: row.get(2)?,
         asr_seconds: row.get(3)?,
-        word_count: row.get(4)?,
-        source_app: row.get(5)?,
-        created_at: parse_dt(row.get::<_, String>(6)?),
+        speech_seconds: row.get(4)?,
+        word_count: row.get(5)?,
+        source_app: row.get(6)?,
+        created_at: parse_dt(row.get::<_, String>(7)?),
     })
 }
 

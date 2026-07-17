@@ -201,11 +201,27 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 
     std::thread::spawn(move || {
         let result = (|| -> Result<(TranscriptEntry, paste::PasteOutcome), String> {
-            let wav = record::stop_recording(active)?;
-            log::info!("wav ready: {}", wav.display());
-            let asr = asr::run_asr(&venv, &worker, &wav, &settings.model, &settings.language)?;
+            let rec = record::stop_recording(active)?;
+            log::info!(
+                "wav ready: {} speech={:.2}s",
+                rec.wav_path.display(),
+                rec.speech_seconds
+            );
+            let asr = asr::run_asr(
+                &venv,
+                &worker,
+                &rec.wav_path,
+                &settings.model,
+                &settings.language,
+            )?;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
-            let entry = db.insert_transcript(text, asr.backend, asr.seconds, None)?;
+            let entry = db.insert_transcript(
+                text,
+                asr.backend,
+                asr.seconds,
+                rec.speech_seconds,
+                None,
+            )?;
             // Always copy first (Wispr Flow: never lose text)
             // Paste only if auto_paste AND a text field is focused
             std::thread::sleep(std::time::Duration::from_millis(120));

@@ -1,18 +1,22 @@
 :root {
   color-scheme: light dark;
-  --bg: #f6f5f2;
-  --bg-side: #efece6;
-  --bg-card: #ffffff;
-  --bg-elev: #faf9f7;
-  --border: rgba(20, 18, 14, 0.08);
+  /* Liquid-glass-ish tokens (macOS Tahoe-inspired; CSS fallback for WebView) */
+  --bg: #f4f2ee;
+  --bg-side: rgba(255, 255, 255, 0.45);
+  --bg-card: rgba(255, 255, 255, 0.62);
+  --bg-elev: rgba(255, 255, 255, 0.72);
+  --glass: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.55);
+  --border: rgba(20, 18, 14, 0.1);
   --text: #16140f;
   --muted: #6b655c;
   --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.1);
+  --accent-soft: rgba(15, 118, 110, 0.12);
   --danger: #be123c;
   --warn: #b45309;
-  --radius: 14px;
-  --shadow: 0 10px 30px rgba(20, 18, 14, 0.06);
+  --radius: 16px;
+  --shadow: 0 12px 40px rgba(20, 18, 14, 0.08);
+  --blur: 28px;
   font-family:
     "SF Pro Text",
     -apple-system,
@@ -29,16 +33,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d0f12;
-    --bg-side: #12151a;
-    --bg-card: #171b22;
-    --bg-elev: #1b2028;
-    --border: rgba(255, 255, 255, 0.08);
+    --bg: #0b0d11;
+    --bg-side: rgba(22, 26, 34, 0.55);
+    --bg-card: rgba(28, 32, 42, 0.55);
+    --bg-elev: rgba(36, 42, 54, 0.65);
+    --glass: rgba(28, 32, 42, 0.5);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --border: rgba(255, 255, 255, 0.1);
     --text: #f2f4f8;
     --muted: #9aa3b5;
     --accent: #2dd4bf;
-    --accent-soft: rgba(45, 212, 191, 0.12);
-    --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    --accent-soft: rgba(45, 212, 191, 0.14);
+    --shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -191,18 +197,23 @@ body:has(.float-pill),
   color: white;
 }
 
-/* Main shell — Wispr Flow style */
+/* Main shell — Tahoe / liquid-glass inspired */
 .shell {
   display: grid;
   grid-template-columns: 220px 1fr;
   height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(45, 212, 191, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(99, 102, 241, 0.1), transparent 50%),
+    var(--bg);
   color: var(--text);
 }
 
 .sidebar {
   background: var(--bg-side);
-  border-right: 1px solid var(--border);
+  backdrop-filter: saturate(160%) blur(var(--blur));
+  -webkit-backdrop-filter: saturate(160%) blur(var(--blur));
+  border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
   padding: 16px 12px;
@@ -527,22 +538,41 @@ code {
   box-shadow: var(--shadow);
 }
 
+.stat.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: saturate(180%) blur(18px);
+  -webkit-backdrop-filter: saturate(180%) blur(18px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.35) inset,
+    var(--shadow);
+}
+
 .stat.big .stat-n {
   font-size: 1.6rem;
 }
 
 .stat-n {
-  font-size: 1.35rem;
+  font-size: 1.45rem;
   font-weight: 700;
   letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em;
 }
 
 .stat-l {
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-top: 4px;
+}
+
+.stat-sub {
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin-top: 6px;
+  opacity: 0.9;
 }
 
 .toolbar {

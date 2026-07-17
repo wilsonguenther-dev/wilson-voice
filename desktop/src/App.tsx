@@ -65,6 +65,10 @@ interface Insights {
   avgAsrSeconds: number;
 }
 
+function fmtInt(n: number | undefined | null) {
+  return Math.max(0, Math.round(n ?? 0)).toLocaleString();
+}
+
 interface DictEntry {
   id: string;
   term: string;
@@ -581,27 +585,31 @@ export default function App() {
           {nav === "home" && (
             <>
               <div className="stats-row">
-                <div className="stat">
-                  <div className="stat-n">
-                    {(insights?.totalWords ?? 0).toLocaleString()}
-                  </div>
+                <div className="stat glass">
+                  <div className="stat-n">{fmtInt(insights?.totalWords)}</div>
                   <div className="stat-l">total words</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-n">
-                    {Math.round(insights?.avgWpm ?? 0)}
+                  <div className="stat-sub">
+                    {fmtInt(insights?.totalSessions)} sessions
                   </div>
+                </div>
+                <div className="stat glass">
+                  <div className="stat-n">{fmtInt(insights?.avgWpm)}</div>
                   <div className="stat-l">avg wpm</div>
+                  <div className="stat-sub">from hold time</div>
                 </div>
-                <div className="stat">
-                  <div className="stat-n">{insights?.streakDays ?? 0}</div>
+                <div className="stat glass">
+                  <div className="stat-n">{fmtInt(insights?.streakDays)}</div>
                   <div className="stat-l">day streak</div>
-                </div>
-                <div className="stat">
-                  <div className="stat-n">
-                    {(insights?.wordsToday ?? 0).toLocaleString()}
+                  <div className="stat-sub">
+                    best {fmtInt(insights?.longestStreak)}
                   </div>
+                </div>
+                <div className="stat glass">
+                  <div className="stat-n">{fmtInt(insights?.wordsToday)}</div>
                   <div className="stat-l">words today</div>
+                  <div className="stat-sub">
+                    {fmtInt(insights?.sessionsToday)} sessions
+                  </div>
                 </div>
               </div>
 

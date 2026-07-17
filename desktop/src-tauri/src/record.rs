@@ -15,6 +15,13 @@ pub struct ActiveRecording {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<(), String>>>,
     pub wav_path: PathBuf,
+    started: std::time::Instant,
+}
+
+pub struct RecordingResult {
+    pub wav_path: PathBuf,
+    /// Wall-clock hold duration (seconds) — source of truth for WPM.
+    pub speech_seconds: f64,
 }
 
 pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
@@ -42,10 +49,12 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
         stop,
         join: Some(join),
         wav_path,
+        started: std::time::Instant::now(),
     })
 }
 
-pub fn stop_recording(mut active: ActiveRecording) -> Result<PathBuf, String> {
+pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, String> {
+    let speech_seconds = active.started.elapsed().as_secs_f64().max(0.05);
     active.stop.store(true, Ordering::SeqCst);
     if let Some(j) = active.join.take() {
         match j.join() {
@@ -58,7 +67,7 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<PathBuf, String> {
 
     if !active.wav_path.exists() {
         return Err(
-            "No audio file — grant Microphone to Wilson Voice in System Settings → Privacy."
+            "No audio file — click Allow once for Microphone (Wilson Voice) in the system dialog, then enable it under System Settings → Privacy → Microphone."
                 .into(),
         );
     }
@@ -69,7 +78,10 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<PathBuf, String> {
             meta.len()
         ));
     }
-    Ok(active.wav_path)
+    Ok(RecordingResult {
+        wav_path: active.wav_path,
+        speech_seconds,
+    })
 }
 
 fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
