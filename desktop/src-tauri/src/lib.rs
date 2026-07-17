@@ -8,6 +8,7 @@
 //! 4 Product UI — Home / Insights / Dictionary / Scratchpad / Permissions
 
 mod asr;
+mod asr_paths;
 mod db;
 mod float_pill;
 mod focus;
@@ -136,6 +137,8 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     if *state.recording.lock() || *state.busy.lock() {
         return;
     }
+    // Do NOT call mic_auth::request_microphone_access here — that is Permissions-only.
+    // Opening the real capture stream is enough for TCC (Allow once after install).
     match record::start_recording(data_dir().join("recordings")) {
         Ok(active) => {
             *state.recorder.lock() = Some(active);
@@ -144,13 +147,13 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             log::info!("recording started");
             let _ = app.emit("recording", true);
             emit_status(app, state);
-            notify(app, "Wilson Voice", "Listening — release hotkey when done");
+            // Quiet: no notification spam on every press (status UI + tray is enough)
         }
         Err(e) => {
             log::error!("record start failed: {e}");
             *state.last_error.lock() = Some(e.clone());
             emit_status(app, state);
-            notify(app, "Wilson Voice — Mic error", e);
+            notify(app, "Wilson Voice — Mic", e);
         }
     }
 }
@@ -394,17 +397,30 @@ fn show_main(app: AppHandle) {
     }
 }
 
-fn resolve_paths() -> (PathBuf, PathBuf) {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let root = home.join("Desktop/wilson-voice");
-    (root.join(".venv/bin/python"), root.join("python/asr_worker.py"))
+#[tauri::command]
+fn setup_asr_venv() -> Result<String, String> {
+    asr_paths::setup_local_venv()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let (venv_py, worker) = resolve_paths();
+    // NEVER resolve ASR to ~/Desktop — that triggers Desktop folder TCC on every stop.
+    // Prefer pre-built Application Support venv; seed worker file only (no Desktop read).
+    let (venv_py, worker) = asr_paths::resolve_paths();
+    if !venv_py.exists() || !asr_paths::python_has_mlx(&venv_py) {
+        log::warn!(
+            "ASR venv not ready at {} — user should click Install local ASR once",
+            venv_py.display()
+        );
+    } else {
+        log::info!(
+            "ASR ready python={} worker={}",
+            venv_py.display(),
+            worker.display()
+        );
+    }
     let db_path = data_dir().join("wilson_voice.db");
     let db = Database::open(db_path).expect("sqlite open failed");
     let legacy = data_dir().join("history").join("transcripts.json");
@@ -473,6 +489,7 @@ pub fn run() {
             request_microphone,
             show_float_pill,
             hide_float_pill,
+            setup_asr_venv,
             get_insights,
             list_dictionary,
             add_dictionary_term,

@@ -35,8 +35,43 @@ def main() -> int:
         import subprocess
         import tempfile
 
+        # Never let HF / caches touch ~/Desktop (macOS TCC Files & Folders spam).
+        support = (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "WilsonVoice"
+        )
+        cache = support / "cache"
+        hf = cache / "huggingface"
+        tmp = support / "tmp"
+        for d in (cache, hf, tmp, support):
+            d.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_HOME", str(hf))
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hf / "hub"))
+        os.environ.setdefault("TRANSFORMERS_CACHE", str(hf / "transformers"))
+        os.environ.setdefault("XDG_CACHE_HOME", str(cache))
+        os.environ.setdefault("TMPDIR", str(tmp))
+        try:
+            os.chdir(support)
+        except OSError:
+            pass
+
+        # Refuse Desktop-based interpreters / scripts
+        for p in (sys.executable, str(wav), __file__):
+            if "/Desktop/" in p or p.rstrip("/").endswith("/Desktop"):
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"path on Desktop blocked for TCC: {p}",
+                        }
+                    )
+                )
+                return 1
+
         venv_cli = Path(sys.executable).resolve().parent / "mlx_whisper"
-        out_dir = Path(tempfile.mkdtemp(prefix="wv-asr-"))
+        out_dir = Path(tempfile.mkdtemp(prefix="wv-asr-", dir=str(tmp)))
         if venv_cli.is_file():
             cmd = [
                 str(venv_cli),
@@ -52,7 +87,14 @@ def main() -> int:
                 "--verbose",
                 "False",
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                cwd=str(support),
+                env=os.environ.copy(),
+            )
             if r.returncode != 0:
                 print(
                     json.dumps(

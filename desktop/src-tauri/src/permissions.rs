@@ -95,17 +95,29 @@ pub fn microphone_probe() -> (bool, String) {
 }
 
 pub fn asr_probe(python: &std::path::Path, worker: &std::path::Path) -> (bool, String) {
+    if !worker.exists() {
+        return (
+            false,
+            format!("Missing ASR worker at {} (should auto-seed)", worker.display()),
+        );
+    }
     if !python.exists() {
         return (
             false,
             format!(
-                "Missing ASR venv at {}. Run: cd ~/Desktop/wilson-voice && python3 -m venv .venv && .venv/bin/pip install mlx-whisper",
+                "Missing ASR Python at {}. Click Install local ASR (one-time, stays off Desktop).",
                 python.display()
             ),
         );
     }
-    if !worker.exists() {
-        return (false, format!("Missing ASR worker at {}", worker.display()));
+    if !crate::asr_paths::python_has_mlx(python) {
+        return (
+            false,
+            format!(
+                "Python at {} lacks mlx-whisper. Click Install local ASR.",
+                python.display()
+            ),
+        );
     }
     (true, format!("ASR ready ({})", python.display()))
 }

@@ -443,6 +443,20 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
+                      toast("Installing local ASR… (one-time network)");
+                      try {
+                        const msg = await invoke<string>("setup_asr_venv");
+                        toast(msg);
+                      } catch (e) {
+                        toast(String(e));
+                      }
+                      await refreshPerms();
+                    }}
+                  >
+                    Install local ASR
+                  </button>
+                  <button
+                    onClick={async () => {
                       await invoke("request_microphone");
                       setTimeout(refreshPerms, 1000);
                     }}
@@ -459,9 +473,11 @@ export default function App() {
                   </button>
                 </div>
                 <p className="muted tiny" style={{ marginTop: 10 }}>
-                  After each reinstall, toggle Wilson Voice OFF→ON in Accessibility
-                  (ad-hoc code signature changes). Mic may be authorized even if the
-                  list UI is slow to show the app name.
+                  Click <strong>Allow</strong> once for Microphone (Wilson Voice). After
+                  that, Dictate must not re-prompt. ASR runs only under Application
+                  Support — never Desktop — so stop-recording must not ask for Desktop
+                  folder access. After each reinstall, re-toggle Accessibility if paste
+                  stops working.
                 </p>
               </div>
 
