@@ -44,7 +44,8 @@ impl Default for AppSettings {
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "⌥Space hold · ⌘⇧V hold".into(),
-            show_floating: true,
+            // Off by default — second always-on-top webview caused freezes on some Macs
+            show_floating: false,
         }
     }
 }
@@ -212,19 +213,41 @@ fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
 }
 
+fn ensure_float_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window("float").is_some() {
+        return Ok(());
+    }
+    let w = WebviewWindowBuilder::new(app, "float", WebviewUrl::App("index.html".into()))
+        .title("Dictate")
+        .inner_size(220.0, 56.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .visible(true)
+        .focused(false)
+        .build()
+        .map_err(|e| format!("float window: {e}"))?;
+    let _ = w.set_position(tauri::LogicalPosition::new(40.0, 80.0));
+    Ok(())
+}
+
 #[tauri::command]
-fn save_settings(app: AppHandle, state: State<'_, Arc<AppState>>, settings: AppSettings) -> Result<(), String> {
+fn save_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    settings: AppSettings,
+) -> Result<(), String> {
     *state.settings.lock() = settings.clone();
     let path = data_dir().join("settings.json");
     let s = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
-    // floating window visibility
-    if let Some(w) = app.get_webview_window("float") {
-        if settings.show_floating {
+    if settings.show_floating {
+        ensure_float_window(&app)?;
+        if let Some(w) = app.get_webview_window("float") {
             let _ = w.show();
-        } else {
-            let _ = w.hide();
         }
+    } else if let Some(w) = app.get_webview_window("float") {
+        let _ = w.hide();
     }
     Ok(())
 }
@@ -449,50 +472,40 @@ pub fn run() {
             show_main
         ])
         .setup(move |app| {
-            let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
-            if let Err(e) = app.global_shortcut().register(shortcut) {
-                log::error!("failed to register ⌥Space: {e}");
-            }
-            let shortcut2 = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
-            if let Err(e) = app.global_shortcut().register(shortcut2) {
-                log::error!("failed to register ⌘⇧V: {e}");
-            }
-
-            // Floating Dictate pill (Wispr-style floating control)
-            let show_float = state.settings.lock().show_floating;
-            let float = WebviewWindowBuilder::new(app, "float", WebviewUrl::App("index.html".into()))
-                .title("Dictate")
-                .inner_size(220.0, 56.0)
-                .resizable(false)
-                .decorations(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .visible(show_float)
-                .focused(false)
-                .build();
-            if let Ok(w) = float {
-                let _ = w.set_position(tauri::LogicalPosition::new(40.0, 80.0));
+            // Main window first — must stay responsive
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+                let w = win.clone();
+                win.on_window_event(move |e| {
+                    if let WindowEvent::CloseRequested { api, .. } = e {
+                        // Hide to tray instead of quit
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
             }
 
+            // Tray (non-blocking)
             let show_i = MenuItem::with_id(app, "show", "Open Wilson Voice", true, None::<&str>)?;
             let toggle_i =
                 MenuItem::with_id(app, "toggle", "Start / Stop dictation", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &toggle_i, &quit_i])?;
 
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("app icon required");
+            let icon = app.default_window_icon().cloned().ok_or("missing app icon")?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
-                .tooltip("Wilson Voice — ⌥Space hold to dictate")
+                .show_menu_on_left_click(false)
+                .tooltip("Wilson Voice — ⌘⇧V hold to dictate")
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
-                        "quit" => app.exit(0),
+                        "quit" => {
+                            app.exit(0);
+                        }
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -529,18 +542,28 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            if let Some(win) = app.get_webview_window("main") {
-                let w = win.clone();
-                win.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
-                        api.prevent_close();
-                        let _ = w.hide();
-                    }
-                });
+            // Hotkeys AFTER UI is up. Use ⌘⇧V only — ⌥Space can fight system shortcuts.
+            // Fail soft so missing Input Monitoring never freezes the app.
+            let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+            match app.global_shortcut().register(sc) {
+                Ok(()) => log::info!("registered ⌘⇧V"),
+                Err(e) => log::warn!("hotkey ⌘⇧V unavailable (Input Monitoring?): {e}"),
+            }
+            let sc2 = Shortcut::new(Some(Modifiers::ALT), Code::Space);
+            match app.global_shortcut().register(sc2) {
+                Ok(()) => log::info!("registered ⌥Space"),
+                Err(e) => log::warn!("hotkey ⌥Space unavailable: {e}"),
+            }
+
+            // Floating pill is opt-in (Settings) — never create on cold start
+            if state.settings.lock().show_floating {
+                if let Err(e) = ensure_float_window(app.handle()) {
+                    log::warn!("float window skipped: {e}");
+                }
             }
 
             emit_status(app.handle(), &state);
-            log::info!("Wilson Voice desktop ready (SQLite + tray + float)");
+            log::info!("Wilson Voice desktop ready");
             Ok(())
         })
         .run(tauri::generate_context!())
