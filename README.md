@@ -1,106 +1,70 @@
 # Wilson Voice
 
-**Local offline dictation for macOS** — a Wispr Flow / Superwhisper alternative built for developers who talk to Claude Code, Codex, and Grok all day.
+**Product-grade local dictation for macOS** — a Wispr Flow / Superwhisper alternative.
 
-- **ASR:** MLX Whisper `large-v3-turbo` (Apple Silicon) with `whisper-cli` fallback  
-- **UX:** Menu bar app + **hold-to-talk** global hotkey (default: **Right ⌥ Option**)  
-- **Output:** Clipboard + auto-paste into the frontmost app  
-- **Privacy:** Audio never leaves your Mac  
-- **Ops:** Rotating logs + JSONL event stream for real-time debugging  
+Not a pile of Python scripts. A real desktop app:
 
-## Why not pure FN?
+- **Native shell:** Tauri 2 + React + Rust (`com.wilsonguenther.wilson-voice`)
+- **Menu bar tray** + **floating Dictate pill** (Wispr-style always-on-top control)
+- **SQLite WAL + FTS5** for transcript history, dictionary, insights, scratchpad
+- **Local ASR:** MLX Whisper (`large-v3-turbo`) via Python sidecar — audio never leaves your Mac
+- **OS paste:** clipboard + simulated ⌘V into the frontmost app
+- **UI:** Home · Insights · Dictionary · Scratchpad · Settings
 
-macOS treats **Fn** as a modifier-only key. Global “hold Fn alone” is unreliable without kernel-level remapping. Defaults:
+See [PRODUCT.md](./PRODUCT.md) for architecture research (Handy, VoiceInk, OpenWhispr, Muesli, sflow).
 
-| Config value | Physical key |
-|--------------|--------------|
-| `right_option` (**default**) | Right ⌥ |
-| `right_command` | Right ⌘ |
-| `f18` | F18 (map **Fn → F18** in [Karabiner-Elements](https://karabiner-elements.pqrs.org/)) |
-| `f13`–`f20` | Function keys |
-
-To make **Fn** work: Karabiner rule *Fn → F18*, then set `hotkey: f18` in config.
-
-## Install
+## Install (desktop app)
 
 ```bash
-cd ~/Desktop/wilson-voice
-pip3 install -e .
-# already have mlx_whisper + models:
-#   mlx-community/whisper-large-v3-turbo
+cd ~/Desktop/wilson-voice/desktop
+npm install
+# one-time: arm64 venv for ASR
+cd .. && python3.13 -m venv .venv && .venv/bin/pip install mlx-whisper
+cd desktop && npm run desktop:build
+open "src-tauri/target/release/bundle/macos/Wilson Voice.app"
+# or copy to Applications:
+# cp -R "src-tauri/target/release/bundle/macos/Wilson Voice.app" /Applications/
 ```
 
-### Permissions (required once)
+### Permissions (once)
 
-1. **Microphone** — Terminal / Python / Wilson Voice  
-2. **Accessibility** — same apps (for paste + global hotkey)  
-3. **Input Monitoring** — if prompted for pynput  
+System Settings → Privacy & Security — grant **Wilson Voice** (not “Python”):
 
-System Settings → Privacy & Security.
+1. **Microphone**
+2. **Accessibility** (paste)
+3. **Input Monitoring** (global hotkeys)
 
-## Run
+## Use
+
+| Action | How |
+|--------|-----|
+| Dictate | Hold **⌥Space** or **⌘⇧V**, or click floating **Dictate** / tray |
+| History | Home tab — search is FTS5 over SQLite |
+| Re-paste | Copy / Paste on any card |
+| Dictionary | Add terms so ASR rewrites jargon correctly |
+| Insights | Words, WPM, streak, 7-day chart |
+| Quit | Tray → Quit (closing the window hides to tray) |
+
+## Data
+
+```
+~/Library/Application Support/WilsonVoice/
+  wilson_voice.db      # SQLite (WAL)
+  settings.json
+  recordings/          # temp WAVs
+```
+
+## Dev
 
 ```bash
-# Menu bar + hotkey
-python3 -m wilson_voice
-# or after install:
-wilson-voice
-
-# CLI (file or timed mic)
-wilson-voice-cli --seconds 4
-wilson-voice-cli /path/to/audio.wav --intent
+cd ~/Desktop/wilson-voice/desktop
+npm run desktop:dev
 ```
 
-## Config
+## Legacy Python package
 
-`~/Library/Application Support/WilsonVoice/config.yaml`
-
-```yaml
-model: mlx-community/whisper-large-v3-turbo
-language: en
-hotkey: right_option
-auto_paste: true
-auto_copy: true
-polish: true
-preferred_mic_substrings:
-  - Wilson G
-  - MacBook Pro Microphone
-```
-
-## Logs (extreme diagnostics)
-
-`~/Library/Logs/WilsonVoice/`
-
-| File | Purpose |
-|------|---------|
-| `wilson-voice.log` | Human-readable rotating log |
-| `events.jsonl` | One JSON event per line (`hotkey_press`, `asr_ok`, `exception`, …) |
-
-Menu → **Open logs**, or:
-
-```bash
-tail -f ~/Library/Logs/WilsonVoice/wilson-voice.log
-tail -f ~/Library/Logs/WilsonVoice/events.jsonl
-```
-
-## Architecture (peers studied)
-
-| Project | Stack | Borrowed ideas |
-|---------|-------|----------------|
-| [VoiceInk](https://github.com/Beingpax/VoiceInk) | Swift + whisper.cpp + Parakeet | Push-to-talk, local models, personal dictionary patterns |
-| [Handy](https://github.com/cjpais/Handy) | Tauri/Rust + Whisper/Parakeet + VAD | Subprocess isolation, paste into focused app, tray |
-| FreeFlow / Hex | Mac dictation | Hotkey UX, ANE/Parakeet speed |
-
-**Wilson Voice language choice:** Python — so we call **your already-working MLX stack** without re-wrapping Metal. ASR runs in a **subprocess** so model crashes cannot kill the tray.
-
-## Tests
-
-```bash
-cd ~/Desktop/wilson-voice
-python3 -m pytest tests/ -q
-python3 scripts/qa_battery.py   # ~50 automated checks + live ASR samples
-```
+`wilson_voice/` remains as the ASR library / CLI used by the desktop sidecar (`python/asr_worker.py`). The **product UI is the Tauri app**, not `python -m wilson_voice`.
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

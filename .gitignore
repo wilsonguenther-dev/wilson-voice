@@ -15,3 +15,10 @@ logs/
 *.log
 Wilson Voice.app/
 *.app/
+
+# Tauri / frontend
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+*.dmg

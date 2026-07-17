@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Wilson Voice records your voice locally to transcribe dictation with Whisper. Audio never leaves your Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Wilson Voice pastes transcribed text into the app you're typing in.</string>
+	<key>LSUIElement</key>
+	<false/>
+</dict>
+</plist>
