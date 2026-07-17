@@ -1,9 +1,12 @@
-//! Clipboard + optional frontmost-app paste.
+//! Clipboard + frontmost-app paste.
 //!
-//! Paste uses CGEvent synthesis via enigo → requires Accessibility trust for
-//! **Wilson Voice** (com.wilsonguenther.wilson-voice), not Python.
+//! CRITICAL (crash 2026-07-17): enigo Key::Unicode on a background thread calls
+//! HIToolbox TSMGetInputSourceProperty → dispatch_assert_queue_fail → SIGTRAP.
+//! All synthetic keystrokes must run on the **main thread**, and we use raw
+//! virtual keycodes (ANSI V + Command) so we never touch the input-source APIs.
 
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use std::sync::mpsc;
+use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -15,7 +18,6 @@ pub fn copy_text(app: &AppHandle, text: &str) -> Result<(), String> {
         .map_err(|e| format!("clipboard write: {e}"))
 }
 
-/// Result of paste attempt for UI messaging.
 #[derive(Debug)]
 pub struct PasteOutcome {
     pub copied: bool,
@@ -23,7 +25,7 @@ pub struct PasteOutcome {
     pub message: String,
 }
 
-/// Always copy; paste only when Accessibility is granted.
+/// Always copy. Paste only when Accessibility is granted, **on the main thread**.
 pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> PasteOutcome {
     if let Err(e) = copy_text(app, text) {
         return PasteOutcome {
@@ -43,10 +45,11 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
         return PasteOutcome {
             copied: true,
             pasted: false,
-            message: "Copied. Enable Accessibility for Wilson Voice to auto-paste (Settings → Permissions).".into(),
+            message: "Copied. Enable Accessibility for Wilson Voice to auto-paste.".into(),
         };
     }
-    match paste_frontmost() {
+
+    match paste_frontmost_on_main(app) {
         Ok(()) => PasteOutcome {
             copied: true,
             pasted: true,
@@ -55,34 +58,120 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
         Err(e) => PasteOutcome {
             copied: true,
             pasted: false,
-            message: format!(
-                "Copied, but paste failed ({e}). Grant Accessibility to Wilson Voice."
-            ),
+            message: format!("Copied, but paste failed ({e})."),
         },
     }
 }
 
-/// Simulate Cmd+V into the frontmost application (macOS).
-/// Caller must check Accessibility first for good UX.
-pub fn paste_frontmost() -> Result<(), String> {
-    if !permissions::is_accessibility_trusted() {
-        return Err(
-            "Accessibility not granted to Wilson Voice — open Settings → Privacy → Accessibility"
-                .into(),
-        );
+/// Schedule paste on the main thread and wait briefly for completion.
+pub fn paste_frontmost_on_main(app: &AppHandle) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        let r = paste_cmd_v_main_thread();
+        let _ = tx.send(r);
+    })
+    .map_err(|e| format!("schedule main-thread paste: {e}"))?;
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "paste timed out waiting for main thread".to_string())?
+}
+
+/// macOS virtual keycodes (ANSI layout — independent of current input source).
+#[cfg(target_os = "macos")]
+mod cg {
+    use std::ffi::c_void;
+
+    pub type CGEventRef = *mut c_void;
+    pub type CGEventSourceRef = *mut c_void;
+    pub type CGKeyCode = u16;
+    pub type CGEventFlags = u64;
+
+    pub const CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 0x100000;
+    pub const CG_HID_EVENT_TAP: u32 = 0; // kCGHIDEventTap
+    pub const K_VK_ANSI_V: CGKeyCode = 0x09;
+    pub const K_VK_COMMAND: CGKeyCode = 0x37;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceCreate(state_id: i32) -> CGEventSourceRef;
+        fn CGEventCreateKeyboardEvent(
+            source: CGEventSourceRef,
+            virtual_key: CGKeyCode,
+            key_down: bool,
+        ) -> CGEventRef;
+        fn CGEventSetFlags(event: CGEventRef, flags: CGEventFlags);
+        fn CGEventPost(tap: u32, event: CGEventRef);
+        fn CFRelease(cf: *mut c_void);
     }
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("enigo: {e}"))?;
-    enigo
-        .key(Key::Meta, Direction::Press)
-        .map_err(|e| format!("meta press: {e}"))?;
-    // Small delay improves reliability in some Electron apps
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    enigo
-        .key(Key::Unicode('v'), Direction::Click)
-        .map_err(|e| format!("v click: {e}"))?;
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    enigo
-        .key(Key::Meta, Direction::Release)
-        .map_err(|e| format!("meta release: {e}"))?;
-    Ok(())
+
+    const K_CG_EVENT_SOURCE_STATE_HID: i32 = 1;
+
+    /// Post ⌘V using only virtual keycodes — never HIToolbox input-source APIs.
+    pub fn post_cmd_v() -> Result<(), String> {
+        unsafe {
+            let source = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_HID);
+            if source.is_null() {
+                return Err("CGEventSourceCreate failed".into());
+            }
+
+            // Cmd down
+            let cmd_down = CGEventCreateKeyboardEvent(source, K_VK_COMMAND, true);
+            if cmd_down.is_null() {
+                CFRelease(source);
+                return Err("cmd down event null".into());
+            }
+            CGEventSetFlags(cmd_down, CG_EVENT_FLAG_MASK_COMMAND);
+            CGEventPost(CG_HID_EVENT_TAP, cmd_down);
+            CFRelease(cmd_down);
+
+            // V down with Cmd flag
+            let v_down = CGEventCreateKeyboardEvent(source, K_VK_ANSI_V, true);
+            if v_down.is_null() {
+                CFRelease(source);
+                return Err("v down event null".into());
+            }
+            CGEventSetFlags(v_down, CG_EVENT_FLAG_MASK_COMMAND);
+            CGEventPost(CG_HID_EVENT_TAP, v_down);
+            CFRelease(v_down);
+
+            // V up
+            let v_up = CGEventCreateKeyboardEvent(source, K_VK_ANSI_V, false);
+            if !v_up.is_null() {
+                CGEventSetFlags(v_up, CG_EVENT_FLAG_MASK_COMMAND);
+                CGEventPost(CG_HID_EVENT_TAP, v_up);
+                CFRelease(v_up);
+            }
+
+            // Cmd up
+            let cmd_up = CGEventCreateKeyboardEvent(source, K_VK_COMMAND, false);
+            if !cmd_up.is_null() {
+                CGEventPost(CG_HID_EVENT_TAP, cmd_up);
+                CFRelease(cmd_up);
+            }
+
+            CFRelease(source);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn paste_cmd_v_main_thread() -> Result<(), String> {
+    if !permissions::is_accessibility_trusted() {
+        return Err("Accessibility not granted to Wilson Voice".into());
+    }
+    // Tiny settle so focus returns to the previous app after our UI/notification
+    std::thread::sleep(Duration::from_millis(30));
+    cg::post_cmd_v()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paste_cmd_v_main_thread() -> Result<(), String> {
+    Err("paste only implemented on macOS".into())
+}
+
+/// Public alias used by commands that already expect a Result.
+pub fn paste_frontmost() -> Result<(), String> {
+    // Without AppHandle we cannot hop threads — only call from main.
+    paste_cmd_v_main_thread()
 }

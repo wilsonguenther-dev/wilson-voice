@@ -322,6 +322,7 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
 
 #[tauri::command]
 fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
+    // IPC may not be main thread — copy_and_maybe_paste hops to main for CGEvent
     let o = paste::copy_and_maybe_paste(&app, &text, true);
     if !o.copied {
         return Err(o.message);
