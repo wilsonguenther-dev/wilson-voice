@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -168,6 +169,21 @@ def main() -> int:
         if jfk.exists():
             text, backend = transcribe(jfk, model=model, language="en", use_fallback=False)
             check("jfk americans", "american" in text.lower() or "country" in text.lower(), text[:80])
+
+    # --- Extra resilience checks ---
+    print("[resilience]")
+    check("asr binary exists", bool(_find_mlx_whisper()))
+    check("ffmpeg exists", shutil.which("ffmpeg") is not None)
+    check("pbcopy exists", shutil.which("pbcopy") is not None)
+    check("import pipeline", True)  # if we got here modules load
+    try:
+        from wilson_voice.pipeline import DictationEngine, DictationResult
+
+        check("DictationResult fields", hasattr(DictationResult, "ok"))
+        check("DictationEngine ctor", DictationEngine(Config()) is not None)
+    except Exception as e:
+        check("DictationResult fields", False, str(e))
+        check("DictationEngine ctor", False, str(e))
 
     print(f"\n=== RESULT: {PASS} passed, {FAIL} failed (total {PASS+FAIL}) ===")
     return 0 if FAIL == 0 else 1
