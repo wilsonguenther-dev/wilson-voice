@@ -13,3 +13,5 @@ venv/
 .DS_Store
 logs/
 *.log
+Wilson Voice.app/
+*.app/

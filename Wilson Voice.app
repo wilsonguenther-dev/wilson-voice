@@ -1,1 +1,0 @@
-/Users/wilsonguenther/Applications/Wilson Voice.app
