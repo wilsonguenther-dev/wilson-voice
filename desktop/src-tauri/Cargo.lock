@@ -5046,9 +5046,10 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wilson-voice"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
+ "core-foundation",
  "dirs",
  "enigo",
  "env_logger",

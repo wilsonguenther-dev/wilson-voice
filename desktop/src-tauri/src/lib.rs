@@ -1,28 +1,28 @@
-//! Wilson Voice — product-grade local dictation (Wispr Flow alternative)
+//! Wilson Voice v0.4 — production dictation desktop app
 //!
-//! Stack (researched from Handy, VoiceInk, OpenWhispr, Muesli, sflow):
-//! - Tauri 2 + React UI (native shell, tray, multi-window)
-//! - Rust for hotkeys / clipboard paste / recording
-//! - SQLite WAL + FTS5 for history, dictionary, insights, scratchpad
-//! - Python MLX Whisper sidecar for on-device ASR
-//!
-//! GraphQL is not used: single-user local app → typed Tauri commands over SQLite
-//! is faster and simpler than an HTTP GraphQL layer.
+//! Phases (PLAN.md):
+//! 0 Hygiene — single /Applications install, no DMG litter
+//! 1 Permissions — AX + mic probes, System Settings deep-links
+//! 2 Hotkeys — ⌘⇧V hold via Carbon on main thread (deferred)
+//! 3 Record + paste — ffmpeg + enigo only when trusted
+//! 4 Product UI — Home / Insights / Dictionary / Scratchpad / Permissions
 
 mod asr;
 mod db;
 mod paste;
+mod permissions;
 mod record;
 
 use db::{Database, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
+use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -34,7 +34,6 @@ pub struct AppSettings {
     pub language: String,
     pub auto_paste: bool,
     pub hotkey_label: String,
-    pub show_floating: bool,
 }
 
 impl Default for AppSettings {
@@ -43,9 +42,7 @@ impl Default for AppSettings {
             model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
-            hotkey_label: "⌥Space hold · ⌘⇧V hold".into(),
-            // Off by default — second always-on-top webview caused freezes on some Macs
-            show_floating: false,
+            hotkey_label: "⌘⇧V hold".into(),
         }
     }
 }
@@ -59,6 +56,8 @@ pub struct AppStatus {
     pub message: String,
     pub python_ok: bool,
     pub worker_ok: bool,
+    pub accessibility: bool,
+    pub hotkey_registered: bool,
 }
 
 struct AppState {
@@ -70,6 +69,7 @@ struct AppState {
     last_error: PLMutex<Option<String>>,
     venv_python: PathBuf,
     asr_worker: PathBuf,
+    hotkey_registered: PLMutex<bool>,
 }
 
 fn data_dir() -> PathBuf {
@@ -81,20 +81,22 @@ fn data_dir() -> PathBuf {
     p
 }
 
-/// Build status without nested locks. (Struct field temps hold MutexGuards for
-/// the whole expression — nesting status_message() there deadlocks parking_lot.)
 fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let last_error = state.last_error.lock().clone();
+    let accessibility = permissions::is_accessibility_trusted();
+    let hotkey_registered = *state.hotkey_registered.lock();
     let message = if recording {
-        "Recording… release hotkey to transcribe".into()
+        "Recording… release ⌘⇧V or click Stop".into()
     } else if busy {
         "Transcribing with local Whisper…".into()
     } else if let Some(ref err) = last_error {
         format!("Error: {err}")
     } else if !state.venv_python.exists() {
-        "Python ASR venv missing — open Settings".into()
+        "ASR venv missing — see Permissions".into()
+    } else if !accessibility {
+        "Ready (copy-only) — enable Accessibility to auto-paste".into()
     } else {
         "Ready — hold ⌘⇧V to dictate".into()
     };
@@ -105,6 +107,8 @@ fn build_status(state: &AppState) -> AppStatus {
         message,
         python_ok: state.venv_python.exists(),
         worker_ok: state.asr_worker.exists(),
+        accessibility,
+        hotkey_registered,
     }
 }
 
@@ -167,38 +171,44 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let state2 = state.clone();
 
     std::thread::spawn(move || {
-        let result = (|| -> Result<TranscriptEntry, String> {
+        let result = (|| -> Result<(TranscriptEntry, paste::PasteOutcome), String> {
             let wav = record::stop_recording(active)?;
             log::info!("wav ready: {}", wav.display());
             let asr = asr::run_asr(&venv, &worker, &wav, &settings.model, &settings.language)?;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
             let entry = db.insert_transcript(text, asr.backend, asr.seconds, None)?;
-            if let Err(e) = paste::copy_text(&app2, &entry.text) {
-                log::warn!("clipboard: {e}");
-            }
-            if settings.auto_paste {
-                std::thread::sleep(std::time::Duration::from_millis(120));
-                if let Err(e) = paste::paste_frontmost() {
-                    log::warn!("paste: {e}");
-                    *state2.last_error.lock() =
-                        Some(format!("Paste failed — grant Accessibility: {e}"));
-                }
-            }
-            Ok(entry)
+            // Focus should return to previous app; brief delay helps paste target
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let outcome = paste::copy_and_maybe_paste(&app2, &entry.text, settings.auto_paste);
+            Ok((entry, outcome))
         })();
 
         match result {
-            Ok(entry) => {
-                *state2.last_error.lock() = None;
+            Ok((entry, outcome)) => {
+                if outcome.pasted {
+                    *state2.last_error.lock() = None;
+                } else if !outcome.copied {
+                    *state2.last_error.lock() = Some(outcome.message.clone());
+                } else if settings.auto_paste && !outcome.pasted {
+                    // Soft warning — text is still on clipboard
+                    *state2.last_error.lock() = Some(outcome.message.clone());
+                } else {
+                    *state2.last_error.lock() = None;
+                }
                 let _ = app2.emit("transcript", &entry);
+                let _ = app2.emit("paste_outcome", &outcome.message);
                 let preview = if entry.text.chars().count() > 100 {
                     let s: String = entry.text.chars().take(100).collect();
                     format!("{s}…")
                 } else {
                     entry.text.clone()
                 };
-                notify(&app2, "Wilson Voice", preview);
-                log::info!("transcript ok words={}", entry.word_count);
+                notify(&app2, "Wilson Voice", format!("{preview}\n({})", outcome.message));
+                log::info!(
+                    "transcript ok words={} pasted={}",
+                    entry.word_count,
+                    outcome.pasted
+                );
             }
             Err(e) => {
                 log::error!("pipeline failed: {e}");
@@ -218,42 +228,12 @@ fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
 }
 
-fn ensure_float_window(app: &AppHandle) -> Result<(), String> {
-    if app.get_webview_window("float").is_some() {
-        return Ok(());
-    }
-    let w = WebviewWindowBuilder::new(app, "float", WebviewUrl::App("index.html".into()))
-        .title("Dictate")
-        .inner_size(220.0, 56.0)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        .visible(true)
-        .focused(false)
-        .build()
-        .map_err(|e| format!("float window: {e}"))?;
-    let _ = w.set_position(tauri::LogicalPosition::new(40.0, 80.0));
-    Ok(())
-}
-
 #[tauri::command]
-fn save_settings(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-    settings: AppSettings,
-) -> Result<(), String> {
+fn save_settings(state: State<'_, Arc<AppState>>, settings: AppSettings) -> Result<(), String> {
     *state.settings.lock() = settings.clone();
     let path = data_dir().join("settings.json");
     let s = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
-    if settings.show_floating {
-        ensure_float_window(&app)?;
-        if let Some(w) = app.get_webview_window("float") {
-            let _ = w.show();
-        }
-    } else if let Some(w) = app.get_webview_window("float") {
-        let _ = w.hide();
-    }
     Ok(())
 }
 
@@ -263,9 +243,7 @@ fn get_history(
     query: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<TranscriptEntry>, String> {
-    state
-        .db
-        .list_transcripts(limit.unwrap_or(200), query)
+    state.db.list_transcripts(limit.unwrap_or(200), query)
 }
 
 #[tauri::command]
@@ -281,6 +259,16 @@ fn delete_entry(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Strin
 #[tauri::command]
 fn get_status(state: State<'_, Arc<AppState>>) -> AppStatus {
     build_status(&state)
+}
+
+#[tauri::command]
+fn get_permissions(state: State<'_, Arc<AppState>>) -> PermissionReport {
+    permissions::report(&state.venv_python, &state.asr_worker, false)
+}
+
+#[tauri::command]
+fn request_accessibility() -> bool {
+    permissions::request_accessibility_prompt()
 }
 
 #[tauri::command]
@@ -333,10 +321,12 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn paste_entry(app: AppHandle, text: String) -> Result<(), String> {
-    paste::copy_text(&app, &text)?;
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    paste::paste_frontmost()
+fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
+    let o = paste::copy_and_maybe_paste(&app, &text, true);
+    if !o.copied {
+        return Err(o.message);
+    }
+    Ok(o.message)
 }
 
 #[tauri::command]
@@ -350,21 +340,7 @@ fn open_data_dir() -> Result<(), String> {
 
 #[tauri::command]
 fn open_privacy_settings(pane: String) -> Result<(), String> {
-    let url = match pane.as_str() {
-        "Microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        "Accessibility" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        }
-        "InputMonitoring" | "ListenEvent" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
-        }
-        _ => "x-apple.systempreferences:com.apple.preference.security",
-    };
-    std::process::Command::new("open")
-        .arg(url)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    permissions::open_privacy_pane(&pane)
 }
 
 #[tauri::command]
@@ -422,6 +398,7 @@ pub fn run() {
         last_error: PLMutex::new(None),
         venv_python: venv_py,
         asr_worker: worker,
+        hotkey_registered: PLMutex::new(false),
     });
 
     tauri::Builder::default()
@@ -436,11 +413,13 @@ pub fn run() {
                 .with_handler({
                     let state = state.clone();
                     move |app, shortcut, event| {
+                        // Only react to our hold-to-talk combo
+                        log::debug!("shortcut event {shortcut:?} {:?}", event.state);
                         if event.state == ShortcutState::Pressed {
-                            log::info!("shortcut pressed: {shortcut:?}");
+                            log::info!("⌘⇧V pressed — start");
                             start_recording(app, &state);
                         } else if event.state == ShortcutState::Released {
-                            log::info!("shortcut released: {shortcut:?}");
+                            log::info!("⌘⇧V released — stop");
                             stop_and_transcribe(app.clone(), state.clone());
                         }
                     }
@@ -455,6 +434,8 @@ pub fn run() {
             clear_history,
             delete_entry,
             get_status,
+            get_permissions,
+            request_accessibility,
             get_insights,
             list_dictionary,
             add_dictionary_term,
@@ -470,9 +451,7 @@ pub fn run() {
             show_main
         ])
         .setup(move |app| {
-            // CRITICAL: setup runs on the main thread inside didFinishLaunching.
-            // Never call global_shortcut().register here — it deadlocks the event loop
-            // and macOS marks the app "not responding".
+            // Lightweight setup only — no hotkey register, no second window
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -497,7 +476,7 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Wilson Voice — ⌘⇧V hold to dictate")
+                .tooltip("Wilson Voice — hold ⌘⇧V to dictate")
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
@@ -540,26 +519,35 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
-            // Defer hotkeys until the event loop is spinning (avoids main-thread deadlock)
+            // Phase 2: register ⌘⇧V on main thread AFTER event loop is live
             let handle = app.handle().clone();
+            let state_hk = state.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::thread::sleep(std::time::Duration::from_millis(600));
                 let h = handle.clone();
+                let st = state_hk.clone();
                 let _ = handle.run_on_main_thread(move || {
+                    // Primary product hotkey — Carbon RegisterEventHotKey via Tauri
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
                     match h.global_shortcut().register(sc) {
-                        Ok(()) => log::info!("registered ⌘⇧V"),
-                        Err(e) => log::warn!("hotkey ⌘⇧V unavailable: {e}"),
-                    }
-                    let sc2 = Shortcut::new(Some(Modifiers::ALT), Code::Space);
-                    match h.global_shortcut().register(sc2) {
-                        Ok(()) => log::info!("registered ⌥Space"),
-                        Err(e) => log::warn!("hotkey ⌥Space unavailable: {e}"),
+                        Ok(()) => {
+                            *st.hotkey_registered.lock() = true;
+                            log::info!("registered hold-to-talk ⌘⇧V");
+                            emit_status(&h, &st);
+                        }
+                        Err(e) => {
+                            *st.hotkey_registered.lock() = false;
+                            log::warn!("⌘⇧V register failed: {e}");
+                            *st.last_error.lock() = Some(format!(
+                                "Hotkey unavailable: {e}. Use the Dictate button in the app."
+                            ));
+                            emit_status(&h, &st);
+                        }
                     }
                 });
             });
 
-            log::info!("Wilson Voice setup complete (hotkeys deferred)");
+            log::info!("Wilson Voice v0.4 setup complete");
             Ok(())
         })
         .run(tauri::generate_context!())

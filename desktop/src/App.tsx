@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 
 type Nav =
   | "home"
+  | "permissions"
   | "insights"
   | "dictionary"
   | "scratchpad"
@@ -16,7 +16,6 @@ interface AppSettings {
   language: string;
   autoPaste: boolean;
   hotkeyLabel: string;
-  showFloating: boolean;
 }
 
 interface AppStatus {
@@ -26,6 +25,18 @@ interface AppStatus {
   message: string;
   pythonOk: boolean;
   workerOk: boolean;
+  accessibility: boolean;
+  hotkeyRegistered: boolean;
+}
+
+interface PermissionReport {
+  accessibility: boolean;
+  microphone: boolean;
+  ffmpegOk: boolean;
+  asrOk: boolean;
+  asrDetail: string;
+  summary: string;
+  allCriticalOk: boolean;
 }
 
 interface TranscriptEntry {
@@ -98,59 +109,11 @@ function formatDay(d: string) {
   }
 }
 
-function FloatPill() {
-  const [status, setStatus] = useState<AppStatus | null>(null);
-
-  useEffect(() => {
-    invoke<AppStatus>("get_status").then(setStatus).catch(() => {});
-    const unsubs: Array<() => void> = [];
-    listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
-      unsubs.push(u),
-    );
-    listen<boolean>("recording", (e) =>
-      setStatus((s) =>
-        s
-          ? {
-              ...s,
-              recording: e.payload,
-              message: e.payload ? "Listening…" : s.message,
-            }
-          : s,
-      ),
-    ).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
-  }, []);
-
-  const live = status?.recording;
-  const busy = status?.busy;
-
-  return (
-    <div
-      className={live ? "float-pill live" : busy ? "float-pill busy" : "float-pill"}
-      data-tauri-drag-region
-    >
-      <button
-        className="float-dictate"
-        onClick={() => invoke("manual_toggle")}
-        disabled={!!busy}
-      >
-        <span className="float-dot" />
-        <span>{live ? "Stop" : busy ? "…" : "Dictate"}</span>
-        <kbd>⌥Space</kbd>
-      </button>
-      <button
-        className="float-open"
-        title="Open Wilson Voice"
-        onClick={() => invoke("show_main")}
-      >
-        ↗
-      </button>
-    </div>
-  );
+function StatusDot({ ok }: { ok: boolean }) {
+  return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
 }
 
 export default function App() {
-  const [isFloat, setIsFloat] = useState(false);
   const [nav, setNav] = useState<Nav>("home");
   const [status, setStatus] = useState<AppStatus>({
     recording: false,
@@ -159,7 +122,10 @@ export default function App() {
     message: "Loading…",
     pythonOk: false,
     workerOk: false,
+    accessibility: false,
+    hotkeyRegistered: false,
   });
+  const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dictionary, setDictionary] = useState<DictEntry[]>([]);
@@ -173,14 +139,6 @@ export default function App() {
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
 
-  useEffect(() => {
-    try {
-      setIsFloat(getCurrentWindow().label === "float");
-    } catch {
-      setIsFloat(false);
-    }
-  }, []);
-
   const loadHistory = useCallback(async (q?: string) => {
     const h = await invoke<TranscriptEntry[]>("get_history", {
       query: q || null,
@@ -189,23 +147,30 @@ export default function App() {
     setHistory(h);
   }, []);
 
+  const refreshPerms = useCallback(async () => {
+    try {
+      setPerms(await invoke<PermissionReport>("get_permissions"));
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, dict, notes, set] = await Promise.all([
+      const [s, st, ins, dict, notes] = await Promise.all([
         invoke<AppSettings>("get_settings"),
         invoke<AppStatus>("get_status"),
         invoke<Insights>("get_insights"),
         invoke<DictEntry[]>("list_dictionary"),
         invoke<ScratchNote[]>("list_scratch"),
-        Promise.resolve(null),
       ]);
       setSettings(s);
       setStatus(st);
       setInsights(ins);
       setDictionary(dict);
       setScratch(notes);
-      void set;
       await loadHistory(query);
+      await refreshPerms();
     } catch (e) {
       setStatus((p) => ({
         ...p,
@@ -213,10 +178,9 @@ export default function App() {
         lastError: String(e),
       }));
     }
-  }, [loadHistory, query]);
+  }, [loadHistory, query, refreshPerms]);
 
   useEffect(() => {
-    if (isFloat) return;
     refreshAll();
     const unsubs: Array<() => void> = [];
     listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
@@ -227,36 +191,42 @@ export default function App() {
         ...s,
         recording: e.payload,
         message: e.payload
-          ? "Recording… release hotkey to transcribe"
+          ? "Recording… release ⌘⇧V or click Stop"
           : s.message,
       })),
     ).then((u) => unsubs.push(u));
     listen<TranscriptEntry>("transcript", async (e) => {
       setHistory((h) => [e.payload, ...h.filter((x) => x.id !== e.payload.id)]);
-      setFlash("Saved · copied · pasted");
-      setTimeout(() => setFlash(null), 2200);
       try {
         setInsights(await invoke("get_insights"));
       } catch {
         /* ignore */
       }
     }).then((u) => unsubs.push(u));
+    listen<string>("paste_outcome", (e) => {
+      setFlash(e.payload);
+      setTimeout(() => setFlash(null), 2800);
+    }).then((u) => unsubs.push(u));
     return () => unsubs.forEach((u) => u());
-  }, [isFloat, refreshAll]);
+  }, [refreshAll]);
 
   useEffect(() => {
-    if (isFloat) return;
     const t = setTimeout(() => {
       loadHistory(query).catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [query, loadHistory, isFloat]);
+  }, [query, loadHistory]);
 
-  if (isFloat) return <FloatPill />;
+  // Auto-open Permissions if critical grants missing on first load
+  useEffect(() => {
+    if (perms && !perms.allCriticalOk && nav === "home") {
+      // soft nudge only once via status — user can stay on home
+    }
+  }, [perms, nav]);
 
   async function toast(msg: string) {
     setFlash(msg);
-    setTimeout(() => setFlash(null), 1800);
+    setTimeout(() => setFlash(null), 2000);
   }
 
   async function toggleRecord() {
@@ -269,8 +239,9 @@ export default function App() {
   }
 
   async function pasteText(text: string) {
-    await invoke("paste_entry", { text });
-    toast("Pasted into frontmost app");
+    const msg = await invoke<string>("paste_entry", { text });
+    toast(msg);
+    await refreshPerms();
   }
 
   async function removeEntry(id: string) {
@@ -351,6 +322,8 @@ export default function App() {
     [insights],
   );
 
+  const needsPerms = perms && !perms.allCriticalOk;
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -360,7 +333,7 @@ export default function App() {
           </div>
           <div>
             <div className="brand-name">Wilson Voice</div>
-            <div className="brand-tag">Local · private · fast</div>
+            <div className="brand-tag">v0.4 · local · private</div>
           </div>
         </div>
 
@@ -368,6 +341,7 @@ export default function App() {
           {(
             [
               ["home", "Home", history.length],
+              ["permissions", "Permissions", needsPerms ? 1 : null],
               ["insights", "Insights", null],
               ["dictionary", "Dictionary", dictionary.length],
               ["scratchpad", "Scratchpad", scratch.length],
@@ -380,16 +354,18 @@ export default function App() {
               onClick={() => setNav(id)}
             >
               <span>{label}</span>
-              {count != null && count > 0 && <span className="count">{count}</span>}
+              {count != null && count > 0 && (
+                <span className={id === "permissions" ? "count warn" : "count"}>
+                  {count}
+                </span>
+              )}
             </button>
           ))}
         </nav>
 
         <div className="sidebar-foot">
           <button
-            className={
-              status.recording ? "dictate-side live" : "dictate-side"
-            }
+            className={status.recording ? "dictate-side live" : "dictate-side"}
             onClick={toggleRecord}
             disabled={status.busy}
           >
@@ -397,7 +373,7 @@ export default function App() {
               ? "Stop listening"
               : status.busy
                 ? "Transcribing…"
-                : "Dictate · ⌥Space"}
+                : "Dictate · ⌘⇧V"}
           </button>
         </div>
       </aside>
@@ -407,6 +383,7 @@ export default function App() {
           <div>
             <h1>
               {nav === "home" && "Welcome back, Wilson"}
+              {nav === "permissions" && "Permissions"}
               {nav === "insights" && "Insights"}
               {nav === "dictionary" && "Dictionary"}
               {nav === "scratchpad" && "Scratchpad"}
@@ -414,15 +391,15 @@ export default function App() {
             </h1>
             <p className="lede">
               {nav === "home" &&
-                "Every dictation lands here. Search, copy, or paste again into any app."}
+                "Hold ⌘⇧V over any text field — Claude, Codex, ChatGPT, Mail. Local Whisper; history in SQLite."}
+              {nav === "permissions" &&
+                "macOS must grant these to Wilson Voice (not Python). Without them, dictation or paste fails."}
               {nav === "insights" &&
-                "Usage analytics from your local SQLite history — nothing leaves this Mac."}
+                "Local analytics from your SQLite history — nothing leaves this Mac."}
               {nav === "dictionary" &&
-                "Teach Whisper your names, products, and jargon so it spells them right."}
-              {nav === "scratchpad" &&
-                "Capture thoughts, assemble prompts, park text for later."}
-              {nav === "settings" &&
-                "Hotkeys, model, permissions, floating Dictate control."}
+                "Custom spellings applied after each transcription."}
+              {nav === "scratchpad" && "Park text and assemble prompts."}
+              {nav === "settings" && "Model, language, auto-paste."}
             </p>
           </div>
           <div className={pillClass}>{status.message}</div>
@@ -430,7 +407,106 @@ export default function App() {
 
         {flash && <div className="toast">{flash}</div>}
 
+        {needsPerms && nav === "home" && (
+          <div className="banner warn" onClick={() => setNav("permissions")}>
+            Setup incomplete — open Permissions to enable Mic / Accessibility
+            for Wilson Voice
+          </div>
+        )}
+
         <div className="content">
+          {nav === "permissions" && (
+            <div className="perms">
+              <div className="panel intro">
+                <h3>Enable for this app only</h3>
+                <p>
+                  Bundle id <code>com.wilsonguenther.wilson-voice</code> must
+                  appear as <strong>Wilson Voice</strong> in System Settings →
+                  Privacy &amp; Security. Do not enable “Python” for this
+                  product.
+                </p>
+                <p className="muted">{perms?.summary}</p>
+                <div className="actions">
+                  <button className="primary" onClick={refreshPerms}>
+                    Re-check permissions
+                  </button>
+                  <button
+                    onClick={async () => {
+                      await invoke("request_accessibility");
+                      setTimeout(refreshPerms, 800);
+                    }}
+                  >
+                    Prompt Accessibility
+                  </button>
+                </div>
+              </div>
+
+              <ul className="perm-list">
+                <li className={perms?.microphone ? "ok" : "bad"}>
+                  <StatusDot ok={!!perms?.microphone} />
+                  <div>
+                    <strong>Microphone</strong>
+                    <p>
+                      Required so ffmpeg can capture audio for Whisper. First
+                      Record may show the system dialog — click Allow for
+                      Wilson Voice.
+                    </p>
+                    <button
+                      onClick={() =>
+                        invoke("open_privacy_settings", { pane: "Microphone" })
+                      }
+                    >
+                      Open Microphone settings
+                    </button>
+                  </div>
+                </li>
+                <li className={perms?.accessibility ? "ok" : "bad"}>
+                  <StatusDot ok={!!perms?.accessibility} />
+                  <div>
+                    <strong>Accessibility</strong>
+                    <p>
+                      Required to simulate ⌘V into the frontmost app (Wispr-style
+                      paste). Without it, text is still copied to the clipboard.
+                    </p>
+                    <button
+                      onClick={() =>
+                        invoke("open_privacy_settings", {
+                          pane: "Accessibility",
+                        })
+                      }
+                    >
+                      Open Accessibility settings
+                    </button>
+                  </div>
+                </li>
+                <li className={status.hotkeyRegistered ? "ok" : "bad"}>
+                  <StatusDot ok={status.hotkeyRegistered} />
+                  <div>
+                    <strong>Global hotkey ⌘⇧V</strong>
+                    <p>
+                      Carbon hotkey registered by Tauri. If this is red, use the
+                      Dictate button. Close Wispr Flow if it steals the combo.
+                    </p>
+                  </div>
+                </li>
+                <li className={perms?.ffmpegOk ? "ok" : "bad"}>
+                  <StatusDot ok={!!perms?.ffmpegOk} />
+                  <div>
+                    <strong>ffmpeg</strong>
+                    <p>Mic capture backend. Install: brew install ffmpeg</p>
+                  </div>
+                </li>
+                <li className={perms?.asrOk ? "ok" : "bad"}>
+                  <StatusDot ok={!!perms?.asrOk} />
+                  <div>
+                    <strong>Local Whisper (MLX)</strong>
+                    <p className="muted">{perms?.asrDetail}</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          )}
+
           {nav === "home" && (
             <>
               <div className="stats-row">
@@ -458,6 +534,29 @@ export default function App() {
                 </div>
               </div>
 
+              <button
+                className={
+                  status.recording
+                    ? "record-btn live"
+                    : status.busy
+                      ? "record-btn busy"
+                      : "record-btn"
+                }
+                onClick={toggleRecord}
+                disabled={status.busy}
+              >
+                <span className="mic" aria-hidden>
+                  {status.recording ? "■" : status.busy ? "…" : "●"}
+                </span>
+                <span>
+                  {status.recording
+                    ? "Listening — click or release ⌘⇧V"
+                    : status.busy
+                      ? "Transcribing…"
+                      : "Hold ⌘⇧V or click to record"}
+                </span>
+              </button>
+
               <div className="toolbar">
                 <input
                   type="search"
@@ -466,7 +565,7 @@ export default function App() {
                   onChange={(e) => setQuery(e.target.value)}
                 />
                 <button className="ghost" onClick={clearAll}>
-                  Clear all
+                  Clear
                 </button>
               </div>
 
@@ -474,9 +573,8 @@ export default function App() {
                 <div className="empty">
                   <h3>No dictations yet</h3>
                   <p>
-                    Hold <kbd>⌥Space</kbd> over any text field — Claude, Codex,
-                    ChatGPT, email — and Wilson Voice will transcribe locally,
-                    paste, and archive here.
+                    Click Dictate or hold <kbd>⌘⇧V</kbd>. Text is stored locally
+                    and searchable forever.
                   </p>
                 </div>
               ) : (
@@ -503,14 +601,12 @@ export default function App() {
                           className="ghost"
                           onClick={() => {
                             setNav("scratchpad");
-                            setNoteTitle(
-                              `From ${formatTime(e.createdAt)}`,
-                            );
+                            setNoteTitle(`From ${formatTime(e.createdAt)}`);
                             setNoteBody(e.text);
                             setActiveNoteId(null);
                           }}
                         >
-                          To scratchpad
+                          Scratchpad
                         </button>
                         <button
                           className="ghost danger"
@@ -533,7 +629,7 @@ export default function App() {
                   <div className="stat-n">
                     {insights.totalWords.toLocaleString()}
                   </div>
-                  <div className="stat-l">total words dictated</div>
+                  <div className="stat-l">total words</div>
                 </div>
                 <div className="stat big">
                   <div className="stat-n">
@@ -543,16 +639,15 @@ export default function App() {
                 </div>
                 <div className="stat big">
                   <div className="stat-n">{Math.round(insights.avgWpm)}</div>
-                  <div className="stat-l">words per minute</div>
+                  <div className="stat-l">wpm</div>
                 </div>
                 <div className="stat big">
                   <div className="stat-n">{insights.streakDays}</div>
                   <div className="stat-l">
-                    day streak (best {insights.longestStreak})
+                    streak (best {insights.longestStreak})
                   </div>
                 </div>
               </div>
-
               <div className="panel-grid">
                 <div className="panel">
                   <h3>Last 7 days</h3>
@@ -579,45 +674,24 @@ export default function App() {
                   <h3>Engine</h3>
                   <ul className="kv">
                     <li>
-                      <span>Avg ASR time</span>
+                      <span>Avg ASR</span>
                       <strong>{insights.avgAsrSeconds.toFixed(2)}s</strong>
                     </li>
                     <li>
-                      <span>Sessions today</span>
-                      <strong>{insights.sessionsToday}</strong>
-                    </li>
-                    <li>
-                      <span>Words today</span>
-                      <strong>{insights.wordsToday.toLocaleString()}</strong>
-                    </li>
-                    <li>
-                      <span>Python venv</span>
-                      <strong className={status.pythonOk ? "ok" : "bad"}>
-                        {status.pythonOk ? "ready" : "missing"}
+                      <span>Hotkey</span>
+                      <strong
+                        className={status.hotkeyRegistered ? "ok" : "bad"}
+                      >
+                        {status.hotkeyRegistered ? "⌘⇧V ok" : "not registered"}
                       </strong>
                     </li>
                     <li>
-                      <span>ASR worker</span>
-                      <strong className={status.workerOk ? "ok" : "bad"}>
-                        {status.workerOk ? "ready" : "missing"}
+                      <span>Accessibility</span>
+                      <strong className={status.accessibility ? "ok" : "bad"}>
+                        {status.accessibility ? "trusted" : "denied"}
                       </strong>
                     </li>
                   </ul>
-                  {insights.topApps.length > 0 && (
-                    <>
-                      <h3 style={{ marginTop: 18 }}>Sources</h3>
-                      <ul className="kv">
-                        {insights.topApps.map((a) => (
-                          <li key={a.app}>
-                            <span>{a.app}</span>
-                            <strong>
-                              {a.words.toLocaleString()} w · {a.sessions}
-                            </strong>
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
                 </div>
               </div>
             </div>
@@ -628,9 +702,8 @@ export default function App() {
               <div className="panel intro">
                 <h3>Spell the way you do</h3>
                 <p>
-                  Add personal terms, company names, and client jargon. After
-                  each transcription, Wilson Voice rewrites matched tokens to
-                  your preferred form — same idea as Wispr Flow Dictionary.
+                  After ASR, matching tokens are rewritten to your preferred
+                  form.
                 </p>
                 <div className="dict-add">
                   <input
@@ -640,13 +713,13 @@ export default function App() {
                     onKeyDown={(e) => e.key === "Enter" && addTerm()}
                   />
                   <input
-                    placeholder="Preferred spelling (optional)"
+                    placeholder="Preferred (optional)"
                     value={newPreferred}
                     onChange={(e) => setNewPreferred(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && addTerm()}
                   />
                   <button className="primary" onClick={addTerm}>
-                    Add word
+                    Add
                   </button>
                 </div>
               </div>
@@ -700,13 +773,16 @@ export default function App() {
                 <textarea
                   value={noteBody}
                   onChange={(e) => setNoteBody(e.target.value)}
-                  placeholder="Park text, draft prompts, assemble emails…"
+                  placeholder="Park text, draft prompts…"
                 />
                 <div className="actions">
                   <button className="primary" onClick={saveNote}>
                     Save
                   </button>
-                  <button onClick={() => copyText(noteBody)} disabled={!noteBody}>
+                  <button
+                    onClick={() => copyText(noteBody)}
+                    disabled={!noteBody}
+                  >
                     Copy
                   </button>
                   <button
@@ -767,27 +843,16 @@ export default function App() {
                     setSettings({ ...settings, autoPaste: e.target.checked })
                   }
                 />
-                <span>Auto-paste into frontmost app after transcription</span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.showFloating}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      showFloating: e.target.checked,
-                    })
-                  }
-                />
-                <span>Show floating Dictate control (Wispr-style pill)</span>
+                <span>
+                  Auto-paste after transcription (needs Accessibility)
+                </span>
               </label>
               <div className="panel">
-                <h3>Hotkeys</h3>
-                <p className="muted">{settings.hotkeyLabel}</p>
-                <p className="muted">
-                  Grant Input Monitoring + Accessibility so global hotkeys and
-                  Cmd+V paste work system-wide.
+                <h3>Hotkey</h3>
+                <p>
+                  <strong>{settings.hotkeyLabel}</strong> — hold to talk,
+                  release to transcribe. Also works from the Dictate button and
+                  menu bar.
                 </p>
               </div>
               <div className="actions wrap">
@@ -800,28 +865,8 @@ export default function App() {
                 <button onClick={() => invoke("open_data_dir")}>
                   Open data folder
                 </button>
-                <button
-                  onClick={() =>
-                    invoke("open_privacy_settings", { pane: "Microphone" })
-                  }
-                >
-                  Mic
-                </button>
-                <button
-                  onClick={() =>
-                    invoke("open_privacy_settings", { pane: "Accessibility" })
-                  }
-                >
-                  Accessibility
-                </button>
-                <button
-                  onClick={() =>
-                    invoke("open_privacy_settings", {
-                      pane: "InputMonitoring",
-                    })
-                  }
-                >
-                  Input Monitoring
+                <button onClick={() => setNav("permissions")}>
+                  Permissions
                 </button>
               </div>
             </div>

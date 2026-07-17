@@ -1,6 +1,6 @@
 [package]
 name = "wilson-voice"
-version = "0.3.0"
+version = "0.4.0"
 description = "Wilson Voice — local dictation desktop app (Wispr Flow alternative)"
 authors = ["Wilson Guenther"]
 edition = "2021"
@@ -31,3 +31,4 @@ log = "0.4"
 env_logger = "0.11"
 dirs = "6"
 rusqlite = { version = "0.32", features = ["bundled"] }
+core-foundation = "0.10"

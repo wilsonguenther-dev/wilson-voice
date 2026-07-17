@@ -280,6 +280,121 @@ kbd {
   padding: 0.1rem 0.4rem;
 }
 
+.count.warn {
+  background: rgba(244, 63, 94, 0.15);
+  color: var(--danger);
+}
+
+.banner {
+  margin: 0 24px 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.banner.warn {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--warn);
+}
+
+.perms .perm-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.perms .perm-list li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.perms .perm-list li.ok {
+  border-color: rgba(15, 118, 110, 0.35);
+}
+
+.perms .perm-list li.bad {
+  border-color: rgba(190, 18, 60, 0.3);
+}
+
+.perms .perm-list p {
+  margin: 4px 0 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dot-ok,
+.dot-bad {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-top: 4px;
+  display: inline-block;
+}
+
+.dot-ok {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.dot-bad {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.15);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--bg-elev);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.record-btn {
+  width: 100%;
+  min-height: 100px;
+  margin-bottom: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+
+.record-btn .mic {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.record-btn.live {
+  border-color: rgba(190, 18, 60, 0.4);
+}
+
+.record-btn.live .mic {
+  background: rgba(190, 18, 60, 0.15);
+  color: var(--danger);
+  animation: pulse 1s infinite;
+}
+
 .sidebar-foot {
   padding-top: 8px;
 }
