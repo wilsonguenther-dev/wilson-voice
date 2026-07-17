@@ -17,6 +17,8 @@ interface AppSettings {
   autoPaste: boolean;
   hotkeyLabel: string;
   showFloatingPill: boolean;
+  /** fast | balanced | max */
+  speedProfile: string;
 }
 
 interface AppStatus {
@@ -79,11 +81,35 @@ interface ScratchNote {
 }
 
 const MODELS = [
+  "mlx-community/whisper-tiny-mlx",
+  "mlx-community/whisper-base-mlx",
+  "mlx-community/whisper-small-mlx",
   "mlx-community/whisper-large-v3-turbo",
-  "mlx-community/whisper-large-v3",
-  "mlx-community/whisper-medium",
-  "mlx-community/whisper-small",
+  "mlx-community/whisper-medium-mlx",
+  "mlx-community/whisper-large-v3-mlx",
 ];
+
+const PROFILES: { id: string; label: string; blurb: string; model: string }[] =
+  [
+    {
+      id: "fast",
+      label: "Fast",
+      blurb: "whisper-small-mlx — best during heavy coding (lowest local load)",
+      model: "mlx-community/whisper-small-mlx",
+    },
+    {
+      id: "balanced",
+      label: "Balanced",
+      blurb: "large-v3-turbo — default accuracy, warm daemon",
+      model: "mlx-community/whisper-large-v3-turbo",
+    },
+    {
+      id: "max",
+      label: "Max",
+      blurb: "large-v3-mlx — slowest, highest accuracy (long notes)",
+      model: "mlx-community/whisper-large-v3-mlx",
+    },
+  ];
 
 function formatTime(iso: string) {
   try {
@@ -851,8 +877,46 @@ export default function App() {
 
           {nav === "settings" && settings && (
             <div className="settings">
+              <div className="panel">
+                <h3>Speed profile (local MLX — no AWS required)</h3>
+                <p className="muted">
+                  Warm daemon keeps the model loaded. Use <strong>Fast</strong>{" "}
+                  during heavy coding so dictation does not fight your session
+                  for Metal/RAM. AWS GPUs are for offline fine-tune / batch —
+                  not every ⌘⇧V.
+                </p>
+                <div className="actions wrap" style={{ marginTop: 10 }}>
+                  {PROFILES.map((p) => (
+                    <button
+                      key={p.id}
+                      className={
+                        (settings.speedProfile || "balanced") === p.id
+                          ? "primary"
+                          : undefined
+                      }
+                      onClick={() =>
+                        setSettings({
+                          ...settings,
+                          speedProfile: p.id,
+                          model: p.model,
+                        })
+                      }
+                      title={p.blurb}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="muted tiny" style={{ marginTop: 8 }}>
+                  {
+                    PROFILES.find(
+                      (p) => p.id === (settings.speedProfile || "balanced"),
+                    )?.blurb
+                  }
+                </p>
+              </div>
               <label className="field">
-                <span>Whisper model (local MLX)</span>
+                <span>Whisper model (override)</span>
                 <select
                   value={settings.model}
                   onChange={(e) =>
@@ -895,7 +959,7 @@ export default function App() {
               <label className="toggle">
                 <input
                   type="checkbox"
-                  checked={settings.showFloatingPill ?? true}
+                  checked={settings.showFloatingPill ?? false}
                   onChange={(e) =>
                     setSettings({
                       ...settings,
@@ -904,15 +968,16 @@ export default function App() {
                   }
                 />
                 <span>
-                  Floating Dictate pill (parked bottom-center — compact HUD)
+                  Floating Dictate pill (v1 webview — not full NSPanel yet)
                 </span>
               </label>
               <div className="panel">
-                <h3>Hotkey + speed</h3>
+                <h3>Hotkey + learning</h3>
                 <p>
                   <strong>{settings.hotkeyLabel}</strong> — hold to talk,
-                  release to transcribe. ASR is local MLX on Apple Silicon
-                  (turbo by default). Smaller models = lower latency.
+                  release to transcribe. Dictionary + vocab harvest improve
+                  jargon over time. Real MLX fine-tune is offline (nights), not
+                  mid-session.
                 </p>
               </div>
               <div className="actions wrap">

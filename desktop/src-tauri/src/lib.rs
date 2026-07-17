@@ -39,19 +39,38 @@ pub struct AppSettings {
     pub auto_paste: bool,
     pub hotkey_label: String,
     pub show_floating_pill: bool,
+    /// fast | balanced | max — maps to model; user can still override model.
+    #[serde(default = "default_speed_profile")]
+    pub speed_profile: String,
+}
+
+fn default_speed_profile() -> String {
+    "balanced".into()
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            // large-v3-turbo is the best speed/accuracy balance on Apple Silicon MLX
+            // Balanced: large-v3-turbo — warm daemon keeps it snappy
             model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "⌘⇧V hold".into(),
             // Off by default until user enables (avoids blank/main collision bugs)
             show_floating_pill: false,
+            // Use "fast" (small) during heavy coding sessions
+            speed_profile: "balanced".into(),
         }
+    }
+}
+
+/// Resolve model from speed profile when user picks a profile button.
+/// IDs must match real mlx-community HF repos (…-mlx for most sizes).
+pub fn model_for_profile(profile: &str) -> &'static str {
+    match profile {
+        "fast" => "mlx-community/whisper-small-mlx",
+        "max" => "mlx-community/whisper-large-v3-mlx",
+        _ => "mlx-community/whisper-large-v3-turbo", // balanced
     }
 }
 
@@ -246,15 +265,44 @@ fn save_settings(
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
 ) -> Result<(), String> {
-    *state.settings.lock() = settings.clone();
+    let mut next = settings;
+    // Keep model aligned with speed profile when profile is one of the known names
+    if matches!(next.speed_profile.as_str(), "fast" | "balanced" | "max") {
+        let want = model_for_profile(&next.speed_profile);
+        // Only auto-map if current model is one of our known profile models (don't clobber custom)
+        let known = [
+            "mlx-community/whisper-small-mlx",
+            "mlx-community/whisper-base-mlx",
+            "mlx-community/whisper-tiny-mlx",
+            "mlx-community/whisper-large-v3-turbo",
+            "mlx-community/whisper-large-v3-mlx",
+            "mlx-community/whisper-medium-mlx",
+            // legacy aliases from earlier builds
+            "mlx-community/whisper-small",
+            "mlx-community/whisper-base",
+            "mlx-community/whisper-large-v3",
+            "mlx-community/whisper-medium",
+        ];
+        if known.iter().any(|m| *m == next.model) {
+            next.model = want.into();
+        }
+    }
+    *state.settings.lock() = next.clone();
     let path = data_dir().join("settings.json");
-    let s = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    let s = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
-    if settings.show_floating_pill {
+    if next.show_floating_pill {
         float_pill::show_float(&app)?;
     } else {
         float_pill::hide_float(&app);
     }
+    // Re-preload the active model in background (warm daemon)
+    asr::preload_async(
+        state.venv_python.clone(),
+        state.asr_worker.clone(),
+        next.model.clone(),
+        next.language.clone(),
+    );
     Ok(())
 }
 
@@ -431,13 +479,23 @@ pub fn run() {
     }
     let db = Arc::new(db);
 
-    let settings = {
+    let settings: AppSettings = {
         let p = data_dir().join("settings.json");
         std::fs::read_to_string(p)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     };
+
+    // Warm ASR daemon + preload model in background (biggest speed win)
+    if venv_py.exists() {
+        asr::preload_async(
+            venv_py.clone(),
+            worker.clone(),
+            settings.model.clone(),
+            settings.language.clone(),
+        );
+    }
 
     let state = Arc::new(AppState {
         settings: PLMutex::new(settings),

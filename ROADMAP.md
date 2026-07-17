@@ -46,14 +46,19 @@ Kokori remains TTS (speech out). Dictation is STT (speech in) — different stac
 
 ## Next build slices (ordered)
 
-1. **tauri-nspanel** float for fullscreen apps  
-2. **ASR speed**: default profile turbo; one-click “fast” = small; optional whisper.cpp sidecar  
-3. **MLX fine-tune path**: dataset of Wilson/Drivia terms → LoRA → local weights folder  
-4. **Developer ID + notarization** so TCC survives updates  
-5. **iOS companion** (history + push) — not system-wide paste  
+1. **Warm ASR daemon + speed profiles** (shipped 2026-07-17) — biggest latency win without AWS  
+2. **Streaming partials** while holding (chunked / VAD)  
+3. **tauri-nspanel** real Dictate pill for fullscreen  
+4. **MLX fine-tune path**: corrections corpus → offline LoRA (local nights; AWS only if dataset is huge)  
+5. **Developer ID + notarization** so TCC survives updates  
+6. Optional **cloud STT backend** (Deepgram) if local median still &gt; 800ms — prefer this over raw EC2  
+7. **iOS companion** (history) — not system-wide paste  
 
 ## Explicit non-goals right now
 - Azure STT  
+- Always-on AWS GPU for every short dictate (wrong cost/latency for hold-to-talk)  
 - Replacing Kokori  
 - Kernel extensions / SIP off  
 - Fake Desktop `.app` wrappers  
+
+See **STRATEGY.md** for the full local-vs-AWS decision.
