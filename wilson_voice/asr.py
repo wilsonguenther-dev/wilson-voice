@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,8 +18,31 @@ class ASRError(Exception):
     pass
 
 
-def _find_mlx_whisper() -> str | None:
-    return shutil.which("mlx_whisper")
+def _find_mlx_whisper() -> list[str] | None:
+    """Return argv prefix to run mlx_whisper CLI.
+
+    Prefer the console script next to sys.executable (venv), then PATH.
+    Do NOT use `python -m mlx_whisper` — the package has no __main__.
+    """
+    import sys
+    from pathlib import Path
+
+    # 1) venv console script beside this interpreter
+    cand = Path(sys.executable).resolve().parent / "mlx_whisper"
+    if cand.is_file() and os.access(cand, os.X_OK):
+        return [str(cand)]
+    # 2) PATH
+    which = shutil.which("mlx_whisper")
+    if which:
+        return [which]
+    # 3) Library path fallback
+    for p in (
+        Path.home() / "Library/Python/3.13/bin/mlx_whisper",
+        Path("/opt/homebrew/bin/mlx_whisper"),
+    ):
+        if p.is_file() and os.access(p, os.X_OK):
+            return [str(p)]
+    return None
 
 
 def _find_whisper_cli() -> str | None:
@@ -31,13 +55,13 @@ def transcribe_mlx(
     language: str = "en",
     timeout: float = 120.0,
 ) -> str:
-    mlx = _find_mlx_whisper()
-    if not mlx:
-        raise ASRError("mlx_whisper not found on PATH")
+    mlx_cmd = _find_mlx_whisper()
+    if not mlx_cmd:
+        raise ASRError("mlx_whisper not found (install into the Wilson Voice venv)")
 
     out_dir = Path(tempfile.mkdtemp(prefix="wv-asr-"))
     cmd = [
-        mlx,
+        *mlx_cmd,
         str(wav),
         "--model",
         model,

@@ -237,15 +237,69 @@ class WilsonVoiceApp(rumps.App):
         rumps.quit_application()
 
 
+def _probe_mic_permission(cfg: Config) -> None:
+    """Request TCC mic access and prove capture works."""
+    try:
+        from .audio import request_mic_permission
+
+        request_mic_permission()
+    except Exception as e:
+        log_exception("request_mic_permission", e)
+    try:
+        rec = DictationEngine(cfg).recorder
+        rec.start()
+        import time
+
+        time.sleep(0.4)
+        audio = rec.stop()
+        peak = float(abs(audio).max()) if len(audio) else 0.0
+        log.info("mic probe samples=%d peak=%.4f", len(audio), peak)
+        log_event("mic_probe", samples=int(len(audio)), peak=peak)
+        if len(audio) == 0 or peak < 1e-6:
+            log.warning(
+                "Mic captured silence/empty — enable Microphone for Python / "
+                "Wilson Voice in System Settings → Privacy & Security → Microphone"
+            )
+    except Exception as e:
+        log_exception("mic_probe", e)
+        log_event("mic_probe_fail", error=str(e))
+
+
 def run_app() -> None:
     # Logging first so policy/setup failures are visible
     cfg = Config.load()
+    # Prefer built-in mic for reliability
+    cfg.preferred_mic_substrings = [
+        "MacBook Pro Microphone",
+        "MacBook Air Microphone",
+        "Built-in",
+        "Wilson G",
+        "Microphone",
+    ]
     setup_logging(cfg.log_level)
     # Must set activation policy before rumps creates the status item
     _force_accessory_app()
+    # Trigger TCC mic prompt so we appear in System Settings → Microphone
+    _probe_mic_permission(cfg)
     app = WilsonVoiceApp(cfg)
     app.run_hotkey()
     log.info("entering rumps run loop — look for '%s' in menu bar + Dock", TITLE_IDLE)
+    log.warning(
+        "PERMISSIONS REQUIRED:\n"
+        "  1) Microphone → enable **Python** (Homebrew) / Wilson Voice\n"
+        "  2) Accessibility → enable **Python** / Wilson Voice\n"
+        "  3) Input Monitoring → enable **Python** / Wilson Voice\n"
+        "Hotkey: hold Right Option (⌥). Menu bar title: Voice"
+    )
     log_event("rumps_run_enter", title=TITLE_IDLE)
+    try:
+        rumps.notification(
+            "Wilson Voice",
+            "Running",
+            "Look for 'Voice' in menu bar. Hold Right ⌥ to talk. "
+            "Enable Mic + Accessibility for Python if prompted.",
+        )
+    except Exception:
+        pass
     # rumps.App.run blocks on NSApp run loop
     app.run()
