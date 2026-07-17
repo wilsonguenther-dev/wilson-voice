@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 
 type Nav =
@@ -115,62 +114,7 @@ function StatusDot({ ok }: { ok: boolean }) {
   return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
 }
 
-/** Compact HUD for the float window — never the full app chrome. */
-function FloatPill() {
-  const [status, setStatus] = useState<AppStatus | null>(null);
-
-  useEffect(() => {
-    invoke<AppStatus>("get_status").then(setStatus).catch(() => {});
-    const unsubs: Array<() => void> = [];
-    listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
-      unsubs.push(u),
-    );
-    listen<boolean>("recording", (e) =>
-      setStatus((s) =>
-        s
-          ? {
-              ...s,
-              recording: e.payload,
-              message: e.payload ? "Listening…" : s.message,
-            }
-          : s,
-      ),
-    ).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
-  }, []);
-
-  const live = !!status?.recording;
-  const busy = !!status?.busy;
-
-  return (
-    <div
-      className={
-        live ? "float-pill live" : busy ? "float-pill busy" : "float-pill"
-      }
-      data-tauri-drag-region
-    >
-      <button
-        className="float-dictate"
-        onClick={() => invoke("manual_toggle")}
-        disabled={busy}
-      >
-        <span className="float-dot" />
-        <span>{live ? "Stop" : busy ? "…" : "Dictate"}</span>
-        <kbd>⌘⇧V</kbd>
-      </button>
-      <button
-        className="float-open"
-        title="Open Wilson Voice"
-        onClick={() => invoke("show_main")}
-      >
-        ↗
-      </button>
-    </div>
-  );
-}
-
 export default function App() {
-  const [isFloat, setIsFloat] = useState(false);
   const [nav, setNav] = useState<Nav>("home");
   const [status, setStatus] = useState<AppStatus>({
     recording: false,
@@ -190,20 +134,12 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [query, setQuery] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [newTerm, setNewTerm] = useState("");
   const [newPreferred, setNewPreferred] = useState("");
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      const label = getCurrentWindow().label;
-      setIsFloat(label === "float" || window.location.hash === "#float");
-    } catch {
-      setIsFloat(window.location.hash === "#float");
-    }
-  }, []);
 
   const loadHistory = useCallback(async (q?: string) => {
     const h = await invoke<TranscriptEntry[]>("get_history", {
@@ -235,9 +171,11 @@ export default function App() {
       setInsights(ins);
       setDictionary(dict);
       setScratch(notes);
+      setBootError(null);
       await loadHistory(query);
       await refreshPerms();
     } catch (e) {
+      setBootError(String(e));
       setStatus((p) => ({
         ...p,
         message: `Bridge error: ${e}`,
@@ -247,7 +185,6 @@ export default function App() {
   }, [loadHistory, query, refreshPerms]);
 
   useEffect(() => {
-    if (isFloat) return;
     refreshAll();
     const unsubs: Array<() => void> = [];
     listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
@@ -276,17 +213,14 @@ export default function App() {
       setTimeout(() => setFlash(null), 2800);
     }).then((u) => unsubs.push(u));
     return () => unsubs.forEach((u) => u());
-  }, [refreshAll, isFloat]);
+  }, [refreshAll]);
 
   useEffect(() => {
-    if (isFloat) return;
     const t = setTimeout(() => {
       loadHistory(query).catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [query, loadHistory, isFloat]);
-
-  if (isFloat) return <FloatPill />;
+  }, [query, loadHistory]);
 
   async function toast(msg: string) {
     setFlash(msg);
@@ -387,6 +321,19 @@ export default function App() {
   );
 
   const needsPerms = perms && !perms.allCriticalOk;
+
+  if (bootError && !settings) {
+    return (
+      <div style={{ padding: 24, fontFamily: "system-ui" }}>
+        <h2>Wilson Voice</h2>
+        <p>UI failed to load backend bridge:</p>
+        <pre style={{ whiteSpace: "pre-wrap" }}>{bootError}</pre>
+        <button type="button" onClick={() => refreshAll()}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="shell">

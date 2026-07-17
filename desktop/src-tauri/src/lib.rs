@@ -48,8 +48,8 @@ impl Default for AppSettings {
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "⌘⇧V hold".into(),
-            // Parked pill is fine; continuous cursor-follow was a UX bug
-            show_floating_pill: true,
+            // Off by default until user enables (avoids blank/main collision bugs)
+            show_floating_pill: false,
         }
     }
 }
@@ -556,11 +556,14 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
-            // Floating pill (opt-in via settings; default on)
+            // Floating pill OFF by default — enable in Settings when wanted
             if state.settings.lock().show_floating_pill {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
+            } else {
+                // Ensure any leftover float from older builds is gone
+                float_pill::hide_float(app.handle());
             }
 
             // Soft AX prompt once if not trusted (does not block)

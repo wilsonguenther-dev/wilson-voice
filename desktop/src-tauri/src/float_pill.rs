@@ -57,8 +57,8 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    // Hash route so React only mounts the compact pill
-    let url = WebviewUrl::App("index.html#float".into());
+    // Separate MPA entry — never load the full app into the pill window
+    let url = WebviewUrl::App("float.html".into());
 
     let w = WebviewWindowBuilder::new(app, "float", url)
         .title("Dictate")
