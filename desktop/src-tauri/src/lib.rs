@@ -81,30 +81,35 @@ fn data_dir() -> PathBuf {
     p
 }
 
-fn status_message(state: &AppState) -> String {
-    if *state.recording.lock() {
+/// Build status without nested locks. (Struct field temps hold MutexGuards for
+/// the whole expression — nesting status_message() there deadlocks parking_lot.)
+fn build_status(state: &AppState) -> AppStatus {
+    let recording = *state.recording.lock();
+    let busy = *state.busy.lock();
+    let last_error = state.last_error.lock().clone();
+    let message = if recording {
         "Recording… release hotkey to transcribe".into()
-    } else if *state.busy.lock() {
+    } else if busy {
         "Transcribing with local Whisper…".into()
-    } else if let Some(err) = state.last_error.lock().clone() {
+    } else if let Some(ref err) = last_error {
         format!("Error: {err}")
     } else if !state.venv_python.exists() {
         "Python ASR venv missing — open Settings".into()
     } else {
-        "Ready — hold ⌥Space to dictate".into()
+        "Ready — hold ⌘⇧V to dictate".into()
+    };
+    AppStatus {
+        recording,
+        busy,
+        last_error,
+        message,
+        python_ok: state.venv_python.exists(),
+        worker_ok: state.asr_worker.exists(),
     }
 }
 
 fn emit_status(app: &AppHandle, state: &AppState) {
-    let status = AppStatus {
-        recording: *state.recording.lock(),
-        busy: *state.busy.lock(),
-        last_error: state.last_error.lock().clone(),
-        message: status_message(state),
-        python_ok: state.venv_python.exists(),
-        worker_ok: state.asr_worker.exists(),
-    };
-    let _ = app.emit("status", &status);
+    let _ = app.emit("status", &build_status(state));
 }
 
 fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
@@ -275,14 +280,7 @@ fn delete_entry(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Strin
 
 #[tauri::command]
 fn get_status(state: State<'_, Arc<AppState>>) -> AppStatus {
-    AppStatus {
-        recording: *state.recording.lock(),
-        busy: *state.busy.lock(),
-        last_error: state.last_error.lock().clone(),
-        message: status_message(&state),
-        python_ok: state.venv_python.exists(),
-        worker_ok: state.asr_worker.exists(),
-    }
+    build_status(&state)
 }
 
 #[tauri::command]
@@ -472,27 +470,27 @@ pub fn run() {
             show_main
         ])
         .setup(move |app| {
-            // Main window first — must stay responsive
+            // CRITICAL: setup runs on the main thread inside didFinishLaunching.
+            // Never call global_shortcut().register here — it deadlocks the event loop
+            // and macOS marks the app "not responding".
+
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
                 let w = win.clone();
                 win.on_window_event(move |e| {
                     if let WindowEvent::CloseRequested { api, .. } = e {
-                        // Hide to tray instead of quit
                         api.prevent_close();
                         let _ = w.hide();
                     }
                 });
             }
 
-            // Tray (non-blocking)
             let show_i = MenuItem::with_id(app, "show", "Open Wilson Voice", true, None::<&str>)?;
             let toggle_i =
                 MenuItem::with_id(app, "toggle", "Start / Stop dictation", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &toggle_i, &quit_i])?;
-
             let icon = app.default_window_icon().cloned().ok_or("missing app icon")?;
 
             let _tray = TrayIconBuilder::new()
@@ -503,9 +501,7 @@ pub fn run() {
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
-                        "quit" => {
-                            app.exit(0);
-                        }
+                        "quit" => app.exit(0),
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -542,28 +538,28 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Hotkeys AFTER UI is up. Use ⌘⇧V only — ⌥Space can fight system shortcuts.
-            // Fail soft so missing Input Monitoring never freezes the app.
-            let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
-            match app.global_shortcut().register(sc) {
-                Ok(()) => log::info!("registered ⌘⇧V"),
-                Err(e) => log::warn!("hotkey ⌘⇧V unavailable (Input Monitoring?): {e}"),
-            }
-            let sc2 = Shortcut::new(Some(Modifiers::ALT), Code::Space);
-            match app.global_shortcut().register(sc2) {
-                Ok(()) => log::info!("registered ⌥Space"),
-                Err(e) => log::warn!("hotkey ⌥Space unavailable: {e}"),
-            }
-
-            // Floating pill is opt-in (Settings) — never create on cold start
-            if state.settings.lock().show_floating {
-                if let Err(e) = ensure_float_window(app.handle()) {
-                    log::warn!("float window skipped: {e}");
-                }
-            }
-
             emit_status(app.handle(), &state);
-            log::info!("Wilson Voice desktop ready");
+
+            // Defer hotkeys until the event loop is spinning (avoids main-thread deadlock)
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+                    match h.global_shortcut().register(sc) {
+                        Ok(()) => log::info!("registered ⌘⇧V"),
+                        Err(e) => log::warn!("hotkey ⌘⇧V unavailable: {e}"),
+                    }
+                    let sc2 = Shortcut::new(Some(Modifiers::ALT), Code::Space);
+                    match h.global_shortcut().register(sc2) {
+                        Ok(()) => log::info!("registered ⌥Space"),
+                        Err(e) => log::warn!("hotkey ⌥Space unavailable: {e}"),
+                    }
+                });
+            });
+
+            log::info!("Wilson Voice setup complete (hotkeys deferred)");
             Ok(())
         })
         .run(tauri::generate_context!())
