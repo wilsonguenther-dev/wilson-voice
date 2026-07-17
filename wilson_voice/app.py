@@ -1,8 +1,15 @@
-"""Menubar tray app (rumps) + global hold-to-talk hotkey."""
+"""Menubar tray app (rumps) + global hold-to-talk hotkey.
+
+macOS note: must run as a proper GUI process (use Wilson Voice.app or
+scripts/start.sh). Background nohup Python often has no visible status item.
+"""
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 import rumps
@@ -14,60 +21,116 @@ from .pipeline import DictationEngine, DictationResult
 
 log = logging.getLogger("wilson_voice.app")
 
+# Plain ASCII title — most reliable menubar visibility (emoji can vanish /
+# get swallowed into the "»" overflow on crowded bars).
+TITLE_IDLE = "Voice"
+TITLE_REC = "●REC"
+TITLE_BUSY = "…Voice"
+
+
+def _force_accessory_app() -> None:
+    """Register as a UI app so the status item is allowed.
+
+    Use Regular (not Accessory) so we also get a Dock icon — makes it
+    obvious the app is running when the menu bar is crowded.
+    """
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+
+        app = NSApplication.sharedApplication()
+        # 0=regular (Dock + menu bar), 1=accessory (menu bar only)
+        app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        app.activateIgnoringOtherApps_(True)
+        log.info("NSApplication activation policy = Regular (Dock + menu bar)")
+        log_event("nsapp_policy", policy="regular", ok=True)
+    except Exception as e:
+        log_exception("nsapp_policy", e)
+
 
 class WilsonVoiceApp(rumps.App):
     def __init__(self, cfg: Optional[Config] = None):
+        # Always use emoji title — most reliable visible menubar indicator.
+        # Custom template icons often vanish in crowded/dark menu bars.
         super().__init__(
-            "WV",
-            title="WV",
+            name="Wilson Voice",
+            title=TITLE_IDLE,
             quit_button="Quit Wilson Voice",
         )
         self.cfg = cfg or Config.load()
-        setup_logging(self.cfg.log_level)
+        # logging may already be initialized in run_app()
+        if not logging.getLogger("wilson_voice").handlers:
+            setup_logging(self.cfg.log_level)
         self.engine = DictationEngine(self.cfg)
         self._hotkey: Optional[HotkeyService] = None
         self._recording = False
         self._last: Optional[DictationResult] = None
 
+        hotkey_label = f"Hotkey: hold {self.cfg.hotkey}"
         self.menu = [
-            rumps.MenuItem(f"Hotkey: hold {self.cfg.hotkey}", callback=None),
+            rumps.MenuItem("Wilson Voice — local dictation"),
+            rumps.MenuItem(hotkey_label, callback=None),
             rumps.MenuItem("Status: idle", callback=None),
             None,
+            rumps.MenuItem("Start 3s test recording", callback=self.test_mic),
             rumps.MenuItem("Toggle auto-paste", callback=self.toggle_paste),
-            rumps.MenuItem("Open logs", callback=self.open_logs),
-            rumps.MenuItem("Test mic (3s)", callback=self.test_mic),
+            rumps.MenuItem("Open logs folder", callback=self.open_logs),
+            rumps.MenuItem("Show config", callback=self.show_config),
             None,
         ]
-        # Keep references to mutable items
         self._status_item = self.menu["Status: idle"]
-        self._hotkey_item = self.menu[f"Hotkey: hold {self.cfg.hotkey}"]
+        self._hotkey_item = self.menu[hotkey_label]
 
-        log_event("app_start", hotkey=self.cfg.hotkey, model=self.cfg.model)
-        log.info("Wilson Voice starting model=%s hotkey=%s", self.cfg.model, self.cfg.hotkey)
+        log_event(
+            "app_start",
+            hotkey=self.cfg.hotkey,
+            model=self.cfg.model,
+            pid=os.getpid(),
+            title=TITLE_IDLE,
+        )
+        log.info(
+            "Wilson Voice UI starting model=%s hotkey=%s pid=%s",
+            self.cfg.model,
+            self.cfg.hotkey,
+            os.getpid(),
+        )
 
     def _set_status(self, text: str) -> None:
         try:
             self._status_item.title = f"Status: {text}"
-            self.title = "●" if "record" in text.lower() else "WV"
+            low = text.lower()
+            if "record" in low:
+                self.title = TITLE_REC
+            elif "transcrib" in low or "busy" in low:
+                self.title = TITLE_BUSY
+            else:
+                self.title = TITLE_IDLE
         except Exception as e:
             log_exception("set_status", e)
 
     def _on_press(self) -> None:
         if self._recording or self.engine.busy:
+            log.debug("press ignored recording=%s busy=%s", self._recording, self.engine.busy)
             return
         try:
             self._recording = True
             self._set_status("recording…")
             self.engine.start_recording()
-            rumps.notification(
-                "Wilson Voice",
-                "Listening",
-                f"Hold {self.cfg.hotkey} — release to transcribe",
-            )
+            try:
+                rumps.notification(
+                    title="Wilson Voice",
+                    subtitle="Listening",
+                    message=f"Hold {self.cfg.hotkey} — release to transcribe",
+                )
+            except Exception as e:
+                log_exception("notification_listen", e)
         except Exception as e:
             self._recording = False
             self._set_status(f"mic error: {e}")
-            rumps.notification("Wilson Voice", "Mic error", str(e))
+            log_exception("on_press", e)
+            try:
+                rumps.notification("Wilson Voice", "Mic error", str(e))
+            except Exception:
+                pass
 
     def _on_release(self) -> None:
         if not self._recording:
@@ -82,14 +145,25 @@ class WilsonVoiceApp(rumps.App):
                 if result.ok:
                     preview = result.text[:80] + ("…" if len(result.text) > 80 else "")
                     self._set_status(f"ok · {result.backend} · {result.asr_s:.1f}s")
-                    rumps.notification("Wilson Voice", "Pasted" if self.cfg.auto_paste else "Copied", preview)
+                    try:
+                        rumps.notification(
+                            "Wilson Voice",
+                            "Pasted" if self.cfg.auto_paste else "Copied",
+                            preview,
+                        )
+                    except Exception as e:
+                        log_exception("notification_ok", e)
                 else:
                     self._set_status(f"fail: {result.error}")
-                    rumps.notification("Wilson Voice", "Failed", result.error or "unknown")
+                    try:
+                        rumps.notification(
+                            "Wilson Voice", "Failed", result.error or "unknown"
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 log_exception("release_worker", e)
                 self._set_status(f"error: {e}")
-                rumps.notification("Wilson Voice", "Error", str(e))
 
         threading.Thread(target=work, daemon=True, name="wv-finish").start()
 
@@ -105,13 +179,25 @@ class WilsonVoiceApp(rumps.App):
 
     def open_logs(self, _):
         import subprocess
+
         from .logging_setup import default_log_dir
 
         d = default_log_dir()
         subprocess.run(["open", str(d)], check=False)
 
+    def show_config(self, _):
+        import subprocess
+
+        from .config import config_path
+
+        p = config_path()
+        rumps.alert(
+            title="Wilson Voice config",
+            message=f"{p}\n\nhotkey={self.cfg.hotkey}\nmodel={self.cfg.model}\nauto_paste={self.cfg.auto_paste}",
+        )
+        subprocess.run(["open", "-R", str(p)], check=False)
+
     def test_mic(self, _):
-        """Record 3 seconds and run full pipeline without hotkey."""
         def work():
             try:
                 self._set_status("test record 3s…")
@@ -122,7 +208,7 @@ class WilsonVoiceApp(rumps.App):
                 result = self.engine.finish()
                 if result.ok:
                     self._set_status(f"test ok · {result.backend}")
-                    rumps.notification("Wilson Voice", "Test OK", result.text[:100])
+                    rumps.notification("Wilson Voice", "Test OK", result.text[:120])
                 else:
                     self._set_status(f"test fail: {result.error}")
                     rumps.notification("Wilson Voice", "Test failed", result.error)
@@ -140,18 +226,26 @@ class WilsonVoiceApp(rumps.App):
         )
         self._hotkey.start()
 
-    def clean_up(self):  # rumps quit hook name varies
+    @rumps.clicked("Quit Wilson Voice")
+    def quit_app(self, _):
         try:
             if self._hotkey:
                 self._hotkey.stop()
         except Exception as e:
-            log_exception("cleanup", e)
+            log_exception("quit_hotkey", e)
         log_event("app_stop")
+        rumps.quit_application()
 
 
 def run_app() -> None:
+    # Logging first so policy/setup failures are visible
     cfg = Config.load()
+    setup_logging(cfg.log_level)
+    # Must set activation policy before rumps creates the status item
+    _force_accessory_app()
     app = WilsonVoiceApp(cfg)
     app.run_hotkey()
-    # rumps.App.run blocks
+    log.info("entering rumps run loop — look for '%s' in menu bar + Dock", TITLE_IDLE)
+    log_event("rumps_run_enter", title=TITLE_IDLE)
+    # rumps.App.run blocks on NSApp run loop
     app.run()
