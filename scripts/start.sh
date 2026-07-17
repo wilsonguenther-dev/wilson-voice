@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
+# Launch the one real Wilson Voice install.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$HOME/Applications/Wilson Voice.app"
-if [[ -d "$APP" ]]; then
-  open -a "$APP"
-  echo "Launched Wilson Voice.app"
-  echo "Look for 'Voice' in the menu bar and Dock."
-  echo "Logs: ~/Library/Logs/WilsonVoice/"
-  exit 0
+APP="/Applications/Wilson Voice.app"
+if [[ ! -x "$APP/Contents/MacOS/wilson-voice" ]]; then
+  echo "Wilson Voice not installed. Run: scripts/rebuild_app.sh"
+  exit 1
 fi
-exec "$ROOT/.venv/bin/python" -m wilson_voice
+# Refuse to start if binary is a shell script (legacy wrapper)
+if file "$APP/Contents/MacOS/wilson-voice" | grep -qi 'script\|text'; then
+  echo "FATAL: $APP is a legacy shell wrapper. Run scripts/rebuild_app.sh"
+  exit 1
+fi
+open -a "Wilson Voice"
+echo "Launched /Applications/Wilson Voice.app"
