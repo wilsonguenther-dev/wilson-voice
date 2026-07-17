@@ -38,7 +38,7 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
         return PasteOutcome {
             copied: true,
             pasted: false,
-            message: "Copied to clipboard".into(),
+            message: "Copied to clipboard (⌘V to paste)".into(),
         };
     }
     if !permissions::is_accessibility_trusted() {

@@ -82,6 +82,33 @@ fn word_count(text: &str) -> i64 {
     text.split_whitespace().filter(|w| !w.is_empty()).count() as i64
 }
 
+/// Tokens worth learning for STT polish: camelCase, snake_case, PascalCase, ALLCAPS, product names.
+fn extract_learnable_tokens(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split(|c: char| c.is_whitespace() || ".,!?;:()[]{}\"'`".contains(c)) {
+        let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+        if t.len() < 3 || t.len() > 48 {
+            continue;
+        }
+        // skip pure lowercase common words
+        let has_upper = t.chars().any(|c| c.is_uppercase());
+        let has_digit = t.chars().any(|c| c.is_ascii_digit());
+        let has_under = t.contains('_') || t.contains('-');
+        let camel = t.chars().any(|c| c.is_lowercase()) && has_upper;
+        if !(has_upper || has_digit || has_under || camel) {
+            continue;
+        }
+        // skip pure numbers
+        if t.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        out.push(t.to_string());
+    }
+    out.sort();
+    out.dedup();
+    out.into_iter().take(40).collect()
+}
+
 impl Database {
     pub fn open(path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
@@ -207,6 +234,10 @@ impl Database {
             source_app,
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // Background vocab learning (local) — before insert uses entry.text
+        drop(conn);
+        let _ = self.learn_from_transcript(&entry.text);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO transcripts (id, text, backend, asr_seconds, word_count, source_app, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -236,6 +267,27 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         Ok(entry)
+    }
+
+    /// Local "fine-tune" signal: learn coding jargon / proper nouns from transcripts.
+    /// Stores high-value tokens in the dictionary table (hits++). Applied on next ASR polish.
+    pub fn learn_from_transcript(&self, text: &str) -> Result<usize, String> {
+        let mut learned = 0usize;
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        for token in extract_learnable_tokens(text) {
+            let n = conn
+                .execute(
+                    "INSERT INTO dictionary (id, term, preferred, hits, created_at)
+                     VALUES (?1, ?2, ?2, 1, ?3)
+                     ON CONFLICT(term) DO UPDATE SET hits = hits + 1",
+                    params![Uuid::new_v4().to_string(), token, now],
+                )
+                .map_err(|e| e.to_string())?;
+            learned += n;
+        }
+        Ok(learned)
     }
 
     pub fn list_transcripts(&self, limit: i64, query: Option<String>) -> Result<Vec<TranscriptEntry>, String> {

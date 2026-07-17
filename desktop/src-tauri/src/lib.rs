@@ -10,6 +10,7 @@
 mod asr;
 mod db;
 mod float_pill;
+mod focus;
 mod mic_auth;
 mod paste;
 mod permissions;
@@ -47,6 +48,7 @@ impl Default for AppSettings {
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "⌘⇧V hold".into(),
+            // Parked pill is fine; continuous cursor-follow was a UX bug
             show_floating_pill: true,
         }
     }
@@ -182,9 +184,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let asr = asr::run_asr(&venv, &worker, &wav, &settings.model, &settings.language)?;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
             let entry = db.insert_transcript(text, asr.backend, asr.seconds, None)?;
-            // Focus should return to previous app; brief delay helps paste target
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let outcome = paste::copy_and_maybe_paste(&app2, &entry.text, settings.auto_paste);
+            // Always copy first (Wispr Flow: never lose text)
+            // Paste only if auto_paste AND a text field is focused
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let want_paste = settings.auto_paste && focus::should_auto_paste();
+            let outcome = paste::copy_and_maybe_paste(&app2, &entry.text, want_paste);
             Ok((entry, outcome))
         })();
 

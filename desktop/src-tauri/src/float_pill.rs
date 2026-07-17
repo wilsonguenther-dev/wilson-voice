@@ -1,69 +1,68 @@
-//! Floating Dictate pill — Wispr-style control that follows the pointer
-//! across spaces/screens.
+//! Floating Dictate pill — compact HUD only (not a second full app).
 //!
-//! Research (Tauri #11488, Apple NSPanel patterns, VoiceInk/Handy):
-//! - Standard NSWindow cannot float above fullscreen apps.
-//! - Real apps use NSPanel + .nonactivatingPanel + canJoinAllSpaces.
-//! - Tauri webview windows with always_on_top work for normal desktops;
-//!   full-screen-over needs tauri-nspanel later.
-//!
-//! This module: non-activating always-on-top float window, repositions near
-//! the mouse so it "follows" across multi-monitor layouts.
+//! Fixed near bottom-center of the primary display. Does **not** chase the
+//! cursor (that glitch made a mini Wilson Voice UI follow the user).
+//! Cursor-relative positioning only when recording starts (optional snap).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-static TRACKING: AtomicBool = AtomicBool::new(false);
-
 #[cfg(target_os = "macos")]
-mod mouse {
+mod screen {
     use std::ffi::c_void;
 
     #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct CGPoint {
-        pub x: f64,
-        pub y: f64,
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    struct CGSize {
+        width: f64,
+        height: f64,
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
-        fn CGEventCreate(source: *mut c_void) -> *mut c_void;
-        fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
-        fn CFRelease(cf: *mut c_void);
+        fn CGDisplayBounds(display: u32) -> CGRect;
+        fn CGMainDisplayID() -> u32;
     }
 
-    /// Global mouse location in Cocoa screen coords (origin bottom-left).
-    pub fn cursor_position() -> Option<(f64, f64)> {
+    /// Primary display size (points/pixels depending on backing).
+    pub fn main_display_size() -> (f64, f64) {
         unsafe {
-            let ev = CGEventCreate(std::ptr::null_mut());
-            if ev.is_null() {
-                return None;
-            }
-            let p = CGEventGetLocation(ev);
-            CFRelease(ev);
-            Some((p.x, p.y))
+            let id = CGMainDisplayID();
+            let r = CGDisplayBounds(id);
+            (r.size.width, r.size.height)
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-mod mouse {
-    pub fn cursor_position() -> Option<(f64, f64)> {
-        None
+mod screen {
+    pub fn main_display_size() -> (f64, f64) {
+        (1440.0, 900.0)
     }
 }
+
+const PILL_W: f64 = 200.0;
+const PILL_H: f64 = 48.0;
 
 pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("float").is_some() {
         return Ok(());
     }
-    let w = WebviewWindowBuilder::new(app, "float", WebviewUrl::App("index.html".into()))
+
+    // Hash route so React only mounts the compact pill
+    let url = WebviewUrl::App("index.html#float".into());
+
+    let w = WebviewWindowBuilder::new(app, "float", url)
         .title("Dictate")
-        .inner_size(220.0, 52.0)
+        .inner_size(PILL_W, PILL_H)
         .resizable(false)
         .decorations(false)
         .always_on_top(true)
@@ -74,58 +73,66 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| format!("float window: {e}"))?;
 
-    let _ = w.set_ignore_cursor_events(false);
-
-    // Seed near cursor
-    if let Some((x, y)) = mouse::cursor_position() {
-        // Cocoa y is from bottom; Tauri LogicalPosition is typically top-left on macOS in recent versions
-        // Use PhysicalPosition for reliability
-        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: (x as i32).saturating_sub(40),
-            y: (y as i32).saturating_sub(70),
-        }));
-    }
+    park_bottom_center(&w);
     Ok(())
+}
+
+fn park_bottom_center(w: &tauri::WebviewWindow) {
+    let (sw, sh) = screen::main_display_size();
+    // Physical coords: origin top-left on Tauri for many setups; bottom-center of main display
+    let x = ((sw - PILL_W) / 2.0).max(0.0) as i32;
+    let y = (sh - PILL_H - 28.0).max(0.0) as i32;
+    let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 
 pub fn show_float(app: &AppHandle) -> Result<(), String> {
     ensure_float(app)?;
     if let Some(w) = app.get_webview_window("float") {
+        park_bottom_center(&w);
         let _ = w.show();
     }
-    start_cursor_tracking(app.clone());
     Ok(())
 }
 
 pub fn hide_float(app: &AppHandle) {
-    TRACKING.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window("float") {
         let _ = w.hide();
     }
 }
 
-fn start_cursor_tracking(app: AppHandle) {
-    if TRACKING.swap(true, Ordering::SeqCst) {
-        return; // already running
-    }
-    let running = Arc::new(AtomicBool::new(true));
-    // Mirror global TRACKING
-    thread::spawn(move || {
-        while TRACKING.load(Ordering::SeqCst) {
-            if let Some(w) = app.get_webview_window("float") {
-                if let Some((x, y)) = mouse::cursor_position() {
-                    // Offset so pill sits just above the cursor
+/// Snap pill near cursor once (e.g. when recording starts) — not continuous follow.
+#[allow(dead_code)]
+pub fn snap_near_cursor(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        #[repr(C)]
+        struct CGPoint {
+            x: f64,
+            y: f64,
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGEventCreate(source: *mut c_void) -> *mut c_void;
+            fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
+            fn CFRelease(cf: *mut c_void);
+        }
+        if let Some(w) = app.get_webview_window("float") {
+            unsafe {
+                let ev = CGEventCreate(std::ptr::null_mut());
+                if !ev.is_null() {
+                    let p = CGEventGetLocation(ev);
+                    CFRelease(ev);
                     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                        x: (x as i32).saturating_sub(30),
-                        y: (y as i32).saturating_sub(64),
+                        x: (p.x as i32).saturating_sub(40),
+                        y: (p.y as i32).saturating_sub(56),
                     }));
                 }
-            } else {
-                break;
             }
-            thread::sleep(Duration::from_millis(80));
         }
-        TRACKING.store(false, Ordering::SeqCst);
-        let _ = running;
-    });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
 }

@@ -131,7 +131,8 @@ pub fn report(
         parts.push("ASR not ready");
     }
 
-    let all_critical_ok = accessibility && microphone && asr_ok;
+    // Mic + ASR are critical for dictation. Accessibility only for paste (clipboard always works).
+    let all_critical_ok = microphone && asr_ok;
     let summary = if all_critical_ok {
         "All critical permissions look good for Wilson Voice.".into()
     } else if parts.is_empty() {
