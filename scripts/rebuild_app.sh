@@ -33,7 +33,7 @@ BIN="$SRC/target/release/wilson-voice"
 test -x "$BIN"
 
 # Sanity: production embed, not dev server
-if strings "$BIN" | grep -q "main-.*\.js" || strings "$BIN" | grep -q "from hold time" || strings "$BIN" | grep -q "Welcome"; then
+if strings "$BIN" | grep -qE "main-.*\.js|/index\.html|hold→clipboard|p50 hold"; then
   echo "OK: frontend strings present in binary"
 else
   # still allow if compressed — but fail hard if cfg(dev) build output
@@ -43,7 +43,12 @@ else
   fi
 fi
 if ! strings "$BIN" | grep -q "index.html"; then
-  echo "WARN: index.html string missing — UI may be blank"
+  echo "FATAL: index.html string missing — UI will be blank"
+  exit 1
+fi
+if strings "$BIN" | grep -q "http://localhost:1420" && ! strings "$BIN" | grep -q "tauri://localhost"; then
+  echo "FATAL: looks like cfg(dev) only — blank white window risk"
+  exit 1
 fi
 
 # Bundle shell
@@ -61,8 +66,8 @@ if [[ ! -f "$APP_SRC/Contents/Info.plist" ]]; then
   <key>CFBundleIdentifier</key><string>com.wilsonguenther.wilson-voice</string>
   <key>CFBundleName</key><string>Wilson Voice</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.1</string>
-  <key>CFBundleVersion</key><string>0.4.1</string>
+  <key>CFBundleShortVersionString</key><string>0.5.0</string>
+  <key>CFBundleVersion</key><string>0.5.0</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key>

@@ -198,14 +198,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let db = state.db.clone();
     let app2 = app.clone();
     let state2 = state.clone();
+    // Capture focused app *before* we steal focus with notifications / main window.
+    let source_app = focus::frontmost_app_name();
+    let t_release = std::time::Instant::now();
 
     std::thread::spawn(move || {
-        let result = (|| -> Result<(TranscriptEntry, paste::PasteOutcome), String> {
+        let result = (|| -> Result<(TranscriptEntry, paste::PasteOutcome, i64), String> {
             let rec = record::stop_recording(active)?;
+            let t_wav = t_release.elapsed().as_millis() as i64;
             log::info!(
-                "wav ready: {} speech={:.2}s",
+                "wav ready: {} speech={:.2}s hold_wall={:.2}s wav_ms={}",
                 rec.wav_path.display(),
-                rec.speech_seconds
+                rec.speech_seconds,
+                rec.hold_wall_seconds,
+                t_wav
             );
             let asr = asr::run_asr(
                 &venv,
@@ -214,24 +220,36 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &settings.model,
                 &settings.language,
             )?;
+            let t_asr = t_release.elapsed().as_millis() as i64;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
+            // Always copy first (Wispr Flow: never lose text)
+            let want_paste = settings.auto_paste && focus::should_auto_paste();
+            let outcome = paste::copy_and_maybe_paste(&app2, &text, want_paste);
+            // North-star metric: release hotkey → text on clipboard
+            let pipeline_ms = t_release.elapsed().as_millis() as i64;
+            log::info!(
+                "latency hold→clipboard={}ms (wav={} asr_done={} asr_model={:.0}ms) backend={}",
+                pipeline_ms,
+                t_wav,
+                t_asr,
+                asr.seconds * 1000.0,
+                asr.backend
+            );
             let entry = db.insert_transcript(
                 text,
                 asr.backend,
                 asr.seconds,
                 rec.speech_seconds,
-                None,
+                pipeline_ms,
+                source_app,
             )?;
-            // Always copy first (Wispr Flow: never lose text)
-            // Paste only if auto_paste AND a text field is focused
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            let want_paste = settings.auto_paste && focus::should_auto_paste();
-            let outcome = paste::copy_and_maybe_paste(&app2, &entry.text, want_paste);
-            Ok((entry, outcome))
+            // Hygiene: drop wav after successful ASR (audio stays local only during process)
+            let _ = std::fs::remove_file(&rec.wav_path);
+            Ok((entry, outcome, pipeline_ms))
         })();
 
         match result {
-            Ok((entry, outcome)) => {
+            Ok((entry, outcome, pipeline_ms)) => {
                 if outcome.pasted {
                     *state2.last_error.lock() = None;
                 } else if !outcome.copied {
@@ -244,17 +262,30 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 }
                 let _ = app2.emit("transcript", &entry);
                 let _ = app2.emit("paste_outcome", &outcome.message);
+                let _ = app2.emit(
+                    "latency",
+                    serde_json::json!({
+                        "pipelineMs": pipeline_ms,
+                        "asrSeconds": entry.asr_seconds,
+                        "speechSeconds": entry.speech_seconds,
+                    }),
+                );
                 let preview = if entry.text.chars().count() > 100 {
                     let s: String = entry.text.chars().take(100).collect();
                     format!("{s}…")
                 } else {
                     entry.text.clone()
                 };
-                notify(&app2, "Wilson Voice", format!("{preview}\n({})", outcome.message));
+                notify(
+                    &app2,
+                    "Wilson Voice",
+                    format!("{preview}\n({} · {}ms)", outcome.message, pipeline_ms),
+                );
                 log::info!(
-                    "transcript ok words={} pasted={}",
+                    "transcript ok words={} pasted={} pipeline_ms={}",
                     entry.word_count,
-                    outcome.pasted
+                    outcome.pasted,
+                    pipeline_ms
                 );
             }
             Err(e) => {
@@ -439,6 +470,25 @@ fn open_data_dir() -> Result<(), String> {
     Ok(())
 }
 
+/// Export transcript history to Application Support for backup / future LoRA corpus.
+#[tauri::command]
+fn export_history(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let json = state.db.export_transcripts_json()?;
+    let path = data_dir().join(format!(
+        "export-transcripts-{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::write(&path, &json).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// Force rebuild daily_stats from transcripts (source of truth).
+#[tauri::command]
+fn recompute_stats(state: State<'_, Arc<AppState>>) -> Result<Insights, String> {
+    state.db.recompute_daily_stats()?;
+    state.db.insights()
+}
+
 #[tauri::command]
 fn open_privacy_settings(pane: String) -> Result<(), String> {
     permissions::open_privacy_pane(&pane)
@@ -574,6 +624,8 @@ pub fn run() {
             copy_entry,
             paste_entry,
             open_data_dir,
+            export_history,
+            recompute_stats,
             open_privacy_settings,
             manual_toggle,
             show_main
@@ -689,7 +741,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.4.1 setup complete");
+            log::info!("Wilson Voice v0.5.0 setup complete (latency+insights hygiene)");
             Ok(())
         })
         .run(tauri::generate_context!())

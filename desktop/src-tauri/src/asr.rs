@@ -198,7 +198,7 @@ where
 pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: String) {
     std::thread::spawn(move || {
         // Small delay so UI/hotkeys register first
-        std::thread::sleep(Duration::from_millis(900));
+        std::thread::sleep(Duration::from_millis(600));
         match with_daemon(&python, &worker, |d| {
             let req = serde_json::json!({
                 "cmd": "preload",
@@ -215,7 +215,19 @@ pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: 
             Ok(r) => log::warn!("ASR preload soft-fail: {:?}", r.error),
             Err(e) => log::warn!("ASR preload error: {e}"),
         }
+        // Keepalive ping so we know daemon is still up after load
+        let _ = with_daemon(&python, &worker, |d| {
+            request_line(d, &serde_json::json!({"cmd": "ping"}))
+        });
     });
+}
+
+/// Lightweight health probe (spawns daemon if needed).
+pub fn ping_daemon(python: &Path, worker: &Path) -> Result<bool, String> {
+    let r = with_daemon(python, worker, |d| {
+        request_line(d, &serde_json::json!({"cmd": "ping"}))
+    })?;
+    Ok(r.ok)
 }
 
 pub fn run_asr(

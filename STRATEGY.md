@@ -1,10 +1,11 @@
-# Wilson Voice — Strategy (2026-07-17)
+# Wilson Voice — Strategy (updated 2026-07-18)
 
 Honest status and the path to Wispr-class speed.
+Canonical architecture decisions: **`ARCHITECTURE.md`** (do not re-open settled items).
 
 ## Did we finish phases 0–4?
 
-**Scaffold: yes. Product polish: no.**
+**Scaffold: yes. Product polish: partial (v0.5 latency + insights hygiene shipped).**
 
 | Phase | Claim | Reality |
 |-------|--------|---------|
@@ -61,21 +62,21 @@ Daily dictate while coding → **warm local + speed profiles** first. Optional c
 
 ## Best strategy moving forward (ordered)
 
-### Now (ship this sprint) — local speed floor
+### Shipped (v0.5.0) — local speed floor + honest metrics
 
-1. **Warm ASR daemon** — load Whisper once, keep process alive, Unix/stdin JSON  
-2. **Speed profiles** in Settings  
-   - **Fast** → `whisper-small` (or base) for coding sessions  
-   - **Balanced** → `large-v3-turbo` (default quality)  
-   - **Max** → `large-v3` only when accuracy matters  
-3. **Preload on launch** (background) so first Dictate isn’t the tax  
-4. Keep **dictionary learning** (jargon rewrite) — cheap “gets better” without GPU training  
+1. **Warm ASR daemon** — load Whisper once, keep process alive, stdin JSON  
+2. **Speed profiles** in Settings (Fast / Balanced / Max scales)  
+3. **Preload on launch** via ModelHolder + temp=0 decode path  
+4. **Dictionary learning** (jargon rewrite)  
+5. **pipeline_ms** north-star metric (release → clipboard) + Insights p50/p95  
+6. **speech_seconds** from WAV duration only — WPM never uses asr latency  
+7. **source_app** + export + wav deleted post-ASR  
 
 ### Next — feel like Wispr
 
-5. **Streaming / partials** while holding (chunked decode or VAD segments)  
-6. **Real floating pill** via `tauri-nspanel` (non-activating, all Spaces, fullscreen auxiliary)  
-7. **Developer ID + notarize** so Mic/AX survive updates  
+8. **Streaming / partials** while holding (chunked decode or VAD segments)  
+9. **Real floating pill** via `tauri-nspanel` (non-activating, all Spaces, fullscreen auxiliary)  
+10. **Developer ID + notarize** so Mic/AX survive updates  
 
 ### Later — “trains in background”
 

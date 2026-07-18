@@ -20,8 +20,11 @@ pub struct ActiveRecording {
 
 pub struct RecordingResult {
     pub wav_path: PathBuf,
-    /// Wall-clock hold duration (seconds) — source of truth for WPM.
+    /// Audio duration from mono 16 kHz samples — source of truth for WPM.
+    /// Never use model latency for speaking rate.
     pub speech_seconds: f64,
+    /// Wall-clock hold (press→release), for latency telemetry only.
+    pub hold_wall_seconds: f64,
 }
 
 pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
@@ -36,7 +39,12 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
         .spawn(move || record_loop(path_t, stop_t))
         .map_err(|e| format!("spawn record thread: {e}"))?;
 
-    thread::sleep(std::time::Duration::from_millis(450));
+    // Wait only until stream is alive (or fail fast) — 450ms was pure dead latency.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(350);
+    while !join.is_finished() && std::time::Instant::now() < deadline {
+        thread::sleep(std::time::Duration::from_millis(20));
+        // Stream thread keeps running until stop; early finish means hard error.
+    }
     if join.is_finished() {
         return match join.join() {
             Ok(Ok(())) => Err("Recording stopped immediately".into()),
@@ -54,7 +62,7 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
 }
 
 pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, String> {
-    let speech_seconds = active.started.elapsed().as_secs_f64().max(0.05);
+    let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
     active.stop.store(true, Ordering::SeqCst);
     if let Some(j) = active.join.take() {
         match j.join() {
@@ -63,7 +71,6 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
             Err(_) => return Err("Recording thread panicked".into()),
         }
     }
-    thread::sleep(std::time::Duration::from_millis(80));
 
     if !active.wav_path.exists() {
         return Err(
@@ -78,10 +85,25 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
             meta.len()
         ));
     }
+    // Prefer true audio duration (16 kHz mono PCM after our writer).
+    let speech_seconds = wav_duration_seconds(&active.wav_path).unwrap_or(hold_wall_seconds);
     Ok(RecordingResult {
         wav_path: active.wav_path,
-        speech_seconds,
+        speech_seconds: speech_seconds.max(0.05),
+        hold_wall_seconds,
     })
+}
+
+/// Duration of a 16-bit mono WAV from header + data size.
+fn wav_duration_seconds(path: &PathBuf) -> Option<f64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let samples = reader.duration() as f64; // frames (per channel)
+    let rate = spec.sample_rate as f64;
+    if rate <= 0.0 {
+        return None;
+    }
+    Some(samples / rate)
 }
 
 fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {

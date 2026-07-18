@@ -47,6 +47,8 @@ interface TranscriptEntry {
   text: string;
   backend: string;
   asrSeconds: number;
+  speechSeconds?: number;
+  pipelineMs?: number;
   wordCount: number;
   createdAt: string;
   sourceApp?: string | null;
@@ -63,6 +65,10 @@ interface Insights {
   wordsLast7: { date: string; words: number; sessions: number }[];
   topApps: { app: string; words: number; sessions: number }[];
   avgAsrSeconds: number;
+  p50PipelineMs?: number;
+  p95PipelineMs?: number;
+  speechSecondsTotal?: number;
+  wpmSampleSessions?: number;
 }
 
 function fmtInt(n: number | undefined | null) {
@@ -595,7 +601,10 @@ export default function App() {
                 <div className="stat glass">
                   <div className="stat-n">{fmtInt(insights?.avgWpm)}</div>
                   <div className="stat-l">avg wpm</div>
-                  <div className="stat-sub">from hold time</div>
+                  <div className="stat-sub">
+                    speech only · n=
+                    {fmtInt(insights?.wpmSampleSessions)}
+                  </div>
                 </div>
                 <div className="stat glass">
                   <div className="stat-n">{fmtInt(insights?.streakDays)}</div>
@@ -661,10 +670,19 @@ export default function App() {
                   {history.map((e) => (
                     <li key={e.id} className="card">
                       <div className="card-meta">
-                        <span>{formatTime(e.createdAt)}</span>
                         <span>
-                          {e.wordCount} words · {e.backend} ·{" "}
-                          {e.asrSeconds.toFixed(1)}s
+                          {formatTime(e.createdAt)}
+                          {e.sourceApp ? ` · ${e.sourceApp}` : ""}
+                        </span>
+                        <span>
+                          {e.wordCount} words · {e.backend}
+                          {(e.speechSeconds ?? 0) > 0
+                            ? ` · ${e.speechSeconds!.toFixed(1)}s speech`
+                            : ""}
+                          {` · ${e.asrSeconds.toFixed(1)}s asr`}
+                          {(e.pipelineMs ?? 0) > 0
+                            ? ` · ${e.pipelineMs}ms hold→clip`
+                            : ""}
                         </span>
                       </div>
                       <p>{e.text}</p>
@@ -750,11 +768,34 @@ export default function App() {
                   </div>
                 </div>
                 <div className="panel">
-                  <h3>Engine</h3>
+                  <h3>Engine & latency</h3>
                   <ul className="kv">
                     <li>
-                      <span>Avg ASR</span>
+                      <span>Avg ASR (model)</span>
                       <strong>{insights.avgAsrSeconds.toFixed(2)}s</strong>
+                    </li>
+                    <li>
+                      <span>p50 hold→clipboard</span>
+                      <strong>
+                        {insights.p50PipelineMs
+                          ? `${insights.p50PipelineMs}ms`
+                          : "—"}
+                      </strong>
+                    </li>
+                    <li>
+                      <span>p95 hold→clipboard</span>
+                      <strong>
+                        {insights.p95PipelineMs
+                          ? `${insights.p95PipelineMs}ms`
+                          : "—"}
+                      </strong>
+                    </li>
+                    <li>
+                      <span>Speech sample</span>
+                      <strong>
+                        {(insights.speechSecondsTotal ?? 0).toFixed(0)}s ·{" "}
+                        {insights.wpmSampleSessions ?? 0} utt
+                      </strong>
                     </li>
                     <li>
                       <span>Hotkey</span>
@@ -771,8 +812,28 @@ export default function App() {
                       </strong>
                     </li>
                   </ul>
+                  <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
+                    WPM uses audio duration only — never model latency. Base ASR
+                    is OpenAI Whisper weights via MLX (not three proprietary
+                    models). Target: p50 hold→clipboard &lt; 800ms on Fast.
+                  </p>
                 </div>
               </div>
+              {insights.topApps.length > 0 && (
+                <div className="panel" style={{ marginTop: 16 }}>
+                  <h3>Top apps</h3>
+                  <ul className="kv">
+                    {insights.topApps.map((a) => (
+                      <li key={a.app}>
+                        <span>{a.app}</span>
+                        <strong>
+                          {a.words.toLocaleString()} w · {a.sessions} sess
+                        </strong>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
@@ -994,6 +1055,18 @@ export default function App() {
                   onClick={() => saveSettings(settings)}
                 >
                   Save settings
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const p = await invoke<string>("export_history");
+                      toast(`Exported → ${p}`);
+                    } catch (e) {
+                      toast(String(e));
+                    }
+                  }}
+                >
+                  Export transcripts
                 </button>
                 <button onClick={() => invoke("open_data_dir")}>
                   Open data folder

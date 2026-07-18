@@ -5,7 +5,7 @@ Say: **back to whisper** (or paste the resume block below).
 ## North star
 Own local dictation. Replace cloud STT subscriptions. Honest stack: **OpenAI Whisper weights via MLX on-device** — not “Wilson-trained foundation models.” Personalization = vocab/dictionary from history; full LoRA fine-tune is future work.
 
-## Current truth (as of last session)
+## Current truth (as of 2026-07-18 / v0.5.0)
 - App: `/Applications/Wilson Voice.app` · bundle `com.wilsonguenther.wilson-voice`
 - Stack: Tauri 2 + React + Rust · SQLite WAL + FTS5 · warm `asr_worker.py --serve`
 - **Must have** `tauri` feature `custom-protocol` or UI is blank white (loads localhost:1420)
@@ -15,14 +15,16 @@ Own local dictation. Replace cloud STT subscriptions. Honest stack: **OpenAI Whi
   - Balanced → `mlx-community/whisper-large-v3-turbo` (~809M) DEFAULT
   - Max → `mlx-community/whisper-large-v3-mlx` (~1.5B)
 - ASR paths only under `~/Library/Application Support/WilsonVoice/` (never Desktop)
+- **Shipped v0.5:** pipeline_ms hold→clipboard telemetry; speech_seconds from WAV duration; WPM excludes asr fallback; source_app; export; ModelHolder preload + temp=0 decode; ARCHITECTURE.md locked
+- See `ARCHITECTURE.md` — FTS before RAG; no GraphQL; local-first
 
 ## Resume agenda (priority order)
-1. **Latency** — warm daemon reliability; Fast profile default under load; streaming/partials; measure p50 hold→clipboard
+1. **Latency** — measure p50 on device after warm; Fast under Metal load; streaming/partials next
 2. **Mic UX** — zero re-prompt after Allow; keep stable codesign; never reintroduce ad-hoc spam
-3. **SQL / insights math** — speech_seconds WPM, daily_stats recompute, streak/today correctness; real-time refresh; no bad heuristics
-4. **Data collection** — clean transcript schema, speech duration, source app, export; no silent drift
-5. **Retrieval later** — FTS5 first (already partial); decide RAG only if dictionary + FTS insufficient; GraphQL is overkill for single-user local
-6. **Architecture decision** — modern zero-day-minded path: local-first, minimal attack surface, no cloud STT in hot path, optional offline LoRA only
+3. **SQL / insights** — mostly fixed (speech-only WPM, daily_stats, streaks); verify live after dictate
+4. **Data collection** — schema clean; wav deleted post-ASR; export in Settings
+5. **Retrieval later** — FTS5 first; RAG only if dictionary + FTS insufficient
+6. **Architecture** — locked in ARCHITECTURE.md (do not re-open)
 7. **HUD** — real NSPanel pill (not glitchy webview chase)
 8. **Honest product language** — never claim “my Whisper” when base is OpenAI Whisper + MLX
 

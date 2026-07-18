@@ -3,6 +3,7 @@
 //! Apple Accessibility:
 //!   AXUIElementCreateSystemWide → kAXFocusedUIElementAttribute → kAXRoleAttribute
 //! If role is a text control, we paste; otherwise clipboard-only.
+//! Also resolves frontmost app name for transcript hygiene (source_app).
 
 #[cfg(target_os = "macos")]
 mod ax {
@@ -76,6 +77,29 @@ mod ax {
             role_ok || sub_ok || editable
         }
     }
+
+    /// Frontmost application title via AX (no NSWorkspace dep).
+    pub fn frontmost_app_name() -> Option<String> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let key = CFString::new("AXFocusedApplication");
+            let mut app: CFTypeRef = std::ptr::null_mut();
+            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut app);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || app.is_null() {
+                return None;
+            }
+            let el = app as AXUIElementRef;
+            let title = attr_string(el, "AXTitle")
+                .or_else(|| attr_string(el, "AXDescription"))
+                .filter(|s| !s.is_empty());
+            CFRelease(app);
+            title
+        }
+    }
 }
 
 /// Should we auto-paste? Requires Accessibility trust + a focused text control.
@@ -91,5 +115,17 @@ pub fn should_auto_paste() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+/// Best-effort focused app name for transcript hygiene. None if AX denied.
+pub fn frontmost_app_name() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        ax::frontmost_app_name()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }

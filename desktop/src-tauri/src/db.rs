@@ -18,11 +18,14 @@ pub struct TranscriptEntry {
     pub id: String,
     pub text: String,
     pub backend: String,
-    /// Model inference wall time (seconds).
+    /// Model inference wall time (seconds). Never used for WPM.
     pub asr_seconds: f64,
-    /// How long the user held the mic (seconds) — used for real WPM.
+    /// Audio duration of the utterance (seconds) — sole input for WPM.
     #[serde(default)]
     pub speech_seconds: f64,
+    /// Release → clipboard wall ms (latency north-star metric).
+    #[serde(default)]
+    pub pipeline_ms: i64,
     pub word_count: i64,
     pub created_at: DateTime<Utc>,
     pub source_app: Option<String>,
@@ -54,12 +57,25 @@ pub struct Insights {
     pub total_sessions: i64,
     pub words_today: i64,
     pub sessions_today: i64,
+    /// Words per minute from speech_seconds only (rows with speech > 0.05s).
     pub avg_wpm: f64,
     pub streak_days: i64,
     pub longest_streak: i64,
     pub words_last_7: Vec<DayCount>,
     pub top_apps: Vec<AppCount>,
     pub avg_asr_seconds: f64,
+    /// p50 release→clipboard ms (0 if no measured rows yet).
+    #[serde(default)]
+    pub p50_pipeline_ms: i64,
+    /// p95 release→clipboard ms.
+    #[serde(default)]
+    pub p95_pipeline_ms: i64,
+    /// Sum of speech_seconds used in WPM (hygiene / debug).
+    #[serde(default)]
+    pub speech_seconds_total: f64,
+    /// Sessions that have real speech_seconds (eligible for WPM).
+    #[serde(default)]
+    pub wpm_sample_sessions: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +215,15 @@ impl Database {
             [],
         );
         let _ = conn.execute(
+            "ALTER TABLE transcripts ADD COLUMN pipeline_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE daily_stats ADD COLUMN pipeline_ms INTEGER NOT NULL DEFAULT 0",
             [],
         );
 
@@ -237,15 +261,17 @@ impl Database {
     }
 
     /// Rebuild `daily_stats` from `transcripts`. Call after insert/delete/clear.
+    ///
+    /// speech_ms only sums real speech_seconds (> 0.05). Never substitutes asr_seconds.
     pub fn recompute_daily_stats(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM daily_stats", [])
             .map_err(|e| e.to_string())?;
         // Group by local calendar day derived from created_at (ISO stored as UTC).
-        // We convert in SQL-ish via application: load rows then bucket.
         let mut stmt = conn
             .prepare(
-                "SELECT created_at, word_count, asr_seconds, COALESCE(speech_seconds,0)
+                "SELECT created_at, word_count, asr_seconds,
+                        COALESCE(speech_seconds,0), COALESCE(pipeline_ms,0)
                  FROM transcripts",
             )
             .map_err(|e| e.to_string())?;
@@ -256,6 +282,7 @@ impl Database {
                     r.get::<_, i64>(1)?,
                     r.get::<_, f64>(2)?,
                     r.get::<_, f64>(3)?,
+                    r.get::<_, i64>(4)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -266,10 +293,11 @@ impl Database {
             sessions: i64,
             asr_ms: i64,
             speech_ms: i64,
+            pipeline_ms: i64,
         }
         let mut map: HashMap<String, Acc> = HashMap::new();
         for row in rows {
-            let (created, words, asr_s, speech_s) = row.map_err(|e| e.to_string())?;
+            let (created, words, asr_s, speech_s, pipe_ms) = row.map_err(|e| e.to_string())?;
             let day = parse_dt(created)
                 .with_timezone(&Local)
                 .date_naive()
@@ -279,26 +307,30 @@ impl Database {
                 sessions: 0,
                 asr_ms: 0,
                 speech_ms: 0,
+                pipeline_ms: 0,
             });
             e.words += words;
             e.sessions += 1;
-            e.asr_ms += (asr_s * 1000.0) as i64;
-            // Prefer real hold time; fall back to asr time if legacy row
-            let speech = if speech_s > 0.05 { speech_s } else { asr_s };
-            e.speech_ms += (speech * 1000.0) as i64;
+            e.asr_ms += (asr_s * 1000.0).round() as i64;
+            // Honest: only count measured speech. Legacy 0 rows do not pollute WPM.
+            if speech_s > 0.05 {
+                e.speech_ms += (speech_s * 1000.0).round() as i64;
+            }
+            e.pipeline_ms += pipe_ms.max(0);
         }
         drop(stmt);
 
         for (day, a) in map {
             conn.execute(
-                "INSERT INTO daily_stats (day, words, sessions, asr_ms, speech_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO daily_stats (day, words, sessions, asr_ms, speech_ms, pipeline_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(day) DO UPDATE SET
                    words = excluded.words,
                    sessions = excluded.sessions,
                    asr_ms = excluded.asr_ms,
-                   speech_ms = excluded.speech_ms",
-                params![day, a.words, a.sessions, a.asr_ms, a.speech_ms],
+                   speech_ms = excluded.speech_ms,
+                   pipeline_ms = excluded.pipeline_ms",
+                params![day, a.words, a.sessions, a.asr_ms, a.speech_ms, a.pipeline_ms],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -311,6 +343,7 @@ impl Database {
         backend: String,
         asr_seconds: f64,
         speech_seconds: f64,
+        pipeline_ms: i64,
         source_app: Option<String>,
     ) -> Result<TranscriptEntry, String> {
         let entry = TranscriptEntry {
@@ -320,6 +353,7 @@ impl Database {
             backend,
             asr_seconds,
             speech_seconds: speech_seconds.max(0.0),
+            pipeline_ms: pipeline_ms.max(0),
             created_at: Utc::now(),
             source_app,
         };
@@ -328,14 +362,16 @@ impl Database {
             let conn = self.conn.lock().map_err(|e| e.to_string())?;
             conn.execute(
                 "INSERT INTO transcripts
-                 (id, text, backend, asr_seconds, speech_seconds, word_count, source_app, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, text, backend, asr_seconds, speech_seconds, pipeline_ms,
+                  word_count, source_app, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     entry.id,
                     entry.text,
                     entry.backend,
                     entry.asr_seconds,
                     entry.speech_seconds,
+                    entry.pipeline_ms,
                     entry.word_count,
                     entry.source_app,
                     entry.created_at.to_rfc3339(),
@@ -378,7 +414,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                            word_count, source_app, created_at
+                            COALESCE(pipeline_ms,0), word_count, source_app, created_at
                      FROM transcripts ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -398,7 +434,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT t.id, t.text, t.backend, t.asr_seconds, COALESCE(t.speech_seconds,0),
-                            t.word_count, t.source_app, t.created_at
+                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at
                      FROM transcripts_fts f
                      JOIN transcripts t ON t.rowid = f.rowid
                      WHERE transcripts_fts MATCH ?1
@@ -413,7 +449,7 @@ impl Database {
                     let mut stmt2 = conn
                         .prepare(
                             "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                                    word_count, source_app, created_at
+                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at
                              FROM transcripts
                              WHERE text LIKE ?1
                              ORDER BY created_at DESC LIMIT ?2",
@@ -665,7 +701,6 @@ impl Database {
 
         // Fallback: if daily_stats empty but we have transcripts today, sum live
         let (words_today, sessions_today) = if words_today == 0 && total_sessions > 0 {
-            // recompute from transcripts for local today
             let mut w = 0i64;
             let mut s = 0i64;
             let mut stmt = conn
@@ -690,21 +725,45 @@ impl Database {
             (words_today, sessions_today)
         };
 
-        // Real speaking WPM = words / (hold time minutes). Never use model latency.
-        let total_speech: f64 = conn
+        // WPM = words_with_speech / (speech_minutes). Exclude rows without speech_seconds.
+        // Never use asr_seconds as a speaking-time proxy (that was a bad heuristic).
+        let (wpm_words, total_speech, wpm_sessions): (i64, f64, i64) = conn
             .query_row(
-                "SELECT COALESCE(SUM(
-                    CASE WHEN speech_seconds > 0.05 THEN speech_seconds ELSE asr_seconds END
-                 ),0) FROM transcripts",
+                "SELECT COALESCE(SUM(word_count),0),
+                        COALESCE(SUM(speech_seconds),0),
+                        COUNT(*)
+                 FROM transcripts
+                 WHERE speech_seconds > 0.05",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .unwrap_or(0.0);
-        let avg_wpm = if total_speech > 0.5 {
-            (total_words as f64) / (total_speech / 60.0)
+            .unwrap_or((0, 0.0, 0));
+        let avg_wpm = if total_speech > 0.5 && wpm_words > 0 {
+            (wpm_words as f64) / (total_speech / 60.0)
         } else {
             0.0
         };
+
+        // Pipeline latency percentiles (release → clipboard)
+        let pipe_vals: Vec<i64> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pipeline_ms FROM transcripts
+                     WHERE pipeline_ms > 0
+                     ORDER BY pipeline_ms ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r.map_err(|e| e.to_string())?);
+            }
+            v
+        };
+        let p50_pipeline_ms = percentile_ms(&pipe_vals, 0.50);
+        let p95_pipeline_ms = percentile_ms(&pipe_vals, 0.95);
 
         // last 7 days
         let mut words_last_7 = Vec::new();
@@ -726,7 +785,7 @@ impl Database {
             });
         }
 
-        // streak
+        // streak from active days (sessions > 0)
         let days: Vec<String> = {
             let mut stmt = conn
                 .prepare("SELECT day FROM daily_stats WHERE sessions > 0 ORDER BY day DESC")
@@ -742,12 +801,12 @@ impl Database {
         };
         let (streak_days, longest_streak) = compute_streaks(&days);
 
-        // top apps
+        // top apps — hide "Unknown" noise when we have real labels mixed in
         let mut top_apps = Vec::new();
         {
             let mut stmt = conn
                 .prepare(
-                    "SELECT COALESCE(source_app, 'Unknown') as app,
+                    "SELECT COALESCE(NULLIF(TRIM(source_app), ''), 'Unknown') as app,
                             SUM(word_count) as w, COUNT(*) as c
                      FROM transcripts
                      GROUP BY 1
@@ -769,7 +828,6 @@ impl Database {
             }
         }
 
-        let _ = days; // silence if unused path
         Ok(Insights {
             total_words,
             total_sessions,
@@ -781,7 +839,17 @@ impl Database {
             words_last_7,
             top_apps,
             avg_asr_seconds: avg_asr,
+            p50_pipeline_ms,
+            p95_pipeline_ms,
+            speech_seconds_total: total_speech,
+            wpm_sample_sessions: wpm_sessions,
         })
+    }
+
+    /// Export transcripts as JSON lines for backup / LoRA corpus later.
+    pub fn export_transcripts_json(&self) -> Result<String, String> {
+        let entries = self.list_transcripts(10_000, None)?;
+        serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
     }
 
     /// Migrate legacy JSON history if present.
@@ -804,7 +872,7 @@ impl Database {
         let legacy: Legacy = serde_json::from_str(&s).map_err(|e| e.to_string())?;
         let mut n = 0;
         for e in legacy.entries {
-            let _ = self.insert_transcript(e.text, e.backend, e.asr_seconds, 0.0, None)?;
+            let _ = self.insert_transcript(e.text, e.backend, e.asr_seconds, 0.0, 0, None)?;
             n += 1;
         }
         let _ = std::fs::rename(&json_path, json_path.with_extension("json.migrated"));
@@ -813,17 +881,26 @@ impl Database {
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {
-    // id, text, backend, asr_seconds, speech_seconds, word_count, source_app, created_at
+    // id, text, backend, asr_seconds, speech_seconds, pipeline_ms, word_count, source_app, created_at
     Ok(TranscriptEntry {
         id: row.get(0)?,
         text: row.get(1)?,
         backend: row.get(2)?,
         asr_seconds: row.get(3)?,
         speech_seconds: row.get(4)?,
-        word_count: row.get(5)?,
-        source_app: row.get(6)?,
-        created_at: parse_dt(row.get::<_, String>(7)?),
+        pipeline_ms: row.get(5)?,
+        word_count: row.get(6)?,
+        source_app: row.get(7)?,
+        created_at: parse_dt(row.get::<_, String>(8)?),
     })
+}
+
+fn percentile_ms(sorted: &[i64], p: f64) -> i64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 fn parse_dt(s: String) -> DateTime<Utc> {

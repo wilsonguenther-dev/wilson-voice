@@ -11,7 +11,7 @@
 | 2 Hotkeys | ⌘⇧V hold on main thread after setup | Done |
 | 3 Record + paste | cpal mic + main-thread paste; clipboard always | Done |
 | 4 Product UI | Home / Permissions / Insights / Dictionary / Scratchpad | Done (v1) |
-| 5 Speed | Warm ASR daemon + Fast/Balanced/Max profiles | In progress |
+| 5 Speed | Warm ASR daemon + Fast/Balanced/Max + pipeline_ms | v0.5 partial (streaming still open) |
 | 6 HUD | Real NSPanel pill (fullscreen-safe) | Not done |
 | 7 Personalize | Correction loop + offline MLX LoRA | Not done |
 | 8 Sign | Developer ID + notarize (TCC survives update) | Not done |

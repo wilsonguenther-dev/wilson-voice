@@ -5,13 +5,19 @@ Modes:
   One-shot (legacy):
     asr_worker.py <wav> [--model M] [--language en]
 
-  Warm daemon (preferred — model stays in memory):
+  Warm daemon (preferred — model stays in memory via mlx_whisper.ModelHolder):
     asr_worker.py --serve
     stdin JSON lines:
       {"cmd":"ping"}
       {"cmd":"preload","model":"...","language":"en"}
       {"cmd":"transcribe","wav":"...","model":"...","language":"en"}
+      {"cmd":"status"}
+      {"cmd":"quit"}
     stdout: one JSON object per line
+
+Stack honesty: base weights are OpenAI Whisper via MLX community conversions —
+not proprietary Wilson foundation models. Personalization lives in the app
+dictionary/SQL layer.
 
 Never touch ~/Desktop (macOS TCC Files & Folders spam).
 """
@@ -65,25 +71,47 @@ def _polish(text: str) -> str:
     return text
 
 
-# Cache loaded models in-process (warm daemon)
-_MODEL_CACHE: dict[str, object] = {}
 _LAST_MODEL: str | None = None
+_PRELOAD_AT: float | None = None
+
+
+def _ensure_model_loaded(model: str) -> float:
+    """Map weights into ModelHolder without a full silence decode when possible."""
+    global _LAST_MODEL, _PRELOAD_AT
+    t0 = time.time()
+    import mlx.core as mx
+    from mlx_whisper.load_models import load_model
+    from mlx_whisper.transcribe import ModelHolder
+
+    dtype = mx.float16
+    # Reuse ModelHolder cache — same process, no reload
+    if ModelHolder.model is None or ModelHolder.model_path != model:
+        ModelHolder.model = load_model(model, dtype=dtype)
+        ModelHolder.model_path = model
+    _LAST_MODEL = model
+    _PRELOAD_AT = time.time()
+    return round(time.time() - t0, 3)
 
 
 def _transcribe_inprocess(wav: Path, model: str, language: str) -> tuple[str, float]:
-    """Load model once per process; reuse weights across utterances."""
+    """Transcribe with warm ModelHolder; single temperature for speed."""
     global _LAST_MODEL
     t0 = time.time()
-
-    # Prefer mlx_whisper.transcribe which caches in its own layer when repeated
     from mlx_whisper import transcribe
+
+    # Force weights warm before decode (no-op if already loaded)
+    _ensure_model_loaded(model)
 
     result = transcribe(
         str(wav),
         path_or_hf_repo=model,
         language=language if language and language != "auto" else None,
-        # verbose False reduces I/O
         verbose=False,
+        # Dictation: greedy only — multi-temp ladder burns Metal for little gain
+        temperature=0.0,
+        condition_on_previous_text=False,
+        # Slightly less eager silence rejection for short holds
+        no_speech_threshold=0.55,
     )
     text = _polish((result.get("text") or "").strip())
     _LAST_MODEL = model
@@ -143,10 +171,11 @@ def do_transcribe(wav: str, model: str, language: str) -> dict:
     try:
         try:
             text, seconds = _transcribe_inprocess(path, model, language)
+            backend = "mlx-warm"
         except Exception as e1:
-            # Fall back to CLI once
             try:
                 text, seconds = _transcribe_cli_fallback(path, model, language)
+                backend = "mlx-cli"
             except Exception as e2:
                 return {
                     "ok": False,
@@ -158,19 +187,21 @@ def do_transcribe(wav: str, model: str, language: str) -> dict:
         return {
             "ok": True,
             "text": text,
-            "backend": "mlx-warm" if _LAST_MODEL else "mlx",
+            "backend": backend,
             "seconds": seconds,
             "model": model,
+            "warm": _LAST_MODEL == model,
         }
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def do_preload(model: str, language: str) -> dict:
-    """Touch-load weights so first real Dictate is fast."""
+    """Load weights into ModelHolder so first real Dictate skips import+map tax."""
     t0 = time.time()
     try:
-        # 0.3s silence is enough to force weight load without meaningful decode cost
+        load_s = _ensure_model_loaded(model)
+        # Tiny silence decode once so mel/decode path is also warm
         import struct
         import wave
         import tempfile
@@ -181,39 +212,69 @@ def do_preload(model: str, language: str) -> dict:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(16000)
-            n = 4800  # 0.3s
+            n = 1600  # 0.1s
             w.writeframes(struct.pack("<" + "h" * n, *([0] * n)))
-        out = do_transcribe(name, model, language)
+        # May return empty — that is fine for silence
+        try:
+            from mlx_whisper import transcribe
+
+            transcribe(
+                name,
+                path_or_hf_repo=model,
+                language=language if language and language != "auto" else None,
+                verbose=False,
+                temperature=0.0,
+            )
+        except Exception:
+            pass
         try:
             os.unlink(name)
         except OSError:
             pass
-        out["preload_seconds"] = round(time.time() - t0, 3)
-        out["cmd"] = "preload"
-        # Empty/silence may fail empty transcript — still counts as warm if model mapped
-        if not out.get("ok") and "Empty" in str(out.get("error", "")):
-            return {
-                "ok": True,
-                "text": "",
-                "backend": "mlx-preload",
-                "seconds": round(time.time() - t0, 3),
-                "model": model,
-                "note": "weights warm; silence empty is fine",
-            }
-        return out
+        return {
+            "ok": True,
+            "text": "",
+            "backend": "mlx-preload",
+            "seconds": round(time.time() - t0, 3),
+            "load_seconds": load_s,
+            "model": model,
+            "note": "weights + decode path warm",
+        }
     except Exception as e:
         return {"ok": False, "error": f"preload: {e}"}
 
 
+def do_status() -> dict:
+    from mlx_whisper.transcribe import ModelHolder
+
+    return {
+        "ok": True,
+        "cmd": "status",
+        "model": _LAST_MODEL or ModelHolder.model_path,
+        "loaded": ModelHolder.model is not None,
+        "preload_at": _PRELOAD_AT,
+        "pid": os.getpid(),
+    }
+
+
 def serve() -> int:
     """JSON-lines protocol on stdin/stdout. Never buffers a full request batch."""
-    # Line-buffered stdout
     try:
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
     except Exception:
         pass
 
-    print(json.dumps({"ok": True, "cmd": "ready", "backend": "mlx-daemon"}), flush=True)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "cmd": "ready",
+                "backend": "mlx-daemon",
+                "stack": "openai-whisper-via-mlx",
+            }
+        ),
+        flush=True,
+    )
 
     for line in sys.stdin:
         line = line.strip()
@@ -228,9 +289,19 @@ def serve() -> int:
         cmd = (req.get("cmd") or "transcribe").lower()
         if cmd == "ping":
             print(
-                json.dumps({"ok": True, "cmd": "pong", "model": _LAST_MODEL}),
+                json.dumps(
+                    {
+                        "ok": True,
+                        "cmd": "pong",
+                        "model": _LAST_MODEL,
+                        "loaded": _LAST_MODEL is not None,
+                    }
+                ),
                 flush=True,
             )
+            continue
+        if cmd == "status":
+            print(json.dumps(do_status()), flush=True)
             continue
         if cmd == "quit":
             print(json.dumps({"ok": True, "cmd": "bye"}), flush=True)
