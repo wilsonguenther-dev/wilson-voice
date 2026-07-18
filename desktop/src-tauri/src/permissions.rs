@@ -134,7 +134,9 @@ pub fn report(
 
     let mut parts = Vec::new();
     if !accessibility {
-        parts.push("Accessibility OFF — paste will only copy to clipboard");
+        parts.push(
+            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Wilson Voice)",
+        );
     }
     if !microphone {
         parts.push("Microphone not ready");

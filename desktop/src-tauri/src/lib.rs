@@ -1,11 +1,8 @@
-//! Wilson Voice v0.4 — production dictation desktop app
+//! Wilson Voice — production dictation desktop app
 //!
-//! Phases (PLAN.md):
-//! 0 Hygiene — single /Applications install, no DMG litter
-//! 1 Permissions — AX + mic probes, System Settings deep-links
-//! 2 Hotkeys — ⌘⇧V hold via Carbon on main thread (deferred)
-//! 3 Record + paste — cpal in-process mic + CGEvent paste on main thread
-//! 4 Product UI — Home / Insights / Dictionary / Scratchpad / Permissions
+//! Hotkeys: primary FN / FN+Control via CGEvent tap (ptt_macos).
+//! Optional legacy ⌘⇧V via Carbon global-shortcut.
+//! HUD: floating float.html pill, parked bottom-center (no cursor chase).
 
 mod asr;
 mod asr_paths;
@@ -15,6 +12,8 @@ mod focus;
 mod mic_auth;
 mod paste;
 mod permissions;
+#[cfg(target_os = "macos")]
+mod ptt_macos;
 mod record;
 
 use db::{Database, DictEntry, Insights, ScratchNote, TranscriptEntry};
@@ -38,14 +37,27 @@ pub struct AppSettings {
     pub language: String,
     pub auto_paste: bool,
     pub hotkey_label: String,
+    /// Always show HUD; also auto-shows while recording even if false.
     pub show_floating_pill: bool,
     /// fast | balanced | max — maps to model; user can still override model.
     #[serde(default = "default_speed_profile")]
     pub speed_profile: String,
+    /// fn | fn_control | both — CGEvent FN PTT (not Carbon).
+    #[serde(default = "default_ptt_binding")]
+    pub ptt_binding: String,
+    /// Keep Carbon ⌘⇧V as secondary hold binding.
+    #[serde(default = "default_true")]
+    pub keep_cmd_shift_v: bool,
 }
 
 fn default_speed_profile() -> String {
     "balanced".into()
+}
+fn default_ptt_binding() -> String {
+    "fn".into()
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -55,11 +67,12 @@ impl Default for AppSettings {
             model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
-            hotkey_label: "⌘⇧V hold".into(),
-            // Off by default until user enables (avoids blank/main collision bugs)
-            show_floating_pill: false,
-            // Use "fast" (small) during heavy coding sessions
+            hotkey_label: "fn hold".into(),
+            // HUD auto-shows on record; permanent park optional
+            show_floating_pill: true,
             speed_profile: "balanced".into(),
+            ptt_binding: "fn".into(),
+            keep_cmd_shift_v: true,
         }
     }
 }
@@ -114,8 +127,9 @@ fn build_status(state: &AppState) -> AppStatus {
     let last_error = state.last_error.lock().clone();
     let accessibility = permissions::is_accessibility_trusted();
     let hotkey_registered = *state.hotkey_registered.lock();
+    let ptt = state.settings.lock().hotkey_label.clone();
     let message = if recording {
-        "Recording… release ⌘⇧V or click Stop".into()
+        format!("Recording… release {ptt} or click Stop")
     } else if busy {
         "Transcribing with local Whisper…".into()
     } else if let Some(ref err) = last_error {
@@ -123,9 +137,9 @@ fn build_status(state: &AppState) -> AppStatus {
     } else if !state.venv_python.exists() {
         "ASR venv missing — see Permissions".into()
     } else if !accessibility {
-        "Ready (copy-only) — enable Accessibility to auto-paste".into()
+        format!("Ready — hold {ptt} (enable Accessibility for paste + FN)")
     } else {
-        "Ready — hold ⌘⇧V to dictate".into()
+        format!("Ready — hold {ptt} to dictate")
     };
     AppStatus {
         recording,
@@ -166,7 +180,8 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             log::info!("recording started");
             let _ = app.emit("recording", true);
             emit_status(app, state);
-            // Quiet: no notification spam on every press (status UI + tray is enough)
+            // Wispr-style: pill appears for the hold (parked, no cursor chase)
+            float_pill::show_for_recording(app);
         }
         Err(e) => {
             log::error!("record start failed: {e}");
@@ -175,6 +190,28 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             notify(app, "Wilson Voice — Mic", e);
         }
     }
+}
+
+/// Discard in-flight take (FN interrupt / cancel) — no ASR.
+fn cancel_recording(app: &AppHandle, state: &AppState) {
+    if !*state.recording.lock() {
+        return;
+    }
+    *state.recording.lock() = false;
+    let _ = app.emit("recording", false);
+    if let Some(active) = state.recorder.lock().take() {
+        let path = active.wav_path.clone();
+        let _ = record::stop_recording(active);
+        let _ = std::fs::remove_file(path);
+    }
+    *state.last_error.lock() = Some("Dictation cancelled (another key while holding fn)".into());
+    emit_status(app, state);
+    if !state.settings.lock().show_floating_pill {
+        float_pill::hide_float(app);
+    } else {
+        let _ = float_pill::show_float(app);
+    }
+    log::info!("recording cancelled");
 }
 
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
@@ -295,6 +332,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             }
         }
         *state2.busy.lock() = false;
+        // Hide pill after dictate unless user wants it always on
+        if !state2.settings.lock().show_floating_pill {
+            float_pill::hide_float(&app2);
+        }
         emit_status(&app2, &state2);
     });
 }
@@ -334,14 +375,24 @@ fn save_settings(
             next.model = want.into();
         }
     }
+    // Keep label in sync with binding
+    next.hotkey_label = match next.ptt_binding.as_str() {
+        "fn_control" => "fn⌃ hold".into(),
+        "both" | "fn_or_fn_control" => "fn / fn⌃ hold".into(),
+        _ => "fn hold".into(),
+    };
     *state.settings.lock() = next.clone();
     let path = data_dir().join("settings.json");
     let s = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
     if next.show_floating_pill {
         float_pill::show_float(&app)?;
-    } else {
+    } else if !*state.recording.lock() {
         float_pill::hide_float(&app);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ptt_macos::set_binding(ptt_macos::PttBinding::from_settings(&next.ptt_binding));
     }
     // Re-preload the active model in background (warm daemon)
     asr::preload_async(
@@ -587,7 +638,10 @@ pub fn run() {
                 .with_handler({
                     let state = state.clone();
                     move |app, shortcut, event| {
-                        // Only react to our hold-to-talk combo
+                        // Legacy secondary: ⌘⇧V (only if keep_cmd_shift_v)
+                        if !state.settings.lock().keep_cmd_shift_v {
+                            return;
+                        }
                         log::debug!("shortcut event {shortcut:?} {:?}", event.state);
                         if event.state == ShortcutState::Pressed {
                             log::info!("⌘⇧V pressed — start");
@@ -656,7 +710,7 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Wilson Voice — hold ⌘⇧V to dictate")
+                .tooltip("Wilson Voice — hold fn to dictate")
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
@@ -699,22 +753,50 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
-            // Floating pill OFF by default — enable in Settings when wanted
+            // Floating pill: show parked if Settings wants always-on HUD
             if state.settings.lock().show_floating_pill {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
             } else {
-                // Ensure any leftover float from older builds is gone
                 float_pill::hide_float(app.handle());
             }
 
-            // Soft AX prompt once if not trusted (does not block)
             if !permissions::is_accessibility_trusted() {
-                log::info!("Accessibility not trusted yet — user should enable Wilson Voice");
+                log::info!(
+                    "Accessibility not trusted — FN hold needs it. Enable Wilson Voice in Privacy → Accessibility"
+                );
             }
 
-            // Phase 2: register ⌘⇧V on main thread AFTER event loop is live
+            // Primary: FN / FN+Control via CGEvent tap (not Carbon)
+            #[cfg(target_os = "macos")]
+            {
+                let binding = ptt_macos::PttBinding::from_settings(
+                    &state.settings.lock().ptt_binding,
+                );
+                let st = state.clone();
+                let h = app.handle().clone();
+                ptt_macos::start(
+                    binding,
+                    Arc::new(move |ev| {
+                        match ev {
+                            ptt_macos::PttEvent::Down => {
+                                start_recording(&h, &st);
+                            }
+                            ptt_macos::PttEvent::Up => {
+                                stop_and_transcribe(h.clone(), st.clone());
+                            }
+                            ptt_macos::PttEvent::Interrupted => {
+                                cancel_recording(&h, &st);
+                            }
+                        }
+                    }),
+                );
+                *state.hotkey_registered.lock() = true;
+                log::info!("FN PTT started ({})", binding.label());
+            }
+
+            // Secondary: optional ⌘⇧V Carbon chord
             let handle = app.handle().clone();
             let state_hk = state.clone();
             std::thread::spawn(move || {
@@ -722,26 +804,26 @@ pub fn run() {
                 let h = handle.clone();
                 let st = state_hk.clone();
                 let _ = handle.run_on_main_thread(move || {
+                    if !st.settings.lock().keep_cmd_shift_v {
+                        log::info!("⌘⇧V disabled in settings");
+                        emit_status(&h, &st);
+                        return;
+                    }
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
                     match h.global_shortcut().register(sc) {
                         Ok(()) => {
-                            *st.hotkey_registered.lock() = true;
-                            log::info!("registered hold-to-talk ⌘⇧V");
+                            log::info!("secondary hold-to-talk ⌘⇧V registered");
                             emit_status(&h, &st);
                         }
                         Err(e) => {
-                            *st.hotkey_registered.lock() = false;
-                            log::warn!("⌘⇧V register failed: {e}");
-                            *st.last_error.lock() = Some(format!(
-                                "Hotkey unavailable: {e}. Use the Dictate button in the app."
-                            ));
+                            log::warn!("⌘⇧V register failed (FN still works): {e}");
                             emit_status(&h, &st);
                         }
                     }
                 });
             });
 
-            log::info!("Wilson Voice v0.5.0 setup complete (latency+insights hygiene)");
+            log::info!("Wilson Voice v0.5.1 setup complete (fn PTT + HUD)");
             Ok(())
         })
         .run(tauri::generate_context!())

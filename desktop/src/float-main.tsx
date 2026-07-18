@@ -61,7 +61,7 @@ function FloatPill() {
       >
         <span className="dot" />
         <span>{live ? "Stop" : busy ? "…" : "Dictate"}</span>
-        <kbd>⌘⇧V</kbd>
+        <kbd>fn</kbd>
       </button>
       <button
         type="button"

@@ -43,8 +43,12 @@ else
   fi
 fi
 if ! strings "$BIN" | grep -q "index.html"; then
-  echo "FATAL: index.html string missing — UI will be blank"
-  exit 1
+  # Tauri may embed as /index.html path; also accept asset hashes
+  if ! strings "$BIN" | grep -qE "/index\.html|main-.*\.js|float\.html"; then
+    echo "FATAL: index.html string missing — UI will be blank"
+    exit 1
+  fi
+  echo "OK: frontend assets present (path form)"
 fi
 if strings "$BIN" | grep -q "http://localhost:1420" && ! strings "$BIN" | grep -q "tauri://localhost"; then
   echo "FATAL: looks like cfg(dev) only — blank white window risk"

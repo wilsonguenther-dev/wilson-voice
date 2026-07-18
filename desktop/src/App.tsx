@@ -19,6 +19,9 @@ interface AppSettings {
   showFloatingPill: boolean;
   /** fast | balanced | max */
   speedProfile: string;
+  /** fn | fn_control | both */
+  pttBinding?: string;
+  keepCmdShiftV?: boolean;
 }
 
 interface AppStatus {
@@ -231,7 +234,7 @@ export default function App() {
         ...s,
         recording: e.payload,
         message: e.payload
-          ? "Recording… release ⌘⇧V or click Stop"
+          ? "Recording… release fn or click Stop"
           : s.message,
       })),
     ).then((u) => unsubs.push(u));
@@ -420,7 +423,7 @@ export default function App() {
               ? "Stop listening"
               : status.busy
                 ? "Transcribing…"
-                : "Dictate · ⌘⇧V"}
+                : "Dictate · fn"}
           </button>
         </div>
       </aside>
@@ -438,7 +441,7 @@ export default function App() {
             </h1>
             <p className="lede">
               {nav === "home" &&
-                "Hold ⌘⇧V over any text field — Claude, Codex, ChatGPT, Mail. Local Whisper; history in SQLite."}
+                "Hold fn over any text field — Claude, Codex, ChatGPT, Mail. Local Whisper; history in SQLite."}
               {nav === "permissions" &&
                 "macOS must grant these to Wilson Voice (not Python). Without them, dictation or paste fails."}
               {nav === "insights" &&
@@ -560,7 +563,7 @@ export default function App() {
                 <li className={status.hotkeyRegistered ? "ok" : "bad"}>
                   <StatusDot ok={status.hotkeyRegistered} />
                   <div>
-                    <strong>Global hotkey ⌘⇧V</strong>
+                    <strong>Hold fn</strong> (Globe)
                     <p>
                       Carbon hotkey registered by Tauri. If this is red, use the
                       Dictate button. Close Wispr Flow if it steals the combo.
@@ -638,10 +641,10 @@ export default function App() {
                 </span>
                 <span>
                   {status.recording
-                    ? "Listening — click or release ⌘⇧V"
+                    ? "Listening — click or release fn"
                     : status.busy
                       ? "Transcribing…"
-                      : "Hold ⌘⇧V or click to record"}
+                      : "Hold fn (or fn⌃) or click to record"}
                 </span>
               </button>
 
@@ -661,7 +664,7 @@ export default function App() {
                 <div className="empty">
                   <h3>No dictations yet</h3>
                   <p>
-                    Click Dictate or hold <kbd>⌘⇧V</kbd>. Text is stored locally
+                    Click Dictate or hold <kbd>fn</kbd>. Text is stored locally
                     and searchable forever.
                   </p>
                 </div>
@@ -802,7 +805,9 @@ export default function App() {
                       <strong
                         className={status.hotkeyRegistered ? "ok" : "bad"}
                       >
-                        {status.hotkeyRegistered ? "⌘⇧V ok" : "not registered"}
+                        {status.hotkeyRegistered
+                          ? settings?.hotkeyLabel || "fn ok"
+                          : "not registered"}
                       </strong>
                     </li>
                     <li>
@@ -952,7 +957,7 @@ export default function App() {
                   Warm daemon keeps the model loaded. Use <strong>Fast</strong>{" "}
                   during heavy coding so dictation does not fight your session
                   for Metal/RAM. AWS GPUs are for offline fine-tune / batch —
-                  not every ⌘⇧V.
+                  not every dictation.
                 </p>
                 <div className="actions wrap" style={{ marginTop: 10 }}>
                   {PROFILES.map((p) => (
@@ -1028,7 +1033,7 @@ export default function App() {
               <label className="toggle">
                 <input
                   type="checkbox"
-                  checked={settings.showFloatingPill ?? false}
+                  checked={settings.showFloatingPill ?? true}
                   onChange={(e) =>
                     setSettings({
                       ...settings,
@@ -1037,16 +1042,70 @@ export default function App() {
                   }
                 />
                 <span>
-                  Floating Dictate pill (v1 webview — not full NSPanel yet)
+                  Always show floating Dictate pill (also appears while
+                  recording)
                 </span>
               </label>
               <div className="panel">
-                <h3>Hotkey + learning</h3>
+                <h3>Hold-to-talk key</h3>
                 <p>
+                  Primary is <strong>fn</strong> (Globe) — Wispr-style. Carbon
+                  cannot bind bare fn; we use a CoreGraphics event tap (needs
+                  Accessibility). Set Keyboard → “Press 🌐 key to” →{" "}
+                  <strong>Do Nothing</strong>.
+                </p>
+                <div className="profile-row">
+                  {(
+                    [
+                      ["fn", "fn", "Bare Globe / fn hold"],
+                      ["fn_control", "fn⌃", "fn + Control"],
+                      ["both", "fn / fn⌃", "Either works"],
+                    ] as const
+                  ).map(([id, label, blurb]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={
+                        (settings.pttBinding ?? "fn") === id
+                          ? "profile active"
+                          : "profile"
+                      }
+                      onClick={() =>
+                        setSettings({
+                          ...settings,
+                          pttBinding: id,
+                          hotkeyLabel:
+                            id === "fn_control"
+                              ? "fn⌃ hold"
+                              : id === "both"
+                                ? "fn / fn⌃ hold"
+                                : "fn hold",
+                        })
+                      }
+                    >
+                      <strong>{label}</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+                <label className="toggle" style={{ marginTop: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.keepCmdShiftV ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        keepCmdShiftV: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>Also keep ⌘⇧V as secondary hold</span>
+                </label>
+                <p style={{ marginTop: 12 }}>
                   <strong>{settings.hotkeyLabel}</strong> — hold to talk,
-                  release to transcribe. Dictionary + vocab harvest improve
-                  jargon over time. Real MLX fine-tune is offline (nights), not
-                  mid-session.
+                  release to transcribe. Pill parks bottom-center of the active
+                  screen (no cursor chase). Dictionary harvest improves jargon
+                  over time.
                 </p>
               </div>
               <div className="actions wrap">

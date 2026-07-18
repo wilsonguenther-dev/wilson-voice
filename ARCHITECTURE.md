@@ -23,8 +23,10 @@ proprietary “Wilson foundation models.” Modes = scale/speed profiles.
 | Retrieval | **FTS5 first** | No RAG until dictionary + FTS proven insufficient |
 | GraphQL | **No** | Overkill for single-user desktop SQLite |
 | Cloud STT hot path | **No** | Local-first, zero-day-minded surface |
-| AWS always-on GPU | **No** for every ⌘⇧V | Network loses to warm local for 2–8s holds |
-| HUD | NSPanel later (`tauri-nspanel`) | Current webview pill is parked off by default |
+| AWS always-on GPU | **No** for every short dictate | Network loses to warm local for 2–8s holds |
+| Primary hotkey | **fn / Globe hold** (CGEvent tap) | Carbon cannot bind bare FN; Accessibility required |
+| Secondary hotkey | Optional ⌘⇧V Carbon + optional fn⌃ | Settings toggles |
+| HUD | Parked bottom-center pill; show on record | Continuous cursor chase OFF; full `tauri-nspanel` next |
 | WPM | `speech_seconds` from audio duration only | Never use model `asr_seconds` as speaking time |
 | Latency metric | Release → clipboard ms (`pipeline_ms`) | North star p50 &lt; 800ms on Fast |
 
