@@ -656,6 +656,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        // Real NSPanel support for Dictate island (macOS)
+        .plugin(tauri_nspanel::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler({
@@ -864,7 +866,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.5.4 — fn⌃ hybrid + space-stable island");
+            log::info!("Wilson Voice v0.5.5 — NSPanel Dictate island (tauri-nspanel)");
             Ok(())
         })
         .run(tauri::generate_context!())

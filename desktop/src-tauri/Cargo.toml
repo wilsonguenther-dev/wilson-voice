@@ -1,6 +1,6 @@
 [package]
 name = "wilson-voice"
-version = "0.5.4"
+version = "0.5.5"
 description = "Wilson Voice — local dictation desktop app (Wispr Flow alternative)"
 authors = ["Wilson Guenther"]
 edition = "2021"
@@ -38,6 +38,7 @@ hound = "3.5.1"
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 block2 = "0.6.2"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
 
 [features]
 default = ["custom-protocol", "macos-private-api"]

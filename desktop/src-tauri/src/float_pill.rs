@@ -1,28 +1,50 @@
-//! Floating Dictate island — rides all Spaces (Mission Control swipe).
+//! Real macOS NSPanel Dictate island (via tauri-nspanel).
 //!
-//! Shell: transparent always-on-top + canJoinAllSpaces + fullScreenAuxiliary.
-//! Parked bottom-center of the active display; re-asserted on a light interval
-//! so Space switches don't bury the HUD in the main app.
+//! This is NOT a normal NSWindow with rounded CSS.
+//! Flow: WebviewWindow → to_panel::<DictatePill>() → NSPanel flags:
+//!   nonactivatingPanel, floating/status level, canJoinAllSpaces,
+//!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-const PILL_W: f64 = 216.0;
-const PILL_H: f64 = 56.0;
+#[cfg(target_os = "macos")]
+use tauri_nspanel::{
+    tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
+};
+
+const PILL_W: f64 = 200.0;
+const PILL_H: f64 = 52.0;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
+static PANEL_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
-mod mac {
+tauri_panel! {
+    panel!(DictatePill {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false,
+            becomes_key_only_if_needed: true,
+            is_floating_panel: true,
+            hides_on_deactivate: false,
+            works_when_modal: true
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+mod screen {
     use std::ffi::c_void;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
-    pub struct CGPoint {
-        pub x: f64,
-        pub y: f64,
+    struct CGPoint {
+        x: f64,
+        y: f64,
     }
     #[repr(C)]
     struct CGSize {
@@ -55,29 +77,16 @@ mod mac {
         fn CFRelease(cf: *mut c_void);
     }
 
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn sel_registerName(name: *const i8) -> *mut c_void;
-        fn objc_msgSend();
-        fn objc_getClass(name: *const i8) -> *mut c_void;
-    }
-
-    pub fn cursor_point() -> Option<CGPoint> {
-        unsafe {
-            let ev = CGEventCreate(std::ptr::null_mut());
-            if ev.is_null() {
-                return None;
-            }
-            let p = CGEventGetLocation(ev);
-            CFRelease(ev);
-            Some(p)
-        }
-    }
-
-    /// Prefer display under cursor; else first active display.
     pub fn active_screen_bounds() -> (f64, f64, f64, f64) {
         unsafe {
-            let p = cursor_point().unwrap_or(CGPoint { x: 0.0, y: 0.0 });
+            let ev = CGEventCreate(std::ptr::null_mut());
+            let p = if ev.is_null() {
+                CGPoint { x: 0.0, y: 0.0 }
+            } else {
+                let pt = CGEventGetLocation(ev);
+                CFRelease(ev);
+                pt
+            };
             let mut id: u32 = 0;
             let mut count: u32 = 0;
             let err = CGGetDisplaysWithPoint(p, 1, &mut id, &mut count);
@@ -94,142 +103,155 @@ mod mac {
             (r.origin.x, r.origin.y, r.size.width, r.size.height)
         }
     }
+}
 
-    pub fn harden_as_hud(ns_window: *mut c_void) {
-        if ns_window.is_null() {
-            return;
-        }
-        unsafe {
-            let sel = |name: &str| {
-                sel_registerName(std::ffi::CString::new(name).unwrap().as_ptr())
-            };
-            type MsgSetBool = unsafe extern "C" fn(*mut c_void, *mut c_void, bool);
-            type MsgSetI64 = unsafe extern "C" fn(*mut c_void, *mut c_void, i64);
-            type MsgGet = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u64;
-            type MsgSetU64 = unsafe extern "C" fn(*mut c_void, *mut c_void, u64);
-            type MsgVoid = unsafe extern "C" fn(*mut c_void, *mut c_void);
-            type MsgObj = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
-            type MsgSetObj = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void);
-
-            let msg_bool: MsgSetBool = std::mem::transmute(objc_msgSend as *const ());
-            let msg_i64: MsgSetI64 = std::mem::transmute(objc_msgSend as *const ());
-            let msg_get: MsgGet = std::mem::transmute(objc_msgSend as *const ());
-            let msg_u64: MsgSetU64 = std::mem::transmute(objc_msgSend as *const ());
-            let msg_void: MsgVoid = std::mem::transmute(objc_msgSend as *const ());
-            let msg_obj: MsgObj = std::mem::transmute(objc_msgSend as *const ());
-            let msg_set_obj: MsgSetObj = std::mem::transmute(objc_msgSend as *const ());
-
-            msg_bool(ns_window, sel("setHidesOnDeactivate:"), false);
-            msg_bool(ns_window, sel("setCanHide:"), false);
-            msg_bool(ns_window, sel("setOpaque:"), false);
-            msg_bool(ns_window, sel("setHasShadow:"), false);
-
-            let class_name = std::ffi::CString::new("NSColor").unwrap();
-            let ns_color = objc_getClass(class_name.as_ptr());
-            if !ns_color.is_null() {
-                let clear = msg_obj(ns_color, sel("clearColor"));
-                if !clear.is_null() {
-                    msg_set_obj(ns_window, sel("setBackgroundColor:"), clear);
-                }
-            }
-
-            // Status-level float so it rides above normal app windows when swiping Spaces
-            // NSStatusWindowLevel = 25
-            msg_i64(ns_window, sel("setLevel:"), 25);
-
-            // canJoinAllSpaces (1) | fullScreenAuxiliary (256) | ignoresCycle (64)
-            // Do NOT set stationary — that can pin oddly vs “follow me across Spaces”
-            let want: u64 = (1 << 0) | (1 << 6) | (1 << 8);
-            msg_u64(ns_window, sel("setCollectionBehavior:"), want);
-
-            // borderless | nonactivatingPanel
-            let mask: u64 = msg_get(ns_window, sel("styleMask"));
-            msg_u64(ns_window, sel("setStyleMask:"), mask | (1 << 7));
-
-            msg_void(ns_window, sel("orderFrontRegardless"));
-        }
+#[cfg(not(target_os = "macos"))]
+mod screen {
+    pub fn active_screen_bounds() -> (f64, f64, f64, f64) {
+        (0.0, 0.0, 1440.0, 900.0)
     }
 }
 
-pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
-    if app.get_webview_window("float").is_some() {
+fn park_bottom_center(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("float") else {
+        return;
+    };
+    let (ox, oy, sw, sh) = screen::active_screen_bounds();
+    let x = (ox + (sw - PILL_W) / 2.0).max(ox) as i32;
+    let y = (oy + sh - PILL_H - 52.0).max(oy) as i32;
+    let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+}
+
+#[cfg(target_os = "macos")]
+fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
+    // Prefer panel API if already converted
+    if let Ok(panel) = app.get_webview_panel("float") {
+        panel.set_level(PanelLevel::Status.value());
+        panel.set_style_mask(
+            StyleMask::empty()
+                .nonactivating_panel()
+                .borderless()
+                .into(),
+        );
+        panel.set_collection_behavior(
+            CollectionBehavior::new()
+                .can_join_all_spaces()
+                .full_screen_auxiliary()
+                .ignores_cycle()
+                .into(),
+        );
+        panel.set_hides_on_deactivate(false);
+        panel.set_floating_panel(true);
+        // order front without activating app
+        panel.order_front_regardless();
+        PANEL_READY.store(true, Ordering::SeqCst);
         return Ok(());
     }
 
-    let url = WebviewUrl::App("float.html".into());
-    let mut builder = WebviewWindowBuilder::new(app, "float", url)
-        .title("Dictate")
-        .inner_size(PILL_W, PILL_H)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .focused(false)
-        .visible(false)
-        .visible_on_all_workspaces(true);
+    let window = app
+        .get_webview_window("float")
+        .ok_or_else(|| "float webview missing".to_string())?;
 
-    #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
-    {
-        builder = builder.transparent(true);
-    }
+    let panel = window
+        .to_panel::<DictatePill>()
+        .map_err(|e| format!("to_panel: {e}"))?;
 
-    let w = builder
-        .build()
-        .map_err(|e| format!("float window: {e}"))?;
-
-    harden_window(&w);
-    park_bottom_center(&w);
+    panel.set_level(PanelLevel::Status.value());
+    panel.set_style_mask(
+        StyleMask::empty()
+            .nonactivating_panel()
+            .borderless()
+            .into(),
+    );
+    panel.set_collection_behavior(
+        CollectionBehavior::new()
+            .can_join_all_spaces()
+            .full_screen_auxiliary()
+            .ignores_cycle()
+            .into(),
+    );
+    panel.set_hides_on_deactivate(false);
+    panel.set_floating_panel(true);
+    panel.order_front_regardless();
+    PANEL_READY.store(true, Ordering::SeqCst);
     Ok(())
 }
 
-fn harden_window(w: &tauri::WebviewWindow) {
-    #[cfg(target_os = "macos")]
-    {
-        match w.ns_window() {
-            Ok(ns) => mac::harden_as_hud(ns as *mut std::ffi::c_void),
-            Err(e) => log::warn!("ns_window for harden: {e}"),
-        }
-    }
-    let _ = w.set_ignore_cursor_events(false);
-    let _ = w.set_always_on_top(true);
+#[cfg(not(target_os = "macos"))]
+fn apply_panel_hud(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
-fn park_bottom_center(w: &tauri::WebviewWindow) {
-    #[cfg(target_os = "macos")]
-    {
-        let (ox, oy, sw, sh) = mac::active_screen_bounds();
-        let x = (ox + (sw - PILL_W) / 2.0).max(ox) as i32;
-        // Bottom-center of active display (middle horizontally, near dock)
-        let y = (oy + sh - PILL_H - 48.0).max(oy) as i32;
-        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-        return;
+/// Create the float webview once, convert to NSPanel, park bottom-center.
+pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window("float").is_none() {
+        let url = WebviewUrl::App("float.html".into());
+        let mut builder = WebviewWindowBuilder::new(app, "float", url)
+            .title("")
+            .inner_size(PILL_W, PILL_H)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .visible(false)
+            .visible_on_all_workspaces(true);
+
+        #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
+        {
+            builder = builder.transparent(true);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("float window: {e}"))?;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: 100,
-            y: 100,
-        }));
+
+    // Convert / re-apply NSPanel HUD flags
+    if let Err(e) = apply_panel_hud(app) {
+        log::warn!("NSPanel convert: {e} — falling back to webview flags");
     }
+
+    park_bottom_center(app);
+
+    if let Some(w) = app.get_webview_window("float") {
+        let _ = w.set_ignore_cursor_events(false);
+        let _ = w.set_always_on_top(true);
+        // Transparent content so only CSS pill paints
+        let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    }
+
+    Ok(())
 }
 
 pub fn show_float(app: &AppHandle) -> Result<(), String> {
     ensure_float(app)?;
-    if let Some(w) = app.get_webview_window("float") {
-        harden_window(&w);
-        park_bottom_center(&w);
-        let _ = w.show();
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(ns) = w.ns_window() {
-                mac::harden_as_hud(ns as *mut std::ffi::c_void);
-            }
+    park_bottom_center(app);
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("float") {
+            let _ = apply_panel_hud(app);
+            panel.show();
+            panel.order_front_regardless();
+            return Ok(());
         }
+    }
+
+    if let Some(w) = app.get_webview_window("float") {
+        let _ = w.show();
     }
     Ok(())
 }
 
 pub fn hide_float(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("float") {
+            panel.hide();
+            return;
+        }
+    }
     if let Some(w) = app.get_webview_window("float") {
         let _ = w.hide();
     }
@@ -249,35 +271,35 @@ pub fn after_recording(app: &AppHandle, keep_visible: bool) {
     }
 }
 
-/// Periodically re-assert float on top + re-park so Space swipes keep the island
-/// centered on the active display instead of vanishing into the main window.
+/// Keep NSPanel on top + re-park after Space swipes (does not recreate window).
 pub fn start_space_keeper(app: AppHandle) {
     if KEEPER_ON.swap(true, Ordering::SeqCst) {
         return;
     }
     thread::Builder::new()
         .name("wv-float-keeper".into())
-        .spawn(move || {
-            loop {
-                thread::sleep(Duration::from_millis(800));
-                let app_main = app.clone();
-                let app_inner = app.clone();
-                let _ = app_main.run_on_main_thread(move || {
-                    if let Some(w) = app_inner.get_webview_window("float") {
-                        if w.is_visible().unwrap_or(false) {
-                            harden_window(&w);
-                            park_bottom_center(&w);
-                            let _ = w.set_always_on_top(true);
-                            #[cfg(target_os = "macos")]
-                            {
-                                if let Ok(ns) = w.ns_window() {
-                                    mac::harden_as_hud(ns as *mut std::ffi::c_void);
-                                }
-                            }
-                        }
+        .spawn(move || loop {
+            thread::sleep(Duration::from_millis(900));
+            let app_main = app.clone();
+            let app_inner = app.clone();
+            let _ = app_main.run_on_main_thread(move || {
+                // Only re-assert if visible
+                let visible = app_inner
+                    .get_webview_window("float")
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
+                if !visible {
+                    return;
+                }
+                park_bottom_center(&app_inner);
+                let _ = apply_panel_hud(&app_inner);
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(panel) = app_inner.get_webview_panel("float") {
+                        panel.order_front_regardless();
                     }
-                });
-            }
+                }
+            });
         })
         .ok();
 }
