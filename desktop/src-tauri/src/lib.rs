@@ -792,16 +792,16 @@ pub fn run() {
                 ptt_macos::start(
                     binding,
                     Arc::new(move |ev| {
-                        match ev {
-                            ptt_macos::PttEvent::Down => {
-                                start_recording(&h, &st);
-                            }
-                            ptt_macos::PttEvent::Up => {
-                                stop_and_transcribe(h.clone(), st.clone());
-                            }
-                            ptt_macos::PttEvent::Interrupted => {
-                                cancel_recording(&h, &st);
-                            }
+                        // CGEvent tap runs on wv-fn-ptt — AppKit/window must be main thread
+                        // or we SIGTRAP: "Must only be used from the main thread"
+                        let st = st.clone();
+                        let h = h.clone();
+                        if let Err(e) = h.clone().run_on_main_thread(move || match ev {
+                            ptt_macos::PttEvent::Down => start_recording(&h, &st),
+                            ptt_macos::PttEvent::Up => stop_and_transcribe(h.clone(), st.clone()),
+                            ptt_macos::PttEvent::Interrupted => cancel_recording(&h, &st),
+                        }) {
+                            log::error!("PTT main-thread hop failed: {e}");
                         }
                     }),
                 );
@@ -836,7 +836,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.5.2 setup complete (glass island HUD)");
+            log::info!("Wilson Voice v0.5.3 setup complete (fn PTT main-thread safe)");
             Ok(())
         })
         .run(tauri::generate_context!())
