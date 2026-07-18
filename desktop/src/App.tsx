@@ -1042,7 +1042,7 @@ export default function App() {
                   }
                 />
                 <span>
-                  Always show floating Dictate pill (also appears while
+                  Always show Dictate island (glass HUD; also appears while
                   recording)
                 </span>
               </label>

@@ -2,26 +2,37 @@
 //!
 //! Recording inside the Wilson Voice process (not external ffmpeg) so macOS TCC
 //! attributes Microphone permission to com.wilsonguenther.wilson-voice.
+//! Live RMS level is exposed for the floating HUD waveform.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
+
+/// Shared peak level 0..=1000 for HUD (updated every audio callback window).
+pub type LevelHandle = Arc<AtomicU32>;
 
 pub struct ActiveRecording {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<(), String>>>,
     pub wav_path: PathBuf,
     started: std::time::Instant,
+    pub level: LevelHandle,
+}
+
+impl ActiveRecording {
+    /// Shared stop flag — false while recording, true after stop.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
 }
 
 pub struct RecordingResult {
     pub wav_path: PathBuf,
     /// Audio duration from mono 16 kHz samples — source of truth for WPM.
-    /// Never use model latency for speaking rate.
     pub speech_seconds: f64,
     /// Wall-clock hold (press→release), for latency telemetry only.
     pub hold_wall_seconds: f64,
@@ -33,17 +44,17 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
     let path_t = wav_path.clone();
+    let level: LevelHandle = Arc::new(AtomicU32::new(0));
+    let level_t = level.clone();
 
     let join = thread::Builder::new()
         .name("wv-record".into())
-        .spawn(move || record_loop(path_t, stop_t))
+        .spawn(move || record_loop(path_t, stop_t, level_t))
         .map_err(|e| format!("spawn record thread: {e}"))?;
 
-    // Wait only until stream is alive (or fail fast) — 450ms was pure dead latency.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(350);
     while !join.is_finished() && std::time::Instant::now() < deadline {
         thread::sleep(std::time::Duration::from_millis(20));
-        // Stream thread keeps running until stop; early finish means hard error.
     }
     if join.is_finished() {
         return match join.join() {
@@ -58,12 +69,14 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
         join: Some(join),
         wav_path,
         started: std::time::Instant::now(),
+        level,
     })
 }
 
 pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, String> {
     let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
     active.stop.store(true, Ordering::SeqCst);
+    active.level.store(0, Ordering::Relaxed);
     if let Some(j) = active.join.take() {
         match j.join() {
             Ok(Ok(())) => {}
@@ -85,7 +98,6 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
             meta.len()
         ));
     }
-    // Prefer true audio duration (16 kHz mono PCM after our writer).
     let speech_seconds = wav_duration_seconds(&active.wav_path).unwrap_or(hold_wall_seconds);
     Ok(RecordingResult {
         wav_path: active.wav_path,
@@ -94,11 +106,10 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
     })
 }
 
-/// Duration of a 16-bit mono WAV from header + data size.
 fn wav_duration_seconds(path: &PathBuf) -> Option<f64> {
     let reader = hound::WavReader::open(path).ok()?;
     let spec = reader.spec();
-    let samples = reader.duration() as f64; // frames (per channel)
+    let samples = reader.duration() as f64;
     let rate = spec.sample_rate as f64;
     if rate <= 0.0 {
         return None;
@@ -106,7 +117,38 @@ fn wav_duration_seconds(path: &PathBuf) -> Option<f64> {
     Some(samples / rate)
 }
 
-fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
+fn push_level(level: &LevelHandle, chunk: &[f32]) {
+    if chunk.is_empty() {
+        return;
+    }
+    // RMS of chunk, lightly compressed for pretty bars
+    let mut sum = 0.0f32;
+    let mut peak = 0.0f32;
+    for &s in chunk {
+        let a = s.abs();
+        sum += a * a;
+        if a > peak {
+            peak = a;
+        }
+    }
+    let rms = (sum / chunk.len() as f32).sqrt();
+    let mix = (rms * 2.2 + peak * 0.35).clamp(0.0, 1.0);
+    let v = (mix * 1000.0) as u32;
+    // decay-friendly: keep max of previous (poller will decay)
+    let prev = level.load(Ordering::Relaxed);
+    if v > prev {
+        level.store(v, Ordering::Relaxed);
+    } else {
+        // soft decay so bars fall smoothly even between callbacks
+        level.store(prev.saturating_sub(40).max(v), Ordering::Relaxed);
+    }
+}
+
+fn record_loop(
+    wav_path: PathBuf,
+    stop: Arc<AtomicBool>,
+    level: LevelHandle,
+) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or_else(|| {
         "No microphone found. Click Dictate once so macOS prompts, then enable Wilson Voice under System Settings → Privacy → Microphone.".to_string()
@@ -118,7 +160,7 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
         )
     })?;
 
-    let sample_rate = supported.sample_rate(); // u32 in cpal 0.18
+    let sample_rate = supported.sample_rate();
     let channels = supported.channels();
     let sample_format = supported.sample_format();
     let conf: cpal::StreamConfig = supported.into();
@@ -131,6 +173,7 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
 
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let samples_cb = samples.clone();
+    let level_cb = level.clone();
     let err_fn = |e| log::error!("cpal stream error: {e}");
 
     let stream = match sample_format {
@@ -138,6 +181,7 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
             .build_input_stream(
                 conf.clone(),
                 move |data: &[f32], _| {
+                    push_level(&level_cb, data);
                     if let Ok(mut v) = samples_cb.lock() {
                         v.extend_from_slice(data);
                     }
@@ -146,33 +190,48 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
                 None,
             )
             .map_err(|e| format!("mic stream f32: {e}"))?,
-        cpal::SampleFormat::I16 => device
-            .build_input_stream(
-                conf.clone(),
-                move |data: &[i16], _| {
-                    if let Ok(mut v) = samples_cb.lock() {
-                        v.extend(data.iter().map(|&s| s as f32 / i16::MAX as f32));
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("mic stream i16: {e}"))?,
-        cpal::SampleFormat::U16 => device
-            .build_input_stream(
-                conf,
-                move |data: &[u16], _| {
-                    if let Ok(mut v) = samples_cb.lock() {
-                        v.extend(
-                            data.iter()
-                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
-                        );
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("mic stream u16: {e}"))?,
+        cpal::SampleFormat::I16 => {
+            let level_cb = level.clone();
+            let samples_cb = samples.clone();
+            device
+                .build_input_stream(
+                    conf.clone(),
+                    move |data: &[i16], _| {
+                        let f: Vec<f32> = data
+                            .iter()
+                            .map(|&s| s as f32 / i16::MAX as f32)
+                            .collect();
+                        push_level(&level_cb, &f);
+                        if let Ok(mut v) = samples_cb.lock() {
+                            v.extend(f);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("mic stream i16: {e}"))?
+        }
+        cpal::SampleFormat::U16 => {
+            let level_cb = level.clone();
+            let samples_cb = samples.clone();
+            device
+                .build_input_stream(
+                    conf,
+                    move |data: &[u16], _| {
+                        let f: Vec<f32> = data
+                            .iter()
+                            .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
+                            .collect();
+                        push_level(&level_cb, &f);
+                        if let Ok(mut v) = samples_cb.lock() {
+                            v.extend(f);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("mic stream u16: {e}"))?
+        }
         other => {
             return Err(format!(
                 "Unsupported sample format {other:?}. Try a different input device."
@@ -188,6 +247,7 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>) -> Result<(), String> {
         thread::sleep(std::time::Duration::from_millis(50));
     }
     drop(stream);
+    level.store(0, Ordering::Relaxed);
 
     let raw = samples.lock().map_err(|e| e.to_string())?.clone();
     if raw.is_empty() {

@@ -174,14 +174,27 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     // Opening the real capture stream is enough for TCC (Allow once after install).
     match record::start_recording(data_dir().join("recordings")) {
         Ok(active) => {
+            let level = active.level.clone();
+            let stop_flag = active.stop_flag();
             *state.recorder.lock() = Some(active);
             *state.recording.lock() = true;
             *state.last_error.lock() = None;
             log::info!("recording started");
             let _ = app.emit("recording", true);
             emit_status(app, state);
-            // Wispr-style: pill appears for the hold (parked, no cursor chase)
+            // Wispr-style: glass island appears for the hold
             float_pill::show_for_recording(app);
+            // Stream mic levels to float HUD (~20 fps)
+            let app_lv = app.clone();
+            std::thread::spawn(move || {
+                use std::sync::atomic::Ordering;
+                while !stop_flag.load(Ordering::SeqCst) {
+                    let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
+                    let _ = app_lv.emit("audio_level", v);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                let _ = app_lv.emit("audio_level", 0.0);
+            });
         }
         Err(e) => {
             log::error!("record start failed: {e}");
@@ -823,7 +836,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.5.1 setup complete (fn PTT + HUD)");
+            log::info!("Wilson Voice v0.5.2 setup complete (glass island HUD)");
             Ok(())
         })
         .run(tauri::generate_context!())

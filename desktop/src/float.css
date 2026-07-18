@@ -1,93 +1,332 @@
+/* Wilson Voice — Dictate HUD
+   VoiceInk-inspired compact island: glass, continuous corners, waveform.
+   Host window is transparent; only this pill is painted. */
+
 * {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
-.pill {
-  height: 100%;
+html,
+body,
+#root {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 6px;
-  background: rgba(18, 18, 22, 0.92);
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #f5f5f7;
+  height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+  -webkit-user-select: none;
+  user-select: none;
   font-family:
     -apple-system,
     BlinkMacSystemFont,
     "SF Pro Text",
+    "Segoe UI",
     system-ui,
     sans-serif;
-  font-size: 13px;
-  user-select: none;
 }
 
-.pill.live {
-  border-color: rgba(251, 113, 133, 0.55);
-  background: rgba(60, 16, 28, 0.94);
-}
-
-.pill.busy {
-  border-color: rgba(251, 191, 36, 0.45);
-}
-
-.dictate {
-  flex: 1;
+.stage {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  border: none;
+  justify-content: center;
   background: transparent;
-  color: inherit;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  border-radius: 999px;
-  padding: 0.35rem 0.5rem;
+  padding: 4px;
 }
 
-.dictate:disabled {
-  opacity: 0.6;
+/* ── Island shell ── */
+.pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  min-width: 168px;
+  max-width: 240px;
+  padding: 0 12px 0 10px;
+  border-radius: 22px;
+  color: #f5f5f7;
   cursor: default;
+  isolation: isolate;
+  /* glass */
+  background:
+    linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.12) 0%,
+      rgba(255, 255, 255, 0.04) 40%,
+      rgba(0, 0, 0, 0.2) 100%
+    ),
+    rgba(14, 14, 18, 0.78);
+  backdrop-filter: blur(28px) saturate(1.55);
+  -webkit-backdrop-filter: blur(28px) saturate(1.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.45),
+    0 10px 28px rgba(0, 0, 0, 0.42),
+    0 2px 6px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  animation: pill-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    transform 0.2s ease;
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #34d399;
-  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+.pill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    transparent 42%
+  );
+  z-index: 0;
 }
 
-.pill.live .dot {
-  background: #fb7185;
-  animation: pulse 1s ease-in-out infinite;
+.pill > * {
+  position: relative;
+  z-index: 1;
 }
 
-@keyframes pulse {
-  50% {
-    transform: scale(1.2);
+@keyframes pill-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
-kbd {
-  margin-left: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  opacity: 0.75;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 1px 5px;
+/* listening — coral glass */
+.pill.live {
+  background:
+    linear-gradient(
+      160deg,
+      rgba(255, 120, 140, 0.22) 0%,
+      rgba(40, 10, 18, 0.55) 50%,
+      rgba(12, 8, 12, 0.82) 100%
+    ),
+    rgba(28, 8, 14, 0.82);
+  border-color: rgba(251, 113, 133, 0.45);
+  box-shadow:
+    0 0 0 0.5px rgba(120, 20, 40, 0.5),
+    0 10px 32px rgba(180, 30, 60, 0.28),
+    0 0 24px rgba(251, 113, 133, 0.18),
+    inset 0 1px 0 rgba(255, 200, 210, 0.18);
 }
 
-.open {
-  width: 32px;
-  height: 32px;
+/* transcribing — amber glass */
+.pill.busy {
+  background:
+    linear-gradient(
+      160deg,
+      rgba(251, 191, 36, 0.18) 0%,
+      rgba(30, 22, 8, 0.6) 50%,
+      rgba(12, 12, 14, 0.82) 100%
+    ),
+    rgba(22, 18, 10, 0.82);
+  border-color: rgba(251, 191, 36, 0.4);
+  box-shadow:
+    0 0 0 0.5px rgba(80, 50, 0, 0.4),
+    0 10px 28px rgba(180, 120, 20, 0.22),
+    inset 0 1px 0 rgba(255, 230, 180, 0.14);
+}
+
+/* ── Record / stop control ── */
+.ctrl {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  color: inherit;
+  display: grid;
+  place-items: center;
   cursor: pointer;
-  font-size: 14px;
+  color: #fff;
+  background: linear-gradient(145deg, #34d399 0%, #10b981 100%);
+  box-shadow:
+    0 0 0 3px rgba(52, 211, 153, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+
+.ctrl:hover {
+  transform: scale(1.06);
+}
+
+.ctrl:active {
+  transform: scale(0.96);
+}
+
+.ctrl:disabled {
+  opacity: 0.7;
+  cursor: default;
+  transform: none;
+}
+
+.pill.live .ctrl {
+  background: linear-gradient(145deg, #fb7185 0%, #e11d48 100%);
+  box-shadow:
+    0 0 0 3px rgba(251, 113, 133, 0.25),
+    0 0 12px rgba(251, 113, 133, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  animation: ctrl-pulse 1.4s ease-in-out infinite;
+}
+
+.pill.busy .ctrl {
+  background: linear-gradient(145deg, #fbbf24 0%, #d97706 100%);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
+  animation: spin-soft 1.1s linear infinite;
+}
+
+@keyframes ctrl-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px rgba(251, 113, 133, 0.22),
+      0 0 10px rgba(251, 113, 133, 0.3);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px rgba(251, 113, 133, 0.12),
+      0 0 18px rgba(251, 113, 133, 0.45);
+  }
+}
+
+@keyframes spin-soft {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ctrl svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
+}
+
+/* ── Waveform ── */
+.wave {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5px;
+  height: 22px;
+  min-width: 72px;
+}
+
+.wave span {
+  display: block;
+  width: 3px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.28);
+  height: 4px;
+  transition: height 0.06s ease-out, background 0.15s ease;
+}
+
+.pill.live .wave span {
+  background: linear-gradient(180deg, #fda4af, #fb7185);
+  box-shadow: 0 0 6px rgba(251, 113, 133, 0.35);
+}
+
+.pill.busy .wave span {
+  background: rgba(251, 191, 36, 0.65);
+  animation: busy-bar 0.9s ease-in-out infinite;
+}
+
+.pill.busy .wave span:nth-child(2) {
+  animation-delay: 0.08s;
+}
+.pill.busy .wave span:nth-child(3) {
+  animation-delay: 0.16s;
+}
+.pill.busy .wave span:nth-child(4) {
+  animation-delay: 0.24s;
+}
+.pill.busy .wave span:nth-child(5) {
+  animation-delay: 0.32s;
+}
+.pill.busy .wave span:nth-child(6) {
+  animation-delay: 0.4s;
+}
+.pill.busy .wave span:nth-child(7) {
+  animation-delay: 0.48s;
+}
+
+@keyframes busy-bar {
+  0%,
+  100% {
+    height: 4px;
+    opacity: 0.45;
+  }
+  50% {
+    height: 14px;
+    opacity: 1;
+  }
+}
+
+/* idle gentle breath on center bars */
+.pill:not(.live):not(.busy) .wave span:nth-child(4),
+.pill:not(.live):not(.busy) .wave span:nth-child(5) {
+  animation: idle-breath 2.4s ease-in-out infinite;
+}
+.pill:not(.live):not(.busy) .wave span:nth-child(5) {
+  animation-delay: 0.3s;
+}
+
+@keyframes idle-breath {
+  0%,
+  100% {
+    height: 4px;
+  }
+  50% {
+    height: 8px;
+  }
+}
+
+/* ── Meta chip (fn) ── */
+.meta {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-variant-numeric: tabular-nums;
+}
+
+.pill.live .meta {
+  color: rgba(255, 220, 225, 0.9);
+  background: rgba(251, 113, 133, 0.15);
+  border-color: rgba(251, 113, 133, 0.25);
+}
+
+/* no outer chrome button — whole pill is the control */
+.pill[role="button"] {
+  cursor: pointer;
+}
+
+.pill[role="button"]:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.7);
+  outline-offset: 2px;
 }

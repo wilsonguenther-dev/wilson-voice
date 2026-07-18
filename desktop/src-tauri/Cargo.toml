@@ -1,6 +1,6 @@
 [package]
 name = "wilson-voice"
-version = "0.5.1"
+version = "0.5.2"
 description = "Wilson Voice — local dictation desktop app (Wispr Flow alternative)"
 authors = ["Wilson Guenther"]
 edition = "2021"
@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # custom-protocol is REQUIRED for production: without it tauri-build sets cfg(dev)
 # and the app loads http://localhost:1420 → blank white window when Vite is not running.
-tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol", "macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,5 +40,6 @@ objc2-foundation = "0.3.2"
 block2 = "0.6.2"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "macos-private-api"]
 custom-protocol = ["tauri/custom-protocol"]
+macos-private-api = ["tauri/macos-private-api"]
