@@ -173,7 +173,9 @@ function FloatPill() {
 
         <Waveform level={level} live={live} busy={busy} />
 
-        <span className="meta">{live ? "fn" : busy ? "…" : "fn"}</span>
+        <span className="meta">
+          {busy ? "…" : live ? "fn⌃" : "fn⌃"}
+        </span>
       </div>
     </div>
   );

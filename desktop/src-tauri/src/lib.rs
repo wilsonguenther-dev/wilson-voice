@@ -54,7 +54,7 @@ fn default_speed_profile() -> String {
     "balanced".into()
 }
 fn default_ptt_binding() -> String {
-    "fn".into()
+    "fn_control".into()
 }
 fn default_true() -> bool {
     true
@@ -67,12 +67,12 @@ impl Default for AppSettings {
             model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
-            hotkey_label: "fn hold".into(),
-            // HUD auto-shows on record; permanent park optional
+            hotkey_label: "fn⌃".into(),
+            // Always-on glass island rides all Spaces
             show_floating_pill: true,
             speed_profile: "balanced".into(),
-            ptt_binding: "fn".into(),
-            keep_cmd_shift_v: true,
+            ptt_binding: "fn_control".into(),
+            keep_cmd_shift_v: false,
         }
     }
 }
@@ -98,12 +98,16 @@ pub struct AppStatus {
     pub worker_ok: bool,
     pub accessibility: bool,
     pub hotkey_registered: bool,
+    #[serde(default)]
+    pub hands_free: bool,
 }
 
 struct AppState {
     settings: PLMutex<AppSettings>,
     recording: PLMutex<bool>,
     busy: PLMutex<bool>,
+    /// Hands-free latch (double-tap fn⌃); release keys but keep recording.
+    hands_free: PLMutex<bool>,
     recorder: PLMutex<Option<record::ActiveRecording>>,
     db: Arc<Database>,
     last_error: PLMutex<Option<String>>,
@@ -124,11 +128,14 @@ fn data_dir() -> PathBuf {
 fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
+    let hands_free = *state.hands_free.lock();
     let last_error = state.last_error.lock().clone();
     let accessibility = permissions::is_accessibility_trusted();
     let hotkey_registered = *state.hotkey_registered.lock();
     let ptt = state.settings.lock().hotkey_label.clone();
-    let message = if recording {
+    let message = if recording && hands_free {
+        format!("Hands-free… tap {ptt} to stop")
+    } else if recording {
         format!("Recording… release {ptt} or click Stop")
     } else if busy {
         "Transcribing with local Whisper…".into()
@@ -137,9 +144,9 @@ fn build_status(state: &AppState) -> AppStatus {
     } else if !state.venv_python.exists() {
         "ASR venv missing — see Permissions".into()
     } else if !accessibility {
-        format!("Ready — hold {ptt} (enable Accessibility for paste + FN)")
+        format!("Ready — {ptt} (enable Accessibility)")
     } else {
-        format!("Ready — hold {ptt} to dictate")
+        format!("Ready — hold {ptt} · double-tap hands-free")
     };
     AppStatus {
         recording,
@@ -150,6 +157,7 @@ fn build_status(state: &AppState) -> AppStatus {
         worker_ok: state.asr_worker.exists(),
         accessibility,
         hotkey_registered,
+        hands_free,
     }
 }
 
@@ -211,23 +219,25 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
         return;
     }
     *state.recording.lock() = false;
+    *state.hands_free.lock() = false;
     let _ = app.emit("recording", false);
     if let Some(active) = state.recorder.lock().take() {
         let path = active.wav_path.clone();
         let _ = record::stop_recording(active);
         let _ = std::fs::remove_file(path);
     }
-    *state.last_error.lock() = Some("Dictation cancelled (another key while holding fn)".into());
+    *state.last_error.lock() = Some("Dictation cancelled (key while holding)".into());
     emit_status(app, state);
-    if !state.settings.lock().show_floating_pill {
-        float_pill::hide_float(app);
-    } else {
-        let _ = float_pill::show_float(app);
-    }
+    float_pill::after_recording(app, state.settings.lock().show_floating_pill);
     log::info!("recording cancelled");
 }
 
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
+    // Hands-free: ignore key-release; only stop on explicit tap / button
+    if *state.hands_free.lock() {
+        log::debug!("stop ignored — hands-free latch active");
+        return;
+    }
     if !*state.recording.lock() {
         return;
     }
@@ -345,10 +355,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             }
         }
         *state2.busy.lock() = false;
-        // Hide pill after dictate unless user wants it always on
-        if !state2.settings.lock().show_floating_pill {
-            float_pill::hide_float(&app2);
-        }
+        *state2.hands_free.lock() = false;
+        // Keep island on all Spaces if always-on; else hide after take
+        float_pill::after_recording(&app2, state2.settings.lock().show_floating_pill);
         emit_status(&app2, &state2);
     });
 }
@@ -390,9 +399,9 @@ fn save_settings(
     }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
-        "fn_control" => "fn⌃ hold".into(),
-        "both" | "fn_or_fn_control" => "fn / fn⌃ hold".into(),
-        _ => "fn hold".into(),
+        "fn" => "fn".into(),
+        "both" | "fn_or_fn_control" => "fn / fn⌃".into(),
+        _ => "fn⌃".into(),
     };
     *state.settings.lock() = next.clone();
     let path = data_dir().join("settings.json");
@@ -631,6 +640,7 @@ pub fn run() {
         settings: PLMutex::new(settings),
         recording: PLMutex::new(false),
         busy: PLMutex::new(false),
+        hands_free: PLMutex::new(false),
         recorder: PLMutex::new(None),
         db,
         last_error: PLMutex::new(None),
@@ -766,22 +776,23 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
-            // Floating pill: show parked if Settings wants always-on HUD
+            // Glass island: always-on + rides all Spaces (re-park loop)
             if state.settings.lock().show_floating_pill {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
                 }
+                float_pill::start_space_keeper(app.handle().clone());
             } else {
                 float_pill::hide_float(app.handle());
             }
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
-                    "Accessibility not trusted — FN hold needs it. Enable Wilson Voice in Privacy → Accessibility"
+                    "Accessibility not trusted — fn⌃ needs it. Enable Wilson Voice in Privacy → Accessibility"
                 );
             }
 
-            // Primary: FN / FN+Control via CGEvent tap (not Carbon)
+            // Primary: fn⌃ hybrid (hold PTT / double-tap hands-free)
             #[cfg(target_os = "macos")]
             {
                 let binding = ptt_macos::PttBinding::from_settings(
@@ -792,24 +803,41 @@ pub fn run() {
                 ptt_macos::start(
                     binding,
                     Arc::new(move |ev| {
-                        // CGEvent tap runs on wv-fn-ptt — AppKit/window must be main thread
-                        // or we SIGTRAP: "Must only be used from the main thread"
                         let st = st.clone();
                         let h = h.clone();
                         if let Err(e) = h.clone().run_on_main_thread(move || match ev {
-                            ptt_macos::PttEvent::Down => start_recording(&h, &st),
-                            ptt_macos::PttEvent::Up => stop_and_transcribe(h.clone(), st.clone()),
-                            ptt_macos::PttEvent::Interrupted => cancel_recording(&h, &st),
+                            ptt_macos::PttEvent::Start => {
+                                start_recording(&h, &st);
+                            }
+                            ptt_macos::PttEvent::Stop => {
+                                *st.hands_free.lock() = false;
+                                stop_and_transcribe(h.clone(), st.clone());
+                            }
+                            ptt_macos::PttEvent::Interrupted => {
+                                *st.hands_free.lock() = false;
+                                cancel_recording(&h, &st);
+                            }
+                            ptt_macos::PttEvent::HandsFreeOn => {
+                                *st.hands_free.lock() = true;
+                                emit_status(&h, &st);
+                                float_pill::show_for_recording(&h);
+                                log::info!("hands-free ON");
+                            }
+                            ptt_macos::PttEvent::HandsFreeOff => {
+                                *st.hands_free.lock() = false;
+                                emit_status(&h, &st);
+                                log::info!("hands-free OFF");
+                            }
                         }) {
                             log::error!("PTT main-thread hop failed: {e}");
                         }
                     }),
                 );
                 *state.hotkey_registered.lock() = true;
-                log::info!("FN PTT started ({})", binding.label());
+                log::info!("PTT hybrid started ({})", binding.label());
             }
 
-            // Secondary: optional ⌘⇧V Carbon chord
+            // Optional secondary ⌘⇧V (off by default)
             let handle = app.handle().clone();
             let state_hk = state.clone();
             std::thread::spawn(move || {
@@ -818,25 +846,25 @@ pub fn run() {
                 let st = state_hk.clone();
                 let _ = handle.run_on_main_thread(move || {
                     if !st.settings.lock().keep_cmd_shift_v {
-                        log::info!("⌘⇧V disabled in settings");
+                        log::info!("⌘⇧V secondary disabled");
                         emit_status(&h, &st);
                         return;
                     }
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
                     match h.global_shortcut().register(sc) {
                         Ok(()) => {
-                            log::info!("secondary hold-to-talk ⌘⇧V registered");
+                            log::info!("secondary ⌘⇧V registered");
                             emit_status(&h, &st);
                         }
                         Err(e) => {
-                            log::warn!("⌘⇧V register failed (FN still works): {e}");
+                            log::warn!("⌘⇧V register failed: {e}");
                             emit_status(&h, &st);
                         }
                     }
                 });
             });
 
-            log::info!("Wilson Voice v0.5.3 setup complete (fn PTT main-thread safe)");
+            log::info!("Wilson Voice v0.5.4 — fn⌃ hybrid + space-stable island");
             Ok(())
         })
         .run(tauri::generate_context!())

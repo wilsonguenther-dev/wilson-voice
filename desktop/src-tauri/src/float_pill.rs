@@ -1,13 +1,18 @@
-//! Floating Dictate island — Wispr/VoiceInk-class HUD.
+//! Floating Dictate island — rides all Spaces (Mission Control swipe).
 //!
-//! Shell: transparent always-on-top window + floating level + multi-monitor park.
-//! Visual: React MPA (float.html) — glass island + waveform (not a dark chip).
+//! Shell: transparent always-on-top + canJoinAllSpaces + fullScreenAuxiliary.
+//! Parked bottom-center of the active display; re-asserted on a light interval
+//! so Space switches don't bury the HUD in the main app.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Host is slightly larger than the 44px island for soft shadow room.
 const PILL_W: f64 = 216.0;
 const PILL_H: f64 = 56.0;
+
+static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -36,6 +41,7 @@ mod mac {
         fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
         fn CGMainDisplayID() -> u32;
         fn CGDisplayBounds(display: u32) -> CGRect;
+        fn CGGetActiveDisplayList(max: u32, list: *mut u32, count: *mut u32) -> i32;
         fn CGGetDisplaysWithPoint(
             point: CGPoint,
             max: u32,
@@ -68,14 +74,21 @@ mod mac {
         }
     }
 
-    pub fn screen_under_cursor() -> (f64, f64, f64, f64) {
+    /// Prefer display under cursor; else first active display.
+    pub fn active_screen_bounds() -> (f64, f64, f64, f64) {
         unsafe {
             let p = cursor_point().unwrap_or(CGPoint { x: 0.0, y: 0.0 });
             let mut id: u32 = 0;
             let mut count: u32 = 0;
             let err = CGGetDisplaysWithPoint(p, 1, &mut id, &mut count);
             if err != 0 || count == 0 {
-                id = CGMainDisplayID();
+                let mut list = [0u32; 16];
+                let mut n = 0u32;
+                if CGGetActiveDisplayList(16, list.as_mut_ptr(), &mut n) == 0 && n > 0 {
+                    id = list[0];
+                } else {
+                    id = CGMainDisplayID();
+                }
             }
             let r = CGDisplayBounds(id);
             (r.origin.x, r.origin.y, r.size.width, r.size.height)
@@ -109,9 +122,8 @@ mod mac {
             msg_bool(ns_window, sel("setHidesOnDeactivate:"), false);
             msg_bool(ns_window, sel("setCanHide:"), false);
             msg_bool(ns_window, sel("setOpaque:"), false);
-            msg_bool(ns_window, sel("setHasShadow:"), false); // CSS draws shadow
+            msg_bool(ns_window, sel("setHasShadow:"), false);
 
-            // clearColor
             let class_name = std::ffi::CString::new("NSColor").unwrap();
             let ns_color = objc_getClass(class_name.as_ptr());
             if !ns_color.is_null() {
@@ -121,14 +133,19 @@ mod mac {
                 }
             }
 
-            // NSFloatingWindowLevel = 3
-            msg_i64(ns_window, sel("setLevel:"), 3);
-            // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
-            let behavior: u64 = msg_get(ns_window, sel("collectionBehavior"));
-            let want: u64 = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
-            msg_u64(ns_window, sel("setCollectionBehavior:"), behavior | want);
+            // Status-level float so it rides above normal app windows when swiping Spaces
+            // NSStatusWindowLevel = 25
+            msg_i64(ns_window, sel("setLevel:"), 25);
+
+            // canJoinAllSpaces (1) | fullScreenAuxiliary (256) | ignoresCycle (64)
+            // Do NOT set stationary — that can pin oddly vs “follow me across Spaces”
+            let want: u64 = (1 << 0) | (1 << 6) | (1 << 8);
+            msg_u64(ns_window, sel("setCollectionBehavior:"), want);
+
+            // borderless | nonactivatingPanel
             let mask: u64 = msg_get(ns_window, sel("styleMask"));
             msg_u64(ns_window, sel("setStyleMask:"), mask | (1 << 7));
+
             msg_void(ns_window, sel("orderFrontRegardless"));
         }
     }
@@ -174,14 +191,16 @@ fn harden_window(w: &tauri::WebviewWindow) {
         }
     }
     let _ = w.set_ignore_cursor_events(false);
+    let _ = w.set_always_on_top(true);
 }
 
 fn park_bottom_center(w: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
-        let (ox, oy, sw, sh) = mac::screen_under_cursor();
+        let (ox, oy, sw, sh) = mac::active_screen_bounds();
         let x = (ox + (sw - PILL_W) / 2.0).max(ox) as i32;
-        let y = (oy + sh - PILL_H - 40.0).max(oy) as i32;
+        // Bottom-center of active display (middle horizontally, near dock)
+        let y = (oy + sh - PILL_H - 48.0).max(oy) as i32;
         let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
         return;
     }
@@ -222,11 +241,43 @@ pub fn show_for_recording(app: &AppHandle) {
     }
 }
 
-/// Hide when recording ends unless always-on HUD is wanted.
 pub fn after_recording(app: &AppHandle, keep_visible: bool) {
     if keep_visible {
         let _ = show_float(app);
     } else {
         hide_float(app);
     }
+}
+
+/// Periodically re-assert float on top + re-park so Space swipes keep the island
+/// centered on the active display instead of vanishing into the main window.
+pub fn start_space_keeper(app: AppHandle) {
+    if KEEPER_ON.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::Builder::new()
+        .name("wv-float-keeper".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(Duration::from_millis(800));
+                let app_main = app.clone();
+                let app_inner = app.clone();
+                let _ = app_main.run_on_main_thread(move || {
+                    if let Some(w) = app_inner.get_webview_window("float") {
+                        if w.is_visible().unwrap_or(false) {
+                            harden_window(&w);
+                            park_bottom_center(&w);
+                            let _ = w.set_always_on_top(true);
+                            #[cfg(target_os = "macos")]
+                            {
+                                if let Ok(ns) = w.ns_window() {
+                                    mac::harden_as_hud(ns as *mut std::ffi::c_void);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        })
+        .ok();
 }

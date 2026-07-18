@@ -1,11 +1,12 @@
-//! macOS push-to-talk via FN / Globe and FN+Control.
+//! macOS push-to-talk via FN+Control (default) and optional bare FN.
 //!
-//! Carbon `RegisterEventHotKey` (tauri-plugin-global-shortcut) cannot bind bare FN.
-//! Industry pattern (open-wispr / OpenWhispr / VoiceInk ideas, clean-room):
-//!   CGEvent tap → FlagsChanged → keycode 63 + SecondaryFn flag edge detect.
+//! Hybrid gesture (VoiceInk-style, clean-room):
+//!   • Hold fn⌃  → push-to-talk (start on hold, stop on release)
+//!   • Double-tap fn⌃ → hands-free latch (keeps recording)
+//!   • Single tap fn⌃ while latched → end hands-free
 //!
-//! Accessibility is required for the tap. User should set
-//! System Settings → Keyboard → “Press 🌐 key to” → **Do Nothing**.
+//! CGEvent tap cannot bind bare FN via Carbon. Accessibility required.
+//! System Settings → Keyboard → “Press 🌐 key to” → Do Nothing.
 
 #![cfg(target_os = "macos")]
 
@@ -15,55 +16,61 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// kVK_Function / Globe
 const KVK_FUNCTION: i64 = 63;
 const KCG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
 const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x0004_0000;
-const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
-const KCG_EVENT_FLAG_MASK_SHIFT: u64 = 0x0002_0000;
-const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x0008_0000;
 
 const KCG_EVENT_FLAGS_CHANGED: u32 = 12;
 const KCG_EVENT_KEY_DOWN: u32 = 10;
-const KCG_EVENT_KEY_UP: u32 = 11;
-const KCG_HID_EVENT_TAP: u32 = 0; // kCGHIDEventTap
+const KCG_HID_EVENT_TAP: u32 = 0;
 const KCG_HEAD_INSERT: u32 = 0;
 const KCG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 const KCG_EVENT_SOURCE_STATE_HID: i32 = 1;
 
+/// Hold longer than this → confirmed push-to-talk (not a tap).
+const HOLD_ARM_MS: u64 = 280;
+/// Two short releases within this window → double-tap (hands-free).
+const DOUBLE_TAP_MS: u64 = 450;
+/// Press shorter than this counts as a tap (not a hold).
+const TAP_MAX_MS: u64 = 320;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttBinding {
-    /// Hold bare FN / Globe (Wispr-style). Default.
     Fn,
-    /// Hold FN+Control (less conflict with system Globe actions).
     FnControl,
-    /// Either bare FN **or** FN+Control counts as hold.
     FnOrFnControl,
 }
 
 impl PttBinding {
     pub fn from_settings(s: &str) -> Self {
         match s {
-            "fn_control" | "fn+control" | "fnctrl" => Self::FnControl,
+            "fn" | "globe" => Self::Fn,
             "fn_or_fn_control" | "both" => Self::FnOrFnControl,
-            _ => Self::Fn,
+            _ => Self::FnControl, // default: fn⌃
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Fn => "fn hold",
-            Self::FnControl => "fn⌃ hold",
-            Self::FnOrFnControl => "fn / fn⌃ hold",
+            Self::FnControl => "fn⌃",
+            Self::FnOrFnControl => "fn / fn⌃",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttEvent {
-    Down,
-    Up,
+    /// Start recording (hold armed or hands-free latch on).
+    Start,
+    /// Stop recording (hold release or hands-free end).
+    Stop,
+    /// Discard in-flight take.
     Interrupted,
+    /// Hands-free latched on (for UI message).
+    HandsFreeOn,
+    /// Hands-free latched off.
+    HandsFreeOff,
 }
 
 type Callback = Arc<dyn Fn(PttEvent) + Send + Sync + 'static>;
@@ -71,12 +78,26 @@ type Callback = Arc<dyn Fn(PttEvent) + Send + Sync + 'static>;
 struct TapState {
     binding: Mutex<PttBinding>,
     callback: Callback,
-    is_down: AtomicBool,
+    /// Combo currently physically held.
+    combo_down: AtomicBool,
     interrupted: AtomicBool,
+    /// Hands-free latch active (recording without hold).
+    hands_free: AtomicBool,
+    /// Recording started because hold exceeded HOLD_ARM_MS.
+    hold_armed: AtomicBool,
+    /// When current press began.
+    press_at: Mutex<Option<Instant>>,
+    /// Last short-release time (for double-tap).
+    last_tap_at: Mutex<Option<Instant>>,
+    /// Generation counter so hold-arm timers can cancel.
+    press_gen: std::sync::atomic::AtomicU64,
+    /// After ending hands-free on key-down, ignore this hold until release.
+    suppress_until_release: AtomicBool,
     last_edge: Mutex<Instant>,
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static GLOBAL_STATE: Mutex<Option<Arc<TapState>>> = Mutex::new(None);
 
 mod ffi {
     use std::ffi::c_void;
@@ -126,14 +147,11 @@ mod ffi {
         pub static kCFRunLoopCommonModes: CFStringRef;
     }
 
-    /// kCGKeyboardEventKeycode
     pub const KEYBOARD_EVENT_KEYCODE: u32 = 9;
 }
 
-/// Start FN PTT listener on a background CFRunLoop thread. Idempotent.
 pub fn start(binding: PttBinding, callback: Callback) {
     if RUNNING.swap(true, Ordering::SeqCst) {
-        // Already running — just update binding
         if let Some(s) = GLOBAL_STATE.lock().as_ref() {
             *s.binding.lock() = binding;
         }
@@ -143,8 +161,14 @@ pub fn start(binding: PttBinding, callback: Callback) {
     let state = Arc::new(TapState {
         binding: Mutex::new(binding),
         callback,
-        is_down: AtomicBool::new(false),
+        combo_down: AtomicBool::new(false),
         interrupted: AtomicBool::new(false),
+        hands_free: AtomicBool::new(false),
+        hold_armed: AtomicBool::new(false),
+        press_at: Mutex::new(None),
+        last_tap_at: Mutex::new(None),
+        press_gen: std::sync::atomic::AtomicU64::new(0),
+        suppress_until_release: AtomicBool::new(false),
         last_edge: Mutex::new(Instant::now() - Duration::from_secs(1)),
     });
     *GLOBAL_STATE.lock() = Some(state.clone());
@@ -155,7 +179,6 @@ pub fn start(binding: PttBinding, callback: Callback) {
         .expect("spawn fn ptt thread");
 }
 
-/// Update binding live without restarting the tap.
 pub fn set_binding(binding: PttBinding) {
     if let Some(s) = GLOBAL_STATE.lock().as_ref() {
         *s.binding.lock() = binding;
@@ -163,14 +186,16 @@ pub fn set_binding(binding: PttBinding) {
     }
 }
 
-static GLOBAL_STATE: Mutex<Option<Arc<TapState>>> = Mutex::new(None);
+pub fn is_hands_free() -> bool {
+    GLOBAL_STATE
+        .lock()
+        .as_ref()
+        .map(|s| s.hands_free.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
 
 fn run_tap(state: Arc<TapState>) {
-    // flagsChanged | keyDown | keyUp
-    let mask = (1u64 << KCG_EVENT_FLAGS_CHANGED)
-        | (1u64 << KCG_EVENT_KEY_DOWN)
-        | (1u64 << KCG_EVENT_KEY_UP);
-
+    let mask = (1u64 << KCG_EVENT_FLAGS_CHANGED) | (1u64 << KCG_EVENT_KEY_DOWN);
     let user_info = Arc::into_raw(state) as *mut std::ffi::c_void;
 
     unsafe {
@@ -183,11 +208,8 @@ fn run_tap(state: Arc<TapState>) {
             user_info,
         );
         if tap.is_null() {
-            log::error!(
-                "FN PTT: CGEventTapCreate failed — enable Accessibility for Wilson Voice"
-            );
+            log::error!("FN PTT: CGEventTapCreate failed — enable Accessibility");
             RUNNING.store(false, Ordering::SeqCst);
-            // reclaim arc
             let _ = Arc::from_raw(user_info as *const TapState);
             return;
         }
@@ -201,7 +223,7 @@ fn run_tap(state: Arc<TapState>) {
         }
         let rl = ffi::CFRunLoopGetCurrent();
         ffi::CFRunLoopAddSource(rl, source, ffi::kCFRunLoopCommonModes);
-        log::info!("FN PTT event tap running (keycode 63 / SecondaryFn)");
+        log::info!("FN PTT hybrid tap running (fn⌃ hold / double-tap hands-free)");
         ffi::CFRunLoopRun();
     }
 }
@@ -219,29 +241,32 @@ unsafe extern "C" fn tap_callback(
 
     let flags = ffi::CGEventGetFlags(event);
     let keycode = ffi::CGEventGetIntegerValueField(event, ffi::KEYBOARD_EVENT_KEYCODE);
-
-    // HID system flags for FN cross-check (ignore false release pulses)
     let hid_flags = ffi::CGEventSourceFlagsState(KCG_EVENT_SOURCE_STATE_HID);
-    let fn_from_event = flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN != 0;
-    let fn_from_hid = hid_flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN != 0;
-    let control = flags & KCG_EVENT_FLAG_MASK_CONTROL != 0
-        || hid_flags & KCG_EVENT_FLAG_MASK_CONTROL != 0;
+
+    let fn_down = (flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN != 0)
+        || (hid_flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN != 0);
+    let control = (flags & KCG_EVENT_FLAG_MASK_CONTROL != 0)
+        || (hid_flags & KCG_EVENT_FLAG_MASK_CONTROL != 0);
 
     if event_type == KCG_EVENT_FLAGS_CHANGED {
-        // Only update FN state from actual FN keycode events
-        if keycode == KVK_FUNCTION {
-            let fn_down = fn_from_event || fn_from_hid;
-            handle_fn_edge(state, fn_down, control);
-        } else {
-            // Control released while FN mode required control — re-evaluate
-            let fn_down = fn_from_event || fn_from_hid;
-            handle_fn_edge(state, fn_down, control);
+        // Re-evaluate on FN or Control changes
+        if keycode == KVK_FUNCTION
+            || keycode == 59
+            || keycode == 62
+            || true
+        {
+            handle_combo_edge(state, fn_down, control);
         }
     } else if event_type == KCG_EVENT_KEY_DOWN {
-        // Non-modifier key while holding → interrupt (Fn+Arrow etc.)
-        if state.is_down.load(Ordering::SeqCst) && !is_modifier_keycode(keycode) {
+        if state.combo_down.load(Ordering::SeqCst)
+            && !state.hands_free.load(Ordering::SeqCst)
+            && !is_modifier_keycode(keycode)
+        {
             if !state.interrupted.swap(true, Ordering::SeqCst) {
                 log::info!("PTT interrupted by keycode {keycode}");
+                // cancel hold arm
+                state.hold_armed.store(false, Ordering::SeqCst);
+                state.combo_down.store(false, Ordering::SeqCst);
                 (state.callback)(PttEvent::Interrupted);
             }
         }
@@ -254,51 +279,135 @@ fn is_modifier_keycode(code: i64) -> bool {
     matches!(code, 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63)
 }
 
-fn handle_fn_edge(state: &TapState, fn_down: bool, control: bool) {
-    let binding = *state.binding.lock();
-    let want = match binding {
+fn combo_wanted(binding: PttBinding, fn_down: bool, control: bool) -> bool {
+    match binding {
         PttBinding::Fn => fn_down,
         PttBinding::FnControl => fn_down && control,
-        PttBinding::FnOrFnControl => fn_down, // bare FN enough; Control optional
-    };
+        PttBinding::FnOrFnControl => fn_down,
+    }
+}
 
-    let was = state.is_down.load(Ordering::SeqCst);
+fn handle_combo_edge(state: &TapState, fn_down: bool, control: bool) {
+    let binding = *state.binding.lock();
+    let want = combo_wanted(binding, fn_down, control);
+    let was = state.combo_down.load(Ordering::SeqCst);
     if want == was {
         return;
     }
 
-    // Debounce double-edges (~30ms)
+    // Debounce chatter
     {
         let mut last = state.last_edge.lock();
-        if last.elapsed() < Duration::from_millis(30) {
+        if last.elapsed() < Duration::from_millis(25) {
             return;
         }
         *last = Instant::now();
     }
 
     if want {
-        state.is_down.store(true, Ordering::SeqCst);
-        state.interrupted.store(false, Ordering::SeqCst);
-        log::info!("PTT down ({binding:?})");
-        (state.callback)(PttEvent::Down);
+        on_combo_down(state);
     } else {
-        state.is_down.store(false, Ordering::SeqCst);
-        let interrupted = state.interrupted.swap(false, Ordering::SeqCst);
-        if interrupted {
-            log::info!("PTT up after interrupt — discard");
-            // No Up — already interrupted (caller cancelled)
-        } else {
-            log::info!("PTT up ({binding:?})");
-            (state.callback)(PttEvent::Up);
-        }
+        on_combo_up(state);
     }
 }
 
-// silence unused constant warnings if not referenced elsewhere
-#[allow(dead_code)]
-const _MASKS: [u64; 4] = [
-    KCG_EVENT_FLAG_MASK_COMMAND,
-    KCG_EVENT_FLAG_MASK_SHIFT,
-    KCG_EVENT_FLAG_MASK_ALTERNATE,
-    KCG_EVENT_FLAG_MASK_CONTROL,
-];
+fn on_combo_down(state: &TapState) {
+    state.combo_down.store(true, Ordering::SeqCst);
+    state.interrupted.store(false, Ordering::SeqCst);
+
+    // Tap while hands-free → end latch (this press is consumed)
+    if state.hands_free.load(Ordering::SeqCst) {
+        log::info!("fn⌃ tap ends hands-free");
+        state.hands_free.store(false, Ordering::SeqCst);
+        state.hold_armed.store(false, Ordering::SeqCst);
+        state.suppress_until_release.store(true, Ordering::SeqCst);
+        *state.press_at.lock() = None;
+        *state.last_tap_at.lock() = None;
+        state.press_gen.fetch_add(1, Ordering::SeqCst);
+        (state.callback)(PttEvent::HandsFreeOff);
+        (state.callback)(PttEvent::Stop);
+        return;
+    }
+
+    if state.suppress_until_release.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let gen = state.press_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    *state.press_at.lock() = Some(Instant::now());
+    state.hold_armed.store(false, Ordering::SeqCst);
+
+    // Arm hold after HOLD_ARM_MS if still held
+    let cb = state.callback.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(HOLD_ARM_MS));
+        let Some(st) = GLOBAL_STATE.lock().clone() else {
+            return;
+        };
+        if st.press_gen.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        if !st.combo_down.load(Ordering::SeqCst) {
+            return;
+        }
+        if st.hands_free.load(Ordering::SeqCst) || st.suppress_until_release.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        st.hold_armed.store(true, Ordering::SeqCst);
+        *st.last_tap_at.lock() = None;
+        log::info!("PTT hold armed → Start");
+        (cb)(PttEvent::Start);
+    });
+}
+
+fn on_combo_up(state: &TapState) {
+    state.combo_down.store(false, Ordering::SeqCst);
+    state.press_gen.fetch_add(1, Ordering::SeqCst); // cancel pending hold arm
+
+    if state.suppress_until_release.swap(false, Ordering::SeqCst) {
+        *state.press_at.lock() = None;
+        return;
+    }
+
+    let press_at = state.press_at.lock().take();
+    let Some(started) = press_at else {
+        return;
+    };
+    let duration = started.elapsed();
+
+    // Hold mode → stop on release
+    if state.hold_armed.swap(false, Ordering::SeqCst) {
+        if state.interrupted.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        log::info!("PTT hold release → Stop ({duration:?})");
+        (state.callback)(PttEvent::Stop);
+        return;
+    }
+
+    if state.hands_free.load(Ordering::SeqCst) {
+        return;
+    }
+
+    // Short press = tap
+    if duration <= Duration::from_millis(TAP_MAX_MS) {
+        let now = Instant::now();
+        let mut last = state.last_tap_at.lock();
+        if let Some(t) = *last {
+            if now.duration_since(t) <= Duration::from_millis(DOUBLE_TAP_MS) {
+                *last = None;
+                state.hands_free.store(true, Ordering::SeqCst);
+                log::info!("PTT double-tap → hands-free ON");
+                (state.callback)(PttEvent::HandsFreeOn);
+                (state.callback)(PttEvent::Start);
+                return;
+            }
+        }
+        *last = Some(now);
+        log::debug!("PTT single tap (double-tap window open)");
+        return;
+    }
+
+    log::debug!("PTT medium release ignored ({duration:?})");
+}

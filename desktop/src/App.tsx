@@ -234,7 +234,7 @@ export default function App() {
         ...s,
         recording: e.payload,
         message: e.payload
-          ? "Recording… release fn or click Stop"
+          ? "Recording… release fn⌃ or click Stop"
           : s.message,
       })),
     ).then((u) => unsubs.push(u));
@@ -423,7 +423,7 @@ export default function App() {
               ? "Stop listening"
               : status.busy
                 ? "Transcribing…"
-                : "Dictate · fn"}
+                : "Dictate · fn⌃"}
           </button>
         </div>
       </aside>
@@ -441,7 +441,7 @@ export default function App() {
             </h1>
             <p className="lede">
               {nav === "home" &&
-                "Hold fn over any text field — Claude, Codex, ChatGPT, Mail. Local Whisper; history in SQLite."}
+                "Hold fn⌃ · double-tap hands-free · tap again to stop. Local Whisper; history in SQLite."}
               {nav === "permissions" &&
                 "macOS must grant these to Wilson Voice (not Python). Without them, dictation or paste fails."}
               {nav === "insights" &&
@@ -563,7 +563,7 @@ export default function App() {
                 <li className={status.hotkeyRegistered ? "ok" : "bad"}>
                   <StatusDot ok={status.hotkeyRegistered} />
                   <div>
-                    <strong>Hold fn</strong> (Globe)
+                    <strong>Hold fn⌃</strong>
                     <p>
                       Carbon hotkey registered by Tauri. If this is red, use the
                       Dictate button. Close Wispr Flow if it steals the combo.
@@ -641,10 +641,10 @@ export default function App() {
                 </span>
                 <span>
                   {status.recording
-                    ? "Listening — click or release fn"
+                    ? "Listening — release fn⌃ or tap to stop hands-free"
                     : status.busy
                       ? "Transcribing…"
-                      : "Hold fn (or fn⌃) or click to record"}
+                      : "Hold fn⌃ · double-tap hands-free"}
                 </span>
               </button>
 
@@ -1049,24 +1049,24 @@ export default function App() {
               <div className="panel">
                 <h3>Hold-to-talk key</h3>
                 <p>
-                  Primary is <strong>fn</strong> (Globe) — Wispr-style. Carbon
-                  cannot bind bare fn; we use a CoreGraphics event tap (needs
-                  Accessibility). Set Keyboard → “Press 🌐 key to” →{" "}
+                  Default is <strong>fn + Control</strong>. Hold to talk;
+                  double-tap to latch hands-free; tap again to stop. Needs
+                  Accessibility. Set Keyboard → “Press 🌐 key to” →{" "}
                   <strong>Do Nothing</strong>.
                 </p>
                 <div className="profile-row">
                   {(
                     [
-                      ["fn", "fn", "Bare Globe / fn hold"],
-                      ["fn_control", "fn⌃", "fn + Control"],
-                      ["both", "fn / fn⌃", "Either works"],
+                      ["fn_control", "fn⌃", "Hold + double-tap hands-free"],
+                      ["fn", "fn", "Bare Globe only"],
+                      ["both", "fn / fn⌃", "Either combo"],
                     ] as const
                   ).map(([id, label, blurb]) => (
                     <button
                       key={id}
                       type="button"
                       className={
-                        (settings.pttBinding ?? "fn") === id
+                        (settings.pttBinding ?? "fn_control") === id
                           ? "profile active"
                           : "profile"
                       }
@@ -1075,11 +1075,11 @@ export default function App() {
                           ...settings,
                           pttBinding: id,
                           hotkeyLabel:
-                            id === "fn_control"
-                              ? "fn⌃ hold"
+                            id === "fn"
+                              ? "fn"
                               : id === "both"
-                                ? "fn / fn⌃ hold"
-                                : "fn hold",
+                                ? "fn / fn⌃"
+                                : "fn⌃",
                         })
                       }
                     >
@@ -1091,7 +1091,7 @@ export default function App() {
                 <label className="toggle" style={{ marginTop: 12 }}>
                   <input
                     type="checkbox"
-                    checked={settings.keepCmdShiftV ?? true}
+                    checked={settings.keepCmdShiftV ?? false}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
@@ -1102,10 +1102,9 @@ export default function App() {
                   <span>Also keep ⌘⇧V as secondary hold</span>
                 </label>
                 <p style={{ marginTop: 12 }}>
-                  <strong>{settings.hotkeyLabel}</strong> — hold to talk,
-                  release to transcribe. Pill parks bottom-center of the active
-                  screen (no cursor chase). Dictionary harvest improves jargon
-                  over time.
+                  <strong>{settings.hotkeyLabel}</strong> — island stays
+                  bottom-center and rides every Space swipe. Dictionary harvest
+                  improves jargon over time.
                 </p>
               </div>
               <div className="actions wrap">
