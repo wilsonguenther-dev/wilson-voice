@@ -236,18 +236,21 @@ pub fn run_asr(
     wav: &Path,
     model: &str,
     language: &str,
+    vocab: &[String],
 ) -> Result<AsrOutput, String> {
     refuse_desktop("python", &python.to_string_lossy())?;
     refuse_desktop("worker", &worker.to_string_lossy())?;
     refuse_desktop("wav", &wav.to_string_lossy())?;
 
-    // Prefer warm daemon
+    // Prefer warm daemon. `vocab` biases decoding toward the user's terms
+    // (Whisper initial_prompt); the worker joins it most-frequent-last.
     let warm = with_daemon(python, worker, |d| {
         let req = serde_json::json!({
             "cmd": "transcribe",
             "wav": wav.to_string_lossy(),
             "model": model,
             "language": language,
+            "vocab": vocab,
         });
         request_line(d, &req)
     });

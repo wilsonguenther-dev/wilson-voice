@@ -273,12 +273,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 rec.hold_wall_seconds,
                 t_wav
             );
+            // Bias Whisper toward the user's learned vocabulary/jargon BEFORE it
+            // decodes (initial_prompt), ordered most-frequent-last.
+            let vocab = db.top_dictionary_terms(60).unwrap_or_default();
             let asr = asr::run_asr(
                 &venv,
                 &worker,
                 &rec.wav_path,
                 &settings.model,
                 &settings.language,
+                &vocab,
             )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
