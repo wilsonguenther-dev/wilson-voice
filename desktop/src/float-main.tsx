@@ -117,11 +117,15 @@ function FloatPill() {
             <path d="M4 12.5l5 5L20 6.5" />
           </svg>
         ) : (
-          <div className="wave" aria-hidden>
-            {BARS.map((i) => (
-              <i key={i} style={{ ["--i" as string]: String(i) } as React.CSSProperties} />
-            ))}
-          </div>
+          <>
+            {/* resting seed (a small breathing dot) — shown only at rest */}
+            <span className="seed" aria-hidden />
+            <div className="wave" aria-hidden>
+              {BARS.map((i) => (
+                <i key={i} style={{ ["--i" as string]: String(i) } as React.CSSProperties} />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>

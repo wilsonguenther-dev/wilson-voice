@@ -40,8 +40,8 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 18px; /* compact thin "line pill" at rest (Wispr-style) */
-  min-width: 58px;
+  height: 16px; /* compact "seed" at rest — a tiny capsule, not a bar */
+  min-width: 56px;
   max-width: 260px;
   padding: 0 10px;
   border-radius: 22px; /* perfect capsule */
@@ -162,6 +162,36 @@ body,
     inset 0 0 0 0.5px hsl(var(--accent-done) / 0.5),
     0 12px 34px rgba(0, 0, 0, 0.46),
     0 0 22px hsl(var(--accent-done) / 0.25);
+}
+
+/* ── resting seed: the entire indicator at rest is a small breathing dot ── */
+.seed {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.55);
+  animation: seed-breathe 2s ease-in-out infinite;
+}
+@keyframes seed-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+/* at rest: show the seed, hide the waveform. when active: the reverse. */
+.pill.live .seed,
+.pill.busy .seed,
+.pill.done .seed {
+  display: none;
+}
+.pill:not(.live):not(.busy):not(.done) .wave {
+  display: none;
 }
 
 /* ── waveform (heights driven by --level) ── */

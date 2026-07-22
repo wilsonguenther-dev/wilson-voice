@@ -89,6 +89,13 @@ fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("to_panel: {e}"))?;
 
     panel.set_level(PanelLevel::Status.value());
+    // KILL THE GREY BOX: NSPanel defaults hasShadow=YES, and macOS draws that
+    // native shadow tracing the ALPHA SILHOUETTE of the content — i.e. the outer
+    // edge of the pill's big soft CSS box-shadow, a rounded rectangle much larger
+    // than the pill. `.shadow(false)` on the builder isn't enough because to_panel
+    // re-asserts the panel default; this panel-level call is authoritative.
+    panel.set_has_shadow(false);
+    panel.set_opaque(false);
     panel.set_style_mask(
         // Only OR the nonactivating bit — do NOT chain .borderless() (tauri-nspanel
         // v2.1 REPLACES the mask, which can panic; window is already decorations(false)).
