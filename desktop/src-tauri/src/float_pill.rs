@@ -36,113 +36,40 @@ tauri_panel! {
     })
 }
 
-#[cfg(target_os = "macos")]
-mod screen {
-    use std::ffi::c_void;
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    struct CGSize {
-        width: f64,
-        height: f64,
-    }
-    #[repr(C)]
-    struct CGRect {
-        origin: CGPoint,
-        size: CGSize,
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventCreate(source: *mut c_void) -> *mut c_void;
-        fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
-        fn CGMainDisplayID() -> u32;
-        fn CGDisplayBounds(display: u32) -> CGRect;
-        fn CGGetActiveDisplayList(max: u32, list: *mut u32, count: *mut u32) -> i32;
-        fn CGGetDisplaysWithPoint(
-            point: CGPoint,
-            max: u32,
-            displays: *mut u32,
-            count: *mut u32,
-        ) -> i32;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRelease(cf: *mut c_void);
-    }
-
-    pub fn active_screen_bounds() -> (f64, f64, f64, f64) {
-        unsafe {
-            let ev = CGEventCreate(std::ptr::null_mut());
-            let p = if ev.is_null() {
-                CGPoint { x: 0.0, y: 0.0 }
-            } else {
-                let pt = CGEventGetLocation(ev);
-                CFRelease(ev);
-                pt
-            };
-            let mut id: u32 = 0;
-            let mut count: u32 = 0;
-            let err = CGGetDisplaysWithPoint(p, 1, &mut id, &mut count);
-            if err != 0 || count == 0 {
-                let mut list = [0u32; 16];
-                let mut n = 0u32;
-                if CGGetActiveDisplayList(16, list.as_mut_ptr(), &mut n) == 0 && n > 0 {
-                    id = list[0];
-                } else {
-                    id = CGMainDisplayID();
-                }
-            }
-            let r = CGDisplayBounds(id);
-            (r.origin.x, r.origin.y, r.size.width, r.size.height)
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod screen {
-    pub fn active_screen_bounds() -> (f64, f64, f64, f64) {
-        (0.0, 0.0, 1440.0, 900.0)
-    }
-}
-
 fn park_bottom_center(app: &AppHandle) {
     let Some(w) = app.get_webview_window("float") else {
         return;
     };
-    let (ox, oy, sw, sh) = screen::active_screen_bounds();
-    let x = (ox + (sw - PILL_W) / 2.0).max(ox) as i32;
-    let y = (oy + sh - PILL_H - 52.0).max(oy) as i32;
+    // Pin to the PRIMARY monitor (never the cursor's display) in Tauri's own
+    // physical-pixel space. Fixes both the Retina points-vs-pixels mis-placement
+    // and the cursor-driven cross-monitor teleport of the old CGDisplayBounds path.
+    let Some(mon) = w
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.current_monitor().ok().flatten())
+    else {
+        return;
+    };
+    let pos = mon.position(); // physical px
+    let size = mon.size(); // physical px
+    let scale = mon.scale_factor();
+    // PILL_W/H and the margin are logical points → scale to physical for centering.
+    let pill_w = (PILL_W * scale) as i32;
+    let pill_h = (PILL_H * scale) as i32;
+    let margin = (52.0 * scale) as i32;
+    let x = pos.x + (size.width as i32 - pill_w) / 2;
+    let y = pos.y + size.height as i32 - pill_h - margin;
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 
 #[cfg(target_os = "macos")]
 fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
-    // Prefer panel API if already converted
+    // Already converted: flags were set ONCE at conversion (below). Re-applying
+    // set_style_mask at runtime does NOT re-run NSPanel's _setPreventsActivation,
+    // so the WindowServer nonactivating tag desyncs → flicker + focus theft. Just
+    // re-assert front (without activating the app).
     if let Ok(panel) = app.get_webview_panel("float") {
-        panel.set_level(PanelLevel::Status.value());
-        panel.set_style_mask(
-            StyleMask::empty()
-                .nonactivating_panel()
-                .borderless()
-                .into(),
-        );
-        panel.set_collection_behavior(
-            CollectionBehavior::new()
-                .can_join_all_spaces()
-                .full_screen_auxiliary()
-                .ignores_cycle()
-                .into(),
-        );
-        panel.set_hides_on_deactivate(false);
-        panel.set_floating_panel(true);
-        // order front without activating app
         panel.order_front_regardless();
         PANEL_READY.store(true, Ordering::SeqCst);
         return Ok(());
@@ -271,7 +198,11 @@ pub fn after_recording(app: &AppHandle, keep_visible: bool) {
     }
 }
 
-/// Keep NSPanel on top + re-park after Space swipes (does not recreate window).
+/// Keep the NSPanel on top across Space swipes. Now benign: it re-parks to a
+/// FIXED bottom-center position (no cursor read → no teleport) and only
+/// re-asserts front (no style-mask reset → no flicker/focus theft). A future
+/// improvement is to drive this off `activeSpaceDidChange`/`didChangeScreenParams`
+/// notifications instead of a timer.
 pub fn start_space_keeper(app: AppHandle) {
     if KEEPER_ON.swap(true, Ordering::SeqCst) {
         return;
@@ -279,7 +210,7 @@ pub fn start_space_keeper(app: AppHandle) {
     thread::Builder::new()
         .name("wv-float-keeper".into())
         .spawn(move || loop {
-            thread::sleep(Duration::from_millis(900));
+            thread::sleep(Duration::from_millis(1500));
             let app_main = app.clone();
             let app_inner = app.clone();
             let _ = app_main.run_on_main_thread(move || {
