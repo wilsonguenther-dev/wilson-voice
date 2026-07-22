@@ -525,13 +525,22 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
-    // IPC may not be main thread — copy_and_maybe_paste hops to main for CGEvent
-    let o = paste::copy_and_maybe_paste(&app, &text, true);
-    if !o.copied {
-        return Err(o.message);
-    }
-    Ok(o.message)
+async fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
+    // MUST be async → runs OFF the main thread. copy_and_maybe_paste hops to the
+    // main thread for the CGEvent ⌘V and blocks waiting on it; a *sync* command
+    // runs ON main and would deadlock waiting for a closure queued to that same
+    // thread (3s freeze, then "paste timed out"). spawn_blocking keeps the async
+    // runtime unblocked while the short main-thread hop completes.
+    tauri::async_runtime::spawn_blocking(move || {
+        let o = paste::copy_and_maybe_paste(&app, &text, true);
+        if o.copied {
+            Ok(o.message)
+        } else {
+            Err(o.message)
+        }
+    })
+    .await
+    .map_err(|e| format!("paste task join failed: {e}"))?
 }
 
 #[tauri::command]
@@ -570,6 +579,13 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
 #[tauri::command]
 fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) {
     if *state.recording.lock() {
+        // A manual stop (Home button / pill / sidebar) always exits hands-free —
+        // clear BOTH latches: the app-side flag (or stop_and_transcribe's guard
+        // makes every on-screen Stop a no-op while locked) AND the PTT tap-side
+        // latch (or the next fn gesture is swallowed resetting it).
+        *state.hands_free.lock() = false;
+        #[cfg(target_os = "macos")]
+        ptt_macos::end_hands_free();
         stop_and_transcribe(app, state.inner().clone());
     } else {
         start_recording(&app, state.inner());
@@ -748,6 +764,11 @@ pub fn run() {
                         }
                         "toggle" => {
                             if *state.recording.lock() {
+                                // Tray Stop also exits hands-free (see manual_toggle) —
+                                // clear both the app-side and PTT tap-side latches.
+                                *state.hands_free.lock() = false;
+                                #[cfg(target_os = "macos")]
+                                ptt_macos::end_hands_free();
                                 stop_and_transcribe(app.clone(), state.clone());
                             } else {
                                 start_recording(app, &state);
