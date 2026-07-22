@@ -13,11 +13,14 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
-/// Max wait for a single daemon response. Bounds a hung worker (stuck decode /
-/// stalled model fetch) so it can't block all future dictation forever; on
-/// timeout the daemon is killed + respawned. Generous enough for a first-run
-/// model load.
-const DAEMON_READ_TIMEOUT_SECS: u64 = 180;
+/// Per-request response timeouts. A hung worker can't block dictation forever;
+/// on timeout the daemon is killed + respawned. Split by command so an
+/// interactive transcribe surfaces a stuck decode quickly, while a first-run
+/// model download (which happens off the hot path during preload) gets a long
+/// leash instead of being mis-killed mid-download.
+const TRANSCRIBE_TIMEOUT_SECS: u64 = 30;
+const PRELOAD_TIMEOUT_SECS: u64 = 900;
+const CONTROL_TIMEOUT_SECS: u64 = 15; // ping / status / unknown
 
 #[derive(Debug, Deserialize)]
 pub struct AsrResult {
@@ -179,15 +182,18 @@ fn request_line(daemon: &mut WarmDaemon, req: &serde_json::Value) -> Result<AsrR
         .map_err(|e| format!("daemon flush: {e}"))?;
 
     // Bounded wait — a hung worker can't block dictation forever. On timeout the
-    // error propagates and with_daemon kills + respawns the daemon.
-    let resp = match daemon
-        .rx
-        .recv_timeout(Duration::from_secs(DAEMON_READ_TIMEOUT_SECS))
-    {
+    // error propagates and with_daemon kills + respawns the daemon. Timeout is
+    // chosen per command (transcribe = short/interactive, preload = long/download).
+    let timeout_secs = match req.get("cmd").and_then(|c| c.as_str()) {
+        Some("transcribe") => TRANSCRIBE_TIMEOUT_SECS,
+        Some("preload") => PRELOAD_TIMEOUT_SECS,
+        _ => CONTROL_TIMEOUT_SECS,
+    };
+    let resp = match daemon.rx.recv_timeout(Duration::from_secs(timeout_secs)) {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => return Err(format!("daemon read: {e}")),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            return Err(format!("daemon read timed out after {DAEMON_READ_TIMEOUT_SECS}s"))
+            return Err(format!("daemon read timed out after {timeout_secs}s"))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             return Err("daemon reader disconnected (worker died)".into())
