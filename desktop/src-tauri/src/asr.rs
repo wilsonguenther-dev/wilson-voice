@@ -5,11 +5,22 @@
 
 use parking_lot::Mutex;
 use serde::Deserialize;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::OnceLock;
+use std::thread;
 use std::time::Duration;
+
+/// Per-request response timeouts. A hung worker can't block dictation forever;
+/// on timeout the daemon is killed + respawned. Split by command so an
+/// interactive transcribe surfaces a stuck decode quickly, while a first-run
+/// model download (which happens off the hot path during preload) gets a long
+/// leash instead of being mis-killed mid-download.
+const TRANSCRIBE_TIMEOUT_SECS: u64 = 30;
+const PRELOAD_TIMEOUT_SECS: u64 = 900;
+const CONTROL_TIMEOUT_SECS: u64 = 15; // ping / status / unknown
 
 #[derive(Debug, Deserialize)]
 pub struct AsrResult {
@@ -29,7 +40,8 @@ pub struct AsrOutput {
 struct WarmDaemon {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    /// Lines from a dedicated reader thread, so reads can be bounded by a timeout.
+    rx: Receiver<io::Result<String>>,
     python: PathBuf,
     worker: PathBuf,
 }
@@ -110,22 +122,49 @@ fn spawn_daemon(python: &Path, worker: &Path) -> Result<WarmDaemon, String> {
         .stdout
         .take()
         .ok_or_else(|| "daemon stdout missing".to_string())?;
-    let mut stdout = BufReader::new(stdout);
 
-    // Wait for ready line
-    let mut ready = String::new();
-    stdout
-        .read_line(&mut ready)
-        .map_err(|e| format!("daemon ready read: {e}"))?;
-    if !ready.contains("ready") && !ready.contains("\"ok\": true") {
-        log::warn!("daemon ready line unexpected: {ready}");
+    // Read stdout on a dedicated thread → channel, so request_line can bound the
+    // wait with recv_timeout instead of blocking forever on a hung worker. The
+    // thread exits on EOF (child died) or when the receiver is dropped (respawn).
+    let (tx, rx) = mpsc::channel::<io::Result<String>>();
+    thread::Builder::new()
+        .name("wv-asr-reader".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("spawn asr reader: {e}"))?;
+
+    // Wait for the ready line (bounded — the daemon prints it right after startup).
+    match rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok(ready)) => {
+            if !ready.contains("ready") && !ready.contains("\"ok\": true") {
+                log::warn!("daemon ready line unexpected: {ready}");
+            }
+        }
+        Ok(Err(e)) => return Err(format!("daemon ready read: {e}")),
+        Err(_) => return Err("daemon did not signal ready in time".into()),
     }
     log::info!("warm ASR daemon up pid={}", child.id());
 
     Ok(WarmDaemon {
         child,
         stdin,
-        stdout,
+        rx,
         python: python.to_path_buf(),
         worker: worker.to_path_buf(),
     })
@@ -142,12 +181,24 @@ fn request_line(daemon: &mut WarmDaemon, req: &serde_json::Value) -> Result<AsrR
         .flush()
         .map_err(|e| format!("daemon flush: {e}"))?;
 
-    let mut resp = String::new();
-    // Block until one full JSON line (model may take a few seconds first time)
-    daemon
-        .stdout
-        .read_line(&mut resp)
-        .map_err(|e| format!("daemon read: {e}"))?;
+    // Bounded wait — a hung worker can't block dictation forever. On timeout the
+    // error propagates and with_daemon kills + respawns the daemon. Timeout is
+    // chosen per command (transcribe = short/interactive, preload = long/download).
+    let timeout_secs = match req.get("cmd").and_then(|c| c.as_str()) {
+        Some("transcribe") => TRANSCRIBE_TIMEOUT_SECS,
+        Some("preload") => PRELOAD_TIMEOUT_SECS,
+        _ => CONTROL_TIMEOUT_SECS,
+    };
+    let resp = match daemon.rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => return Err(format!("daemon read: {e}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(format!("daemon read timed out after {timeout_secs}s"))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("daemon reader disconnected (worker died)".into())
+        }
+    };
     if resp.trim().is_empty() {
         return Err("daemon returned empty response".into());
     }
