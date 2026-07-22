@@ -102,8 +102,12 @@ def test_transcribe_without_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     wavs = sorted(rec_dir.glob("*.wav")) if rec_dir.exists() else []
     if not wavs:
         pytest.skip("no local recording available")
-    # Pick a recording with real signal.
-    wav = max(wavs, key=lambda f: float(abs(_load_wav_f32(f)).max()) if f.stat().st_size else 0.0)
+
+    def _peak(f: Path) -> float:
+        a = _load_wav_f32(f)
+        return float(abs(a).max()) if a.size else 0.0
+
+    wav = max(wavs, key=_peak)  # a recording with real signal
 
     monkeypatch.setenv("PATH", "/usr/bin:/bin")  # ffmpeg unreachable (bundle condition)
     assert shutil.which("ffmpeg") is None, "test invalid: ffmpeg still reachable"

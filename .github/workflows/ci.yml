@@ -12,7 +12,8 @@ concurrency:
 jobs:
   python-asr:
     name: Python ASR sidecar
-    runs-on: macos-14
+    # Fast suite is numpy-only stdlib (no MLX/Metal) — Linux is cheaper + faster.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -60,10 +60,10 @@ def _polish(text: str) -> str:
     import re
 
     # Only strip STANDALONE / leading disfluencies, never mid-sentence words —
-    # dictating "I mean it" or "you know the drill" must survive intact.
+    # dictating "I mean it", "you know the drill", or "umbrella" must survive.
     for pat in [
-        r"^\s*(?:um|uh|erm|hmm)[,\s]+",           # leading filler
-        r"[,\s]+(?:um|uh|erm|hmm)(?=[,\s]|$)",     # bracketed filler token
+        r"^\s*(?:um|uh|erm|hmm)\b[,\s]*",          # leading filler + its trailing sep
+        r"[,\s]+(?:um|uh|erm|hmm)\b[,\s]*",         # bracketed filler + its trailing sep
     ]:
         text = re.sub(pat, " ", text, flags=re.I)
     text = re.sub(r"\s{2,}", " ", text).strip()
@@ -381,7 +381,9 @@ def serve() -> int:
             # Dictionary biasing: `prompt` (string) wins; else join `vocab` (list),
             # most-frequent term LAST (Whisper weights later prompt tokens more).
             prompt = req.get("prompt")
-            if not prompt and isinstance(req.get("vocab"), list):
+            if prompt is not None:
+                prompt = str(prompt)  # coerce (only Rust calls this, but be robust)
+            elif isinstance(req.get("vocab"), list):
                 prompt = " ".join(str(t) for t in req["vocab"] if t)[-800:] or None
             print(
                 json.dumps(do_transcribe(wav, model, language, prompt)),
