@@ -30,11 +30,23 @@
   end (all IPC + imports + file structure).
 
 ## 2. Analytics — make the MATH extremely accurate (Wilson emphasized)
-- Audit + fix `db.rs` insights: **total words, avg WPM, day streak, words today**.
-  WPM must use `speech_seconds` only (never asr_seconds) — verify. Use the best
-  algorithm; research correct WPM/streak math. Check every diff/constraint.
+- ✅ **DONE (branch `fix/analytics-accuracy`, commit 95e805c):** total words, avg
+  WPM, day streak, words today are now audited + PROVEN by 11 tests.
+  - WPM root-cause fix: `speech_seconds` was the full clip length (silence +
+    pauses inflated the denominator). Now it's **real voiced time** via an
+    energy VAD (`record.rs::voiced_seconds`: 20ms-frame RMS, adaptive noise
+    floor, bridge <=300ms inter-word gaps, drop lead/trail + long pauses). WPM
+    is speech-weighted (Σwords / Σvoiced-min) and excludes legacy speech=0 rows.
+  - `insights()` reads the authoritative `daily_stats` rollup (rebuilt each
+    insert + healed at startup) — removed the O(N) fresh-day full-scan fallback.
+  - Test seam `insert_transcript_at` proves streak (consecutive/grace/gaps),
+    words-today scoping, total-words, and WPM exclusion. `cargo test` 16/16.
+  - NEXT here: expose per-day WPM safely (daily_stats stores `words` over ALL
+    rows but `speech_ms` only over speech>0.05 rows — do NOT divide them directly;
+    compute per-day WPM from a speech-filtered word sum when charts need it).
 - **Track beyond 365 days** (currently 7-day window). Full history retention +
-  rollups (daily/weekly/monthly/yearly).
+  rollups (daily/weekly/monthly/yearly). NEXT INCREMENT: add `daily_series(days)`
+  + month/week rollup queries off `daily_stats`; feeds the heatmap + charts.
 - **15+ chart types**, user-switchable board: bar, line, **circle/donut**,
   rectangle/treemap, triangle, **GitHub-style commit heatmap**, radial, area,
   sparkline, etc. Let users change how the Insights board looks.
