@@ -184,18 +184,35 @@ pub fn hide_float(app: &AppHandle) {
     }
 }
 
-pub fn show_for_recording(app: &AppHandle) {
-    if let Err(e) = show_float(app) {
-        log::warn!("float show: {e}");
+/// Run a pill/NSPanel op on the MAIN thread from any caller thread. AppKit panel
+/// methods (set_level / order_front / show / hide) are main-thread-only; calling
+/// them off-main is an instant SIGTRAP ("Must only be used from the main thread").
+/// The dictation pipeline calls `after_recording` from a worker thread, which
+/// crashed here (float_pill::apply_panel_hud off-main). Dispatching makes these
+/// entry points thread-placement-independent so no caller can reintroduce it.
+fn dispatch_main<F: FnOnce(&AppHandle) + Send + 'static>(app: &AppHandle, f: F) {
+    let app2 = app.clone();
+    if let Err(e) = app.clone().run_on_main_thread(move || f(&app2)) {
+        log::warn!("pill main-thread dispatch failed: {e}");
     }
 }
 
+pub fn show_for_recording(app: &AppHandle) {
+    dispatch_main(app, |a| {
+        if let Err(e) = show_float(a) {
+            log::warn!("float show: {e}");
+        }
+    });
+}
+
 pub fn after_recording(app: &AppHandle, keep_visible: bool) {
-    if keep_visible {
-        let _ = show_float(app);
-    } else {
-        hide_float(app);
-    }
+    dispatch_main(app, move |a| {
+        if keep_visible {
+            let _ = show_float(a);
+        } else {
+            hide_float(a);
+        }
+    });
 }
 
 /// Keep the NSPanel on top across Space swipes. Now benign: it re-parks to a
