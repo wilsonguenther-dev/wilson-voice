@@ -61,9 +61,17 @@ cd ~/Desktop/wilson-voice/desktop
 npm run desktop:dev
 ```
 
-## Legacy Python package
+## One app, one sidecar
 
-`wilson_voice/` remains as the ASR library / CLI used by the desktop sidecar (`python/asr_worker.py`). The **product UI is the Tauri app**, not `python -m wilson_voice`.
+Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window
+(Home / Insights / Dictionary / Settings) plus an always-on-top Dictate pill.
+On-device ASR runs in one embedded Python sidecar, `python/asr_worker.py`
+(MLX Whisper), spawned from an Application-Support venv — it decodes audio
+in-process (no `ffmpeg` binary) and needs no PATH.
+
+> The former standalone `wilson_voice/` rumps/pynput menu-bar app was removed in
+> favour of this single Tauri app (recoverable from git history). Nothing in the
+> shipping product imports it.
 
 ## License
 

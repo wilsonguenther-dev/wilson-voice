@@ -59,16 +59,72 @@ def _refuse_desktop(path: str) -> str | None:
 def _polish(text: str) -> str:
     import re
 
+    # Only strip STANDALONE / leading disfluencies, never mid-sentence words —
+    # dictating "I mean it" or "you know the drill" must survive intact.
     for pat in [
-        r"\b(um|uh|erm|hmm)\b",
-        r"\byou know\b",
-        r"\bi mean\b",
+        r"^\s*(?:um|uh|erm|hmm)[,\s]+",           # leading filler
+        r"[,\s]+(?:um|uh|erm|hmm)(?=[,\s]|$)",     # bracketed filler token
     ]:
-        text = re.sub(pat, "", text, flags=re.I)
+        text = re.sub(pat, " ", text, flags=re.I)
     text = re.sub(r"\s{2,}", " ", text).strip()
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
     return text
+
+
+WHISPER_SR = 16000
+
+
+def _load_wav_f32(path: Path):
+    """Decode a PCM WAV to a mono float32 array at 16 kHz **without ffmpeg**.
+
+    mlx_whisper.load_audio() shells out to the ffmpeg *binary* for string paths,
+    which is absent from a Finder-launched .app's PATH and breaks ASR in the
+    bundle. Passing an ndarray to transcribe() skips load_audio entirely. The app
+    already writes 16 kHz mono s16 (record.rs); the channel/width/rate handling
+    below is a defensive net for any conformant PCM WAV.
+    """
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as w:
+        n_channels = w.getnchannels()
+        sampwidth = w.getsampwidth()
+        framerate = w.getframerate()
+        raw = w.readframes(w.getnframes())
+
+    if not raw:
+        return np.zeros(0, dtype=np.float32)
+
+    if sampwidth == 2:
+        data = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    elif sampwidth == 4:
+        data = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+    elif sampwidth == 1:  # 8-bit PCM is unsigned
+        data = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sampwidth == 3:  # 24-bit packed little-endian
+        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        i24 = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+        i24 = np.where(i24 & 0x800000, i24 - 0x1000000, i24)
+        data = i24.astype(np.float32) / 8388608.0
+    else:
+        raise ValueError(f"unsupported WAV sample width: {sampwidth * 8}-bit")
+
+    if n_channels > 1:
+        data = data.reshape(-1, n_channels).mean(axis=1)
+
+    if framerate != WHISPER_SR and data.size:
+        # Linear resample to 16 kHz — safety net only; primary path is already 16k.
+        tgt_n = int(round(data.size / float(framerate) * WHISPER_SR))
+        if tgt_n > 0:
+            data = np.interp(
+                np.linspace(0.0, data.size - 1, tgt_n),
+                np.arange(data.size),
+                data,
+            ).astype(np.float32)
+
+    return np.ascontiguousarray(data, dtype=np.float32)
 
 
 _LAST_MODEL: str | None = None
@@ -93,8 +149,15 @@ def _ensure_model_loaded(model: str) -> float:
     return round(time.time() - t0, 3)
 
 
-def _transcribe_inprocess(wav: Path, model: str, language: str) -> tuple[str, float]:
-    """Transcribe with warm ModelHolder; single temperature for speed."""
+def _transcribe_inprocess(
+    wav: Path, model: str, language: str, prompt: str | None = None
+) -> tuple[str, float]:
+    """Transcribe with warm ModelHolder; single temperature for speed.
+
+    Feeds an in-memory float32 array (not a path) so mlx_whisper never invokes
+    the ffmpeg CLI. `prompt` biases decoding toward the user's dictionary/jargon
+    (Whisper `initial_prompt`, ~224-token budget).
+    """
     global _LAST_MODEL
     t0 = time.time()
     from mlx_whisper import transcribe
@@ -102,8 +165,11 @@ def _transcribe_inprocess(wav: Path, model: str, language: str) -> tuple[str, fl
     # Force weights warm before decode (no-op if already loaded)
     _ensure_model_loaded(model)
 
-    result = transcribe(
-        str(wav),
+    audio = _load_wav_f32(wav)  # ndarray → ffmpeg-free decode path
+    if audio.size == 0:
+        return "", round(time.time() - t0, 3)
+
+    kwargs = dict(
         path_or_hf_repo=model,
         language=language if language and language != "auto" else None,
         verbose=False,
@@ -113,6 +179,16 @@ def _transcribe_inprocess(wav: Path, model: str, language: str) -> tuple[str, fl
         # Slightly less eager silence rejection for short holds
         no_speech_threshold=0.55,
     )
+    if prompt:
+        kwargs["initial_prompt"] = prompt
+
+    try:
+        result = transcribe(audio, **kwargs)
+    except TypeError:
+        # Older mlx_whisper without initial_prompt kwarg — retry without biasing
+        kwargs.pop("initial_prompt", None)
+        result = transcribe(audio, **kwargs)
+
     text = _polish((result.get("text") or "").strip())
     _LAST_MODEL = model
     return text, round(time.time() - t0, 3)
@@ -158,7 +234,9 @@ def _transcribe_cli_fallback(wav: Path, model: str, language: str) -> tuple[str,
     return text, round(time.time() - t0, 3)
 
 
-def do_transcribe(wav: str, model: str, language: str) -> dict:
+def do_transcribe(
+    wav: str, model: str, language: str, prompt: str | None = None
+) -> dict:
     for p in (sys.executable, wav, __file__):
         err = _refuse_desktop(p)
         if err:
@@ -170,7 +248,7 @@ def do_transcribe(wav: str, model: str, language: str) -> dict:
 
     try:
         try:
-            text, seconds = _transcribe_inprocess(path, model, language)
+            text, seconds = _transcribe_inprocess(path, model, language, prompt)
             backend = "mlx-warm"
         except Exception as e1:
             try:
@@ -201,35 +279,20 @@ def do_preload(model: str, language: str) -> dict:
     t0 = time.time()
     try:
         load_s = _ensure_model_loaded(model)
-        # Tiny silence decode once so mel/decode path is also warm
-        import struct
-        import wave
-        import tempfile
-
-        fd, name = tempfile.mkstemp(suffix=".wav", dir=str(TMP))
-        os.close(fd)
-        with wave.open(name, "w") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            n = 1600  # 0.1s
-            w.writeframes(struct.pack("<" + "h" * n, *([0] * n)))
-        # May return empty — that is fine for silence
+        # Warm the mel/decode path once on an in-memory silence array — no temp
+        # WAV, no ffmpeg. May return empty; that is fine for silence.
         try:
+            import numpy as np
             from mlx_whisper import transcribe
 
             transcribe(
-                name,
+                np.zeros(WHISPER_SR // 10, dtype=np.float32),  # 0.1s silence
                 path_or_hf_repo=model,
                 language=language if language and language != "auto" else None,
                 verbose=False,
                 temperature=0.0,
             )
         except Exception:
-            pass
-        try:
-            os.unlink(name)
-        except OSError:
             pass
         return {
             "ok": True,
@@ -315,7 +378,15 @@ def serve() -> int:
             wav = req.get("wav") or ""
             model = req.get("model") or "mlx-community/whisper-large-v3-turbo"
             language = req.get("language") or "en"
-            print(json.dumps(do_transcribe(wav, model, language)), flush=True)
+            # Dictionary biasing: `prompt` (string) wins; else join `vocab` (list),
+            # most-frequent term LAST (Whisper weights later prompt tokens more).
+            prompt = req.get("prompt")
+            if not prompt and isinstance(req.get("vocab"), list):
+                prompt = " ".join(str(t) for t in req["vocab"] if t)[-800:] or None
+            print(
+                json.dumps(do_transcribe(wav, model, language, prompt)),
+                flush=True,
+            )
             continue
         print(json.dumps({"ok": False, "error": f"unknown cmd: {cmd}"}), flush=True)
     return 0

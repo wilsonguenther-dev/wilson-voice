@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-asr:
+    name: Python ASR sidecar
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile sidecar
+        run: python -m py_compile python/asr_worker.py
+      - name: Lint (ruff, informational)
+        run: |
+          pip install ruff
+          ruff check python tests || true
+      - name: Unit tests (fast, no MLX)
+        run: |
+          pip install numpy pytest
+          pytest -m "not heavy"
+
+  desktop:
+    name: Tauri build (Rust + frontend)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+      - name: Build frontend (tsc + vite)
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: rustfmt (informational)
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all -- --check || true
+      - name: clippy (informational)
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets --features custom-protocol || true
+
+      # Build + tests are the gate. Lints are informational until the tree is clean.
+      - name: cargo build (release, embedded frontend)
+        working-directory: desktop/src-tauri
+        run: cargo build --release --features custom-protocol
+      - name: cargo test
+        working-directory: desktop/src-tauri
+        run: cargo test --features custom-protocol
