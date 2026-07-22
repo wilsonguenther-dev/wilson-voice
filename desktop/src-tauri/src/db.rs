@@ -102,45 +102,44 @@ fn word_count(text: &str) -> i64 {
     text.split_whitespace().filter(|w| !w.is_empty()).count() as i64
 }
 
-/// Tokens worth learning for STT polish: camelCase, snake_case, PascalCase, ALLCAPS, product names.
-/// Common words that get a sentence-initial capital — must NOT be harvested as
-/// jargon (they flooded the dictionary as The/And/You/This before this filter).
-const STOPWORDS: &[&str] = &[
-    "the", "and", "you", "your", "yours", "this", "that", "these", "those", "they",
-    "them", "then", "there", "here", "what", "when", "where", "which", "while",
-    "with", "have", "has", "had", "was", "were", "will", "would", "could", "should",
-    "from", "for", "but", "not", "are", "our", "out", "all", "any", "can", "get",
-    "got", "how", "its", "let", "may", "one", "see", "she", "him", "his", "her",
-    "hers", "who", "why", "yes", "yeah", "okay", "just", "like", "some", "more",
-    "most", "much", "many", "also", "because", "about", "after", "again", "been",
-    "before", "being", "does", "done", "down", "each", "into", "over", "said",
-    "than", "very", "well", "went", "gonna", "wanna", "really", "right", "thing",
-    "things", "think", "know", "need", "make", "made", "want", "going",
+/// Seed dictionary terms — proper nouns that deliberately WON'T auto-harvest
+/// (they're plain first-capitalized words; see is_jargon_token).
+const SEED_TERMS: &[&str] = &[
+    "Drivia", "Wilson", "Jeisil", "Aidan", "Supabase", "Vercel", "Whisper", "Tauri", "Kokori",
 ];
+
+/// Auto-harvest ONLY structurally-unambiguous jargon: an internal capital
+/// (camelCase / PascalCase mid-word: RunPod, McApp), an ALL-CAPS acronym
+/// (SQL, MLX, GPU), a digit (GPT-4, H2E), or `_`/`-` (snake_case, kebab-case).
+///
+/// We deliberately do NOT learn plain first-letter-capitalized words. Whisper
+/// capitalizes every sentence start, so "The / Doing / Actually / Drivia" are
+/// ~95% common-word noise — that flood was the whole dictionary-junk problem.
+/// Real proper nouns come from SEED_TERMS + the user's manual dictionary entries.
+fn is_jargon_token(t: &str) -> bool {
+    if t.len() < 3 || t.len() > 48 {
+        return false;
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return false; // pure number
+    }
+    let has_sep = t.contains('_') || t.contains('-');
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    // uppercase anywhere but position 0 → mid-word cap (camelCase/PascalCase)
+    let internal_cap = t.chars().skip(1).any(|c| c.is_uppercase());
+    let uppers = t.chars().filter(|c| c.is_uppercase()).count();
+    let has_lower = t.chars().any(|c| c.is_lowercase());
+    let all_caps_acronym = uppers >= 2 && !has_lower && t.len() <= 8;
+    has_sep || has_digit || internal_cap || all_caps_acronym
+}
 
 fn extract_learnable_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(|c: char| c.is_whitespace() || ".,!?;:()[]{}\"'`".contains(c)) {
         let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
-        if t.len() < 3 || t.len() > 48 {
-            continue;
+        if is_jargon_token(t) {
+            out.push(t.to_string());
         }
-        // Drop common sentence-initial-capitalized words (The/And/You/...).
-        if STOPWORDS.contains(&t.to_ascii_lowercase().as_str()) {
-            continue;
-        }
-        let has_upper = t.chars().any(|c| c.is_uppercase());
-        let has_digit = t.chars().any(|c| c.is_ascii_digit());
-        let has_under = t.contains('_') || t.contains('-');
-        let camel = t.chars().any(|c| c.is_lowercase()) && has_upper;
-        if !(has_upper || has_digit || has_under || camel) {
-            continue;
-        }
-        // skip pure numbers
-        if t.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        out.push(t.to_string());
     }
     out.sort();
     out.dedup();
@@ -310,24 +309,43 @@ impl Database {
 
         // Seed default dictionary terms useful for Wilson
         {
-            let defaults = [
-                "Drivia",
-                "Wilson",
-                "Jeisil",
-                "Aidan",
-                "Supabase",
-                "Vercel",
-                "Whisper",
-                "Tauri",
-                "Kokori",
-            ];
             let now = Utc::now().to_rfc3339();
-            for term in defaults {
+            for term in SEED_TERMS {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at)
                      VALUES (?1, ?2, NULL, 0, ?3)",
                     params![Uuid::new_v4().to_string(), term, now],
                 );
+            }
+        }
+
+        // Purge harvest junk on every open: (a) old self-referential rows
+        // (preferred == term, the old harvest bug) and (b) auto-harvested
+        // (preferred IS NULL) non-seed terms that aren't structurally jargon
+        // (The / Doing / Keeps / ...). Seeds and real jargon are preserved.
+        let _ = conn.execute(
+            "DELETE FROM dictionary WHERE preferred IS NOT NULL AND preferred = term",
+            [],
+        );
+        {
+            let seeds: std::collections::HashSet<String> =
+                SEED_TERMS.iter().map(|s| s.to_lowercase()).collect();
+            let mut junk: Vec<String> = Vec::new();
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT id, term FROM dictionary WHERE preferred IS NULL")
+            {
+                if let Ok(rows) = stmt.query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    for (id, term) in rows.flatten() {
+                        if !seeds.contains(&term.to_lowercase()) && !is_jargon_token(&term) {
+                            junk.push(id);
+                        }
+                    }
+                }
+            }
+            for id in junk {
+                let _ = conn.execute("DELETE FROM dictionary WHERE id = ?1", params![id]);
             }
         }
 
