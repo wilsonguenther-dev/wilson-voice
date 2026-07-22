@@ -7,6 +7,6 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Wilson Voice pastes transcribed text into the app you're typing in.</string>
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 </dict>
 </plist>

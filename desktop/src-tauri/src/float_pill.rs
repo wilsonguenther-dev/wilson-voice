@@ -85,14 +85,14 @@ fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
 
     panel.set_level(PanelLevel::Status.value());
     panel.set_style_mask(
-        StyleMask::empty()
-            .nonactivating_panel()
-            .borderless()
-            .into(),
+        // Only OR the nonactivating bit — do NOT chain .borderless() (tauri-nspanel
+        // v2.1 REPLACES the mask, which can panic; window is already decorations(false)).
+        StyleMask::empty().nonactivating_panel().into(),
     );
     panel.set_collection_behavior(
         CollectionBehavior::new()
             .can_join_all_spaces()
+            .stationary() // pin across Space swipes
             .full_screen_auxiliary()
             .ignores_cycle()
             .into(),

@@ -732,6 +732,12 @@ pub fn run() {
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
 
+            // Accessory (agent) app: no Dock icon AND — the actual fix — lets the
+            // NSPanel Dictate island float over OTHER apps' fullscreen Spaces in a
+            // packaged build (a .regular app cannot). Pairs with LSUIElement=true.
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
