@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -180,6 +180,14 @@ export default function App() {
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
 
+  // Read the live query without making `refreshAll` depend on it — otherwise the
+  // mount effect that registers event listeners re-runs on every keystroke,
+  // tearing down + re-adding all listeners and dropping events in the gap.
+  const queryRef = useRef(query);
+  useEffect(() => {
+    queryRef.current = query;
+  }, [query]);
+
   const loadHistory = useCallback(async (q?: string) => {
     const h = await invoke<TranscriptEntry[]>("get_history", {
       query: q || null,
@@ -211,7 +219,7 @@ export default function App() {
       setDictionary(dict);
       setScratch(notes);
       setBootError(null);
-      await loadHistory(query);
+      await loadHistory(queryRef.current);
       await refreshPerms();
     } catch (e) {
       setBootError(String(e));
@@ -221,7 +229,7 @@ export default function App() {
         lastError: String(e),
       }));
     }
-  }, [loadHistory, query, refreshPerms]);
+  }, [loadHistory, refreshPerms]);
 
   useEffect(() => {
     refreshAll();
@@ -266,66 +274,105 @@ export default function App() {
     setTimeout(() => setFlash(null), 2000);
   }
 
+  // Every mutating command returns Result<_, String>; on Err the promise rejects.
+  // Without a catch the UI silently no-ops (and throws an unhandled rejection),
+  // so a failed paste/save/delete looks identical to success. Surface it.
   async function toggleRecord() {
-    await invoke("manual_toggle");
+    try {
+      await invoke("manual_toggle");
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function copyText(text: string) {
-    await invoke("copy_entry", { text });
-    toast("Copied");
+    try {
+      await invoke("copy_entry", { text });
+      toast("Copied");
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function pasteText(text: string) {
-    const msg = await invoke<string>("paste_entry", { text });
-    toast(msg);
+    try {
+      const msg = await invoke<string>("paste_entry", { text });
+      toast(msg);
+    } catch (e) {
+      toast(String(e));
+    }
     await refreshPerms();
   }
 
   async function removeEntry(id: string) {
-    await invoke("delete_entry", { id });
-    setHistory((h) => h.filter((e) => e.id !== id));
-    setInsights(await invoke("get_insights"));
+    try {
+      await invoke("delete_entry", { id });
+      setHistory((h) => h.filter((e) => e.id !== id));
+      setInsights(await invoke("get_insights"));
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function clearAll() {
     if (!confirm("Clear all transcript history from SQLite?")) return;
-    await invoke("clear_history");
-    setHistory([]);
-    setInsights(await invoke("get_insights"));
+    try {
+      await invoke("clear_history");
+      setHistory([]);
+      setInsights(await invoke("get_insights"));
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function saveSettings(next: AppSettings) {
-    await invoke("save_settings", { settings: next });
-    setSettings(next);
-    toast("Settings saved");
+    try {
+      await invoke("save_settings", { settings: next });
+      setSettings(next);
+      toast("Settings saved");
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function addTerm() {
     if (!newTerm.trim()) return;
-    await invoke("add_dictionary_term", {
-      term: newTerm.trim(),
-      preferred: newPreferred.trim() || null,
-    });
-    setNewTerm("");
-    setNewPreferred("");
-    setDictionary(await invoke("list_dictionary"));
-    toast("Dictionary term added");
+    try {
+      await invoke("add_dictionary_term", {
+        term: newTerm.trim(),
+        preferred: newPreferred.trim() || null,
+      });
+      setNewTerm("");
+      setNewPreferred("");
+      setDictionary(await invoke("list_dictionary"));
+      toast("Dictionary term added");
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function removeTerm(id: string) {
-    await invoke("delete_dictionary_term", { id });
-    setDictionary((d) => d.filter((x) => x.id !== id));
+    try {
+      await invoke("delete_dictionary_term", { id });
+      setDictionary((d) => d.filter((x) => x.id !== id));
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function saveNote() {
-    const note = await invoke<ScratchNote>("save_scratch", {
-      id: activeNoteId,
-      title: noteTitle || "Note",
-      body: noteBody,
-    });
-    setActiveNoteId(note.id);
-    setScratch(await invoke("list_scratch"));
-    toast("Scratchpad saved");
+    try {
+      const note = await invoke<ScratchNote>("save_scratch", {
+        id: activeNoteId,
+        title: noteTitle || "Note",
+        body: noteBody,
+      });
+      setActiveNoteId(note.id);
+      setScratch(await invoke("list_scratch"));
+      toast("Scratchpad saved");
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   function openNote(n: ScratchNote) {
@@ -341,9 +388,13 @@ export default function App() {
   }
 
   async function deleteNote(id: string) {
-    await invoke("delete_scratch", { id });
-    if (activeNoteId === id) newNote();
-    setScratch(await invoke("list_scratch"));
+    try {
+      await invoke("delete_scratch", { id });
+      if (activeNoteId === id) newNote();
+      setScratch(await invoke("list_scratch"));
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   const pillClass = status.recording
