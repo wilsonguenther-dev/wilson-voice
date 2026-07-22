@@ -493,6 +493,31 @@ impl Database {
         pipeline_ms: i64,
         source_app: Option<String>,
     ) -> Result<TranscriptEntry, String> {
+        self.insert_transcript_at(
+            text,
+            backend,
+            asr_seconds,
+            speech_seconds,
+            pipeline_ms,
+            source_app,
+            Utc::now(),
+        )
+    }
+
+    /// Same as `insert_transcript` but with an explicit timestamp. Production
+    /// always uses `Utc::now()`; the timestamp seam exists so the analytics tests
+    /// can place sessions on specific calendar days (streaks, words-today).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_transcript_at(
+        &self,
+        text: String,
+        backend: String,
+        asr_seconds: f64,
+        speech_seconds: f64,
+        pipeline_ms: i64,
+        source_app: Option<String>,
+        created_at: DateTime<Utc>,
+    ) -> Result<TranscriptEntry, String> {
         let entry = TranscriptEntry {
             id: Uuid::new_v4().to_string(),
             word_count: word_count(&text),
@@ -501,7 +526,7 @@ impl Database {
             asr_seconds,
             speech_seconds: speech_seconds.max(0.0),
             pipeline_ms: pipeline_ms.max(0),
-            created_at: Utc::now(),
+            created_at,
             source_app,
         };
         let _ = self.learn_from_transcript(&entry.text);
@@ -858,6 +883,13 @@ impl Database {
             )
             .unwrap_or(0.0);
 
+        // `daily_stats` is the authoritative rollup: it's fully rebuilt from
+        // `transcripts` on every insert/delete/clear AND healed once at startup
+        // (see recompute_daily_stats + open()), so a today row exists whenever a
+        // transcript exists for today. Reading it is an O(1) indexed lookup — we
+        // deliberately do NOT fall back to a full-table scan here, which used to
+        // fire on every fresh-day render (words_today == 0) and would become an
+        // O(N) hotspot as multi-year history accumulates.
         let today = Local::now().date_naive().to_string();
         let (words_today, sessions_today): (i64, i64) = conn
             .query_row(
@@ -868,32 +900,6 @@ impl Database {
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or((0, 0));
-
-        // Fallback: if daily_stats empty but we have transcripts today, sum live
-        let (words_today, sessions_today) = if words_today == 0 && total_sessions > 0 {
-            let mut w = 0i64;
-            let mut s = 0i64;
-            let mut stmt = conn
-                .prepare("SELECT created_at, word_count FROM transcripts")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| e.to_string())?;
-            for row in rows {
-                let (created, wc) = row.map_err(|e| e.to_string())?;
-                let day = parse_dt(created)
-                    .with_timezone(&Local)
-                    .date_naive()
-                    .to_string();
-                if day == today {
-                    w += wc;
-                    s += 1;
-                }
-            }
-            (w, s)
-        } else {
-            (words_today, sessions_today)
-        };
 
         // WPM = words_with_speech / (speech_minutes). Exclude rows without speech_seconds.
         // Never use asr_seconds as a speaking-time proxy (that was a bad heuristic).
@@ -1264,6 +1270,132 @@ mod tests {
         assert!(present, "manual term 'Anthropic' was wrongly purged");
 
         drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Analytics math (total words / WPM / streaks / words-today) ────────────
+    // These prove the numbers Wilson watches are exactly right, under the real
+    // edge cases: legacy speech=0 rows, multi-day history, streak grace + gaps.
+
+    fn fresh_db(tag: &str) -> (Database, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("wv-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(dir.join("wilson_voice.db")).unwrap();
+        (db, dir)
+    }
+
+    /// UTC instant for local noon `n` days ago — anchored at noon so day-boundary
+    /// timezone conversion can never land the session on the wrong calendar day.
+    fn days_ago_noon(n: i64) -> DateTime<Utc> {
+        let day = Local::now().date_naive() - Duration::days(n);
+        day.and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn words(n: usize) -> String {
+        (0..n).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn total_words_and_sessions_are_exact() {
+        let (db, dir) = fresh_db("total");
+        db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(2), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(1), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.total_words, 6, "total words must sum every session");
+        assert_eq!(ins.total_sessions, 3);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wpm_is_speech_weighted_and_excludes_legacy_zero_rows() {
+        let (db, dir) = fresh_db("wpm");
+        // 30 words / 30s + 30 words / 30s = 60 words / 60s = exactly 60 WPM.
+        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
+        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
+        // A legacy row with NO measured speech (speech_seconds = 0). It contributes
+        // 100 words to total, but MUST NOT enter the WPM math (no speaking time).
+        db.insert_transcript(words(100), "mlx".into(), 9.0, 0.0, 0, None).unwrap();
+
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.total_words, 160, "all words count toward the total");
+        assert!(
+            (ins.avg_wpm - 60.0).abs() < 1e-6,
+            "WPM must be 60 (speech-weighted), got {}",
+            ins.avg_wpm
+        );
+        assert_eq!(ins.wpm_sample_sessions, 2, "only speech rows are WPM samples");
+        assert!(
+            (ins.speech_seconds_total - 60.0).abs() < 1e-6,
+            "speech total must exclude the zero-speech row"
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn words_today_ignores_other_days() {
+        let (db, dir) = fresh_db("today");
+        db.insert_transcript(words(10), "mlx".into(), 0.5, 2.0, 0, None).unwrap(); // today
+        db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3))
+            .unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.words_today, 10, "words_today must exclude prior days");
+        assert_eq!(ins.sessions_today, 1);
+        assert_eq!(ins.total_words, 110, "total still spans all days");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streak_counts_consecutive_days_including_today() {
+        let (db, dir) = fresh_db("streak");
+        for n in [0, 1, 2] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        // A gap, then an old day — must not extend the current streak.
+        db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5))
+            .unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 3, "today + 2 prior consecutive days");
+        assert_eq!(ins.longest_streak, 3);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streak_grace_allows_missing_today() {
+        let (db, dir) = fresh_db("grace");
+        // Active yesterday/-2/-3 but NOT today → streak still counts (day not over).
+        for n in [1, 2, 3] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 3, "missing-today grace: yesterday anchors the streak");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn longest_streak_spans_gaps() {
+        let (db, dir) = fresh_db("longest");
+        // Current run of 2 (yesterday, -2), older run of 4 (-5..-8).
+        for n in [1, 2, 5, 6, 7, 8] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 2, "current streak is the recent 2-day run");
+        assert_eq!(ins.longest_streak, 4, "longest is the older 4-day run");
+        drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
