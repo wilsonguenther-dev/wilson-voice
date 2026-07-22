@@ -755,7 +755,10 @@ pub fn run() {
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
-                        "quit" => app.exit(0),
+                        "quit" => {
+                            state.db.checkpoint(); // flush WAL before we exit
+                            app.exit(0);
+                        }
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
@@ -890,6 +893,16 @@ pub fn run() {
             log::info!("Wilson Voice v0.5.5 — NSPanel Dictate island (tauri-nspanel)");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Wilson Voice");
+        .build(tauri::generate_context!())
+        .expect("error while building Wilson Voice")
+        .run(|app_handle, event| {
+            // Checkpoint the WAL on exit so it never grows unbounded and the .db
+            // isn't left a deceptive 4 KB stub. Covers Cmd-Q / window-driven exit;
+            // the tray Quit item also checkpoints before app.exit(0).
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    state.db.checkpoint();
+                }
+            }
+        });
 }

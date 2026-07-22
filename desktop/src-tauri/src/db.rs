@@ -129,22 +129,85 @@ fn extract_learnable_tokens(text: &str) -> Vec<String> {
     out.into_iter().take(40).collect()
 }
 
+/// Distinguishes a genuinely corrupt DB (safe to quarantine + recreate) from a
+/// transient/environmental open failure (must be propagated, NEVER quarantined —
+/// renaming a healthy DB aside because another instance briefly held a lock, or
+/// the disk was full, is the exact data loss the rescue path exists to prevent).
+enum OpenErr {
+    Corrupt(String),
+    Other(String),
+}
+
+impl OpenErr {
+    fn classify(ctx: &str, e: rusqlite::Error) -> OpenErr {
+        use rusqlite::ErrorCode;
+        let corrupt = matches!(
+            &e,
+            rusqlite::Error::SqliteFailure(err, _)
+                if matches!(err.code, ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
+        );
+        let msg = format!("{ctx}: {e}");
+        if corrupt {
+            OpenErr::Corrupt(msg)
+        } else {
+            OpenErr::Other(msg)
+        }
+    }
+
+    fn into_string(self) -> String {
+        match self {
+            OpenErr::Corrupt(s) | OpenErr::Other(s) => s,
+        }
+    }
+}
+
 impl Database {
+    /// Open the DB, recovering ONLY from genuine corruption: on a corrupt/unreadable
+    /// file the bad files are quarantined (kept for manual recovery) and a fresh DB
+    /// is created. Transient failures (another instance holding a lock, disk full,
+    /// I/O, permissions) are propagated — a healthy DB is never renamed aside. This
+    /// is the "rescue" path.
     pub fn open(path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let conn = Connection::open(&path).map_err(|e| format!("sqlite open: {e}"))?;
+        match Self::open_inner(&path) {
+            Ok(db) => Ok(db),
+            Err(OpenErr::Corrupt(e)) => {
+                log::error!("DB corrupt ({e}); quarantining and recreating");
+                Self::quarantine(&path);
+                Self::open_inner(&path).map_err(OpenErr::into_string)
+            }
+            // BUSY / disk-full / I/O / permission — do NOT rename a valid DB aside.
+            Err(OpenErr::Other(e)) => Err(e),
+        }
+    }
+
+    fn open_inner(path: &std::path::Path) -> Result<Self, OpenErr> {
+        let conn = Connection::open(path).map_err(|e| OpenErr::classify("sqlite open", e))?;
+        // busy_timeout FIRST — the journal_mode=WAL step below can itself return
+        // SQLITE_BUSY under contention, and must be protected by the timeout.
         conn.execute_batch(
             "
+            PRAGMA busy_timeout = 5000;
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
+            PRAGMA wal_autocheckpoint = 400;
             ",
         )
-        .map_err(|e| format!("pragma: {e}"))?;
+        .map_err(|e| OpenErr::classify("pragma", e))?;
+
+        // Integrity gate — a corrupt/garbage file returns non-'ok' or SQLITE_NOTADB;
+        // classify so ONLY corruption triggers quarantine, never a transient lock.
+        let check: String = conn
+            .query_row("PRAGMA quick_check", [], |r| r.get(0))
+            .map_err(|e| OpenErr::classify("quick_check", e))?;
+        if check != "ok" {
+            return Err(OpenErr::Corrupt(format!("integrity check failed: {check}")));
+        }
 
         conn.execute_batch(
             "
@@ -207,7 +270,7 @@ impl Database {
             );
             ",
         )
-        .map_err(|e| format!("schema: {e}"))?;
+        .map_err(|e| OpenErr::classify("schema", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -258,6 +321,41 @@ impl Database {
             log::warn!("daily_stats recompute on open: {e}");
         }
         Ok(db)
+    }
+
+    /// Rename a corrupt DB (+ its -wal / -shm) aside, timestamped, for manual
+    /// recovery. Best-effort — failures are logged, not fatal.
+    fn quarantine(path: &std::path::Path) {
+        // Sub-second component so a fast fail→relaunch loop can't overwrite an
+        // earlier recovery copy (fs::rename replaces the target on POSIX).
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let stamp = format!("{}-{nanos:09}", Local::now().format("%Y%m%d-%H%M%S"));
+        for suffix in ["", "-wal", "-shm"] {
+            let mut from = path.as_os_str().to_os_string();
+            from.push(suffix);
+            let from = PathBuf::from(from);
+            if from.exists() {
+                let mut to = from.clone().into_os_string();
+                to.push(format!(".corrupt-{stamp}"));
+                match std::fs::rename(&from, PathBuf::from(to)) {
+                    Ok(()) => log::warn!("quarantined {}", from.display()),
+                    Err(e) => log::warn!("quarantine {} failed: {e}", from.display()),
+                }
+            }
+        }
+    }
+
+    /// Flush the WAL back into the main DB and truncate it. Call on app exit so
+    /// the -wal doesn't grow unbounded and the .db isn't left a deceptive stub.
+    pub fn checkpoint(&self) {
+        if let Ok(conn) = self.conn.lock() {
+            if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+                log::warn!("wal_checkpoint failed: {e}");
+            }
+        }
     }
 
     /// Rebuild `daily_stats` from `transcripts`. Call after insert/delete/clear.
@@ -950,4 +1048,89 @@ fn compute_streaks(days_desc: &[String]) -> (i64, i64) {
         prev = Some(d);
     }
     (streak, longest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescue_recreates_corrupt_db() {
+        let dir = std::env::temp_dir().join(format!("wv-db-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        // A garbage (non-SQLite) file — the WAL pragma / quick_check will reject it.
+        std::fs::write(&path, b"not a sqlite database, just garbage bytes").unwrap();
+
+        // open() must NOT brick — it quarantines the bad file and recreates.
+        let db = Database::open(path.clone()).expect("open should rescue a corrupt DB");
+        // The rescued DB is usable.
+        db.insights().expect("insights query on rescued DB");
+
+        // A timestamped quarantine copy of the bad file exists.
+        let quarantined = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+        assert!(quarantined, "corrupt DB should have been quarantined");
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checkpoint_truncates_wal() {
+        let dir = std::env::temp_dir().join(format!("wv-ckpt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        let db = Database::open(path.clone()).unwrap();
+        // Generate WAL frames, then checkpoint(TRUNCATE) → wal file shrinks to 0.
+        db.insert_transcript(
+            "hello world one two three".into(),
+            "mlx".into(),
+            1.0,
+            2.0,
+            100,
+            Some("Test".into()),
+        )
+        .unwrap();
+        db.checkpoint();
+        let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
+        if wal.exists() {
+            assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0, "WAL not truncated");
+        }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn healthy_db_reopen_not_quarantined() {
+        let dir = std::env::temp_dir().join(format!("wv-reopen-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        // Create + populate, then close.
+        {
+            let db = Database::open(path.clone()).unwrap();
+            db.insert_transcript("keep this".into(), "mlx".into(), 1.0, 1.0, 10, None)
+                .unwrap();
+        }
+        // Reopening a VALID db must not quarantine it, and data must survive.
+        let db2 = Database::open(path.clone()).unwrap();
+        assert_eq!(db2.list_transcripts(10, None).unwrap().len(), 1, "data lost on reopen");
+        let quarantined = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+        assert!(!quarantined, "healthy DB was wrongly quarantined");
+
+        drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
