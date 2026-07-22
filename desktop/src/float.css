@@ -39,6 +39,7 @@ body,
   position: relative;
   display: flex;
   align-items: center;
+  justify-content: center; /* content is centered in every state */
   gap: 8px;
   height: 16px; /* compact "seed" at rest — a tiny capsule, not a bar */
   min-width: 56px;
@@ -76,12 +77,10 @@ body,
   gap: 10px;
   padding: 0 14px 0 8px;
 }
-/* control button is hidden in the compact resting state; slides in when expanded */
+/* control button is fully OUT of layout at rest (not width:0 — that left a sliver
+   + negative margin that shoved the seed off-center). It reappears when expanded. */
 .pill:not(.live):not(.busy):not(.done) .ctrl {
-  width: 0;
-  opacity: 0;
-  margin-left: -6px;
-  pointer-events: none;
+  display: none;
 }
 .pill::after {
   content: "";
@@ -196,7 +195,6 @@ body,
 
 /* ── waveform (heights driven by --level) ── */
 .wave {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
