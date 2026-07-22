@@ -103,6 +103,21 @@ fn word_count(text: &str) -> i64 {
 }
 
 /// Tokens worth learning for STT polish: camelCase, snake_case, PascalCase, ALLCAPS, product names.
+/// Common words that get a sentence-initial capital — must NOT be harvested as
+/// jargon (they flooded the dictionary as The/And/You/This before this filter).
+const STOPWORDS: &[&str] = &[
+    "the", "and", "you", "your", "yours", "this", "that", "these", "those", "they",
+    "them", "then", "there", "here", "what", "when", "where", "which", "while",
+    "with", "have", "has", "had", "was", "were", "will", "would", "could", "should",
+    "from", "for", "but", "not", "are", "our", "out", "all", "any", "can", "get",
+    "got", "how", "its", "let", "may", "one", "see", "she", "him", "his", "her",
+    "hers", "who", "why", "yes", "yeah", "okay", "just", "like", "some", "more",
+    "most", "much", "many", "also", "because", "about", "after", "again", "been",
+    "before", "being", "does", "done", "down", "each", "into", "over", "said",
+    "than", "very", "well", "went", "gonna", "wanna", "really", "right", "thing",
+    "things", "think", "know", "need", "make", "made", "want", "going",
+];
+
 fn extract_learnable_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(|c: char| c.is_whitespace() || ".,!?;:()[]{}\"'`".contains(c)) {
@@ -110,7 +125,10 @@ fn extract_learnable_tokens(text: &str) -> Vec<String> {
         if t.len() < 3 || t.len() > 48 {
             continue;
         }
-        // skip pure lowercase common words
+        // Drop common sentence-initial-capitalized words (The/And/You/...).
+        if STOPWORDS.contains(&t.to_ascii_lowercase().as_str()) {
+            continue;
+        }
         let has_upper = t.chars().any(|c| c.is_uppercase());
         let has_digit = t.chars().any(|c| c.is_ascii_digit());
         let has_under = t.contains('_') || t.contains('-');
@@ -492,8 +510,12 @@ impl Database {
         for token in extract_learnable_tokens(text) {
             let n = conn
                 .execute(
+                    // Harvested tokens are CANDIDATES (preferred=NULL), not self-
+                    // rewrites. They bias recognition via initial_prompt (by `term`
+                    // + `hits`); only a real correction sets a distinct `preferred`.
+                    // (The old `?2,?2` made preferred==term → apply_dictionary a no-op.)
                     "INSERT INTO dictionary (id, term, preferred, hits, created_at)
-                     VALUES (?1, ?2, ?2, 1, ?3)
+                     VALUES (?1, ?2, NULL, 1, ?3)
                      ON CONFLICT(term) DO UPDATE SET hits = hits + 1",
                     params![Uuid::new_v4().to_string(), token, now],
                 )
@@ -501,6 +523,25 @@ impl Database {
             learned += n;
         }
         Ok(learned)
+    }
+
+    /// Top-N dictionary terms by hit count, ordered so the MOST-frequent is LAST
+    /// (Whisper `initial_prompt` weights later tokens more heavily; the worker
+    /// also keeps the tail when it truncates to the token budget).
+    pub fn top_dictionary_terms(&self, limit: i64) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT term FROM dictionary ORDER BY hits DESC, created_at ASC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut terms = Vec::new();
+        for r in rows {
+            terms.push(r.map_err(|e| e.to_string())?);
+        }
+        terms.reverse(); // most-frequent last
+        Ok(terms)
     }
 
     pub fn list_transcripts(&self, limit: i64, query: Option<String>) -> Result<Vec<TranscriptEntry>, String> {
@@ -1131,6 +1172,41 @@ mod tests {
         assert!(!quarantined, "healthy DB was wrongly quarantined");
 
         drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn learning_harvest_and_biasing() {
+        let dir = std::env::temp_dir().join(format!("wv-learn-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(dir.join("wilson_voice.db")).unwrap();
+
+        // "The"/"and" are stopwords (dropped); Drivia/RunPod/JAX are jargon (kept).
+        // RunPod appears twice → higher hits.
+        db.learn_from_transcript("The Drivia RunPod deploy and JAX").unwrap();
+        db.learn_from_transcript("RunPod scaled and Supabase synced").unwrap();
+
+        let dict = db.list_dictionary().unwrap();
+        let get = |t: &str| dict.iter().find(|d| d.term.eq_ignore_ascii_case(t));
+        assert!(get("Drivia").is_some(), "jargon not harvested");
+        assert!(get("RunPod").is_some());
+        assert!(get("JAX").is_some());
+        assert!(get("The").is_none(), "stopword 'The' was harvested");
+        assert!(get("and").is_none(), "stopword 'and' was harvested");
+        // No term may have preferred == term (the old apply_dictionary no-op bug).
+        for d in &dict {
+            assert!(
+                d.preferred.as_deref() != Some(d.term.as_str()),
+                "term {} has preferred==term",
+                d.term
+            );
+        }
+        // Most-frequent term is LAST (Whisper weights later prompt tokens more).
+        let top = db.top_dictionary_terms(50).unwrap();
+        assert_eq!(top.last().map(String::as_str), Some("RunPod"), "not most-frequent-last: {top:?}");
+
+        drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
