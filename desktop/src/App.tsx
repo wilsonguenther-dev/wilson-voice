@@ -304,14 +304,25 @@ export default function App() {
     await refreshPerms();
   }
 
+  // Best-effort insights refresh — its failure must not toast an error for a
+  // mutation that already succeeded.
+  async function refreshInsights() {
+    try {
+      setInsights(await invoke("get_insights"));
+    } catch {
+      /* leave stale insights; the mutation itself succeeded */
+    }
+  }
+
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
       setHistory((h) => h.filter((e) => e.id !== id));
-      setInsights(await invoke("get_insights"));
     } catch (e) {
       toast(String(e));
+      return;
     }
+    await refreshInsights();
   }
 
   async function clearAll() {
@@ -319,10 +330,11 @@ export default function App() {
     try {
       await invoke("clear_history");
       setHistory([]);
-      setInsights(await invoke("get_insights"));
     } catch (e) {
       toast(String(e));
+      return;
     }
+    await refreshInsights();
   }
 
   async function saveSettings(next: AppSettings) {
@@ -547,7 +559,11 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
-                      await invoke("request_microphone");
+                      try {
+                        await invoke("request_microphone");
+                      } catch (e) {
+                        toast(String(e));
+                      }
                       setTimeout(refreshPerms, 1000);
                     }}
                   >
@@ -555,7 +571,11 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
-                      await invoke("request_accessibility");
+                      try {
+                        await invoke("request_accessibility");
+                      } catch (e) {
+                        toast(String(e));
+                      }
                       setTimeout(refreshPerms, 800);
                     }}
                   >
@@ -584,7 +604,9 @@ export default function App() {
                     </p>
                     <button
                       onClick={() =>
-                        invoke("open_privacy_settings", { pane: "Microphone" })
+                        invoke("open_privacy_settings", {
+                          pane: "Microphone",
+                        }).catch((e) => toast(String(e)))
                       }
                     >
                       Open Microphone settings
@@ -604,7 +626,7 @@ export default function App() {
                       onClick={() =>
                         invoke("open_privacy_settings", {
                           pane: "Accessibility",
-                        })
+                        }).catch((e) => toast(String(e)))
                       }
                     >
                       Open Accessibility settings
