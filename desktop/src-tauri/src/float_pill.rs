@@ -223,13 +223,8 @@ pub fn start_space_keeper(app: AppHandle) {
                     return;
                 }
                 park_bottom_center(&app_inner);
+                // apply_panel_hud already re-asserts front on the converted panel.
                 let _ = apply_panel_hud(&app_inner);
-                #[cfg(target_os = "macos")]
-                {
-                    if let Ok(panel) = app_inner.get_webview_panel("float") {
-                        panel.order_front_regardless();
-                    }
-                }
             });
         })
         .ok();
