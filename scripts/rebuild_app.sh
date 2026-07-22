@@ -10,7 +10,19 @@ APP_DST="/Applications/Wilson Voice.app"
 ENT="$SRC/Entitlements.plist"
 IDENTITY="${WILSON_VOICE_SIGN_IDENTITY:-Apple Development: Wilson Guenther (U8BP8Z86T2)}"
 if ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "Wilson Guenther"; then
-  IDENTITY="-"
+  # Ad-hoc signing has no stable designated requirement, so the cdhash changes
+  # every build and macOS DROPS Mic/Accessibility/Input-Monitoring grants each
+  # rebuild — the exact "permissions don't stick / paste keeps failing" trap.
+  # Fail hard unless explicitly overridden, instead of silently shipping it.
+  if [[ "${WILSON_VOICE_ALLOW_ADHOC:-0}" == "1" ]]; then
+    echo "WARN: no 'Wilson Guenther' codesign identity — ad-hoc signing (TCC grants will NOT persist across rebuilds)."
+    IDENTITY="-"
+  else
+    echo "FATAL: no 'Wilson Guenther' codesign identity found." >&2
+    echo "       Ad-hoc signing resets TCC (mic/accessibility) every rebuild." >&2
+    echo "       Install the Apple Development cert, or set WILSON_VOICE_ALLOW_ADHOC=1 to force it." >&2
+    exit 1
+  fi
 fi
 echo "codesign identity: $IDENTITY"
 
