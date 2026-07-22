@@ -5,14 +5,14 @@
 > sessions. Each item = its own branch + PR + review.
 
 ## 0. Naming + license + open-sourcing
-- **Rename** the whole app + the GitHub repo from `Wilson Voice` / `wilson-voice`.
-  Candidates: **Yap / Yappy** (Wilson's lean), Vox, Utter, Murmur, Parle. Pick one,
-  then rename: repo, bundle id `com.wilsonguenther.wilson-voice`, product name,
-  Info.plist, all UI strings, the ASR paths dir (`~/Library/.../WilsonVoice`).
-- **License:** Wilson said "MIT it — internal only, no commercial." MIT *allows*
-  commercial, so this needs a **source-available, non-commercial / internal-use
-  license** (e.g. BSL 1.1, PolyForm Internal Use, or a custom license), NOT plain
-  MIT. Confirm intent with Wilson before choosing.
+- **Name = `Yap` (LOCKED by Wilson).** Rename everything: GitHub repo
+  (`wilson-voice` → `yap`), bundle id (`com.wilsonguenther.wilson-voice`), product
+  name, Info.plist, all UI strings, tray/app copy, and the ASR paths dir
+  (`~/Library/Application Support/WilsonVoice` → `Yap`; migrate the existing db).
+  Note: renaming the bundle id resets TCC — plan a one-time re-grant at the rename.
+- **License = source-available, INTERNAL-USE / NON-COMMERCIAL (LOCKED).** Use
+  **BSL 1.1** or **PolyForm Internal-Use** — NOT plain MIT (MIT permits commercial,
+  which Wilson does not want). Wilson agreed.
 - **README:** for open-source devs — how to download the Whisper model from
   **HuggingFace**, how to configure/swap **on-device STT models** (Whisper sizes,
   Parakeet, Apple SpeechAnalyzer) in Settings, install/permissions, no dev-jargon.
