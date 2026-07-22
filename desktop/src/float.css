@@ -40,10 +40,10 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 22px; /* compact "line pill" at rest (Wispr-style) */
-  min-width: 92px;
+  height: 18px; /* compact thin "line pill" at rest (Wispr-style) */
+  min-width: 58px;
   max-width: 260px;
-  padding: 0 12px;
+  padding: 0 10px;
   border-radius: 22px; /* perfect capsule */
   color: #f5f5f7;
   isolation: isolate;
@@ -171,6 +171,12 @@ body,
   align-items: center;
   justify-content: center;
   gap: 3px;
+  height: 14px;
+  min-width: 44px;
+  transition: height 0.3s cubic-bezier(0.22, 1, 0.36, 1), min-width 0.3s ease;
+}
+.pill.live .wave,
+.pill.busy .wave {
   height: 22px;
   min-width: 76px;
 }
@@ -178,7 +184,7 @@ body,
   width: 3px;
   border-radius: 99px;
   background: rgba(255, 255, 255, 0.3);
-  height: calc(3px + var(--level) * var(--peak, 1) * 17px);
+  height: calc(3px + var(--level) * var(--peak, 1) * 16px);
   transition: height 0.085s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s;
   will-change: height;
 }

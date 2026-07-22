@@ -123,6 +123,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             .inner_size(PILL_W, PILL_H)
             .resizable(false)
             .decorations(false)
+            .shadow(false) // no NSWindow shadow → only the pill's CSS shadow shows (kills the grey box)
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false)
