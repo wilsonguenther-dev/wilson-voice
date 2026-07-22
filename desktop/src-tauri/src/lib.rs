@@ -580,9 +580,12 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
 fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) {
     if *state.recording.lock() {
         // A manual stop (Home button / pill / sidebar) always exits hands-free —
-        // clear the latch first, or stop_and_transcribe's hands-free guard makes
-        // every on-screen Stop a no-op while locked. (Mirrors the PTT Stop path.)
+        // clear BOTH latches: the app-side flag (or stop_and_transcribe's guard
+        // makes every on-screen Stop a no-op while locked) AND the PTT tap-side
+        // latch (or the next fn gesture is swallowed resetting it).
         *state.hands_free.lock() = false;
+        #[cfg(target_os = "macos")]
+        ptt_macos::end_hands_free();
         stop_and_transcribe(app, state.inner().clone());
     } else {
         start_recording(&app, state.inner());
@@ -761,8 +764,11 @@ pub fn run() {
                         }
                         "toggle" => {
                             if *state.recording.lock() {
-                                // Tray Stop also exits hands-free (see manual_toggle).
+                                // Tray Stop also exits hands-free (see manual_toggle) —
+                                // clear both the app-side and PTT tap-side latches.
                                 *state.hands_free.lock() = false;
+                                #[cfg(target_os = "macos")]
+                                ptt_macos::end_hands_free();
                                 stop_and_transcribe(app.clone(), state.clone());
                             } else {
                                 start_recording(app, &state);

@@ -194,6 +194,29 @@ pub fn is_hands_free() -> bool {
         .unwrap_or(false)
 }
 
+/// End hands-free from OUTSIDE the tap (pill / Home button / sidebar / tray Stop).
+///
+/// The PTT state machine keeps its own `hands_free` latch (an `AtomicBool`)
+/// separate from `AppState.hands_free`. If we only clear the app-side flag, the
+/// next fn press hits `on_combo_down`'s stale-latch branch and is consumed just
+/// to reset it — swallowing the user's next gesture. This resets the tap-side
+/// latch too, mirroring the internal tap-ends-hands-free path. `press_gen` is
+/// bumped to cancel any in-flight hold-arm timer. `suppress_until_release` is set
+/// ONLY if a key is physically held right now — otherwise it would suppress the
+/// user's next press instead of the current (already-released) one.
+pub fn end_hands_free() {
+    if let Some(s) = GLOBAL_STATE.lock().as_ref() {
+        s.hands_free.store(false, Ordering::SeqCst);
+        s.hold_armed.store(false, Ordering::SeqCst);
+        s.press_gen.fetch_add(1, Ordering::SeqCst);
+        *s.press_at.lock() = None;
+        *s.last_tap_at.lock() = None;
+        if s.combo_down.load(Ordering::SeqCst) {
+            s.suppress_until_release.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 fn run_tap(state: Arc<TapState>) {
     let mask = (1u64 << KCG_EVENT_FLAGS_CHANGED) | (1u64 << KCG_EVENT_KEY_DOWN);
     let user_info = Arc::into_raw(state) as *mut std::ffi::c_void;

@@ -64,7 +64,10 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
             if let Some(prev) = prior {
                 let app2 = app.clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(200));
+                    // Wait past the target app's async ⌘V read before restoring.
+                    // 400ms is a safer heuristic than 200ms for slow/busy targets;
+                    // NSPasteboard.changeCount polling is a tracked follow-up.
+                    std::thread::sleep(Duration::from_millis(400));
                     let _ = app2.clipboard().write_text(prev);
                 });
             }
