@@ -16,8 +16,11 @@ use tauri_nspanel::{
     tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
 
-const PILL_W: f64 = 200.0;
-const PILL_H: f64 = 52.0;
+// WINDOW size — deliberately LARGER than the pill so its ambient shadow renders
+// inside the transparent window. A pill-sized window clips the shadow at its edge,
+// which reads as an ugly hard rectangle. The pill is centered inside by CSS (.stage).
+const PILL_W: f64 = 340.0;
+const PILL_H: f64 = 120.0;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
@@ -57,7 +60,9 @@ fn park_bottom_center(app: &AppHandle) {
     // PILL_W/H and the margin are logical points → scale to physical for centering.
     let pill_w = (PILL_W * scale) as i32;
     let pill_h = (PILL_H * scale) as i32;
-    let margin = (52.0 * scale) as i32;
+    // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
+    // taller window) then floats ~50pt up with shadow room below it.
+    let margin = (14.0 * scale) as i32;
     let x = pos.x + (size.width as i32 - pill_w) / 2;
     let y = pos.y + size.height as i32 - pill_h - margin;
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
@@ -142,7 +147,10 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
     park_bottom_center(app);
 
     if let Some(w) = app.get_webview_window("float") {
-        let _ = w.set_ignore_cursor_events(false);
+        // Click-THROUGH: the pill is a HUD indicator over other apps and its window
+        // is much larger than the visible pill (shadow room), so it must never
+        // intercept clicks in the transparent margin. Control is via fn / tray.
+        let _ = w.set_ignore_cursor_events(true);
         let _ = w.set_always_on_top(true);
         // Transparent content so only CSS pill paints
         let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));

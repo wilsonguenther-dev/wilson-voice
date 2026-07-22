@@ -306,15 +306,27 @@ impl Database {
             "ALTER TABLE daily_stats ADD COLUMN pipeline_ms INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Provenance so the junk-purge NEVER deletes manual or seed terms — only
+        // 'harvest'. (Manual term-only adds are also preferred IS NULL, so preferred
+        // alone can't distinguish them.)
+        let _ = conn.execute(
+            "ALTER TABLE dictionary ADD COLUMN source TEXT NOT NULL DEFAULT 'harvest'",
+            [],
+        );
 
         // Seed default dictionary terms useful for Wilson
         {
             let now = Utc::now().to_rfc3339();
             for term in SEED_TERMS {
                 let _ = conn.execute(
-                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at)
-                     VALUES (?1, ?2, NULL, 0, ?3)",
+                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, NULL, 0, ?3, 'seed')",
                     params![Uuid::new_v4().to_string(), term, now],
+                );
+                // Existing rows (pre-source-column) defaulted to 'harvest' — promote seeds.
+                let _ = conn.execute(
+                    "UPDATE dictionary SET source = 'seed' WHERE term = ?1 COLLATE NOCASE",
+                    params![term],
                 );
             }
         }
@@ -331,9 +343,10 @@ impl Database {
             let seeds: std::collections::HashSet<String> =
                 SEED_TERMS.iter().map(|s| s.to_lowercase()).collect();
             let mut junk: Vec<String> = Vec::new();
-            if let Ok(mut stmt) =
-                conn.prepare("SELECT id, term FROM dictionary WHERE preferred IS NULL")
-            {
+            // Only 'harvest' rows are purge candidates — manual + seed are safe.
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, term FROM dictionary WHERE source = 'harvest' AND preferred IS NULL",
+            ) {
                 if let Ok(rows) = stmt.query_map([], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
                 }) {
@@ -532,8 +545,8 @@ impl Database {
                     // rewrites. They bias recognition via initial_prompt (by `term`
                     // + `hits`); only a real correction sets a distinct `preferred`.
                     // (The old `?2,?2` made preferred==term → apply_dictionary a no-op.)
-                    "INSERT INTO dictionary (id, term, preferred, hits, created_at)
-                     VALUES (?1, ?2, NULL, 1, ?3)
+                    "INSERT INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, NULL, 1, ?3, 'harvest')
                      ON CONFLICT(term) DO UPDATE SET hits = hits + 1",
                     params![Uuid::new_v4().to_string(), token, now],
                 )
@@ -693,9 +706,9 @@ impl Database {
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO dictionary (id, term, preferred, hits, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4)
-             ON CONFLICT(term) DO UPDATE SET preferred = excluded.preferred",
+            "INSERT INTO dictionary (id, term, preferred, hits, created_at, source)
+             VALUES (?1, ?2, ?3, 0, ?4, 'manual')
+             ON CONFLICT(term) DO UPDATE SET preferred = excluded.preferred, source = 'manual'",
             params![
                 entry.id,
                 entry.term,
@@ -1225,6 +1238,32 @@ mod tests {
         assert_eq!(top.last().map(String::as_str), Some("RunPod"), "not most-frequent-last: {top:?}");
 
         drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_term_survives_purge() {
+        let dir = std::env::temp_dir().join(format!("wv-manual-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        {
+            let db = Database::open(path.clone()).unwrap();
+            // A manual, term-ONLY add (no preferred) of a plain first-cap proper noun —
+            // exactly the row the purge used to wrongly delete.
+            db.add_dictionary_term("Anthropic".into(), None).unwrap();
+        }
+        // Reopen → runs the startup purge. Manual term must survive.
+        let db2 = Database::open(path.clone()).unwrap();
+        let present = db2
+            .list_dictionary()
+            .unwrap()
+            .iter()
+            .any(|d| d.term.eq_ignore_ascii_case("Anthropic"));
+        assert!(present, "manual term 'Anthropic' was wrongly purged");
+
+        drop(db2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
