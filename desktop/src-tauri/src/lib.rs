@@ -525,13 +525,22 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
-    // IPC may not be main thread — copy_and_maybe_paste hops to main for CGEvent
-    let o = paste::copy_and_maybe_paste(&app, &text, true);
-    if !o.copied {
-        return Err(o.message);
-    }
-    Ok(o.message)
+async fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
+    // MUST be async → runs OFF the main thread. copy_and_maybe_paste hops to the
+    // main thread for the CGEvent ⌘V and blocks waiting on it; a *sync* command
+    // runs ON main and would deadlock waiting for a closure queued to that same
+    // thread (3s freeze, then "paste timed out"). spawn_blocking keeps the async
+    // runtime unblocked while the short main-thread hop completes.
+    tauri::async_runtime::spawn_blocking(move || {
+        let o = paste::copy_and_maybe_paste(&app, &text, true);
+        if o.copied {
+            Ok(o.message)
+        } else {
+            Err(o.message)
+        }
+    })
+    .await
+    .map_err(|e| format!("paste task join failed: {e}"))?
 }
 
 #[tauri::command]
@@ -570,6 +579,10 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
 #[tauri::command]
 fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) {
     if *state.recording.lock() {
+        // A manual stop (Home button / pill / sidebar) always exits hands-free —
+        // clear the latch first, or stop_and_transcribe's hands-free guard makes
+        // every on-screen Stop a no-op while locked. (Mirrors the PTT Stop path.)
+        *state.hands_free.lock() = false;
         stop_and_transcribe(app, state.inner().clone());
     } else {
         start_recording(&app, state.inner());
@@ -748,6 +761,8 @@ pub fn run() {
                         }
                         "toggle" => {
                             if *state.recording.lock() {
+                                // Tray Stop also exits hands-free (see manual_toggle).
+                                *state.hands_free.lock() = false;
                                 stop_and_transcribe(app.clone(), state.clone());
                             } else {
                                 start_recording(app, &state);

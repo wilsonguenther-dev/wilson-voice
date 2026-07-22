@@ -26,7 +26,15 @@ pub struct PasteOutcome {
 }
 
 /// Always copy. Paste only when Accessibility is granted, **on the main thread**.
+///
+/// After a successful auto-paste the user's *prior* clipboard is restored (like
+/// Wispr) so dictation never silently clobbers what they had copied. On paste
+/// failure the transcript is left on the clipboard so they can ⌘V manually.
 pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> PasteOutcome {
+    // Snapshot the existing clipboard before we overwrite it. (Text only for now;
+    // image/file restore is a tracked follow-up.)
+    let prior = app.clipboard().read_text().ok();
+
     if let Err(e) = copy_text(app, text) {
         return PasteOutcome {
             copied: false,
@@ -50,11 +58,22 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
     }
 
     match paste_frontmost_on_main(app) {
-        Ok(()) => PasteOutcome {
-            copied: true,
-            pasted: true,
-            message: "Copied and pasted into frontmost app".into(),
-        },
+        Ok(()) => {
+            // Restore the prior clipboard once the target app has consumed the
+            // paste. Off-thread + delayed so we neither block nor race the ⌘V.
+            if let Some(prev) = prior {
+                let app2 = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = app2.clipboard().write_text(prev);
+                });
+            }
+            PasteOutcome {
+                copied: true,
+                pasted: true,
+                message: "Pasted into frontmost app".into(),
+            }
+        }
         Err(e) => PasteOutcome {
             copied: true,
             pasted: false,
