@@ -233,3 +233,48 @@ NOT done (still original):
 - **Smart formatting** (§6 above).
 - **Port the polished pill** (world-fill camera + typewriter/receptionist personas +
   sky-blue capsule) from `docs/prototypes/yappy-pill.html` into `YappyPill.tsx`.
+
+## 8. MASTER PLAN — Yap to a shippable product (Wilson handed me AI/ML/inference lead, 2026-07-23)
+Big vision: a downloadable macOS (later Windows) desktop app, distributed via a link on the
+Forge front-end platform (drag-and-drop install), auto-updating, with support/error logging,
+Wispr-parity intelligence via LOCAL inference, later a ~$5/mo subscription. My model/inference
+calls are below. Split into (A) autonomous CI/CD-loop items [testable, merge-on-green] and
+(B) prototype-first / human-in-the-loop items [design or model-download heavy].
+
+### Model & inference decisions (my call as the ML lead)
+- **Cleanup LLM (the Wispr "second pass"): Qwen2.5-3B-Instruct, 4-bit, via MLX-LM.** Reasons:
+  strongest instruction-following in the 3B class, Apache-2.0 (ship-safe), ~1.9GB 4-bit, runs in
+  the SAME MLX venv/daemon we already use for Whisper, ~30-60 tok/s on Apple Silicon → sub-second
+  cleanup on short dictations. **Latency fallback: Qwen2.5-1.5B-Instruct-4bit** (~1GB, faster) for
+  older/8GB Macs, selectable in Settings. Gemma-2-2B is a viable alt but Qwen2.5 wins on control +
+  size. NEVER block paste on the LLM — hard timeout (~600ms) → fall back to rule-based/raw.
+- **ASR: keep MLX-Whisper** (large-v3-turbo default; small/base for speed). Already wired.
+- **VAD / voice isolation: research pending** (agent launched) — candidates: Silero VAD (gate),
+  RNNoise / DeepFilterNet (denoise), Apple's built-in **Voice Isolation** (AUVoiceIsolation /
+  AVAudioApplication) — likely: Apple Voice Isolation + Silero VAD on-device, cheap + native.
+
+### (A) CI/CD-loop items (testable → autonomous batches)
+- **Error logging + diagnostics**: structured rotating log file in the data dir, a global panic/
+  error hook, "Export diagnostics" in Settings. (Support/bug visibility.)
+- **Distribution packaging**: add DMG bundle target + `tauri-plugin-updater` (auto-update) +
+  a GitHub Actions **release** workflow that builds, signs, **notarizes**, and publishes the DMG +
+  updater manifest on a tag. (Drag-and-drop download + auto-update to all users.)
+- **Onboarding flow**: first-run React flow — welcome → permissions walkthrough → **voice-sample
+  capture** (records a calibration phrase for later personalization) → done, gated by `onboarded`.
+- **Local-LLM cleanup ARCHITECTURE**: a `Polish` pipeline trait — rule-based Backtrack (done) as
+  default + a slot for the MLX-LLM cleanup behind a setting, graceful fallback; model loaded at
+  runtime via a `setup` command (NOT in CI). Wire cleanup levels (None/Light/Medium/High) + store
+  `raw_text` + `polished_text` + an "Undo AI edit" toggle (from the Wispr research).
+- **UI (testable parts)**: Settings de-jargon + make Dictation-mode/Pill-style prominent;
+  configurable-hotkeys capture UI; Insights charts wired to daily_series/monthly_series.
+
+### (B) prototype-first / human-in-the-loop
+- **Local-LLM cleanup pass (runtime)**: download Qwen2.5-3B-4bit into the MLX venv via a setup
+  step; the actual model-in-the-loop cleanup (can't run in CI). Prototype prompt + guardrails,
+  Wilson reviews output quality before it's on by default.
+- **Voice isolation/denoise**: after research — integrate the chosen denoiser into record.rs.
+- **UI visual overhaul**: Home/Insights/Settings redesign — prototype in artifacts, Wilson
+  approves, then loop the buildable pieces.
+- **Voice personalization / fine-tuning**: use captured samples + frequent-term dictionary to
+  bias/adapt (initial_prompt biasing now; LoRA later). Future.
+- **Windows build + $5/mo subscription + licensing**: later; needs the cross-platform + billing pass.
