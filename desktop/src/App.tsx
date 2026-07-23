@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import Onboarding from "./Onboarding";
 import "./App.css";
 
 type Nav =
@@ -26,6 +27,10 @@ interface AppSettings {
   pillStyle?: string;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
+  /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
+  onboarded?: boolean;
+  /** Calibration phrase captured during onboarding, kept for later personalization. */
+  calibrationSample?: string | null;
 }
 
 interface AppStatus {
@@ -351,6 +356,23 @@ export default function App() {
     }
   }
 
+  // YV9 — persist onboarding completion (+ optional calibration sample) so the
+  // first-run flow does not re-appear on next launch. Uses saveSettings per spec.
+  async function finishOnboarding(sample: string | null) {
+    if (!settings) return;
+    await saveSettings({
+      ...settings,
+      onboarded: true,
+      calibrationSample: sample ?? settings.calibrationSample ?? null,
+    });
+  }
+
+  // "Replay onboarding" — clear the gate so the flow shows again.
+  async function replayOnboarding() {
+    if (!settings) return;
+    await saveSettings({ ...settings, onboarded: false });
+  }
+
   async function addTerm() {
     if (!newTerm.trim()) return;
     try {
@@ -438,6 +460,17 @@ export default function App() {
           Retry
         </button>
       </div>
+    );
+  }
+
+  // YV9 — first-run onboarding gate: show once settings are loaded and the user
+  // has not completed it. Rendered over the app; the main UI stays mounted.
+  if (settings && !settings.onboarded) {
+    return (
+      <Onboarding
+        onFinish={(sample) => finishOnboarding(sample)}
+        onSkip={() => finishOnboarding(null)}
+      />
     );
   }
 
@@ -1282,6 +1315,7 @@ export default function App() {
                 <button onClick={() => setNav("permissions")}>
                   Permissions
                 </button>
+                <button onClick={replayOnboarding}>Replay onboarding</button>
               </div>
             </div>
           )}
