@@ -734,6 +734,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        // Auto-update: checks the GitHub Releases updater manifest (see
+        // tauri.conf.json plugins.updater) and installs signed DMG updates.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Real NSPanel support for Dictate island (macOS)
         .plugin(tauri_nspanel::init())
         .plugin(
