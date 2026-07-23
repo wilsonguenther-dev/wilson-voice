@@ -6,6 +6,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
+use nnnoiseless::DenoiseState;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,7 +42,7 @@ pub struct RecordingResult {
     pub hold_wall_seconds: f64,
 }
 
-pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
+pub fn start_recording(dir: PathBuf, denoise: bool) -> Result<ActiveRecording, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let wav_path = dir.join(format!("{}.wav", Uuid::new_v4()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -52,7 +53,7 @@ pub fn start_recording(dir: PathBuf) -> Result<ActiveRecording, String> {
 
     let join = thread::Builder::new()
         .name("wv-record".into())
-        .spawn(move || record_loop(path_t, stop_t, level_t))
+        .spawn(move || record_loop(path_t, stop_t, level_t, denoise))
         .map_err(|e| format!("spawn record thread: {e}"))?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(350);
@@ -235,7 +236,12 @@ fn push_level(level: &LevelHandle, chunk: &[f32]) {
     }
 }
 
-fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>, level: LevelHandle) -> Result<(), String> {
+fn record_loop(
+    wav_path: PathBuf,
+    stop: Arc<AtomicBool>,
+    level: LevelHandle,
+    denoise: bool,
+) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or_else(|| {
         "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.".to_string()
@@ -355,6 +361,15 @@ fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>, level: LevelHandle) -> 
     let mono = high_pass(&mono, sample_rate, HIGH_PASS_HZ);
     let mono = normalize_rms(&mono, NORMALIZE_TARGET_DBFS);
     let mono = edge_fade(&mono, sample_rate, EDGE_FADE_MS);
+    // Denoise (Tier 1, docs/research/voice-isolation.md) — RNNoise over the
+    // native-rate buffer AFTER hygiene, still BEFORE the 16 kHz downsample.
+    // Gated by the user's `denoise` setting; the function itself falls back to
+    // its input on any degeneracy so a bad clip never loses the utterance.
+    let mono = if denoise {
+        denoise_rnnoise(&mono, sample_rate)
+    } else {
+        mono
+    };
     let target_rate = 16_000u32;
     let resampled = if sample_rate == target_rate {
         mono
@@ -517,6 +532,94 @@ fn edge_fade(samples: &[f32], sample_rate: u32, fade_ms: f32) -> Vec<f32> {
         return samples.to_vec();
     }
     out
+}
+
+// ── Denoise (Tier 1) ────────────────────────────────────────────────────────
+// RNNoise (nnnoiseless) over the whole clip. RNNoise is a 48 kHz model that
+// consumes 480-sample (10 ms) frames of i16-range floats and keeps recurrent
+// state, so for our BATCH path we resample to 48 kHz (if the mic isn't already
+// there), stream every frame through in order, then resample back. Conservative
+// by construction: on any degenerate input — or if the model would gut the
+// signal (output energy collapses vs input) — it returns the input UNCHANGED so
+// a bad clip never loses the utterance.
+
+/// RNNoise's fixed operating rate.
+const RNNOISE_SR: u32 = 48_000;
+
+/// Plain RMS of a buffer (linear amplitude). Helper for the denoise collapse
+/// guard and its unit tests.
+fn rms_energy(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|&x| (x as f64) * (x as f64)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// Suppress steady background noise (fans, hum, keyboard hiss) with RNNoise.
+/// Input/output are mono `[-1, 1]` floats at `sample_rate`. Falls back to the
+/// input unchanged on any degeneracy or over-suppression — never returns silence
+/// for a real utterance.
+fn denoise_rnnoise(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    const FRAME: usize = DenoiseState::FRAME_SIZE; // 480 samples @ 48 kHz
+    if samples.len() < FRAME || sample_rate == 0 || samples.iter().any(|s| !s.is_finite()) {
+        return samples.to_vec();
+    }
+    // RNNoise only speaks 48 kHz.
+    let need_resample = sample_rate != RNNOISE_SR;
+    let at48 = if need_resample {
+        resample_linear(samples, sample_rate, RNNOISE_SR)
+    } else {
+        samples.to_vec()
+    };
+    if at48.len() < FRAME {
+        return samples.to_vec();
+    }
+
+    let mut state = DenoiseState::new();
+    let mut in_frame = [0.0f32; FRAME];
+    let mut out_frame = [0.0f32; FRAME];
+    // Process one extra silent frame past the end to flush RNNoise's one-frame
+    // algorithmic (overlap-add) delay, then drop that leading frame so the
+    // denoised stream re-aligns sample-for-sample with the input.
+    let total = at48.len() + FRAME;
+    let mut denoised = Vec::with_capacity(total);
+    let mut idx = 0;
+    while idx < total {
+        for (k, slot) in in_frame.iter_mut().enumerate() {
+            let src = idx + k;
+            // RNNoise wants i16-range floats, not [-1, 1].
+            *slot = if src < at48.len() {
+                at48[src] * i16::MAX as f32
+            } else {
+                0.0
+            };
+        }
+        state.process_frame(&mut out_frame, &in_frame);
+        for &o in out_frame.iter() {
+            denoised.push(o / i16::MAX as f32);
+        }
+        idx += FRAME;
+    }
+    let aligned: Vec<f32> = denoised.into_iter().skip(FRAME).take(at48.len()).collect();
+
+    let restored = if need_resample {
+        resample_linear(&aligned, RNNOISE_SR, sample_rate)
+    } else {
+        aligned
+    };
+
+    // Never lose the utterance: bail to the raw input on empty / non-finite
+    // output, or if denoise would collapse the signal to near-nothing.
+    if restored.is_empty() || restored.iter().any(|s| !s.is_finite()) {
+        return samples.to_vec();
+    }
+    let in_rms = rms_energy(samples);
+    let out_rms = rms_energy(&restored);
+    if in_rms > 1e-5 && out_rms < in_rms * 0.05 {
+        return samples.to_vec();
+    }
+    restored
 }
 
 fn write_wav_i16(path: &PathBuf, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
@@ -770,5 +873,144 @@ mod tests {
         let one = edge_fade(&[0.7], NATIVE_SR, EDGE_FADE_MS);
         assert_eq!(one.len(), 1);
         assert!(one[0].is_finite());
+    }
+
+    // ── Denoise (Tier 1) ────────────────────────────────────────────────────
+    // Exercise RNNoise at its native 48 kHz so no resample distortion clouds the
+    // measurement. A voiced, speech-like fixture (fundamental + harmonics) is
+    // what RNNoise is trained to keep; broadband noise is what it removes.
+
+    /// Deterministic broadband noise in [-amp, amp] via a small xorshift PRNG —
+    /// no `rand` dependency, fully reproducible so the test never flakes.
+    fn broadband_noise(len: usize, amp: f32, seed: u64) -> Vec<f32> {
+        let mut s = seed | 1;
+        (0..len)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                // Map to [-1, 1) then scale.
+                let u = (s >> 11) as f32 / (1u64 << 53) as f32; // [0, 1)
+                (u * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    /// A voiced, speech-like tone: a ~140 Hz fundamental plus a few harmonics
+    /// with a falling (formant-ish) envelope. RNNoise recognizes this as voiced
+    /// and should preserve it.
+    fn voiced(secs: f64, sr: u32, amp: f32) -> Vec<f32> {
+        let n = (secs * sr as f64) as usize;
+        let f0 = 140.0f32;
+        let harmonics = [(1.0, 1.0), (2.0, 0.6), (3.0, 0.35), (4.0, 0.2), (5.0, 0.12)];
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                let mut v = 0.0f32;
+                for (mult, gain) in harmonics {
+                    v += gain * (2.0 * PI * f0 * mult * t).sin();
+                }
+                amp * v
+            })
+            .collect()
+    }
+
+    /// Best-aligned residual (noise) power between a clean reference and a
+    /// processed signal, searching a small delay window so any leftover
+    /// algorithmic offset can't masquerade as distortion.
+    fn residual_power(clean: &[f32], processed: &[f32], max_shift: usize) -> f64 {
+        let n = clean.len().min(processed.len());
+        let mut best = f64::INFINITY;
+        for shift in 0..=max_shift {
+            let mut sum = 0.0f64;
+            let mut cnt = 0usize;
+            for i in 0..n {
+                if i + shift >= processed.len() {
+                    break;
+                }
+                let e = clean[i] as f64 - processed[i + shift] as f64;
+                sum += e * e;
+                cnt += 1;
+            }
+            if cnt > 0 {
+                let p = sum / cnt as f64;
+                if p < best {
+                    best = p;
+                }
+            }
+        }
+        best
+    }
+
+    fn power(s: &[f32]) -> f64 {
+        if s.is_empty() {
+            return 0.0;
+        }
+        s.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>() / s.len() as f64
+    }
+
+    #[test]
+    fn denoise_improves_snr_on_a_noisy_fixture() {
+        // Voiced speech-like signal + broadband noise at ~equal power (~0 dB in).
+        let clean = voiced(2.0, NATIVE_SR, 0.10);
+        let noise = broadband_noise(clean.len(), 0.06, 0x9E37_79B9_7F4A_7C15);
+        let noisy: Vec<f32> = clean.iter().zip(&noise).map(|(&c, &n)| c + n).collect();
+
+        let denoised = denoise_rnnoise(&noisy, NATIVE_SR);
+        assert_eq!(denoised.len(), noisy.len(), "length must be preserved");
+
+        // SNR = clean power / residual (vs clean) power. RNNoise knocks the noise
+        // floor down while keeping the voice, so the residual shrinks → SNR up.
+        let shift = DenoiseState::FRAME_SIZE; // tolerate up to one frame of offset
+        let sig_power = power(&clean);
+        let snr_in = 10.0 * (sig_power / residual_power(&clean, &noisy, shift)).log10();
+        let snr_out = 10.0 * (sig_power / residual_power(&clean, &denoised, shift)).log10();
+        let improvement = snr_out - snr_in;
+        assert!(
+            improvement >= 6.0,
+            "denoise should raise SNR ≥ 6 dB (in {snr_in:.1} → out {snr_out:.1}, +{improvement:.1} dB)"
+        );
+    }
+
+    #[test]
+    fn denoise_preserves_clean_speech_within_1db() {
+        // A clean voiced clip must survive denoise with ≤ ~1 dB energy loss —
+        // no over-suppression of the user's own words.
+        let clean = voiced(2.0, NATIVE_SR, 0.12);
+        let denoised = denoise_rnnoise(&clean, NATIVE_SR);
+        assert_eq!(denoised.len(), clean.len());
+        let loss_db = 10.0 * (power(&clean) / power(&denoised)).log10();
+        assert!(
+            loss_db <= 1.0,
+            "clean speech should lose ≤ 1 dB of energy, lost {loss_db:.2} dB"
+        );
+        assert!(!denoised.iter().any(|v| !v.is_finite()));
+    }
+
+    #[test]
+    fn denoise_falls_back_to_input_unchanged() {
+        // Degenerate inputs must return the input UNCHANGED (never lose audio):
+        //   • empty buffer
+        //   • zero sample rate
+        //   • too short to fill a single 480-sample frame
+        //   • non-finite samples
+        assert!(denoise_rnnoise(&[], NATIVE_SR).is_empty());
+
+        let short = voiced(0.005, NATIVE_SR, 0.2); // < FRAME_SIZE samples
+        assert!(short.len() < DenoiseState::FRAME_SIZE);
+        assert_eq!(denoise_rnnoise(&short, NATIVE_SR), short);
+
+        let some = voiced(0.05, NATIVE_SR, 0.2);
+        assert_eq!(denoise_rnnoise(&some, 0), some, "zero rate → unchanged");
+
+        let mut nan = voiced(0.05, NATIVE_SR, 0.2);
+        nan[10] = f32::NAN;
+        assert!(
+            denoise_rnnoise(&nan, NATIVE_SR)
+                .iter()
+                .zip(&nan)
+                .all(|(&a, &b)| a.to_bits() == b.to_bits()),
+            "non-finite input must be returned byte-identical (unchanged)"
+        );
     }
 }

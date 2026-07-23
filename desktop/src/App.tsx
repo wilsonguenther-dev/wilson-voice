@@ -33,6 +33,12 @@ interface AppSettings {
    * add dictionary → backtrack → formatting → local-LLM polish. Default "light".
    */
   cleanupLevel?: string;
+  /**
+   * Denoise the captured clip with RNNoise before transcription (backend
+   * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)
+   * before the 16 kHz downsample. Default on.
+   */
+  denoise?: boolean;
   /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
   onboarded?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */
@@ -1160,6 +1166,18 @@ export default function App() {
                 <span>
                   Always show Dictate island (glass HUD; also appears while
                   recording)
+                </span>
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.denoise ?? true}
+                  onChange={(e) =>
+                    setSettings({ ...settings, denoise: e.target.checked })
+                  }
+                />
+                <span>
+                  Suppress background noise (RNNoise — fans, hum, keyboard)
                 </span>
               </label>
               <div className="panel">

@@ -63,6 +63,12 @@ pub struct AppSettings {
     /// `dictation::CleanupLevel` / `run_cleanup`).
     #[serde(default = "default_cleanup_level")]
     pub cleanup_level: String,
+    /// Denoise the captured clip with RNNoise before transcription (YV12).
+    /// Suppresses steady background noise (fans, hum, keyboard) over the
+    /// native-rate buffer before the 16 kHz downsample. Defaults on; the
+    /// denoiser itself falls back to the raw audio on any degeneracy.
+    #[serde(default = "default_true")]
+    pub denoise: bool,
     /// First-run onboarding completed (YV9). While false the UI shows the
     /// welcome → permissions → voice-calibration flow; set true on finish.
     #[serde(default)]
@@ -108,6 +114,7 @@ impl Default for AppSettings {
             pill_style: "classic".into(),
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
+            denoise: true,
             onboarded: false,
             calibration_sample: None,
         }
@@ -217,7 +224,8 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     }
     // Do NOT call mic_auth::request_microphone_access here — that is Permissions-only.
     // Opening the real capture stream is enough for TCC (Allow once after install).
-    match record::start_recording(data_dir().join("recordings")) {
+    let denoise = state.settings.lock().denoise;
+    match record::start_recording(data_dir().join("recordings"), denoise) {
         Ok(active) => {
             let level = active.level.clone();
             let stop_flag = active.stop_flag();
@@ -1029,6 +1037,9 @@ mod tests {
         // YV10: cleanup_level defaults to "light" for fresh installs and legacy JSON.
         assert_eq!(AppSettings::default().cleanup_level, "light");
         assert_eq!(parsed.cleanup_level, "light");
+        // YV12: denoise defaults ON for fresh installs and legacy JSON (serde default).
+        assert!(AppSettings::default().denoise);
+        assert!(parsed.denoise);
 
         // A finished onboarding round-trips (camelCase key on the wire).
         let mut done = AppSettings::default();
