@@ -19,10 +19,10 @@ use tauri_nspanel::{
 // WINDOW size — deliberately LARGER than the pill so its ambient shadow renders
 // inside the transparent window. A pill-sized window clips the shadow at its edge,
 // which reads as an ugly hard rectangle. The pill is centered inside by CSS (.stage).
-// Window is transparent + larger than the creature: room for the origami's
-// spread (wings/neck), its shadow, and the speech bubble above it.
-const PILL_W: f64 = 320.0;
-const PILL_H: f64 = 210.0;
+// Transparent window a bit larger than the pill: room for the expanded capsule
+// and the speech bubble above it. The visible pill is small + centered by CSS/JS.
+const PILL_W: f64 = 300.0;
+const PILL_H: f64 = 140.0;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
