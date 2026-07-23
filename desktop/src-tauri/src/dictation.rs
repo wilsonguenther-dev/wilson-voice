@@ -61,10 +61,19 @@ pub fn format_dictation(text: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if let Some(list) = detect_and_format_list(trimmed) {
+    // Backtrack cleanup (YV6): drop fillers + apply spoken self-corrections BEFORE list
+    // detection. `clean_backtrack` is itself guarded against emptying non-empty input,
+    // but we re-guard here to keep the "never lose text" contract explicit at the seam.
+    let cleaned = clean_backtrack(trimmed);
+    let cleaned = if cleaned.trim().is_empty() {
+        trimmed.to_string()
+    } else {
+        cleaned
+    };
+    if let Some(list) = detect_and_format_list(&cleaned) {
         return list;
     }
-    trimmed.to_string()
+    cleaned.trim().to_string()
 }
 
 /// Resolve the effective dictation mode for a transcription. A user-picked fixed mode
@@ -87,6 +96,181 @@ pub fn resolve_mode(setting: &str, app_name: &str) -> DictationMode {
 /// verbatim — we never reflow identifiers or plain prose — everything else is formatted.
 pub fn should_format(mode: DictationMode) -> bool {
     !matches!(mode, DictationMode::Code | DictationMode::Plain)
+}
+
+// ---------------------------------------------------------------------------
+// Backtrack v1 (YV6) — rule-based filler + self-correction cleanup (on-device).
+//
+// A conservative, PURE first pass that mirrors Wispr Flow's "Backtrack" for the
+// obvious, low-risk cases while a local-LLM pass (P0 backlog) does the rest. It
+// (a) drops standalone filler tokens, (b) applies spoken self-corrections via a
+// small set of unambiguous trigger phrases, and (c) NEVER empties the string —
+// if a rule would leave nothing, the original text is returned unchanged. Kept
+// intentionally narrow: it only fires where intent is clear, never rewriting
+// meaning or touching ordinary prose.
+// ---------------------------------------------------------------------------
+
+/// Standalone, meaning-free filler tokens that are always safe to drop.
+const FILLER_TOKENS: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "hmm"];
+
+/// Comma-parenthetical discourse fillers — removed ONLY when clearly non-semantic,
+/// i.e. bounded by commas on both sides (", like," → ","), which is the signal that
+/// they're a hedge rather than a real word (the verb "like", "you know" as content).
+const DISCOURSE_FILLERS: &[&str] = &[", like,", ", you know,", ", i mean,"];
+
+/// Conservative rule-based backtrack cleanup: apply spoken self-corrections, then
+/// strip fillers. Guarded so a non-empty input can never become empty.
+pub fn clean_backtrack(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let corrected = apply_self_correction(trimmed);
+    let deflated = remove_fillers(&corrected);
+    let cleaned = deflated.trim();
+    // Never lose text: if the rules stripped everything (e.g. an all-filler
+    // utterance), fall back to the original transcript.
+    if cleaned.is_empty() {
+        return trimmed.to_string();
+    }
+    cleaned.to_string()
+}
+
+/// Remove filler words: comma-bounded discourse hedges first, then standalone
+/// pure-filler tokens ("um", "uh", …) anywhere in the utterance.
+fn remove_fillers(text: &str) -> String {
+    let mut s = text.to_string();
+    for phrase in DISCOURSE_FILLERS {
+        s = replace_ci_ascii(&s, phrase, ",");
+    }
+    s.split_whitespace()
+        .filter(|tok| !is_pure_filler(tok))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// True when a whitespace token is a standalone pure filler ("um", "uh,", "Er.").
+fn is_pure_filler(token: &str) -> bool {
+    FILLER_TOKENS.contains(&token_core(token).as_str())
+}
+
+/// Apply the unambiguous self-correction triggers: clause-retraction markers
+/// ("scratch that", "no wait") drop the retracted clause; a numeric "actually"
+/// restatement ("coffee at 2 actually 3" → "coffee at 3") swaps the value.
+fn apply_self_correction(text: &str) -> String {
+    let mut s = text.to_string();
+    for marker in ["scratch that", "no wait"] {
+        if let Some(corrected) = apply_clause_correction(&s, marker) {
+            s = corrected;
+        }
+    }
+    if let Some(corrected) = apply_numeric_actually(&s) {
+        s = corrected;
+    }
+    s
+}
+
+/// Handle a clause-retraction marker: keep whatever follows the marker (the
+/// correction), drop the retracted clause that precedes it, and preserve any
+/// earlier clauses. Fires ONLY when the marker clearly begins a new clause
+/// (preceded by a boundary), so it can never chop content out of plain prose.
+/// Returns `None` (no change) when the pattern isn't a safe, obvious correction.
+fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
+    let pos = find_ci_ascii(text.as_bytes(), marker.as_bytes(), 0)?;
+    let before = &text[..pos];
+    let after = text[pos + marker.len()..]
+        .trim_start_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?') || c.is_whitespace())
+        .trim();
+    if after.is_empty() {
+        // Nothing to correct with — leave the utterance untouched.
+        return None;
+    }
+    let before_trim = before.trim_end();
+    if !before_trim.ends_with(|c: char| matches!(c, ',' | '.' | ';' | '\n')) {
+        // Marker isn't clause-delimited → too ambiguous to fire safely.
+        return None;
+    }
+    // Everything up to (and including) the boundary before the retracted clause.
+    let core_before =
+        before_trim.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | '\n') || c.is_whitespace());
+    let head = match core_before.rfind(|c: char| matches!(c, ',' | '.' | ';' | '\n')) {
+        Some(i) => core_before[..=i].trim().to_string(),
+        None => String::new(),
+    };
+    let combined = if head.is_empty() {
+        after.to_string()
+    } else {
+        format!("{} {}", head, after)
+    };
+    if combined.trim().is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
+}
+
+/// Numeric restatement via "actually": when the tokens flanking "actually" are
+/// both plain numbers, replace the first with the second and drop "actually"
+/// ("coffee at 2 actually 3" → "coffee at 3"). Restricting to numbers keeps it
+/// safe — it never fires on the adverb ("I actually think …").
+fn apply_numeric_actually(text: &str) -> Option<String> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for i in 1..tokens.len().saturating_sub(1) {
+        if token_core(tokens[i]) == "actually"
+            && is_numeric_token(tokens[i - 1])
+            && is_numeric_token(tokens[i + 1])
+        {
+            let mut out: Vec<&str> = Vec::with_capacity(tokens.len() - 2);
+            out.extend_from_slice(&tokens[..i - 1]);
+            out.extend_from_slice(&tokens[i + 1..]);
+            return Some(out.join(" "));
+        }
+    }
+    None
+}
+
+/// Lowercased alphanumeric core of a token, with surrounding punctuation stripped.
+fn token_core(token: &str) -> String {
+    token
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+/// True when a token is a plain number once surrounding punctuation is stripped.
+fn is_numeric_token(token: &str) -> bool {
+    let core = token.trim_matches(|c: char| !c.is_alphanumeric());
+    !core.is_empty() && core.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Case-insensitive ASCII substring search over bytes, returning the byte offset
+/// of the first match at/after `from`. Byte-based (never builds a resized
+/// lowercased string) so it's safe on UTF-8 input — an ASCII needle only ever
+/// matches ASCII bytes, which are always char boundaries.
+fn find_ci_ascii(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (from..=hay.len() - needle.len()).find(|&i| {
+        needle
+            .iter()
+            .enumerate()
+            .all(|(j, &nb)| hay[i + j].eq_ignore_ascii_case(&nb))
+    })
+}
+
+/// Case-insensitive ASCII substring replacement built on [`find_ci_ascii`]. Only
+/// ASCII needles/replacements — matches land on char boundaries so slicing is safe.
+fn replace_ci_ascii(haystack: &str, needle: &str, replacement: &str) -> String {
+    let (hay, need) = (haystack.as_bytes(), needle.as_bytes());
+    let mut out = String::with_capacity(haystack.len());
+    let mut last = 0;
+    while let Some(pos) = find_ci_ascii(hay, need, last) {
+        out.push_str(&haystack[last..pos]);
+        out.push_str(replacement);
+        last = pos + need.len();
+    }
+    out.push_str(&haystack[last..]);
+    out
 }
 
 /// Enumerator cue words that, at the start of a clause, mark a new list item.
@@ -263,6 +447,83 @@ mod tests {
         assert!(should_format(DictationMode::List));
         assert!(should_format(DictationMode::Notes));
         assert!(should_format(DictationMode::Email));
+    }
+
+    // --- Backtrack v1 (YV6) ----------------------------------------------
+
+    #[test]
+    fn backtrack_removes_standalone_fillers() {
+        assert_eq!(
+            clean_backtrack("um so I think we should uh go home"),
+            "so I think we should go home"
+        );
+        assert_eq!(clean_backtrack("Er, hello there"), "hello there");
+        assert_eq!(clean_backtrack("that is hmm interesting"), "that is interesting");
+    }
+
+    #[test]
+    fn backtrack_removes_comma_bounded_discourse_fillers() {
+        // Comma-bounded hedges are dropped; the real words survive.
+        assert_eq!(
+            clean_backtrack("we need milk, like, and eggs"),
+            "we need milk, and eggs"
+        );
+        assert_eq!(
+            clean_backtrack("it was, you know, really good"),
+            "it was, really good"
+        );
+        // The verb "like" (not comma-bounded) is left alone.
+        assert_eq!(clean_backtrack("I like the plan"), "I like the plan");
+    }
+
+    #[test]
+    fn backtrack_applies_actually_restatement() {
+        // The documented Wispr example.
+        assert_eq!(
+            clean_backtrack("Let's do coffee at 2 actually 3"),
+            "Let's do coffee at 3"
+        );
+        assert_eq!(clean_backtrack("coffee at 2 actually 3"), "coffee at 3");
+    }
+
+    #[test]
+    fn backtrack_applies_clause_retraction_markers() {
+        assert_eq!(
+            clean_backtrack("meet at noon, scratch that, meet at one"),
+            "meet at one"
+        );
+        // Earlier, non-retracted clauses are preserved.
+        assert_eq!(
+            clean_backtrack("I'm free today, let's do noon, scratch that, let's do one"),
+            "I'm free today, let's do one"
+        );
+        assert_eq!(
+            clean_backtrack("book the blue one, no wait, the red one"),
+            "the red one"
+        );
+    }
+
+    #[test]
+    fn backtrack_preserves_content_and_never_empties() {
+        // "actually" as an adverb is NOT a numeric restatement — text is untouched.
+        let prose = "I actually think we should meet at the office tomorrow.";
+        assert_eq!(clean_backtrack(prose), prose);
+        // Plain prose with no triggers is returned verbatim.
+        let plain = "The quarterly report is ready for your review.";
+        assert_eq!(clean_backtrack(plain), plain);
+        // An all-filler utterance can never be emptied — original is preserved.
+        assert_eq!(clean_backtrack("um uh er"), "um uh er");
+        // A dangling marker with no correction is left untouched.
+        assert_eq!(clean_backtrack("meet at noon scratch that"), "meet at noon scratch that");
+    }
+
+    #[test]
+    fn format_dictation_runs_backtrack_cleanup() {
+        // Fillers are stripped inside the polish path, prose stays prose.
+        assert_eq!(
+            format_dictation("um the report is uh done"),
+            "the report is done"
+        );
     }
 
     #[test]
