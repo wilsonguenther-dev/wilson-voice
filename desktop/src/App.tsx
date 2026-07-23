@@ -22,6 +22,8 @@ interface AppSettings {
   /** fn | fn_control | both */
   pttBinding?: string;
   keepCmdShiftV?: boolean;
+  /** classic (obsidian capsule) | yappy (pixel pet) */
+  pillStyle?: string;
 }
 
 interface AppStatus {
@@ -1119,6 +1121,32 @@ export default function App() {
                   recording)
                 </span>
               </label>
+              <div className="panel">
+                <h3>Pill style</h3>
+                <p>Pick your Dictate companion — it switches live.</p>
+                <div className="profile-row">
+                  {(
+                    [
+                      ["classic", "Classic", "Obsidian waveform capsule"],
+                      ["yappy", "Yappy 🐥", "A pixel pet in a little world"],
+                    ] as const
+                  ).map(([id, label, blurb]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={
+                        (settings.pillStyle ?? "classic") === id
+                          ? "profile active"
+                          : "profile"
+                      }
+                      onClick={() => saveSettings({ ...settings, pillStyle: id })}
+                    >
+                      <strong>{label}</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="panel">
                 <h3>Hold-to-talk key</h3>
                 <p>

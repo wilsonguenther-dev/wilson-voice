@@ -48,6 +48,9 @@ pub struct AppSettings {
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
+    /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
+    #[serde(default = "default_pill_style")]
+    pub pill_style: String,
 }
 
 fn default_speed_profile() -> String {
@@ -55,6 +58,9 @@ fn default_speed_profile() -> String {
 }
 fn default_ptt_binding() -> String {
     "fn_control".into()
+}
+fn default_pill_style() -> String {
+    "classic".into()
 }
 fn default_true() -> bool {
     true
@@ -73,6 +79,7 @@ impl Default for AppSettings {
             speed_profile: "balanced".into(),
             ptt_binding: "fn_control".into(),
             keep_cmd_shift_v: false,
+            pill_style: "classic".into(),
         }
     }
 }
@@ -411,6 +418,8 @@ fn save_settings(
     let path = data_dir().join("settings.json");
     let s = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())?;
+    // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live).
+    let _ = app.emit("settings", &next);
     if next.show_floating_pill {
         float_pill::show_float(&app)?;
     } else if !*state.recording.lock() {
@@ -731,6 +740,12 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // Accessory (agent) app: no Dock icon AND — the actual fix — lets the
+            // NSPanel Dictate island float over OTHER apps' fullscreen Spaces in a
+            // packaged build (a .regular app cannot). Pairs with LSUIElement=true.
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();

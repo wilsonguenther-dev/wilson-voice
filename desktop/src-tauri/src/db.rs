@@ -102,45 +102,44 @@ fn word_count(text: &str) -> i64 {
     text.split_whitespace().filter(|w| !w.is_empty()).count() as i64
 }
 
-/// Tokens worth learning for STT polish: camelCase, snake_case, PascalCase, ALLCAPS, product names.
-/// Common words that get a sentence-initial capital — must NOT be harvested as
-/// jargon (they flooded the dictionary as The/And/You/This before this filter).
-const STOPWORDS: &[&str] = &[
-    "the", "and", "you", "your", "yours", "this", "that", "these", "those", "they",
-    "them", "then", "there", "here", "what", "when", "where", "which", "while",
-    "with", "have", "has", "had", "was", "were", "will", "would", "could", "should",
-    "from", "for", "but", "not", "are", "our", "out", "all", "any", "can", "get",
-    "got", "how", "its", "let", "may", "one", "see", "she", "him", "his", "her",
-    "hers", "who", "why", "yes", "yeah", "okay", "just", "like", "some", "more",
-    "most", "much", "many", "also", "because", "about", "after", "again", "been",
-    "before", "being", "does", "done", "down", "each", "into", "over", "said",
-    "than", "very", "well", "went", "gonna", "wanna", "really", "right", "thing",
-    "things", "think", "know", "need", "make", "made", "want", "going",
+/// Seed dictionary terms — proper nouns that deliberately WON'T auto-harvest
+/// (they're plain first-capitalized words; see is_jargon_token).
+const SEED_TERMS: &[&str] = &[
+    "Drivia", "Wilson", "Jeisil", "Aidan", "Supabase", "Vercel", "Whisper", "Tauri", "Kokori",
 ];
+
+/// Auto-harvest ONLY structurally-unambiguous jargon: an internal capital
+/// (camelCase / PascalCase mid-word: RunPod, McApp), an ALL-CAPS acronym
+/// (SQL, MLX, GPU), a digit (GPT-4, H2E), or `_`/`-` (snake_case, kebab-case).
+///
+/// We deliberately do NOT learn plain first-letter-capitalized words. Whisper
+/// capitalizes every sentence start, so "The / Doing / Actually / Drivia" are
+/// ~95% common-word noise — that flood was the whole dictionary-junk problem.
+/// Real proper nouns come from SEED_TERMS + the user's manual dictionary entries.
+fn is_jargon_token(t: &str) -> bool {
+    if t.len() < 3 || t.len() > 48 {
+        return false;
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return false; // pure number
+    }
+    let has_sep = t.contains('_') || t.contains('-');
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    // uppercase anywhere but position 0 → mid-word cap (camelCase/PascalCase)
+    let internal_cap = t.chars().skip(1).any(|c| c.is_uppercase());
+    let uppers = t.chars().filter(|c| c.is_uppercase()).count();
+    let has_lower = t.chars().any(|c| c.is_lowercase());
+    let all_caps_acronym = uppers >= 2 && !has_lower && t.len() <= 8;
+    has_sep || has_digit || internal_cap || all_caps_acronym
+}
 
 fn extract_learnable_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(|c: char| c.is_whitespace() || ".,!?;:()[]{}\"'`".contains(c)) {
         let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
-        if t.len() < 3 || t.len() > 48 {
-            continue;
+        if is_jargon_token(t) {
+            out.push(t.to_string());
         }
-        // Drop common sentence-initial-capitalized words (The/And/You/...).
-        if STOPWORDS.contains(&t.to_ascii_lowercase().as_str()) {
-            continue;
-        }
-        let has_upper = t.chars().any(|c| c.is_uppercase());
-        let has_digit = t.chars().any(|c| c.is_ascii_digit());
-        let has_under = t.contains('_') || t.contains('-');
-        let camel = t.chars().any(|c| c.is_lowercase()) && has_upper;
-        if !(has_upper || has_digit || has_under || camel) {
-            continue;
-        }
-        // skip pure numbers
-        if t.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        out.push(t.to_string());
     }
     out.sort();
     out.dedup();
@@ -307,27 +306,59 @@ impl Database {
             "ALTER TABLE daily_stats ADD COLUMN pipeline_ms INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Provenance so the junk-purge NEVER deletes manual or seed terms — only
+        // 'harvest'. (Manual term-only adds are also preferred IS NULL, so preferred
+        // alone can't distinguish them.)
+        let _ = conn.execute(
+            "ALTER TABLE dictionary ADD COLUMN source TEXT NOT NULL DEFAULT 'harvest'",
+            [],
+        );
 
         // Seed default dictionary terms useful for Wilson
         {
-            let defaults = [
-                "Drivia",
-                "Wilson",
-                "Jeisil",
-                "Aidan",
-                "Supabase",
-                "Vercel",
-                "Whisper",
-                "Tauri",
-                "Kokori",
-            ];
             let now = Utc::now().to_rfc3339();
-            for term in defaults {
+            for term in SEED_TERMS {
                 let _ = conn.execute(
-                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at)
-                     VALUES (?1, ?2, NULL, 0, ?3)",
+                    "INSERT OR IGNORE INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, NULL, 0, ?3, 'seed')",
                     params![Uuid::new_v4().to_string(), term, now],
                 );
+                // Existing rows (pre-source-column) defaulted to 'harvest' — promote seeds.
+                let _ = conn.execute(
+                    "UPDATE dictionary SET source = 'seed' WHERE term = ?1 COLLATE NOCASE",
+                    params![term],
+                );
+            }
+        }
+
+        // Purge harvest junk on every open: (a) old self-referential rows
+        // (preferred == term, the old harvest bug) and (b) auto-harvested
+        // (preferred IS NULL) non-seed terms that aren't structurally jargon
+        // (The / Doing / Keeps / ...). Seeds and real jargon are preserved.
+        let _ = conn.execute(
+            "DELETE FROM dictionary WHERE preferred IS NOT NULL AND preferred = term",
+            [],
+        );
+        {
+            let seeds: std::collections::HashSet<String> =
+                SEED_TERMS.iter().map(|s| s.to_lowercase()).collect();
+            let mut junk: Vec<String> = Vec::new();
+            // Only 'harvest' rows are purge candidates — manual + seed are safe.
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, term FROM dictionary WHERE source = 'harvest' AND preferred IS NULL",
+            ) {
+                if let Ok(rows) = stmt.query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    for (id, term) in rows.flatten() {
+                        if !seeds.contains(&term.to_lowercase()) && !is_jargon_token(&term) {
+                            junk.push(id);
+                        }
+                    }
+                }
+            }
+            for id in junk {
+                let _ = conn.execute("DELETE FROM dictionary WHERE id = ?1", params![id]);
             }
         }
 
@@ -462,6 +493,31 @@ impl Database {
         pipeline_ms: i64,
         source_app: Option<String>,
     ) -> Result<TranscriptEntry, String> {
+        self.insert_transcript_at(
+            text,
+            backend,
+            asr_seconds,
+            speech_seconds,
+            pipeline_ms,
+            source_app,
+            Utc::now(),
+        )
+    }
+
+    /// Same as `insert_transcript` but with an explicit timestamp. Production
+    /// always uses `Utc::now()`; the timestamp seam exists so the analytics tests
+    /// can place sessions on specific calendar days (streaks, words-today).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_transcript_at(
+        &self,
+        text: String,
+        backend: String,
+        asr_seconds: f64,
+        speech_seconds: f64,
+        pipeline_ms: i64,
+        source_app: Option<String>,
+        created_at: DateTime<Utc>,
+    ) -> Result<TranscriptEntry, String> {
         let entry = TranscriptEntry {
             id: Uuid::new_v4().to_string(),
             word_count: word_count(&text),
@@ -470,7 +526,7 @@ impl Database {
             asr_seconds,
             speech_seconds: speech_seconds.max(0.0),
             pipeline_ms: pipeline_ms.max(0),
-            created_at: Utc::now(),
+            created_at,
             source_app,
         };
         let _ = self.learn_from_transcript(&entry.text);
@@ -514,8 +570,8 @@ impl Database {
                     // rewrites. They bias recognition via initial_prompt (by `term`
                     // + `hits`); only a real correction sets a distinct `preferred`.
                     // (The old `?2,?2` made preferred==term → apply_dictionary a no-op.)
-                    "INSERT INTO dictionary (id, term, preferred, hits, created_at)
-                     VALUES (?1, ?2, NULL, 1, ?3)
+                    "INSERT INTO dictionary (id, term, preferred, hits, created_at, source)
+                     VALUES (?1, ?2, NULL, 1, ?3, 'harvest')
                      ON CONFLICT(term) DO UPDATE SET hits = hits + 1",
                     params![Uuid::new_v4().to_string(), token, now],
                 )
@@ -675,9 +731,9 @@ impl Database {
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO dictionary (id, term, preferred, hits, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4)
-             ON CONFLICT(term) DO UPDATE SET preferred = excluded.preferred",
+            "INSERT INTO dictionary (id, term, preferred, hits, created_at, source)
+             VALUES (?1, ?2, ?3, 0, ?4, 'manual')
+             ON CONFLICT(term) DO UPDATE SET preferred = excluded.preferred, source = 'manual'",
             params![
                 entry.id,
                 entry.term,
@@ -827,6 +883,13 @@ impl Database {
             )
             .unwrap_or(0.0);
 
+        // `daily_stats` is the authoritative rollup: it's fully rebuilt from
+        // `transcripts` on every insert/delete/clear AND healed once at startup
+        // (see recompute_daily_stats + open()), so a today row exists whenever a
+        // transcript exists for today. Reading it is an O(1) indexed lookup — we
+        // deliberately do NOT fall back to a full-table scan here, which used to
+        // fire on every fresh-day render (words_today == 0) and would become an
+        // O(N) hotspot as multi-year history accumulates.
         let today = Local::now().date_naive().to_string();
         let (words_today, sessions_today): (i64, i64) = conn
             .query_row(
@@ -838,47 +901,31 @@ impl Database {
             .map_err(|e| e.to_string())?
             .unwrap_or((0, 0));
 
-        // Fallback: if daily_stats empty but we have transcripts today, sum live
-        let (words_today, sessions_today) = if words_today == 0 && total_sessions > 0 {
-            let mut w = 0i64;
-            let mut s = 0i64;
-            let mut stmt = conn
-                .prepare("SELECT created_at, word_count FROM transcripts")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| e.to_string())?;
-            for row in rows {
-                let (created, wc) = row.map_err(|e| e.to_string())?;
-                let day = parse_dt(created)
-                    .with_timezone(&Local)
-                    .date_naive()
-                    .to_string();
-                if day == today {
-                    w += wc;
-                    s += 1;
-                }
-            }
-            (w, s)
-        } else {
-            (words_today, sessions_today)
-        };
-
-        // WPM = words_with_speech / (speech_minutes). Exclude rows without speech_seconds.
-        // Never use asr_seconds as a speaking-time proxy (that was a bad heuristic).
-        let (wpm_words, total_speech, wpm_sessions): (i64, f64, i64) = conn
-            .query_row(
-                "SELECT COALESCE(SUM(word_count),0),
-                        COALESCE(SUM(speech_seconds),0),
-                        COUNT(*)
-                 FROM transcripts
-                 WHERE speech_seconds > 0.05",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap_or((0, 0.0, 0));
-        let avg_wpm = if total_speech > 0.5 && wpm_words > 0 {
-            (wpm_words as f64) / (total_speech / 60.0)
+        // WPM = words / speaking-minutes, pooled across all sessions. Only rows
+        // with measured speech (>0.05s) count — never asr_seconds (inference time).
+        //
+        // Guard against VAD under-measurement: a quiet clip with one loud transient
+        // can yield a tiny voiced value while carrying many words → an impossible
+        // per-session rate that inflates the pooled average. Floor each row's
+        // speaking time at the word-count-implied minimum (words / MAX_WPM) so no
+        // session can claim a super-human rate, and cap the reported average. The
+        // RAW speech sum is kept separately as an honest hygiene stat.
+        const MAX_WPM: f64 = 400.0;
+        let wpm_sql = format!(
+            "SELECT COALESCE(SUM(word_count),0),
+                    COALESCE(SUM(MAX(speech_seconds, word_count * 60.0 / {MAX_WPM})),0),
+                    COALESCE(SUM(speech_seconds),0),
+                    COUNT(*)
+             FROM transcripts
+             WHERE speech_seconds > 0.05"
+        );
+        let (wpm_words, wpm_speech, total_speech, wpm_sessions): (i64, f64, f64, i64) = conn
+            .query_row(&wpm_sql, [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap_or((0, 0.0, 0.0, 0));
+        let avg_wpm = if wpm_speech > 0.5 && wpm_words > 0 {
+            ((wpm_words as f64) / (wpm_speech / 60.0)).min(MAX_WPM)
         } else {
             0.0
         };
@@ -983,6 +1030,96 @@ impl Database {
             speech_seconds_total: total_speech,
             wpm_sample_sessions: wpm_sessions,
         })
+    }
+
+    /// Contiguous day-by-day series for the last `days` days (today inclusive),
+    /// oldest first, zero-filled for days with no activity. This is the primitive
+    /// behind every Insights chart — bar/line series and the GitHub-style activity
+    /// heatmap. `daily_stats` retains every active day (nothing is pruned), so any
+    /// window works, including "beyond 365 days". Reads the authoritative rollup,
+    /// so it's a single indexed range scan, not a transcript rescan.
+    pub fn daily_series(&self, days: i64) -> Result<Vec<DayCount>, String> {
+        let days = days.clamp(1, 3660); // cap at ~10y to bound the vector
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let start = (Local::now().date_naive() - Duration::days(days - 1)).to_string();
+
+        use std::collections::HashMap;
+        let mut map: HashMap<String, (i64, i64)> = HashMap::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT day, words, sessions FROM daily_stats WHERE day >= ?1")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![start], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (d, w, s) = row.map_err(|e| e.to_string())?;
+                map.insert(d, (w, s));
+            }
+        }
+
+        let mut out = Vec::with_capacity(days as usize);
+        for i in (0..days).rev() {
+            let d = (Local::now().date_naive() - Duration::days(i)).to_string();
+            let (w, s) = map.get(&d).copied().unwrap_or((0, 0));
+            out.push(DayCount { date: d, words: w, sessions: s });
+        }
+        Ok(out)
+    }
+
+    /// Contiguous month-by-month rollup for the last `months` months (this month
+    /// inclusive), oldest first, zero-filled. `date` is "YYYY-MM". Powers the
+    /// year/all-time Insights views without shipping day-granular data to the UI.
+    /// Aggregates `daily_stats` by calendar month in SQL (one grouped scan).
+    pub fn monthly_series(&self, months: i64) -> Result<Vec<DayCount>, String> {
+        use chrono::Datelike;
+        let months = months.clamp(1, 240); // cap at 20y
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        use std::collections::HashMap;
+        let mut map: HashMap<String, (i64, i64)> = HashMap::new();
+        {
+            // day is "YYYY-MM-DD" → the month key is its first 7 chars.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT substr(day,1,7) AS ym, COALESCE(SUM(words),0), COALESCE(SUM(sessions),0)
+                     FROM daily_stats GROUP BY ym",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (ym, w, s) = row.map_err(|e| e.to_string())?;
+                map.insert(ym, (w, s));
+            }
+        }
+
+        // Build the contiguous list of month keys, newest → oldest, then reverse.
+        let today = Local::now().date_naive();
+        let (mut y, mut m) = (today.year(), today.month() as i32);
+        let mut keys: Vec<String> = Vec::with_capacity(months as usize);
+        for _ in 0..months {
+            keys.push(format!("{y:04}-{m:02}"));
+            m -= 1;
+            if m == 0 {
+                m = 12;
+                y -= 1;
+            }
+        }
+        keys.reverse(); // oldest first
+        let out = keys
+            .into_iter()
+            .map(|ym| {
+                let (w, s) = map.get(&ym).copied().unwrap_or((0, 0));
+                DayCount { date: ym, words: w, sessions: s }
+            })
+            .collect();
+        Ok(out)
     }
 
     /// Export transcripts as JSON lines for backup / LoRA corpus later.
@@ -1205,6 +1342,299 @@ mod tests {
         // Most-frequent term is LAST (Whisper weights later prompt tokens more).
         let top = db.top_dictionary_terms(50).unwrap();
         assert_eq!(top.last().map(String::as_str), Some("RunPod"), "not most-frequent-last: {top:?}");
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_term_survives_purge() {
+        let dir = std::env::temp_dir().join(format!("wv-manual-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        {
+            let db = Database::open(path.clone()).unwrap();
+            // A manual, term-ONLY add (no preferred) of a plain first-cap proper noun —
+            // exactly the row the purge used to wrongly delete.
+            db.add_dictionary_term("Anthropic".into(), None).unwrap();
+        }
+        // Reopen → runs the startup purge. Manual term must survive.
+        let db2 = Database::open(path.clone()).unwrap();
+        let present = db2
+            .list_dictionary()
+            .unwrap()
+            .iter()
+            .any(|d| d.term.eq_ignore_ascii_case("Anthropic"));
+        assert!(present, "manual term 'Anthropic' was wrongly purged");
+
+        drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Analytics math (total words / WPM / streaks / words-today) ────────────
+    // These prove the numbers Wilson watches are exactly right, under the real
+    // edge cases: legacy speech=0 rows, multi-day history, streak grace + gaps.
+
+    fn fresh_db(tag: &str) -> (Database, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("wv-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(dir.join("wilson_voice.db")).unwrap();
+        (db, dir)
+    }
+
+    /// UTC instant for local noon `n` days ago — anchored at noon so day-boundary
+    /// timezone conversion can never land the session on the wrong calendar day.
+    fn days_ago_noon(n: i64) -> DateTime<Utc> {
+        let day = Local::now().date_naive() - Duration::days(n);
+        day.and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn words(n: usize) -> String {
+        (0..n).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn total_words_and_sessions_are_exact() {
+        let (db, dir) = fresh_db("total");
+        db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(2), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(1), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.total_words, 6, "total words must sum every session");
+        assert_eq!(ins.total_sessions, 3);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wpm_is_speech_weighted_and_excludes_legacy_zero_rows() {
+        let (db, dir) = fresh_db("wpm");
+        // 30 words / 30s + 30 words / 30s = 60 words / 60s = exactly 60 WPM.
+        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
+        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
+        // A legacy row with NO measured speech (speech_seconds = 0). It contributes
+        // 100 words to total, but MUST NOT enter the WPM math (no speaking time).
+        db.insert_transcript(words(100), "mlx".into(), 9.0, 0.0, 0, None).unwrap();
+
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.total_words, 160, "all words count toward the total");
+        assert!(
+            (ins.avg_wpm - 60.0).abs() < 1e-6,
+            "WPM must be 60 (speech-weighted), got {}",
+            ins.avg_wpm
+        );
+        assert_eq!(ins.wpm_sample_sessions, 2, "only speech rows are WPM samples");
+        assert!(
+            (ins.speech_seconds_total - 60.0).abs() < 1e-6,
+            "speech total must exclude the zero-speech row"
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wpm_is_clamped_against_transient_fooled_short_speech() {
+        let (db, dir) = fresh_db("wpmclamp");
+        // Normal session: 60 words / 60s = 60 WPM.
+        db.insert_transcript(words(60), "mlx".into(), 5.0, 60.0, 0, None).unwrap();
+        // Pathological: 200 words but only 0.3s "voiced" (a loud transient fooled
+        // the VAD). Un-clamped this single session is 40,000 WPM and would drag the
+        // pooled average to ~259. The word-count floor caps its speaking time at
+        // 200/400*60 = 30s → pooled = 260 words / ((60+30)/60) min = 173.3 WPM.
+        db.insert_transcript(words(200), "mlx".into(), 3.0, 0.3, 0, None).unwrap();
+
+        let ins = db.insights().unwrap();
+        assert!(ins.avg_wpm <= 400.0 + 1e-6, "WPM must be capped, got {}", ins.avg_wpm);
+        assert!(
+            (ins.avg_wpm - 173.33).abs() < 0.5,
+            "expected ~173.3 pooled WPM after the plausibility floor, got {}",
+            ins.avg_wpm
+        );
+        // Raw hygiene stat is still the true (un-floored) speech sum.
+        assert!(
+            (ins.speech_seconds_total - 60.3).abs() < 1e-6,
+            "speech_seconds_total must stay raw, got {}",
+            ins.speech_seconds_total
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn words_today_ignores_other_days() {
+        let (db, dir) = fresh_db("today");
+        // Anchor the "today" row at local noon too, so an insert landing a
+        // microsecond before local midnight can't race the day boundary.
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0))
+            .unwrap();
+        db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3))
+            .unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.words_today, 10, "words_today must exclude prior days");
+        assert_eq!(ins.sessions_today, 1);
+        assert_eq!(ins.total_words, 110, "total still spans all days");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streak_counts_consecutive_days_including_today() {
+        let (db, dir) = fresh_db("streak");
+        for n in [0, 1, 2] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        // A gap, then an old day — must not extend the current streak.
+        db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5))
+            .unwrap();
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 3, "today + 2 prior consecutive days");
+        assert_eq!(ins.longest_streak, 3);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streak_grace_allows_missing_today() {
+        let (db, dir) = fresh_db("grace");
+        // Active yesterday/-2/-3 but NOT today → streak still counts (day not over).
+        for n in [1, 2, 3] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 3, "missing-today grace: yesterday anchors the streak");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn longest_streak_spans_gaps() {
+        let (db, dir) = fresh_db("longest");
+        // Current run of 2 (yesterday, -2), older run of 4 (-5..-8).
+        for n in [1, 2, 5, 6, 7, 8] {
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+                .unwrap();
+        }
+        let ins = db.insights().unwrap();
+        assert_eq!(ins.streak_days, 2, "current streak is the recent 2-day run");
+        assert_eq!(ins.longest_streak, 4, "longest is the older 4-day run");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daily_series_is_contiguous_and_zero_filled() {
+        let (db, dir) = fresh_db("series");
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0)).unwrap();
+        db.insert_transcript_at(words(20), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3)).unwrap();
+        db.insert_transcript_at(words(30), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5)).unwrap();
+
+        let s = db.daily_series(7).unwrap();
+        assert_eq!(s.len(), 7, "series must have exactly one entry per requested day");
+        // oldest first, strictly consecutive calendar days
+        for w in s.windows(2) {
+            let a = NaiveDate::parse_from_str(&w[0].date, "%Y-%m-%d").unwrap();
+            let b = NaiveDate::parse_from_str(&w[1].date, "%Y-%m-%d").unwrap();
+            assert_eq!(b, a + Duration::days(1), "days must be contiguous & ascending");
+        }
+        // last entry is today with 10 words; days 3 and 5 back carry their counts
+        assert_eq!(s[6].words, 10, "today");
+        assert_eq!(s[3].words, 20, "3 days ago"); // index 6-3
+        assert_eq!(s[1].words, 30, "5 days ago"); // index 6-5
+        // untouched days are zero-filled, not missing
+        assert_eq!(s[5].words, 0, "yesterday had no activity → 0, not absent");
+        let total: i64 = s.iter().map(|d| d.words).sum();
+        assert_eq!(total, 60, "series words sum to the inserted total in-window");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Noon on the 15th of the month `n` months ago (mid-month → no boundary flake).
+    fn months_ago_15th(n: i64) -> DateTime<Utc> {
+        use chrono::Datelike;
+        let today = Local::now().date_naive();
+        let (mut y, mut m) = (today.year(), today.month() as i32);
+        for _ in 0..n {
+            m -= 1;
+            if m == 0 {
+                m = 12;
+                y -= 1;
+            }
+        }
+        NaiveDate::from_ymd_opt(y, m as u32, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn monthly_series_rolls_up_and_zero_fills() {
+        let (db, dir) = fresh_db("monthly");
+        // this month, and 2 months back — 1 month back is intentionally left empty.
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
+        db.insert_transcript_at(words(7), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
+        db.insert_transcript_at(words(40), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(2)).unwrap();
+
+        let s = db.monthly_series(3).unwrap();
+        assert_eq!(s.len(), 3, "one entry per requested month");
+        // keys look like YYYY-MM and are contiguous ascending
+        for e in &s {
+            assert!(e.date.len() == 7 && e.date.as_bytes()[4] == b'-', "month key YYYY-MM: {}", e.date);
+        }
+        assert_eq!(s[2].words, 17, "this month sums both sessions (10+7)");
+        assert_eq!(s[2].sessions, 2);
+        assert_eq!(s[1].words, 0, "the empty middle month is zero-filled, not absent");
+        assert_eq!(s[0].words, 40, "two months ago");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_and_clear_actually_remove_rows() {
+        // Proves the History / Dictionary / Scratchpad delete+clear paths the UI
+        // calls really remove data (the §1 "verify delete works" item), at the DB
+        // layer we can test headlessly.
+        let (db, dir) = fresh_db("delete");
+
+        // History: delete one, then clear all.
+        let a = db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(4), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        assert_eq!(db.list_transcripts(50, None).unwrap().len(), 2);
+        db.delete_transcript(&a.id).unwrap();
+        let after = db.list_transcripts(50, None).unwrap();
+        assert_eq!(after.len(), 1, "delete_transcript did not remove the row");
+        assert!(!after.iter().any(|e| e.id == a.id), "deleted id still present");
+        db.clear_transcripts().unwrap();
+        assert_eq!(db.list_transcripts(50, None).unwrap().len(), 0, "clear_transcripts failed");
+
+        // Dictionary: add then delete by id.
+        let term = db.add_dictionary_term("Anthropic".into(), None).unwrap();
+        assert!(db.list_dictionary().unwrap().iter().any(|d| d.id == term.id));
+        db.delete_dictionary_term(&term.id).unwrap();
+        assert!(
+            !db.list_dictionary().unwrap().iter().any(|d| d.id == term.id),
+            "delete_dictionary_term did not remove the term"
+        );
+
+        // Scratchpad: save then delete by id.
+        let note = db.save_scratch(None, "Title".into(), "body".into()).unwrap();
+        assert!(db.list_scratch().unwrap().iter().any(|n| n.id == note.id));
+        db.delete_scratch(&note.id).unwrap();
+        assert!(
+            !db.list_scratch().unwrap().iter().any(|n| n.id == note.id),
+            "delete_scratch did not remove the note"
+        );
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);

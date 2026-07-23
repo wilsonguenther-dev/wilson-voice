@@ -1,0 +1,264 @@
+<title>Yap — the opening pill (world fills the pill)</title>
+<style>
+  :root{ --bg:#12131a; --bg2:#181a24; --ink:#f3f2f7; --muted:#9a9db0; --card:rgba(255,255,255,.05); --line:rgba(255,255,255,.09); --accent:#ffd24a; --mono:ui-monospace,"SF Mono",Menlo,monospace; --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif; }
+  @media (prefers-color-scheme: light){:root{ --bg:#fbeadb; --bg2:#fff6ec; --ink:#3a2f2a; --muted:#8a7a6f; --card:rgba(0,0,0,.03); --line:rgba(0,0,0,.08);}}
+  :root[data-theme="dark"]{--bg:#12131a;--bg2:#181a24;--ink:#f3f2f7;--muted:#9a9db0;--card:rgba(255,255,255,.05);--line:rgba(255,255,255,.09);}
+  :root[data-theme="light"]{--bg:#fbeadb;--bg2:#fff6ec;--ink:#3a2f2a;--muted:#8a7a6f;--card:rgba(0,0,0,.03);--line:rgba(0,0,0,.08);}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--round);-webkit-font-smoothing:antialiased;line-height:1.5;}
+  .wrap{max-width:920px;margin:0 auto;padding:36px 22px 70px;}
+  header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+  .brand{display:flex;align-items:center;gap:11px;} .brand h1{margin:0;font-size:22px;font-weight:800;letter-spacing:-.02em;} .brand span{color:var(--muted);font:500 13px var(--mono);}
+  .dot{width:30px;height:30px;border-radius:9px;background:radial-gradient(120% 120% at 30% 25%,#ffe27a,#ffbf2e);box-shadow:0 3px 10px rgba(255,180,40,.4);}
+  .themeb{font:500 12px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer;}
+  .lede{margin:18px 0 20px;max-width:60ch;color:var(--muted);font-size:15px;} .lede b{color:var(--ink);}
+  .stage{position:relative;border-radius:24px;overflow:hidden;min-height:300px;border:1px solid var(--line);background:radial-gradient(120% 90% at 50% 20%, color-mix(in oklab,var(--bg2),white 5%), var(--bg2));display:grid;place-items:center;box-shadow:0 30px 70px rgba(0,0,0,.25);}
+  canvas#pet{width:100%;height:300px;display:block;image-rendering:pixelated;}
+  .bubble{position:absolute;left:50%;transform:translate(-50%,-100%) scale(.9);background:#20222e;color:#fff;border:1px solid rgba(255,255,255,.14);border-radius:13px;padding:6px 12px;font-size:14px;font-weight:700;box-shadow:0 12px 30px rgba(0,0,0,.4);white-space:nowrap;max-width:76%;opacity:0;transition:opacity .25s,transform .3s cubic-bezier(.34,1.56,.64,1);z-index:3;pointer-events:none;}
+  :root[data-theme="light"] .bubble{background:#fff;color:#3a2f2a;border-color:rgba(0,0,0,.08);}
+  .bubble.show{opacity:1;transform:translate(-50%,-100%) scale(1);}
+  .bubble::after{content:"";position:absolute;bottom:-5px;left:50%;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:inherit;border-right:1px solid rgba(255,255,255,.14);border-bottom:1px solid rgba(255,255,255,.14);}
+  .tag{position:absolute;bottom:14px;left:16px;font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
+  .dock{display:grid;grid-template-columns:1.1fr 1fr;gap:15px;margin-top:20px;} @media(max-width:720px){.dock{grid-template-columns:1fr;}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:17px;}
+  .panel h3{margin:0 0 4px;font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.09em;color:var(--muted);} .panel .hint{margin:0 0 12px;font-size:12.5px;color:var(--muted);}
+  .btn{border:0;cursor:pointer;border-radius:12px;padding:13px;font:800 15px var(--round);color:#4a3410;background:linear-gradient(180deg,#ffe27a,#ffc32e);box-shadow:0 8px 20px rgba(255,180,40,.35);transition:transform .12s;}
+  .btn:hover{transform:translateY(-1px);} .btn:disabled{opacity:.55;transform:none;cursor:default;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;}
+  .chip{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;font:600 13px var(--round);cursor:pointer;transition:.15s;}
+  .chip:hover{color:var(--ink);} .chip[aria-pressed="true"]{color:var(--ink);border-color:var(--accent);background:rgba(255,210,74,.14);box-shadow:inset 0 0 0 1px rgba(255,210,74,.4);}
+  .field{margin-top:13px;} .field label{display:flex;justify-content:space-between;font:600 12px var(--mono);color:var(--muted);margin-bottom:8px;} .field label b{color:var(--ink);}
+  input[type=range]{width:100%;accent-color:var(--accent);}
+  .tierline{margin-top:12px;padding:12px;border-radius:12px;border:1px dashed var(--line);font-size:13px;} .tierline b{color:var(--accent);}
+  footer{margin-top:22px;font:500 12px var(--mono);color:var(--muted);line-height:1.7;} footer b{color:var(--ink);}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><div class="dot"></div><div><h1>Yap</h1><span>the world fills the whole pill</span></div></div>
+    <button class="themeb" id="themeb">◐ theme</button>
+  </header>
+  <p class="lede">The pill is <b>zoomed into Yappy's face</b> at rest; when you dictate it <b>pulls back and the world fills the
+    entire pill</b>. Longer prompts add props: a paragraph → 📝 <b>notepad &amp; pencil</b>; a few paragraphs → 🧑‍💼 a
+    <b>desk + typewriter</b>; an essay → 🤓 glasses, filing your whole story.</p>
+
+  <section class="stage">
+    <div class="bubble" id="bubble"></div>
+    <canvas id="pet"></canvas>
+    <div class="tag" id="tag">idle</div>
+  </section>
+
+  <div class="dock">
+    <div class="panel">
+      <h3>Talk to Yappy</h3><p class="hint">Longer prompts unlock the notepad → receptionist beats.</p>
+      <button class="btn" id="dictate" style="width:100%">▶ Dictate a prompt</button>
+      <div class="row" style="margin-top:10px"><button class="chip" data-state="idle">Idle</button><button class="chip" data-state="listening">Listening</button><button class="chip" data-state="thinking">Thinking</button><button class="chip" data-state="done">Done</button></div>
+      <div class="field"><label>Words in this prompt <b id="wl">80</b></label><input type="range" id="words" min="1" max="320" value="80"></div>
+      <div class="tierline" id="tierline">—</div>
+    </div>
+    <div class="panel">
+      <h3>Creature</h3><p class="hint">Reusable rig — one creature config; drop in more Yap pets later.</p>
+      <div class="row" id="pets"><button class="chip" data-pet="chick" aria-pressed="true">🐥 Yappy (chick)</button></div>
+      <h3 style="margin-top:16px">Personality</h3>
+      <div class="row" id="tones"><button class="chip" data-tone="rude">Rude</button><button class="chip" data-tone="friendly" aria-pressed="true">Friendly</button><button class="chip" data-tone="rose">Rose</button></div>
+    </div>
+  </div>
+  <footer><b>New:</b> a pull-back camera so the world fills the whole pill (no black box), pencil-in-hand + a pixel typewriter on the desk, and tone-aware chatter (Rude actually sasses now). Data-driven creature + tier config → reusable for more pets.</footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $=(s)=>document.querySelector(s);
+  $("#themeb").onclick=()=>{const c=document.documentElement.getAttribute("data-theme");document.documentElement.setAttribute("data-theme",c==="dark"?"light":c==="light"?"dark":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));};
+
+  /* ── tiers: word count → persona + prop + tone-aware lines ── */
+  const TIERS=[
+    {max:5,  name:"tiny",  prop:"none",
+      say:{rude:"that it?",friendly:"got it!",rose:"mm, got it 🌸"}, work:{rude:[],friendly:[],rose:[]}},
+    {max:20, name:"quick", prop:"none",
+      say:{rude:"easy.",friendly:"nice, got it!",rose:"sweet, done 🌸"}, work:{rude:[],friendly:[],rose:[]}},
+    {max:60, name:"notes", prop:"pad",
+      say:{rude:"noted, chatterbox.",friendly:"ooh, jotting that down!",rose:"every word, noted 🌸"},
+      work:{rude:["ugh, writing…","noting your rant…"],friendly:["let me note that…","jotting it down…"],rose:["noting every word…","so worth writing 🌸"]}},
+    {max:150,name:"desk",  prop:"desk",
+      say:{rude:"filing your rant.",friendly:"one sec — filing this!",rose:"organizing it for you 🌸"},
+      work:{rude:["filing this mess…","typing, typing…","you done yet?"],friendly:["one moment, filing…","typing it up…","receptionist mode!"],rose:["typing it up 🌸","filing carefully…","almost, love…"]}},
+    {max:1e9,name:"essay", prop:"desk",
+      say:{rude:"an ESSAY? oh my.",friendly:"whoa — a whole essay!",rose:"your masterpiece, saved 🌸"},
+      work:{rude:["an ESSAY, huh…","still typing…","chapter two??","my wings hurt…"],friendly:["that's an essay…","formulating…","chapter two…","stamp, file, next!"],rose:["your whole story 🌸","typing it all…","every word matters…"]}},
+  ];
+  const tierFor=(w)=>TIERS.find(t=>w<=t.max);
+
+  function mouthDriver(){let open=0,ph=0;const g=.04,gm=.6,gn=4.5,ar=22,rr=7,br=.06,brR=2.2;
+    return{push(rms,dt){ph+=dt*brR;let t=0;if(rms>g)t=Math.min(1,Math.pow((rms-g)/(1-g),gm)*gn);const r=t>open?ar:rr;open+=(t-open)*(1-Math.exp(-r*Math.max(0,dt)));open=Math.min(1,Math.max(0,open));return t<.02?Math.max(open,(0.5+0.5*Math.sin(ph))*br):open;},reset(){open=0;}};}
+  class SOD{constructor(f,z,r,x0=0){const pf=Math.PI*f;this.k1=z/pf;this.k2=1/((2*pf)*(2*pf));this.k3=r*z/(2*pf);this.xp=x0;this.y=x0;this.yd=0;}
+    update(dt,x){const xd=(x-this.xp)/Math.max(dt,1e-4);this.xp=x;const k2=Math.max(this.k2,dt*dt/2+dt*this.k1/2,dt*this.k1);this.y+=dt*this.yd;this.yd+=dt*(x+this.k3*xd-this.y-this.k1*this.yd)/k2;return this.y;}}
+  const lerp=(a,b,t)=>a+(b-a)*t;
+
+  /* ── scene buffer (wide; the world fills its full width so it fills the pill) ── */
+  const PW=176, PH=44, GY=30, FX=88, FY=18;   // face is at (FX,FY); grass starts at GY
+  const os=document.createElement("canvas");os.width=PW;os.height=PH;const octx=os.getContext("2d");
+  const P={ sky1:"#8fd6ff",sky2:"#c6ecff",sun:"#fff2b0",cloud:"#fffaf0",grass:"#8fd06a",grassD:"#6fb84e",
+    body:"#ffd24a",light:"#ffe9a0",dark:"#eba21f",outline:"#6b3a2e",cavity:"#7a2e14",belly:"#fff2c4",
+    beak:"#ff9f1c",beakD:"#e07a12",eye:"#3a2f36",white:"#fff",blush:"#ff89a8",foot:"#f2861a",tongue:"#ff5d7a",sprout:"#e8a41f",
+    paper:"#fffdf5",paperL:"#c9c3ad",desk:"#b06a3a",deskD:"#8a4f28",glass:"#2c2a36",pencil:"#ffcf3a",pencilT:"#ff8fb0",tw:"#4a4a55",twD:"#33333d",twKey:"#d8d8e2" };
+  const ell=(cx,cy,rx,ry,c)=>{octx.fillStyle=c;for(let y=Math.floor(cy-ry);y<=Math.ceil(cy+ry);y++){const t=(y+.5-cy)/ry;if(Math.abs(t)>1)continue;const hw=rx*Math.sqrt(1-t*t);octx.fillRect(Math.round(cx-hw),y,Math.max(1,Math.round(2*hw)),1);}};
+  const rc=(x,y,w,h,c)=>{octx.fillStyle=c;octx.fillRect(Math.round(x),Math.round(y),w,h);};
+
+  const CHICK={ name:"chick", draw(cx,feetY,A){
+    const cy=feetY-11-A.hop; const rx=11+A.sx, ry=11+A.sy;
+    ell(cx+rx-1,cy+2,4,3,P.outline); ell(cx+rx-1,cy+2,3,2,P.dark);                          // tail
+    ell(cx+rx-2,cy+1-A.flap,3,4,P.outline); ell(cx+rx-2,cy+1-A.flap,2,3,P.dark);            // back wing
+    ell(cx,cy,rx+1,ry+1,P.outline); ell(cx,cy,rx,ry,P.body); ell(cx-3,cy-4,rx-4,ry-5,P.light); ell(cx,cy+5,rx-5,ry-5,P.belly);
+    const sw=Math.round(A.sway); rc(cx-1+sw,cy-ry-2,1,3,P.sprout); rc(cx+1+sw,cy-ry-3,1,3,P.sprout);
+    // front wing — holds a pencil when noting/at desk
+    const wy=cy+1-A.flap;
+    ell(cx-rx+2,wy,3,4,P.outline); ell(cx-rx+2,wy,2,3,P.body);
+    if(A.pencil){ const px=cx-rx-1, py=cy+3; rc(px-3,py-3,1,1,P.pencilT); rc(px-2,py-2,1,1,P.pencil); rc(px-1,py-1,1,1,P.pencil); rc(px,py,1,1,P.pencil); rc(px+1,py+1,1,1,P.dark); }
+    const ex=5,ey=cy+1;
+    for(const s of[-1,1]){const eXc=cx+s*ex;
+      if(A.mood>.55){rc(eXc-2,ey-1,1,1,P.eye);rc(eXc-1,ey-2,1,1,P.eye);rc(eXc,ey-2,1,1,P.eye);rc(eXc+1,ey-1,1,1,P.eye);}
+      else if(A.blink>.5){rc(eXc-2,ey,4,1,P.eye);}
+      else if(A.look==="down"){ell(eXc,ey+1,2.1,2.3,P.eye);rc(eXc-1,ey,1,1,P.white);}
+      else{ell(eXc,ey,2.2,2.7,P.eye);rc(eXc-1,ey-2,1,1,P.white);octx.globalAlpha=.7;rc(eXc+1,ey+1,1,1,P.white);octx.globalAlpha=1;}
+    }
+    if(A.glasses){ rc(cx-ex-3,ey-1,1,4,P.glass); rc(cx-ex+2,ey-1,1,4,P.glass); rc(cx-ex-3,ey-1,5,1,P.glass); rc(cx-ex-3,ey+2,5,1,P.glass);
+      rc(cx+ex-2,ey-1,1,4,P.glass); rc(cx+ex+3,ey-1,1,4,P.glass); rc(cx+ex-2,ey-1,5,1,P.glass); rc(cx+ex-2,ey+2,5,1,P.glass); rc(cx-2,ey,4,1,P.glass); }
+    const by=cy+5,f=A.beakF;
+    rc(cx-1,by-1,3,1,P.beakD); rc(cx-1,by,3,1,P.beak);
+    if(f===1){rc(cx,by+1,1,1,P.cavity);rc(cx-1,by+2,3,1,P.beakD);}
+    else if(f>=2){rc(cx-1,by+1,3,1,P.cavity);rc(cx,by+2,1,1,P.tongue);rc(cx-1,by+3,3,1,P.beakD);}
+    else{rc(cx,by+1,1,1,P.beak);}
+    octx.globalAlpha=.7; rc(cx-rx+2,cy+3,2,1,P.blush); rc(cx+rx-3,cy+3,2,1,P.blush); octx.globalAlpha=1;
+    rc(cx-3,cy+ry-1,1,2,P.foot); rc(cx+3,cy+ry-1,1,2,P.foot);
+  }};
+  let creature=CHICK;
+
+  function drawScene(A){
+    octx.clearRect(0,0,PW,PH);
+    const w=A.world;
+    { octx.globalAlpha=Math.max(0.8,w);
+      octx.fillStyle=P.sky1; octx.fillRect(0,0,PW,GY);
+      octx.fillStyle=P.sky2; octx.fillRect(0,0,PW,7);
+      ell(20,8,5,5,P.sun);
+      ell(120,7,7,2,P.cloud); ell(126,7,4,2,P.cloud); ell(64,11,6,2,P.cloud);
+      octx.fillStyle=P.grass; octx.fillRect(0,GY,PW,PH-GY); octx.fillStyle=P.grassD; octx.fillRect(0,GY,PW,2);
+      for(let x=3;x<PW;x+=9){rc(x,GY-2,1,2,P.grassD);}
+      octx.globalAlpha=1;
+    }
+    const cx=FX - (A.prop==="desk"?6:0), feet=GY;
+    if(A.prop==="pad" && A.propIn>.05){ const px=cx+13+(1-A.propIn)*18, py=GY-12;
+      octx.globalAlpha=A.propIn; rc(px,py,11,12,P.paperL); rc(px+1,py+1,9,10,P.paper);
+      for(let i=0;i<3;i++) rc(px+2,py+3+i*2,7,1,P.paperL); octx.globalAlpha=1;
+    }
+    creature.draw(cx,feet,A);
+    if(A.prop==="desk" && A.propIn>.05){ const dy=GY-2 + (1-A.propIn)*16;
+      octx.globalAlpha=Math.min(1,A.propIn+.2);
+      rc(4,dy,PW-8,8,P.desk); rc(4,dy,PW-8,2,P.deskD); rc(4,dy+7,PW-8,1,P.deskD);
+      // a little pixel TYPEWRITER on the desk
+      const tx=cx+14, ty=dy-6;
+      rc(tx,ty+2,14,5,P.tw); rc(tx,ty+2,14,1,P.twD); rc(tx+2,ty,10,3,P.tw);        // body + carriage
+      rc(tx+4,ty-3,6,3,P.paper);                                                    // paper sticking up
+      for(let k=0;k<4;k++) rc(tx+2+k*3,ty+5,2,1,P.twKey);                           // keys
+      // a small stamp/lamp
+      rc(cx-26,dy+1,4,5,P.sun);
+      octx.globalAlpha=1;
+    }
+  }
+
+  const cv=$("#pet"),ctx=cv.getContext("2d");
+  let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
+  const resize=()=>{const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);};
+  new ResizeObserver(resize).observe(cv); resize();
+
+  const S={state:"idle",words:80,tone:"friendly",nonce:0,mic:null};
+  const bubble=$("#bubble"),tag=$("#tag"),mouth=mouthDriver();
+  const R={sway:new SOD(2.2,.35,1.4), open:new SOD(3.2,.7,1.4), prop:new SOD(3,.7,1.2)};
+  const J={phase:"ground",t:0,y:0,vy:0,power:0,crouch:0};
+  const hop=(p)=>{if(J.phase==="ground"||J.phase==="land"){J.phase="crouch";J.t=0;J.power=p;}};
+  let blinkT=-1,nextBlink=1.4,elapsed=0,tPrev=0,mood=0,moodT=0,level=0,beakFrame=0,beakHold=0,openV=0,propV=0,chatN=0,chatT=0,sparkle=[];
+  const ACC={idle:"351 95% 71%",listening:"351 95% 71%",thinking:"38 92% 55%",done:"152 69% 52%"};
+  const say=(t)=>{bubble.textContent=t;bubble.classList.toggle("show",!!t);};
+
+  function propOf(){ const t=tierFor(S.words); return (S.state==="thinking"||S.state==="done")?t.prop:"none"; }
+  function setState(s){ S.state=s; tag.textContent=s; chatN=0; chatT=0;
+    const t=tierFor(S.words), tone=S.tone;
+    if(s==="listening"){moodT=0;hop(1);say("");}
+    else if(s==="thinking"){moodT=0; const wl=t.work[tone]; say(wl&&wl.length?wl[0]:"");}
+    else if(s==="done"){moodT=1;hop(1.2);burst(); say(t.say[tone]||t.say.friendly);}
+    else {moodT=0;say("");}
+    document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.state===s)));
+    updateTierline();
+  }
+  function burst(){for(let i=0;i<10;i++){const a=Math.random()*6.28,sp=24+Math.random()*36;sparkle.push({x:0,y:-4,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-22,life:1,heart:i%3===0});}}
+  const speechEnv=(t)=>{const s=Math.max(0,Math.sin(t*.013))*Math.max(0,Math.sin(t*.031+1));return Math.min(1,s*.9+.15*s);};
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+  function loop(ts){
+    const dt=Math.min(.05,(ts-tPrev)/1000||0);tPrev=ts;elapsed+=dt;
+    if(blinkT<0){nextBlink-=dt;if(nextBlink<=0)blinkT=0;} let blink=0;
+    if(blinkT>=0){blinkT+=dt;const d=.13;blink=blinkT<d/2?blinkT/(d/2):blinkT<d?1-(blinkT-d/2)/(d/2):0;if(blinkT>d){blinkT=-1;nextBlink=2+Math.random()*4;}}
+    const active=S.state!=="idle";
+    openV=Math.max(0,Math.min(1,R.open.update(dt,active?1:0)));
+    const wantProp=propOf(); propV=Math.max(0,Math.min(1,R.prop.update(dt, wantProp!=="none"?1:0)));
+    mood+=(moodT-mood)*Math.min(1,dt*10);
+    const grav=2600;
+    if(J.phase==="crouch"){J.t+=dt;J.crouch=Math.min(1,J.t/.1);if(J.t>=.1){J.phase="air";J.vy=-260*J.power;J.crouch=0;}}
+    else if(J.phase==="air"){J.vy+=grav*dt;J.y+=J.vy*dt;if(J.y>=0){J.y=0;J.phase="land";J.t=0;J.vy=0;}}
+    else if(J.phase==="land"){J.t+=dt;if(J.t>.13)J.phase="ground";}
+    else if(S.state==="listening"&&Math.random()<dt*.4)hop(.6);
+    const land=J.phase==="land"?(1-J.t/.13):0;
+    const hopPx=(-J.y/9)-J.crouch*1.4;
+    const sx=Math.round(land*2+J.crouch*1.2), sy=Math.round(-land*2-J.crouch*1.5+Math.max(-2,Math.min(2,-J.vy/240)));
+    const flap=Math.round(S.state==="listening"?Math.abs(Math.sin(elapsed*14))*2:0);
+    const sway=R.sway.update(dt,Math.sin(elapsed*3)*1+(S.state==="thinking"?.6:0));
+    if(S.state==="listening"||S.state==="thinking"){level=S.mic?S.mic():speechEnv(ts)*(S.state==="thinking"?.3:1);} else level=0;
+    const beak=mouth.push(level,dt); beakHold-=dt;
+    if(S.state==="done")beakFrame=0;
+    else if(beakHold<=0){let w=beakFrame;if(beakFrame===0&&beak>.28)w=1;else if(beakFrame===1&&beak>.6)w=2;else if(beakFrame>=2&&beak<.42)w=1;else if(beakFrame===1&&beak<.12)w=0;if(w!==beakFrame){beakFrame=w;beakHold=.05;}}
+    const t=tierFor(S.words), wl=t.work[S.tone];
+    if(S.state==="thinking"&&wl&&wl.length){chatT-=dt;if(chatT<=0){chatN++;say(wl[chatN%wl.length]);chatT=.95+Math.random()*.5;}}
+    sparkle.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=120*dt;p.life-=dt*1.2;}); sparkle=sparkle.filter(p=>p.life>0);
+    const lookMode=(wantProp!=="none"&&propV>.5)?"down":"fwd";
+    const glasses=(t.name==="desk"||t.name==="essay")&&propV>.5&&S.state!=="idle";
+    const pencil=(t.name==="notes")&&propV>.4&&S.state!=="idle";
+    drawScene({hop:hopPx,sx,sy,blink,mood,beakF:beakFrame,sway,flap,world:openV,prop:wantProp,propIn:propV,look:lookMode,glasses,pencil});
+
+    // ── the capsule + pull-back camera (world fills the whole pill) ──
+    ctx.clearRect(0,0,W,H);
+    const tierOpen=(wantProp==="desk")?1.16:(wantProp==="pad")?1.05:1;
+    const cx=W/2, cy=H*0.56;
+    const capW=lerp(66,206*tierOpen,openV), capH=lerp(20,50*tierOpen,openV);
+    const x0=cx-capW/2,y0=cy-capH/2, acc=ACC[S.state];
+    if(openV>.05){ctx.save();ctx.shadowColor=`hsla(${acc}, ${.5*openV})`;ctx.shadowBlur=22*openV;rr(x0,y0,capW,capH,capH/2);ctx.fillStyle="rgba(0,0,0,.001)";ctx.fill();ctx.restore();}
+    const g=ctx.createLinearGradient(0,y0,0,y0+capH);g.addColorStop(0,"#c6ecff");g.addColorStop(1,"#8fd6ff");
+    ctx.fillStyle=g; rr(x0,y0,capW,capH,capH/2); ctx.fill();
+    ctx.save(); rr(x0+1,y0+1,capW-2,capH-2,(capH-2)/2); ctx.clip(); ctx.imageSmoothingEnabled=false;
+    // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
+    const iw=capW-2, ih=capH-2;
+    const viewW=lerp(30,PW,openV);                 // how much of the buffer we see (widthwise)
+    const viewH=viewW*(ih/iw);                     // match the capsule aspect → no distortion
+    const vcx=FX, vcy=lerp(FY, PH*0.5, openV);      // pan from the face to the scene centre
+    ctx.drawImage(os, vcx-viewW/2, vcy-viewH/2, viewW, viewH, x0+1, y0+1, iw, ih);
+    for(const q of sparkle){ctx.save();ctx.globalAlpha=Math.max(0,q.life);ctx.translate(cx+q.x,cy+q.y);ctx.fillStyle=q.heart?"#ff6f9c":"#ffd24a";ctx.fillRect(-1,-1,2,2);ctx.restore();}
+    ctx.restore();
+    ctx.lineWidth=1; ctx.strokeStyle=openV>.05?`hsla(${acc}, .55)`:"rgba(255,255,255,.12)"; rr(x0+.5,y0+.5,capW-1,capH-1,capH/2); ctx.stroke();
+    bubble.style.left=cx+"px"; bubble.style.top=(y0-10)+"px";
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame((t)=>{tPrev=t;requestAnimationFrame(loop);});
+
+  function updateTierline(){ const t=tierFor(S.words); const persona={tiny:"quick nod",quick:"quick nod",notes:"📝 notepad + pencil",desk:"🧑‍💼 desk + typewriter",essay:"🤓 glasses, full filing"}[t.name];
+    $("#tierline").innerHTML=`<b>${t.name}</b> — ${persona}`; }
+  document.querySelectorAll("[data-state]").forEach(b=>b.onclick=()=>{if(b.dataset.state==="done")S.nonce++;setState(b.dataset.state);});
+  const words=$("#words"); words.oninput=()=>{S.words=+words.value;$("#wl").textContent=words.value;updateTierline();if(S.state!=="idle")setState(S.state);};
+  document.querySelectorAll("[data-tone]").forEach(b=>b.onclick=()=>{S.tone=b.dataset.tone;document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));if(S.state==="thinking"||S.state==="done")setState(S.state);});
+  let seq=null;
+  $("#dictate").onclick=()=>{ if(seq)return; const b=$("#dictate"); b.disabled=true; setState("listening");
+    const t=tierFor(S.words); const think=t.name==="tiny"||t.name==="quick"?500:t.name==="notes"?1700:t.name==="desk"?2500:3400;
+    const steps=[[1700,"thinking"],[think,"done"],[2600,"idle"]]; let i=0;
+    const run=()=>{if(i>=steps.length){seq=null;b.disabled=false;return;}const[ms,nx]=steps[i++];seq=setTimeout(()=>{if(nx==="done")S.nonce++;setState(nx);run();},ms);}; run();
+  };
+  updateTierline(); setState("idle");
+})();
+</script>

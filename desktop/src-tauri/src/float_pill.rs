@@ -16,8 +16,13 @@ use tauri_nspanel::{
     tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
 
-const PILL_W: f64 = 200.0;
-const PILL_H: f64 = 52.0;
+// WINDOW size — deliberately LARGER than the pill so its ambient shadow renders
+// inside the transparent window. A pill-sized window clips the shadow at its edge,
+// which reads as an ugly hard rectangle. The pill is centered inside by CSS (.stage).
+// Transparent window a bit larger than the pill: room for the expanded capsule
+// and the speech bubble above it. The visible pill is small + centered by CSS/JS.
+const PILL_W: f64 = 300.0;
+const PILL_H: f64 = 140.0;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
@@ -57,7 +62,9 @@ fn park_bottom_center(app: &AppHandle) {
     // PILL_W/H and the margin are logical points → scale to physical for centering.
     let pill_w = (PILL_W * scale) as i32;
     let pill_h = (PILL_H * scale) as i32;
-    let margin = (52.0 * scale) as i32;
+    // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
+    // taller window) then floats ~50pt up with shadow room below it.
+    let margin = (14.0 * scale) as i32;
     let x = pos.x + (size.width as i32 - pill_w) / 2;
     let y = pos.y + size.height as i32 - pill_h - margin;
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
@@ -84,15 +91,22 @@ fn apply_panel_hud(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("to_panel: {e}"))?;
 
     panel.set_level(PanelLevel::Status.value());
+    // KILL THE GREY BOX: NSPanel defaults hasShadow=YES, and macOS draws that
+    // native shadow tracing the ALPHA SILHOUETTE of the content — i.e. the outer
+    // edge of the pill's big soft CSS box-shadow, a rounded rectangle much larger
+    // than the pill. `.shadow(false)` on the builder isn't enough because to_panel
+    // re-asserts the panel default; this panel-level call is authoritative.
+    panel.set_has_shadow(false);
+    panel.set_opaque(false);
     panel.set_style_mask(
-        StyleMask::empty()
-            .nonactivating_panel()
-            .borderless()
-            .into(),
+        // Only OR the nonactivating bit — do NOT chain .borderless() (tauri-nspanel
+        // v2.1 REPLACES the mask, which can panic; window is already decorations(false)).
+        StyleMask::empty().nonactivating_panel().into(),
     );
     panel.set_collection_behavior(
         CollectionBehavior::new()
             .can_join_all_spaces()
+            .stationary() // pin across Space swipes
             .full_screen_auxiliary()
             .ignores_cycle()
             .into(),
@@ -118,6 +132,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             .inner_size(PILL_W, PILL_H)
             .resizable(false)
             .decorations(false)
+            .shadow(false) // no NSWindow shadow → only the pill's CSS shadow shows (kills the grey box)
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false)
@@ -142,7 +157,10 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
     park_bottom_center(app);
 
     if let Some(w) = app.get_webview_window("float") {
-        let _ = w.set_ignore_cursor_events(false);
+        // Click-THROUGH: the pill is a HUD indicator over other apps and its window
+        // is much larger than the visible pill (shadow room), so it must never
+        // intercept clicks in the transparent margin. Control is via fn / tray.
+        let _ = w.set_ignore_cursor_events(true);
         let _ = w.set_always_on_top(true);
         // Transparent content so only CSS pill paints
         let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));

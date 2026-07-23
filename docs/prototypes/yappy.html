@@ -1,0 +1,293 @@
+<title>Yap — Yappy's little world</title>
+<style>
+  :root{
+    --bg:#12131a; --bg2:#181a24; --ink:#f3f2f7; --muted:#9a9db0;
+    --card:rgba(255,255,255,.05); --line:rgba(255,255,255,.09);
+    --accent:#ffd24a; --mono:ui-monospace,"SF Mono",Menlo,monospace; --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: light){:root{ --bg:#fbeadb; --bg2:#fff6ec; --ink:#3a2f2a; --muted:#8a7a6f; --card:rgba(0,0,0,.03); --line:rgba(0,0,0,.08);}}
+  :root[data-theme="dark"]{--bg:#12131a;--bg2:#181a24;--ink:#f3f2f7;--muted:#9a9db0;--card:rgba(255,255,255,.05);--line:rgba(255,255,255,.09);}
+  :root[data-theme="light"]{--bg:#fbeadb;--bg2:#fff6ec;--ink:#3a2f2a;--muted:#8a7a6f;--card:rgba(0,0,0,.03);--line:rgba(0,0,0,.08);}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--round);-webkit-font-smoothing:antialiased;line-height:1.5;}
+  .wrap{max-width:960px;margin:0 auto;padding:38px 22px 70px;}
+  header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+  .brand{display:flex;align-items:center;gap:11px;} .brand h1{margin:0;font-size:22px;font-weight:800;letter-spacing:-.02em;} .brand span{color:var(--muted);font:500 13px var(--mono);}
+  .dot{width:30px;height:30px;border-radius:9px;background:radial-gradient(120% 120% at 30% 25%,#ffe27a,#ffbf2e);box-shadow:0 3px 10px rgba(255,180,40,.4);}
+  .themeb{font:500 12px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer;}
+  .lede{margin:18px 0 22px;max-width:62ch;color:var(--muted);font-size:15px;} .lede b{color:var(--ink);}
+  .stage{position:relative;border-radius:26px;overflow:hidden;min-height:430px;border:1px solid var(--line);
+    background:radial-gradient(120% 90% at 50% 12%, color-mix(in oklab,var(--bg2),white 6%), var(--bg2));box-shadow:0 30px 70px rgba(0,0,0,.25);display:grid;place-items:center;}
+  canvas#pet{width:100%;height:430px;display:block;image-rendering:pixelated;}
+  .bubble{position:absolute;left:50%;transform:translate(-50%,0) scale(.9);
+    background:#20222e;color:#fff;border:1px solid rgba(255,255,255,.14);border-radius:13px;padding:7px 13px;font-size:14.5px;font-weight:600;
+    box-shadow:0 12px 30px rgba(0,0,0,.4);white-space:nowrap;max-width:70%;opacity:0;transition:opacity .25s,transform .3s cubic-bezier(.34,1.56,.64,1);z-index:3;pointer-events:none;}
+  :root[data-theme="light"] .bubble{background:#fff;color:#3a2f2a;border-color:rgba(0,0,0,.08);}
+  .bubble.show{opacity:1;transform:translate(-50%,0) scale(1);}
+  .bubble::after{content:"";position:absolute;bottom:-5px;left:50%;transform:translateX(-50%) rotate(45deg);width:9px;height:9px;background:inherit;border-right:1px solid rgba(255,255,255,.14);border-bottom:1px solid rgba(255,255,255,.14);}
+  .tag{position:absolute;bottom:14px;left:16px;font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);z-index:3;}
+  .dock{display:grid;grid-template-columns:1.1fr 1fr;gap:15px;margin-top:20px;} @media(max-width:720px){.dock{grid-template-columns:1fr;}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:17px;}
+  .panel h3{margin:0 0 4px;font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.09em;color:var(--muted);} .panel .hint{margin:0 0 12px;font-size:12.5px;color:var(--muted);}
+  .btn{border:0;cursor:pointer;border-radius:12px;padding:13px;font:800 15px var(--round);color:#4a3410;background:linear-gradient(180deg,#ffe27a,#ffc32e);box-shadow:0 8px 20px rgba(255,180,40,.35);transition:transform .12s;}
+  .btn.ghost{background:var(--card);color:var(--ink);border:1px solid var(--line);box-shadow:none;font-weight:600;font-size:13.5px;padding:10px 12px;}
+  .btn:hover{transform:translateY(-1px);} .btn:disabled{opacity:.55;transform:none;cursor:default;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;}
+  .chip{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:7px 13px;font:600 13px var(--round);cursor:pointer;transition:.15s;}
+  .chip:hover{color:var(--ink);} .chip[aria-pressed="true"]{color:var(--ink);border-color:var(--accent);background:rgba(255,210,74,.14);box-shadow:inset 0 0 0 1px rgba(255,210,74,.4);}
+  .field{margin-top:13px;} .field label{display:flex;justify-content:space-between;font:600 12px var(--mono);color:var(--muted);margin-bottom:8px;} .field label b{color:var(--ink);}
+  input[type=range]{width:100%;accent-color:var(--accent);}
+  .toggle{display:flex;align-items:center;justify-content:space-between;margin-top:13px;gap:12px;} .toggle span{font-size:13.5px;} .toggle small{display:block;color:var(--muted);font:400 11.5px var(--mono);}
+  .sw{position:relative;width:44px;height:26px;flex:none;} .sw input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;} .sw .tk{position:absolute;inset:0;border-radius:999px;background:var(--line);transition:.2s;} .sw .kn{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:.2s;} .sw input:checked~.tk{background:var(--accent);} .sw input:checked~.kn{left:21px;}
+  .preview{margin-top:15px;padding:13px;border-radius:12px;border:1px dashed var(--line);} .preview .bk{font:600 10.5px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);} .preview .ln{font-size:17px;font-weight:700;margin-top:6px;min-height:24px;}
+  footer{margin-top:24px;font:500 12px var(--mono);color:var(--muted);line-height:1.7;} footer b{color:var(--ink);}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><div class="dot"></div><div><h1>Yap</h1><span>Yappy lives in your menu bar</span></div></div>
+    <button class="themeb" id="themeb">◐ theme</button>
+  </header>
+  <p class="lede">No box — the pill is a tiny <b>world</b> Yappy lives in. It <b>wanders and pecks</b> when idle; when you start
+    dictating it <b>runs up to the front</b>, perks up, and its beak moves with your voice; while it works it <b>chatters</b>
+    ("formulating…"), then yaps a line and pastes. Real pixel diorama, hand-coded.</p>
+
+  <section class="stage">
+    <div class="bubble" id="bubble"></div>
+    <canvas id="pet"></canvas>
+    <div class="tag" id="tag">idle</div>
+  </section>
+
+  <div class="dock">
+    <div class="panel">
+      <h3>Play with Yappy</h3><p class="hint">Run the flow, or move its beak with your real mic.</p>
+      <div class="row"><button class="btn" id="dictate" style="flex:1">▶ Dictate a prompt</button><button class="btn ghost" id="mic">🎤 My voice</button></div>
+      <div class="row" style="margin-top:10px"><button class="chip" data-state="idle">Idle</button><button class="chip" data-state="listening">Listening</button><button class="chip" data-state="thinking">Thinking</button><button class="chip" data-state="done">Done</button><button class="chip" data-state="sleepy">Sleepy</button></div>
+      <div class="field"><label>Words in this prompt <b id="wl">32</b></label><input type="range" id="words" min="1" max="300" value="32"></div>
+    </div>
+    <div class="panel">
+      <h3>Personality</h3><p class="hint">Chatter while working, and its final line.</p>
+      <div class="row" id="tones"><button class="chip" data-tone="rude">Rude</button><button class="chip" data-tone="friendly" aria-pressed="true">Friendly</button><button class="chip" data-tone="rose">Rose</button><button class="chip" data-tone="off">Off</button></div>
+      <div class="toggle"><span>Curse filter <small>cleans the Rude voice (damn → dang)</small></span><label class="sw"><input type="checkbox" id="curse" checked><span class="tk"></span><span class="kn"></span></label></div>
+      <div class="preview"><div class="bk"><span id="bk">medium</span> · <span id="tn">friendly</span></div><div class="ln" id="pl">—</div></div>
+    </div>
+  </div>
+  <footer><b>A pixel diorama:</b> sky, grass, and a wandering chick rendered to a 108×70 buffer, scaled with smoothing off. Waddle-walk + run cycle, crouch-hops, blink, sleepy, frame-based beak, and working chatter — all hand-coded. In the app the pill window <em>is</em> this world.</footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $=(s)=>document.querySelector(s); const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $("#themeb").onclick=()=>{const c=document.documentElement.getAttribute("data-theme");document.documentElement.setAttribute("data-theme",c==="dark"?"light":c==="light"?"dark":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));};
+
+  const RUDE={tiny:["got it, got it.","okay, mapping it."],short:["easy.","say less.","on it."],medium:["okay you've got things to say.","big thoughts."],long:["damn, you're yapping a lot.","you forgot how to type?"],epic:["oh my gosh bro… am I your only friend?","what a monologue."]};
+  const RUDE_C={...RUDE,long:["dang, you're yapping a lot.","you forgot how to type?"],epic:["oh my gosh… am I your only friend?","what a monologue."]};
+  const FRIEND={tiny:["got it!","on it!"],short:["nice, got that.","you got it!"],medium:["ooh, lots to say!","love the detail."],long:["wow, lots to work with!","you're on a roll!"],epic:["a whole story — love it!","you have SO much to say!"]};
+  const ROSE={tiny:["mm, got it 🌸","of course."],short:["sweet, got that.","anything for you."],medium:["ooh, tell me more.","I love hearing you."],long:["you could talk all day 🌸","I hang on every word."],epic:["never stop talking to me.","I'd listen forever 🌸"]};
+  // working chatter while transcribing / pasting
+  const WORK={short:["got it…","one sec…"],medium:["okay okay…","typing it…"],long:["formulating…","almost there…","writing it out…"],epic:["formulating, formulating…","that's an essay…","hang on hang on…","big one…"]};
+  const bucket=(w)=>w<=5?"tiny":w<=20?"short":w<=60?"medium":w<=150?"long":"epic";
+  const tbl=(t,c)=>t==="rude"?(c?RUDE_C:RUDE):t==="friendly"?FRIEND:t==="rose"?ROSE:null;
+  const line=(w,t,c,n=0)=>{const T=tbl(t,c);if(!T)return"";const o=T[bucket(Math.max(0,w|0))];return o[((n%o.length)+o.length)%o.length];};
+  const workLine=(w,n)=>{const b=bucket(Math.max(0,w|0)); const o=WORK[b]||WORK.medium; return o[n%o.length];};
+  function mouthDriver(){let open=0,ph=0;const g=.04,gm=.6,gn=4.5,ar=22,rr=7,br=.06,brR=2.2;
+    return{push(rms,dt){ph+=dt*brR;let t=0;if(rms>g)t=Math.min(1,Math.pow((rms-g)/(1-g),gm)*gn);const r=t>open?ar:rr;open+=(t-open)*(1-Math.exp(-r*Math.max(0,dt)));open=Math.min(1,Math.max(0,open));return t<.02?Math.max(open,(0.5+0.5*Math.sin(ph))*br):open;},reset(){open=0;}};}
+
+  /* ── pixel diorama buffer ── */
+  const PW=108, PH=70, GY=52;   // ground line
+  const os=document.createElement("canvas"); os.width=PW; os.height=PH; const octx=os.getContext("2d");
+  const C={ sky1:"#ffe6c0", sky2:"#ffd39a", sun:"#fff2b0", cloud:"#fffaf0",
+    grass:"#8fd06a", grassD:"#6fb84e", dirt:"#caa46a",
+    body:"#ffd24a", light:"#ffe9a0", dark:"#eba21f", deep:"#cf7f2a", outline:"#6b3a2e", cavity:"#7a2e14", belly:"#fff2c4",
+    beak:"#ff9f1c", beakD:"#e07a12", eye:"#3a2f36", white:"#ffffff", blush:"#ff89a8", foot:"#f2861a", tongue:"#ff5d7a", sprout:"#e8a41f", pot:"#d8894a", leaf:"#79c257", petal:"#ff8fb0" };
+  function ell(cx,cy,rx,ry,col){ octx.fillStyle=col; for(let y=Math.floor(cy-ry);y<=Math.ceil(cy+ry);y++){ const t=(y+.5-cy)/ry; if(Math.abs(t)>1)continue; const hw=rx*Math.sqrt(1-t*t); octx.fillRect(Math.round(cx-hw),y,Math.max(1,Math.round(2*hw)),1);} }
+  const rct=(x,y,w,h,col)=>{ octx.fillStyle=col; octx.fillRect(Math.round(x),Math.round(y),w,h); };
+
+  function drawScene(){
+    // sky bands
+    octx.fillStyle=C.sky1; octx.fillRect(0,0,PW,GY);
+    octx.fillStyle=C.sky2; octx.fillRect(0,GY-14,PW,14);
+    // sun
+    octx.fillStyle=C.sun; ell(16,13,7,7,C.sun);
+    // clouds
+    octx.fillStyle=C.cloud; ell(74,12,7,3,C.cloud); ell(80,12,5,3,C.cloud); ell(40,20,6,2,C.cloud);
+    // ground
+    octx.fillStyle=C.grass; octx.fillRect(0,GY,PW,PH-GY);
+    octx.fillStyle=C.grassD; octx.fillRect(0,GY,PW,2);
+    // grass tufts
+    octx.fillStyle=C.grassD; for(let x=4;x<PW;x+=11){ rct(x,GY-2,1,2); rct(x+2,GY-3,1,3); rct(x+1,GY-2,1,2); }
+    // little flower + pot on the right
+    rct(94,GY-6,1,6,C.leaf); octx.fillStyle=C.petal; ell(94.5,GY-7,2,2,C.petal); octx.fillStyle=C.sun; rct(94,GY-7,1,1);
+    // pot on left
+    octx.fillStyle=C.pot; octx.fillRect(8,GY-4,7,4); octx.fillStyle=C.leaf; ell(11.5,GY-6,3,3,C.leaf);
+  }
+
+  // chick at buffer center (cx, feetY), P = anim params
+  function drawChick(cx, feetY, P){
+    const bob=P.bob, cy=feetY-13 - P.hop + bob;
+    const rx=13+P.sx, ry=13+P.sy;
+    // ground contact shadow
+    octx.fillStyle="rgba(60,90,40,.22)"; for(let y=feetY-1;y<=feetY+1;y++){ const t=(y-feetY)/1.5; const hw=(11-P.hop*.5)*Math.sqrt(Math.max(0,1-t*t)); octx.fillRect(Math.round(cx-hw),y,Math.max(1,Math.round(2*hw)),1);}
+    ell(cx+rx-1,cy+2,5,4,C.outline); ell(cx+rx-1,cy+2,4,3,C.dark);        // tail (outlined)
+    ell(cx+rx-2,cy+1-P.flap,4,6,C.outline); ell(cx+rx-2,cy+1-P.flap,3,5,C.dark); // back wing
+    ell(cx,cy,rx+1,ry+1,C.outline);                // warm-brown silhouette outline
+    ell(cx,cy,rx,ry,C.body);                       // body
+    ell(cx-3,cy-4,rx-4,ry-5,C.light);              // top light
+    ell(cx,cy+5,rx-5,ry-5,C.belly);                // belly
+    // sprout
+    const sw=Math.round(P.sway); rct(cx-1+sw,cy-ry-3,1,3,C.sprout); rct(cx+1+sw,cy-ry-4,1,4,C.sprout); rct(cx+sw,cy-ry-2,1,2,C.sprout);
+    ell(cx-rx+2,cy+1-P.flap,4,6,C.outline); ell(cx-rx+2,cy+1-P.flap,3,5,C.body); rct(cx-rx+1,cy-1-P.flap,1,4,C.dark);  // front wing (outlined)
+    // eyes
+    const ex=6, ey=cy+1;
+    for(const s of [-1,1]){ const eXc=cx+s*ex;
+      if(P.mood>.55){ octx.fillStyle=C.eye; rct(eXc-2,ey-1,1,1); rct(eXc-1,ey-2,1,1); rct(eXc,ey-2,1,1); rct(eXc+1,ey-1,1,1); }
+      else if(P.blink>.5||P.mood<-.5){ octx.fillStyle=C.eye; rct(eXc-2,ey+(P.mood<-.5?1:0),4,1); }
+      else { ell(eXc,ey,2.4,3,C.eye); octx.fillStyle=C.white; rct(eXc-1+Math.round(P.look),ey-2+Math.round(P.lookY),1,1); octx.globalAlpha=.7; rct(eXc+1,ey+1,1,1); octx.globalAlpha=1; }
+    }
+    // BEAK — real hinge with a DARK CAVITY (frames 0 closed / 1 ajar / 2 wide).
+    // Fixed upper mandible; lower drops ≤2px; the reveal is a dark mouth interior
+    // (not body-yellow), with a seam so the beak reads as separate from the body.
+    const by=cy+6, f=P.beakF;
+    rct(cx-1,by-1,3,1,C.beakD);                    // seam: beak base vs body
+    octx.fillStyle=C.beak; rct(cx-1,by,3,1);        // upper mandible (fixed)
+    if(f===1){ octx.fillStyle=C.cavity; rct(cx,by+1,1,1); octx.fillStyle=C.beakD; rct(cx-1,by+2,3,1); rct(cx,by+3,1,1); }
+    else if(f>=2){ octx.fillStyle=C.cavity; rct(cx-1,by+1,3,1); octx.fillStyle=C.tongue; rct(cx,by+2,1,1); octx.fillStyle=C.beakD; rct(cx-1,by+3,3,1); rct(cx,by+4,1,1); }
+    else { octx.fillStyle=C.beak; rct(cx,by+1,1,1); }
+    // blush
+    octx.fillStyle=C.blush; octx.globalAlpha=.75; rct(cx-rx+2,cy+3,2,1); rct(cx+rx-3,cy+3,2,1); octx.globalAlpha=1;
+    // feet (waddle step)
+    octx.fillStyle=C.foot; const st=P.step;
+    rct(cx-4+ (st>0?1:0), cy+ry-1,1,2); rct(cx-5+(st>0?1:0),cy+ry+1,3,1);
+    rct(cx+4+ (st<0?-1:0), cy+ry-1,1,2); rct(cx+3+(st<0?-1:0),cy+ry+1,3,1);
+  }
+
+  class SOD{ constructor(f,z,r,x0=0){ const pf=Math.PI*f; this.k1=z/pf; this.k2=1/((2*pf)*(2*pf)); this.k3=r*z/(2*pf); this.xp=x0; this.y=x0; this.yd=0; }
+    update(dt,x){ const xd=(x-this.xp)/Math.max(dt,1e-4); this.xp=x; const k2=Math.max(this.k2,dt*dt/2+dt*this.k1/2,dt*this.k1); this.y+=dt*this.yd; this.yd+=dt*(x+this.k3*xd-this.y-this.k1*this.yd)/k2; return this.y; } }
+
+  const cv=$("#pet"), ctx=cv.getContext("2d");
+  let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
+  const resize=()=>{const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);ctx.imageSmoothingEnabled=false;};
+  new ResizeObserver(resize).observe(cv); resize();
+
+  const S={state:"idle",words:32,tone:"friendly",curse:true,nonce:0,mic:null};
+  const bubble=$("#bubble"), tag=$("#tag"), mouth=mouthDriver();
+  const R={sway:new SOD(2.2,.35,1.4), look:new SOD(3.5,.7,0), lookY:new SOD(3.5,.7,0)};
+  const J={phase:"ground",t:0,y:0,vy:0,power:0,crouch:0};
+  function hop(p){ if(J.phase==="ground"||J.phase==="land"){J.phase="crouch";J.t=0;J.power=p;} }
+  let blinkT=-1,nextBlink=1.4, elapsed=0,tPrev=0, eyeWide=0,eyeWideT=0, mood=0,moodT=0, idleFor=0, sparkle=[], beak=0, level=0, beakFrame=0, beakHold=0;
+  const chatty=(w)=>{const b=bucket(w);return b==="medium"||b==="long"||b==="epic";};  // short/tiny land instantly, no "working" line
+  // world movement
+  let petX=54, petTarget=54, walkPhase=0, moving=false, wanderTimer=2, chatterTimer=0, chatterN=0;
+
+  function say(txt){ bubble.textContent=txt; bubble.classList.toggle("show",!!txt); }
+  function setState(s){ S.state=s; tag.textContent=s; idleFor=0; chatterN=0; chatterTimer=0;
+    if(s==="listening"){eyeWideT=1;moodT=0;petTarget=54;hop(1);}
+    else if(s==="thinking"){eyeWideT=.2;moodT=0;petTarget=54; say(chatty(S.words)?workLine(S.words,0):"");}
+    else if(s==="done"){moodT=1;eyeWideT=.4;petTarget=72;hop(1.3);burst();say(line(S.words,S.tone,S.curse,S.nonce));}
+    else if(s==="sleepy"){eyeWideT=-1;moodT=0;say("");}
+    else {eyeWideT=0;moodT=0;say("");}
+    document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.state===s)));
+  }
+  function burst(){ for(let i=0;i<14;i++){const a=Math.random()*6.28,sp=30+Math.random()*50,heart=i%3===0; sparkle.push({x:0,y:-6,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-30,life:1,heart});} }
+  const speechEnv=(t)=>{const s=Math.max(0,Math.sin(t*.013))*Math.max(0,Math.sin(t*.031+1));return Math.min(1,s*.9+.15*s);};
+
+  function loop(ts){
+    const dt=Math.min(.05,(ts-tPrev)/1000||0); tPrev=ts; elapsed+=dt; idleFor+=dt;
+    if(S.state==="idle"&&idleFor>10)setState("sleepy");
+    // blink
+    if(blinkT<0){nextBlink-=dt;if(nextBlink<=0)blinkT=0;} let blink=0;
+    if(blinkT>=0){blinkT+=dt;const d=.13;blink=blinkT<d/2?blinkT/(d/2):blinkT<d?1-(blinkT-d/2)/(d/2):0;if(blinkT>d){blinkT=-1;nextBlink=2+Math.random()*4;}}
+    // wander (idle)
+    if(S.state==="idle"){ wanderTimer-=dt; if(wanderTimer<=0){ petTarget=20+Math.random()*68; wanderTimer=2+Math.random()*3.5; } }
+    // move toward target (run when active, stroll when idle)
+    const active=(S.state!=="idle"&&S.state!=="sleepy");
+    const speed=active?70:16;
+    const dx=petTarget-petX; moving=Math.abs(dx)>1.2;
+    if(moving){ petX+=Math.sign(dx)*Math.min(Math.abs(dx),speed*dt); walkPhase+=dt*(active?18:9); } else walkPhase*=0;
+    // gaze
+    let lookTx=0,lookTy=0;
+    if(S.state==="idle"&&!moving){ lookTx=Math.sin(elapsed*.6)*1.2; } else if(S.state==="thinking"){ lookTx=Math.sin(elapsed)*1; lookTy=-1; }
+    const look=R.look.update(dt,lookTx), lookY=R.lookY.update(dt,lookTy);
+    eyeWide+=(eyeWideT-eyeWide)*Math.min(1,dt*8); mood+=(moodT-mood)*Math.min(1,dt*10);
+    // hop physics
+    const grav=2600;
+    if(J.phase==="crouch"){J.t+=dt;J.crouch=Math.min(1,J.t/.11);if(J.t>=.11){J.phase="air";J.vy=-360*J.power;J.crouch=0;}}
+    else if(J.phase==="air"){J.vy+=grav*dt;J.y+=J.vy*dt;if(J.y>=0){J.y=0;J.phase="land";J.t=0;J.vy=0;}}
+    else if(J.phase==="land"){J.t+=dt;if(J.t>.14)J.phase="ground";}
+    else if(S.state==="idle"&&!moving&&Math.random()<dt*.25)hop(.6);
+    const land=J.phase==="land"?(1-J.t/.14):0;
+    const airStretch=Math.max(-2,Math.min(3,-J.vy/220));
+    const hopPx=(-J.y/6) - J.crouch*2;
+    const sx=Math.round(-airStretch*.5 + land*2 + J.crouch*1.4);
+    const sy=Math.round(airStretch*.7 - land*2.2 - J.crouch*2);
+    // waddle bob + step
+    const bob=moving? -Math.round(Math.abs(Math.sin(walkPhase))) : 0;
+    const step=moving? (Math.sin(walkPhase)>0?1:-1) : 0;
+    const flap=Math.round((moving?Math.abs(Math.sin(walkPhase))*2:0) + (S.state==="listening"?Math.abs(Math.sin(elapsed*14))*2:0));
+    const sway=R.sway.update(dt, Math.sin(elapsed*3)*1.2 + look*.6 + (moving?Math.sin(walkPhase)*1.5:0));
+    // mouth (frame-based beak)
+    if(S.state==="listening"||S.state==="thinking"){level=S.mic?S.mic():(reduce?.2:speechEnv(ts)*(S.state==="thinking"?.3:1));} else level=0;
+    beak=mouth.push(level,dt);
+    // quantize to 3 frames with hysteresis + min-hold so single pixels don't strobe
+    beakHold-=dt;
+    if(S.state==="done"){ beakFrame=0; }
+    else if(beakHold<=0){ let w=beakFrame;
+      if(beakFrame===0&&beak>.28)w=1; else if(beakFrame===1&&beak>.6)w=2;
+      else if(beakFrame>=2&&beak<.42)w=1; else if(beakFrame===1&&beak<.12)w=0;
+      if(w!==beakFrame){ beakFrame=w; beakHold=.05; } }
+    const beakF=beakFrame;
+    // working chatter — only for longer prompts (short ones land instantly)
+    if(S.state==="thinking"&&chatty(S.words)){ chatterTimer-=dt; if(chatterTimer<=0){ chatterN++; say(workLine(S.words,chatterN)); chatterTimer=.9+Math.random()*.5; } }
+    // particles
+    sparkle.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=140*dt;p.life-=dt*1.1;}); sparkle=sparkle.filter(p=>p.life>0);
+
+    // render buffer
+    drawScene();
+    drawChick(Math.round(petX)*PW/108, GY, {hop:hopPx,sx,sy,bob,step,blink,look,lookY,mood,beakF,sway,flap});
+    // to screen
+    render(hopPx);
+    // bubble follows the pet
+    positionBubble();
+    requestAnimationFrame(loop);
+  }
+
+  let worldRect={x:0,y:0,w:0,h:0,scale:1};
+  function render(hopPx){
+    ctx.clearRect(0,0,W,H);
+    // world window (rounded, cozy — no device box)
+    const ww=Math.min(W*.7,430), wh=ww*PH/PW, wx=(W-ww)/2, wy=(H-wh)/2 - 6;
+    worldRect={x:wx,y:wy,w:ww,h:wh,scale:ww/PW};
+    ctx.save(); ctx.fillStyle="rgba(0,0,0,.28)"; rr(wx+6,wy+10,ww,wh,20); ctx.fill(); ctx.restore();
+    ctx.save(); rr(wx,wy,ww,wh,20); ctx.clip();
+    ctx.imageSmoothingEnabled=false; ctx.drawImage(os,wx,wy,ww,wh);
+    // gentle vignette
+    const vg=ctx.createRadialGradient(wx+ww/2,wy+wh*.4,wh*.2,wx+ww/2,wy+wh*.5,wh*.8); vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(20,20,40,.16)"); ctx.fillStyle=vg; ctx.fillRect(wx,wy,ww,wh);
+    // sparkles over the pet
+    const pxS=wx+ (petX*PW/108)*worldRect.scale, pyS=wy+(GY-13-hopPx)*worldRect.scale;
+    for(const q of sparkle){ ctx.save(); ctx.globalAlpha=Math.max(0,q.life); ctx.translate(pxS+q.x*worldRect.scale*.4,pyS+q.y*worldRect.scale*.4); if(q.heart){ctx.fillStyle="#ff6f9c";heart(ctx,worldRect.scale*2.2);}else{ctx.fillStyle="#ffd24a";star(ctx,worldRect.scale*1.8);} ctx.restore(); }
+    ctx.restore();
+    // soft rim
+    ctx.strokeStyle="rgba(255,255,255,.12)"; ctx.lineWidth=1.5; rr(wx,wy,ww,wh,20); ctx.stroke();
+  }
+  function positionBubble(){
+    const pxS=worldRect.x + (petX*PW/108)*worldRect.scale;
+    const pyS=worldRect.y + (GY-26)*worldRect.scale;
+    bubble.style.left=pxS+"px"; bubble.style.top=(pyS-18)+"px";
+  }
+  function rr(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  function star(c,s){ c.beginPath(); for(let i=0;i<5;i++){const a=-Math.PI/2+i*Math.PI*2/5;c.lineTo(Math.cos(a)*s,Math.sin(a)*s);const b=a+Math.PI/5;c.lineTo(Math.cos(b)*s*.45,Math.sin(b)*s*.45);} c.closePath(); c.fill(); }
+  function heart(c,s){ c.beginPath(); c.moveTo(0,s*.3); c.bezierCurveTo(s,-s*.5,s*.5,-s,0,-s*.2); c.bezierCurveTo(-s*.5,-s,-s,-s*.5,0,s*.3); c.fill(); }
+
+  requestAnimationFrame((t)=>{tPrev=t;requestAnimationFrame(loop);});
+
+  document.querySelectorAll("[data-state]").forEach(b=>b.onclick=()=>{ if(b.dataset.state==="done")S.nonce++; setState(b.dataset.state); });
+  const words=$("#words"); words.oninput=()=>{S.words=+words.value;$("#wl").textContent=words.value;pv();};
+  document.querySelectorAll("[data-tone]").forEach(b=>b.onclick=()=>{S.tone=b.dataset.tone;document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));pv();});
+  $("#curse").onchange=e=>{S.curse=e.target.checked;pv();};
+  function pv(){$("#bk").textContent=bucket(S.words);$("#tn").textContent=S.tone;$("#pl").textContent=line(S.words,S.tone,S.curse,S.nonce)||"— (Yappy stays quiet)";}
+  let seq=null;
+  $("#dictate").onclick=()=>{ if(seq)return; const b=$("#dictate"); b.disabled=true; setState("listening"); const tk=bucket(S.words), think=(tk==="tiny"||tk==="short")?450:tk==="medium"?1500:tk==="long"?2400:3200; const steps=[[1900,"thinking"],[think,"done"],[3000,"idle"]]; let i=0; const run=()=>{if(i>=steps.length){seq=null;b.disabled=false;return;}const[ms,nx]=steps[i++];seq=setTimeout(()=>{if(nx==="done")S.nonce++;setState(nx);run();},ms);}; run(); };
+  $("#mic").onclick=async()=>{ if(S.mic)return; try{const st=await navigator.mediaDevices.getUserMedia({audio:true});const ac=new(window.AudioContext||window.webkitAudioContext)();const src=ac.createMediaStreamSource(st);const an=ac.createAnalyser();an.fftSize=512;src.connect(an);const buf=new Uint8Array(an.fftSize);S.mic=()=>{an.getByteTimeDomainData(buf);let s=0;for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128;s+=v*v;}return Math.min(1,Math.sqrt(s/buf.length)*4.5);};$("#mic").textContent="🎤 live";setState("listening");}catch(e){$("#mic").textContent="🎤 blocked";} };
+  pv(); setState("idle");
+})();
+</script>
