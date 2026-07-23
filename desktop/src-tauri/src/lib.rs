@@ -10,6 +10,7 @@ mod db;
 mod dictation;
 mod float_pill;
 mod focus;
+mod logging;
 mod mic_auth;
 mod paste;
 mod permissions;
@@ -600,6 +601,17 @@ fn open_data_dir() -> Result<(), String> {
     Ok(())
 }
 
+/// Export diagnostics (YV7): reveal the rotating logs folder (`data_dir/logs/`)
+/// so users can attach yap.log to a support/bug report. Reuses the open pattern.
+#[tauri::command]
+fn open_logs_dir() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(logging::logs_dir(&data_dir()))
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Export transcript history to Application Support for backup / future LoRA corpus.
 #[tauri::command]
 fn export_history(state: State<'_, Arc<AppState>>) -> Result<String, String> {
@@ -655,7 +667,9 @@ fn setup_asr_venv() -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
+    // a panic hook — keeps the console output and mirrors it to disk for support.
+    logging::init(&data_dir());
 
     // NEVER resolve ASR to ~/Desktop — that triggers Desktop folder TCC on every stop.
     // Prefer pre-built Application Support venv; seed worker file only (no Desktop read).
@@ -767,6 +781,7 @@ pub fn run() {
             copy_entry,
             paste_entry,
             open_data_dir,
+            open_logs_dir,
             export_history,
             recompute_stats,
             open_privacy_settings,
