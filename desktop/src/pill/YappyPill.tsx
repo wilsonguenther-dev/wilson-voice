@@ -45,6 +45,19 @@ const workLine = (w: number, n: number) => { const o = WORK[CHAT_TONE][bucketFor
 // prop/persona keyed off the transcript word count
 const propFor = (w: number): Prop => { const b = bucketFor(w); return b === "medium" ? "pad" : (b === "long" || b === "epic") ? "desk" : "none"; };
 
+// ── LIVE escalation WHILE listening ── word count is unknown until the transcript
+// arrives, so react by how long you've been talking. quick → notes → desk → essay.
+type LiveTier = "quick" | "notes" | "desk" | "essay";
+const LIVE_TIERS: LiveTier[] = ["quick", "notes", "desk", "essay"];
+const liveTierFor = (listenT: number): LiveTier => listenT < 4 ? "quick" : listenT < 9 ? "notes" : listenT < 16 ? "desk" : "essay";
+const LIVE_PROP: Record<LiveTier, Prop> = { quick: "none", notes: "pad", desk: "desk", essay: "desk" };
+// tone-aware live line spoken the moment you cross into a new tier (quick has none)
+const LIVE_LINE: Partial<Record<LiveTier, Record<ChatTone, string>>> = {
+  notes: { rude: "ok, noting…", friendly: "ooh, lots to say!", rose: "tell me more 🌹" },
+  desk: { rude: "a whole rant…", friendly: "okay, big one!", rose: "i'm all ears 🌹" },
+  essay: { rude: "an ESSAY, live?!", friendly: "wow, keep going!", rose: "forever, love 🌹" },
+};
+
 class SOD {
   private k1: number; private k2: number; private k3: number; private xp: number; private yv: number; private yd = 0;
   constructor(f: number, z: number, r: number, x0 = 0) { const pf = Math.PI * f; this.k1 = z / pf; this.k2 = 1 / ((2 * pf) * (2 * pf)); this.k3 = r * z / (2 * pf); this.xp = x0; this.yv = x0; }
@@ -111,7 +124,9 @@ export default function YappyPill() {
         octx.fillStyle = C.sky1; octx.fillRect(0, 0, PW, GY);
         octx.fillStyle = C.sky2; octx.fillRect(0, 0, PW, 7);
         ell(20, 8, 5, 5, C.sun);
-        ell(120, 7, 7, 2, C.cloud); ell(126, 7, 4, 2, C.cloud); ell(64, 11, 6, 2, C.cloud);
+        // slow drifting clouds
+        const cd = (elapsed * 2) % (PW + 20), cX = (x: number) => ((x + cd) % (PW + 20)) - 10;
+        ell(cX(120), 7, 7, 2, C.cloud); ell(cX(126), 7, 4, 2, C.cloud); ell(cX(64), 11, 6, 2, C.cloud);
         octx.fillStyle = C.grass; octx.fillRect(0, GY, PW, PH - GY); octx.fillStyle = C.grassD; octx.fillRect(0, GY, PW, 2);
         for (let x = 3; x < PW; x += 9) rct(x, GY - 2, 1, 2, C.grassD);
         octx.globalAlpha = 1;
@@ -147,15 +162,19 @@ export default function YappyPill() {
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
+    let listenT = 0, liveSaid = -1;   // seconds spent listening + highest live tier already reacted to
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     const ACC: Record<Phase, string> = { idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%", done: "152 69% 52%", sleepy: "230 20% 60%" };
-    // props only appear once Yappy is working (thinking/done), never while idle/listening
-    const wantPropFor = (p: Phase, w: number): Prop => (p === "thinking" || p === "done") ? propFor(w) : "none";
+    // listening → prop escalates by how long you've talked (live); thinking/done → keyed off the transcript word count
+    const wantPropFor = (p: Phase, w: number, lt: number): Prop =>
+      p === "listening" ? LIVE_PROP[liveTierFor(lt)]
+        : (p === "thinking" || p === "done") ? propFor(w)
+          : "none";
 
     function setPhase(p: Phase) {
       phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0;
-      if (p === "listening") { moodT = 0; hop(1); say(""); }
+      if (p === "listening") { moodT = 0; hop(1); say(""); listenT = 0; liveSaid = -1; }
       else if (p === "thinking") { moodT = 0; say(chatty(words) ? workLine(words, 0) : ""); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, DEFAULT_TONE, words)); }
       else { moodT = 0; say(""); }
@@ -181,7 +200,12 @@ export default function YappyPill() {
       let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
       const active = phase === "listening" || phase === "thinking" || phase === "done";
       openV = R.open.update(dt, active ? 1 : 0); openV = Math.max(0, Math.min(1, openV));
-      const wantProp = wantPropFor(phase, words);
+      // live escalation WHILE talking — a long dictation isn't just flapping wings; it reacts as you go
+      if (phase === "listening") {
+        listenT += dt; const idx = LIVE_TIERS.indexOf(liveTierFor(listenT));
+        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTierFor(listenT)]; if (line) say(line[CHAT_TONE]); }
+      } else listenT = 0;
+      const wantProp = wantPropFor(phase, words, listenT);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
       mood += (moodT - mood) * Math.min(1, dt * 10);
       const grav = 2600;
@@ -205,15 +229,17 @@ export default function YappyPill() {
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 
       const lookMode: "down" | "fwd" = (wantProp !== "none" && propV > .5) ? "down" : "fwd";
-      const glasses = (bucketFor(words) === "long" || bucketFor(words) === "epic") && propV > .5 && phase !== "idle";
-      const pencil = bucketFor(words) === "medium" && propV > .4 && phase !== "idle";
+      // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
+      const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
+      const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
       drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       ctx.clearRect(0, 0, W, H);
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       const cx = W / 2, cy = H * 0.56;
-      const capW = lerp(66, 206 * tierOpen, openV), capH = lerp(20, 50 * tierOpen, openV);
+      // bigger open capsule so the chick + grass read larger
+      const capW = lerp(72, 236 * tierOpen, openV), capH = lerp(22, 60 * tierOpen, openV);
       const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
@@ -223,7 +249,7 @@ export default function YappyPill() {
       ctx.save(); rr(x0 + 1, y0 + 1, capW - 2, capH - 2, (capH - 2) / 2); ctx.clip(); ctx.imageSmoothingEnabled = false;
       // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
       const iw = capW - 2, ih = capH - 2;
-      const viewW = lerp(30, PW, openV);              // how much of the buffer we see (widthwise)
+      const viewW = lerp(26, PW * 0.8, openV);         // zoom in: see ~80% of the buffer at open (bigger chick + grass)
       const viewH = viewW * (ih / iw);                // match the capsule aspect → no distortion
       const vcx = FX, vcy = lerp(FY, PH * 0.5, openV); // pan from the face to the scene centre
       ctx.drawImage(os, vcx - viewW / 2, vcy - viewH / 2, viewW, viewH, x0 + 1, y0 + 1, iw, ih);
