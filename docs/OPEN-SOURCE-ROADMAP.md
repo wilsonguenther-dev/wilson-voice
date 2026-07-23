@@ -60,6 +60,62 @@
 - **Configurable hotkeys in Settings** (Wilson: "the biggest thing") — a proper
   key-capture UI, multiple bindings per action, validated against system conflicts.
 
+## 3b. 🐣 THE YAPPING PILL — origami mascot + reactive personality (Wilson's headline creative vision)
+
+This is the signature identity of Yap. The pill stops being a passive capsule and
+becomes a **living mouth / mascot** that reacts to how much you talk. Build it
+end-to-end; research is in `docs/research/origami-yapping-pill.md`.
+
+### Origami fold/unfold mascot
+- At **rest** the pill is a small **folded origami** shape (a compact capsule/seed).
+- When you start dictating it **UNFOLDS like real origami** into an animal/creature
+  mascot (crane, fox, etc.), and when you finish it **folds back the exact same
+  way** — the motion must be the *true reverse* of the fold.
+- The fold/unfold has to follow a **real origami crease pattern**, not a fake
+  morph: "unfold in the exact way that an origami of whatever animal unfolds in
+  real life… it folds back the exact same way." This is the hard, must-nail part.
+- **Multiple mascots** = the origami "pets." User can pick/collect creatures.
+- Approach candidates (see research file): (a) FOLD crease-pattern format
+  (edemaine/fold) + a keyframed fold-angle timeline, (b) Amanda Ghassaei's
+  Origami Simulator (WebGL rigid-fold) driving a 0→1 fold parameter, (c)
+  hand-authored SVG/CSS 3D-hinge fold rig. Must run at 60fps, low CPU, in the
+  WebKit webview, fully bundled (no CDN), permissive OSS license only.
+
+### Word-count-reactive "yapping" messages
+- The pill/mouth shows **reactive text based on how many words** you dictated in a
+  prompt. Tiered by word count, e.g.:
+  - short → "got it, got it. okay, mapping it."
+  - medium → "oh, you have a lot to say."
+  - long → "damn, you're yapping a lot" / "you forgot how to type or something?"
+  - very long → "oh my gosh bro… am I your only friend?"
+- **Tone presets** (user-selectable in Settings, on/off): **Rude/Sassy** (with a
+  **curse filter** toggle — "damn you yapping"), **Friendly**, **Rose** (sweet).
+  Curse filter is independent so users can keep the sass but clean the language.
+- All copy lives in a config table so it's editable/localizable; ship a good
+  default set per tone. Reactive line picked deterministically per session by
+  word-count bucket (+ light rotation so it's not repetitive).
+
+### The mouth
+- The pill "is supposed to look like a **mouth**"; the emoji/mascot **folds into
+  it**. Listening = mouth open/animated with the waveform; done = satisfied.
+
+## 3c. Fill EVERY state gap with animation (Wilson: "there's a bunch of gaps")
+- The dead time **after the user stops talking and before text appears**
+  (transcribing) needs real motion — not a frozen pill. Audit the whole state
+  machine and give each transition an action:
+  `idle → (press) → listening → (release) → transcribing/thinking → polishing →
+  pasting → done → fold back to idle`. Today only listening/busy/done exist.
+- Add "thinking" choreography for the transcribe gap (the origami could be
+  mid-fold, or the mascot "chewing/processing"), a paste confirmation beat, and a
+  graceful fold-back. 360-audit for every other missing micro-state (errors,
+  permission-needed, model-loading, empty result).
+
+## 3d. 360 code audit (senior full-stack pass)
+- Audit **every file, function, and diff** to a senior full-stack standard —
+  correctness, error handling, dead code, naming, UX. Loop: build → QA → push →
+  adversarial review → fix. (Analytics math already went through this — apply the
+  same rigor to pill/record/paste/lib/IPC and the whole frontend.)
+
 ## 4. Team / collaboration component (bigger feature)
 - Devs on the same project can **see each other's sessions**, **share prompts**
   (what people are prompting/saying), and **compete** (word-count leaderboard, like
