@@ -99,6 +99,10 @@ end-to-end; research is in `docs/research/origami-yapping-pill.md`.
 - Must run 60fps, low CPU, in the WebKit webview, fully bundled (no CDN).
 
 ### Word-count-reactive "yapping" messages
+> ✅ Engine DONE: `desktop/src/pill/tone.ts` — pure `reactiveLine(words, {tone,
+> curseFilter}, nonce)`. Buckets tiny/short/medium/long/epic; tones rude/friendly/
+> rose/off; independent curse filter (damn→dang); nonce rotates lines. tsc + runtime
+> asserts pass. TODO: wire into the pill on transcription-done + a Settings picker.
 - The pill/mouth shows **reactive text based on how many words** you dictated in a
   prompt. Tiered by word count, e.g.:
   - short → "got it, got it. okay, mapping it."
