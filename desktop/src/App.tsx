@@ -24,6 +24,8 @@ interface AppSettings {
   keepCmdShiftV?: boolean;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
+  /** auto | plain | list | email | code | notes */
+  dictationMode?: string;
 }
 
 interface AppStatus {
@@ -1140,6 +1142,41 @@ export default function App() {
                           : "profile"
                       }
                       onClick={() => saveSettings({ ...settings, pillStyle: id })}
+                    >
+                      <strong>{label}</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="panel">
+                <h3>Dictation mode</h3>
+                <p>
+                  Auto adapts formatting to the app you’re typing into; pick a
+                  fixed mode to force it. Text is never lost.
+                </p>
+                <div className="profile-row">
+                  {(
+                    [
+                      ["auto", "Auto", "Adapt to the focused app"],
+                      ["plain", "Plain", "Verbatim — no reformatting"],
+                      ["list", "List", "Turn spoken lists into bullets"],
+                      ["email", "Email", "Compose-friendly formatting"],
+                      ["code", "Code", "Leave identifiers untouched"],
+                      ["notes", "Notes", "Note-taking formatting"],
+                    ] as const
+                  ).map(([id, label, blurb]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={
+                        (settings.dictationMode ?? "auto") === id
+                          ? "profile active"
+                          : "profile"
+                      }
+                      onClick={() =>
+                        saveSettings({ ...settings, dictationMode: id })
+                      }
                     >
                       <strong>{label}</strong>
                       <span>{blurb}</span>

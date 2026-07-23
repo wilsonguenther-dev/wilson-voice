@@ -52,6 +52,10 @@ pub struct AppSettings {
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
+    /// Smart-dictation mode: auto | plain | list | email | code | notes.
+    /// "auto" infers the mode from the frontmost app; any other value forces it.
+    #[serde(default = "default_dictation_mode")]
+    pub dictation_mode: String,
 }
 
 fn default_speed_profile() -> String {
@@ -62,6 +66,9 @@ fn default_ptt_binding() -> String {
 }
 fn default_pill_style() -> String {
     "classic".into()
+}
+fn default_dictation_mode() -> String {
+    "auto".into()
 }
 fn default_true() -> bool {
     true
@@ -81,6 +88,7 @@ impl Default for AppSettings {
             ptt_binding: "fn_control".into(),
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
+            dictation_mode: "auto".into(),
         }
     }
 }
@@ -294,15 +302,31 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
-            // Smart dictation v1 (YV3): infer the context mode from the focused app and
-            // detect list/prose structure. Log-only for now — NOT wired into the paste
-            // output so it can't regress the "never lose text" guarantee.
-            let dictation_mode =
-                dictation::mode_for_app(source_app.as_deref().unwrap_or_default());
+            // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
+            // wins, otherwise it's inferred from the focused app — and format the transcript
+            // BEFORE it's stored/pasted. `apply_dictation` is guarded so it can never lose
+            // text (falls back to the raw transcript on any error/empty result).
+            let dictation_mode = dictation::resolve_mode(
+                &settings.dictation_mode,
+                source_app.as_deref().unwrap_or_default(),
+            );
+            let text = if dictation::should_format(dictation_mode) {
+                let formatted = dictation::format_dictation(&text);
+                // Guard: never lose text — if formatting yields nothing from a non-empty
+                // transcript, fall back to the raw text.
+                if formatted.trim().is_empty() && !text.trim().is_empty() {
+                    text
+                } else {
+                    formatted
+                }
+            } else {
+                // Code / Plain modes stay verbatim.
+                text
+            };
             log::info!(
-                "smart-dictation: mode={:?} list_detected={}",
+                "smart-dictation: mode={:?} setting={}",
                 dictation_mode,
-                dictation::format_dictation(&text) != text
+                settings.dictation_mode
             );
             // Always copy first (Wispr Flow: never lose text)
             let want_paste = settings.auto_paste && focus::should_auto_paste();
