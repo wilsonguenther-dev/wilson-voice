@@ -1,350 +1,89 @@
-/* Wilson Voice — floating Dictate island.
- * Solid "obsidian island" (Dynamic Island / superwhisper style). We do NOT use
- * backdrop-filter: it's a no-op on a transparent webview (can't blur the desktop
- * behind), which is exactly why the old pill read as a muddy grey rectangle.
- * Depth comes from layered gradients + a hairline rim + ambient/contact shadows.
+/* Yap — "Kami" floating companion.
+ * The window is transparent + larger than the creature so its shadow + the
+ * speech bubble have room. Only the origami (Canvas2D) and the bubble paint;
+ * everything else is see-through. Control is via fn⌃ / tray (the window is
+ * click-through), so nothing here needs to intercept the cursor.
  */
-
 :root {
-  --accent-live: 351 95% 71%; /* rose  — listening      */
-  --accent-busy: 38 92% 55%;  /* amber — transcribing   */
-  --accent-done: 152 69% 52%; /* green — done           */
-  --level: 0;                 /* audio level 0..1, set from JS each frame */
+  --accent-live: 351 95% 71%;
+  --accent-busy: 38 92% 55%;
+  --accent-done: 152 69% 52%;
 }
-
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 html,
 body,
 #root {
   margin: 0;
   height: 100%;
+  width: 100%;
   background: transparent;
   overflow: hidden;
 }
 
-.stage {
+.kami-stage {
+  position: relative;
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   -webkit-user-select: none;
   user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-family: -apple-system, "SF Pro Rounded", ui-rounded, system-ui, sans-serif;
 }
 
-.pill {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center; /* content is centered in every state */
-  gap: 8px;
-  height: 16px; /* compact "seed" at rest — a tiny capsule, not a bar */
-  min-width: 56px;
-  max-width: 260px;
-  padding: 0 10px;
-  border-radius: 22px; /* perfect capsule */
-  color: #f5f5f7;
-  isolation: isolate;
-  cursor: pointer;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 34%),
-    linear-gradient(180deg, #17181c 0%, #0c0c0f 100%);
-  box-shadow:
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.35),
-    0 12px 34px rgba(0, 0, 0, 0.46),
-    0 2px 6px rgba(0, 0, 0, 0.34);
-  animation: pill-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
-  transition:
-    box-shadow 0.28s ease,
-    background 0.28s ease,
-    transform 0.18s ease,
-    height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    min-width 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    gap 0.3s ease,
-    padding 0.3s ease;
-}
-/* Expand to the full "radio pill" on activity (listening / transcribing / done). */
-.pill.live,
-.pill.busy,
-.pill.done {
-  height: 44px;
-  min-width: 200px;
-  gap: 10px;
-  padding: 0 14px 0 8px;
-}
-/* control button is fully OUT of layout at rest (not width:0 — that left a sliver
-   + negative margin that shoved the seed off-center). It reappears when expanded. */
-.pill:not(.live):not(.busy):not(.done) .ctrl {
-  display: none;
-}
-.pill::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s ease, box-shadow 0.3s ease;
-}
-@keyframes pill-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* ── LISTENING ── */
-.pill.live {
-  box-shadow:
-    inset 0 0 0 0.5px hsl(var(--accent-live) / 0.45),
-    inset 0 1px 0 rgba(255, 220, 225, 0.18),
-    0 12px 34px rgba(0, 0, 0, 0.46),
-    0 0 26px hsl(var(--accent-live) / 0.22);
-}
-.pill.live::after {
-  opacity: 1;
-  box-shadow: 0 0 30px 3px hsl(var(--accent-live) / 0.3);
-  animation: halo 2.2s ease-in-out infinite;
-}
-@keyframes halo {
-  50% {
-    box-shadow: 0 0 40px 6px hsl(var(--accent-live) / 0.42);
-  }
-}
-
-/* ── TRANSCRIBING ── */
-.pill.busy {
-  box-shadow:
-    inset 0 0 0 0.5px hsl(var(--accent-busy) / 0.4),
-    0 12px 34px rgba(0, 0, 0, 0.46),
-    0 0 22px hsl(var(--accent-busy) / 0.18);
-}
-.pill.busy::before {
-  content: "";
+.kami-canvas {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
-  z-index: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    100deg,
-    transparent 20%,
-    hsl(var(--accent-busy) / 0.22) 45%,
-    hsl(var(--accent-busy) / 0.1) 55%,
-    transparent 80%
-  );
-  background-size: 220% 100%;
-  animation: shimmer 1.15s linear infinite;
-}
-@keyframes shimmer {
-  from {
-    background-position: 220% 0;
-  }
-  to {
-    background-position: -120% 0;
-  }
-}
-
-/* ── DONE ── */
-.pill.done {
-  box-shadow:
-    inset 0 0 0 0.5px hsl(var(--accent-done) / 0.5),
-    0 12px 34px rgba(0, 0, 0, 0.46),
-    0 0 22px hsl(var(--accent-done) / 0.25);
-}
-
-/* ── resting seed: the entire indicator at rest is a small breathing dot ── */
-.seed {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  margin: 0 auto;
-  background: rgba(255, 255, 255, 0.55);
-  animation: seed-breathe 2s ease-in-out infinite;
-}
-@keyframes seed-breathe {
-  0%,
-  100% {
-    opacity: 0.4;
-    transform: scale(0.85);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
-}
-/* at rest: show the seed, hide the waveform. when active: the reverse. */
-.pill.live .seed,
-.pill.busy .seed,
-.pill.done .seed {
-  display: none;
-}
-.pill:not(.live):not(.busy):not(.done) .wave {
-  display: none;
-}
-
-/* ── waveform (heights driven by --level) ── */
-.wave {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  height: 14px;
-  min-width: 44px;
-  transition: height 0.3s cubic-bezier(0.22, 1, 0.36, 1), min-width 0.3s ease;
-}
-.pill.live .wave,
-.pill.busy .wave {
-  height: 22px;
-  min-width: 76px;
-}
-.wave i {
-  width: 3px;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.3);
-  height: calc(3px + var(--level) * var(--peak, 1) * 16px);
-  transition: height 0.085s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s;
-  will-change: height;
-}
-.wave i:nth-child(1),
-.wave i:nth-child(9) {
-  --peak: 0.3;
-}
-.wave i:nth-child(2),
-.wave i:nth-child(8) {
-  --peak: 0.52;
-}
-.wave i:nth-child(3),
-.wave i:nth-child(7) {
-  --peak: 0.72;
-}
-.wave i:nth-child(4),
-.wave i:nth-child(6) {
-  --peak: 0.9;
-}
-.wave i:nth-child(5) {
-  --peak: 1;
-}
-.pill.live .wave i {
-  background: linear-gradient(180deg, hsl(var(--accent-live) / 0.95), hsl(var(--accent-live) / 0.65));
-  box-shadow: 0 0 7px hsl(var(--accent-live) / 0.4);
-}
-/* idle: gentle breathing on the centre bars only */
-.pill:not(.live):not(.busy):not(.done) .wave i:nth-child(4),
-.pill:not(.live):not(.busy):not(.done) .wave i:nth-child(6) {
-  animation: breathe 2.4s ease-in-out infinite;
-}
-.pill:not(.live):not(.busy):not(.done) .wave i:nth-child(5) {
-  animation: breathe 2.4s ease-in-out 0.3s infinite;
-}
-@keyframes breathe {
-  0%,
-  100% {
-    height: 4px;
-  }
-  50% {
-    height: 9px;
-  }
-}
-/* transcribing: bars self-animate (ignore --level) */
-.pill.busy .wave i {
-  background: hsl(var(--accent-busy) / 0.7);
-  animation: busy-bar 0.9s ease-in-out infinite;
-  animation-delay: calc(var(--i, 0) * 0.08s);
-}
-@keyframes busy-bar {
-  0%,
-  100% {
-    height: 4px;
-    opacity: 0.5;
-  }
-  50% {
-    height: 15px;
-    opacity: 1;
-  }
-}
-
-/* ── control button ── */
-.ctrl {
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border: 0;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
+  width: 100%;
+  height: 100%;
+  display: block;
   cursor: pointer;
-  color: #fff;
-  background: radial-gradient(120% 120% at 30% 25%, #3a3b40, #17181c);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Dynamic-Island-style speech bubble, centered above the creature. */
+.kami-bubble {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px) scale(0.92);
+  max-width: 88%;
+  padding: 7px 13px;
+  border-radius: 14px;
+  background: #0c0c10;
+  color: #f7f1e6;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  text-align: center;
+  text-wrap: balance;
+  white-space: nowrap;
   overflow: hidden;
-  transition:
-    transform 0.14s,
-    box-shadow 0.2s,
-    background 0.2s,
-    width 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    margin 0.3s ease;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.ctrl:hover {
-  transform: scale(1.06);
+.kami-bubble.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
 }
-.ctrl:active {
-  transform: scale(0.95);
-}
-.ctrl svg {
-  width: 15px;
-  height: 15px;
-}
-.pill.live .ctrl {
-  background: radial-gradient(120% 120% at 30% 25%, hsl(var(--accent-live) / 1), hsl(351 90% 45%));
-  box-shadow: 0 0 0 3px hsl(var(--accent-live) / 0.25), 0 0 14px hsl(var(--accent-live) / 0.4);
-  animation: ctrl-pulse 1.4s ease-in-out infinite;
-}
-@keyframes ctrl-pulse {
-  50% {
-    box-shadow: 0 0 0 5px hsl(var(--accent-live) / 0.12), 0 0 20px hsl(var(--accent-live) / 0.5);
-  }
+.kami-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  background: #0c0c10;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-/* ── done checkmark ── */
-.check {
-  width: 22px;
-  height: 22px;
-  flex: 1;
-}
-.check path {
-  fill: none;
-  stroke: hsl(var(--accent-done));
-  stroke-width: 2.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 26;
-  stroke-dashoffset: 26;
-  animation: draw 0.32s ease-out forwards;
-}
-@keyframes draw {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@media (prefers-color-scheme: light) {
-  .pill {
-    box-shadow:
-      inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.16),
-      0 14px 40px rgba(0, 0, 0, 0.3),
-      0 2px 8px rgba(0, 0, 0, 0.22);
+@media (prefers-reduced-motion: reduce) {
+  .kami-bubble {
+    transition: opacity 0.2s ease;
   }
 }
