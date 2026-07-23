@@ -7,6 +7,7 @@
 mod asr;
 mod asr_paths;
 mod db;
+mod dictation;
 mod float_pill;
 mod focus;
 mod mic_auth;
@@ -293,6 +294,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
             let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
+            // Smart dictation v1 (YV3): infer the context mode from the focused app and
+            // detect list/prose structure. Log-only for now — NOT wired into the paste
+            // output so it can't regress the "never lose text" guarantee.
+            let dictation_mode =
+                dictation::mode_for_app(source_app.as_deref().unwrap_or_default());
+            log::info!(
+                "smart-dictation: mode={:?} list_detected={}",
+                dictation_mode,
+                dictation::format_dictation(&text) != text
+            );
             // Always copy first (Wispr Flow: never lose text)
             let want_paste = settings.auto_paste && focus::should_auto_paste();
             let outcome = paste::copy_and_maybe_paste(&app2, &text, want_paste);
