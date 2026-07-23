@@ -1,26 +1,24 @@
 <title>Yap — Yappy, your dictation buddy</title>
 <style>
   :root{
-    --bg:#12131a; --bg2:#171922; --ink:#f3f2f7; --muted:#9a9db0;
+    --bg:#12131a; --bg2:#181a24; --ink:#f3f2f7; --muted:#9a9db0;
     --card:rgba(255,255,255,.05); --line:rgba(255,255,255,.09);
-    --pink:#ff6f9c; --accent:#ffd24a; --mono:ui-monospace,"SF Mono",Menlo,monospace;
-    --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;
+    --accent:#ffd24a; --mono:ui-monospace,"SF Mono",Menlo,monospace; --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;
   }
-  @media (prefers-color-scheme: light){:root{ --bg:#fdeee0; --bg2:#fff6ec; --ink:#3a2f2a; --muted:#8a7a6f; --card:rgba(0,0,0,.03); --line:rgba(0,0,0,.08);}}
-  :root[data-theme="dark"]{--bg:#12131a;--bg2:#171922;--ink:#f3f2f7;--muted:#9a9db0;--card:rgba(255,255,255,.05);--line:rgba(255,255,255,.09);}
-  :root[data-theme="light"]{--bg:#fdeee0;--bg2:#fff6ec;--ink:#3a2f2a;--muted:#8a7a6f;--card:rgba(0,0,0,.03);--line:rgba(0,0,0,.08);}
+  @media (prefers-color-scheme: light){:root{ --bg:#fbeadb; --bg2:#fff6ec; --ink:#3a2f2a; --muted:#8a7a6f; --card:rgba(0,0,0,.03); --line:rgba(0,0,0,.08);}}
+  :root[data-theme="dark"]{--bg:#12131a;--bg2:#181a24;--ink:#f3f2f7;--muted:#9a9db0;--card:rgba(255,255,255,.05);--line:rgba(255,255,255,.09);}
+  :root[data-theme="light"]{--bg:#fbeadb;--bg2:#fff6ec;--ink:#3a2f2a;--muted:#8a7a6f;--card:rgba(0,0,0,.03);--line:rgba(0,0,0,.08);}
   *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--round);-webkit-font-smoothing:antialiased;line-height:1.5;}
   .wrap{max-width:960px;margin:0 auto;padding:38px 22px 70px;}
   header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;}
   .brand{display:flex;align-items:center;gap:11px;} .brand h1{margin:0;font-size:22px;font-weight:800;letter-spacing:-.02em;} .brand span{color:var(--muted);font:500 13px var(--mono);}
   .dot{width:30px;height:30px;border-radius:9px;background:radial-gradient(120% 120% at 30% 25%,#ffe27a,#ffbf2e);box-shadow:0 3px 10px rgba(255,180,40,.4);}
   .themeb{font:500 12px var(--mono);color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer;}
-  .lede{margin:18px 0 22px;max-width:60ch;color:var(--muted);font-size:15px;} .lede b{color:var(--ink);}
-  .stage{position:relative;border-radius:26px;overflow:hidden;min-height:400px;border:1px solid var(--line);
-    background:radial-gradient(120% 90% at 50% 15%, color-mix(in oklab,var(--bg2),white 6%), var(--bg2));
-    box-shadow:0 30px 70px rgba(0,0,0,.25);display:grid;place-items:center;}
-  canvas#pet{width:100%;height:400px;display:block;}
-  .bubble{position:absolute;top:26px;left:50%;transform:translateX(-50%) translateY(-6px) scale(.9);
+  .lede{margin:18px 0 22px;max-width:62ch;color:var(--muted);font-size:15px;} .lede b{color:var(--ink);}
+  .stage{position:relative;border-radius:26px;overflow:hidden;min-height:430px;border:1px solid var(--line);
+    background:radial-gradient(120% 90% at 50% 12%, color-mix(in oklab,var(--bg2),white 6%), var(--bg2));box-shadow:0 30px 70px rgba(0,0,0,.25);}
+  canvas#pet{width:100%;height:430px;display:block;}
+  .bubble{position:absolute;top:24px;left:50%;transform:translateX(-50%) translateY(-6px) scale(.9);
     background:#20222e;color:#fff;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:9px 15px;font-size:15px;font-weight:600;
     box-shadow:0 14px 34px rgba(0,0,0,.4);white-space:nowrap;max-width:80%;opacity:0;transition:opacity .3s,transform .35s cubic-bezier(.34,1.56,.64,1);}
   :root[data-theme="light"] .bubble{background:#fff;color:#3a2f2a;border-color:rgba(0,0,0,.08);}
@@ -46,12 +44,12 @@
 
 <div class="wrap">
   <header>
-    <div class="brand"><div class="dot"></div><div><h1>Yap</h1><span>meet Yappy — your dictation buddy</span></div></div>
+    <div class="brand"><div class="dot"></div><div><h1>Yap</h1><span>Yappy v2 — now with feathers &amp; follow-through</span></div></div>
     <button class="themeb" id="themeb">◐ theme</button>
   </header>
-  <p class="lede"><b>Yappy</b> is a little chick who lives in your menu bar. It breathes, blinks, and hops on its own; when you
-    dictate it <b>perks up and its beak moves with your voice</b>; while it thinks it gets impatient; when it's done it
-    <b>hops for joy</b> and yaps a line based on how much you said. Hand-coded, no sprites — say hi below.</p>
+  <p class="lede"><b>Yappy</b> is a little chick who lives in your menu bar. Everything moves on its own springs — the sprout, wings,
+    and tail <b>trail the body</b>, it <b>crouches before it hops</b> and squashes on landing, breathes, blinks, glances around,
+    and its <b>beak moves with your voice</b>. Idle too long and it gets sleepy. Say hi below.</p>
 
   <section class="stage">
     <div class="bubble" id="bubble"></div>
@@ -63,7 +61,7 @@
     <div class="panel">
       <h3>Play with Yappy</h3><p class="hint">Run the flow, or move its beak with your real mic.</p>
       <div class="row"><button class="btn" id="dictate" style="flex:1">▶ Dictate a prompt</button><button class="btn ghost" id="mic">🎤 My voice</button></div>
-      <div class="row" style="margin-top:10px"><button class="chip" data-state="idle">Idle</button><button class="chip" data-state="listening">Listening</button><button class="chip" data-state="thinking">Thinking</button><button class="chip" data-state="done">Done</button></div>
+      <div class="row" style="margin-top:10px"><button class="chip" data-state="idle">Idle</button><button class="chip" data-state="listening">Listening</button><button class="chip" data-state="thinking">Thinking</button><button class="chip" data-state="done">Done</button><button class="chip" data-state="sleepy">Sleepy</button></div>
       <div class="field"><label>Words in this prompt <b id="wl">32</b></label><input type="range" id="words" min="1" max="300" value="32"></div>
     </div>
     <div class="panel">
@@ -73,7 +71,7 @@
       <div class="preview"><div class="bk"><span id="bk">medium</span> · <span id="tn">friendly</span></div><div class="ln" id="pl">—</div></div>
     </div>
   </div>
-  <footer><b>Fully hand-coded:</b> procedural spring bounce, squash &amp; stretch, blink + breathing, a voice-driven beak, and a happy hop with sparkles — no sprite sheets, no animation library. This is the direction; pets will be swappable.</footer>
+  <footer><b>Every part is a spring:</b> second-order dynamics (t3ssel8r form — the response term gives the hop its anticipation), volume-preserving squash &amp; stretch, blink/breathe/gaze micro-life, rim-light + occlusion shading, feather texture, and voice-driven beak. All hand-coded, zero assets.</footer>
 </div>
 
 <script>
@@ -95,12 +93,11 @@
   function mouthDriver(){let open=0,ph=0;const g=.04,gm=.6,gn=4.5,ar=22,rr=7,br=.06,brR=2.2;
     return{push(rms,dt){ph+=dt*brR;let t=0;if(rms>g)t=Math.min(1,Math.pow((rms-g)/(1-g),gm)*gn);const r=t>open?ar:rr;open+=(t-open)*(1-Math.exp(-r*Math.max(0,dt)));open=Math.min(1,Math.max(0,open));return t<.02?Math.max(open,(0.5+0.5*Math.sin(ph))*br):open;},reset(){open=0;}};}
 
-  /* spring integrator (damped harmonic) for bouncy motion */
-  function spring(k, d){ let x=0,v=0,t=0; return {
-    set t(nt){ t=nt; }, get x(){ return x; },
-    step(dt){ const a=-k*(x-t)-d*v; v+=a*dt; x+=v*dt; return x; },
-    kick(amt){ v+=amt; }
-  };}
+  /* second-order dynamics (t3ssel8r): f=freq Hz, z=damping ratio, r=response (r<0 anticipates) */
+  class SOD{ constructor(f,z,r,x0=0){ const pf=Math.PI*f; this.k1=z/pf; this.k2=1/((2*pf)*(2*pf)); this.k3=r*z/(2*pf); this.xp=x0; this.y=x0; this.yd=0; }
+    update(dt,x){ const xd=(x-this.xp)/Math.max(dt,1e-4); this.xp=x;
+      const k2=Math.max(this.k2, dt*dt/2+dt*this.k1/2, dt*this.k1);
+      this.y+=dt*this.yd; this.yd+=dt*(x+this.k3*xd-this.y-this.k1*this.yd)/k2; return this.y; } }
 
   const cv=$("#pet"), ctx=cv.getContext("2d");
   let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
@@ -110,120 +107,185 @@
   const S={state:"idle",words:32,tone:"friendly",curse:true,nonce:0,mic:null};
   const bubble=$("#bubble"), tag=$("#tag");
   const mouth=mouthDriver();
-  // procedural state
-  const hop=spring(120,14);           // vertical bounce (px), target 0
-  const sx=spring(180,16), sy=spring(180,16); sx.t=1; sy.t=1; sx.step(0.001); sy.step(0.001);
-  let blink=0, nextBlink=1.2, blinkT=-1;
-  let breathe=0, look={x:0,y:0}, lookTimer=0, hairPh=0, sparkle=[], eyeWide=0, mood=0; // mood 0 neutral,1 happy
-  let mouthOpen=0, level=0, tPrev=0, elapsed=0;
 
-  function setState(s){ S.state=s; tag.textContent=s;
-    if(s==="listening"){ eyeWideT=1; hop.kick(-260); }
-    if(s==="thinking"){ eyeWideT=.2; }
-    if(s==="idle"){ eyeWideT=0; mood=0; }
-    if(s==="done"){ mood=1; hop.kick(-420); burst(); const l=line(S.words,S.tone,S.curse,S.nonce); bubble.textContent=l; bubble.classList.toggle("show",!!l); }
-    else bubble.classList.remove("show");
+  // ── rig: springs for every trailing part ──
+  const R={
+    hairA:new SOD(2.2,0.35,1.4), hairA2:new SOD(1.8,0.4,1.6),  // 2-seg sprout
+    wingL:new SOD(3,0.4,0), wingR:new SOD(3,0.4,0),
+    tail:new SOD(2,0.5,1.2), headLean:new SOD(2.6,0.6,0),
+    look:new SOD(3.5,0.7,0), lookY:new SOD(3.5,0.7,0),
+    browL:new SOD(6,0.8,0), browR:new SOD(6,0.8,0),
+    bodyScale:new SOD(4,0.6,2),  // reactive scale pop
+  };
+  // jump/hop state machine (anticipation → air → land)
+  const J={phase:"ground",t:0,y:0,vy:0,power:0,crouch:0};
+  function hop(power){ if(J.phase==="ground"||J.phase==="land"){ J.phase="crouch"; J.t=0; J.power=power; } }
+  let blink=0,nextBlink=1.4,blinkT=-1, breathe=0, hairPh=0, elapsed=0, tPrev=0;
+  let eyeWideT=0, eyeWide=0, mood=0, moodT=0, sparkle=[], idleFor=0, lookTx=0,lookTy=0,lookTimer=0, wingFlap=0;
+  let beak=0, level=0;
+
+  function setState(s){ S.state=s; tag.textContent=s; idleFor=0;
+    if(s==="listening"){ eyeWideT=1; moodT=0; hop(560); R.browL.xp=-1;R.browR.xp=-1; wingFlap=1; }
+    else if(s==="thinking"){ eyeWideT=.15; moodT=0; wingFlap=0; }
+    else if(s==="done"){ moodT=1; eyeWideT=.4; hop(760); burst(); const l=line(S.words,S.tone,S.curse,S.nonce); bubble.textContent=l; bubble.classList.toggle("show",!!l); }
+    else if(s==="sleepy"){ eyeWideT=-1; moodT=0; }
+    else { eyeWideT=0; moodT=0; wingFlap=0; }
+    if(s!=="done") bubble.classList.remove("show");
     document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.state===s)));
   }
-  let eyeWideT=0;
-  function burst(){ for(let i=0;i<14;i++){ const a=Math.random()*Math.PI*2, sp=60+Math.random()*120; sparkle.push({x:0,y:0,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-40,life:1,r:2+Math.random()*3}); } }
-  function speechEnv(t){const s=Math.max(0,Math.sin(t*.013))*Math.max(0,Math.sin(t*.031+1));return Math.min(1,s*.9+.15*s);}
+  function burst(){ for(let i=0;i<20;i++){ const a=Math.random()*Math.PI*2, sp=70+Math.random()*150, heart=i%3===0; sparkle.push({x:0,y:-8,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-70,life:1,r:2+Math.random()*3,heart}); } }
+  const speechEnv=(t)=>{const s=Math.max(0,Math.sin(t*.013))*Math.max(0,Math.sin(t*.031+1));return Math.min(1,s*.9+.15*s);};
 
   function loop(ts){
-    const dt=Math.min(.05,(ts-tPrev)/1000||0); tPrev=ts; elapsed+=dt;
-    // idle micro-life
-    breathe = Math.sin(elapsed*2.2)*(reduce?0:1);
-    hairPh += dt*6;
-    // blink timing
-    if(blinkT<0){ nextBlink-=dt; if(nextBlink<=0){ blinkT=0; } }
-    if(blinkT>=0){ blinkT+=dt; const d=.13; blink = blinkT<d/2? blinkT/(d/2) : blinkT<d? 1-(blinkT-d/2)/(d/2):0; if(blinkT>d){ blinkT=-1; nextBlink=1.4+Math.random()*2.6; } }
-    // occasional look-around (idle only)
-    lookTimer-=dt; if(lookTimer<=0 && S.state==="idle"){ look.tx=(Math.random()*2-1)*.5; look.ty=(Math.random()*2-1)*.3; lookTimer=1.2+Math.random()*2.2; }
-    if(S.state!=="idle"){ look.tx=0; look.ty=S.state==="thinking"?-.5:0; }
-    look.x+=((look.tx||0)-look.x)*Math.min(1,dt*6); look.y+=((look.ty||0)-look.y)*Math.min(1,dt*6);
-    // eyes
-    eyeWide+=(eyeWideT-eyeWide)*Math.min(1,dt*8);
-    // bounce / squash
-    hop.t=0; hop.step(dt);
-    const vy=hop.x;
-    // squash from vertical velocity: stretch when rising, squash when landing
-    const stretch = Math.max(-.18,Math.min(.22,-vy/900));
-    sx.t=1-stretch; sy.t=1+stretch; sx.step(dt); sy.step(dt);
-    // occasional idle hop
-    if(S.state==="idle" && Math.random()<dt*0.5) hop.kick(-150);
+    const dt=Math.min(.05,(ts-tPrev)/1000||0); tPrev=ts; elapsed+=dt; hairPh+=dt*6;
+    breathe=reduce?0:Math.sin(elapsed*2.0);
+    idleFor+=dt;
+    if(S.state==="idle" && idleFor>9){ setState("sleepy"); }
+    // blink
+    if(blinkT<0){ nextBlink-=dt; if(nextBlink<=0)blinkT=0; }
+    if(blinkT>=0){ blinkT+=dt; const d=.13; blink=blinkT<d/2?blinkT/(d/2):blinkT<d?1-(blinkT-d/2)/(d/2):0; if(blinkT>d){blinkT=-1;nextBlink=2+Math.random()*4;} }
+    // look-around
+    lookTimer-=dt; if(lookTimer<=0){ if(S.state==="idle"){lookTx=(Math.random()*2-1)*.6;lookTy=(Math.random()*2-1)*.3;} else if(S.state==="thinking"){lookTx=Math.sin(elapsed)*.5;lookTy=-.6;} else {lookTx=0;lookTy=0;} lookTimer=1+Math.random()*2.2; }
+    const lookX=R.look.update(dt,lookTx), lookY=R.lookY.update(dt,lookTy);
+    eyeWide+=(eyeWideT-eyeWide)*Math.min(1,dt*8); mood+=(moodT-mood)*Math.min(1,dt*10);
+    // jump machine
+    const grav=2600;
+    if(J.phase==="crouch"){ J.t+=dt; J.crouch=Math.min(1,J.t/.11)*.16; if(J.t>=.11){J.phase="air";J.vy=-J.power;J.crouch=0;} }
+    else if(J.phase==="air"){ J.vy+=grav*dt; J.y+=J.vy*dt; if(J.y>=0){J.y=0;J.phase="land";J.t=0;J.vy=0;} }
+    else if(J.phase==="land"){ J.t+=dt; if(J.t>.15)J.phase="ground"; }
+    else if(S.state==="idle" && Math.random()<dt*.35){ hop(320); }
+    else if(S.state==="listening" && Math.random()<dt*.7){ hop(300); }
+    const vy=J.vy, bodyY=J.y - J.crouch*80;
+    // squash: stretch in air (by vy), squash on land/crouch
+    const land=J.phase==="land"?(1-J.t/.15):0;
+    const airStretch=Math.max(-.14,Math.min(.2,-vy/1400));
+    const sqY=1+airStretch - land*.24 - J.crouch*.7;
+    const sqX=1-airStretch + land*.26 + J.crouch*.5;
+    const pop=R.bodyScale.update(dt, (S.state==="done"?1:0));
+    // trailing parts fed body velocity / lean
+    const bodyVel=-vy;
+    const hairA=R.hairA.update(dt, bodyVel*.0009 + Math.sin(hairPh)*.05 + lookX*.15);
+    const hairA2=R.hairA2.update(dt, hairA*1.2);
+    wingFlap += ((S.state==="listening"?1:0)-wingFlap)*Math.min(1,dt*6);
+    const flap=Math.sin(elapsed*16)*.5*wingFlap;
+    const wingL=R.wingL.update(dt, bodyVel*.0011 + flap + .5);
+    const wingR=R.wingR.update(dt, bodyVel*.0011 - flap + .5);
+    const tail=R.tail.update(dt, -bodyVel*.0012 + Math.sin(hairPh*.8)*.06 - lookX*.2);
+    const headLean=R.headLean.update(dt, lookX*.10 + (S.state==="thinking"?.12:0));
+    // brows
+    const browTarget = S.state==="listening"?-1 : S.state==="thinking"?.6 : mood>.5?-.4 : S.state==="sleepy"?.3 : 0;
+    const browL=R.browL.update(dt,browTarget), browR=R.browR.update(dt,browTarget);
     // mouth
-    if(S.state==="listening"||S.state==="thinking"){ level = S.mic?S.mic():(reduce?.2:speechEnv(ts)*(S.state==="thinking"?.35:1)); } else level=0;
-    mouthOpen=mouth.push(level,dt);
-    // sparkles
-    sparkle.forEach(p=>{ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=200*dt; p.life-=dt*1.2; });
+    if(S.state==="listening"||S.state==="thinking"){ level=S.mic?S.mic():(reduce?.2:speechEnv(ts)*(S.state==="thinking"?.3:1)); } else level=0;
+    beak=mouth.push(level,dt);
+    // particles
+    sparkle.forEach(p=>{ p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=260*dt;p.life-=dt*1.1; });
     sparkle=sparkle.filter(p=>p.life>0);
 
-    draw(vy);
+    draw({bodyY,sqX,sqY,pop,vy,lookX,lookY,eyeWide,mood,blink,hairA,hairA2,wingL,wingR,tail,headLean,browL,browR,beak});
     requestAnimationFrame(loop);
   }
 
-  function draw(vy){
+  function draw(p){
     ctx.clearRect(0,0,W,H);
-    const cx=W/2, groundY=H*0.72, base=Math.min(W,H)*0.19;
-    const cy=groundY - base - vy + breathe*2;
-    // ground shadow (shrinks as it rises)
-    const sh=Math.max(.2,1-(-vy)/300);
-    ctx.save(); ctx.globalAlpha=.18*sh; ctx.fillStyle="#000";
-    ctx.beginPath(); ctx.ellipse(cx,groundY+base*0.15,base*0.9*sh,base*0.26*sh,0,0,7); ctx.fill(); ctx.restore();
+    const cx=W/2, groundY=H*.74, r=Math.min(W,H)*.185;
+    const cy=groundY - r - p.bodyY + Math.sin(elapsed*2)*1.6;
+    // ground shadow
+    const air=Math.max(0,-p.bodyY)/120, sh=Math.max(.35,1-air*.5);
+    ctx.save(); ctx.globalAlpha=.2*sh; ctx.fillStyle="#000"; ctx.beginPath(); ctx.ellipse(cx,groundY+r*.16,r*.92*sh,r*.24*sh,0,0,7); ctx.fill(); ctx.restore();
 
-    ctx.save(); ctx.translate(cx,cy); ctx.scale(sx.x,sy.x);
-    const r=base;
-    // feet
-    ctx.strokeStyle="#f79420"; ctx.lineWidth=r*.09; ctx.lineCap="round";
-    for(const s of [-1,1]){ ctx.beginPath(); ctx.moveTo(s*r*.34, r*.86); ctx.lineTo(s*r*.34, r*1.02); ctx.moveTo(s*r*.34,r*1.02); ctx.lineTo(s*r*.20,r*1.1); ctx.moveTo(s*r*.34,r*1.02); ctx.lineTo(s*r*.48,r*1.1); ctx.stroke(); }
-    // wings (wiggle)
-    const wf=Math.sin(hairPh*.7)*.12 + (S.state==="listening"?Math.sin(hairPh*2)*.2:0);
-    for(const s of [-1,1]){ ctx.save(); ctx.translate(s*r*.86,r*.06); ctx.rotate(s*(0.5+wf)); ctx.fillStyle="#ffca3a"; ctx.beginPath(); ctx.ellipse(0,0,r*.30,r*.5,0,0,7); ctx.fill(); ctx.restore(); }
-    // body (soft round with volume gradient)
-    const g=ctx.createRadialGradient(-r*.3,-r*.4,r*.2,0,0,r*1.25); g.addColorStop(0,"#ffe680"); g.addColorStop(.55,"#ffd24a"); g.addColorStop(1,"#f5b825");
-    ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(0,0,r,r*1.06,0,0,7); ctx.fill();
-    // belly highlight
-    ctx.fillStyle="rgba(255,240,190,.5)"; ctx.beginPath(); ctx.ellipse(0,r*.26,r*.62,r*.6,0,0,7); ctx.fill();
-    // hair sprout (secondary motion)
-    ctx.strokeStyle="#f5b825"; ctx.lineWidth=r*.07; ctx.lineCap="round";
-    const sway=Math.sin(hairPh)*r*.06 - vy*.02;
-    for(const o of [-.16,0,.16]){ ctx.beginPath(); ctx.moveTo(o*r,-r*.98); ctx.quadraticCurveTo(o*r+sway,-r*1.28, o*r+sway*1.4,-r*1.5); ctx.stroke(); }
+    ctx.save(); ctx.translate(cx,cy); ctx.rotate(p.headLean*.12); ctx.scale(p.sqX*(1+p.pop*.04),p.sqY*(1+p.pop*.04));
+
+    // TAIL (behind body)
+    ctx.save(); ctx.translate(r*.9,r*.1); ctx.rotate(p.tail+.5);
+    ctx.fillStyle="#f4b52f";
+    for(let i=0;i<3;i++){ ctx.save(); ctx.rotate((i-1)*.28); ctx.beginPath(); ctx.ellipse(r*.34,0,r*.36,r*.13,0,0,7); ctx.fill(); ctx.restore(); }
+    ctx.restore();
+    // BACK wing
+    drawWing(-1, p.wingR, r, true);
+
+    // BODY with volume shading
+    const bg=ctx.createRadialGradient(-r*.34,-r*.44,r*.15,0,r*.1,r*1.35);
+    bg.addColorStop(0,"#ffe98f"); bg.addColorStop(.5,"#ffd24a"); bg.addColorStop(.86,"#f6b92c"); bg.addColorStop(1,"#e8a41f");
+    ctx.fillStyle=bg; ctx.beginPath(); ctx.ellipse(0,0,r,r*1.03,0,0,7); ctx.fill();
+    // occlusion at bottom
+    const ao=ctx.createLinearGradient(0,r*.2,0,r*1.03); ao.addColorStop(0,"rgba(150,90,10,0)"); ao.addColorStop(1,"rgba(150,90,10,.28)");
+    ctx.fillStyle=ao; ctx.beginPath(); ctx.ellipse(0,0,r,r*1.03,0,0,7); ctx.fill();
+    // feather texture (soft down flecks)
+    ctx.save(); ctx.beginPath(); ctx.ellipse(0,0,r,r*1.03,0,0,7); ctx.clip(); ctx.strokeStyle="rgba(220,150,20,.13)"; ctx.lineWidth=1.1; ctx.lineCap="round";
+    for(let i=0;i<10;i++){ const a=(i/10)*6.28+ (i%2)*.3; const rr=r*(.35+.5*((i*37)%10)/10); ctx.beginPath(); ctx.moveTo(Math.cos(a)*rr,Math.sin(a)*rr*1.03); ctx.lineTo(Math.cos(a)*rr*.86,Math.sin(a)*rr*1.03-r*.12); ctx.stroke(); }
+    ctx.restore();
+    // belly
+    ctx.fillStyle="rgba(255,244,200,.55)"; ctx.beginPath(); ctx.ellipse(0,r*.3,r*.6,r*.58,0,0,7); ctx.fill();
+    // rim light top-left
+    ctx.save(); ctx.beginPath(); ctx.ellipse(0,0,r,r*1.03,0,0,7); ctx.clip(); ctx.strokeStyle="rgba(255,255,230,.6)"; ctx.lineWidth=r*.06; ctx.beginPath(); ctx.ellipse(-r*.06,-r*.06,r*.98,r*1.0,0,Math.PI*1.05,Math.PI*1.7); ctx.stroke(); ctx.restore();
+
+    // HAIR sprout (2-seg spring chain)
+    ctx.strokeStyle="#f2ac25"; ctx.lineWidth=r*.075; ctx.lineCap="round";
+    for(const o of [-.13,0,.13]){ const x0=o*r, y0=-r*.98; const x1=x0+Math.sin(p.hairA+o*3)*r*.18, y1=y0-r*.24; const x2=x1+Math.sin(p.hairA2+o*3)*r*.22, y2=y1-r*.22;
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.quadraticCurveTo(x1,y1,x2,y2); ctx.stroke();
+      ctx.fillStyle="#f2ac25"; ctx.beginPath(); ctx.arc(x2,y2,r*.045,0,7); ctx.fill(); }
+
+    // FRONT wing
+    drawWing(1, p.wingL, r, false);
+
+    // FACE
+    const ex=r*.36, ey=r*.06, er=r*.25*(1+p.eyeWide*.14 - Math.max(0,-p.eyeWide)*.7);
     // blush
-    ctx.fillStyle="rgba(255,120,150,.45)";
-    for(const s of [-1,1]){ ctx.beginPath(); ctx.ellipse(s*r*.5,r*.16,r*.16,r*.11,0,0,7); ctx.fill(); }
-    // eyes (big, low on face = baby schema)
-    const ex=r*.34, ey=-r*.06, er=r*.24*(1+eyeWide*.12);
+    ctx.fillStyle=`rgba(255,120,150,${.4+.25*Math.max(0,p.mood)})`;
+    for(const s of [-1,1]){ ctx.beginPath(); ctx.ellipse(s*r*.56,r*.2,r*.15,r*.1,0,0,7); ctx.fill(); }
+    // eyes
     for(const s of [-1,1]){
-      // white
-      ctx.fillStyle="#2c2a36";
-      const open=1-blink;
-      ctx.save(); ctx.translate(s*ex,ey); ctx.scale(1, Math.max(.06,open* (mood?0.8:1)));
-      if(mood>.5){ // happy arc eyes ^_^
-        ctx.strokeStyle="#2c2a36"; ctx.lineWidth=r*.09; ctx.lineCap="round"; ctx.beginPath(); ctx.arc(0,r*.05,er*.9,Math.PI*1.15,Math.PI*1.85); ctx.stroke();
+      ctx.save(); ctx.translate(s*ex,ey);
+      const open=(1-p.blink)*(p.eyeWide<0?.35:1);
+      if(p.mood>.55){ // ^_^
+        ctx.strokeStyle="#3a2f36"; ctx.lineWidth=r*.085; ctx.lineCap="round"; ctx.beginPath(); ctx.arc(0,r*.06,er*.95,Math.PI*1.15,Math.PI*1.85); ctx.stroke();
       } else {
-        ctx.beginPath(); ctx.ellipse(0,0,er,er*1.15,0,0,7); ctx.fill();
-        // pupil + highlight follow look
-        ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(look.x*er*.5 - er*.28, -er*.34 + look.y*er*.4, er*.34, 0,7); ctx.fill();
-        ctx.beginPath(); ctx.arc(look.x*er*.5 + er*.22, er*.1, er*.14, 0,7); ctx.globalAlpha=.7; ctx.fill(); ctx.globalAlpha=1;
+        ctx.save(); ctx.scale(1,Math.max(.05,open));
+        // eye white base (subtle) + dark iris
+        ctx.fillStyle="#3a2f36"; ctx.beginPath(); ctx.ellipse(0,0,er,er*1.18,0,0,7); ctx.fill();
+        // pupil offset by gaze
+        const px=p.lookX*er*.4, py=p.lookY*er*.4;
+        // big + small catchlight
+        ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(px-er*.3,py-er*.36,er*.32,0,7); ctx.fill();
+        ctx.globalAlpha=.75; ctx.beginPath(); ctx.arc(px+er*.24,py+er*.16,er*.13,0,7); ctx.fill(); ctx.globalAlpha=1;
+        ctx.restore();
+        // eyelid (sleepy) shading top
       }
       ctx.restore();
+      // brow
+      const bv=(s<0?p.browL:p.browR);
+      ctx.strokeStyle="#e39a1e"; ctx.lineWidth=r*.06; ctx.lineCap="round";
+      ctx.save(); ctx.translate(s*ex,ey-er*1.35 + bv*r*.06); ctx.rotate(s*(-bv)*.5);
+      ctx.beginPath(); ctx.moveTo(-er*.55,0); ctx.lineTo(er*.55,-r*.02); ctx.stroke(); ctx.restore();
     }
-    // beak (opens with voice)
-    const bo=mouthOpen*r*.34, by=r*.34;
-    ctx.fillStyle="#ff9f1c";
-    ctx.beginPath(); ctx.moveTo(-r*.16,by); ctx.lineTo(r*.16,by); ctx.lineTo(0,by+r*.16); ctx.closePath(); ctx.fill(); // upper
-    ctx.fillStyle="#f4830e";
-    ctx.beginPath(); ctx.moveTo(-r*.13,by+bo+r*.02); ctx.lineTo(r*.13,by+bo+r*.02); ctx.lineTo(0,by+bo+r*.15); ctx.closePath(); ctx.fill(); // lower drops when open
-    // little tongue when wide open
-    if(bo>r*.14){ ctx.fillStyle="#ff5d7a"; ctx.beginPath(); ctx.ellipse(0,by+bo*.5+r*.04,r*.06,r*.05,0,0,7); ctx.fill(); }
+    // BEAK (upper fixed, lower drops with voice; tongue peek)
+    const by=r*.36, bo=p.beak*r*.32;
+    ctx.fillStyle="#ff9f1c"; ctx.beginPath(); ctx.moveTo(-r*.15,by); ctx.lineTo(r*.15,by); ctx.lineTo(0,by+r*.15); ctx.closePath(); ctx.fill();
+    if(bo>r*.12){ ctx.fillStyle="#c8531f"; ctx.beginPath(); ctx.ellipse(0,by+bo*.5+r*.05,r*.11,bo*.4,0,0,7); ctx.fill(); ctx.fillStyle="#ff607f"; ctx.beginPath(); ctx.ellipse(0,by+bo*.5+r*.06,r*.06,r*.045,0,0,7); ctx.fill(); }
+    ctx.fillStyle="#f4830e"; ctx.beginPath(); ctx.moveTo(-r*.13,by+bo+r*.01); ctx.lineTo(r*.13,by+bo+r*.01); ctx.lineTo(0,by+bo+r*.14); ctx.closePath(); ctx.fill();
+    // feet (shift with lean)
+    ctx.strokeStyle="#f79420"; ctx.lineWidth=r*.085; ctx.lineCap="round";
+    for(const s of [-1,1]){ const fx=s*r*.32 + p.headLean*r*.2; ctx.beginPath(); ctx.moveTo(fx,r*.9); ctx.lineTo(fx,r*1.0); ctx.moveTo(fx,r*1.0); ctx.lineTo(fx-r*.12,r*1.08); ctx.moveTo(fx,r*1.0); ctx.lineTo(fx+r*.12,r*1.08); ctx.moveTo(fx,r*1.0); ctx.lineTo(fx,r*1.1); ctx.stroke(); }
     ctx.restore();
 
-    // sparkles (done)
-    for(const p of sparkle){ ctx.save(); ctx.globalAlpha=Math.max(0,p.life); ctx.fillStyle="#ffd24a"; ctx.translate(cx+p.x,cy+p.y); star(ctx,p.r*2.2); ctx.restore(); }
+    // sleepy Z's
+    if(S.state==="sleepy"){ ctx.fillStyle="rgba(150,160,200,.8)"; ctx.font=`600 ${r*.2}px ${getComputedStyle(document.body).fontFamily}`; for(let i=0;i<3;i++){ const a=(elapsed*.7+i*.5)%3; ctx.globalAlpha=Math.max(0,1-a/3); ctx.fillText("z", cx+r*.7+i*r*.18, cy-r*.9-a*r*.3); } ctx.globalAlpha=1; }
     // thinking dots
-    if(S.state==="thinking"){ for(let i=0;i<3;i++){ const a=(Math.sin(elapsed*4-i*.6)+1)/2; ctx.globalAlpha=.3+.6*a; ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted"); ctx.beginPath(); ctx.arc(cx+r*.9+i*12, cy-r*1.1, 3, 0,7); ctx.fill(); } ctx.globalAlpha=1; }
+    if(S.state==="thinking"){ for(let i=0;i<3;i++){ const a=(Math.sin(elapsed*4-i*.6)+1)/2; ctx.globalAlpha=.3+.6*a; ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted")||"#999"; ctx.beginPath(); ctx.arc(cx+r*.95+i*13, cy-r*1.15, 3.2, 0,7); ctx.fill(); } ctx.globalAlpha=1; }
+    // particles
+    for(const q of sparkle){ ctx.save(); ctx.globalAlpha=Math.max(0,q.life); ctx.translate(cx+q.x,cy+q.y); if(q.heart){ ctx.fillStyle="#ff6f9c"; heart(ctx,q.r*2.6);} else { ctx.fillStyle="#ffd24a"; star(ctx,q.r*2.2);} ctx.restore(); }
   }
-  function star(c,s){ c.beginPath(); for(let i=0;i<5;i++){ const a=-Math.PI/2+i*Math.PI*2/5; c.lineTo(Math.cos(a)*s,Math.sin(a)*s); const a2=a+Math.PI/5; c.lineTo(Math.cos(a2)*s*.45,Math.sin(a2)*s*.45);} c.closePath(); c.fill(); }
+  function drawWing(side, ang, r, back){
+    ctx.save(); ctx.translate(side*r*.9, r*.02); ctx.rotate(side*ang);
+    const g=ctx.createLinearGradient(0,-r*.4,0,r*.4); g.addColorStop(0, back?"#f2b52f":"#ffd968"); g.addColorStop(1, back?"#e29a1c":"#f4b62c");
+    ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(side*r*.02,0,r*.26,r*.46,0,0,7); ctx.fill();
+    // 3 feather ridges
+    ctx.strokeStyle="rgba(180,110,10,.25)"; ctx.lineWidth=1.4; for(let i=-1;i<2;i++){ ctx.beginPath(); ctx.moveTo(side*r*.02,i*r*.14); ctx.lineTo(side*r*.02 - side*r*.16, i*r*.14+r*.18); ctx.stroke(); }
+    ctx.restore();
+  }
+  function star(c,s){ c.beginPath(); for(let i=0;i<5;i++){ const a=-Math.PI/2+i*Math.PI*2/5; c.lineTo(Math.cos(a)*s,Math.sin(a)*s); const b=a+Math.PI/5; c.lineTo(Math.cos(b)*s*.45,Math.sin(b)*s*.45);} c.closePath(); c.fill(); }
+  function heart(c,s){ c.beginPath(); c.moveTo(0,s*.3); c.bezierCurveTo(s,-s*.5,s*.5,-s,0,-s*.2); c.bezierCurveTo(-s*.5,-s,-s,-s*.5,0,s*.3); c.fill(); }
 
   requestAnimationFrame((t)=>{tPrev=t;requestAnimationFrame(loop);});
 
@@ -235,7 +297,7 @@
   function pv(){$("#bk").textContent=bucket(S.words);$("#tn").textContent=S.tone;$("#pl").textContent=line(S.words,S.tone,S.curse,S.nonce)||"— (Yappy stays quiet)";}
   let seq=null;
   $("#dictate").onclick=()=>{ if(seq)return; const b=$("#dictate"); b.disabled=true; setState("listening");
-    const steps=[[1900,"thinking"],[1200,"done"],[2600,"idle"]]; let i=0; const run=()=>{ if(i>=steps.length){seq=null;b.disabled=false;return;} const[ms,nx]=steps[i++]; seq=setTimeout(()=>{ if(nx==="done")S.nonce++; setState(nx); run();},ms);}; run();
+    const steps=[[2000,"thinking"],[1300,"done"],[2800,"idle"]]; let i=0; const run=()=>{ if(i>=steps.length){seq=null;b.disabled=false;return;} const[ms,nx]=steps[i++]; seq=setTimeout(()=>{ if(nx==="done")S.nonce++; setState(nx); run();},ms);}; run();
   };
   $("#mic").onclick=async()=>{ if(S.mic)return; try{ const st=await navigator.mediaDevices.getUserMedia({audio:true}); const ac=new(window.AudioContext||window.webkitAudioContext)(); const src=ac.createMediaStreamSource(st); const an=ac.createAnalyser(); an.fftSize=512; src.connect(an); const buf=new Uint8Array(an.fftSize); S.mic=()=>{ an.getByteTimeDomainData(buf); let s=0; for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128;s+=v*v;} return Math.min(1,Math.sqrt(s/buf.length)*4.5);}; $("#mic").textContent="🎤 live"; setState("listening"); }catch(e){ $("#mic").textContent="🎤 blocked"; } };
   pv(); setState("idle");
