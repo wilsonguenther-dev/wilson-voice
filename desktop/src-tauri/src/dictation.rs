@@ -9,7 +9,7 @@
 //! Kept pure so they're trivially testable and safe to call anywhere in the pipeline
 //! without touching the "never lose text" paste path.
 
-/// Dictation context inferred from the frontmost application.
+/// Dictation context inferred from the frontmost application, or picked by the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationMode {
     Email,
@@ -18,6 +18,8 @@ pub enum DictationMode {
     Code,
     Chat,
     Plain,
+    /// User-forced list formatting (never inferred from an app).
+    List,
 }
 
 /// Map a frontmost app name (or bundle id) to a dictation mode via keyword match.
@@ -63,6 +65,28 @@ pub fn format_dictation(text: &str) -> String {
         return list;
     }
     trimmed.to_string()
+}
+
+/// Resolve the effective dictation mode for a transcription. A user-picked fixed mode
+/// (the `dictation_mode` setting) always wins; the sentinel `"auto"` — or any value we
+/// don't recognize — defers to app detection via [`mode_for_app`].
+///
+/// Setting values mirror the Settings picker: `auto | plain | list | email | code | notes`.
+pub fn resolve_mode(setting: &str, app_name: &str) -> DictationMode {
+    match setting.trim().to_lowercase().as_str() {
+        "plain" => DictationMode::Plain,
+        "list" => DictationMode::List,
+        "email" => DictationMode::Email,
+        "code" => DictationMode::Code,
+        "notes" => DictationMode::Notes,
+        _ => mode_for_app(app_name),
+    }
+}
+
+/// Whether [`format_dictation`] should run for a given mode. `Code` and `Plain` stay
+/// verbatim — we never reflow identifiers or plain prose — everything else is formatted.
+pub fn should_format(mode: DictationMode) -> bool {
+    !matches!(mode, DictationMode::Code | DictationMode::Plain)
 }
 
 /// Enumerator cue words that, at the start of a clause, mark a new list item.
@@ -201,5 +225,58 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert_eq!(format_dictation("   "), "");
+    }
+
+    #[test]
+    fn fixed_mode_overrides_detected_mode() {
+        // Slack detects as Chat via app inference…
+        assert_eq!(mode_for_app("Slack"), DictationMode::Chat);
+        // …but a user-picked fixed mode always wins over detection.
+        assert_eq!(resolve_mode("email", "Slack"), DictationMode::Email);
+        assert_eq!(resolve_mode("plain", "Gmail"), DictationMode::Plain);
+        assert_eq!(resolve_mode("list", "Xcode"), DictationMode::List);
+        // "auto" (and unknown values) defer back to app detection.
+        assert_eq!(resolve_mode("auto", "Slack"), DictationMode::Chat);
+        assert_eq!(resolve_mode("auto", "Google Docs"), DictationMode::Document);
+    }
+
+    /// Mirror of the pipeline wiring in `lib.rs`: pick the mode, then format (guarded so
+    /// non-empty input can never yield empty output).
+    fn pipeline_format(setting: &str, app: &str, raw: &str) -> String {
+        let mode = resolve_mode(setting, app);
+        if should_format(mode) {
+            let formatted = format_dictation(raw);
+            if formatted.trim().is_empty() && !raw.trim().is_empty() {
+                raw.to_string()
+            } else {
+                formatted
+            }
+        } else {
+            raw.to_string()
+        }
+    }
+
+    #[test]
+    fn should_format_skips_code_and_plain() {
+        assert!(!should_format(DictationMode::Code));
+        assert!(!should_format(DictationMode::Plain));
+        assert!(should_format(DictationMode::List));
+        assert!(should_format(DictationMode::Notes));
+        assert!(should_format(DictationMode::Email));
+    }
+
+    #[test]
+    fn pipeline_applies_format_dictation_and_never_loses_text() {
+        let raw = "first, buy milk, second, buy eggs, third, buy bread";
+        // format_dictation IS applied for detected/document-style modes.
+        assert_eq!(
+            pipeline_format("auto", "Obsidian", raw),
+            "1. Buy milk\n2. Buy eggs\n3. Buy bread"
+        );
+        // A user-forced Code/Plain mode leaves the transcript verbatim.
+        assert_eq!(pipeline_format("code", "Obsidian", raw), raw);
+        assert_eq!(pipeline_format("plain", "Obsidian", raw), raw);
+        // Guard: non-empty input never yields empty output.
+        assert!(!pipeline_format("notes", "Obsidian", "hello world").is_empty());
     }
 }
