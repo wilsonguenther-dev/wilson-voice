@@ -1267,6 +1267,18 @@ export default function App() {
                 <button onClick={() => invoke("open_data_dir")}>
                   Open data folder
                 </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      await invoke("open_logs_dir");
+                      toast("Opened logs folder for diagnostics");
+                    } catch (e) {
+                      toast(String(e));
+                    }
+                  }}
+                >
+                  Export diagnostics (logs)
+                </button>
                 <button onClick={() => setNav("permissions")}>
                   Permissions
                 </button>
