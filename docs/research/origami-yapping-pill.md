@@ -477,3 +477,437 @@ percentage global (`globals.creasePercent` / `setCreasePercent` / `shouldAnimate
 confirmed in Origami Simulator `js/globals.js`. Example crease-pattern paths confirmed in that
 repo's `assets/` tree. `fold-convert --flat-fold` (end-state only) confirmed in edemaine/fold
 README.*
+
+---
+
+## Geometric crease rendering (v2 research)
+
+> **Why v2.** The first prototype folded a *hand-authored silhouette* — it "looked like a
+> pill in modes," not origami, because it morphed an outline instead of articulating a
+> crease pattern. v2's goal is **genuine geometric crease folding**: a visible crease
+> pattern (mountain/valley lines) whose **flat facets rotate rigidly about their shared
+> creases** and collapse into a 3D creature, projected to 2D — the paper look with *real
+> crease structure*. The core primitive is **hinge-tree forward kinematics** (each face =
+> parent's transform ∘ a rotation about the shared crease edge), which is hand-authorable
+> in ~150 lines of Canvas2D and needs **zero third-party runtime code** (so licensing is
+> moot for the engine itself). Everything below is the concrete math, the real repos, and
+> a copy-pasteable sketch.
+
+### v2.1 — Rigid-origami FOLDING engines in JS: which give a usable MIT playback path?
+
+The key distinction is **flat-folded state** (final 2D geometry + which layer is on top —
+what you need for a *painter's-order* stack) vs **partial-fold angles over time** (the
+per-crease dihedral angles at each `t`, what an *animation* needs). Most tools only do the
+former; only a solver or a hinge rig gives the latter.
+
+| Repo | License | Live in webview? | Gives partial-fold **angles/animation**? | Role for us |
+|---|---|---|---|---|
+| **amandaghassaei/OrigamiSimulator** <https://github.com/amandaghassaei/OrigamiSimulator> | **MIT** | yes but heavy (three.js + GPU solver) | **Yes** — global `creasePercent` ramps every crease's dihedral | **Bake engine** (offline sweep, §v1) *or* reference for the fold-angle model |
+| **georgiee/origami** ("Origamizake") <https://github.com/georgiee/origami> · demo <https://georgiee.github.io/origami/> | **MIT** | yes (three.js runtime) | **Yes-ish** — folds by *reflecting* half-planes across crease lines; "choose a model, **skip through steps with a slider**" = step playback | The only **MIT runtime-folding** JS project; study its reflect-across-crease op |
+| **origamimagiro/flat-folder** (Jason Ku) <https://github.com/origamimagiro/flat-folder> | **MIT** (verified) | yes (pure JS browser app) | **No** — computes **flat-folded state + layer/overlap order only**; imports FOLD/SVG/**OPX/CP**, exports FOLD | **Offline** tool to get the correct **stacking order** of the flat pose (feeds painter's-sort) — not an animator |
+| **edemaine/fold** <https://github.com/edemaine/fold> | **MIT** | yes (parser is `JSON.parse`) | **No** — format + I/O + `--flat-fold` **end state only** | Canonical CP storage + loader (§v1) |
+| **robbykraft/Origami** (Rabbit Ear) <https://github.com/robbykraft/Origami> | **GPL-3.0** ⚠️ | — | Yes (full fold solver) | **Study only / offline** — never ship (GPL is fatal to BSL/PolyForm) |
+| **Tachi** Freeform / Rigid Origami Sim <https://origami.c.u-tokyo.ac.jp/~tachi/software/> | Java, no clear OSS license | no | Yes (academic origin) | **Algorithms/reference only** — OrigamiSimulator already ports Tachi's method to MIT web |
+
+**How OrigamiSimulator maps `creasePercent` → vertex positions (the model to copy).**
+Confirmed by source read (`js/dynamic/dynamicSolver.js`) + Ghassaei's paper *"Fast,
+Interactive Origami Simulation using GPU Computation"*:
+
+1. On init, **every crease stores a fixed target dihedral** `creaseMeta[i*4+2] =
+   crease.getTargetTheta()` — that's the crease's *fully-folded* angle, `±π` scaled by the
+   material's fold limit, sign = mountain(−)/valley(+).
+2. The global fold slider is pushed to the GPU as a uniform on **every** solver step:
+   `gpuMath.setUniformForProgram("velocityCalc", "u_creasePercent", percent, "1f")` and
+   likewise for `positionCalcVerlet`.
+3. In the GLSL, the **instantaneous target for each crease is `u_creasePercent *
+   targetTheta`**. A torsional (crease) spring applies a force proportional to
+   `(currentθ − creasePercent·targetTheta)`, alongside **axial** (edge-length) and **face**
+   constraints that keep facets rigid; node positions integrate by **Verlet**. It relaxes
+   *all* creases simultaneously toward the scaled target — it does **not** fold in sequence.
+
+The load-bearing takeaway for a hand rig: **`creasePercent` is one scalar `t` that
+multiplies every crease's flat-fold angle.** That is *exactly* the single-DOF ramp a
+hinge-tree uses — `φ_crease(t) = t · φ_crease^flat`. OrigamiSimulator just also *solves the
+loop-closure/rigidity coupling numerically* so arbitrary patterns stay physical; a hinge
+tree gets that coupling for free only when the face graph is a tree (see §v2.2).
+
+**Verdict.** There is **no drop-in MIT library that plays back partial-fold angles of an
+arbitrary crease pattern live and cheaply.** The usable MIT paths are: (a) **bake** frames
+from OrigamiSimulator offline and lerp them (best fidelity for a complex creature — the v1
+plan), or (b) **hand-author a hinge-tree** for the bases/mouth (real crease articulation,
+no dep, trivial CPU — best for the pill's fold + mouth). Use **flat-folder** offline once
+per model to lock the flat-pose **layer order** so the painter's sort never flickers.
+
+### v2.2 — Kinematics you can author by hand in ~150 lines
+
+#### The hinge-tree fold (the engine) — exact math
+
+Represent the sheet as **rigid facets** joined at creases. Build a **spanning tree of the
+face-adjacency graph**: pick a root face, and every other face has exactly one *parent* it
+shares a crease edge with. One scalar `t ∈ [0,1]` (plus, optionally, an independent `mouth`
+DOF) drives all fold angles.
+
+- Material (flat) coordinates: each vertex `i` has `v_i = (x_i, y_i, 0)`.
+- Root face `r`: world transform `M_r = I` (its folded coords = its flat coords).
+- For a child face `f` sharing crease edge `(a, b)` with its parent `p`, with signed
+  dihedral fold angle `φ_f(t)`:
+  - Hinge axis in **material** coords: `k = normalize(v_b − v_a)`, point on axis `A = v_a`.
+  - **Rotation about the line** `(A, k)` by `φ`, as an affine `H = (R, τ)` via **Rodrigues**:
+
+    ```
+    R = I·cosφ + sinφ·[k]×  + (1−cosφ)·k kᵀ        // 3×3
+    τ = A − R·A                                     // so the line (A,k) is fixed
+        [k]× = [[0,−kz, ky],[kz,0,−kx],[−ky,kx,0]]
+    ```
+  - **Compose with the parent** (both expressed in material coords, then folded together):
+    `M_f = M_p ∘ H`, i.e. `M_f(v) = M_p( R·v + τ )`.
+  - World position of any material vertex `v` on face `f`: `P = M_f · v`.
+
+  Because `H` **fixes the crease line** `(a,b)` and `M_p` is applied to both faces'
+  shared coordinates identically, the shared edge verts computed from the parent and from
+  the child are **bit-identical** — the paper never tears. Fold angle `φ_f(t) = t ·
+  φ_f^flat` (with `φ^flat = ±π·assignment`) ⇒ `t=0` is the flat crease pattern, `t=1` the
+  collapsed creature; **unfold = run `t` backwards**, provably exact (same as v1).
+
+- **Render:** apply a fixed view rotation `V` (small pitch+yaw so you see 3D), then
+  **orthographic project** (`sx = cx + s·(V·P)x`, `sy = cy − s·(V·P)y`), keep `(V·P)z` for
+  depth; **painter-sort faces by centroid depth** (far first); **shade** each facet by
+  `lightness ∝ |n̂ · L̂|` where `n̂` is the facet normal (cross product of two edges) — this
+  flat-per-facet shading is what *reads as folded paper*. Stroke the facet edges faintly =
+  visible creases.
+
+**The one honest caveat (loops).** A real interior vertex makes its surrounding faces form
+a **cycle**, and a spanning tree cuts one crease of that cycle. The fold angles around a
+loop are **not independent** — they're coupled by a rigidity/loop-closure constraint, so
+naively setting every `φ = t·φ^flat` leaves a small gap at the cut crease for a general
+pattern. Two clean ways to stay genuinely rigid by hand:
+1. **Author tree-structured "folds"** (a fold *sequence* / a net with no closed interior
+   vertex) — wings, neck, head, beak-jaws hinged off a body all form a tree, zero coupling.
+   This is what the code sketch below does and what georgiee/origami's reflect-op does.
+2. **Solve the coupling in closed form for a single vertex** (below) and drive the loop's
+   creases from one driver angle — good for the symmetric bases.
+
+#### Single-vertex fold (waterbomb / cootie-catcher / preliminary base) — the closed form
+
+A single interior vertex is a **spherical linkage**: put the vertex at a sphere's center;
+each sector angle becomes a spherical arc, each fold angle is the supplement of an interior
+angle of the spherical polygon (Huffman). Governing facts:
+
+- **Flat-foldability (Kawasaki–Justin):** alternate sector angles sum to π
+  (`α₁+α₃+… = α₂+α₄+… = π`). **Maekawa–Justin:** `#mountain − #valley = ±2`.
+- **A developable degree-4 vertex is a spherical 4R linkage ⇒ exactly 1 DOF.** Under the
+  **Weierstrass / half-angle substitution `tᵢ = tan(ρᵢ/2)`** the fold-angle relations
+  become *linear*: pick one crease as the **driver** and every other fold angle follows
+
+  ```
+  tan(ρ_j / 2) = c_j · tan(ρ_driver / 2)          // c_j fixed by the sector angles
+  ```
+
+  (Huffman's spherical-trig relations, simplified via Weierstrass; see
+  [royalsociety, Parametric solutions to degree-4 vertices, 2023](https://royalsocietypublishing.org/rspa/article/479/2279/20230319/101163/Parametric-solutions-to-the-kinematics-of)
+  and [arXiv 2408.08816, Lorentz transformation for degree-4 vertices](https://arxiv.org/abs/2408.08816)).
+  Drive `ρ_driver = t·π`, compute the others from the constant ratios → a **genuinely
+  rigid, loop-closing 1-DOF fold** you can hand-code.
+- **Symmetric vertices are trivial.** The **preliminary base** and **waterbomb base** are
+  the *same* crease pattern — a square with both diagonals **and** both book-fold midlines
+  through the center (a degree-8 vertex) — differing **only in mountain/valley assignment**
+  (preliminary: midlines valley / diagonals mountain → collapses to a square-with-flaps;
+  waterbomb: inverted → collapses to a triangle/balloon). By symmetry the collapse is a
+  **1-DOF path with all fold-angle magnitudes equal**, so you can drive it with one `t` and
+  a single per-crease `±` sign. *This is exactly what OrigamiSimulator's `±creasePercent`
+  does: −100% is the M/V-inverted collapse of the same sheet — preliminary ⇄ waterbomb.*
+- **Bird base** = preliminary base + four **petal folds** (more faces, still 1-DOF for the
+  symmetric collapse) → your "crane/bird" creature.
+- **Cootie-catcher / fortune-teller = the MOUTH.** Once folded, it's four rigid quad flaps
+  hinged along the center spine; **pinching opens/closes it as a genuine 1-DOF rigid
+  motion** — no flat-fold solve needed, just one dihedral. Model it directly as a hinge with
+  an *opening* angle and drive that angle from mic amplitude (§v2.5). This is the cleanest,
+  most "origami" audio-reactive jaw available.
+
+#### The five bases, as authoring recipes
+
+| Base | Crease pattern (square) | Central vertex | Collapsed 3D form | Hinge-rig note |
+|---|---|---|---|---|
+| **Preliminary** | 2 diagonals + 2 midlines | degree-8 | small square + 4 flaps | 1-DOF symmetric; parent of bird/crane |
+| **Waterbomb** | *same lines*, M/V inverted | degree-8 | triangle / balloon | drive with `−t` of preliminary |
+| **Bird** | preliminary + 4 petal folds | — | 4 long points (crane body) | tree of petal faces off the preliminary |
+| **Cootie-catcher** | 2 diagonals + 2 midlines, blintzed | — | 4 pockets → **opening mouth** | one *opening* dihedral = the jaw |
+| **Cootie mouth (min)** | — | — | 2 jaw flaps sharing a spine edge | upper/lower beak on shared crease `[a,b]`, `±m` |
+
+### v2.3 — Where to get crease patterns / nets (permissive / public-domain)
+
+Copyright rule (unchanged, critical): **traditional models are public-domain folk
+knowledge** (crane, flapping bird, preliminary/waterbomb/bird/frog bases, cootie catcher,
+fox puppet, boat, samurai hat); **named modern designs by living authors are copyrighted
+even when the `.cp`/SVG sits in an MIT repo** — the repo's license covers the code, not the
+artist's design.
+
+- ✅ **OrigamiSimulator `assets/`** (repo MIT; designs traditional): `Origami/traditionalCrane.svg`,
+  `flappingBird.svg`; `Bases/birdBase.svg`, `frogBase.svg`, `waterbombBase.svg`,
+  `squareBase.svg`, `pinwheelBase.svg`, `boatBase.svg`. (Crane, fox-from-frog-base, bird.)
+- ✅ **flat-folder** imports/ships FOLD + **`.cp` (Oripa)** + OPX + SVG — a good place to grab
+  or normalize **traditional** CP files and re-export clean FOLD (MIT tool, offline).
+- ✅ **edemaine/fold** example galleries (MIT format; traditional/abstract test models).
+- ✅ **`.cp` files from Oripa / public CP archives** — but *filter to traditional/PD designs
+  only*; skip anything credited to a named designer (Lang, Kamiya, etc.).
+- ✅ **Wikimedia Commons polyhedra/animal nets** — many **CC0/PD** (public-domain math) for
+  geometric creatures (crab/dog built from boxes, frog from waterbomb).
+- ✅ **Self-author in Inkscape** — draw the CP as an SVG, **red stroke = mountain, blue =
+  valley** (OrigamiSimulator import convention), import → bake, *or* type the vertices
+  straight into the hinge-rig's `flat[]` array. This sidesteps every third-party-design
+  question and is the cleanest path for bespoke "Yap pets."
+- ❌ **Do not ship** `assets/…Lang…` (Cardinal, KnlDragon, Orchid) or any named-designer CP —
+  local experimentation only.
+
+For **crane / fox / frog / crab / dog** specifically: crane + flapping bird ship as
+traditional SVGs; **fox and frog** come from the **frog base**; **crab and dog** are easiest
+as **box-pleat / geometric nets** (author your own or use CC0 nets) rather than hunting a
+copyrighted CP.
+
+### v2.4 — CSS 3D "origami" hinge technique (nested `preserve-3d`)
+
+Real, permissive references for folding DOM in 3D by rotating nested elements about their
+shared edges:
+
+- **OriDomi** (dmotz) <https://github.com/dmotz/oridomi> · <http://oridomi.com/> — **MIT**,
+  standalone (no hard deps). "Fold up DOM elements like paper." Slices a target element into
+  panels and folds them with CSS 3D transforms; requires `transform`/`preserve-3d`. The most
+  complete pure-CSS origami-fold library.
+- **mrflix/paperfold** <https://github.com/mrflix/paperfold> — **MIT** (in v1 list). The
+  cleanest minimal reference for the parent/child hinge (`rotateX` + `transform-style:
+  preserve-3d`).
+- **Codrops "3D Folding Layout Technique"** <https://tympanus.net/codrops/2020/01/14/3d-folding-technique/>
+  — the canonical write-up. Wrapper gets `perspective` + `transform-style: preserve-3d`;
+  each fold panel gets a **`transform-origin` on the shared edge** (`bottom center` /
+  `top center`) and an opposite **`rotateX(±deg)`**; **`overflow:hidden`** hides the content
+  outside each panel so the seam reads as one folded sheet. Known wart: **tiny sub-pixel line
+  gaps between folds** in some browsers (mitigate by scaling parent up / child down).
+- **davidwalsh.name/3d-transforms** + **/folding-animation** — nesting-coordinate-system
+  explainers (a child's transform is relative to its already-rotated parent — the same
+  hinge-tree composition as §v2.2, done by the CSS compositor).
+
+**The core CSS pattern** (each crease is a nested div; the child's coordinate frame rides
+its parent, so folding a parent folds all its children):
+
+```html
+<div class="scene" style="perspective:600px">
+  <div class="face" style="transform-style:preserve-3d">
+    <!-- child hinged along its TOP edge: -->
+    <div class="face child"
+         style="transform-origin:top center; transform:rotateX(var(--fold));
+                transform-style:preserve-3d; backface-visibility:visible">
+      …grandchild hinged on ITS edge…
+    </div>
+  </div>
+</div>
+```
+Drive `--fold` (or `element.animate(...,{...})` with `playbackRate=-1` to reverse exactly).
+
+**When CSS beats Canvas:** few facets; you want **crisp DOM/text/images on the facets**
+(the pill's logo, a word count *on* the paper); GPU-composited transitions with ~zero JS;
+reversibility via WAAPI. **When Canvas wins (our fold):** many facets, **per-facet normal
+shading** (the paper look), **true depth painter-sort** across interleaving flaps, and one
+scalar driving *dozens* of coupled creases — CSS can't z-sort arbitrary interpenetrating
+panels or shade by normal, and per-facet `preserve-3d` nesting gets unwieldy past ~8 folds.
+**Recommendation: Canvas2D hinge-tree for the creature fold; CSS `preserve-3d` only for a
+simple 2–4 panel accent** (e.g. an unfolding "receipt" of the transcript) where real DOM
+content must live on the paper.
+
+### v2.5 — Audio-reactive "mouth" (mic RMS → jaw dihedral)
+
+Yap already exposes a live mic level (`--level`, Rust `audio_level` events). To open/close an
+origami beak or cootie-catcher mouth **in sync with speech**, map a **smoothed loudness
+envelope** to a single **jaw dihedral** — an independent DOF `mouth` alongside the fold `t`.
+
+1. **Get RMS** from a Web Audio `AnalyserNode` on the mic stream (or reuse the existing
+   level; RMS is the honest loudness):
+   ```js
+   const buf = new Float32Array(analyser.fftSize);       // time-domain
+   analyser.getFloatTimeDomainData(buf);
+   let s = 0; for (const x of buf) s += x*x;
+   const rms = Math.sqrt(s / buf.length);                // 0..~0.3 for speech
+   ```
+2. **Noise-gate + normalize** to `0..1` (subtract a floor so silence = fully-closed, and a
+   gamma < 1 to make quiet speech visibly move the jaw):
+   ```js
+   const FLOOR = 0.02, REF = 0.18, GAMMA = 0.7;
+   let level = Math.min(1, Math.max(0, (rms - FLOOR) / REF));
+   level = Math.pow(level, GAMMA);
+   ```
+3. **Asymmetric attack/release smoothing** (fast open on an onset, slower close so the mouth
+   doesn't chatter) — one-pole EMA with two rates:
+   ```js
+   const ATTACK = 0.6, RELEASE = 0.15;                   // per-frame @60fps
+   env += (level - env) * (level > env ? ATTACK : RELEASE);
+   ```
+4. **Map env → jaw dihedral** (radians), with a tiny idle so it's *never a frozen frame*:
+   ```js
+   const JAW_MIN = 0.05, JAW_MAX = 0.6;                  // ~3°..34°
+   const idle = 0.02 * Math.sin(performance.now()/650);  // subtle breathing
+   const mouth = JAW_MIN + env * (JAW_MAX - JAW_MIN) + idle;
+   ```
+   Feed `mouth` to the beak faces' angle functions (upper jaw `+mouth`, lower jaw `−mouth`).
+   During *listening* the rAF loop runs anyway (waveform), so the mouth is free; at idle,
+   `env→0` and you can drop back to a static folded frame.
+
+Optional polish: split `rms` into a low band (jaw amplitude) and a high band (a slight
+"lip"/wing flutter) via two `AnalyserNode`s with different `smoothingTimeConstant`, but a
+single RMS→jaw map already reads clearly as talking.
+
+### v2.6 — Ranked: how to make it REALLY look like geometric origami in v2
+
+1. **Render flat-shaded facets from a real crease pattern, hard creases visible.** The single
+   biggest fidelity lever is **per-facet flat shading** (constant lightness per triangle from
+   its normal) + **stroked crease edges** + **painter's depth sort**. This is what separates
+   "folded paper" from "a morphing blob." Do this in **Canvas2D** (no WebGL context in the
+   panel). *(§v2.2 render step.)*
+2. **Drive the fold with real hinge kinematics, one scalar `t`.** Facets rotate about their
+   actual shared creases (`M_f = M_p ∘ Rodrigues(edge, t·φ_flat)`), collapsing the flat CP
+   into the creature. `t:0→1` fold, `t:1→0` unfold = exact reverse. *(§v2.2.)*
+3. **Author the creature as a hinge tree (wings/neck/head/jaws off a body).** Tree structure
+   = no loop-coupling, genuinely rigid by construction, and covers the bird/crane silhouette
+   plus the mouth. Add the **cootie-catcher jaw** as an independent 1-DOF for the audio mouth.
+   *(§v2.2 recipes + code sketch.)*
+4. **Lock the flat-pose layer order once with flat-folder (MIT, offline).** For any pose where
+   flaps interleave and centroid-z sort could flicker, precompute the true stacking order and
+   store it as a per-face draw priority. *(§v2.1.)*
+5. **For a complex creature that a hand tree can't reach, BAKE from OrigamiSimulator (MIT).**
+   Sweep `creasePercent` 0→1 on a *traditional* CP, dump per-step vertex positions, lerp at
+   runtime — same Canvas2D renderer, just keyframes instead of live kinematics. *(§v1.)*
+6. **Audio mouth = RMS → jaw dihedral with attack/release EMA.** *(§v2.5.)*
+7. **CSS `preserve-3d` only for a 2–4-panel DOM accent** (e.g. an unfolding transcript
+   receipt), never for the creature fold. *(§v2.4.)*
+
+**Explicitly still-rejected:** silhouette morphs (flubber/polymorph/Lottie) *for the fold*;
+GSAP/MorphSVG (non-OSI license); Rabbit Ear (GPL) shipped at runtime; a live GPU solver
+kept alive in the always-on panel.
+
+### v2.7 — Minimal hinge-tree fold sketch (Canvas2D, adapt freely)
+
+Real geometric folding: facets rotate about their shared creases via Rodrigues, one scalar
+`t` collapses the flat crease pattern into a bird, `mouth` opens the beak from mic RMS.
+Zero dependencies; drop the `flat`/`faces` arrays to swap creatures (or paste baked frames).
+
+```js
+// ---- tiny vec3 + affine {R:[9 row-major], t:[3]} ----
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];};
+const apply=(M,p)=>[ M.R[0]*p[0]+M.R[1]*p[1]+M.R[2]*p[2]+M.t[0],
+                     M.R[3]*p[0]+M.R[4]*p[1]+M.R[5]*p[2]+M.t[1],
+                     M.R[6]*p[0]+M.R[7]*p[1]+M.R[8]*p[2]+M.t[2] ];
+function compose(M,N){ // (M∘N)(p) = M(N(p))
+  const R=new Array(9);
+  for(let r=0;r<3;r++)for(let c=0;c<3;c++)
+    R[r*3+c]=M.R[r*3]*N.R[c]+M.R[r*3+1]*N.R[3+c]+M.R[r*3+2]*N.R[6+c];
+  const t=apply(M, N.t);
+  return {R,t};
+}
+const I={R:[1,0,0,0,1,0,0,0,1],t:[0,0,0]};
+function rotAboutLine(A,k,ang){            // rotate space about line (point A, unit axis k)
+  const c=Math.cos(ang), s=Math.sin(ang), C=1-c, [x,y,z]=k;
+  const R=[ c+x*x*C,   x*y*C-z*s, x*z*C+y*s,
+            y*x*C+z*s, c+y*y*C,   y*z*C-x*s,
+            z*x*C-y*s, z*y*C+x*s, c+z*z*C ];
+  const RA=[R[0]*A[0]+R[1]*A[1]+R[2]*A[2],
+            R[3]*A[0]+R[4]*A[1]+R[5]*A[2],
+            R[6]*A[0]+R[7]*A[1]+R[8]*A[2]];
+  return {R, t:[A[0]-RA[0], A[1]-RA[1], A[2]-RA[2]]};   // fixes the whole line
+}
+
+// ---- the crease pattern (flat material coords) — replace with your CP ----
+const flat=[
+  [-0.35,-1.0],[0.35,-1.0],[0.35,1.0],[-0.35,1.0], // 0-3 body quad
+  [-1.3,0.0],[1.3,0.0],                             // 4,5 wing tips
+  [-0.35,1.8],[0.35,1.8],                           // 6,7 head top edge (mouth spine)
+  [0.0,2.5],[0.0,2.5]                               // 8 upper-beak tip, 9 lower-beak tip
+];
+// faces: parents MUST precede children. hinge=[a,b] shared crease edge (indices into flat).
+const faces=[
+  {v:[0,1,2,3], parent:-1, hinge:null,  ang:()=>0},              // 0 body (root, in-plane)
+  {v:[3,0,4],   parent:0,  hinge:[3,0], ang:t=>-t*1.15},         // 1 left wing (about left edge)
+  {v:[2,5,1],   parent:0,  hinge:[2,1], ang:t=> t*1.15},         // 2 right wing (sign flipped: axis reversed)
+  {v:[3,2,7,6], parent:0,  hinge:[3,2], ang:t=> t*0.8},          // 3 head (tilt forward off top edge)
+  {v:[6,7,8],   parent:3,  hinge:[6,7], ang:(t,m)=> t*0.25+m},   // 4 upper beak
+  {v:[6,7,9],   parent:3,  hinge:[6,7], ang:(t,m)=> t*0.25-m},   // 5 lower beak (opens with mouth)
+];
+
+function computeWorld(t, mouth){
+  const M=new Array(faces.length), W=new Array(faces.length);
+  for(let i=0;i<faces.length;i++){
+    const f=faces[i];
+    if(f.parent<0){ M[i]=I; }
+    else{
+      const A=[flat[f.hinge[0]][0],flat[f.hinge[0]][1],0];
+      const B=[flat[f.hinge[1]][0],flat[f.hinge[1]][1],0];
+      M[i]=compose(M[f.parent], rotAboutLine(A, norm(sub(B,A)), f.ang(t,mouth)));
+    }
+    W[i]=f.v.map(vi=>apply(M[i],[flat[vi][0],flat[vi][1],0]));
+  }
+  return W;
+}
+
+// ---- view + render ----
+const VIEW=compose(rotAboutLine([0,0,0],[1,0,0],-0.55),  // pitch
+                   rotAboutLine([0,0,0],[0,1,0], 0.35)); // yaw
+const L=norm([0.3,0.6,1.0]);                              // light dir
+function render(ctx, W, w, h){
+  const S=Math.min(w,h)*0.22, CX=w/2, CY=h*0.62;
+  const items=W.map(poly=>{
+    const view=poly.map(p=>apply(VIEW,p));
+    const scr=view.map(p=>[CX+S*p[0], CY-S*p[1]]);
+    const z=view.reduce((s,p)=>s+p[2],0)/view.length;
+    const n=norm(cross(sub(view[1],view[0]), sub(view[2],view[0])));
+    return {scr, z, n};
+  });
+  items.sort((a,b)=>a.z-b.z);                             // far first (painter)
+  ctx.clearRect(0,0,w,h);
+  for(const it of items){
+    const sh=Math.round((0.55+0.45*Math.abs(dot(it.n,L)))*100);
+    ctx.beginPath();
+    it.scr.forEach((p,j)=> j?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+    ctx.closePath();
+    ctx.fillStyle=`hsl(45 42% ${sh}%)`;                   // warm paper tone
+    ctx.fill();
+    ctx.strokeStyle='rgba(120,90,55,0.45)'; ctx.lineWidth=1; ctx.stroke(); // creases
+  }
+}
+
+// ---- drive loop: t eases 0→1 on activate; mouth from mic RMS (see §v2.5) ----
+let t=0, target=0, env=0, raf=0;
+function frame(ctx, canvas, analyser, buf){
+  // mouth envelope
+  analyser.getFloatTimeDomainData(buf);
+  let s=0; for(const x of buf) s+=x*x;
+  let lv=Math.min(1,Math.max(0,(Math.sqrt(s/buf.length)-0.02)/0.18)); lv=Math.pow(lv,0.7);
+  env += (lv-env)*(lv>env?0.6:0.15);
+  const mouth=0.05 + env*0.55 + 0.02*Math.sin(performance.now()/650);
+  // fold ease
+  t += (target-t)*0.18;
+  render(ctx, computeWorld(t, mouth), canvas.width, canvas.height);
+  // keep animating while folding OR while listening (mouth moving); else stop (0 idle CPU)
+  if(Math.abs(target-t)>0.001 || env>0.01) raf=requestAnimationFrame(()=>frame(ctx,canvas,analyser,buf));
+  else raf=0;
+}
+// unfoldToCreature(): target=1;  foldFlat(): target=0;  (kick raf if !raf)
+```
+
+Notes for adaptation: (1) the wings show the **axis-direction sign gotcha** — face 2's hinge
+is written `[2,1]` (not `[1,2]`) so its axis points opposite face 1's, letting the *same*
+`±t` lift both wings symmetrically; flip the hinge order or the angle sign per side. (2)
+`ang` returns the **dihedral fold angle** — `±π` targets give a full flat-fold; the smaller
+constants here give a stylized rest pose. (3) To play **baked keyframes** instead of live
+kinematics, skip `computeWorld` and feed `render` the lerped frame directly — same renderer.
+(4) For a **single-vertex base** (preliminary/waterbomb/cootie) give every crease the *same*
+`|t·π|` with alternating signs (symmetry ⇒ loops close); for a general degree-4 vertex use
+the `tan(ρ/2)` ratios from §v2.2 to set each `ang`.
+
+---
+*v2 research verified 2026-07-22: flat-folder MIT + flat-state/layer-order-only + FOLD/SVG/OPX/CP
+I/O (repo read); OrigamiSimulator `creasePercent → creasePercent·targetTheta` crease-force model
+(`js/dynamic/dynamicSolver.js` + Ghassaei GPU-computation paper); georgiee/origami MIT reflect-op
+runtime folding with step slider; OriDomi MIT; Codrops preserve-3d/transform-origin/overflow-hidden
+technique + sub-pixel-gap caveat; degree-4 = spherical 4R linkage, 1-DOF, `tᵢ=tan(ρᵢ/2)` linear
+relations (royalsociety RSPA 2023, arXiv 2408.08816); Kawasaki/Maekawa flat-foldability;
+preliminary ⇄ waterbomb = same CP, inverted M/V.*

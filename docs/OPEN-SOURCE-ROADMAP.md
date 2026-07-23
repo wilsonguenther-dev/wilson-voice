@@ -68,7 +68,38 @@
 
 This is the signature identity of Yap. The pill stops being a passive capsule and
 becomes a **living mouth / mascot** that reacts to how much you talk. Build it
-end-to-end; research is in `docs/research/origami-yapping-pill.md`.
+end-to-end; research is in `docs/research/origami-yapping-pill.md` (fold math),
+`docs/research/companion-and-pill-inspiration.md` (UX/direction), and
+`docs/research/motion-and-components.md` (render tech).
+
+### ▶ DECIDED DIRECTION — "Kami" (the capsule is scrapped)
+From the inspiration research. A **folded-paper creature that lives at the notch**:
+- **Peeks** at rest (opt-in, non-blocking, dismissible, purpose-first — anti-Clippy).
+- **Unfolds one beat** when you talk; the **beak = the waveform mouth**, driven by
+  the live mic level via `MouthDriver` (`desktop/src/pill/mouth.ts`, already built).
+- **Chews** while transcribing (fills the dead gap), settles on paste, then **folds
+  back the exact reverse** and yaps its word-count line (`tone.ts`) from a
+  **Dynamic-Island-style speech bubble** right above it.
+- **Pets = swappable `crease.json` packs** (Shimeji-style asset packs → community pets).
+- **Position is a setting** — flick-to-corner / pick a spot (Wispr's #1 complaint is a
+  fixed pill). Offer a **Pindrop-style HUD-shape picker** (notch / orb / bubble / pill).
+- Goo/liquid-glass = later *themes*; "seed-hatch" = a later evolution. v0 fallback if
+  the fold is too heavy = a pure-CSS "concertina" accordion.
+
+### ▶ DECIDED RENDER TECH (both research agents converge)
+- **Fold = baked Canvas2D, NOT live WebGL.** Bake the crane fold offline with
+  **Origami Simulator (MIT)** → per-frame vertices → FOLD JSON → play back with the
+  zero-dep `foldPlayer.ts` (~30–50KB, bit-exact reverse). A persistent WebGL context
+  on an always-on panel is the main battery/thermal risk — avoid it.
+- **Rive (MIT)** for the reactive-personality layer (expressions/blinks) *later* —
+  needs `'wasm-unsafe-eval'` in the CSP.
+- **HUD look:** native Tauri window **vibrancy** + an **SVG gooey/metaball filter**
+  for the speech bubble + **`motion`** (MIT) for micro-interactions + copy-in MIT
+  components (shadcn / Magic UI / Cult UI / motion-primitives). **Charts:** uPlot + visx.
+- **License landmines — do NOT bundle:** Spline (proprietary + CDN), ReactBits
+  (MIT **+ Commons Clause**), Hover.dev (proprietary), p5.js (LGPL → use Two.js),
+  GSAP (free-but-non-OSI → use `motion`/anime.js v4/WAAPI), Rabbit Ear (GPL, offline
+  tool only). Safe WebGL if ever needed: **ogl** (Unlicense, ~10KB) or three.js (MIT).
 
 ### Origami fold/unfold mascot
 - At **rest** the pill is a small **folded origami** shape (a compact capsule/seed).
