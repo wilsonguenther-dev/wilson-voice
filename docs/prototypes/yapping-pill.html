@@ -1,418 +1,214 @@
-<title>Yap — the yapping pill</title>
+<title>Yap — Kami, the notch companion</title>
 <style>
-  :root {
-    --desk:#0a0a0d; --desk-2:#101015; --ink:#f4f4f6; --ink-muted:#969aa4;
-    --hair:rgba(255,255,255,.10); --card:rgba(255,255,255,.035); --card-line:rgba(255,255,255,.08);
-    --obsidian-a:#17181c; --obsidian-b:#0c0c0f; --paper:#f5f5f7;
-    --rose:351 95% 71%; --amber:38 92% 55%; --green:152 69% 52%;
-    --mountain:351 90% 66%;  /* mountain creases (convention: one color) */
-    --valley:210 90% 66%;    /* valley creases (dashed)                  */
-    --accent:var(--rose);
-    --shadow:0 24px 60px rgba(0,0,0,.5);
-    --mono:ui-monospace,"SF Mono",Menlo,monospace;
-    --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,"Segoe UI",sans-serif;
+  :root{
+    --desk:#0b0c10; --desk-2:#0f1116; --ink:#f4f4f6; --ink-muted:#9aa0aa;
+    --hair:rgba(255,255,255,.10); --card:rgba(255,255,255,.04); --card-line:rgba(255,255,255,.09);
+    --paper-a:#f7f1e6; --paper-b:#e8ddc8; --paper-edge:#cdbf9f;  /* warm paper */
+    --rose:351 95% 71%; --amber:38 92% 55%; --green:152 69% 52%; --mountain:351 80% 62%; --valley:210 78% 60%;
+    --accent:var(--rose); --shadow:0 30px 70px rgba(0,0,0,.55);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace; --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;
   }
-  @media (prefers-color-scheme: light){ :root{
-    --desk:#e9e6df; --desk-2:#f3f1ec; --ink:#1b1b20; --ink-muted:#5c616b;
-    --hair:rgba(0,0,0,.10); --card:rgba(0,0,0,.028); --card-line:rgba(0,0,0,.09); --shadow:0 24px 60px rgba(60,40,30,.22);
-  }}
-  :root[data-theme="dark"]{ --desk:#0a0a0d;--desk-2:#101015;--ink:#f4f4f6;--ink-muted:#969aa4;--hair:rgba(255,255,255,.10);--card:rgba(255,255,255,.035);--card-line:rgba(255,255,255,.08);--shadow:0 24px 60px rgba(0,0,0,.5); }
-  :root[data-theme="light"]{ --desk:#e9e6df;--desk-2:#f3f1ec;--ink:#1b1b20;--ink-muted:#5c616b;--hair:rgba(0,0,0,.10);--card:rgba(0,0,0,.028);--card-line:rgba(0,0,0,.09);--shadow:0 24px 60px rgba(60,40,30,.22); }
+  @media (prefers-color-scheme: light){:root{ --desk:#eae6dd; --desk-2:#f2eee6; --ink:#20201c; --ink-muted:#5c5a51; --hair:rgba(0,0,0,.10); --card:rgba(0,0,0,.03); --card-line:rgba(0,0,0,.09); --shadow:0 30px 70px rgba(70,55,30,.22);}}
+  :root[data-theme="dark"]{--desk:#0b0c10;--desk-2:#0f1116;--ink:#f4f4f6;--ink-muted:#9aa0aa;--hair:rgba(255,255,255,.10);--card:rgba(255,255,255,.04);--card-line:rgba(255,255,255,.09);--shadow:0 30px 70px rgba(0,0,0,.55);}
+  :root[data-theme="light"]{--desk:#eae6dd;--desk-2:#f2eee6;--ink:#20201c;--ink-muted:#5c5a51;--hair:rgba(0,0,0,.10);--card:rgba(0,0,0,.03);--card-line:rgba(0,0,0,.09);--shadow:0 30px 70px rgba(70,55,30,.22);}
+  *{box-sizing:border-box;} body{margin:0;background:var(--desk);color:var(--ink);font-family:var(--round);-webkit-font-smoothing:antialiased;line-height:1.5;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px;}
+  header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .brand{display:flex;align-items:center;gap:12px;} .brand h1{font-size:22px;margin:0;letter-spacing:-.02em;font-weight:700;} .brand span{color:var(--ink-muted);font-size:13px;font-family:var(--mono);}
+  .mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(180deg,#1b1c22,#0c0c10);box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 4px 14px rgba(0,0,0,.35);display:grid;place-items:center;} .mark i{width:6px;height:6px;border-radius:50%;background:hsl(var(--rose));box-shadow:0 0 10px hsl(var(--rose)/.7);}
+  .theme-toggle{font:500 12px var(--mono);color:var(--ink-muted);background:var(--card);border:1px solid var(--card-line);border-radius:8px;padding:7px 11px;cursor:pointer;} .theme-toggle:hover{color:var(--ink);}
+  .lede{margin:22px 0 24px;max-width:64ch;color:var(--ink-muted);font-size:15.5px;} .lede b{color:var(--ink);font-weight:600;}
 
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--desk); color:var(--ink); font-family:var(--round); -webkit-font-smoothing:antialiased; line-height:1.5; }
-  .wrap { max-width:1080px; margin:0 auto; padding:40px 24px 80px; }
-  header.top { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; }
-  .brand { display:flex; align-items:center; gap:12px; }
-  .mark { width:34px; height:34px; border-radius:10px; background:linear-gradient(180deg,var(--obsidian-a),var(--obsidian-b)); box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 4px 14px rgba(0,0,0,.35); display:grid; place-items:center; }
-  .mark i { display:block; width:6px; height:6px; border-radius:50%; background:hsl(var(--rose)); box-shadow:0 0 10px hsl(var(--rose)/.7); }
-  .brand h1 { font-size:22px; margin:0; letter-spacing:-.02em; font-weight:700; }
-  .brand span { color:var(--ink-muted); font-size:13px; font-family:var(--mono); }
-  .theme-toggle { font:500 12px var(--mono); color:var(--ink-muted); background:var(--card); border:1px solid var(--card-line); border-radius:8px; padding:7px 11px; cursor:pointer; }
-  .theme-toggle:hover { color:var(--ink); }
-  .lede { margin:22px 0 26px; max-width:64ch; color:var(--ink-muted); font-size:15.5px; }
-  .lede b { color:var(--ink); font-weight:600; }
+  /* ── the "screen" with a real notch ── */
+  .screen{position:relative;border-radius:26px;overflow:hidden;min-height:440px;border:1px solid var(--hair);box-shadow:var(--shadow);
+    background:radial-gradient(130% 90% at 50% -20%, color-mix(in oklab,var(--desk-2),white 5%), var(--desk-2));}
+  .menubar{position:absolute;top:0;left:0;right:0;height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font:600 11px var(--mono);color:var(--ink-muted);background:linear-gradient(180deg,rgba(0,0,0,.25),transparent);z-index:2;}
+  .menubar .r{display:flex;gap:12px;opacity:.8;}
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:190px;height:34px;background:#000;border-radius:0 0 16px 16px;z-index:6;box-shadow:0 2px 8px rgba(0,0,0,.5);}
+  /* the companion hangs from the notch */
+  .kami{position:absolute;top:24px;left:50%;transform:translateX(-50%);width:280px;height:300px;z-index:5;pointer-events:none;}
+  canvas#fold{position:absolute;inset:0;width:100%;height:100%;}
+  /* Dynamic-Island-style speech bubble */
+  .bubble{position:absolute;top:44px;left:50%;transform:translateX(-50%) translateY(-6px) scale(.9);z-index:7;
+    background:#0c0c10;color:#f7f1e6;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:9px 15px;
+    font-size:15px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;max-width:340px;
+    box-shadow:0 14px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08);
+    opacity:0;transition:opacity .3s cubic-bezier(.22,1,.36,1), transform .35s cubic-bezier(.34,1.56,.64,1);}
+  .bubble.show{opacity:1;transform:translateX(-50%) translateY(0) scale(1);}
+  .bubble::after{content:"";position:absolute;top:-5px;left:50%;transform:translateX(-50%) rotate(45deg);width:10px;height:10px;background:#0c0c10;border-left:1px solid rgba(255,255,255,.12);border-top:1px solid rgba(255,255,255,.12);}
+  .statechip{position:absolute;bottom:16px;left:18px;font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--accent));display:flex;align-items:center;gap:7px;z-index:3;}
+  .statechip .dot{width:7px;height:7px;border-radius:50%;background:hsl(var(--accent));box-shadow:0 0 10px hsl(var(--accent)/.8);}
+  .metric{position:absolute;bottom:16px;right:18px;font:500 11px var(--mono);color:var(--ink-muted);z-index:3;} .metric b{color:var(--ink);font-variant-numeric:tabular-nums;}
+  .legend{position:absolute;bottom:40px;left:18px;display:flex;gap:14px;font:500 10.5px var(--mono);color:var(--ink-muted);z-index:3;}
+  .legend s{text-decoration:none;display:inline-flex;align-items:center;gap:6px;} .legend .m{width:14px;border-top:2px solid hsl(var(--mountain));} .legend .v{width:14px;border-top:2px dashed hsl(var(--valley));}
 
-  .stage { position:relative; border-radius:22px; overflow:hidden; background:radial-gradient(120% 80% at 50% -10%, color-mix(in oklab,var(--desk-2),white 4%), var(--desk-2)), var(--desk-2); border:1px solid var(--hair); min-height:420px; display:grid; place-items:end center; box-shadow:var(--shadow); }
-  .state-tag { position:absolute; top:16px; left:18px; font:600 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:hsl(var(--accent)); display:flex; align-items:center; gap:7px; z-index:3; }
-  .state-tag .dot { width:7px; height:7px; border-radius:50%; background:hsl(var(--accent)); box-shadow:0 0 10px hsl(var(--accent)/.8); }
-  .metric { position:absolute; top:16px; right:18px; font:500 11px var(--mono); color:var(--ink-muted); text-align:right; z-index:3; }
-  .metric b { color:var(--ink); font-variant-numeric:tabular-nums; }
-
-  .floaty { position:relative; width:100%; height:420px; }
-  /* reactive line — sits BARELY above the creature's head */
-  .say { position:absolute; left:0; right:0; text-align:center; font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--ink); opacity:0; transform:translateY(4px); transition:opacity .28s, transform .28s; text-wrap:balance; z-index:4; top:96px; pointer-events:none; }
-  .say.show { opacity:1; transform:none; }
-  canvas#fold { position:absolute; inset:0; width:100%; height:100%; display:block; }
-  /* the resting capsule (only when idle) */
-  .capsule { position:absolute; left:50%; bottom:26px; transform:translateX(-50%); height:16px; min-width:60px; border-radius:22px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,var(--obsidian-a),var(--obsidian-b)); box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 12px 30px rgba(0,0,0,.45); transition:opacity .3s; z-index:2; }
-  .capsule .seed { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,.6); animation:breathe 2s ease-in-out infinite; }
-  @keyframes breathe { 0%,100%{opacity:.4; transform:scale(.85);} 50%{opacity:1; transform:scale(1.1);} }
-  @media (prefers-reduced-motion: reduce){ .capsule .seed{ animation:none; } }
-
-  .dock { display:grid; grid-template-columns:1.1fr 1fr; gap:16px; margin-top:22px; }
-  @media (max-width:760px){ .dock{ grid-template-columns:1fr; } }
-  .panel { background:var(--card); border:1px solid var(--card-line); border-radius:16px; padding:18px; }
-  .panel h3 { margin:0 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-muted); font-family:var(--mono); font-weight:600; }
-  .panel .hint { margin:0 0 14px; font-size:12.5px; color:var(--ink-muted); }
-  .btn { border:0; cursor:pointer; border-radius:12px; padding:14px; font:700 15px var(--round); color:#fff; letter-spacing:-.01em; background:linear-gradient(180deg,hsl(var(--rose)/1),hsl(351 88% 52%)); box-shadow:0 8px 22px hsl(var(--rose)/.35); transition:transform .12s; }
-  .btn.ghost { background:var(--card); color:var(--ink); border:1px solid var(--card-line); box-shadow:none; font-weight:600; font-size:13.5px; padding:10px 12px; }
-  .btn:hover { transform:translateY(-1px); }
-  .btn:disabled { opacity:.55; cursor:default; transform:none; }
-  .row { display:flex; flex-wrap:wrap; gap:8px; }
-  .chip { border:1px solid var(--card-line); background:transparent; color:var(--ink-muted); border-radius:999px; padding:7px 13px; font:600 13px var(--round); cursor:pointer; transition:.15s; }
-  .chip:hover { color:var(--ink); }
-  .chip[aria-pressed="true"] { color:var(--ink); border-color:hsl(var(--accent)/.7); background:hsl(var(--accent)/.12); box-shadow:inset 0 0 0 1px hsl(var(--accent)/.3); }
-  .field { margin-top:14px; }
-  .field label { display:flex; justify-content:space-between; align-items:baseline; font:600 12px var(--mono); color:var(--ink-muted); margin-bottom:8px; }
-  .field label b { color:hsl(var(--accent)); font-variant-numeric:tabular-nums; }
-  input[type=range] { width:100%; accent-color:hsl(var(--accent)); }
-  .toggle { display:flex; align-items:center; justify-content:space-between; margin-top:14px; gap:12px; }
-  .toggle span { font-size:13.5px; } .toggle small { color:var(--ink-muted); display:block; font-size:11.5px; font-family:var(--mono); }
-  .sw { position:relative; width:44px; height:26px; flex:none; }
-  .sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
-  .sw .track { position:absolute; inset:0; border-radius:999px; background:var(--card-line); transition:.2s; }
-  .sw .knob { position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.4); transition:.2s; }
-  .sw input:checked ~ .track { background:hsl(var(--accent)/.9); } .sw input:checked ~ .knob { left:21px; }
-  .preview { margin-top:16px; padding:14px; border-radius:12px; border:1px dashed var(--card-line); background:color-mix(in oklab,var(--card),transparent 20%); }
-  .preview .bk { font:600 10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-muted); }
-  .preview .ln { font-size:17px; font-weight:600; letter-spacing:-.01em; margin-top:6px; text-wrap:balance; min-height:24px; }
-  footer.note { margin-top:26px; font:500 12px var(--mono); color:var(--ink-muted); line-height:1.7; }
-  footer.note b { color:var(--ink); }
-  .kbd { font:600 11px var(--mono); border:1px solid var(--card-line); border-bottom-width:2px; border-radius:6px; padding:1px 6px; color:var(--ink); }
-  .legend { position:absolute; bottom:14px; left:18px; display:flex; gap:14px; font:500 10.5px var(--mono); color:var(--ink-muted); z-index:3; }
-  .legend s { text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
-  .legend .m { width:14px; height:0; border-top:2px solid hsl(var(--mountain)); }
-  .legend .v { width:14px; height:0; border-top:2px dashed hsl(var(--valley)); }
+  .dock{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;margin-top:22px;} @media(max-width:760px){.dock{grid-template-columns:1fr;}}
+  .panel{background:var(--card);border:1px solid var(--card-line);border-radius:16px;padding:18px;}
+  .panel h3{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-muted);font-family:var(--mono);font-weight:600;} .panel .hint{margin:0 0 12px;font-size:12.5px;color:var(--ink-muted);}
+  .btn{border:0;cursor:pointer;border-radius:12px;padding:13px;font:700 15px var(--round);color:#fff;letter-spacing:-.01em;background:linear-gradient(180deg,hsl(var(--rose)/1),hsl(351 88% 52%));box-shadow:0 8px 22px hsl(var(--rose)/.35);transition:transform .12s;}
+  .btn.ghost{background:var(--card);color:var(--ink);border:1px solid var(--card-line);box-shadow:none;font-weight:600;font-size:13.5px;padding:10px 12px;} .btn:hover{transform:translateY(-1px);} .btn:disabled{opacity:.55;cursor:default;transform:none;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;}
+  .chip{border:1px solid var(--card-line);background:transparent;color:var(--ink-muted);border-radius:999px;padding:7px 13px;font:600 13px var(--round);cursor:pointer;transition:.15s;} .chip:hover{color:var(--ink);} .chip[aria-pressed="true"]{color:var(--ink);border-color:hsl(var(--accent)/.7);background:hsl(var(--accent)/.12);box-shadow:inset 0 0 0 1px hsl(var(--accent)/.3);}
+  .field{margin-top:14px;} .field label{display:flex;justify-content:space-between;align-items:baseline;font:600 12px var(--mono);color:var(--ink-muted);margin-bottom:8px;} .field label b{color:hsl(var(--accent));font-variant-numeric:tabular-nums;}
+  input[type=range]{width:100%;accent-color:hsl(var(--accent));}
+  .toggle{display:flex;align-items:center;justify-content:space-between;margin-top:14px;gap:12px;} .toggle span{font-size:13.5px;} .toggle small{color:var(--ink-muted);display:block;font-size:11.5px;font-family:var(--mono);}
+  .sw{position:relative;width:44px;height:26px;flex:none;} .sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;} .sw .track{position:absolute;inset:0;border-radius:999px;background:var(--card-line);transition:.2s;} .sw .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:.2s;} .sw input:checked~.track{background:hsl(var(--accent)/.9);} .sw input:checked~.knob{left:21px;}
+  .preview{margin-top:16px;padding:14px;border-radius:12px;border:1px dashed var(--card-line);} .preview .bk{font:600 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted);} .preview .ln{font-size:17px;font-weight:600;margin-top:6px;text-wrap:balance;min-height:24px;}
+  footer.note{margin-top:26px;font:500 12px var(--mono);color:var(--ink-muted);line-height:1.7;} footer.note b{color:var(--ink);} .kbd{font:600 11px var(--mono);border:1px solid var(--card-line);border-bottom-width:2px;border-radius:6px;padding:1px 6px;color:var(--ink);}
 </style>
 
 <div class="wrap">
   <header class="top">
-    <div class="brand">
-      <div class="mark"><i></i></div>
-      <div><h1>Yap</h1><span>local dictation, with a mouth</span></div>
-    </div>
+    <div class="brand"><div class="mark"><i></i></div><div><h1>Yap</h1><span>Kami · the notch companion</span></div></div>
     <button class="theme-toggle" id="themeBtn">◐ theme</button>
   </header>
+  <p class="lede">Meet <b>Kami</b> — a folded-paper companion that lives in your <b>notch</b>. It <b>peeks</b> while
+    you work, <b>unfolds</b> when you start dictating (the beak is your <b>voice</b>), chews while it transcribes,
+    then <b>folds back exactly</b> and yaps a line tuned to how much you said. Live below — talk to it.</p>
 
-  <p class="lede">
-    A real <b>crease pattern</b> — mountain and valley folds — that <b>collapses into your pet</b> when you dictate
-    and <b>unfolds the exact same way</b> in reverse. The beak <b>yaps in time with your voice</b> while it listens,
-    then it talks back. Everything below is live: pick a pet, drive the mouth, tune the personality.
-  </p>
-
-  <section class="stage" id="stage">
-    <div class="state-tag"><span class="dot"></span><span id="stateName">idle</span></div>
-    <div class="metric"><span id="wc">0</span> words · <b id="wpm">—</b> wpm</div>
-    <div class="floaty">
-      <div class="say" id="say"></div>
-      <canvas id="fold" aria-hidden="true"></canvas>
-      <div class="capsule" id="capsule"><span class="seed"></span></div>
-    </div>
+  <section class="screen" id="screen">
+    <div class="menubar"><span>◾ Yap</span><span class="r"><span>◧</span><span>􀙲</span><span>􀯓</span><span>12:47</span></span></div>
+    <div class="notch"></div>
+    <div class="kami"><canvas id="fold" aria-hidden="true"></canvas></div>
+    <div class="bubble" id="bubble"></div>
     <div class="legend"><s><span class="m"></span>mountain</s><s><span class="v"></span>valley</s></div>
+    <div class="statechip"><span class="dot"></span><span id="stateName">idle</span></div>
+    <div class="metric"><span id="wc">0</span> words · <b id="wpm">—</b> wpm</div>
   </section>
 
   <div class="dock">
     <div class="panel">
-      <h3>Your pet</h3>
-      <p class="hint">Each is its own crease pattern. Customizable — bake more later.</p>
-      <div class="row" id="pets">
-        <button class="chip" data-pet="crane" aria-pressed="true">🕊 Crane</button>
-        <button class="chip" data-pet="fox">🦊 Fox</button>
-        <button class="chip" data-pet="frog">🐸 Frog</button>
-      </div>
-      <p class="hint" style="margin:16px 0 8px">Drive the mouth</p>
-      <div class="row">
-        <button class="btn" id="dictateBtn" style="flex:1">▶ Dictate a prompt</button>
-        <button class="btn ghost" id="micBtn" title="Use your real microphone">🎤 My voice</button>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button class="chip" data-state="idle">Idle</button>
-        <button class="chip" data-state="listening">Listening</button>
-        <button class="chip" data-state="thinking">Thinking</button>
-        <button class="chip" data-state="done">Done</button>
-      </div>
+      <h3>Talk to Kami</h3><p class="hint">Run the flow, or drive the mouth with your real mic.</p>
+      <div class="row"><button class="btn" id="dictateBtn" style="flex:1">▶ Dictate a prompt</button><button class="btn ghost" id="micBtn">🎤 My voice</button></div>
+      <div class="row" style="margin-top:10px"><button class="chip" data-state="idle">Peek</button><button class="chip" data-state="listening">Listening</button><button class="chip" data-state="thinking">Thinking</button><button class="chip" data-state="done">Done</button></div>
       <div class="field"><label>Words in this prompt <b id="wcLabel">32</b></label><input type="range" id="words" min="1" max="300" value="32"></div>
+      <p class="hint" style="margin:16px 0 8px">Your pet <span style="opacity:.6">· swappable crease packs</span></p>
+      <div class="row" id="pets"><button class="chip" data-pet="crane" aria-pressed="true">🕊 Crane</button><button class="chip" data-pet="fox">🦊 Fox</button><button class="chip" data-pet="frog">🐸 Frog</button></div>
     </div>
-
     <div class="panel">
-      <h3>Personality</h3>
-      <p class="hint">What it says when it finishes.</p>
-      <div class="row" id="tones">
-        <button class="chip" data-tone="rude">Rude</button>
-        <button class="chip" data-tone="friendly" aria-pressed="true">Friendly</button>
-        <button class="chip" data-tone="rose">Rose</button>
-        <button class="chip" data-tone="off">Off</button>
-      </div>
-      <div class="toggle"><span>Curse filter <small>cleans the Rude voice (damn → dang)</small></span>
-        <label class="sw"><input type="checkbox" id="curse" checked><span class="track"></span><span class="knob"></span></label></div>
+      <h3>Personality</h3><p class="hint">What Kami says when it finishes.</p>
+      <div class="row" id="tones"><button class="chip" data-tone="rude">Rude</button><button class="chip" data-tone="friendly" aria-pressed="true">Friendly</button><button class="chip" data-tone="rose">Rose</button><button class="chip" data-tone="off">Off</button></div>
+      <div class="toggle"><span>Curse filter <small>cleans the Rude voice (damn → dang)</small></span><label class="sw"><input type="checkbox" id="curse" checked><span class="track"></span><span class="knob"></span></label></div>
       <div class="preview"><div class="bk"><span id="bkName">medium</span> · <span id="toneName">friendly</span></div><div class="ln" id="previewLine">—</div></div>
+      <p class="hint" style="margin:16px 0 8px">HUD shape <span style="opacity:.6">· Pindrop-style, position is a setting</span></p>
+      <div class="row"><button class="chip" aria-pressed="true">Notch</button><button class="chip">Orb</button><button class="chip">Bubble</button><button class="chip">Pill</button></div>
     </div>
   </div>
 
-  <footer class="note">
-    <b>Geometric, not faked:</b> the fold is a hinge-tree over a real crease pattern — each facet rotates about its
-    crease by a dihedral angle driven by one scalar, so <b>fold = unfold reversed, bit-exact</b>. Rendered in
-    dependency-free Canvas2D (facets painter-sorted + shaded like paper). In the app, the beak's open angle is driven
-    by the live mic RMS the recorder already exposes. Real binding is <span class="kbd">fn ⌃</span>, not a wake word.
-  </footer>
+  <footer class="note"><b>Real fold, not a morph:</b> a hinge-tree over a crease pattern (mountain solid / valley dashed) — each facet
+    rotates about its crease by one scalar, so <b>fold = unfold reversed, bit-exact</b>. Shipping path bakes the crane from
+    Origami&nbsp;Simulator (MIT) → dependency-free Canvas2D playback (no always-on WebGL). Beak tracks the live mic RMS.
+    Binding is <span class="kbd">fn ⌃</span>. Pets are swappable packs; position &amp; shape are settings.</footer>
 </div>
 
 <script>
 (() => {
   "use strict";
-  const $ = (s)=>document.querySelector(s);
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  $("#themeBtn").addEventListener("click", ()=>{
-    const c=document.documentElement.getAttribute("data-theme");
-    document.documentElement.setAttribute("data-theme", c==="dark"?"light":c==="light"?"dark":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));
-  });
+  const $=(s)=>document.querySelector(s); const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $("#themeBtn").addEventListener("click",()=>{const c=document.documentElement.getAttribute("data-theme");document.documentElement.setAttribute("data-theme",c==="dark"?"light":c==="light"?"dark":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));});
 
-  /* ---- reactive tone engine (mirrors desktop/src/pill/tone.ts) ---- */
-  const RUDE={tiny:["got it, got it.","okay, mapping it.","that it?"],short:["easy.","say less.","on it."],medium:["okay you've got things to say.","alright, big thoughts."],long:["damn, you're yapping a lot.","you forgot how to type or something?"],epic:["oh my gosh bro… am I your only friend?","hell of a monologue."]};
-  const RUDE_CLEAN={...RUDE,long:["dang, you're yapping a lot.","you forgot how to type or something?"],epic:["oh my gosh… am I your only friend?","heck of a monologue."]};
-  const FRIENDLY={tiny:["got it!","on it.","okay!"],short:["nice, got that.","you got it."],medium:["ooh, you've got a lot to say.","love the detail."],long:["wow, lots to work with — love it.","you're on a roll!"],epic:["okay that's a whole story — I'm here for it.","you have SO much to say!"]};
-  const ROSE={tiny:["mm, got it 🌹","of course."],short:["sweet, got that.","anything for you."],medium:["ooh, tell me more.","I love hearing you talk."],long:["you could talk to me all day 🌹","I hang on every word."],epic:["never stop talking to me.","I'd listen to you forever 🌹"]};
+  /* tone engine (mirrors desktop/src/pill/tone.ts) */
+  const RUDE={tiny:["got it, got it.","okay, mapping it."],short:["easy.","say less.","on it."],medium:["okay you've got things to say.","alright, big thoughts."],long:["damn, you're yapping a lot.","you forgot how to type?"],epic:["oh my gosh bro… am I your only friend?","hell of a monologue."]};
+  const RUDE_CLEAN={...RUDE,long:["dang, you're yapping a lot.","you forgot how to type?"],epic:["oh my gosh… am I your only friend?","heck of a monologue."]};
+  const FRIENDLY={tiny:["got it!","on it."],short:["nice, got that.","you got it."],medium:["ooh, a lot to say.","love the detail."],long:["wow, lots to work with!","you're on a roll!"],epic:["a whole story — I'm here for it.","you have SO much to say!"]};
+  const ROSE={tiny:["mm, got it 🌹","of course."],short:["sweet, got that.","anything for you."],medium:["ooh, tell me more.","I love hearing you."],long:["you could talk all day 🌹","I hang on every word."],epic:["never stop talking to me.","I'd listen forever 🌹"]};
   const bucketFor=(w)=>w<=5?"tiny":w<=20?"short":w<=60?"medium":w<=150?"long":"epic";
   const tableFor=(t,c)=>t==="rude"?(c?RUDE_CLEAN:RUDE):t==="friendly"?FRIENDLY:t==="rose"?ROSE:null;
   const reactiveLine=(w,t,c,n=0)=>{const tb=tableFor(t,c);if(!tb)return"";const o=tb[bucketFor(Math.max(0,Math.floor(w)))];return o[((n%o.length)+o.length)%o.length];};
 
-  /* ---- 3D hinge-tree origami folder ---------------------------------------
-     A crease pattern = flat facets in the z=0 plane joined by crease edges.
-     Each facet folds about its crease by a dihedral angle (scaled by t). We walk
-     the tree: root stays flat, each child = parent's placement then a rotation
-     about the shared crease. Fold back = same t reversed → bit-exact.          */
-  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
-  const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
-  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
-  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  /* mouth (mirrors desktop/src/pill/mouth.ts) */
+  function makeMouth(){let open=0,phase=0;const g=0.04,gm=0.6,gn=4.5,ar=22,rr=7,br=0.06,brR=2.2;
+    return{push(rms,dt){phase+=dt*brR;let tgt=0;if(rms>g){tgt=Math.min(1,Math.pow((rms-g)/(1-g),gm)*gn);}const rate=tgt>open?ar:rr;const k=1-Math.exp(-rate*Math.max(0,dt));open+=(tgt-open)*k;open=Math.min(1,Math.max(0,open));if(tgt<0.02)return Math.max(open,(0.5+0.5*Math.sin(phase))*br);return open;},reset(){open=0;}};}
+
+  /* 3D hinge-tree folder (validated) */
+  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
   const norm=(a)=>{const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l];};
-  // rotate point p about axis k (unit) through origin A by angle th (Rodrigues)
-  function rotAbout(p,A,k,th){
-    const v=sub(p,A), c=Math.cos(th), s=Math.sin(th);
-    const kv=cross(k,v), kk=dot(k,v);
-    const r=[ v[0]*c+kv[0]*s+k[0]*kk*(1-c),
-              v[1]*c+kv[1]*s+k[1]*kk*(1-c),
-              v[2]*c+kv[2]*s+k[2]*kk*(1-c) ];
-    return add(r,A);
-  }
-  // A pet = { verts:[[x,y]], facets:[{poly:[vi], parent, crease:[vi,vi], dih}], color, accent }
-  // parent=-1 → root. dih is the folded dihedral (radians); multiplied by t.
-  function P(x,y){return [x,y];}
-  const PETS = {
-    crane: {
-      accent:"351 95% 71%", tint:[245,245,247],
-      verts:[
-        P(-0.15,0.16),P(0.9,0.11),P(0.9,-0.11),P(-0.15,-0.16), // body 0-3
-        P(0.42,1.18),   // Lwing tip 4
-        P(0.42,-1.18),  // Rwing tip 5
-        P(-1.05,0.30),  // neck tip 6
-        P(1.62,0.34),   // tail tip 7
-        P(-1.02,0.14),P(-1.02,0.46), // mouth hinge 8,9
-        P(-1.62,0.40),  // upper beak 10
-        P(-1.62,0.20),  // lower beak 11
-      ],
-      facets:[
-        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},        // body (root)
-        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.15},        // left wing (up)
-        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.15},       // right wing (up, other side)
-        {poly:[0,3,6],parent:0,crease:[0,3],dih:0.95},        // neck (up-forward)
-        {poly:[1,2,7],parent:0,crease:[1,2],dih:0.8},         // tail (up-back)
-        {poly:[8,9,10],parent:3,crease:[8,9],dih:0.55},       // upper beak (mouth)
-        {poly:[8,9,11],parent:3,crease:[8,9],dih:-0.55},      // lower beak (mouth)
-      ],
-      mouthFacets:[5,6], // indices whose dih is modulated by voice
-    },
-    fox: {
-      accent:"25 95% 60%", tint:[240,150,70],
-      verts:[
-        P(-0.2,0.2),P(0.85,0.14),P(0.85,-0.14),P(-0.2,-0.2), // face 0-3
-        P(0.55,0.95),  // left ear 4
-        P(0.55,-0.95), // right ear 5
-        P(-1.1,0.0),   // snout 6
-        P(0.95,0.0),   // back 7
-        P(-1.0,0.12),P(-1.0,-0.12), // mouth hinge 8,9
-        P(-1.55,0.22), // upper jaw 10
-        P(-1.55,-0.02),// lower jaw 11
-      ],
-      facets:[
-        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},
-        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.35},   // ear
-        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.35},  // ear
-        {poly:[0,3,6],parent:0,crease:[0,3],dih:0.7},    // snout
-        {poly:[1,2,7],parent:0,crease:[1,2],dih:0.5},    // back
-        {poly:[8,9,10],parent:3,crease:[8,9],dih:0.5},
-        {poly:[8,9,11],parent:3,crease:[8,9],dih:-0.5},
-      ],
-      mouthFacets:[5,6],
-    },
-    frog: {
-      accent:"140 65% 52%", tint:[90,200,120],
-      verts:[
-        P(-0.3,0.35),P(0.7,0.25),P(0.7,-0.25),P(-0.3,-0.35), // body 0-3
-        P(0.2,1.0),   // left leg 4
-        P(0.2,-1.0),  // right leg 5
-        P(-1.0,0.28), // left eye/mouth 6
-        P(-1.0,-0.28),// right eye 7
-        P(-0.55,0.1),P(-0.55,-0.1), // mouth hinge 8,9
-        P(-1.25,0.16),// upper 10
-        P(-1.25,-0.16),//lower 11
-      ],
-      facets:[
-        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},
-        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.5},  // leg
-        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.5}, // leg
-        {poly:[0,3,6,7],parent:0,crease:[0,3],dih:0.65},// head
-        {poly:[8,9,10],parent:0,crease:[8,9],dih:0.6},
-        {poly:[8,9,11],parent:0,crease:[8,9],dih:-0.6},
-      ],
-      mouthFacets:[4,5],
-    },
+  function rotAbout(p,A,k,th){const v=sub(p,A),c=Math.cos(th),s=Math.sin(th),kv=cross(k,v),kk=dot(k,v);return add([v[0]*c+kv[0]*s+k[0]*kk*(1-c),v[1]*c+kv[1]*s+k[1]*kk*(1-c),v[2]*c+kv[2]*s+k[2]*kk*(1-c)],A);}
+  const P=(x,y)=>[x,y];
+  const PETS={
+    crane:{tint:[247,241,230],edge:[205,191,159],mouth:[5,6],verts:[P(-0.15,0.16),P(0.9,0.11),P(0.9,-0.11),P(-0.15,-0.16),P(0.42,1.18),P(0.42,-1.18),P(-1.05,0.30),P(1.62,0.34),P(-1.02,0.14),P(-1.02,0.46),P(-1.62,0.40),P(-1.62,0.20)],
+      facets:[{poly:[0,1,2,3],parent:-1,crease:null,dih:0},{poly:[0,1,4],parent:0,crease:[0,1],dih:1.15},{poly:[3,2,5],parent:0,crease:[3,2],dih:-1.15},{poly:[0,3,6],parent:0,crease:[0,3],dih:0.95},{poly:[1,2,7],parent:0,crease:[1,2],dih:0.8},{poly:[8,9,10],parent:3,crease:[8,9],dih:0.55},{poly:[8,9,11],parent:3,crease:[8,9],dih:-0.55}]},
+    fox:{tint:[240,150,70],edge:[180,95,40],mouth:[5,6],verts:[P(-0.2,0.2),P(0.85,0.14),P(0.85,-0.14),P(-0.2,-0.2),P(0.55,0.95),P(0.55,-0.95),P(-1.1,0),P(0.95,0),P(-1.0,0.12),P(-1.0,-0.12),P(-1.55,0.22),P(-1.55,-0.02)],
+      facets:[{poly:[0,1,2,3],parent:-1,crease:null,dih:0},{poly:[0,1,4],parent:0,crease:[0,1],dih:1.35},{poly:[3,2,5],parent:0,crease:[3,2],dih:-1.35},{poly:[0,3,6],parent:0,crease:[0,3],dih:0.7},{poly:[1,2,7],parent:0,crease:[1,2],dih:0.5},{poly:[8,9,10],parent:3,crease:[8,9],dih:0.5},{poly:[8,9,11],parent:3,crease:[8,9],dih:-0.5}]},
+    frog:{tint:[110,200,130],edge:[60,150,90],mouth:[4,5],verts:[P(-0.3,0.35),P(0.7,0.25),P(0.7,-0.25),P(-0.3,-0.35),P(0.2,1.0),P(0.2,-1.0),P(-1.0,0.28),P(-1.0,-0.28),P(-0.55,0.1),P(-0.55,-0.1),P(-1.25,0.16),P(-1.25,-0.16)],
+      facets:[{poly:[0,1,2,3],parent:-1,crease:null,dih:0},{poly:[0,1,4],parent:0,crease:[0,1],dih:1.5},{poly:[3,2,5],parent:0,crease:[3,2],dih:-1.5},{poly:[0,3,6,7],parent:0,crease:[0,3],dih:0.65},{poly:[8,9,10],parent:0,crease:[8,9],dih:0.6},{poly:[8,9,11],parent:0,crease:[8,9],dih:-0.6}]},
   };
-
-  // Fold a pet at parameter t (0 flat → 1 folded) with a mouth-open amount 0..1.
-  // Returns facet polygons as arrays of 3D points, plus the crease segments.
-  function foldPet(pet, t, mouthOpen){
-    const flat3 = pet.verts.map(v=>[v[0],v[1],0]);
-    const xf = new Array(pet.facets.length); // per-facet transform: flatPoint3 -> world3
-    xf[0] = (p)=>p; // root identity
-    // BFS by parent order (facets authored parent-before-child)
-    for (let i=1;i<pet.facets.length;i++){
-      const f=pet.facets[i], par=xf[f.parent];
-      const A=par(flat3[f.crease[0]]), B=par(flat3[f.crease[1]]);
-      const k=norm(sub(B,A));
-      let dih=f.dih*t;
-      if (pet.mouthFacets.includes(i)) dih = f.dih*(t) + Math.sign(f.dih)*mouthOpen*0.5*t;
-      xf[i]=(p)=>rotAbout(par(p),A,k,dih);
-    }
-    const polys=pet.facets.map((f,i)=>({verts:f.poly.map(vi=>xf[i](flat3[vi])), fi:i}));
-    // crease segments (each facet's crease edge, in world) for line drawing
-    const creases=[];
-    for (let i=1;i<pet.facets.length;i++){
-      const f=pet.facets[i];
-      const a=xf[f.parent](flat3[f.crease[0]]), b=xf[f.parent](flat3[f.crease[1]]);
-      creases.push({a,b, valley:f.dih<0});
-    }
-    return {polys, creases};
+  function foldPet(pet,t,mouthOpen){
+    const flat=pet.verts.map(v=>[v[0],v[1],0]); const xf=new Array(pet.facets.length); xf[0]=(p)=>p;
+    for(let i=1;i<pet.facets.length;i++){const f=pet.facets[i],par=xf[f.parent];const A=par(flat[f.crease[0]]),B=par(flat[f.crease[1]]),k=norm(sub(B,A));let dih=f.dih*t;if(pet.mouth.includes(i))dih=f.dih*t+Math.sign(f.dih)*mouthOpen*0.5*t;xf[i]=(p)=>rotAbout(par(p),A,k,dih);}
+    const polys=pet.facets.map((f,i)=>({verts:f.poly.map(vi=>xf[i](flat[vi])),fi:i}));
+    const creases=[];for(let i=1;i<pet.facets.length;i++){const f=pet.facets[i];creases.push({a:xf[f.parent](flat[f.crease[0]]),b:xf[f.parent](flat[f.crease[1]]),valley:f.dih<0});}
+    return{polys,creases};
   }
 
-  /* ---- render ---- */
-  const cv=$("#fold"), ctx=cv.getContext("2d");
-  let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
-  function resize(){ const r=cv.getBoundingClientRect(); W=r.width; H=r.height; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+  const cv=$("#fold"),ctx=cv.getContext("2d"); let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
+  function resize(){const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
   new ResizeObserver(resize).observe(cv); resize();
-
-  const TILT=0.62;                      // camera pitch so folds read as 3D
-  function project(p3){                  // rotate about world X by TILT, orthographic
-    const cy=Math.cos(TILT), sy=Math.sin(TILT);
-    const y=p3[1]*cy - p3[2]*sy, z=p3[1]*sy + p3[2]*cy;
-    return {x:p3[0], y, depth:z};
-  }
-  const light=norm([0.35,0.55,0.75]);
-
-  function drawPet(pet, t, mouthOpen){
-    const {polys, creases}=foldPet(pet, t, mouthOpen);
-    const scale=Math.min(W,H)*0.30;
-    const cx=W/2, cyc=H*0.46;
-    const toScreen=(p3)=>{const pr=project(p3); return [cx+pr.x*scale, cyc-pr.y*scale, pr.depth];};
-    // accent glow
-    if (t>0.02){ const g=ctx.createRadialGradient(cx,cyc,6,cx,cyc,scale*2.4); g.addColorStop(0,`hsla(${pet.accent}, ${0.16*t})`); g.addColorStop(1,"hsla(0,0%,0%,0)"); ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
-    // painter-sort facets by mean depth (far first)
-    const items=polys.map(pl=>{ const s=pl.verts.map(toScreen); const d=s.reduce((a,p)=>a+p[2],0)/s.length; return {s, d, fi:pl.fi, world:pl.verts}; });
+  const TILT=0.6; const light=norm([0.3,0.5,0.8]);
+  function project(p){const cy=Math.cos(TILT),sy=Math.sin(TILT);return{x:p[0],y:p[1]*cy-p[2]*sy,depth:p[1]*sy+p[2]*cy};}
+  function getVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+  function drawPet(pet,t,mouthOpen){
+    const {polys,creases}=foldPet(pet,t,mouthOpen);
+    const scale=Math.min(W,H)*0.26; const cx=W/2, cyc=H*0.42 + (1-t)*18; // tuck up near notch when folded
+    const toS=(p)=>{const pr=project(p);return[cx+pr.x*scale,cyc-pr.y*scale,pr.depth];};
+    const items=polys.map(pl=>{const s=pl.verts.map(toS);const d=s.reduce((a,p)=>a+p[2],0)/s.length;return{s,d,world:pl.verts};});
     items.sort((a,b)=>a.d-b.d);
-    for (const it of items){
-      // facet normal (world) for shading
-      const [A,B,C]=it.world;
-      const n=norm(cross(sub(B,A),sub(C,A)));
-      const lam=Math.abs(dot(n,light));
-      const bright=(0.5+0.5*lam);
-      const [r,gr,b]=pet.tint;
-      const alpha=(0.12+0.80*t);
-      ctx.beginPath(); it.s.forEach((p,i)=> i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.closePath();
-      ctx.fillStyle=`rgba(${Math.round(r*bright)},${Math.round(gr*bright)},${Math.round(b*bright)},${alpha})`;
-      ctx.fill();
-      ctx.lineWidth=0.6; ctx.strokeStyle=`rgba(0,0,0,${0.10*t})`; ctx.stroke();
+    for(const it of items){
+      const[A,B,C]=it.world; const n=norm(cross(sub(B,A),sub(C,A))); const lam=Math.abs(dot(n,light)); const bright=0.55+0.45*lam;
+      const[r,g,b]=pet.tint; const alpha=0.14+0.80*t;
+      // soft drop shadow for paper depth
+      ctx.save(); ctx.shadowColor="rgba(0,0,0,"+(0.25*t)+")"; ctx.shadowBlur=10; ctx.shadowOffsetY=5;
+      ctx.beginPath(); it.s.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.closePath();
+      ctx.fillStyle=`rgba(${Math.round(r*bright)},${Math.round(g*bright)},${Math.round(b*bright)},${alpha})`; ctx.fill(); ctx.restore();
+      ctx.lineWidth=0.6; ctx.strokeStyle=`rgba(${pet.edge.join(",")},${0.5*t})`; ctx.stroke();
     }
-    // crease lines (mountain solid / valley dashed) — bold when flat
-    const creaseA=0.25+0.55*(1-t)+0.12*t;
-    for (const cr of creases){
-      const a=toScreen(cr.a), b=toScreen(cr.b);
-      ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]);
-      ctx.lineWidth=1.1;
-      ctx.setLineDash(cr.valley?[4,3]:[]);
-      ctx.strokeStyle=`hsla(${cr.valley?getVar('--valley'):getVar('--mountain')}, ${creaseA})`;
-      ctx.stroke();
-    }
+    const ca=0.22+0.5*(1-t)+0.1*t;
+    for(const cr of creases){const a=toS(cr.a),b=toS(cr.b);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.lineWidth=1.1;ctx.setLineDash(cr.valley?[4,3]:[]);ctx.strokeStyle=`hsla(${cr.valley?getVar('--valley'):getVar('--mountain')}, ${ca})`;ctx.stroke();}
     ctx.setLineDash([]);
-    return {cx, cyc, scale};
   }
-  function getVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
-  /* ---- state + loop ---- */
-  const S={state:"idle", pet:"crane", words:32, tone:"friendly", curse:true, nonce:0, t:0, tTarget:0, mouth:0, mic:null};
+  const S={state:"idle",pet:"crane",words:32,tone:"friendly",curse:true,nonce:0,t:0.08,tTarget:0.08,mouth:0,mic:null,chew:0};
+  const FOLD={idle:0.08,listening:1.0,thinking:0.82,done:1.0};
   const accents={idle:"--rose",listening:"--rose",thinking:"--amber",done:"--green"};
-  const stage=$("#stage"), sayEl=$("#say"), capsule=$("#capsule");
-  function setAccent(){ stage.style.setProperty("--accent", getVar(accents[S.state]||"--rose")); }
+  const screen=$("#screen"),bubble=$("#bubble");
+  function setAccent(){screen.style.setProperty("--accent",getVar(accents[S.state]||"--rose"));}
   function applyState(){
-    S.tTarget=(S.state==="idle")?0:1;
-    capsule.style.opacity = S.state==="idle" ? "1":"0";
-    $("#stateName").textContent=S.state; setAccent();
-    if(S.state==="done"){ const l=reactiveLine(S.words,S.tone,S.curse,S.nonce); sayEl.textContent=l; sayEl.classList.toggle("show",!!l); }
-    else sayEl.classList.remove("show");
+    S.tTarget=FOLD[S.state]; $("#stateName").textContent=(S.state==="idle"?"peek":S.state); setAccent();
+    if(S.state==="done"){const l=reactiveLine(S.words,S.tone,S.curse,S.nonce);bubble.textContent=l;bubble.classList.toggle("show",!!l);}
+    else bubble.classList.remove("show");
     document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.state===S.state)));
-    $("#wc").textContent=S.words;
-    $("#wpm").textContent=S.state==="done"?Math.min(400,Math.round(2.6*60)):"—";
+    $("#wc").textContent=S.words; $("#wpm").textContent=S.state==="done"?Math.min(400,156):"—";
   }
-  // synthesized speech envelope (syllabic) for the mouth when not using real mic
-  function speechEnv(ts){
-    const syl=Math.max(0,Math.sin(ts*0.013))*Math.max(0,Math.sin(ts*0.031+1))*0.9;
-    const flutter=0.35*(0.5+0.5*Math.sin(ts*0.06));
-    return Math.min(1,(syl+flutter*syl));
-  }
+  const mouth=makeMouth();
+  function speechEnv(ts){const syl=Math.max(0,Math.sin(ts*0.013))*Math.max(0,Math.sin(ts*0.031+1));return Math.min(1,syl*0.9+0.15*syl);}
   let raf=0,last=0;
   function loop(ts){
-    if(!last)last=ts; const dt=Math.min(0.05,(ts-last)/1000); last=ts;
-    S.t += Math.sign(S.tTarget-S.t)*Math.min(Math.abs(S.tTarget-S.t), 2.8*dt);
-    // mouth target
-    let mt=0;
-    if(S.state==="listening"||S.state==="thinking"){
-      if(S.mic){ mt=S.mic(); } else { mt=reduce?0.3:speechEnv(ts)*(S.state==="thinking"?0.5:1); }
-    }
-    S.mouth += (mt-S.mouth)*0.35;
-    ctx.clearRect(0,0,W,H);
-    drawPet(PETS[S.pet], S.t, S.mouth);
+    if(!last)last=ts;const dt=Math.min(0.05,(ts-last)/1000);last=ts;
+    // chew wobble while thinking
+    S.chew += dt; const chew = S.state==="thinking" && !reduce ? Math.sin(S.chew*7)*0.06 : 0;
+    const target=S.tTarget+chew;
+    S.t += Math.sign(target-S.t)*Math.min(Math.abs(target-S.t),2.8*dt);
+    let rms=0;
+    if(S.state==="listening"||S.state==="thinking"){ rms=S.mic?S.mic():(reduce?0.2:speechEnv(ts)*(S.state==="thinking"?0.4:1)); }
+    S.mouth=mouth.push(rms,dt);
+    ctx.clearRect(0,0,W,H); drawPet(PETS[S.pet],Math.max(0,S.t),S.mouth);
     raf=requestAnimationFrame(loop);
   }
   raf=requestAnimationFrame(loop);
 
-  /* ---- controls ---- */
-  const setState=(s)=>{ S.state=s; if(s==="done")S.nonce++; applyState(); };
+  const setState=(s)=>{S.state=s;if(s==="done")S.nonce++;applyState();};
   document.querySelectorAll("[data-state]").forEach(b=>b.addEventListener("click",()=>setState(b.dataset.state)));
-  document.querySelectorAll("[data-pet]").forEach(b=>b.addEventListener("click",()=>{
-    S.pet=b.dataset.pet; document.querySelectorAll("[data-pet]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));
-  }));
-  const words=$("#words"); words.addEventListener("input",()=>{ S.words=+words.value; $("#wcLabel").textContent=words.value; refreshPreview(); if(S.state==="done")applyState(); });
-  document.querySelectorAll("[data-tone]").forEach(b=>b.addEventListener("click",()=>{ S.tone=b.dataset.tone; document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); refreshPreview(); if(S.state==="done")applyState(); }));
-  $("#curse").addEventListener("change",e=>{ S.curse=e.target.checked; refreshPreview(); if(S.state==="done")applyState(); });
-  function refreshPreview(){ $("#bkName").textContent=bucketFor(S.words); $("#toneName").textContent=S.tone; const l=reactiveLine(S.words,S.tone,S.curse,S.nonce); $("#previewLine").textContent=l||"— (pill stays silent)"; }
-
+  document.querySelectorAll("[data-pet]").forEach(b=>b.addEventListener("click",()=>{S.pet=b.dataset.pet;document.querySelectorAll("[data-pet]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));}));
+  const words=$("#words");words.addEventListener("input",()=>{S.words=+words.value;$("#wcLabel").textContent=words.value;refreshPreview();if(S.state==="done")applyState();});
+  document.querySelectorAll("[data-tone]").forEach(b=>b.addEventListener("click",()=>{S.tone=b.dataset.tone;document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));refreshPreview();if(S.state==="done")applyState();}));
+  $("#curse").addEventListener("change",e=>{S.curse=e.target.checked;refreshPreview();if(S.state==="done")applyState();});
+  // generic single-select chip groups (HUD shape)
+  document.querySelectorAll(".row").forEach(row=>{ if(row.querySelector("[data-state],[data-tone],[data-pet],#dictateBtn")) return; row.querySelectorAll(".chip").forEach(c=>c.addEventListener("click",()=>{row.querySelectorAll(".chip").forEach(x=>x.setAttribute("aria-pressed",String(x===c)));})); });
+  function refreshPreview(){$("#bkName").textContent=bucketFor(S.words);$("#toneName").textContent=S.tone;const l=reactiveLine(S.words,S.tone,S.curse,S.nonce);$("#previewLine").textContent=l||"— (Kami stays quiet)";}
   let seq=null;
-  $("#dictateBtn").addEventListener("click",()=>{ if(seq)return; const btn=$("#dictateBtn"); btn.disabled=true; setState("listening");
-    const steps=[[1800,"thinking"],[1100,"done"],[2600,"idle"]]; let i=0;
-    const run=()=>{ if(i>=steps.length){seq=null;btn.disabled=false;return;} const [ms,nx]=steps[i++]; seq=setTimeout(()=>{setState(nx);run();},ms); }; run();
-  });
-  // real microphone → mouth
-  $("#micBtn").addEventListener("click", async ()=>{
-    if(S.mic){ return; }
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      const ac=new (window.AudioContext||window.webkitAudioContext)();
-      const src=ac.createMediaStreamSource(stream); const an=ac.createAnalyser(); an.fftSize=512; src.connect(an);
-      const buf=new Uint8Array(an.fftSize);
-      S.mic=()=>{ an.getByteTimeDomainData(buf); let s=0; for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128; s+=v*v;} const rms=Math.sqrt(s/buf.length); return Math.min(1, rms*4.5); };
-      $("#micBtn").textContent="🎤 live"; setState("listening");
-    }catch(e){ $("#micBtn").textContent="🎤 blocked"; }
-  });
+  $("#dictateBtn").addEventListener("click",()=>{if(seq)return;const b=$("#dictateBtn");b.disabled=true;setState("listening");const steps=[[1900,"thinking"],[1100,"done"],[2600,"idle"]];let i=0;const run=()=>{if(i>=steps.length){seq=null;b.disabled=false;return;}const[ms,nx]=steps[i++];seq=setTimeout(()=>{setState(nx);run();},ms);};run();});
+  $("#micBtn").addEventListener("click",async()=>{if(S.mic)return;try{const st=await navigator.mediaDevices.getUserMedia({audio:true});const ac=new(window.AudioContext||window.webkitAudioContext)();const src=ac.createMediaStreamSource(st);const an=ac.createAnalyser();an.fftSize=512;src.connect(an);const buf=new Uint8Array(an.fftSize);S.mic=()=>{an.getByteTimeDomainData(buf);let s=0;for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128;s+=v*v;}return Math.min(1,Math.sqrt(s/buf.length)*4.5);};$("#micBtn").textContent="🎤 live";setState("listening");}catch(e){$("#micBtn").textContent="🎤 blocked";}});
 
   applyState(); refreshPreview();
 })();
