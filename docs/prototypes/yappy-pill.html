@@ -141,7 +141,8 @@
       octx.fillStyle=P.sky1; octx.fillRect(0,0,PW,GY);
       octx.fillStyle=P.sky2; octx.fillRect(0,0,PW,7);
       ell(20,8,5,5,P.sun);
-      ell(120,7,7,2,P.cloud); ell(126,7,4,2,P.cloud); ell(64,11,6,2,P.cloud);
+      const cd=(elapsed*2)%(PW+20), cX=(x)=>((x+cd)%(PW+20))-10;  // slow drifting clouds
+      ell(cX(120),7,7,2,P.cloud); ell(cX(126),7,4,2,P.cloud); ell(cX(64),11,6,2,P.cloud);
       octx.fillStyle=P.grass; octx.fillRect(0,GY,PW,PH-GY); octx.fillStyle=P.grassD; octx.fillRect(0,GY,PW,2);
       for(let x=3;x<PW;x+=9){rc(x,GY-2,1,2,P.grassD);}
       octx.globalAlpha=1;
@@ -176,14 +177,18 @@
   const R={sway:new SOD(2.2,.35,1.4), open:new SOD(3.2,.7,1.4), prop:new SOD(3,.7,1.2)};
   const J={phase:"ground",t:0,y:0,vy:0,power:0,crouch:0};
   const hop=(p)=>{if(J.phase==="ground"||J.phase==="land"){J.phase="crouch";J.t=0;J.power=p;}};
-  let blinkT=-1,nextBlink=1.4,elapsed=0,tPrev=0,mood=0,moodT=0,level=0,beakFrame=0,beakHold=0,openV=0,propV=0,chatN=0,chatT=0,sparkle=[];
+  let blinkT=-1,nextBlink=1.4,elapsed=0,tPrev=0,mood=0,moodT=0,level=0,beakFrame=0,beakHold=0,openV=0,propV=0,chatN=0,chatT=0,listenT=0,liveSaid=-1,sparkle=[];
   const ACC={idle:"351 95% 71%",listening:"351 95% 71%",thinking:"38 92% 55%",done:"152 69% 52%"};
   const say=(t)=>{bubble.textContent=t;bubble.classList.toggle("show",!!t);};
 
-  function propOf(){ const t=tierFor(S.words); return (S.state==="thinking"||S.state==="done")?t.prop:"none"; }
+  const liveName=()=>listenT<4?"quick":listenT<9?"notes":listenT<16?"desk":"essay";  // escalate by how long you've talked
+  function propOf(){
+    if(S.state==="listening"){ return TIERS.find(t=>t.name===liveName()).prop; }
+    const t=tierFor(S.words); return (S.state==="thinking"||S.state==="done")?t.prop:"none";
+  }
   function setState(s){ S.state=s; tag.textContent=s; chatN=0; chatT=0;
     const t=tierFor(S.words), tone=S.tone;
-    if(s==="listening"){moodT=0;hop(1);say("");}
+    if(s==="listening"){moodT=0;hop(1);say("");listenT=0;liveSaid=-1;}
     else if(s==="thinking"){moodT=0; const wl=t.work[tone]; say(wl&&wl.length?wl[0]:"");}
     else if(s==="done"){moodT=1;hop(1.2);burst(); say(t.say[tone]||t.say.friendly);}
     else {moodT=0;say("");}
@@ -202,6 +207,9 @@
     openV=Math.max(0,Math.min(1,R.open.update(dt,active?1:0)));
     const wantProp=propOf(); propV=Math.max(0,Math.min(1,R.prop.update(dt, wantProp!=="none"?1:0)));
     mood+=(moodT-mood)*Math.min(1,dt*10);
+    // live escalation WHILE talking — a long dictation isn't just flapping wings; it reacts as you go
+    if(S.state==="listening"){ listenT+=dt; const idx=["quick","notes","desk","essay"].indexOf(liveName());
+      if(idx>liveSaid){ liveSaid=idx; const L={notes:{rude:"ok, noting…",friendly:"ooh, lots to say!",rose:"tell me more 🌸"},desk:{rude:"a whole rant…",friendly:"okay, big one!",rose:"i'm all ears 🌸"},essay:{rude:"an ESSAY, live?!",friendly:"wow, keep going!",rose:"forever, love 🌸"}}[liveName()]; if(L)say(L[S.tone]||L.friendly); } }
     const grav=2600;
     if(J.phase==="crouch"){J.t+=dt;J.crouch=Math.min(1,J.t/.1);if(J.t>=.1){J.phase="air";J.vy=-260*J.power;J.crouch=0;}}
     else if(J.phase==="air"){J.vy+=grav*dt;J.y+=J.vy*dt;if(J.y>=0){J.y=0;J.phase="land";J.t=0;J.vy=0;}}
@@ -228,7 +236,7 @@
     ctx.clearRect(0,0,W,H);
     const tierOpen=(wantProp==="desk")?1.16:(wantProp==="pad")?1.05:1;
     const cx=W/2, cy=H*0.56;
-    const capW=lerp(66,206*tierOpen,openV), capH=lerp(20,50*tierOpen,openV);
+    const capW=lerp(72,236*tierOpen,openV), capH=lerp(22,60*tierOpen,openV);
     const x0=cx-capW/2,y0=cy-capH/2, acc=ACC[S.state];
     if(openV>.05){ctx.save();ctx.shadowColor=`hsla(${acc}, ${.5*openV})`;ctx.shadowBlur=22*openV;rr(x0,y0,capW,capH,capH/2);ctx.fillStyle="rgba(0,0,0,.001)";ctx.fill();ctx.restore();}
     const g=ctx.createLinearGradient(0,y0,0,y0+capH);g.addColorStop(0,"#c6ecff");g.addColorStop(1,"#8fd6ff");
@@ -236,7 +244,7 @@
     ctx.save(); rr(x0+1,y0+1,capW-2,capH-2,(capH-2)/2); ctx.clip(); ctx.imageSmoothingEnabled=false;
     // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
     const iw=capW-2, ih=capH-2;
-    const viewW=lerp(30,PW,openV);                 // how much of the buffer we see (widthwise)
+    const viewW=lerp(26,PW*0.8,openV);             // zoom in: see ~80% of the buffer at open (bigger chick + grass)
     const viewH=viewW*(ih/iw);                     // match the capsule aspect → no distortion
     const vcx=FX, vcy=lerp(FY, PH*0.5, openV);      // pan from the face to the scene centre
     ctx.drawImage(os, vcx-viewW/2, vcy-viewH/2, viewW, viewH, x0+1, y0+1, iw, ih);
