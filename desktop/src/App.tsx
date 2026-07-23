@@ -27,6 +27,12 @@ interface AppSettings {
   pillStyle?: string;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
+  /**
+   * Auto-Cleanup level (backend `cleanup_level`): none | light | medium | high.
+   * Gates the cleanup pipeline — "none" pastes the raw transcript; higher levels
+   * add dictionary → backtrack → formatting → local-LLM polish. Default "light".
+   */
+  cleanupLevel?: string;
   /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
   onboarded?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */
@@ -1209,6 +1215,40 @@ export default function App() {
                       }
                       onClick={() =>
                         saveSettings({ ...settings, dictationMode: id })
+                      }
+                    >
+                      <strong>{label}</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="panel">
+                <h3>Auto-cleanup</h3>
+                <p>
+                  How much Yap polishes each transcript. None pastes the raw
+                  words verbatim; higher levels remove fillers, fix spoken
+                  self-corrections, and format. Text is never lost.
+                </p>
+                <div className="profile-row">
+                  {(
+                    [
+                      ["none", "None", "Raw — paste exactly as spoken"],
+                      ["light", "Light", "Fillers + self-corrections"],
+                      ["medium", "Medium", "Light + smart formatting"],
+                      ["high", "High", "Medium + AI polish"],
+                    ] as const
+                  ).map(([id, label, blurb]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={
+                        (settings.cleanupLevel ?? "light") === id
+                          ? "profile active"
+                          : "profile"
+                      }
+                      onClick={() =>
+                        saveSettings({ ...settings, cleanupLevel: id })
                       }
                     >
                       <strong>{label}</strong>

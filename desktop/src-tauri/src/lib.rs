@@ -57,6 +57,12 @@ pub struct AppSettings {
     /// "auto" infers the mode from the frontmost app; any other value forces it.
     #[serde(default = "default_dictation_mode")]
     pub dictation_mode: String,
+    /// Auto-Cleanup level (YV10): none | light | medium | high (default "light").
+    /// Gates the cleanup pipeline — "none" is a raw passthrough; higher levels
+    /// enable dictionary → backtrack → formatting → local-LLM polish (see
+    /// `dictation::CleanupLevel` / `run_cleanup`).
+    #[serde(default = "default_cleanup_level")]
+    pub cleanup_level: String,
     /// First-run onboarding completed (YV9). While false the UI shows the
     /// welcome → permissions → voice-calibration flow; set true on finish.
     #[serde(default)]
@@ -79,6 +85,9 @@ fn default_pill_style() -> String {
 fn default_dictation_mode() -> String {
     "auto".into()
 }
+fn default_cleanup_level() -> String {
+    "light".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -98,6 +107,7 @@ impl Default for AppSettings {
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
             dictation_mode: "auto".into(),
+            cleanup_level: "light".into(),
             onboarded: false,
             calibration_sample: None,
         }
@@ -312,32 +322,33 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &vocab,
             )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
-            let text = db.apply_dictionary(&asr.text).unwrap_or(asr.text);
+            // Raw ASR output — preserved verbatim so both raw and polished text are
+            // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
+            let raw_text = asr.text;
             // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
-            // wins, otherwise it's inferred from the focused app — and format the transcript
-            // BEFORE it's stored/pasted. `apply_dictation` is guarded so it can never lose
-            // text (falls back to the raw transcript on any error/empty result).
+            // wins, otherwise it's inferred from the focused app.
             let dictation_mode = dictation::resolve_mode(
                 &settings.dictation_mode,
                 source_app.as_deref().unwrap_or_default(),
             );
-            let text = if dictation::should_format(dictation_mode) {
-                let formatted = dictation::format_dictation(&text);
-                // Guard: never lose text — if formatting yields nothing from a non-empty
-                // transcript, fall back to the raw text.
-                if formatted.trim().is_empty() && !text.trim().is_empty() {
-                    text
-                } else {
-                    formatted
-                }
-            } else {
-                // Code / Plain modes stay verbatim.
-                text
-            };
-            log::info!(
-                "smart-dictation: mode={:?} setting={}",
+            // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
+            // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
+            // stage is guarded so a non-empty transcript can never become empty (falls
+            // back to its input on any error/empty result — "never lose text").
+            let cleanup_level = dictation::CleanupLevel::from_setting(&settings.cleanup_level);
+            let text = dictation::run_cleanup(
+                &raw_text,
+                cleanup_level,
                 dictation_mode,
-                settings.dictation_mode
+                |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
+                dictation::polish_llm,
+            );
+            log::info!(
+                "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
+                cleanup_level,
+                dictation_mode,
+                settings.dictation_mode,
+                settings.cleanup_level
             );
             // Always copy first (Wispr Flow: never lose text)
             let want_paste = settings.auto_paste && focus::should_auto_paste();
@@ -352,13 +363,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 asr.seconds * 1000.0,
                 asr.backend
             );
-            let entry = db.insert_transcript(
+            // Store BOTH the polished text and the raw ASR transcript (YV10).
+            let entry = db.insert_transcript_at(
                 text,
                 asr.backend,
                 asr.seconds,
                 rec.speech_seconds,
                 pipeline_ms,
                 source_app,
+                chrono::Utc::now(),
+                Some(raw_text),
             )?;
             // Hygiene: drop wav after successful ASR (audio stays local only during process)
             let _ = std::fs::remove_file(&rec.wav_path);
@@ -1012,6 +1026,9 @@ mod tests {
         let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
         assert!(!parsed.onboarded);
         assert!(parsed.calibration_sample.is_none());
+        // YV10: cleanup_level defaults to "light" for fresh installs and legacy JSON.
+        assert_eq!(AppSettings::default().cleanup_level, "light");
+        assert_eq!(parsed.cleanup_level, "light");
 
         // A finished onboarding round-trips (camelCase key on the wire).
         let mut done = AppSettings::default();

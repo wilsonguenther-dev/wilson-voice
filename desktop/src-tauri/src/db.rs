@@ -29,6 +29,12 @@ pub struct TranscriptEntry {
     pub word_count: i64,
     pub created_at: DateTime<Utc>,
     pub source_app: Option<String>,
+    /// Raw ASR transcript before the cleanup pipeline (YV10). `text` holds the
+    /// polished result; this preserves the verbatim dictation for raw↔polished
+    /// display / "Undo AI edit". Defaults to `text` when no raw is supplied and
+    /// is `None` only for legacy rows written before the column existed.
+    #[serde(default)]
+    pub raw_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +304,9 @@ impl Database {
             "ALTER TABLE transcripts ADD COLUMN pipeline_ms INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // YV10: store the raw ASR transcript alongside the polished `text`. Nullable
+        // so legacy rows (written before the cleanup pipeline) stay valid as NULL.
+        let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN raw_text TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
             [],
@@ -501,6 +510,7 @@ impl Database {
             pipeline_ms,
             source_app,
             Utc::now(),
+            None,
         )
     }
 
@@ -517,7 +527,13 @@ impl Database {
         pipeline_ms: i64,
         source_app: Option<String>,
         created_at: DateTime<Utc>,
+        raw_text: Option<String>,
     ) -> Result<TranscriptEntry, String> {
+        // Preserve the raw ASR transcript (YV10); default to the polished `text`
+        // when the caller supplies none (raw == polished, e.g. cleanup off).
+        let raw = raw_text
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| text.clone());
         let entry = TranscriptEntry {
             id: Uuid::new_v4().to_string(),
             word_count: word_count(&text),
@@ -528,6 +544,7 @@ impl Database {
             pipeline_ms: pipeline_ms.max(0),
             created_at,
             source_app,
+            raw_text: Some(raw),
         };
         let _ = self.learn_from_transcript(&entry.text);
         {
@@ -535,8 +552,8 @@ impl Database {
             conn.execute(
                 "INSERT INTO transcripts
                  (id, text, backend, asr_seconds, speech_seconds, pipeline_ms,
-                  word_count, source_app, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  word_count, source_app, created_at, raw_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     entry.id,
                     entry.text,
@@ -547,6 +564,7 @@ impl Database {
                     entry.word_count,
                     entry.source_app,
                     entry.created_at.to_rfc3339(),
+                    entry.raw_text,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -609,7 +627,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                            COALESCE(pipeline_ms,0), word_count, source_app, created_at
+                            COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
                      FROM transcripts ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -629,7 +647,7 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT t.id, t.text, t.backend, t.asr_seconds, COALESCE(t.speech_seconds,0),
-                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at
+                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at, t.raw_text
                      FROM transcripts_fts f
                      JOIN transcripts t ON t.rowid = f.rowid
                      WHERE transcripts_fts MATCH ?1
@@ -644,7 +662,7 @@ impl Database {
                     let mut stmt2 = conn
                         .prepare(
                             "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at
+                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
                              FROM transcripts
                              WHERE text LIKE ?1
                              ORDER BY created_at DESC LIMIT ?2",
@@ -1157,7 +1175,7 @@ impl Database {
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {
-    // id, text, backend, asr_seconds, speech_seconds, pipeline_ms, word_count, source_app, created_at
+    // id, text, backend, asr_seconds, speech_seconds, pipeline_ms, word_count, source_app, created_at, raw_text
     Ok(TranscriptEntry {
         id: row.get(0)?,
         text: row.get(1)?,
@@ -1168,6 +1186,7 @@ fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> 
         word_count: row.get(6)?,
         source_app: row.get(7)?,
         created_at: parse_dt(row.get::<_, String>(8)?),
+        raw_text: row.get(9)?,
     })
 }
 
@@ -1281,6 +1300,46 @@ mod tests {
         if wal.exists() {
             assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0, "WAL not truncated");
         }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stores_raw_and_polished_text() {
+        let dir = std::env::temp_dir().join(format!("wv-raw-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        let db = Database::open(path.clone()).unwrap();
+        // Polished text differs from the raw ASR transcript; both are stored (YV10).
+        let entry = db
+            .insert_transcript_at(
+                "the report is done".into(),
+                "mlx".into(),
+                1.0,
+                2.0,
+                100,
+                Some("Notes".into()),
+                Utc::now(),
+                Some("um the report is uh done".into()),
+            )
+            .unwrap();
+        assert_eq!(entry.text, "the report is done");
+        assert_eq!(entry.raw_text.as_deref(), Some("um the report is uh done"));
+
+        // Survives a round-trip through SQLite (column persists + maps back).
+        let listed = db.list_transcripts(10, None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].text, "the report is done");
+        assert_eq!(listed[0].raw_text.as_deref(), Some("um the report is uh done"));
+
+        // Default: with no raw supplied, raw_text mirrors the final text.
+        let plain = db
+            .insert_transcript("plain text".into(), "mlx".into(), 1.0, 1.0, 0, None)
+            .unwrap();
+        assert_eq!(plain.raw_text.as_deref(), Some("plain text"));
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1472,9 +1531,9 @@ mod tests {
         let (db, dir) = fresh_db("today");
         // Anchor the "today" row at local noon too, so an insert landing a
         // microsecond before local midnight can't race the day boundary.
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0))
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None)
             .unwrap();
-        db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3))
+        db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None)
             .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.words_today, 10, "words_today must exclude prior days");
@@ -1488,11 +1547,11 @@ mod tests {
     fn streak_counts_consecutive_days_including_today() {
         let (db, dir) = fresh_db("streak");
         for n in [0, 1, 2] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         // A gap, then an old day — must not extend the current streak.
-        db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5))
+        db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None)
             .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.streak_days, 3, "today + 2 prior consecutive days");
@@ -1506,7 +1565,7 @@ mod tests {
         let (db, dir) = fresh_db("grace");
         // Active yesterday/-2/-3 but NOT today → streak still counts (day not over).
         for n in [1, 2, 3] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         let ins = db.insights().unwrap();
@@ -1520,7 +1579,7 @@ mod tests {
         let (db, dir) = fresh_db("longest");
         // Current run of 2 (yesterday, -2), older run of 4 (-5..-8).
         for n in [1, 2, 5, 6, 7, 8] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n))
+            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         let ins = db.insights().unwrap();
@@ -1533,9 +1592,9 @@ mod tests {
     #[test]
     fn daily_series_is_contiguous_and_zero_filled() {
         let (db, dir) = fresh_db("series");
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0)).unwrap();
-        db.insert_transcript_at(words(20), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3)).unwrap();
-        db.insert_transcript_at(words(30), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5)).unwrap();
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None).unwrap();
+        db.insert_transcript_at(words(20), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None).unwrap();
+        db.insert_transcript_at(words(30), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None).unwrap();
 
         let s = db.daily_series(7).unwrap();
         assert_eq!(s.len(), 7, "series must have exactly one entry per requested day");
@@ -1582,9 +1641,9 @@ mod tests {
     fn monthly_series_rolls_up_and_zero_fills() {
         let (db, dir) = fresh_db("monthly");
         // this month, and 2 months back — 1 month back is intentionally left empty.
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
-        db.insert_transcript_at(words(7), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
-        db.insert_transcript_at(words(40), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(2)).unwrap();
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
+        db.insert_transcript_at(words(7), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
+        db.insert_transcript_at(words(40), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(2), None).unwrap();
 
         let s = db.monthly_series(3).unwrap();
         assert_eq!(s.len(), 3, "one entry per requested month");
