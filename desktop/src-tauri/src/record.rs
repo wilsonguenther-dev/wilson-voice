@@ -130,7 +130,9 @@ fn voiced_seconds_from_wav(path: &PathBuf) -> Option<f64> {
     let spec = reader.spec();
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
-            let scale = 1.0 / (1i32 << (spec.bits_per_sample - 1)) as f32;
+            // i64 shift: 1i32 << 31 overflows the sign bit for 32-bit WAV. (Prod
+            // only ever writes 16-bit, but keep this correct for foreign inputs.)
+            let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .samples::<i32>()
                 .filter_map(|s| s.ok())
@@ -174,8 +176,18 @@ fn voiced_seconds(samples: &[f32], sample_rate: u32) -> f64 {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let floor = sorted[((sorted.len() as f64) * 0.10) as usize];
     let peak = *sorted.last().unwrap();
-    // Above the noise floor, but never below an absolute or peak-relative gate.
-    let thresh = (floor * 3.0).max(peak * 0.06).max(1e-4);
+    // Dynamic range decides the gate. When the low-percentile "floor" sits close
+    // to the peak, the clip has NO real silence to anchor on — it's continuous
+    // speech (or steady input). A floor·3 gate would then reject every frame and
+    // collapse voiced→0 (which silently reverts WPM to the old clip-length
+    // denominator). Detect that and use a peak-relative gate that keeps the whole
+    // utterance. Otherwise anchor on the silence floor to carve speech out of the
+    // surrounding quiet (the common push-to-talk case).
+    let thresh = if floor > peak * 0.4 {
+        (peak * 0.3).max(1e-4)
+    } else {
+        (floor * 3.0).max(peak * 0.06).max(1e-4)
+    };
 
     let mask: Vec<bool> = rms.iter().map(|&r| r > thresh).collect();
     // Bridge short inter-word gaps between voiced runs.
@@ -447,6 +459,20 @@ mod tests {
         // ~0.95s (0.4 + 0.15 bridged + 0.4), definitely more than the 0.8s of pure tone.
         assert!(v > 0.85, "short gap should be bridged, got {v:.3}s");
         assert!(v < 1.1, "should not over-count, got {v:.3}s");
+    }
+
+    #[test]
+    fn steady_signal_without_silence_is_not_collapsed_to_zero() {
+        // Continuous speech / steady input has low dynamic range (no silence to
+        // anchor a noise floor). A naive floor·3 gate rejects every frame → 0s,
+        // which silently reverts WPM to the clip-length denominator. The
+        // dynamic-range guard must keep (most of) a 2.0s steady tone as voiced.
+        let sig = tone(2.0, 200.0, 0.4);
+        let v = voiced_seconds(&sig, SR);
+        assert!(
+            v > 1.5,
+            "steady tone must count as voiced (dynamic-range guard), got {v:.3}s"
+        );
     }
 
     #[test]

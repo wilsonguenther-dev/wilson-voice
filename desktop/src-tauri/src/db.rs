@@ -901,21 +901,31 @@ impl Database {
             .map_err(|e| e.to_string())?
             .unwrap_or((0, 0));
 
-        // WPM = words_with_speech / (speech_minutes). Exclude rows without speech_seconds.
-        // Never use asr_seconds as a speaking-time proxy (that was a bad heuristic).
-        let (wpm_words, total_speech, wpm_sessions): (i64, f64, i64) = conn
-            .query_row(
-                "SELECT COALESCE(SUM(word_count),0),
-                        COALESCE(SUM(speech_seconds),0),
-                        COUNT(*)
-                 FROM transcripts
-                 WHERE speech_seconds > 0.05",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap_or((0, 0.0, 0));
-        let avg_wpm = if total_speech > 0.5 && wpm_words > 0 {
-            (wpm_words as f64) / (total_speech / 60.0)
+        // WPM = words / speaking-minutes, pooled across all sessions. Only rows
+        // with measured speech (>0.05s) count — never asr_seconds (inference time).
+        //
+        // Guard against VAD under-measurement: a quiet clip with one loud transient
+        // can yield a tiny voiced value while carrying many words → an impossible
+        // per-session rate that inflates the pooled average. Floor each row's
+        // speaking time at the word-count-implied minimum (words / MAX_WPM) so no
+        // session can claim a super-human rate, and cap the reported average. The
+        // RAW speech sum is kept separately as an honest hygiene stat.
+        const MAX_WPM: f64 = 400.0;
+        let wpm_sql = format!(
+            "SELECT COALESCE(SUM(word_count),0),
+                    COALESCE(SUM(MAX(speech_seconds, word_count * 60.0 / {MAX_WPM})),0),
+                    COALESCE(SUM(speech_seconds),0),
+                    COUNT(*)
+             FROM transcripts
+             WHERE speech_seconds > 0.05"
+        );
+        let (wpm_words, wpm_speech, total_speech, wpm_sessions): (i64, f64, f64, i64) = conn
+            .query_row(&wpm_sql, [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap_or((0, 0.0, 0.0, 0));
+        let avg_wpm = if wpm_speech > 0.5 && wpm_words > 0 {
+            ((wpm_words as f64) / (wpm_speech / 60.0)).min(MAX_WPM)
         } else {
             0.0
         };
@@ -1340,9 +1350,40 @@ mod tests {
     }
 
     #[test]
+    fn wpm_is_clamped_against_transient_fooled_short_speech() {
+        let (db, dir) = fresh_db("wpmclamp");
+        // Normal session: 60 words / 60s = 60 WPM.
+        db.insert_transcript(words(60), "mlx".into(), 5.0, 60.0, 0, None).unwrap();
+        // Pathological: 200 words but only 0.3s "voiced" (a loud transient fooled
+        // the VAD). Un-clamped this single session is 40,000 WPM and would drag the
+        // pooled average to ~259. The word-count floor caps its speaking time at
+        // 200/400*60 = 30s → pooled = 260 words / ((60+30)/60) min = 173.3 WPM.
+        db.insert_transcript(words(200), "mlx".into(), 3.0, 0.3, 0, None).unwrap();
+
+        let ins = db.insights().unwrap();
+        assert!(ins.avg_wpm <= 400.0 + 1e-6, "WPM must be capped, got {}", ins.avg_wpm);
+        assert!(
+            (ins.avg_wpm - 173.33).abs() < 0.5,
+            "expected ~173.3 pooled WPM after the plausibility floor, got {}",
+            ins.avg_wpm
+        );
+        // Raw hygiene stat is still the true (un-floored) speech sum.
+        assert!(
+            (ins.speech_seconds_total - 60.3).abs() < 1e-6,
+            "speech_seconds_total must stay raw, got {}",
+            ins.speech_seconds_total
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn words_today_ignores_other_days() {
         let (db, dir) = fresh_db("today");
-        db.insert_transcript(words(10), "mlx".into(), 0.5, 2.0, 0, None).unwrap(); // today
+        // Anchor the "today" row at local noon too, so an insert landing a
+        // microsecond before local midnight can't race the day boundary.
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0))
+            .unwrap();
         db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3))
             .unwrap();
         let ins = db.insights().unwrap();
