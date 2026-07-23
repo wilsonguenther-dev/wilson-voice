@@ -90,14 +90,14 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
 
     if !active.wav_path.exists() {
         return Err(
-            "No audio file — click Allow once for Microphone (Wilson Voice) in the system dialog, then enable it under System Settings → Privacy → Microphone."
+            "No audio file — click Allow once for Microphone (Yap) in the system dialog, then enable it under System Settings → Privacy → Microphone."
                 .into(),
         );
     }
     let meta = std::fs::metadata(&active.wav_path).map_err(|e| e.to_string())?;
     if meta.len() < 1000 {
         return Err(format!(
-            "Audio too short ({} bytes) — hold longer, or allow Microphone for Wilson Voice.",
+            "Audio too short ({} bytes) — hold longer, or allow Microphone for Yap.",
             meta.len()
         ));
     }
@@ -244,12 +244,12 @@ fn record_loop(
 ) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or_else(|| {
-        "No microphone found. Click Dictate once so macOS prompts, then enable Wilson Voice under System Settings → Privacy → Microphone.".to_string()
+        "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.".to_string()
     })?;
 
     let supported = device.default_input_config().map_err(|e| {
         format!(
-            "Mic config failed ({e}). Enable Microphone for Wilson Voice (not Python) in System Settings."
+            "Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings."
         )
     })?;
 
@@ -334,7 +334,7 @@ fn record_loop(
 
     stream
         .play()
-        .map_err(|e| format!("mic start failed ({e}). Allow Microphone for Wilson Voice."))?;
+        .map_err(|e| format!("mic start failed ({e}). Allow Microphone for Yap."))?;
 
     while !stop.load(Ordering::SeqCst) {
         thread::sleep(std::time::Duration::from_millis(50));
@@ -345,7 +345,7 @@ fn record_loop(
     let raw = samples.lock().map_err(|e| e.to_string())?.clone();
     if raw.is_empty() {
         return Err(
-            "No samples captured. Enable Microphone for Wilson Voice in System Settings.".into(),
+            "No samples captured. Enable Microphone for Yap in System Settings.".into(),
         );
     }
 

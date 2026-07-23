@@ -75,21 +75,21 @@ pub fn microphone_probe() -> (bool, String) {
                 Ok(cfg) => (
                     true,
                     format!(
-                        "Mic ready: {name} ({} Hz). If Wilson Voice is missing from System Settings → Microphone, click Dictate once to trigger the prompt.",
+                        "Mic ready: {name} ({} Hz). If Yap is missing from System Settings → Microphone, click Dictate once to trigger the prompt.",
                         cfg.sample_rate()
                     ),
                 ),
                 Err(e) => (
                     false,
                     format!(
-                        "Mic found ({name}) but config failed: {e}. Toggle Microphone for Wilson Voice in System Settings."
+                        "Mic found ({name}) but config failed: {e}. Toggle Microphone for Yap in System Settings."
                     ),
                 ),
             }
         }
         None => (
             false,
-            "No input device. Click Dictate once so macOS prompts for Microphone, then enable Wilson Voice in System Settings → Privacy → Microphone.".into(),
+            "No input device. Click Dictate once so macOS prompts for Microphone, then enable Yap in System Settings → Privacy → Microphone.".into(),
         ),
     }
 }
@@ -135,7 +135,7 @@ pub fn report(
     let mut parts = Vec::new();
     if !accessibility {
         parts.push(
-            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Wilson Voice)",
+            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Yap)",
         );
     }
     if !microphone {
@@ -148,7 +148,7 @@ pub fn report(
     // Mic + ASR are critical for dictation. Accessibility only for paste (clipboard always works).
     let all_critical_ok = microphone && asr_ok;
     let summary = if all_critical_ok {
-        "All critical permissions look good for Wilson Voice.".into()
+        "All critical permissions look good for Yap.".into()
     } else if parts.is_empty() {
         mic_detail
     } else {

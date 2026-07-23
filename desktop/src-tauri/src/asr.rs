@@ -61,7 +61,7 @@ fn asr_env_home() -> PathBuf {
 fn refuse_desktop(label: &str, p: &str) -> Result<(), String> {
     if p.contains("/Desktop/") || p.contains("/Desktop") {
         return Err(format!(
-            "Refusing ASR path on Desktop ({label}={p}). Reinstall Wilson Voice so ASR uses Application Support."
+            "Refusing ASR path on Desktop ({label}={p}). Reinstall Yap so ASR uses Application Support."
         ));
     }
     Ok(())
