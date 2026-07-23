@@ -1032,6 +1032,43 @@ impl Database {
         })
     }
 
+    /// Contiguous day-by-day series for the last `days` days (today inclusive),
+    /// oldest first, zero-filled for days with no activity. This is the primitive
+    /// behind every Insights chart — bar/line series and the GitHub-style activity
+    /// heatmap. `daily_stats` retains every active day (nothing is pruned), so any
+    /// window works, including "beyond 365 days". Reads the authoritative rollup,
+    /// so it's a single indexed range scan, not a transcript rescan.
+    pub fn daily_series(&self, days: i64) -> Result<Vec<DayCount>, String> {
+        let days = days.clamp(1, 3660); // cap at ~10y to bound the vector
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let start = (Local::now().date_naive() - Duration::days(days - 1)).to_string();
+
+        use std::collections::HashMap;
+        let mut map: HashMap<String, (i64, i64)> = HashMap::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT day, words, sessions FROM daily_stats WHERE day >= ?1")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![start], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (d, w, s) = row.map_err(|e| e.to_string())?;
+                map.insert(d, (w, s));
+            }
+        }
+
+        let mut out = Vec::with_capacity(days as usize);
+        for i in (0..days).rev() {
+            let d = (Local::now().date_naive() - Duration::days(i)).to_string();
+            let (w, s) = map.get(&d).copied().unwrap_or((0, 0));
+            out.push(DayCount { date: d, words: w, sessions: s });
+        }
+        Ok(out)
+    }
+
     /// Export transcripts as JSON lines for backup / LoRA corpus later.
     pub fn export_transcripts_json(&self) -> Result<String, String> {
         let entries = self.list_transcripts(10_000, None)?;
@@ -1436,6 +1473,33 @@ mod tests {
         let ins = db.insights().unwrap();
         assert_eq!(ins.streak_days, 2, "current streak is the recent 2-day run");
         assert_eq!(ins.longest_streak, 4, "longest is the older 4-day run");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daily_series_is_contiguous_and_zero_filled() {
+        let (db, dir) = fresh_db("series");
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0)).unwrap();
+        db.insert_transcript_at(words(20), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3)).unwrap();
+        db.insert_transcript_at(words(30), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5)).unwrap();
+
+        let s = db.daily_series(7).unwrap();
+        assert_eq!(s.len(), 7, "series must have exactly one entry per requested day");
+        // oldest first, strictly consecutive calendar days
+        for w in s.windows(2) {
+            let a = NaiveDate::parse_from_str(&w[0].date, "%Y-%m-%d").unwrap();
+            let b = NaiveDate::parse_from_str(&w[1].date, "%Y-%m-%d").unwrap();
+            assert_eq!(b, a + Duration::days(1), "days must be contiguous & ascending");
+        }
+        // last entry is today with 10 words; days 3 and 5 back carry their counts
+        assert_eq!(s[6].words, 10, "today");
+        assert_eq!(s[3].words, 20, "3 days ago"); // index 6-3
+        assert_eq!(s[1].words, 30, "5 days ago"); // index 6-5
+        // untouched days are zero-filled, not missing
+        assert_eq!(s[5].words, 0, "yesterday had no activity → 0, not absent");
+        let total: i64 = s.iter().map(|d| d.words).sum();
+        assert_eq!(total, 60, "series words sum to the inserted total in-window");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }

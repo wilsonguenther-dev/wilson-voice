@@ -45,8 +45,12 @@
     rows but `speech_ms` only over speech>0.05 rows — do NOT divide them directly;
     compute per-day WPM from a speech-filtered word sum when charts need it).
 - **Track beyond 365 days** (currently 7-day window). Full history retention +
-  rollups (daily/weekly/monthly/yearly). NEXT INCREMENT: add `daily_series(days)`
-  + month/week rollup queries off `daily_stats`; feeds the heatmap + charts.
+  rollups (daily/weekly/monthly/yearly).
+  - ✅ `daily_series(days)` DONE (`db.rs`): contiguous, zero-filled, oldest-first
+    day series off the authoritative `daily_stats` (single indexed range scan);
+    retention already unlimited (nothing pruned) so any window works. Test proves
+    contiguity + zero-fill + sums. Feeds the heatmap + bar/line charts.
+  - TODO: week/month/year rollups; expose via a Tauri command to the Insights UI.
 - **15+ chart types**, user-switchable board: bar, line, **circle/donut**,
   rectangle/treemap, triangle, **GitHub-style commit heatmap**, radial, area,
   sparkline, etc. Let users change how the Insights board looks.
