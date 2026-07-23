@@ -429,7 +429,7 @@ export default function App() {
   if (bootError && !settings) {
     return (
       <div style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h2>Wilson Voice</h2>
+        <h2>Yap</h2>
         <p>UI failed to load backend bridge:</p>
         <pre style={{ whiteSpace: "pre-wrap" }}>{bootError}</pre>
         <button type="button" onClick={() => refreshAll()}>
@@ -447,7 +447,7 @@ export default function App() {
             <span className={status.recording ? "dot pulse" : "dot"} />
           </div>
           <div>
-            <div className="brand-name">Wilson Voice</div>
+            <div className="brand-name">Yap</div>
             <div className="brand-tag">v0.4 · local · private</div>
           </div>
         </div>
@@ -508,7 +508,7 @@ export default function App() {
               {nav === "home" &&
                 "Hold fn⌃ · double-tap hands-free · tap again to stop. Local Whisper; history in SQLite."}
               {nav === "permissions" &&
-                "macOS must grant these to Wilson Voice (not Python). Without them, dictation or paste fails."}
+                "macOS must grant these to Yap (not Python). Without them, dictation or paste fails."}
               {nav === "insights" &&
                 "Local analytics from your SQLite history — nothing leaves this Mac."}
               {nav === "dictionary" &&
@@ -525,7 +525,7 @@ export default function App() {
         {needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
-            for Wilson Voice
+            for Yap
           </div>
         )}
 
@@ -536,7 +536,7 @@ export default function App() {
                 <h3>Enable for this app only</h3>
                 <p>
                   Bundle id <code>com.wilsonguenther.wilson-voice</code> must
-                  appear as <strong>Wilson Voice</strong> in System Settings →
+                  appear as <strong>Yap</strong> in System Settings →
                   Privacy &amp; Security. Do not enable “Python” for this
                   product.
                 </p>
@@ -585,7 +585,7 @@ export default function App() {
                   </button>
                 </div>
                 <p className="muted tiny" style={{ marginTop: 10 }}>
-                  Click <strong>Allow</strong> once for Microphone (Wilson Voice). After
+                  Click <strong>Allow</strong> once for Microphone (Yap). After
                   that, Dictate must not re-prompt. ASR runs only under Application
                   Support — never Desktop — so stop-recording must not ask for Desktop
                   folder access. After each reinstall, re-toggle Accessibility if paste
@@ -601,7 +601,7 @@ export default function App() {
                     <p>
                       In-process capture (Apple Silicon / cpal). Click{" "}
                       <strong>Request Microphone</strong> or Dictate so macOS
-                      prompts — then enable <strong>Wilson Voice</strong> in
+                      prompts — then enable <strong>Yap</strong> in
                       Privacy → Microphone.
                     </p>
                     <button
@@ -621,7 +621,7 @@ export default function App() {
                     <strong>Accessibility</strong>
                     <p>
                       Required to simulate ⌘V paste (Wispr-style). You already
-                      enabled Wilson Voice.app — if status still says copy-only,
+                      enabled Yap.app — if status still says copy-only,
                       toggle it off/on after this install, then click Re-check.
                     </p>
                     <button
@@ -650,7 +650,7 @@ export default function App() {
                   <div>
                     <strong>Mic capture</strong>
                     <p>
-                      In-process audio (cpal) so TCC lists <strong>Wilson Voice</strong>, not
+                      In-process audio (cpal) so TCC lists <strong>Yap</strong>, not
                       Python or ffmpeg. Click Dictate once to trigger the system prompt.
                     </p>
                   </div>

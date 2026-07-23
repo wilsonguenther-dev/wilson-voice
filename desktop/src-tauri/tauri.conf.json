@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Wilson Voice",
+  "productName": "Yap",
   "version": "0.5.5",
   "identifier": "com.wilsonguenther.wilson-voice",
   "build": {
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Wilson Voice",
+        "title": "Yap",
         "width": 980,
         "height": 700,
         "minWidth": 720,
@@ -38,7 +38,7 @@
     "targets": ["app"],
     "category": "Productivity",
     "shortDescription": "Local dictation with history — Wispr Flow alternative",
-    "longDescription": "Wilson Voice is a native macOS dictation app: menubar tray, floating Dictate control, global hotkeys, local MLX Whisper ASR, SQLite transcript history with FTS search, dictionary, insights, and automatic paste.",
+    "longDescription": "Yap is a native macOS dictation app: menubar tray, floating Dictate control, global hotkeys, local MLX Whisper ASR, SQLite transcript history with FTS search, dictionary, insights, and automatic paste.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

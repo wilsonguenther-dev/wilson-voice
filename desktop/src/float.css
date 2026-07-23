@@ -1,4 +1,4 @@
-/* Wilson Voice — floating Dictate island.
+/* Yap — floating Dictate island.
  * Solid "obsidian island" (Dynamic Island / superwhisper style). We do NOT use
  * backdrop-filter: it's a no-op on a transparent webview (can't blur the desktop
  * behind), which is exactly why the old pill read as a muddy grey rectangle.

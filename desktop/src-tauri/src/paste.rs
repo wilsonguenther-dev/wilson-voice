@@ -53,7 +53,7 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
         return PasteOutcome {
             copied: true,
             pasted: false,
-            message: "Copied. Enable Accessibility for Wilson Voice to auto-paste.".into(),
+            message: "Copied. Enable Accessibility for Yap to auto-paste.".into(),
         };
     }
 
@@ -180,7 +180,7 @@ mod cg {
 #[cfg(target_os = "macos")]
 fn paste_cmd_v_main_thread() -> Result<(), String> {
     if !permissions::is_accessibility_trusted() {
-        return Err("Accessibility not granted to Wilson Voice".into());
+        return Err("Accessibility not granted to Yap".into());
     }
     // Tiny settle so focus returns to the previous app after our UI/notification
     std::thread::sleep(Duration::from_millis(30));

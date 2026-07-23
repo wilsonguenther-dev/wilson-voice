@@ -215,7 +215,7 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             log::error!("record start failed: {e}");
             *state.last_error.lock() = Some(e.clone());
             emit_status(app, state);
-            notify(app, "Wilson Voice — Mic", e);
+            notify(app, "Yap — Mic", e);
         }
     }
 }
@@ -349,7 +349,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 };
                 notify(
                     &app2,
-                    "Wilson Voice",
+                    "Yap",
                     format!("{preview}\n({} · {}ms)", outcome.message, pipeline_ms),
                 );
                 log::info!(
@@ -362,7 +362,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             Err(e) => {
                 log::error!("pipeline failed: {e}");
                 *state2.last_error.lock() = Some(e.clone());
-                notify(&app2, "Wilson Voice — Failed", e);
+                notify(&app2, "Yap — Failed", e);
             }
         }
         *state2.busy.lock() = false;
@@ -759,7 +759,7 @@ pub fn run() {
                 });
             }
 
-            let show_i = MenuItem::with_id(app, "show", "Open Wilson Voice", true, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
             let toggle_i =
                 MenuItem::with_id(app, "toggle", "Start / Stop dictation", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -770,7 +770,7 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Wilson Voice — hold fn to dictate")
+                .tooltip("Yap — hold fn to dictate")
                 .on_menu_event({
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
