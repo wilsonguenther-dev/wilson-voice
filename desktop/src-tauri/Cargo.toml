@@ -36,6 +36,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 core-foundation = "0.10"
 cpal = "0.18.1"
 hound = "3.5.1"
+# RNNoise (pure-Rust, BSD-3, no shipped model asset) — steady-noise suppression
+# over the captured clip before the 16 kHz downsample (YV12). default-features
+# off drops its optional hdf5/ndarray/train tooling; we only need DenoiseState.
+nnnoiseless = { version = "0.5.2", default-features = false }
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 block2 = "0.6.2"
