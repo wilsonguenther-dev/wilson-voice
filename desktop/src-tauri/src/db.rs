@@ -1069,6 +1069,59 @@ impl Database {
         Ok(out)
     }
 
+    /// Contiguous month-by-month rollup for the last `months` months (this month
+    /// inclusive), oldest first, zero-filled. `date` is "YYYY-MM". Powers the
+    /// year/all-time Insights views without shipping day-granular data to the UI.
+    /// Aggregates `daily_stats` by calendar month in SQL (one grouped scan).
+    pub fn monthly_series(&self, months: i64) -> Result<Vec<DayCount>, String> {
+        use chrono::Datelike;
+        let months = months.clamp(1, 240); // cap at 20y
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+
+        use std::collections::HashMap;
+        let mut map: HashMap<String, (i64, i64)> = HashMap::new();
+        {
+            // day is "YYYY-MM-DD" → the month key is its first 7 chars.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT substr(day,1,7) AS ym, COALESCE(SUM(words),0), COALESCE(SUM(sessions),0)
+                     FROM daily_stats GROUP BY ym",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (ym, w, s) = row.map_err(|e| e.to_string())?;
+                map.insert(ym, (w, s));
+            }
+        }
+
+        // Build the contiguous list of month keys, newest → oldest, then reverse.
+        let today = Local::now().date_naive();
+        let (mut y, mut m) = (today.year(), today.month() as i32);
+        let mut keys: Vec<String> = Vec::with_capacity(months as usize);
+        for _ in 0..months {
+            keys.push(format!("{y:04}-{m:02}"));
+            m -= 1;
+            if m == 0 {
+                m = 12;
+                y -= 1;
+            }
+        }
+        keys.reverse(); // oldest first
+        let out = keys
+            .into_iter()
+            .map(|ym| {
+                let (w, s) = map.get(&ym).copied().unwrap_or((0, 0));
+                DayCount { date: ym, words: w, sessions: s }
+            })
+            .collect();
+        Ok(out)
+    }
+
     /// Export transcripts as JSON lines for backup / LoRA corpus later.
     pub fn export_transcripts_json(&self) -> Result<String, String> {
         let entries = self.list_transcripts(10_000, None)?;
@@ -1500,6 +1553,49 @@ mod tests {
         assert_eq!(s[5].words, 0, "yesterday had no activity → 0, not absent");
         let total: i64 = s.iter().map(|d| d.words).sum();
         assert_eq!(total, 60, "series words sum to the inserted total in-window");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Noon on the 15th of the month `n` months ago (mid-month → no boundary flake).
+    fn months_ago_15th(n: i64) -> DateTime<Utc> {
+        use chrono::Datelike;
+        let today = Local::now().date_naive();
+        let (mut y, mut m) = (today.year(), today.month() as i32);
+        for _ in 0..n {
+            m -= 1;
+            if m == 0 {
+                m = 12;
+                y -= 1;
+            }
+        }
+        NaiveDate::from_ymd_opt(y, m as u32, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn monthly_series_rolls_up_and_zero_fills() {
+        let (db, dir) = fresh_db("monthly");
+        // this month, and 2 months back — 1 month back is intentionally left empty.
+        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
+        db.insert_transcript_at(words(7), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0)).unwrap();
+        db.insert_transcript_at(words(40), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(2)).unwrap();
+
+        let s = db.monthly_series(3).unwrap();
+        assert_eq!(s.len(), 3, "one entry per requested month");
+        // keys look like YYYY-MM and are contiguous ascending
+        for e in &s {
+            assert!(e.date.len() == 7 && e.date.as_bytes()[4] == b'-', "month key YYYY-MM: {}", e.date);
+        }
+        assert_eq!(s[2].words, 17, "this month sums both sessions (10+7)");
+        assert_eq!(s[2].sessions, 2);
+        assert_eq!(s[1].words, 0, "the empty middle month is zero-filled, not absent");
+        assert_eq!(s[0].words, 40, "two months ago");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
