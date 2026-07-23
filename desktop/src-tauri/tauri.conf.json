@@ -35,7 +35,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": ["app", "dmg"],
     "category": "Productivity",
     "shortDescription": "Local dictation with history — Wispr Flow alternative",
     "longDescription": "Yap is a native macOS dictation app: menubar tray, floating Dictate control, global hotkeys, local MLX Whisper ASR, SQLite transcript history with FTS search, dictionary, insights, and automatic paste.",
@@ -53,5 +53,15 @@
       "signingIdentity": "Apple Development: Wilson Guenther (U8BP8Z86T2)"
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE1MEYxMzRGNjU4MDlENkUKUldSdW5ZQmxUeE1QRlhQbnZybTB0SjlYWlVnaHk3MVZ1T3A0VWpnS3VGaG9meXlyblc2cG9ET2sK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }

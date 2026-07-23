@@ -25,6 +25,7 @@
     "shell:allow-open",
     "notification:default",
     "fs:default",
-    "store:default"
+    "store:default",
+    "updater:default"
   ]
 }

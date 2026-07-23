@@ -1,0 +1,97 @@
+name: Release
+
+# Build + publish a distributable macOS DMG (plus the auto-updater manifest)
+# whenever a version tag is pushed, e.g. `git tag v0.5.6 && git push --tags`.
+on:
+  push:
+    tags:
+      - "v*"
+
+# The release job creates a GitHub Release and uploads assets to it.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build + publish DMG
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+      - name: Build frontend (tsc + vite)
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Fast-fail compile gate before the heavier bundling/signing step.
+      - name: Compile Rust (release)
+        working-directory: desktop/src-tauri
+        run: cargo build --release --features custom-protocol
+
+      # Notarization only runs when all three Apple credentials are configured as
+      # repo secrets. When any is absent the DMG is still built + published, just
+      # un-notarized — the release does not fail.
+      - name: Resolve notarization secrets
+        id: notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Apple credentials present — notarization ENABLED."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Apple credentials absent — skipping notarization (DMG published un-notarized)."
+          fi
+
+      # Bundles the .dmg + the updater artifacts (.app.tar.gz + .sig) and the
+      # `latest.json` updater manifest, then creates the GitHub Release and
+      # uploads them all as assets. Reads the frontend already built above via
+      # beforeBuildCommand (idempotent).
+      #
+      # TODO(distribution): before the first real release, generate a production
+      # updater keypair (`npm run tauri signer generate`) and set:
+      #   - repo secret TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD if any)
+      #   - the matching public key in tauri.conf.json plugins.updater.pubkey
+      #     (the value committed there today is a THROWAWAY placeholder key).
+      # For signed + notarized DMGs also set APPLE_ID / APPLE_PASSWORD (an
+      # app-specific password) / APPLE_TEAM_ID / APPLE_SIGNING_IDENTITY.
+      - name: Build, sign, notarize + publish (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — must match plugins.updater.pubkey in tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Notarization — populated only when the check above passed, so tauri
+          # notarizes when present and skips gracefully when the secrets are absent.
+          APPLE_ID: ${{ steps.notarize.outputs.enabled == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.notarize.outputs.enabled == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.notarize.outputs.enabled == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "Yap ${{ github.ref_name }}"
+          releaseDraft: true
+          args: --bundles dmg updater
+          includeUpdaterJson: true
