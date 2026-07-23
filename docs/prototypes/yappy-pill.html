@@ -137,7 +137,7 @@
   function drawScene(A){
     octx.clearRect(0,0,PW,PH);
     const w=A.world;
-    if(w>.02){ octx.globalAlpha=w;
+    { octx.globalAlpha=Math.max(0.8,w);
       octx.fillStyle=P.sky1; octx.fillRect(0,0,PW,GY);
       octx.fillStyle=P.sky2; octx.fillRect(0,0,PW,7);
       ell(20,8,5,5,P.sun);
@@ -231,7 +231,7 @@
     const capW=lerp(66,206*tierOpen,openV), capH=lerp(20,50*tierOpen,openV);
     const x0=cx-capW/2,y0=cy-capH/2, acc=ACC[S.state];
     if(openV>.05){ctx.save();ctx.shadowColor=`hsla(${acc}, ${.5*openV})`;ctx.shadowBlur=22*openV;rr(x0,y0,capW,capH,capH/2);ctx.fillStyle="rgba(0,0,0,.001)";ctx.fill();ctx.restore();}
-    const g=ctx.createLinearGradient(0,y0,0,y0+capH);g.addColorStop(0,"#17181c");g.addColorStop(1,"#0c0c0f");
+    const g=ctx.createLinearGradient(0,y0,0,y0+capH);g.addColorStop(0,"#c6ecff");g.addColorStop(1,"#8fd6ff");
     ctx.fillStyle=g; rr(x0,y0,capW,capH,capH/2); ctx.fill();
     ctx.save(); rr(x0+1,y0+1,capW-2,capH-2,(capH-2)/2); ctx.clip(); ctx.imageSmoothingEnabled=false;
     // CAMERA: rest = zoomed onto the face; open = whole buffer (world fills the pill)
