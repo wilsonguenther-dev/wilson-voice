@@ -204,3 +204,32 @@ From the inspiration research. A **folded-paper creature that lives at the notch
 (§2 first half). 3. Hotkey-config UI + Settings de-jargon (§3). 4. Insights charts
 (§2 second half). 5. UI overhaul + icon (§3). 6. Rename + license + README (§0).
 7. Team component (§4) last (hardest). Notarization when distributing.
+
+## 6. Smart dictation — context-aware formatting (Wispr Flow parity) [NEW]
+Wilson wants dictation as smart as Wispr Flow:
+- **App/context awareness.** Detect the frontmost app + field and adapt.
+  FOUNDATION EXISTS: `focus.rs::frontmost_app_name()` already resolves the app and
+  `accepts_text` (focused element editability); each transcript stores `source_app`.
+  Extend: map app -> mode (Gmail/Outlook = email; Google Docs/Word = document;
+  Notes/Bear = notes; Terminal/iTerm/VS Code = code/plain; Slack/Discord = chat;
+  Roblox/games = plain). Keyword the bundle id / app name.
+- **Intelligent formatting** (the killer feature). In the ASR polish step
+  (`python/asr_worker.py` + the Rust pipeline), format by content + context:
+  lists -> bullet/numbered list; paragraphs -> prose; a grocery list in Notes ->
+  a list; a formal email in Gmail -> greeting/sign-off/formal tone. Detect intent
+  from cues ("first, second", "dear", "grocery list") + the app mode.
+- **Modes** (auto + user override in Settings): Formal / Casual / List / Email /
+  Code / Notes. Show the active mode on the pill.
+
+## 7. HONEST STATUS (2026-07-23) — what is NOT done yet
+Wilson noted the app "still says Wilson Voice + looks like the original." Correct.
+Done this arc: analytics accuracy (WPM/streak/series, tested), the switchable
+Classic<->Yappy pill (origami retired), the Yappy pixel companion design.
+NOT done (still original): 
+- **App RENAME "Wilson Voice" -> "Yap"** (§0). Bundle id, product name, Info.plist,
+  tray/UI copy, data dir. NOTE: renaming the bundle id resets TCC -> one-time re-grant.
+- **Full UI OVERHAUL** (§3): Home / Permissions / Insights / Dictionary / Scratchpad /
+  Settings still look like the original app. Needs the whole design pass.
+- **Smart formatting** (§6 above).
+- **Port the polished pill** (world-fill camera + typewriter/receptionist personas +
+  sky-blue capsule) from `docs/prototypes/yappy-pill.html` into `YappyPill.tsx`.
