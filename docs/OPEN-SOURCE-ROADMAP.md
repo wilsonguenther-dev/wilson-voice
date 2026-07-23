@@ -75,11 +75,28 @@ end-to-end; research is in `docs/research/origami-yapping-pill.md`.
   morph: "unfold in the exact way that an origami of whatever animal unfolds in
   real life… it folds back the exact same way." This is the hard, must-nail part.
 - **Multiple mascots** = the origami "pets." User can pick/collect creatures.
-- Approach candidates (see research file): (a) FOLD crease-pattern format
-  (edemaine/fold) + a keyframed fold-angle timeline, (b) Amanda Ghassaei's
-  Origami Simulator (WebGL rigid-fold) driving a 0→1 fold parameter, (c)
-  hand-authored SVG/CSS 3D-hinge fold rig. Must run at 60fps, low CPU, in the
-  WebKit webview, fully bundled (no CDN), permissive OSS license only.
+- **DECIDED v1 stack (research done + license-verified — `docs/research/origami-yapping-pill.md`):**
+  **bake-once / play-back-cheap.**
+  1. *Offline bake:* sweep Amanda Ghassaei's **Origami Simulator** (MIT, WebGL
+     rigid-fold; drivable via `globals.creasePercent` / `setCreasePercent()`)
+     0→1 over a **traditional crane** crease pattern → dump per-frame vertex
+     positions to `crane.json` (~30KB gzip). Store as **FOLD** format
+     (`edemaine/fold`, MIT; loader = `JSON.parse`).
+  2. *Runtime:* a **zero-dep Canvas2D `foldPlayer`** interpolates ONE eased
+     scalar `t` across baked frames. Unfold `t:0→1`, fold `t:1→0` → the reverse
+     is **bit-exact by construction** (this is the ONLY faithful way to get
+     "folds back the exact same way"). `rAF` runs only while animating → idle
+     CPU ≈ 0. No WebGL context in the always-on panel.
+- **License landmines (do NOT ship):** Rabbit Ear (`robbykraft/Origami`) is
+  **GPL-3.0** — offline tool only, never bundled. **GSAP/MorphSVG** non-OSI.
+  flubber/polymorph/Lottie = silhouette *morphs*, not crease folds (mouth/eye
+  accents only). Named **Lang** crease patterns carry author copyright even in an
+  MIT repo — use only traditional/public-domain CPs (Origami Simulator's MIT
+  `assets/traditionalCrane.svg` etc.) or author custom in Inkscape.
+- **Deps (all MIT):** siriwave (optional waveform), **Rive** `rive-app` (v2
+  expressive mascot, local `.riv`, CDN-free), **leo-profanity**/`bad-words` (curse
+  filter → clean-vs-sassy copy table).
+- Must run 60fps, low CPU, in the WebKit webview, fully bundled (no CDN).
 
 ### Word-count-reactive "yapping" messages
 - The pill/mouth shows **reactive text based on how many words** you dictated in a
