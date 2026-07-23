@@ -1,206 +1,104 @@
 <title>Yap — the yapping pill</title>
 <style>
   :root {
-    /* desk (theme-aware) */
-    --desk: #0a0a0d;
-    --desk-2: #101015;
-    --ink: #f4f4f6;
-    --ink-muted: #969aa4;
-    --hair: rgba(255,255,255,.10);
-    --card: rgba(255,255,255,.035);
-    --card-line: rgba(255,255,255,.08);
-    /* pill — OBSIDIAN in every theme (it floats over the desktop for real) */
-    --obsidian-a: #17181c;
-    --obsidian-b: #0c0c0f;
-    --paper: #f5f5f7;
-    /* state accents — from the app's real float.css */
-    --rose: 351 95% 71%;
-    --amber: 38 92% 55%;
-    --green: 152 69% 52%;
-    --accent: var(--rose);
-    --shadow: 0 24px 60px rgba(0,0,0,.5);
-    --mono: ui-monospace, "SF Mono", Menlo, monospace;
-    --round: ui-rounded, "SF Pro Rounded", -apple-system, system-ui, "Segoe UI", sans-serif;
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --desk: #e9e6df; --desk-2: #f3f1ec;
-      --ink: #1b1b20; --ink-muted: #5c616b;
-      --hair: rgba(0,0,0,.10); --card: rgba(0,0,0,.028); --card-line: rgba(0,0,0,.09);
-      --shadow: 0 24px 60px rgba(60,40,30,.22);
-    }
-  }
-  :root[data-theme="dark"] {
     --desk:#0a0a0d; --desk-2:#101015; --ink:#f4f4f6; --ink-muted:#969aa4;
     --hair:rgba(255,255,255,.10); --card:rgba(255,255,255,.035); --card-line:rgba(255,255,255,.08);
+    --obsidian-a:#17181c; --obsidian-b:#0c0c0f; --paper:#f5f5f7;
+    --rose:351 95% 71%; --amber:38 92% 55%; --green:152 69% 52%;
+    --mountain:351 90% 66%;  /* mountain creases (convention: one color) */
+    --valley:210 90% 66%;    /* valley creases (dashed)                  */
+    --accent:var(--rose);
     --shadow:0 24px 60px rgba(0,0,0,.5);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --round:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,"Segoe UI",sans-serif;
   }
-  :root[data-theme="light"] {
+  @media (prefers-color-scheme: light){ :root{
     --desk:#e9e6df; --desk-2:#f3f1ec; --ink:#1b1b20; --ink-muted:#5c616b;
-    --hair:rgba(0,0,0,.10); --card:rgba(0,0,0,.028); --card-line:rgba(0,0,0,.09);
-    --shadow:0 24px 60px rgba(60,40,30,.22);
-  }
+    --hair:rgba(0,0,0,.10); --card:rgba(0,0,0,.028); --card-line:rgba(0,0,0,.09); --shadow:0 24px 60px rgba(60,40,30,.22);
+  }}
+  :root[data-theme="dark"]{ --desk:#0a0a0d;--desk-2:#101015;--ink:#f4f4f6;--ink-muted:#969aa4;--hair:rgba(255,255,255,.10);--card:rgba(255,255,255,.035);--card-line:rgba(255,255,255,.08);--shadow:0 24px 60px rgba(0,0,0,.5); }
+  :root[data-theme="light"]{ --desk:#e9e6df;--desk-2:#f3f1ec;--ink:#1b1b20;--ink-muted:#5c616b;--hair:rgba(0,0,0,.10);--card:rgba(0,0,0,.028);--card-line:rgba(0,0,0,.09);--shadow:0 24px 60px rgba(60,40,30,.22); }
 
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--desk); color: var(--ink);
-    font-family: var(--round);
-    -webkit-font-smoothing: antialiased;
-    line-height: 1.5;
-  }
-  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
-
-  header.top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-  .brand { display: flex; align-items: center; gap: 12px; }
-  .mark {
-    width: 34px; height: 34px; border-radius: 10px;
-    background: linear-gradient(180deg, var(--obsidian-a), var(--obsidian-b));
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 4px 14px rgba(0,0,0,.35);
-    display: grid; place-items: center;
-  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--desk); color:var(--ink); font-family:var(--round); -webkit-font-smoothing:antialiased; line-height:1.5; }
+  .wrap { max-width:1080px; margin:0 auto; padding:40px 24px 80px; }
+  header.top { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .mark { width:34px; height:34px; border-radius:10px; background:linear-gradient(180deg,var(--obsidian-a),var(--obsidian-b)); box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 4px 14px rgba(0,0,0,.35); display:grid; place-items:center; }
   .mark i { display:block; width:6px; height:6px; border-radius:50%; background:hsl(var(--rose)); box-shadow:0 0 10px hsl(var(--rose)/.7); }
-  .brand h1 { font-size: 22px; margin: 0; letter-spacing: -.02em; font-weight: 700; }
-  .brand span { color: var(--ink-muted); font-size: 13px; font-family: var(--mono); }
-  .theme-toggle {
-    font: 500 12px var(--mono); color: var(--ink-muted); background: var(--card);
-    border: 1px solid var(--card-line); border-radius: 8px; padding: 7px 11px; cursor: pointer;
-  }
-  .theme-toggle:hover { color: var(--ink); }
+  .brand h1 { font-size:22px; margin:0; letter-spacing:-.02em; font-weight:700; }
+  .brand span { color:var(--ink-muted); font-size:13px; font-family:var(--mono); }
+  .theme-toggle { font:500 12px var(--mono); color:var(--ink-muted); background:var(--card); border:1px solid var(--card-line); border-radius:8px; padding:7px 11px; cursor:pointer; }
+  .theme-toggle:hover { color:var(--ink); }
+  .lede { margin:22px 0 26px; max-width:64ch; color:var(--ink-muted); font-size:15.5px; }
+  .lede b { color:var(--ink); font-weight:600; }
 
-  .lede { margin: 22px 0 26px; max-width: 62ch; color: var(--ink-muted); font-size: 15.5px; }
-  .lede b { color: var(--ink); font-weight: 600; }
+  .stage { position:relative; border-radius:22px; overflow:hidden; background:radial-gradient(120% 80% at 50% -10%, color-mix(in oklab,var(--desk-2),white 4%), var(--desk-2)), var(--desk-2); border:1px solid var(--hair); min-height:420px; display:grid; place-items:end center; box-shadow:var(--shadow); }
+  .state-tag { position:absolute; top:16px; left:18px; font:600 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:hsl(var(--accent)); display:flex; align-items:center; gap:7px; z-index:3; }
+  .state-tag .dot { width:7px; height:7px; border-radius:50%; background:hsl(var(--accent)); box-shadow:0 0 10px hsl(var(--accent)/.8); }
+  .metric { position:absolute; top:16px; right:18px; font:500 11px var(--mono); color:var(--ink-muted); text-align:right; z-index:3; }
+  .metric b { color:var(--ink); font-variant-numeric:tabular-nums; }
 
-  /* ── STAGE ── */
-  .stage {
-    position: relative; border-radius: 22px; overflow: hidden;
-    background:
-      radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--desk-2), white 4%), var(--desk-2)),
-      var(--desk-2);
-    border: 1px solid var(--hair);
-    min-height: 380px; display: grid; place-items: end center;
-    box-shadow: var(--shadow);
-  }
-  .stage::before { /* faint crease-grid, nods to a crease pattern */
-    content:""; position:absolute; inset:0; pointer-events:none; opacity:.5;
-    background-image:
-      linear-gradient(hsl(var(--accent)/.05) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--accent)/.05) 1px, transparent 1px);
-    background-size: 46px 46px; mask-image: radial-gradient(80% 70% at 50% 40%, #000, transparent 78%);
-    transition: background-image .4s;
-  }
-  .state-tag {
-    position: absolute; top: 16px; left: 18px; font: 600 11px var(--mono);
-    letter-spacing:.08em; text-transform: uppercase; color: hsl(var(--accent));
-    display:flex; align-items:center; gap:7px;
-  }
-  .state-tag .dot { width:7px; height:7px; border-radius:50%; background: hsl(var(--accent)); box-shadow:0 0 10px hsl(var(--accent)/.8); }
-  .metric { position:absolute; top:16px; right:18px; font: 500 11px var(--mono); color: var(--ink-muted); text-align:right; }
-  .metric b { color: var(--ink); font-variant-numeric: tabular-nums; }
-
-  .floaty { position: relative; margin-bottom: 42px; display: grid; place-items: center; gap: 14px; }
-
-  /* reactive "yapping" line bubble */
-  .say {
-    min-height: 22px; max-width: 320px; text-align:center;
-    font-size: 16px; font-weight: 600; letter-spacing:-.01em; color: var(--ink);
-    opacity: 0; transform: translateY(6px); transition: opacity .3s, transform .3s;
-    text-wrap: balance;
-  }
-  .say.show { opacity: 1; transform: none; }
-
-  /* the pill itself */
-  .pill {
-    position: relative; height: 120px; width: 260px;
-    display: grid; place-items: center;
-  }
-  canvas#fold { width: 260px; height: 120px; display:block; }
-  .capsule {
-    position:absolute; left:50%; bottom:14px; transform: translateX(-50%);
-    height: 16px; min-width: 60px; border-radius: 22px; padding: 0 12px;
-    display:flex; align-items:center; justify-content:center; gap:8px;
-    background: linear-gradient(180deg, var(--obsidian-a), var(--obsidian-b));
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 12px 30px rgba(0,0,0,.45);
-    transition: height .34s cubic-bezier(.22,1,.36,1), min-width .34s cubic-bezier(.22,1,.36,1), box-shadow .3s;
-  }
-  .pill.active .capsule { height: 44px; min-width: 200px; box-shadow: inset 0 0 0 .5px hsl(var(--accent)/.5), 0 12px 34px rgba(0,0,0,.5), 0 0 26px hsl(var(--accent)/.28); }
-  .seed { width:6px; height:6px; border-radius:50%; background: rgba(255,255,255,.6); animation: breathe 2s ease-in-out infinite; }
-  .pill.active .seed { display:none; }
+  .floaty { position:relative; width:100%; height:420px; }
+  /* reactive line — sits BARELY above the creature's head */
+  .say { position:absolute; left:0; right:0; text-align:center; font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--ink); opacity:0; transform:translateY(4px); transition:opacity .28s, transform .28s; text-wrap:balance; z-index:4; top:96px; pointer-events:none; }
+  .say.show { opacity:1; transform:none; }
+  canvas#fold { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* the resting capsule (only when idle) */
+  .capsule { position:absolute; left:50%; bottom:26px; transform:translateX(-50%); height:16px; min-width:60px; border-radius:22px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,var(--obsidian-a),var(--obsidian-b)); box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 12px 30px rgba(0,0,0,.45); transition:opacity .3s; z-index:2; }
+  .capsule .seed { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,.6); animation:breathe 2s ease-in-out infinite; }
   @keyframes breathe { 0%,100%{opacity:.4; transform:scale(.85);} 50%{opacity:1; transform:scale(1.1);} }
-  .wave { display:none; align-items:center; gap:3px; height:22px; }
-  .pill.active.listening .wave, .pill.active.thinking .wave { display:flex; }
-  .wave i { width:3px; border-radius:99px; background:hsl(var(--accent)/.9); height:5px; }
-  .check { display:none; width:22px; height:22px; }
-  .pill.done .check { display:block; }
-  .pill.done .wave { display:none; }
-  @media (prefers-reduced-motion: reduce) { .seed { animation: none; } }
+  @media (prefers-reduced-motion: reduce){ .capsule .seed{ animation:none; } }
 
-  /* ── DOCK ── */
-  .dock { display:grid; grid-template-columns: 1.1fr 1fr; gap: 16px; margin-top: 22px; }
-  @media (max-width: 720px){ .dock { grid-template-columns: 1fr; } }
-  .panel { background: var(--card); border: 1px solid var(--card-line); border-radius: 16px; padding: 18px; }
-  .panel h3 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing:.09em; color: var(--ink-muted); font-family: var(--mono); font-weight: 600; }
-  .panel .hint { margin: 0 0 14px; font-size: 12.5px; color: var(--ink-muted); }
-
-  .dictate {
-    width: 100%; border: 0; cursor: pointer; border-radius: 12px; padding: 14px;
-    font: 700 15px var(--round); color: white; letter-spacing:-.01em;
-    background: linear-gradient(180deg, hsl(var(--rose)/1), hsl(351 88% 52%));
-    box-shadow: 0 8px 22px hsl(var(--rose)/.35); transition: transform .12s, box-shadow .2s;
-  }
-  .dictate:hover { transform: translateY(-1px); }
-  .dictate:active { transform: translateY(0); }
-  .dictate:disabled { opacity:.55; cursor: default; transform:none; }
-
-  .row { display:flex; flex-wrap: wrap; gap: 8px; }
-  .chip {
-    border: 1px solid var(--card-line); background: transparent; color: var(--ink-muted);
-    border-radius: 999px; padding: 7px 13px; font: 600 13px var(--round); cursor: pointer; transition: .15s;
-  }
-  .chip:hover { color: var(--ink); }
-  .chip[aria-pressed="true"] { color: var(--ink); border-color: hsl(var(--accent)/.7); background: hsl(var(--accent)/.12); box-shadow: inset 0 0 0 1px hsl(var(--accent)/.3); }
-
-  .field { margin-top: 14px; }
-  .field label { display:flex; justify-content: space-between; align-items:baseline; font: 600 12px var(--mono); color: var(--ink-muted); margin-bottom: 8px; }
-  .field label b { color: hsl(var(--accent)); font-variant-numeric: tabular-nums; }
-  input[type=range] { width: 100%; accent-color: hsl(var(--accent)); }
-
-  .toggle { display:flex; align-items:center; justify-content: space-between; margin-top: 14px; gap: 12px; }
-  .toggle span { font-size: 13.5px; }
-  .toggle small { color: var(--ink-muted); display:block; font-size: 11.5px; font-family: var(--mono); }
-  .sw { position: relative; width: 44px; height: 26px; flex: none; }
+  .dock { display:grid; grid-template-columns:1.1fr 1fr; gap:16px; margin-top:22px; }
+  @media (max-width:760px){ .dock{ grid-template-columns:1fr; } }
+  .panel { background:var(--card); border:1px solid var(--card-line); border-radius:16px; padding:18px; }
+  .panel h3 { margin:0 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-muted); font-family:var(--mono); font-weight:600; }
+  .panel .hint { margin:0 0 14px; font-size:12.5px; color:var(--ink-muted); }
+  .btn { border:0; cursor:pointer; border-radius:12px; padding:14px; font:700 15px var(--round); color:#fff; letter-spacing:-.01em; background:linear-gradient(180deg,hsl(var(--rose)/1),hsl(351 88% 52%)); box-shadow:0 8px 22px hsl(var(--rose)/.35); transition:transform .12s; }
+  .btn.ghost { background:var(--card); color:var(--ink); border:1px solid var(--card-line); box-shadow:none; font-weight:600; font-size:13.5px; padding:10px 12px; }
+  .btn:hover { transform:translateY(-1px); }
+  .btn:disabled { opacity:.55; cursor:default; transform:none; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { border:1px solid var(--card-line); background:transparent; color:var(--ink-muted); border-radius:999px; padding:7px 13px; font:600 13px var(--round); cursor:pointer; transition:.15s; }
+  .chip:hover { color:var(--ink); }
+  .chip[aria-pressed="true"] { color:var(--ink); border-color:hsl(var(--accent)/.7); background:hsl(var(--accent)/.12); box-shadow:inset 0 0 0 1px hsl(var(--accent)/.3); }
+  .field { margin-top:14px; }
+  .field label { display:flex; justify-content:space-between; align-items:baseline; font:600 12px var(--mono); color:var(--ink-muted); margin-bottom:8px; }
+  .field label b { color:hsl(var(--accent)); font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:hsl(var(--accent)); }
+  .toggle { display:flex; align-items:center; justify-content:space-between; margin-top:14px; gap:12px; }
+  .toggle span { font-size:13.5px; } .toggle small { color:var(--ink-muted); display:block; font-size:11.5px; font-family:var(--mono); }
+  .sw { position:relative; width:44px; height:26px; flex:none; }
   .sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
-  .sw .track { position:absolute; inset:0; border-radius: 999px; background: var(--card-line); transition:.2s; }
+  .sw .track { position:absolute; inset:0; border-radius:999px; background:var(--card-line); transition:.2s; }
   .sw .knob { position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.4); transition:.2s; }
-  .sw input:checked ~ .track { background: hsl(var(--accent)/.9); }
-  .sw input:checked ~ .knob { left: 21px; }
-
-  .preview { margin-top: 16px; padding: 14px; border-radius: 12px; border: 1px dashed var(--card-line);
-    background: color-mix(in oklab, var(--card), transparent 20%); }
-  .preview .bk { font: 600 10.5px var(--mono); letter-spacing:.08em; text-transform: uppercase; color: var(--ink-muted); }
-  .preview .ln { font-size: 17px; font-weight: 600; letter-spacing:-.01em; margin-top: 6px; text-wrap: balance; min-height: 24px; }
-
-  footer.note { margin-top: 26px; font: 500 12px var(--mono); color: var(--ink-muted); line-height: 1.7; }
-  footer.note b { color: var(--ink); }
-  .kbd { font: 600 11px var(--mono); border:1px solid var(--card-line); border-bottom-width:2px; border-radius:6px; padding: 1px 6px; color: var(--ink); }
+  .sw input:checked ~ .track { background:hsl(var(--accent)/.9); } .sw input:checked ~ .knob { left:21px; }
+  .preview { margin-top:16px; padding:14px; border-radius:12px; border:1px dashed var(--card-line); background:color-mix(in oklab,var(--card),transparent 20%); }
+  .preview .bk { font:600 10.5px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-muted); }
+  .preview .ln { font-size:17px; font-weight:600; letter-spacing:-.01em; margin-top:6px; text-wrap:balance; min-height:24px; }
+  footer.note { margin-top:26px; font:500 12px var(--mono); color:var(--ink-muted); line-height:1.7; }
+  footer.note b { color:var(--ink); }
+  .kbd { font:600 11px var(--mono); border:1px solid var(--card-line); border-bottom-width:2px; border-radius:6px; padding:1px 6px; color:var(--ink); }
+  .legend { position:absolute; bottom:14px; left:18px; display:flex; gap:14px; font:500 10.5px var(--mono); color:var(--ink-muted); z-index:3; }
+  .legend s { text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+  .legend .m { width:14px; height:0; border-top:2px solid hsl(var(--mountain)); }
+  .legend .v { width:14px; height:0; border-top:2px dashed hsl(var(--valley)); }
 </style>
 
 <div class="wrap">
   <header class="top">
     <div class="brand">
       <div class="mark"><i></i></div>
-      <div>
-        <h1>Yap</h1>
-        <span>local dictation, with a mouth</span>
-      </div>
+      <div><h1>Yap</h1><span>local dictation, with a mouth</span></div>
     </div>
     <button class="theme-toggle" id="themeBtn">◐ theme</button>
   </header>
 
   <p class="lede">
-    The pill isn't a passive bar — it's a <b>living origami mascot</b>. Hold your key and it
-    <b>unfolds</b> like a paper crane; let go and it <b>folds back the exact same way</b>
-    (the same crease timeline, played in reverse). When it's done it <b>talks back</b> — a line
-    tuned to how much you just yapped. Prototype below is fully interactive.
+    A real <b>crease pattern</b> — mountain and valley folds — that <b>collapses into your pet</b> when you dictate
+    and <b>unfolds the exact same way</b> in reverse. The beak <b>yaps in time with your voice</b> while it listens,
+    then it talks back. Everything below is live: pick a pet, drive the mouth, tune the personality.
   </p>
 
   <section class="stage" id="stage">
@@ -208,266 +106,314 @@
     <div class="metric"><span id="wc">0</span> words · <b id="wpm">—</b> wpm</div>
     <div class="floaty">
       <div class="say" id="say"></div>
-      <div class="pill" id="pill">
-        <canvas id="fold" width="520" height="240" aria-hidden="true"></canvas>
-        <div class="capsule">
-          <span class="seed"></span>
-          <div class="wave" id="wave"></div>
-          <svg class="check" viewBox="0 0 24 24" fill="none" stroke="hsl(152 69% 52%)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
-        </div>
-      </div>
+      <canvas id="fold" aria-hidden="true"></canvas>
+      <div class="capsule" id="capsule"><span class="seed"></span></div>
     </div>
+    <div class="legend"><s><span class="m"></span>mountain</s><s><span class="v"></span>valley</s></div>
   </section>
 
   <div class="dock">
     <div class="panel">
-      <h3>Try it</h3>
-      <p class="hint">Run the whole flow, or step through states by hand.</p>
-      <button class="dictate" id="dictateBtn">▶  Dictate a prompt</button>
-      <div class="row" style="margin-top:12px">
+      <h3>Your pet</h3>
+      <p class="hint">Each is its own crease pattern. Customizable — bake more later.</p>
+      <div class="row" id="pets">
+        <button class="chip" data-pet="crane" aria-pressed="true">🕊 Crane</button>
+        <button class="chip" data-pet="fox">🦊 Fox</button>
+        <button class="chip" data-pet="frog">🐸 Frog</button>
+      </div>
+      <p class="hint" style="margin:16px 0 8px">Drive the mouth</p>
+      <div class="row">
+        <button class="btn" id="dictateBtn" style="flex:1">▶ Dictate a prompt</button>
+        <button class="btn ghost" id="micBtn" title="Use your real microphone">🎤 My voice</button>
+      </div>
+      <div class="row" style="margin-top:10px">
         <button class="chip" data-state="idle">Idle</button>
         <button class="chip" data-state="listening">Listening</button>
         <button class="chip" data-state="thinking">Thinking</button>
         <button class="chip" data-state="done">Done</button>
       </div>
-      <div class="field">
-        <label>Words in this prompt <b id="wcLabel">32</b></label>
-        <input type="range" id="words" min="1" max="300" value="32">
-      </div>
+      <div class="field"><label>Words in this prompt <b id="wcLabel">32</b></label><input type="range" id="words" min="1" max="300" value="32"></div>
     </div>
 
     <div class="panel">
       <h3>Personality</h3>
-      <p class="hint">How the pill reacts when it finishes.</p>
+      <p class="hint">What it says when it finishes.</p>
       <div class="row" id="tones">
         <button class="chip" data-tone="rude">Rude</button>
         <button class="chip" data-tone="friendly" aria-pressed="true">Friendly</button>
         <button class="chip" data-tone="rose">Rose</button>
         <button class="chip" data-tone="off">Off</button>
       </div>
-      <div class="toggle">
-        <span>Curse filter <small>cleans the Rude voice (damn → dang)</small></span>
-        <label class="sw"><input type="checkbox" id="curse" checked><span class="track"></span><span class="knob"></span></label>
-      </div>
-      <div class="preview">
-        <div class="bk"><span id="bkName">medium</span> · <span id="toneName">friendly</span></div>
-        <div class="ln" id="previewLine">—</div>
-      </div>
+      <div class="toggle"><span>Curse filter <small>cleans the Rude voice (damn → dang)</small></span>
+        <label class="sw"><input type="checkbox" id="curse" checked><span class="track"></span><span class="knob"></span></label></div>
+      <div class="preview"><div class="bk"><span id="bkName">medium</span> · <span id="toneName">friendly</span></div><div class="ln" id="previewLine">—</div></div>
     </div>
   </div>
 
   <footer class="note">
-    <b>How the fold stays honest:</b> the open→folded motion is one eased scalar over a baked crease
-    timeline, so <b>fold = unfold reversed, bit-exact</b> — the only way it truly "folds back the same
-    way." Frames bake offline from a traditional crane crease pattern with Origami Simulator (MIT);
-    runtime playback is dependency-free Canvas2D. Real binding is <span class="kbd">fn ⌃</span>, not a wake word.
+    <b>Geometric, not faked:</b> the fold is a hinge-tree over a real crease pattern — each facet rotates about its
+    crease by a dihedral angle driven by one scalar, so <b>fold = unfold reversed, bit-exact</b>. Rendered in
+    dependency-free Canvas2D (facets painter-sorted + shaded like paper). In the app, the beak's open angle is driven
+    by the live mic RMS the recorder already exposes. Real binding is <span class="kbd">fn ⌃</span>, not a wake word.
   </footer>
 </div>
 
 <script>
 (() => {
   "use strict";
-  const $ = (s) => document.querySelector(s);
+  const $ = (s)=>document.querySelector(s);
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  /* ---------- theme toggle ---------- */
-  $("#themeBtn").addEventListener("click", () => {
-    const cur = document.documentElement.getAttribute("data-theme");
-    const next = cur === "dark" ? "light" : cur === "light" ? "dark"
-      : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
-    document.documentElement.setAttribute("data-theme", next);
+  $("#themeBtn").addEventListener("click", ()=>{
+    const c=document.documentElement.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", c==="dark"?"light":c==="light"?"dark":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));
   });
 
-  /* ---------- reactive tone engine (mirrors desktop/src/pill/tone.ts) ---------- */
-  const RUDE = { tiny:["got it, got it.","okay, mapping it.","that it?"], short:["easy.","say less.","on it."],
-    medium:["okay you've got things to say.","alright, big thoughts."],
-    long:["damn, you're yapping a lot.","you forgot how to type or something?"],
-    epic:["oh my gosh bro… am I your only friend?","hell of a monologue."] };
-  const RUDE_CLEAN = { ...RUDE, long:["dang, you're yapping a lot.","you forgot how to type or something?"],
-    epic:["oh my gosh… am I your only friend?","heck of a monologue."] };
-  const FRIENDLY = { tiny:["got it!","on it.","okay!"], short:["nice, got that.","you got it."],
-    medium:["ooh, you've got a lot to say.","love the detail."],
-    long:["wow, lots to work with — love it.","you're on a roll!"],
-    epic:["okay that's a whole story — I'm here for it.","you have SO much to say!"] };
-  const ROSE = { tiny:["mm, got it 🌹","of course."], short:["sweet, got that.","anything for you."],
-    medium:["ooh, tell me more.","I love hearing you talk."],
-    long:["you could talk to me all day 🌹","I hang on every word."],
-    epic:["never stop talking to me.","I'd listen to you forever 🌹"] };
-  const bucketFor = (w) => w<=5?"tiny":w<=20?"short":w<=60?"medium":w<=150?"long":"epic";
-  const tableFor = (tone,curse) => tone==="rude"?(curse?RUDE_CLEAN:RUDE):tone==="friendly"?FRIENDLY:tone==="rose"?ROSE:null;
-  const reactiveLine = (w,tone,curse,nonce=0) => {
-    const t = tableFor(tone,curse); if(!t) return "";
-    const opts = t[bucketFor(Math.max(0,Math.floor(w)))];
-    return opts[((nonce%opts.length)+opts.length)%opts.length];
+  /* ---- reactive tone engine (mirrors desktop/src/pill/tone.ts) ---- */
+  const RUDE={tiny:["got it, got it.","okay, mapping it.","that it?"],short:["easy.","say less.","on it."],medium:["okay you've got things to say.","alright, big thoughts."],long:["damn, you're yapping a lot.","you forgot how to type or something?"],epic:["oh my gosh bro… am I your only friend?","hell of a monologue."]};
+  const RUDE_CLEAN={...RUDE,long:["dang, you're yapping a lot.","you forgot how to type or something?"],epic:["oh my gosh… am I your only friend?","heck of a monologue."]};
+  const FRIENDLY={tiny:["got it!","on it.","okay!"],short:["nice, got that.","you got it."],medium:["ooh, you've got a lot to say.","love the detail."],long:["wow, lots to work with — love it.","you're on a roll!"],epic:["okay that's a whole story — I'm here for it.","you have SO much to say!"]};
+  const ROSE={tiny:["mm, got it 🌹","of course."],short:["sweet, got that.","anything for you."],medium:["ooh, tell me more.","I love hearing you talk."],long:["you could talk to me all day 🌹","I hang on every word."],epic:["never stop talking to me.","I'd listen to you forever 🌹"]};
+  const bucketFor=(w)=>w<=5?"tiny":w<=20?"short":w<=60?"medium":w<=150?"long":"epic";
+  const tableFor=(t,c)=>t==="rude"?(c?RUDE_CLEAN:RUDE):t==="friendly"?FRIENDLY:t==="rose"?ROSE:null;
+  const reactiveLine=(w,t,c,n=0)=>{const tb=tableFor(t,c);if(!tb)return"";const o=tb[bucketFor(Math.max(0,Math.floor(w)))];return o[((n%o.length)+o.length)%o.length];};
+
+  /* ---- 3D hinge-tree origami folder ---------------------------------------
+     A crease pattern = flat facets in the z=0 plane joined by crease edges.
+     Each facet folds about its crease by a dihedral angle (scaled by t). We walk
+     the tree: root stays flat, each child = parent's placement then a rotation
+     about the shared crease. Fold back = same t reversed → bit-exact.          */
+  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const norm=(a)=>{const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l];};
+  // rotate point p about axis k (unit) through origin A by angle th (Rodrigues)
+  function rotAbout(p,A,k,th){
+    const v=sub(p,A), c=Math.cos(th), s=Math.sin(th);
+    const kv=cross(k,v), kk=dot(k,v);
+    const r=[ v[0]*c+kv[0]*s+k[0]*kk*(1-c),
+              v[1]*c+kv[1]*s+k[1]*kk*(1-c),
+              v[2]*c+kv[2]*s+k[2]*kk*(1-c) ];
+    return add(r,A);
+  }
+  // A pet = { verts:[[x,y]], facets:[{poly:[vi], parent, crease:[vi,vi], dih}], color, accent }
+  // parent=-1 → root. dih is the folded dihedral (radians); multiplied by t.
+  function P(x,y){return [x,y];}
+  const PETS = {
+    crane: {
+      accent:"351 95% 71%", tint:[245,245,247],
+      verts:[
+        P(-0.15,0.16),P(0.9,0.11),P(0.9,-0.11),P(-0.15,-0.16), // body 0-3
+        P(0.42,1.18),   // Lwing tip 4
+        P(0.42,-1.18),  // Rwing tip 5
+        P(-1.05,0.30),  // neck tip 6
+        P(1.62,0.34),   // tail tip 7
+        P(-1.02,0.14),P(-1.02,0.46), // mouth hinge 8,9
+        P(-1.62,0.40),  // upper beak 10
+        P(-1.62,0.20),  // lower beak 11
+      ],
+      facets:[
+        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},        // body (root)
+        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.15},        // left wing (up)
+        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.15},       // right wing (up, other side)
+        {poly:[0,3,6],parent:0,crease:[0,3],dih:0.95},        // neck (up-forward)
+        {poly:[1,2,7],parent:0,crease:[1,2],dih:0.8},         // tail (up-back)
+        {poly:[8,9,10],parent:3,crease:[8,9],dih:0.55},       // upper beak (mouth)
+        {poly:[8,9,11],parent:3,crease:[8,9],dih:-0.55},      // lower beak (mouth)
+      ],
+      mouthFacets:[5,6], // indices whose dih is modulated by voice
+    },
+    fox: {
+      accent:"25 95% 60%", tint:[240,150,70],
+      verts:[
+        P(-0.2,0.2),P(0.85,0.14),P(0.85,-0.14),P(-0.2,-0.2), // face 0-3
+        P(0.55,0.95),  // left ear 4
+        P(0.55,-0.95), // right ear 5
+        P(-1.1,0.0),   // snout 6
+        P(0.95,0.0),   // back 7
+        P(-1.0,0.12),P(-1.0,-0.12), // mouth hinge 8,9
+        P(-1.55,0.22), // upper jaw 10
+        P(-1.55,-0.02),// lower jaw 11
+      ],
+      facets:[
+        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},
+        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.35},   // ear
+        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.35},  // ear
+        {poly:[0,3,6],parent:0,crease:[0,3],dih:0.7},    // snout
+        {poly:[1,2,7],parent:0,crease:[1,2],dih:0.5},    // back
+        {poly:[8,9,10],parent:3,crease:[8,9],dih:0.5},
+        {poly:[8,9,11],parent:3,crease:[8,9],dih:-0.5},
+      ],
+      mouthFacets:[5,6],
+    },
+    frog: {
+      accent:"140 65% 52%", tint:[90,200,120],
+      verts:[
+        P(-0.3,0.35),P(0.7,0.25),P(0.7,-0.25),P(-0.3,-0.35), // body 0-3
+        P(0.2,1.0),   // left leg 4
+        P(0.2,-1.0),  // right leg 5
+        P(-1.0,0.28), // left eye/mouth 6
+        P(-1.0,-0.28),// right eye 7
+        P(-0.55,0.1),P(-0.55,-0.1), // mouth hinge 8,9
+        P(-1.25,0.16),// upper 10
+        P(-1.25,-0.16),//lower 11
+      ],
+      facets:[
+        {poly:[0,1,2,3],parent:-1,crease:null,dih:0},
+        {poly:[0,1,4],parent:0,crease:[0,1],dih:1.5},  // leg
+        {poly:[3,2,5],parent:0,crease:[3,2],dih:-1.5}, // leg
+        {poly:[0,3,6,7],parent:0,crease:[0,3],dih:0.65},// head
+        {poly:[8,9,10],parent:0,crease:[8,9],dih:0.6},
+        {poly:[8,9,11],parent:0,crease:[8,9],dih:-0.6},
+      ],
+      mouthFacets:[4,5],
+    },
   };
 
-  /* ---------- state ---------- */
-  const S = { state:"idle", words:32, tone:"friendly", curse:true, nonce:0, foldTarget:0, fold:0 };
-  const accents = { idle:"var(--rose)", listening:"var(--rose)", thinking:"var(--amber)", done:"var(--green)" };
-  const pill = $("#pill"), stage = $("#stage"), sayEl = $("#say");
-
-  // build waveform bars
-  const wave = $("#wave");
-  for (let i=0;i<9;i++){ wave.appendChild(document.createElement("i")); }
-  const bars = [...wave.children];
-
-  function setAccent() {
-    const a = accents[S.state] || "var(--rose)";
-    stage.style.setProperty("--accent", getComputedStyle(document.documentElement).getPropertyValue(
-      a==="var(--rose)"?"--rose":a==="var(--amber)"?"--amber":"--green"));
-  }
-
-  function applyState() {
-    S.foldTarget = (S.state==="idle") ? 0 : 1;
-    pill.className = "pill" + (S.state!=="idle" ? " active" : "") +
-      (S.state==="listening"?" listening":"") + (S.state==="thinking"?" thinking":"") +
-      (S.state==="done"?" done":"");
-    $("#stateName").textContent = S.state;
-    setAccent();
-    if (S.state==="done") {
-      const line = reactiveLine(S.words, S.tone, S.curse, S.nonce);
-      sayEl.textContent = line;
-      sayEl.classList.toggle("show", !!line);
-    } else {
-      sayEl.classList.remove("show");
+  // Fold a pet at parameter t (0 flat → 1 folded) with a mouth-open amount 0..1.
+  // Returns facet polygons as arrays of 3D points, plus the crease segments.
+  function foldPet(pet, t, mouthOpen){
+    const flat3 = pet.verts.map(v=>[v[0],v[1],0]);
+    const xf = new Array(pet.facets.length); // per-facet transform: flatPoint3 -> world3
+    xf[0] = (p)=>p; // root identity
+    // BFS by parent order (facets authored parent-before-child)
+    for (let i=1;i<pet.facets.length;i++){
+      const f=pet.facets[i], par=xf[f.parent];
+      const A=par(flat3[f.crease[0]]), B=par(flat3[f.crease[1]]);
+      const k=norm(sub(B,A));
+      let dih=f.dih*t;
+      if (pet.mouthFacets.includes(i)) dih = f.dih*(t) + Math.sign(f.dih)*mouthOpen*0.5*t;
+      xf[i]=(p)=>rotAbout(par(p),A,k,dih);
     }
-    document.querySelectorAll("[data-state]").forEach(b =>
-      b.setAttribute("aria-pressed", String(b.dataset.state===S.state)));
-    updateMetric();
-  }
-  function updateMetric() {
-    $("#wc").textContent = S.words;
-    // playful "wpm": assume ~2.6 words/sec speaking, clamp like the real engine (≤400)
-    $("#wpm").textContent = S.state==="done" ? Math.min(400, Math.round(S.words / (S.words/2.6) * 60)) : "—";
-  }
-
-  /* ---------- origami crane fold (Canvas2D, one eased scalar; reverse = exact) ---------- */
-  const cv = $("#fold"), ctx = cv.getContext("2d");
-  const DPR = Math.min(devicePixelRatio||1, 2);
-  cv.width = 520*DPR; cv.height = 240*DPR; ctx.scale(DPR,DPR);
-  const W=520, H=240, CX=W/2, CY=H*0.52;
-
-  // points: open silhouette of a stylized crane, and their folded (collapsed) targets.
-  // order = when in the 0..1 sweep this point opens (stagger → paper "unfurling").
-  const P = (ox,oy,fx,fy,order)=>({o:[ox,oy],f:[fx,fy],order});
-  const pts = {
-    neck:  P(CX-92, CY-70, CX,     CY-6,  .55),
-    beak:  P(CX-118,CY-58, CX,     CY-4,  .70),
-    tail:  P(CX+96, CY-40, CX,     CY-2,  .55),
-    lwing: P(CX-96, CY+30, CX-10,  CY+4,  .15),
-    rwing: P(CX+96, CY+30, CX+10,  CY+4,  .15),
-    lwtip: P(CX-40, CY+64, CX-6,   CY+20, .35),
-    rwtip: P(CX+40, CY+64, CX+6,   CY+20, .35),
-    body:  P(CX,    CY+40, CX,     CY+18, .0),
-    crown: P(CX,    CY-30, CX,     CY-2,  .0),
-  };
-  const ease = (t)=> t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
-  function pos(pt, t) {
-    // local progress: point starts folding/unfolding at `order`, finishes at 1
-    const span = 1 - pt.order;
-    const lp = span<=0 ? 1 : Math.max(0, Math.min(1, (t - pt.order)/span));
-    const e = ease(lp);
-    return [ pt.f[0] + (pt.o[0]-pt.f[0])*e, pt.f[1] + (pt.o[1]-pt.f[1])*e ];
-  }
-  // facets (triangles) — filled paper, shaded by how "open" they are
-  const facets = [
-    ["crown","neck","body"], ["neck","beak","body"],
-    ["crown","body","tail"],
-    ["body","lwing","lwtip"], ["body","lwtip","crown"],
-    ["body","rwing","rwtip"], ["body","rwtip","crown"],
-  ];
-  function draw() {
-    ctx.clearRect(0,0,W,H);
-    const t = S.fold;
-    // accent glow behind, intensity by openness
-    const accHsl = S.state==="thinking" ? "38 92% 55%" : S.state==="done" ? "152 69% 52%" : "351 95% 71%";
-    if (t>0.02) {
-      const g = ctx.createRadialGradient(CX,CY,4, CX,CY,120);
-      g.addColorStop(0, `hsla(${accHsl}, ${0.18*t})`);
-      g.addColorStop(1, "hsla(0,0%,0%,0)");
-      ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    const polys=pet.facets.map((f,i)=>({verts:f.poly.map(vi=>xf[i](flat3[vi])), fi:i}));
+    // crease segments (each facet's crease edge, in world) for line drawing
+    const creases=[];
+    for (let i=1;i<pet.facets.length;i++){
+      const f=pet.facets[i];
+      const a=xf[f.parent](flat3[f.crease[0]]), b=xf[f.parent](flat3[f.crease[1]]);
+      creases.push({a,b, valley:f.dih<0});
     }
-    const V = {}; for (const k in pts) V[k] = pos(pts[k], t);
-    // facets
-    for (const [a,b,c] of facets) {
-      const A=V[a],B=V[b],C=V[c];
-      // pseudo fold-shading: area vs open area → darker when folded
-      ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.lineTo(C[0],C[1]); ctx.closePath();
-      const light = 0.62 + 0.34*t;            // paper brightens as it opens
-      ctx.fillStyle = `rgba(245,245,247,${(0.10 + 0.82*t)*light})`;
+    return {polys, creases};
+  }
+
+  /* ---- render ---- */
+  const cv=$("#fold"), ctx=cv.getContext("2d");
+  let W=0,H=0,DPR=Math.min(devicePixelRatio||1,2);
+  function resize(){ const r=cv.getBoundingClientRect(); W=r.width; H=r.height; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+  new ResizeObserver(resize).observe(cv); resize();
+
+  const TILT=0.62;                      // camera pitch so folds read as 3D
+  function project(p3){                  // rotate about world X by TILT, orthographic
+    const cy=Math.cos(TILT), sy=Math.sin(TILT);
+    const y=p3[1]*cy - p3[2]*sy, z=p3[1]*sy + p3[2]*cy;
+    return {x:p3[0], y, depth:z};
+  }
+  const light=norm([0.35,0.55,0.75]);
+
+  function drawPet(pet, t, mouthOpen){
+    const {polys, creases}=foldPet(pet, t, mouthOpen);
+    const scale=Math.min(W,H)*0.30;
+    const cx=W/2, cyc=H*0.46;
+    const toScreen=(p3)=>{const pr=project(p3); return [cx+pr.x*scale, cyc-pr.y*scale, pr.depth];};
+    // accent glow
+    if (t>0.02){ const g=ctx.createRadialGradient(cx,cyc,6,cx,cyc,scale*2.4); g.addColorStop(0,`hsla(${pet.accent}, ${0.16*t})`); g.addColorStop(1,"hsla(0,0%,0%,0)"); ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+    // painter-sort facets by mean depth (far first)
+    const items=polys.map(pl=>{ const s=pl.verts.map(toScreen); const d=s.reduce((a,p)=>a+p[2],0)/s.length; return {s, d, fi:pl.fi, world:pl.verts}; });
+    items.sort((a,b)=>a.d-b.d);
+    for (const it of items){
+      // facet normal (world) for shading
+      const [A,B,C]=it.world;
+      const n=norm(cross(sub(B,A),sub(C,A)));
+      const lam=Math.abs(dot(n,light));
+      const bright=(0.5+0.5*lam);
+      const [r,gr,b]=pet.tint;
+      const alpha=(0.12+0.80*t);
+      ctx.beginPath(); it.s.forEach((p,i)=> i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.closePath();
+      ctx.fillStyle=`rgba(${Math.round(r*bright)},${Math.round(gr*bright)},${Math.round(b*bright)},${alpha})`;
       ctx.fill();
-      // crease lines
-      ctx.strokeStyle = `hsla(${accHsl}, ${0.10+0.22*t})`;
-      ctx.lineWidth = 0.8; ctx.stroke();
+      ctx.lineWidth=0.6; ctx.strokeStyle=`rgba(0,0,0,${0.10*t})`; ctx.stroke();
     }
-    // outline
-    ctx.beginPath();
-    const ring = ["beak","neck","crown","tail","rwing","rwtip","body","lwtip","lwing"];
-    ring.forEach((k,i)=>{ const p=V[k]; i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); });
-    ctx.closePath();
-    ctx.strokeStyle = `rgba(245,245,247,${0.15+0.55*t})`; ctx.lineWidth = 1.1; ctx.stroke();
+    // crease lines (mountain solid / valley dashed) — bold when flat
+    const creaseA=0.25+0.55*(1-t)+0.12*t;
+    for (const cr of creases){
+      const a=toScreen(cr.a), b=toScreen(cr.b);
+      ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]);
+      ctx.lineWidth=1.1;
+      ctx.setLineDash(cr.valley?[4,3]:[]);
+      ctx.strokeStyle=`hsla(${cr.valley?getVar('--valley'):getVar('--mountain')}, ${creaseA})`;
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    return {cx, cyc, scale};
   }
+  function getVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
-  /* ---------- animation loop ---------- */
-  let raf=0, last=0;
+  /* ---- state + loop ---- */
+  const S={state:"idle", pet:"crane", words:32, tone:"friendly", curse:true, nonce:0, t:0, tTarget:0, mouth:0, mic:null};
+  const accents={idle:"--rose",listening:"--rose",thinking:"--amber",done:"--green"};
+  const stage=$("#stage"), sayEl=$("#say"), capsule=$("#capsule");
+  function setAccent(){ stage.style.setProperty("--accent", getVar(accents[S.state]||"--rose")); }
+  function applyState(){
+    S.tTarget=(S.state==="idle")?0:1;
+    capsule.style.opacity = S.state==="idle" ? "1":"0";
+    $("#stateName").textContent=S.state; setAccent();
+    if(S.state==="done"){ const l=reactiveLine(S.words,S.tone,S.curse,S.nonce); sayEl.textContent=l; sayEl.classList.toggle("show",!!l); }
+    else sayEl.classList.remove("show");
+    document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.state===S.state)));
+    $("#wc").textContent=S.words;
+    $("#wpm").textContent=S.state==="done"?Math.min(400,Math.round(2.6*60)):"—";
+  }
+  // synthesized speech envelope (syllabic) for the mouth when not using real mic
+  function speechEnv(ts){
+    const syl=Math.max(0,Math.sin(ts*0.013))*Math.max(0,Math.sin(ts*0.031+1))*0.9;
+    const flutter=0.35*(0.5+0.5*Math.sin(ts*0.06));
+    return Math.min(1,(syl+flutter*syl));
+  }
+  let raf=0,last=0;
   function loop(ts){
-    if(!last) last=ts; const dt=(ts-last)/1000; last=ts;
-    // ease fold toward target
-    const speed = 2.7; // ~0.37s
-    if (Math.abs(S.fold - S.foldTarget) > 0.001) {
-      S.fold += Math.sign(S.foldTarget - S.fold) * Math.min(Math.abs(S.foldTarget-S.fold), speed*dt);
-    } else S.fold = S.foldTarget;
-    // waveform while listening/thinking
-    if (S.state==="listening" || S.state==="thinking") {
-      const base = S.state==="thinking" ? 0.35 : 0.9;
-      bars.forEach((b,i)=>{
-        const n = reduce ? 0.4 : (0.4 + 0.6*Math.abs(Math.sin(ts/180 + i*0.7))) * base;
-        b.style.height = (4 + n*16) + "px";
-        b.style.background = `hsl(${S.state==="thinking"?"38 92% 55%":"351 95% 71%"} / .9)`;
-      });
+    if(!last)last=ts; const dt=Math.min(0.05,(ts-last)/1000); last=ts;
+    S.t += Math.sign(S.tTarget-S.t)*Math.min(Math.abs(S.tTarget-S.t), 2.8*dt);
+    // mouth target
+    let mt=0;
+    if(S.state==="listening"||S.state==="thinking"){
+      if(S.mic){ mt=S.mic(); } else { mt=reduce?0.3:speechEnv(ts)*(S.state==="thinking"?0.5:1); }
     }
-    draw();
-    raf = requestAnimationFrame(loop);
+    S.mouth += (mt-S.mouth)*0.35;
+    ctx.clearRect(0,0,W,H);
+    drawPet(PETS[S.pet], S.t, S.mouth);
+    raf=requestAnimationFrame(loop);
   }
-  raf = requestAnimationFrame(loop);
+  raf=requestAnimationFrame(loop);
 
-  /* ---------- controls ---------- */
-  function setState(s){ S.state=s; if(s==="done") S.nonce++; applyState(); }
-  document.querySelectorAll("[data-state]").forEach(b => b.addEventListener("click", ()=> setState(b.dataset.state)));
-
-  const words = $("#words");
-  words.addEventListener("input", ()=>{ S.words=+words.value; $("#wcLabel").textContent=words.value; refreshPreview(); if(S.state==="done") applyState(); });
-
-  document.querySelectorAll("[data-tone]").forEach(b => b.addEventListener("click", ()=>{
-    S.tone=b.dataset.tone;
-    document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed", String(x===b)));
-    refreshPreview(); if(S.state==="done") applyState();
+  /* ---- controls ---- */
+  const setState=(s)=>{ S.state=s; if(s==="done")S.nonce++; applyState(); };
+  document.querySelectorAll("[data-state]").forEach(b=>b.addEventListener("click",()=>setState(b.dataset.state)));
+  document.querySelectorAll("[data-pet]").forEach(b=>b.addEventListener("click",()=>{
+    S.pet=b.dataset.pet; document.querySelectorAll("[data-pet]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));
   }));
-  $("#curse").addEventListener("change", e=>{ S.curse=e.target.checked; refreshPreview(); if(S.state==="done") applyState(); });
+  const words=$("#words"); words.addEventListener("input",()=>{ S.words=+words.value; $("#wcLabel").textContent=words.value; refreshPreview(); if(S.state==="done")applyState(); });
+  document.querySelectorAll("[data-tone]").forEach(b=>b.addEventListener("click",()=>{ S.tone=b.dataset.tone; document.querySelectorAll("[data-tone]").forEach(x=>x.setAttribute("aria-pressed",String(x===b))); refreshPreview(); if(S.state==="done")applyState(); }));
+  $("#curse").addEventListener("change",e=>{ S.curse=e.target.checked; refreshPreview(); if(S.state==="done")applyState(); });
+  function refreshPreview(){ $("#bkName").textContent=bucketFor(S.words); $("#toneName").textContent=S.tone; const l=reactiveLine(S.words,S.tone,S.curse,S.nonce); $("#previewLine").textContent=l||"— (pill stays silent)"; }
 
-  function refreshPreview(){
-    $("#bkName").textContent = bucketFor(S.words);
-    $("#toneName").textContent = S.tone;
-    const ln = reactiveLine(S.words, S.tone, S.curse, S.nonce);
-    $("#previewLine").textContent = ln || "— (pill stays silent)";
-  }
-
-  const dictateBtn = $("#dictateBtn");
   let seq=null;
-  dictateBtn.addEventListener("click", ()=>{
-    if(seq) return;
-    dictateBtn.disabled = true;
-    setState("listening");
-    const steps = [ [1600,"thinking"], [1100,"done"], [2400,"idle"] ];
-    let i=0;
-    const run = ()=>{
-      if(i>=steps.length){ seq=null; dictateBtn.disabled=false; return; }
-      const [ms,next]=steps[i++]; seq=setTimeout(()=>{ setState(next); run(); }, ms);
-    };
-    run();
+  $("#dictateBtn").addEventListener("click",()=>{ if(seq)return; const btn=$("#dictateBtn"); btn.disabled=true; setState("listening");
+    const steps=[[1800,"thinking"],[1100,"done"],[2600,"idle"]]; let i=0;
+    const run=()=>{ if(i>=steps.length){seq=null;btn.disabled=false;return;} const [ms,nx]=steps[i++]; seq=setTimeout(()=>{setState(nx);run();},ms); }; run();
+  });
+  // real microphone → mouth
+  $("#micBtn").addEventListener("click", async ()=>{
+    if(S.mic){ return; }
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      const ac=new (window.AudioContext||window.webkitAudioContext)();
+      const src=ac.createMediaStreamSource(stream); const an=ac.createAnalyser(); an.fftSize=512; src.connect(an);
+      const buf=new Uint8Array(an.fftSize);
+      S.mic=()=>{ an.getByteTimeDomainData(buf); let s=0; for(let i=0;i<buf.length;i++){const v=(buf[i]-128)/128; s+=v*v;} const rms=Math.sqrt(s/buf.length); return Math.min(1, rms*4.5); };
+      $("#micBtn").textContent="🎤 live"; setState("listening");
+    }catch(e){ $("#micBtn").textContent="🎤 blocked"; }
   });
 
-  /* ---------- init ---------- */
   applyState(); refreshPreview();
 })();
 </script>
