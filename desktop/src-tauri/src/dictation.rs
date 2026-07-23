@@ -99,6 +99,151 @@ pub fn should_format(mode: DictationMode) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Cleanup pipeline (YV10) — the Wispr-style "polish" pass, architecture only.
+//
+// Wispr Flow is not a better transcriber; it's ASR + a fine-tuned "cleanup" LLM
+// second pass fed rich context (see docs/research/wispr-parity.md §0-1). This
+// module lays that architecture WITHOUT downloading a model: an ordered stage
+// pipeline gated by an Auto-Cleanup level, with the LLM stage present as a
+// guarded NO-OP stub that falls back to its input. Every stage is guarded so a
+// non-empty transcript can never become empty ("never lose text").
+// ---------------------------------------------------------------------------
+
+/// Auto-Cleanup intensity — Wispr Flow parity (Settings → Style → Auto Cleanup:
+/// None / Light / Medium / High). Gates which pipeline stages run. `None` is a
+/// pure raw passthrough (nothing is applied — the raw transcript is returned
+/// verbatim); higher levels enable progressively more of the pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupLevel {
+    /// Raw passthrough — no cleanup at all.
+    None,
+    /// Dictionary/vocabulary replacement + backtrack (filler + self-correction).
+    Light,
+    /// Light + smart formatting (list detection, etc.).
+    Medium,
+    /// Medium + the local-LLM polish stage.
+    High,
+}
+
+impl CleanupLevel {
+    /// Parse the `cleanup_level` setting. Unknown/empty values fall back to the
+    /// default (`Light`), mirroring the Settings picker: `none | light | medium | high`.
+    pub fn from_setting(setting: &str) -> Self {
+        match setting.trim().to_lowercase().as_str() {
+            "none" => CleanupLevel::None,
+            "medium" => CleanupLevel::Medium,
+            "high" => CleanupLevel::High,
+            _ => CleanupLevel::Light,
+        }
+    }
+
+    /// Vocabulary/dictionary replacement runs at every level except `None`.
+    fn runs_dictionary(self) -> bool {
+        self != CleanupLevel::None
+    }
+    /// Backtrack (filler removal + spoken self-correction) runs from `Light` up.
+    fn runs_backtrack(self) -> bool {
+        matches!(self, CleanupLevel::Light | CleanupLevel::Medium | CleanupLevel::High)
+    }
+    /// Smart formatting (list detection) runs from `Medium` up.
+    fn runs_format(self) -> bool {
+        matches!(self, CleanupLevel::Medium | CleanupLevel::High)
+    }
+    /// The local-LLM polish stage runs only at `High`.
+    fn runs_llm(self) -> bool {
+        self == CleanupLevel::High
+    }
+}
+
+/// LLM polish stage — **guarded NO-OP STUB** (YV10 architecture only).
+///
+/// The eventual implementation will call a small local instruct model (MLX-LM;
+/// Qwen2.5-1.5B/3B-Instruct or Llama-3.2-3B-Instruct, 4-bit) to "recreate exactly
+/// what the user would have typed" — Wispr Flow's second pass (see
+/// docs/research/wispr-parity.md §1, P0). Downloading/wiring that model is a
+/// later runtime setup step; **no model is fetched here**.
+///
+/// Contract for the future implementation: it MUST be fallible and map any
+/// error/timeout to `None` so [`run_cleanup`] falls back to its input — and it
+/// must NEVER return `Some("")`. Returning `None` today makes the stage a safe
+/// no-op that leaves the transcript untouched.
+pub fn polish_llm(_text: &str) -> Option<String> {
+    // No local model yet → no-op. When wired: run inference under a timeout and
+    // return `None` on any failure so the pipeline keeps the input text.
+    None
+}
+
+/// Run the ordered cleanup pipeline over a raw transcript.
+///
+/// Stages, in order (each gated by `level`, each guarded so it can never empty a
+/// non-empty transcript):
+///   1. `apply_dictionary` — user vocabulary/replacement (supplied as a closure so
+///      this stays pure/testable; production passes `Database::apply_dictionary`).
+///   2. backtrack cleanup — [`clean_backtrack`] (fillers + spoken self-corrections).
+///   3. `format_dictation` — smart formatting (list detection), respecting `mode`.
+///   4. LLM polish — `polish` (production passes [`polish_llm`], a guarded no-op stub
+///      that falls back to the input on any error/timeout).
+///
+/// `level == None` short-circuits to a verbatim raw passthrough.
+pub fn run_cleanup<D, P>(
+    raw: &str,
+    level: CleanupLevel,
+    mode: DictationMode,
+    apply_dictionary: D,
+    polish: P,
+) -> String
+where
+    D: Fn(&str) -> String,
+    P: Fn(&str) -> Option<String>,
+{
+    // `None` = raw passthrough: return the transcript exactly as dictated.
+    if level == CleanupLevel::None {
+        return raw.to_string();
+    }
+
+    // Guarded assignment: only accept a stage's output when it's non-empty, so
+    // no stage can ever erase a non-empty transcript.
+    let mut text = raw.to_string();
+
+    // Stage 1 — dictionary/vocabulary replacement.
+    if level.runs_dictionary() {
+        let out = apply_dictionary(&text);
+        if !out.trim().is_empty() {
+            text = out;
+        }
+    }
+    // Stage 2 — backtrack cleanup (fillers + self-correction).
+    if level.runs_backtrack() {
+        let out = clean_backtrack(&text);
+        if !out.trim().is_empty() {
+            text = out;
+        }
+    }
+    // Stage 3 — smart formatting. `format_dictation` also runs a backtrack pass
+    // internally, so at Medium/High the standalone Stage 2 above is idempotent.
+    if level.runs_format() && should_format(mode) {
+        let out = format_dictation(&text);
+        if !out.trim().is_empty() {
+            text = out;
+        }
+    }
+    // Stage 4 — local-LLM polish (guarded). `None`/empty ⇒ keep current text.
+    if level.runs_llm() {
+        if let Some(out) = polish(&text) {
+            if !out.trim().is_empty() {
+                text = out;
+            }
+        }
+    }
+
+    // Final "never lose text" backstop.
+    if text.trim().is_empty() && !raw.trim().is_empty() {
+        return raw.to_string();
+    }
+    text
+}
+
+// ---------------------------------------------------------------------------
 // Backtrack v1 (YV6) — rule-based filler + self-correction cleanup (on-device).
 //
 // A conservative, PURE first pass that mirrors Wispr Flow's "Backtrack" for the
@@ -539,5 +684,99 @@ mod tests {
         assert_eq!(pipeline_format("plain", "Obsidian", raw), raw);
         // Guard: non-empty input never yields empty output.
         assert!(!pipeline_format("notes", "Obsidian", "hello world").is_empty());
+    }
+
+    // --- Cleanup pipeline (YV10) -----------------------------------------
+
+    /// Identity dictionary stage (no vocabulary changes) for pipeline tests.
+    fn no_dict(t: &str) -> String {
+        t.to_string()
+    }
+
+    #[test]
+    fn cleanup_level_parses_with_light_default() {
+        assert_eq!(CleanupLevel::from_setting("none"), CleanupLevel::None);
+        assert_eq!(CleanupLevel::from_setting("light"), CleanupLevel::Light);
+        assert_eq!(CleanupLevel::from_setting("MEDIUM"), CleanupLevel::Medium);
+        assert_eq!(CleanupLevel::from_setting("High"), CleanupLevel::High);
+        // Unknown/empty values fall back to the default (Light).
+        assert_eq!(CleanupLevel::from_setting(""), CleanupLevel::Light);
+        assert_eq!(CleanupLevel::from_setting("bogus"), CleanupLevel::Light);
+    }
+
+    #[test]
+    fn cleanup_level_none_returns_raw_unchanged() {
+        // Even with a dictionary that WOULD rewrite the text and an LLM stub that
+        // WOULD replace it, `None` short-circuits to a verbatim raw passthrough.
+        let raw = "um first, buy milk, second, buy eggs";
+        let out = run_cleanup(
+            raw,
+            CleanupLevel::None,
+            DictationMode::Notes,
+            |_t| "REWRITTEN".to_string(),
+            |_t| Some("POLISHED".to_string()),
+        );
+        assert_eq!(out, raw);
+    }
+
+    #[test]
+    fn cleanup_pipeline_runs_stages_in_order() {
+        use std::cell::RefCell;
+        // Record the ORDER of the two closure-backed stages (dictionary, LLM).
+        // The two pure middle stages (backtrack, format) are proven to have run,
+        // in position, by their visible effect on the output.
+        let order = RefCell::new(Vec::<&'static str>::new());
+        let dict = |t: &str| {
+            order.borrow_mut().push("dictionary");
+            // Vocabulary fix that only the FIRST stage could apply.
+            t.replace("Drivea", "Drivia")
+        };
+        let llm = |t: &str| {
+            order.borrow_mut().push("llm");
+            Some(t.to_string())
+        };
+        // Raw has: a dictionary miss (Drivea), a filler (um), and list intent.
+        let raw = "um first, ship Drivea, second, buy eggs";
+        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, dict, llm);
+
+        // Dictionary ran before the LLM stage (stages 1 → 4 ordering).
+        assert_eq!(*order.borrow(), vec!["dictionary", "llm"]);
+        // Stage 1 (dictionary) applied: "Drivea" → "Drivia".
+        assert!(out.contains("Drivia"), "dictionary stage output missing: {out}");
+        // Stage 2 (backtrack) applied: the "um" filler is gone.
+        assert!(!out.contains("um "), "backtrack stage did not run: {out}");
+        // Stage 3 (format) applied: enumerated list intent became a numbered list.
+        assert_eq!(out, "1. Ship Drivia\n2. Buy eggs");
+    }
+
+    #[test]
+    fn cleanup_level_gates_which_stages_run() {
+        let raw = "um first, buy milk, second, buy eggs";
+        // Light: backtrack runs (filler removed) but NOT list formatting.
+        let light = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        assert_eq!(light, "first, buy milk, second, buy eggs");
+        // Medium: formatting also runs → numbered list.
+        let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, polish_llm);
+        assert_eq!(medium, "1. Buy milk\n2. Buy eggs");
+    }
+
+    #[test]
+    fn llm_polish_stub_is_a_guarded_noop() {
+        // The stub never rewrites text today.
+        assert_eq!(polish_llm("hello world"), None);
+        // A failing/empty LLM result must never lose text: High level with a stub
+        // that returns None keeps the pre-LLM (formatted) result.
+        let raw = "first, buy milk, second, buy eggs";
+        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, polish_llm);
+        assert_eq!(out, "1. Buy milk\n2. Buy eggs");
+        // An LLM stage that erroneously returns empty is ignored (guarded).
+        let out2 = run_cleanup(
+            raw,
+            CleanupLevel::High,
+            DictationMode::Notes,
+            no_dict,
+            |_t| Some("   ".to_string()),
+        );
+        assert_eq!(out2, "1. Buy milk\n2. Buy eggs");
     }
 }
