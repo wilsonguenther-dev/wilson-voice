@@ -57,6 +57,14 @@ pub struct AppSettings {
     /// "auto" infers the mode from the frontmost app; any other value forces it.
     #[serde(default = "default_dictation_mode")]
     pub dictation_mode: String,
+    /// First-run onboarding completed (YV9). While false the UI shows the
+    /// welcome → permissions → voice-calibration flow; set true on finish.
+    #[serde(default)]
+    pub onboarded: bool,
+    /// Calibration phrase captured during onboarding, kept for later
+    /// personalization (initial_prompt biasing / future voice adaptation).
+    #[serde(default)]
+    pub calibration_sample: Option<String>,
 }
 
 fn default_speed_profile() -> String {
@@ -90,6 +98,8 @@ impl Default for AppSettings {
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
             dictation_mode: "auto".into(),
+            onboarded: false,
+            calibration_sample: None,
         }
     }
 }
@@ -977,4 +987,41 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    // YV9: onboarding gate must default to false so a fresh install shows the
+    // first-run flow, and older settings.json (written before the field existed)
+    // must deserialize with onboarded=false via serde default — never panic.
+    #[test]
+    fn onboarded_defaults_false_and_is_backward_compatible() {
+        assert!(!AppSettings::default().onboarded);
+        assert!(AppSettings::default().calibration_sample.is_none());
+
+        // Legacy settings JSON with no `onboarded` / `calibrationSample` keys.
+        let legacy = r#"{
+            "model": "mlx-community/whisper-large-v3-turbo",
+            "language": "en",
+            "autoPaste": true,
+            "hotkeyLabel": "fn⌃",
+            "showFloatingPill": true
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(!parsed.onboarded);
+        assert!(parsed.calibration_sample.is_none());
+
+        // A finished onboarding round-trips (camelCase key on the wire).
+        let mut done = AppSettings::default();
+        done.onboarded = true;
+        done.calibration_sample = Some("the quick brown fox".into());
+        let json = serde_json::to_string(&done).expect("serialize");
+        assert!(json.contains("\"onboarded\":true"));
+        assert!(json.contains("\"calibrationSample\":\"the quick brown fox\""));
+        let back: AppSettings = serde_json::from_str(&json).expect("round-trip");
+        assert!(back.onboarded);
+        assert_eq!(back.calibration_sample.as_deref(), Some("the quick brown fox"));
+    }
 }
