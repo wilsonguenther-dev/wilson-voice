@@ -26,8 +26,12 @@
   framework's default URL/menu into output. Find the source: default Tauri app
   menu ("Learn More"→tauri.app), leftover template content in index.html, or a
   context-menu/clipboard path. This is embarrassing for an OSS release — must fix.
-- **Verify History / Scratchpad / Dictionary delete + copy actually work** end to
-  end (all IPC + imports + file structure).
+- ✅ **Verified: History / Scratchpad / Dictionary delete + copy work.** Audited the
+  full path — every command is registered, frontend invokes match names+args, the
+  clipboard plugin is initialized (`copy_entry` → clipboard-manager), and the toast
+  renders the raw message (the old "Error: Copied to clipboard" mislabel is gone;
+  it toasts "Copied"). Deletes update local state + refresh. Added a DB-layer proof
+  test (`delete_and_clear_actually_remove_rows`) covering all three surfaces.
 
 ## 2. Analytics — make the MATH extremely accurate (Wilson emphasized)
 - ✅ **DONE (branch `fix/analytics-accuracy`, commit 95e805c):** total words, avg

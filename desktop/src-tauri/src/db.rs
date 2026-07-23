@@ -1599,4 +1599,44 @@ mod tests {
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn delete_and_clear_actually_remove_rows() {
+        // Proves the History / Dictionary / Scratchpad delete+clear paths the UI
+        // calls really remove data (the §1 "verify delete works" item), at the DB
+        // layer we can test headlessly.
+        let (db, dir) = fresh_db("delete");
+
+        // History: delete one, then clear all.
+        let a = db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(4), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        assert_eq!(db.list_transcripts(50, None).unwrap().len(), 2);
+        db.delete_transcript(&a.id).unwrap();
+        let after = db.list_transcripts(50, None).unwrap();
+        assert_eq!(after.len(), 1, "delete_transcript did not remove the row");
+        assert!(!after.iter().any(|e| e.id == a.id), "deleted id still present");
+        db.clear_transcripts().unwrap();
+        assert_eq!(db.list_transcripts(50, None).unwrap().len(), 0, "clear_transcripts failed");
+
+        // Dictionary: add then delete by id.
+        let term = db.add_dictionary_term("Anthropic".into(), None).unwrap();
+        assert!(db.list_dictionary().unwrap().iter().any(|d| d.id == term.id));
+        db.delete_dictionary_term(&term.id).unwrap();
+        assert!(
+            !db.list_dictionary().unwrap().iter().any(|d| d.id == term.id),
+            "delete_dictionary_term did not remove the term"
+        );
+
+        // Scratchpad: save then delete by id.
+        let note = db.save_scratch(None, "Title".into(), "body".into()).unwrap();
+        assert!(db.list_scratch().unwrap().iter().any(|n| n.id == note.id));
+        db.delete_scratch(&note.id).unwrap();
+        assert!(
+            !db.list_scratch().unwrap().iter().any(|n| n.id == note.id),
+            "delete_scratch did not remove the note"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
