@@ -139,9 +139,7 @@ fn voiced_seconds_from_wav(path: &PathBuf) -> Option<f64> {
                 .map(|s| s as f32 * scale)
                 .collect()
         }
-        hound::SampleFormat::Float => {
-            reader.samples::<f32>().filter_map(|s| s.ok()).collect()
-        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
     };
     Some(voiced_seconds(&samples, spec.sample_rate))
 }
@@ -237,11 +235,7 @@ fn push_level(level: &LevelHandle, chunk: &[f32]) {
     }
 }
 
-fn record_loop(
-    wav_path: PathBuf,
-    stop: Arc<AtomicBool>,
-    level: LevelHandle,
-) -> Result<(), String> {
+fn record_loop(wav_path: PathBuf, stop: Arc<AtomicBool>, level: LevelHandle) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or_else(|| {
         "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.".to_string()
@@ -290,10 +284,8 @@ fn record_loop(
                 .build_input_stream(
                     conf.clone(),
                     move |data: &[i16], _| {
-                        let f: Vec<f32> = data
-                            .iter()
-                            .map(|&s| s as f32 / i16::MAX as f32)
-                            .collect();
+                        let f: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                         push_level(&level_cb, &f);
                         if let Ok(mut v) = samples_cb.lock() {
                             v.extend(f);
@@ -344,9 +336,7 @@ fn record_loop(
 
     let raw = samples.lock().map_err(|e| e.to_string())?.clone();
     if raw.is_empty() {
-        return Err(
-            "No samples captured. Enable Microphone for Yap in System Settings.".into(),
-        );
+        return Err("No samples captured. Enable Microphone for Yap in System Settings.".into());
     }
 
     let mono = if channels <= 1 {
@@ -357,6 +347,14 @@ fn record_loop(
             .map(|c| c.iter().sum::<f32>() / c.len() as f32)
             .collect()
     };
+    // Signal hygiene (Tier 0, docs/research/voice-isolation.md) — cheap pure DSP
+    // applied at the NATIVE rate BEFORE the 16 kHz downsample: kill sub-80 Hz
+    // rumble/hum, lift a quiet voice toward a consistent level (peak-limited, no
+    // clipping), then de-click the PTT press/release edges. Each stage returns
+    // its input unchanged on degenerate audio, so a bad clip never NaNs the path.
+    let mono = high_pass(&mono, sample_rate, HIGH_PASS_HZ);
+    let mono = normalize_rms(&mono, NORMALIZE_TARGET_DBFS);
+    let mono = edge_fade(&mono, sample_rate, EDGE_FADE_MS);
     let target_rate = 16_000u32;
     let resampled = if sample_rate == target_rate {
         mono
@@ -365,11 +363,7 @@ fn record_loop(
     };
 
     write_wav_i16(&wav_path, target_rate, &resampled)?;
-    log::info!(
-        "wrote {} samples → {}",
-        resampled.len(),
-        wav_path.display()
-    );
+    log::info!("wrote {} samples → {}", resampled.len(), wav_path.display());
     Ok(())
 }
 
@@ -386,6 +380,141 @@ fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
         let i1 = (i0 + 1).min(input.len() - 1);
         let t = (src - i0 as f64) as f32;
         out.push(input[i0] * (1.0 - t) + input[i1] * t);
+    }
+    out
+}
+
+// ── Signal hygiene (Tier 0) ─────────────────────────────────────────────────
+// Pure, deterministic DSP applied to the mono buffer before the 16 kHz resample.
+// Kept as standalone `&[f32]`-in / `Vec<f32>`-out functions so each is unit
+// testable in isolation. Every one is defensive: on empty/zero-rate/degenerate
+// input (or if it would produce a non-finite sample) it returns the input
+// unchanged rather than corrupting the pipeline.
+
+/// High-pass corner — Whisper needs nothing below ~80 Hz for speech, and this
+/// kills AC hum, HVAC rumble, and desk/handling thumps before they smear the
+/// low bands.
+const HIGH_PASS_HZ: f32 = 80.0;
+/// RMS-normalize / soft-AGC target level. −20 dBFS is a comfortable speech level
+/// that leaves headroom below full-scale so a boosted quiet voice never clips.
+const NORMALIZE_TARGET_DBFS: f32 = -20.0;
+/// Edge de-click fade length (ms) at clip start/end.
+const EDGE_FADE_MS: f32 = 5.0;
+
+/// Second-order (biquad) Butterworth high-pass at `cutoff_hz`. Removes DC offset,
+/// mains hum, and low rumble. Returns the input unchanged on degenerate input or
+/// if the filter ever goes non-finite.
+fn high_pass(samples: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
+    if samples.is_empty()
+        || sample_rate == 0
+        || cutoff_hz <= 0.0
+        || cutoff_hz >= sample_rate as f32 / 2.0
+    {
+        return samples.to_vec();
+    }
+    // RBJ cookbook high-pass coefficients (Q = 1/√2 → maximally flat passband).
+    let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / sample_rate as f32;
+    let (sin_w0, cos_w0) = w0.sin_cos();
+    let q = std::f32::consts::FRAC_1_SQRT_2;
+    let alpha = sin_w0 / (2.0 * q);
+    let a0 = 1.0 + alpha;
+    if a0 == 0.0 || !a0.is_finite() {
+        return samples.to_vec();
+    }
+    let b0 = ((1.0 + cos_w0) / 2.0) / a0;
+    let b1 = (-(1.0 + cos_w0)) / a0;
+    let b2 = b0;
+    let a1 = (-2.0 * cos_w0) / a0;
+    let a2 = (1.0 - alpha) / a0;
+
+    let mut out = Vec::with_capacity(samples.len());
+    // Direct Form I state.
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for &x0 in samples {
+        let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        if !y0.is_finite() {
+            return samples.to_vec();
+        }
+        out.push(y0);
+        x2 = x1;
+        x1 = x0;
+        y2 = y1;
+        y1 = y0;
+    }
+    out
+}
+
+/// RMS-normalize toward `target_dbfs` (soft AGC), peak-limited so the boost never
+/// clips, with a final hard limit to [-1, 1] as a safety net. Silence guard: a
+/// clip whose RMS is at/below the noise floor is left untouched so we never
+/// divide by ~0 and blow up the gain on a silent capture.
+fn normalize_rms(samples: &[f32], target_dbfs: f32) -> Vec<f32> {
+    if samples.is_empty() {
+        return samples.to_vec();
+    }
+    let mut sum_sq = 0.0f64;
+    let mut peak = 0.0f32;
+    for &s in samples {
+        if !s.is_finite() {
+            return samples.to_vec();
+        }
+        sum_sq += (s as f64) * (s as f64);
+        let a = s.abs();
+        if a > peak {
+            peak = a;
+        }
+    }
+    let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+    // Silence / near-silence guard (~-80 dBFS): nothing to lift, avoid blowup.
+    if !rms.is_finite() || rms < 1e-4 || peak <= 0.0 {
+        return samples.to_vec();
+    }
+    let target_rms = 10.0f32.powf(target_dbfs / 20.0);
+    // Gain toward target, but never enough to push the loudest sample past ~full
+    // scale (peak-limit) → boost stays clip-free. Cap runaway gain on very quiet
+    // input. Also refuses to invent signal (>0 always).
+    let peak_ceiling = 0.99f32;
+    let gain = (target_rms / rms)
+        .min(peak_ceiling / peak)
+        .min(64.0)
+        .max(0.0);
+    if !gain.is_finite() {
+        return samples.to_vec();
+    }
+    let out: Vec<f32> = samples
+        .iter()
+        .map(|&s| (s * gain).clamp(-1.0, 1.0))
+        .collect();
+    if out.iter().any(|v| !v.is_finite()) {
+        return samples.to_vec();
+    }
+    out
+}
+
+/// Short linear fade-in/out over `fade_ms` at each edge to de-click the
+/// push-to-talk key press and release pop. Returns input unchanged on degenerate
+/// input.
+fn edge_fade(samples: &[f32], sample_rate: u32, fade_ms: f32) -> Vec<f32> {
+    if samples.is_empty() || sample_rate == 0 || fade_ms <= 0.0 {
+        return samples.to_vec();
+    }
+    let mut out = samples.to_vec();
+    let n = out.len();
+    let mut fade = (sample_rate as f32 * fade_ms / 1000.0) as usize;
+    if fade == 0 {
+        return out;
+    }
+    // Don't let the two fades overlap on a very short clip.
+    if fade * 2 > n {
+        fade = n / 2;
+    }
+    for i in 0..fade {
+        let g = i as f32 / fade as f32;
+        out[i] *= g;
+        out[n - 1 - i] *= g;
+    }
+    if out.iter().any(|v| !v.is_finite()) {
+        return samples.to_vec();
     }
     out
 }
@@ -482,7 +611,164 @@ mod tests {
         sig.extend(silence(1.0));
         sig.extend(tone(0.4, 200.0, 0.4));
         let v = voiced_seconds(&sig, SR);
-        assert!(v < 1.0, "long pause must NOT be counted as speech, got {v:.3}s");
+        assert!(
+            v < 1.0,
+            "long pause must NOT be counted as speech, got {v:.3}s"
+        );
         assert!(v > 0.6, "both words should still count, got {v:.3}s");
+    }
+
+    // ── Signal hygiene (Tier 0) ─────────────────────────────────────────────
+    // Native capture is ~48 kHz, so exercise the hygiene fns at that rate.
+    const NATIVE_SR: u32 = 48_000;
+
+    /// Sine at an arbitrary sample rate.
+    fn tone_at(sr: u32, secs: f64, freq: f32, amp: f32) -> Vec<f32> {
+        let n = (secs * sr as f64) as usize;
+        (0..n)
+            .map(|i| amp * (2.0 * PI * freq * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    fn rms(s: &[f32]) -> f32 {
+        if s.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = s.iter().map(|&x| (x as f64) * (x as f64)).sum();
+        (sum / s.len() as f64).sqrt() as f32
+    }
+    fn to_dbfs(x: f32) -> f32 {
+        20.0 * x.max(1e-12).log10()
+    }
+    fn max_abs(s: &[f32]) -> f32 {
+        s.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn high_pass_attenuates_low_freq_and_preserves_speech_band() {
+        // A 25 Hz rumble tone should be knocked down hard; a 300 Hz speech-band
+        // tone should pass through essentially untouched.
+        let low = tone_at(NATIVE_SR, 1.0, 25.0, 0.5);
+        let mid = tone_at(NATIVE_SR, 1.0, 300.0, 0.5);
+        let low_hp = high_pass(&low, NATIVE_SR, HIGH_PASS_HZ);
+        let mid_hp = high_pass(&mid, NATIVE_SR, HIGH_PASS_HZ);
+        // Measure over the back half to skip the filter's start-up transient.
+        let half = |v: &[f32]| v[v.len() / 2..].to_vec();
+
+        let low_atten_db = to_dbfs(rms(&half(&low))) - to_dbfs(rms(&half(&low_hp)));
+        assert!(
+            low_atten_db > 12.0,
+            "25 Hz rumble should be attenuated (got {low_atten_db:.1} dB)"
+        );
+        let mid_atten_db = to_dbfs(rms(&half(&mid))) - to_dbfs(rms(&half(&mid_hp)));
+        assert!(
+            mid_atten_db.abs() < 1.5,
+            "300 Hz speech band should be preserved (got {mid_atten_db:.2} dB change)"
+        );
+        assert!(low_hp.len() == low.len() && !low_hp.iter().any(|v| !v.is_finite()));
+    }
+
+    #[test]
+    fn normalize_lifts_quiet_sine_to_target_without_clipping() {
+        // A very quiet (~-40 dBFS RMS) sine must be lifted toward the -20 dBFS
+        // target within a few dB, with NO sample exceeding full scale.
+        let quiet = tone_at(NATIVE_SR, 1.0, 220.0, 0.01414); // RMS ≈ 0.01 → -40 dBFS
+        assert!(
+            (to_dbfs(rms(&quiet)) - (-40.0)).abs() < 1.0,
+            "fixture should sit near -40 dBFS, got {:.1}",
+            to_dbfs(rms(&quiet))
+        );
+        let norm = normalize_rms(&quiet, NORMALIZE_TARGET_DBFS);
+        let out_dbfs = to_dbfs(rms(&norm));
+        assert!(
+            (out_dbfs - NORMALIZE_TARGET_DBFS).abs() < 3.0,
+            "normalized RMS {out_dbfs:.1} dBFS should be within a few dB of {NORMALIZE_TARGET_DBFS}"
+        );
+        assert!(
+            max_abs(&norm) <= 1.0,
+            "no sample may exceed full scale, got peak {}",
+            max_abs(&norm)
+        );
+        assert!(norm.len() == quiet.len());
+    }
+
+    #[test]
+    fn normalize_hard_limits_and_never_exceeds_full_scale() {
+        // Even a hot / already-loud signal stays within [-1, 1] after normalize.
+        let loud = tone_at(NATIVE_SR, 0.5, 300.0, 0.9);
+        let norm = normalize_rms(&loud, NORMALIZE_TARGET_DBFS);
+        assert!(
+            max_abs(&norm) <= 1.0,
+            "peak {} must be ≤ 1.0",
+            max_abs(&norm)
+        );
+        assert!(!norm.iter().any(|v| !v.is_finite()));
+    }
+
+    #[test]
+    fn normalize_silence_is_left_unchanged() {
+        // Pure silence has no level to lift → guard must return it untouched
+        // (no divide-by-noise blowup, no NaN).
+        let sil = vec![0.0f32; NATIVE_SR as usize / 2];
+        let out = normalize_rms(&sil, NORMALIZE_TARGET_DBFS);
+        assert_eq!(out, sil);
+    }
+
+    #[test]
+    fn edge_fade_zeroes_the_edges_and_keeps_the_body() {
+        let mut sig = tone_at(NATIVE_SR, 0.2, 300.0, 0.8);
+        // Force non-zero endpoints so a fade is observable.
+        *sig.first_mut().unwrap() = 0.8;
+        *sig.last_mut().unwrap() = -0.8;
+        let faded = edge_fade(&sig, NATIVE_SR, EDGE_FADE_MS);
+        assert_eq!(faded.len(), sig.len());
+        assert!(faded[0].abs() < 1e-6, "start must fade in from 0");
+        assert!(
+            faded[faded.len() - 1].abs() < 1e-6,
+            "end must fade out to 0"
+        );
+        // The middle is untouched.
+        let mid = faded.len() / 2;
+        assert!((faded[mid] - sig[mid]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hygiene_never_yields_nan_or_empty() {
+        // A realistic noisy, quiet capture run through the full chain must stay
+        // finite and non-empty, at the natural length.
+        let mut sig = tone_at(NATIVE_SR, 0.5, 180.0, 0.02);
+        for (i, s) in sig.iter_mut().enumerate() {
+            // add rumble + a little broadband texture
+            *s += 0.03 * (2.0 * PI * 30.0 * i as f32 / NATIVE_SR as f32).sin();
+            *s += if i % 7 == 0 { 0.01 } else { -0.005 };
+        }
+        let chained = edge_fade(
+            &normalize_rms(
+                &high_pass(&sig, NATIVE_SR, HIGH_PASS_HZ),
+                NORMALIZE_TARGET_DBFS,
+            ),
+            NATIVE_SR,
+            EDGE_FADE_MS,
+        );
+        assert_eq!(chained.len(), sig.len(), "length must be preserved");
+        assert!(!chained.is_empty(), "must not be emptied");
+        assert!(
+            !chained.iter().any(|v| !v.is_finite()),
+            "no NaN/Inf may be produced"
+        );
+        assert!(
+            max_abs(&chained) <= 1.0,
+            "output must stay within full scale"
+        );
+
+        // Degenerate inputs are handled without panicking or producing NaN.
+        assert!(high_pass(&[], NATIVE_SR, HIGH_PASS_HZ).is_empty());
+        assert!(normalize_rms(&[], NORMALIZE_TARGET_DBFS).is_empty());
+        assert!(edge_fade(&[], NATIVE_SR, EDGE_FADE_MS).is_empty());
+        assert_eq!(high_pass(&[0.5], 0, HIGH_PASS_HZ), vec![0.5]); // zero rate → unchanged
+                                                                   // Single sample doesn't panic on the edge-fade halving.
+        let one = edge_fade(&[0.7], NATIVE_SR, EDGE_FADE_MS);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].is_finite());
     }
 }
