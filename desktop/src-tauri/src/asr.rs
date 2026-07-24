@@ -327,14 +327,6 @@ pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: 
     });
 }
 
-/// Lightweight health probe (spawns daemon if needed).
-pub fn ping_daemon(python: &Path, worker: &Path) -> Result<bool, String> {
-    let r = with_daemon(python, worker, None, |d| {
-        request_line(d, &serde_json::json!({"cmd": "ping"}))
-    })?;
-    Ok(r.ok)
-}
-
 pub fn run_asr(
     python: &Path,
     worker: &Path,

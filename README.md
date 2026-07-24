@@ -54,6 +54,11 @@ System Settings → Privacy & Security — grant **Wilson Voice** (not “Python
   recordings/          # temp WAVs
 ```
 
+**At-rest storage:** transcripts and history live in a plain local **SQLite**
+database (`wilson_voice.db`); the app does not encrypt it itself and relies on
+macOS **FileVault** full-disk encryption for at-rest protection — enable FileVault
+if the transcript history is sensitive.
+
 ## Dev
 
 ```bash

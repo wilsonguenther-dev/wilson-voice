@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const KVK_FUNCTION: i64 = 63;
 const KCG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
 const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x0004_0000;
 
@@ -173,10 +172,16 @@ pub fn start(binding: PttBinding, callback: Callback) {
     });
     *GLOBAL_STATE.lock() = Some(state.clone());
 
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name("wv-fn-ptt".into())
         .spawn(move || run_tap(state))
-        .expect("spawn fn ptt thread");
+    {
+        // Non-fatal: without the fn PTT tap the app still runs via the tray
+        // Start/Stop toggle and the secondary ⌘⇧V shortcut — don't take the
+        // whole process down just because the OS refused this one thread.
+        log::error!("failed to spawn fn PTT thread: {e}; PTT hotkey disabled (tray / ⌘⇧V still work)");
+        RUNNING.store(false, Ordering::SeqCst);
+    }
 }
 
 pub fn set_binding(binding: PttBinding) {
@@ -184,14 +189,6 @@ pub fn set_binding(binding: PttBinding) {
         *s.binding.lock() = binding;
         log::info!("PTT binding → {:?}", binding);
     }
-}
-
-pub fn is_hands_free() -> bool {
-    GLOBAL_STATE
-        .lock()
-        .as_ref()
-        .map(|s| s.hands_free.load(Ordering::SeqCst))
-        .unwrap_or(false)
 }
 
 /// End hands-free from OUTSIDE the tap (pill / Home button / sidebar / tray Stop).
@@ -272,14 +269,9 @@ unsafe extern "C" fn tap_callback(
         || (hid_flags & KCG_EVENT_FLAG_MASK_CONTROL != 0);
 
     if event_type == KCG_EVENT_FLAGS_CHANGED {
-        // Re-evaluate on FN or Control changes
-        if keycode == KVK_FUNCTION
-            || keycode == 59
-            || keycode == 62
-            || true
-        {
-            handle_combo_edge(state, fn_down, control);
-        }
+        // Any flags-changed event may be an fn or Control edge — re-evaluate the
+        // combo unconditionally; handle_combo_edge no-ops when nothing changed.
+        handle_combo_edge(state, fn_down, control);
     } else if event_type == KCG_EVENT_KEY_DOWN {
         if state.combo_down.load(Ordering::SeqCst)
             && !state.hands_free.load(Ordering::SeqCst)

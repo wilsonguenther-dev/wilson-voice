@@ -206,6 +206,14 @@ impl Database {
         }
     }
 
+    /// Last-resort in-memory database, used only when the on-disk DB cannot be
+    /// opened even after a retry (disk full / locked / permissions). Keeps the
+    /// app usable for the current session; transcripts are NOT persisted across
+    /// restarts. The schema is created the same way as the on-disk path.
+    pub fn open_in_memory() -> Result<Self, String> {
+        Self::open_inner(std::path::Path::new(":memory:")).map_err(OpenErr::into_string)
+    }
+
     fn open_inner(path: &std::path::Path) -> Result<Self, OpenErr> {
         let conn = Connection::open(path).map_err(|e| OpenErr::classify("sqlite open", e))?;
         // busy_timeout FIRST — the journal_mode=WAL step below can itself return

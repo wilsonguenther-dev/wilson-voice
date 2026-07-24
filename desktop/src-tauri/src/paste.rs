@@ -103,7 +103,7 @@ pub fn copy_and_maybe_paste(
         }
     }
 
-    match paste_frontmost_on_main(app) {
+    match dispatch_paste_on_main(app) {
         Ok(()) => {
             // Restore the prior clipboard once the target app has consumed the
             // paste. Off-thread + delayed so we neither block nor race the ⌘V.
@@ -132,7 +132,7 @@ pub fn copy_and_maybe_paste(
 }
 
 /// Schedule paste on the main thread and wait briefly for completion.
-pub fn paste_frontmost_on_main(app: &AppHandle) -> Result<(), String> {
+pub fn dispatch_paste_on_main(app: &AppHandle) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     app.run_on_main_thread(move || {
         let r = paste_cmd_v_main_thread();
@@ -236,12 +236,6 @@ fn paste_cmd_v_main_thread() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 fn paste_cmd_v_main_thread() -> Result<(), String> {
     Err("paste only implemented on macOS".into())
-}
-
-/// Public alias used by commands that already expect a Result.
-pub fn paste_frontmost() -> Result<(), String> {
-    // Without AppHandle we cannot hop threads — only call from main.
-    paste_cmd_v_main_thread()
 }
 
 #[cfg(test)]
