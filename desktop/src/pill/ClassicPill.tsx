@@ -24,6 +24,9 @@ export default function ClassicPill() {
   const pillRef = useRef<HTMLDivElement | null>(null);
   const prevBusy = useRef(false);
   const doneTimer = useRef<number | null>(null);
+  // Set by the rAF effect; called by the audio_level listener to re-arm the
+  // smoothing loop after it parks itself at rest (audit [0]).
+  const wakeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     // prefers-reduced-motion: paint one calm static frame (level 0, waveform at
@@ -33,13 +36,33 @@ export default function ClassicPill() {
       return;
     }
     let raf = 0;
+    let running = false;
     const loop = () => {
       smoothRef.current += (levelRef.current - smoothRef.current) * 0.3;
       pillRef.current?.style.setProperty("--level", smoothRef.current.toFixed(3));
+      // Settle-and-park: once both the target level and the smoothed value are
+      // at rest, stop scheduling frames so the always-on pill doesn't burn a
+      // 60fps rAF forever while idle (audit [0]). The audio_level listener
+      // re-arms the loop via wakeRef when new audio arrives.
+      if (levelRef.current < 0.002 && smoothRef.current < 0.002) {
+        smoothRef.current = 0;
+        pillRef.current?.style.setProperty("--level", "0");
+        running = false;
+        return;
+      }
       raf = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    const wake = () => {
+      if (running) return;
+      running = true;
+      raf = requestAnimationFrame(loop);
+    };
+    wakeRef.current = wake;
+    wake(); // paint down to rest once, then park
+    return () => {
+      cancelAnimationFrame(raf);
+      wakeRef.current = () => {};
+    };
   }, []);
 
   useEffect(() => {
@@ -69,6 +92,7 @@ export default function ClassicPill() {
     listen<number>("audio_level", (e) => {
       const v = typeof e.payload === "number" ? e.payload : 0;
       levelRef.current = Math.max(0, Math.min(1, v));
+      if (levelRef.current > 0.002) wakeRef.current(); // re-arm the smoothing loop
     }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;

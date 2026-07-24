@@ -398,6 +398,31 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     log::info!("recording cancelled");
 }
 
+/// Panic-safety net for the transcribe worker (audit finding [8]). `busy` is set
+/// true before the worker thread spawns and reset at the end of its normal path;
+/// if the worker *panics* before that reset, `busy` stays true forever and
+/// dictation is permanently soft-locked until restart. This guard force-resets
+/// `busy`/`hands_free` on unwind. It is disarmed on the normal path, so it only
+/// fires on an actual panic.
+struct WorkerBusyGuard {
+    state: Arc<AppState>,
+    app: AppHandle,
+    armed: bool,
+}
+impl Drop for WorkerBusyGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        *self.state.busy.lock() = false;
+        *self.state.hands_free.lock() = false;
+        log::error!(
+            "transcribe worker unwound before cleanup — force-reset busy/hands_free (was soft-lock)"
+        );
+        emit_status(&self.app, &self.state);
+    }
+}
+
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // Hands-free: ignore key-release; only stop on explicit tap / button
     if *state.hands_free.lock() {
@@ -432,6 +457,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let t_release = std::time::Instant::now();
 
     std::thread::spawn(move || {
+        // Panic-safety: disarmed after the normal cleanup below (see [8]).
+        let mut busy_guard = WorkerBusyGuard {
+            state: state2.clone(),
+            app: app2.clone(),
+            armed: true,
+        };
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
         let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
@@ -618,6 +649,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // Keep island on all Spaces if always-on; else hide after take
         float_pill::after_recording(&app2, state2.settings.lock().show_floating_pill);
         emit_status(&app2, &state2);
+        // Reached the normal end — no soft-lock, disarm the panic guard.
+        busy_guard.armed = false;
     });
 }
 
@@ -1050,7 +1083,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         // Auto-update: checks the GitHub Releases updater manifest (see
         // tauri.conf.json plugins.updater) and installs signed DMG updates.

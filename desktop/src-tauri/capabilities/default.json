@@ -22,7 +22,6 @@
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "notification:default",
-    "fs:default",
     "updater:default"
   ]
 }

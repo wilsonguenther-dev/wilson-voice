@@ -20,7 +20,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
-tauri-plugin-fs = "2.5.1"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-updater = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -43,9 +42,6 @@ nnnoiseless = { version = "0.5.2", default-features = false }
 # direct URL, then OFFLINE — never HuggingFace); a missing/broken model falls back
 # safely to the energy-VAD path so an utterance is never lost.
 tract-onnx = "0.21"
-objc2 = "0.6.4"
-objc2-foundation = "0.3.2"
-block2 = "0.6.2"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
 
 [features]
