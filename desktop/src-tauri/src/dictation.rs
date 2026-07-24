@@ -99,6 +99,113 @@ pub fn should_format(mode: DictationMode) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// No-speech + hallucination guards (YV16) — stop Whisper pasting phantom text.
+//
+// A near-silent / sub-second tap makes Whisper hallucinate degenerate repetitive
+// tokens ("WPM-SERV-SERV-SERV…") which then get pasted into the focused app. Two
+// pure, conservative guards close that hole: (1) gate ASR on TRUE voiced time so
+// silence never reaches the model, and (2) reject degenerate repetition loops in
+// the raw ASR output before paste. Both are side-effect-free and unit-tested.
+// ---------------------------------------------------------------------------
+
+/// Minimum TRUE voiced seconds (energy VAD) required to bother transcribing.
+/// Below this a clip is treated as no-speech — a fumbled or near-silent tap — and
+/// ASR is skipped so Whisper can't hallucinate text on silence.
+const MIN_SPEECH_SECONDS: f64 = 0.35;
+
+/// True when the clip holds enough real speech to transcribe. Fed the TRUE
+/// energy-VAD value (`record::RecordingResult.voiced_seconds`, which is 0.0 on
+/// silence with NO clip-length fallback), so a silent / sub-second tap gates out
+/// before ASR runs.
+pub fn has_enough_speech(voiced_seconds: f64) -> bool {
+    voiced_seconds >= MIN_SPEECH_SECONDS
+}
+
+/// Reject degenerate Whisper "hallucination loops" — the phantom repetitive
+/// tokens the model emits when handed near-silence — BEFORE they get pasted into
+/// the user's focused app. Pure and deliberately CONSERVATIVE: it must stay quiet
+/// for normal prose, a genuine numbered list, and short spoken emphatics
+/// ("no no no", "very very good").
+///
+/// Fires on any of:
+///   1. ≥4 consecutive identical whitespace tokens ("the the the the …").
+///   2. unique/total whitespace-token ratio < 0.3 when total ≥ 6 — a clip that is
+///      overwhelmingly one repeated token (the 6-token floor keeps a short
+///      emphatic like "no no no" from tripping it).
+///   3. a single whitespace token that, split on `-`/`_`, is a short unit repeated
+///      ≥4× ("WPM-SERV-SERV-SERV-SERV" — Whisper emits the whole loop as ONE token).
+pub fn is_hallucinated_repetition(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    // Rule 1 — ≥4 identical tokens in a row.
+    if max_consecutive_identical(&tokens) >= 4 {
+        return true;
+    }
+    // Rule 2 — overwhelmingly one repeated token, on a long-enough clip only.
+    let total = tokens.len();
+    if total >= 6 {
+        let mut uniq: Vec<&str> = tokens.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        if (uniq.len() as f64 / total as f64) < 0.3 {
+            return true;
+        }
+    }
+    // Rule 3 — a single glued token that is a short unit repeated ≥4× on `-`/`_`.
+    for tok in &tokens {
+        let parts: Vec<&str> = tok
+            .split(|c| c == '-' || c == '_')
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.len() >= 4 && has_short_repeated_unit(&parts) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Longest run of identical adjacent items. Helper for the repetition guard.
+fn max_consecutive_identical<T: PartialEq>(items: &[T]) -> usize {
+    let mut best = 0usize;
+    let mut run = 0usize;
+    let mut prev: Option<&T> = None;
+    for item in items {
+        if prev == Some(item) {
+            run += 1;
+        } else {
+            run = 1;
+            prev = Some(item);
+        }
+        if run > best {
+            best = run;
+        }
+    }
+    best
+}
+
+/// True when `parts` contains a SHORT unit (≤10 chars) repeated ≥4× in a row —
+/// the "SERV-SERV-SERV-SERV" signature. The length bound keeps genuinely
+/// hyphenated content from being mistaken for a hallucination loop.
+fn has_short_repeated_unit(parts: &[&str]) -> bool {
+    let mut run = 0usize;
+    let mut prev: Option<&str> = None;
+    for &p in parts {
+        if prev == Some(p) {
+            run += 1;
+        } else {
+            run = 1;
+            prev = Some(p);
+        }
+        if run >= 4 && p.chars().count() <= 10 {
+            return true;
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Cleanup pipeline (YV10) — the Wispr-style "polish" pass, architecture only.
 //
 // Wispr Flow is not a better transcriber; it's ASR + a fine-tuned "cleanup" LLM
@@ -504,6 +611,40 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- No-speech + hallucination guards (YV16) --------------------------
+
+    #[test]
+    fn has_enough_speech_thresholds() {
+        // Silence and a sub-0.35s tap are NOT enough speech to transcribe…
+        assert!(!has_enough_speech(0.0));
+        assert!(!has_enough_speech(0.2));
+        // …a half-second of real voiced time is.
+        assert!(has_enough_speech(0.5));
+    }
+
+    #[test]
+    fn hallucinated_repetition_flags_degenerate_loops() {
+        // The reported "WPM-SERV" spam, both spaced and glued into one token.
+        assert!(is_hallucinated_repetition("WPM SERV SERV SERV SERV"));
+        assert!(is_hallucinated_repetition("WPM-SERV-SERV-SERV-SERV"));
+        // A classic Whisper stuck-token loop.
+        assert!(is_hallucinated_repetition("the the the the the the"));
+    }
+
+    #[test]
+    fn hallucinated_repetition_spares_normal_text() {
+        // Ordinary prose is never flagged.
+        assert!(!is_hallucinated_repetition(
+            "The weather today is nice and I think we should go for a walk."
+        ));
+        // A real numbered list survives (repeated "Buy" is not a degenerate loop).
+        assert!(!is_hallucinated_repetition(
+            "1. Buy milk\n2. Buy eggs\n3. Buy bread"
+        ));
+        // A short spoken emphatic (<4 repeats) is legitimate speech.
+        assert!(!is_hallucinated_repetition("no no no"));
+    }
 
     #[test]
     fn app_maps_to_expected_mode() {
