@@ -7,7 +7,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -103,6 +103,9 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
     }
     let meta = std::fs::metadata(&active.wav_path).map_err(|e| e.to_string())?;
     if meta.len() < 1000 {
+        // YV20/M3: the caller returns early here — delete the tiny clip now so a
+        // sub-second tap never leaves a voice wav behind on disk.
+        let _ = std::fs::remove_file(&active.wav_path);
         return Err(format!(
             "Audio too short ({} bytes) — hold longer, or allow Microphone for Yap.",
             meta.len()
@@ -121,6 +124,31 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
         voiced_seconds: voiced,
         hold_wall_seconds,
     })
+}
+
+/// Pure sweep predicate (YV20/M3): does this dir-entry name look like a captured
+/// voice clip we should remove at startup? Case-insensitive `*.wav`, non-empty
+/// stem. Kept pure so it's unit-testable without touching the filesystem.
+fn is_stale_wav(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".wav") && lower.len() > ".wav".len()
+}
+
+/// Remove every stale `*.wav` from the recordings dir. Called once at startup —
+/// no capture is in flight then, so any leftover clip is orphaned (a prior crash
+/// or hard-kill that couldn't run its own cleanup). Returns how many were removed.
+pub fn sweep_stale_wavs(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        if is_stale_wav(&name.to_string_lossy()) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn wav_duration_seconds(path: &PathBuf) -> Option<f64> {
@@ -663,6 +691,37 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / SR as f32).sin())
             .collect()
+    }
+
+    #[test]
+    fn stale_wav_predicate_matches_only_wavs() {
+        assert!(is_stale_wav("f47ac10b-58cc-4372-a567-0e02b2c3d479.wav"));
+        assert!(is_stale_wav("CLIP.WAV"));
+        assert!(is_stale_wav("a.wav"));
+        // Non-wavs and the bare extension must be left alone.
+        assert!(!is_stale_wav(".wav"));
+        assert!(!is_stale_wav("wilson_voice.db"));
+        assert!(!is_stale_wav("notes.txt"));
+        assert!(!is_stale_wav("recording.wav.tmp"));
+        assert!(!is_stale_wav(""));
+    }
+
+    #[test]
+    fn sweep_removes_wavs_only() {
+        let dir =
+            std::env::temp_dir().join(format!("yv20-sweep-{}-{:p}", std::process::id(), &0u8));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.wav"), b"x").unwrap();
+        std::fs::write(dir.join("b.WAV"), b"x").unwrap();
+        std::fs::write(dir.join("keep.db"), b"x").unwrap();
+        let removed = sweep_stale_wavs(&dir);
+        assert_eq!(removed, 2, "both wavs removed");
+        assert!(dir.join("keep.db").exists(), "non-wav preserved");
+        assert!(!dir.join("a.wav").exists());
+        // Missing dir is a safe no-op.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(sweep_stale_wavs(&dir), 0);
     }
 
     #[test]

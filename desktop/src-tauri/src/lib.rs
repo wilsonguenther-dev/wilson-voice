@@ -169,6 +169,20 @@ fn data_dir() -> PathBuf {
     p
 }
 
+/// RAII guard (YV20/M3) that unlinks the captured voice WAV when it drops —
+/// covering EVERY exit of the transcribe closure (success, the no-speech /
+/// hallucination gates, and — crucially — the ASR / DB `Err` early-returns).
+/// Before this, an ASR or DB failure left a `.wav` of the user's voice on disk
+/// forever, contradicting "nothing leaves this machine". The clip is always
+/// disposable, so cleanup is unconditional.
+struct WavCleanup(PathBuf);
+
+impl Drop for WavCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
@@ -312,6 +326,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // loop): the caller shows a gentle soft status instead of a hard error.
         let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
             let rec = record::stop_recording(active)?;
+            // YV20/M3: from here on the wav is deleted on ANY exit (success, the
+            // gates below, or the ASR/DB `?` failures) — never leaked on error.
+            let _wav_cleanup = WavCleanup(rec.wav_path.clone());
             let t_wav = t_release.elapsed().as_millis() as i64;
             log::info!(
                 "wav ready: {} speech={:.2}s voiced={:.2}s hold_wall={:.2}s wav_ms={}",
@@ -329,7 +346,6 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     "no-speech gate: voiced={:.2}s below threshold — skipping ASR",
                     rec.voiced_seconds
                 );
-                let _ = std::fs::remove_file(&rec.wav_path);
                 return Ok(None);
             }
             // Bias Whisper toward the user's learned vocabulary/jargon BEFORE it
@@ -350,8 +366,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // Hallucination gate (YV16): reject degenerate Whisper repetition loops
             // ("WPM-SERV-SERV-SERV…") BEFORE they reach the clipboard/paste path.
             if dictation::is_hallucinated_repetition(&raw_text) {
-                log::info!("hallucination gate: rejected degenerate ASR output {raw_text:?}");
-                let _ = std::fs::remove_file(&rec.wav_path);
+                // YV20/M2: never write the transcript body to the log — count only.
+                log::info!(
+                    "hallucination gate: rejected degenerate ASR output ({} chars)",
+                    raw_text.chars().count()
+                );
                 return Ok(None);
             }
             // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
@@ -403,8 +422,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 chrono::Utc::now(),
                 Some(raw_text),
             )?;
-            // Hygiene: drop wav after successful ASR (audio stays local only during process)
-            let _ = std::fs::remove_file(&rec.wav_path);
+            // Hygiene: the wav is dropped by `_wav_cleanup` on scope exit (audio
+            // stays local only during the process, on success and on error alike).
             Ok(Some((entry, outcome, pipeline_ms)))
         })();
 
@@ -750,6 +769,14 @@ pub fn run() {
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
     logging::init(&data_dir());
+
+    // YV20/M3: sweep any stale voice WAVs left by a prior crash / hard-kill (the
+    // happy path deletes its own clip, but a SIGKILL mid-transcribe can't). No
+    // recording is in flight at startup, so every *.wav here is safe to remove.
+    let swept = record::sweep_stale_wavs(&data_dir().join("recordings"));
+    if swept > 0 {
+        log::info!("startup: swept {swept} stale voice wav(s) from recordings dir");
+    }
 
     // NEVER resolve ASR to ~/Desktop — that triggers Desktop folder TCC on every stop.
     // Prefer pre-built Application Support venv; seed worker file only (no Desktop read).
