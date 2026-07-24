@@ -1085,7 +1085,12 @@ code {
    docs/prototypes/yappy-house.html. The bezel + stat strip mirror the SSOT. */
 .yappy-house {
   position: relative;
-  margin: 4px 0 20px;
+  /* YV19: keep the whole dollhouse compact so the room + Yappy + the stat row
+     and the Dictate button frame together above the fold on a normal-height
+     window. Capping the width keeps the 3:2 stage from growing taller than its
+     max-height below, so it needs no letterboxing to stay crisp. */
+  max-width: 474px;
+  margin: 4px auto 20px;
 }
 .yappy-house .yh-tag {
   position: absolute;
@@ -1126,6 +1131,12 @@ code {
   display: block;
   width: 100%;
   height: auto;
+  /* YV19: bound the displayed height so the full scene fits above the fold.
+     object-fit keeps the 3:2 aspect (never stretches, never crops Yappy or the
+     window) and image-rendering keeps the upscaled pixels nearest-neighbour
+     crisp if the stage is ever scaled to fit within this cap. */
+  max-height: 300px;
+  object-fit: contain;
   border-radius: 8px;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
