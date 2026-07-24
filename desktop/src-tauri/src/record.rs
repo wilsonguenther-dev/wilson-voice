@@ -38,6 +38,12 @@ pub struct RecordingResult {
     /// excluded, natural inter-word gaps are kept. NOT the raw clip length
     /// (that inflates the denominator and makes WPM read low + jittery).
     pub speech_seconds: f64,
+    /// TRUE energy-VAD voiced seconds — 0.0 on silence, with NO clip-length
+    /// fallback (unlike `speech_seconds`, which floors to the raw clip so WPM
+    /// never divides by ~0). This is the honest "did the user actually speak?"
+    /// signal: the no-speech gate reads it to reject a near-silent tap before
+    /// ASR, so Whisper never hallucinates repetitive garbage on silence.
+    pub voiced_seconds: f64,
     /// Wall-clock hold (press→release), for latency telemetry only.
     pub hold_wall_seconds: f64,
 }
@@ -110,6 +116,9 @@ pub fn stop_recording(mut active: ActiveRecording) -> Result<RecordingResult, St
     Ok(RecordingResult {
         wav_path: active.wav_path,
         speech_seconds: speech_seconds.max(0.05),
+        // The TRUE voiced value — no clip-length fallback, so a silent tap reads
+        // 0.0 and the no-speech gate can reject it before ASR.
+        voiced_seconds: voiced,
         hold_wall_seconds,
     })
 }

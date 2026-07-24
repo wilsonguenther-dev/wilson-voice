@@ -308,16 +308,30 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let t_release = std::time::Instant::now();
 
     std::thread::spawn(move || {
-        let result = (|| -> Result<(TranscriptEntry, paste::PasteOutcome, i64), String> {
+        // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
+        // loop): the caller shows a gentle soft status instead of a hard error.
+        let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
             let rec = record::stop_recording(active)?;
             let t_wav = t_release.elapsed().as_millis() as i64;
             log::info!(
-                "wav ready: {} speech={:.2}s hold_wall={:.2}s wav_ms={}",
+                "wav ready: {} speech={:.2}s voiced={:.2}s hold_wall={:.2}s wav_ms={}",
                 rec.wav_path.display(),
                 rec.speech_seconds,
+                rec.voiced_seconds,
                 rec.hold_wall_seconds,
                 t_wav
             );
+            // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
+            // voiced time. Skip ASR entirely so Whisper never hallucinates
+            // repetitive garbage ("WPM-SERV-SERV…") on silence.
+            if !dictation::has_enough_speech(rec.voiced_seconds) {
+                log::info!(
+                    "no-speech gate: voiced={:.2}s below threshold — skipping ASR",
+                    rec.voiced_seconds
+                );
+                let _ = std::fs::remove_file(&rec.wav_path);
+                return Ok(None);
+            }
             // Bias Whisper toward the user's learned vocabulary/jargon BEFORE it
             // decodes (initial_prompt), ordered most-frequent-last.
             let vocab = db.top_dictionary_terms(60).unwrap_or_default();
@@ -333,6 +347,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
             let raw_text = asr.text;
+            // Hallucination gate (YV16): reject degenerate Whisper repetition loops
+            // ("WPM-SERV-SERV-SERV…") BEFORE they reach the clipboard/paste path.
+            if dictation::is_hallucinated_repetition(&raw_text) {
+                log::info!("hallucination gate: rejected degenerate ASR output {raw_text:?}");
+                let _ = std::fs::remove_file(&rec.wav_path);
+                return Ok(None);
+            }
             // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
             // wins, otherwise it's inferred from the focused app.
             let dictation_mode = dictation::resolve_mode(
@@ -384,11 +405,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             // Hygiene: drop wav after successful ASR (audio stays local only during process)
             let _ = std::fs::remove_file(&rec.wav_path);
-            Ok((entry, outcome, pipeline_ms))
+            Ok(Some((entry, outcome, pipeline_ms)))
         })();
 
         match result {
-            Ok((entry, outcome, pipeline_ms)) => {
+            Ok(Some((entry, outcome, pipeline_ms))) => {
                 if outcome.pasted {
                     *state2.last_error.lock() = None;
                 } else if !outcome.copied {
@@ -426,6 +447,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     outcome.pasted,
                     pipeline_ms
                 );
+            }
+            Ok(None) => {
+                // No speech / rejected hallucination: nothing to paste. This is a
+                // NORMAL fumbled tap, not a failure — surface a gentle soft status
+                // (transient flash toast) and do NOT set a hard last_error, do NOT
+                // insert a transcript.
+                *state2.last_error.lock() = None;
+                let msg = "Didn't catch any speech — hold and speak";
+                let _ = app2.emit("paste_outcome", msg);
+                log::info!("no-speech / hallucination: skipped paste, soft status shown");
             }
             Err(e) => {
                 log::error!("pipeline failed: {e}");
