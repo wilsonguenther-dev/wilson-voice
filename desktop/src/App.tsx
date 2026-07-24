@@ -416,6 +416,10 @@ export default function App() {
       const dest = e.payload as Nav;
       setNav(dest);
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Tray "Keyboard Shortcuts…" jumps straight to the Shortcut sub-tab.
+    listen<string>("settings-tab", (e) => {
+      setSettingsTab(e.payload as SettingsTab);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());

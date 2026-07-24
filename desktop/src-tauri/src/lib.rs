@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Emitter, Manager, State, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -802,6 +802,38 @@ fn copy_entry(app: AppHandle, text: String) -> Result<(), String> {
     paste::copy_text(&app, &text)
 }
 
+/// Re-paste the most recent transcript — backs the tray "Paste Last Transcript"
+/// item and the global ⌃⌘V shortcut (Wispr-parity). Reads the newest row
+/// (`list_transcripts` is `ORDER BY created_at DESC`) and pastes it into the
+/// current frontmost app. Like `paste_entry`, the CGEvent ⌘V hop BLOCKS the
+/// main thread, so the paste MUST run off-main via `spawn_blocking` — calling
+/// it directly from a main-thread menu/shortcut callback would deadlock. This
+/// only copies+pastes; it does NOT insert a new history row (no duplicate).
+fn paste_last_transcript(app: &AppHandle, state: &AppState) {
+    let text = match state.db.list_transcripts(1, None) {
+        Ok(entries) => match entries.into_iter().next() {
+            Some(e) => e.text,
+            None => {
+                log::info!("paste last transcript: history is empty");
+                return;
+            }
+        },
+        Err(err) => {
+            log::warn!("paste last transcript: db read failed: {err}");
+            return;
+        }
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Explicit re-paste: the current frontmost app is the intended target,
+        // so pass `None` (the source-app guard does not apply here).
+        let o = paste::copy_and_maybe_paste(&app, &text, true, None);
+        if !o.copied {
+            log::warn!("paste last transcript failed: {}", o.message);
+        }
+    });
+}
+
 #[tauri::command]
 async fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
     // MUST be async → runs OFF the main thread. copy_and_maybe_paste hops to the
@@ -1030,6 +1062,17 @@ pub fn run() {
                 .with_handler({
                     let state = state.clone();
                     move |app, shortcut, event| {
+                        // ⌃⌘V — Paste Last Transcript (Wispr-parity, always on,
+                        // independent of the ⌘⇧V dictation toggle below).
+                        let paste_last_sc =
+                            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyV);
+                        if shortcut == &paste_last_sc {
+                            if event.state == ShortcutState::Pressed {
+                                log::info!("⌃⌘V pressed — paste last transcript");
+                                paste_last_transcript(app, &state);
+                            }
+                            return;
+                        }
                         // Legacy secondary: ⌘⇧V (only if keep_cmd_shift_v)
                         if !state.settings.lock().keep_cmd_shift_v {
                             return;
@@ -1127,20 +1170,43 @@ pub fn run() {
                 *state.hands_free.lock(),
                 None::<&str>,
             )?;
+            // "Paste Last Transcript" (⌃⌘V) — re-injects the newest transcript,
+            // the marquee Wispr-parity action. The accelerator is also registered
+            // globally below so it fires anywhere, not just when the menu is open.
+            let paste_last_i = MenuItem::with_id(
+                app,
+                "paste_last",
+                "Paste Last Transcript",
+                true,
+                Some("Ctrl+Cmd+V"),
+            )?;
             let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let sep2 = PredefinedMenuItem::separator(app)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let shortcuts_i =
+                MenuItem::with_id(app, "shortcuts", "Keyboard Shortcuts…", true, None::<&str>)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
+            // Feedback/report affordance (Wispr's "Share feedback" / "Talk to
+            // support") — opens the repo's new-issue page in the browser.
+            let feedback_i =
+                MenuItem::with_id(app, "feedback", "Send Feedback…", true, None::<&str>)?;
+            let sep4 = PredefinedMenuItem::separator(app)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit Yap", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
                     &dictation_i,
-                    &hands_free_i,
+                    &paste_last_i,
                     &sep1,
+                    &hands_free_i,
+                    &sep2,
                     &show_i,
                     &settings_i,
-                    &sep2,
+                    &shortcuts_i,
+                    &sep3,
+                    &feedback_i,
+                    &sep4,
                     &quit_i,
                 ],
             )?;
@@ -1159,7 +1225,11 @@ pub fn run() {
                 .icon(icon)
                 .icon_as_template(true)
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                // Left-click opens the dropdown (Wispr behavior). Previously a
+                // left-click only toggled the main window and the menu hid on
+                // right-click, so it read as "no dropdown". The window is now
+                // reached via the "Open Yap" item.
+                .show_menu_on_left_click(true)
                 .tooltip("Yap — hold fn to dictate")
                 .on_menu_event({
                     let state = state.clone();
@@ -1181,6 +1251,24 @@ pub fn run() {
                                 let _ = w.set_focus();
                             }
                             let _ = app.emit("navigate", "settings");
+                        }
+                        "paste_last" => {
+                            paste_last_transcript(app, &state);
+                        }
+                        "shortcuts" => {
+                            // Open Settings and hint the Shortcut sub-tab.
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                            let _ = app.emit("navigate", "settings");
+                            let _ = app.emit("settings-tab", "shortcut");
+                        }
+                        "feedback" => {
+                            // Open the repo's new-issue page in the default browser.
+                            let _ = std::process::Command::new("open")
+                                .arg("https://github.com/wilsonguenther-dev/wilson-voice/issues/new")
+                                .spawn();
                         }
                         "hands_free" => {
                             if *state.hands_free.lock() {
@@ -1217,24 +1305,6 @@ pub fn run() {
                             }
                         }
                         _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(w) = app.get_webview_window("main") {
-                            if w.is_visible().unwrap_or(false) {
-                                let _ = w.hide();
-                            } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
                     }
                 })
                 .build(app)?;
@@ -1305,7 +1375,8 @@ pub fn run() {
                 log::info!("PTT hybrid started ({})", binding.label());
             }
 
-            // Optional secondary ⌘⇧V (off by default)
+            // Global ⌃⌘V (Paste Last Transcript, always on) + optional ⌘⇧V
+            // dictation toggle (off by default).
             let handle = app.handle().clone();
             let state_hk = state.clone();
             std::thread::spawn(move || {
@@ -1313,6 +1384,14 @@ pub fn run() {
                 let h = handle.clone();
                 let st = state_hk.clone();
                 let _ = handle.run_on_main_thread(move || {
+                    // ⌃⌘V — Paste Last Transcript, registered unconditionally so
+                    // the tray item's accelerator fires system-wide (Wispr-parity).
+                    let paste_sc =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyV);
+                    match h.global_shortcut().register(paste_sc) {
+                        Ok(()) => log::info!("⌃⌘V paste-last registered"),
+                        Err(e) => log::warn!("⌃⌘V register failed: {e}"),
+                    }
                     if !st.settings.lock().keep_cmd_shift_v {
                         log::info!("⌘⇧V secondary disabled");
                         emit_status(&h, &st);
