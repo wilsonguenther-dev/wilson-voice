@@ -13,6 +13,26 @@ type Nav =
   | "scratchpad"
   | "settings";
 
+// YV27 — Settings is split into labeled sub-panels behind an in-Settings
+// segmented sub-nav so the screen is no longer one infinite scroll. Every
+// existing control lives under exactly one of these tabs.
+type SettingsTab =
+  | "companion"
+  | "dictation"
+  | "audio"
+  | "shortcut"
+  | "advanced"
+  | "privacy";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "companion", label: "Companion" },
+  { id: "dictation", label: "Dictation" },
+  { id: "audio", label: "Audio" },
+  { id: "shortcut", label: "Shortcut" },
+  { id: "advanced", label: "Advanced" },
+  { id: "privacy", label: "Privacy" },
+];
+
 interface AppSettings {
   model: string;
   language: string;
@@ -26,6 +46,12 @@ interface AppSettings {
   keepCmdShiftV?: boolean;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
+  /**
+   * Companion tone (YV27): friendly | rude | rose (default friendly). Drives
+   * Yappy's reactive lines — the pill chatter + the house mood label. Read live
+   * by YappyPill (settings event) and YappyHouse (prop). Curse filter stays on.
+   */
+  companionTone?: string;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**
@@ -212,6 +238,8 @@ function StatusDot({ ok }: { ok: boolean }) {
 
 export default function App() {
   const [nav, setNav] = useState<Nav>("home");
+  // YV27 — which Settings sub-panel is showing (segmented sub-nav).
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("companion");
   const [status, setStatus] = useState<AppStatus>({
     recording: false,
     busy: false,
@@ -888,6 +916,7 @@ export default function App() {
               <YappyHouse
                 wordsToday={insights?.wordsToday}
                 streakDays={insights?.streakDays}
+                companionTone={settings?.companionTone}
               />
 
               <div className="stats-row">
@@ -1363,392 +1392,486 @@ export default function App() {
 
           {nav === "settings" && settings && (
             <div className="settings">
-              {/* ── Companion — the on-screen pet + HUD (surfaced first) ── */}
-              <h2 className="settings-section">
-                Companion
-                <span className="sub">
-                  How Yap looks and feels while you talk.
-                </span>
-              </h2>
-              <div className="panel">
-                <h3>Pill style</h3>
-                <p>
-                  Pick your companion — the little helper that appears when you
-                  dictate. It switches live, so try both.
-                </p>
-                <div className="profile-row">
-                  {(
-                    [
-                      ["classic", "Classic", "A sleek waveform capsule"],
-                      ["yappy", "Yappy 🐥", "A pixel pet in a little world"],
-                    ] as const
-                  ).map(([id, label, blurb]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={
-                        (settings.pillStyle ?? "classic") === id
-                          ? "profile active"
-                          : "profile"
-                      }
-                      onClick={() => saveSettings({ ...settings, pillStyle: id })}
-                    >
-                      <strong>{label}</strong>
-                      <span>{blurb}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.showFloatingPill ?? true}
-                  onChange={(e) =>
-                    saveSettings({
-                      ...settings,
-                      showFloatingPill: e.target.checked,
-                    })
-                  }
-                />
-                <span>
-                  Keep the companion on screen at all times (otherwise it only
-                  appears while you talk)
-                </span>
-              </label>
-
-              {/* ── Dictation — how your speech becomes clean text ── */}
-              <h2 className="settings-section">
-                Dictation
-                <span className="sub">
-                  How your speech is cleaned up and formatted.
-                </span>
-              </h2>
-              <div className="panel">
-                <h3>Dictation mode</h3>
-                <p>
-                  Auto shapes your text to fit whatever app you’re typing into.
-                  Pick a fixed mode to always format the same way. Your words
-                  are never dropped.
-                </p>
-                <div className="profile-row">
-                  {(
-                    [
-                      ["auto", "Auto", "Match the app I’m typing into"],
-                      ["plain", "Plain", "Exactly what I said, no changes"],
-                      ["list", "List", "Turn spoken lists into bullets"],
-                      ["email", "Email", "Tidy formatting for messages"],
-                      ["code", "Code", "Leave code and names untouched"],
-                      ["notes", "Notes", "Formatting for quick notes"],
-                    ] as const
-                  ).map(([id, label, blurb]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={
-                        (settings.dictationMode ?? "auto") === id
-                          ? "profile active"
-                          : "profile"
-                      }
-                      onClick={() =>
-                        saveSettings({ ...settings, dictationMode: id })
-                      }
-                    >
-                      <strong>{label}</strong>
-                      <span>{blurb}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.denoise ?? true}
-                  onChange={(e) =>
-                    saveSettings({ ...settings, denoise: e.target.checked })
-                  }
-                />
-                <span>
-                  <strong>Denoise</strong> — remove steady background noise like
-                  fans, hum, and keyboard clatter before transcribing
-                </span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.muteWhileDictating ?? true}
-                  onChange={(e) =>
-                    saveSettings({
-                      ...settings,
-                      muteWhileDictating: e.target.checked,
-                    })
-                  }
-                />
-                <span>
-                  <strong>Mute the Mac while dictating</strong> — silence system
-                  audio so nothing plays over you, and restore your exact volume
-                  when you stop
-                </span>
-              </label>
-              <div className="panel">
-                <h3>Auto-cleanup</h3>
-                <p>
-                  How much Yap tidies each transcript. None pastes your exact
-                  words; higher levels drop “um”s, fix things you re-said, and
-                  format the result. Your words are never dropped.
-                </p>
-                <div className="profile-row">
-                  {(
-                    [
-                      ["none", "None", "Exactly as spoken"],
-                      ["light", "Light", "Remove filler + fix re-dos"],
-                      ["medium", "Medium", "Light + smart formatting"],
-                      ["high", "High", "Medium + AI polish"],
-                    ] as const
-                  ).map(([id, label, blurb]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={
-                        (settings.cleanupLevel ?? "light") === id
-                          ? "profile active"
-                          : "profile"
-                      }
-                      onClick={() =>
-                        saveSettings({ ...settings, cleanupLevel: id })
-                      }
-                    >
-                      <strong>{label}</strong>
-                      <span>{blurb}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.autoPaste}
-                  onChange={(e) =>
-                    saveSettings({ ...settings, autoPaste: e.target.checked })
-                  }
-                />
-                <span>
-                  Paste my words automatically when I finish talking (needs
-                  Accessibility permission)
-                </span>
-              </label>
-              <label className="field">
-                <span>Language I speak</span>
-                <select
-                  value={settings.language}
-                  onChange={(e) =>
-                    saveSettings({ ...settings, language: e.target.value })
-                  }
-                >
-                  <option value="en">English</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="ht">Haitian Creole</option>
-                </select>
-              </label>
-
-              {/* ── Shortcut — the key you hold to talk ── */}
-              <h2 className="settings-section">
-                Shortcut
-                <span className="sub">The key you hold to start talking.</span>
-              </h2>
-              <div className="panel">
-                <h3>Hold-to-talk key</h3>
-                <p>
-                  Default is <strong>fn + Control</strong>. Hold it to talk,
-                  double-tap to keep it running hands-free, then tap again to
-                  stop. Needs Accessibility permission. Tip: set Keyboard →
-                  “Press 🌐 key to” → <strong>Do Nothing</strong> so the Globe
-                  key doesn’t open emoji.
-                </p>
-                <div className="profile-row">
-                  {(
-                    [
-                      ["fn_control", "fn⌃", "Hold + double-tap hands-free"],
-                      ["fn", "fn", "Bare Globe only"],
-                      ["both", "fn / fn⌃", "Either combo"],
-                    ] as const
-                  ).map(([id, label, blurb]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={
-                        (settings.pttBinding ?? "fn_control") === id
-                          ? "profile active"
-                          : "profile"
-                      }
-                      onClick={() => applyBinding(id)}
-                    >
-                      <strong>{label}</strong>
-                      <span>{blurb}</span>
-                    </button>
-                  ))}
-                </div>
-                {/* YV15 — record the next combo instead of picking a preset. */}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    marginTop: 12,
-                  }}
-                >
+              {/* YV27 — segmented sub-nav: one panel at a time, no infinite scroll. */}
+              <div className="settings-subnav" role="tablist" aria-label="Settings sections">
+                {SETTINGS_TABS.map((t) => (
                   <button
+                    key={t.id}
                     type="button"
-                    className={capturing ? "primary" : "ghost"}
-                    aria-pressed={capturing}
-                    onClick={() => {
-                      setCaptureHint(
-                        capturing
-                          ? null
-                          : "Listening… hold your shortcut now (Esc to cancel).",
-                      );
-                      setCapturing((c) => !c);
-                    }}
-                  >
-                    {capturing ? "Listening… press your keys" : "Set shortcut"}
-                  </button>
-                  <span className="muted">
-                    Currently <strong>{settings.hotkeyLabel}</strong>
-                  </span>
-                </div>
-                {captureHint && (
-                  <p className="muted" style={{ marginTop: 8 }}>
-                    {captureHint}
-                  </p>
-                )}
-                <label className="toggle" style={{ marginTop: 12 }}>
-                  <input
-                    type="checkbox"
-                    checked={settings.keepCmdShiftV ?? false}
-                    onChange={(e) =>
-                      saveSettings({
-                        ...settings,
-                        keepCmdShiftV: e.target.checked,
-                      })
+                    role="tab"
+                    aria-selected={settingsTab === t.id}
+                    className={
+                      settingsTab === t.id ? "subnav-item active" : "subnav-item"
                     }
-                  />
-                  <span>Also let me hold ⌘⇧V as a backup</span>
-                </label>
-                <p style={{ marginTop: 12 }}>
-                  Currently set to <strong>{settings.hotkeyLabel}</strong>. The
-                  companion stays bottom-center and follows you across every
-                  desktop. Yap also learns the words you use most over time.
-                </p>
+                    onClick={() => setSettingsTab(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
               </div>
 
-              {/* ── Model & Speed — advanced tuning ── */}
-              <h2 className="settings-section">
-                Model &amp; Speed
-                <span className="sub">
-                  Advanced — leave these as-is unless dictation feels slow.
-                </span>
-              </h2>
-              <div className="panel">
-                <h3>Speed vs. accuracy</h3>
-                <p className="muted">
-                  Yap keeps your voice model loaded so dictation starts the
-                  moment you press your key. Choose <strong>Fast</strong> when
-                  your Mac is busy, or a higher-accuracy option when you want the
-                  cleanest text. Everything runs on your Mac.
-                </p>
-                <div className="actions wrap" style={{ marginTop: 10 }}>
-                  {PROFILES.map((p) => (
-                    <button
-                      key={p.id}
-                      className={
-                        (settings.speedProfile || "balanced") === p.id
-                          ? "primary"
-                          : undefined
-                      }
-                      onClick={() =>
+              {/* ── Companion — the on-screen pet + HUD ── */}
+              {settingsTab === "companion" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Companion
+                    <span className="sub">
+                      How Yap looks and feels while you talk.
+                    </span>
+                  </h2>
+                  <div className="panel">
+                    <h3>Pill style</h3>
+                    <p>
+                      Pick your companion — the little helper that appears when
+                      you dictate. It switches live, so try both.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["classic", "Classic", "A sleek waveform capsule"],
+                          ["yappy", "Yappy 🐥", "A pixel pet in a little world"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.pillStyle ?? "classic") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, pillStyle: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="panel">
+                    <h3>Companion tone</h3>
+                    <p>
+                      How Yappy talks back when you finish — the reactive line
+                      keyed to how much you said. Warm, a little rude, or sweet.
+                      Independent of which companion you picked.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["friendly", "Friendly", "Warm and encouraging"],
+                          ["rude", "Rude 😏", "Sassy — teases when you ramble"],
+                          ["rose", "Rose 🌹", "Sweet and adoring"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.companionTone ?? "friendly") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, companionTone: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.showFloatingPill ?? true}
+                      onChange={(e) =>
                         saveSettings({
                           ...settings,
-                          speedProfile: p.id,
-                          model: p.model,
+                          showFloatingPill: e.target.checked,
                         })
                       }
-                      title={p.blurb}
+                    />
+                    <span>
+                      Keep the companion on screen at all times (otherwise it
+                      only appears while you talk)
+                    </span>
+                  </label>
+                </section>
+              )}
+
+              {/* ── Dictation — how your speech becomes clean text ── */}
+              {settingsTab === "dictation" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Dictation
+                    <span className="sub">
+                      How your speech is cleaned up and formatted.
+                    </span>
+                  </h2>
+                  <div className="panel">
+                    <h3>Dictation mode</h3>
+                    <p>
+                      Auto shapes your text to fit whatever app you’re typing
+                      into. Pick a fixed mode to always format the same way. Your
+                      words are never dropped.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["auto", "Auto", "Match the app I’m typing into"],
+                          ["plain", "Plain", "Exactly what I said, no changes"],
+                          ["list", "List", "Turn spoken lists into bullets"],
+                          ["email", "Email", "Tidy formatting for messages"],
+                          ["code", "Code", "Leave code and names untouched"],
+                          ["notes", "Notes", "Formatting for quick notes"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.dictationMode ?? "auto") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, dictationMode: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="panel">
+                    <h3>Auto-cleanup</h3>
+                    <p>
+                      How much Yap tidies each transcript. None pastes your exact
+                      words; higher levels drop “um”s, fix things you re-said,
+                      and format the result. Your words are never dropped.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["none", "None", "Exactly as spoken"],
+                          ["light", "Light", "Remove filler + fix re-dos"],
+                          ["medium", "Medium", "Light + smart formatting"],
+                          ["high", "High", "Medium + AI polish"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.cleanupLevel ?? "light") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, cleanupLevel: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.autoPaste}
+                      onChange={(e) =>
+                        saveSettings({
+                          ...settings,
+                          autoPaste: e.target.checked,
+                        })
+                      }
+                    />
+                    <span>
+                      Paste my words automatically when I finish talking (needs
+                      Accessibility permission)
+                    </span>
+                  </label>
+                  <label className="field">
+                    <span>Language I speak</span>
+                    <select
+                      value={settings.language}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, language: e.target.value })
+                      }
                     >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="muted tiny" style={{ marginTop: 8 }}>
-                  {
-                    PROFILES.find(
-                      (p) => p.id === (settings.speedProfile || "balanced"),
-                    )?.blurb
-                  }
-                </p>
-              </div>
-              <label className="field">
-                <span>Voice model (advanced override)</span>
-                <select
-                  value={settings.model}
-                  onChange={(e) =>
-                    saveSettings({ ...settings, model: e.target.value })
-                  }
-                >
-                  {MODELS.map((m) => (
-                    <option key={m} value={m}>
-                      {m.replace("mlx-community/", "")}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                      <option value="en">English</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                      <option value="ht">Haitian Creole</option>
+                    </select>
+                  </label>
+                </section>
+              )}
+
+              {/* ── Audio — capture cleanup + what plays while you talk ── */}
+              {settingsTab === "audio" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Audio
+                    <span className="sub">
+                      Cleaning up your mic and quieting the room while you talk.
+                    </span>
+                  </h2>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.denoise ?? true}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, denoise: e.target.checked })
+                      }
+                    />
+                    <span>
+                      <strong>Denoise</strong> — remove steady background noise
+                      like fans, hum, and keyboard clatter before transcribing
+                    </span>
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.muteWhileDictating ?? true}
+                      onChange={(e) =>
+                        saveSettings({
+                          ...settings,
+                          muteWhileDictating: e.target.checked,
+                        })
+                      }
+                    />
+                    <span>
+                      <strong>Mute the Mac while dictating</strong> — silence
+                      system audio so nothing plays over you, and restore your
+                      exact volume when you stop
+                    </span>
+                  </label>
+                </section>
+              )}
+
+              {/* ── Shortcut — the key you hold to talk ── */}
+              {settingsTab === "shortcut" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Shortcut
+                    <span className="sub">
+                      The key you hold to start talking.
+                    </span>
+                  </h2>
+                  <div className="panel">
+                    <h3>Hold-to-talk key</h3>
+                    <p>
+                      Default is <strong>fn + Control</strong>. Hold it to talk,
+                      double-tap to keep it running hands-free, then tap again to
+                      stop. Needs Accessibility permission. Tip: set Keyboard →
+                      “Press 🌐 key to” → <strong>Do Nothing</strong> so the
+                      Globe key doesn’t open emoji.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["fn_control", "fn⌃", "Hold + double-tap hands-free"],
+                          ["fn", "fn", "Bare Globe only"],
+                          ["both", "fn / fn⌃", "Either combo"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.pttBinding ?? "fn_control") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() => applyBinding(id)}
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {/* YV15 — record the next combo instead of picking a preset. */}
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        marginTop: 12,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className={capturing ? "primary" : "ghost"}
+                        aria-pressed={capturing}
+                        onClick={() => {
+                          setCaptureHint(
+                            capturing
+                              ? null
+                              : "Listening… hold your shortcut now (Esc to cancel).",
+                          );
+                          setCapturing((c) => !c);
+                        }}
+                      >
+                        {capturing
+                          ? "Listening… press your keys"
+                          : "Set shortcut"}
+                      </button>
+                      <span className="muted">
+                        Currently <strong>{settings.hotkeyLabel}</strong>
+                      </span>
+                    </div>
+                    {captureHint && (
+                      <p className="muted" style={{ marginTop: 8 }}>
+                        {captureHint}
+                      </p>
+                    )}
+                    <label className="toggle" style={{ marginTop: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.keepCmdShiftV ?? false}
+                        onChange={(e) =>
+                          saveSettings({
+                            ...settings,
+                            keepCmdShiftV: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>Also let me hold ⌘⇧V as a backup</span>
+                    </label>
+                    <p style={{ marginTop: 12 }}>
+                      Currently set to <strong>{settings.hotkeyLabel}</strong>.
+                      The companion stays bottom-center and follows you across
+                      every desktop. Yap also learns the words you use most over
+                      time.
+                    </p>
+                  </div>
+                </section>
+              )}
+
+              {/* ── Advanced — model & speed tuning ── */}
+              {settingsTab === "advanced" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Advanced — Model &amp; Speed
+                    <span className="sub">
+                      Leave these as-is unless dictation feels slow.
+                    </span>
+                  </h2>
+                  <div className="panel">
+                    <h3>Speed vs. accuracy</h3>
+                    <p className="muted">
+                      Yap keeps your voice model loaded so dictation starts the
+                      moment you press your key. Choose <strong>Fast</strong>{" "}
+                      when your Mac is busy, or a higher-accuracy option when you
+                      want the cleanest text. Everything runs on your Mac.
+                    </p>
+                    <div className="actions wrap" style={{ marginTop: 10 }}>
+                      {PROFILES.map((p) => (
+                        <button
+                          key={p.id}
+                          className={
+                            (settings.speedProfile || "balanced") === p.id
+                              ? "primary"
+                              : undefined
+                          }
+                          onClick={() =>
+                            saveSettings({
+                              ...settings,
+                              speedProfile: p.id,
+                              model: p.model,
+                            })
+                          }
+                          title={p.blurb}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="muted tiny" style={{ marginTop: 8 }}>
+                      {
+                        PROFILES.find(
+                          (p) => p.id === (settings.speedProfile || "balanced"),
+                        )?.blurb
+                      }
+                    </p>
+                  </div>
+                  <label className="field">
+                    <span>Voice model (advanced override)</span>
+                    <select
+                      value={settings.model}
+                      onChange={(e) =>
+                        saveSettings({ ...settings, model: e.target.value })
+                      }
+                    >
+                      {MODELS.map((m) => (
+                        <option key={m} value={m}>
+                          {m.replace("mlx-community/", "")}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </section>
+              )}
 
               {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
-              <h2 className="settings-section">
-                Privacy &amp; Diagnostics
-                <span className="sub">
-                  Everything stays on your Mac. Export or inspect your data here.
-                </span>
-              </h2>
-              <div className="actions wrap">
-                <button
-                  className="primary"
-                  onClick={() => saveSettings(settings)}
-                >
-                  Save settings
-                </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      const p = await invoke<string>("export_history");
-                      toast(`Exported → ${p}`);
-                    } catch (e) {
-                      toast(String(e));
-                    }
-                  }}
-                >
-                  Export transcripts
-                </button>
-                <button onClick={() => invoke("open_data_dir")}>
-                  Open data folder
-                </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      await invoke("open_logs_dir");
-                      toast("Opened logs folder for diagnostics");
-                    } catch (e) {
-                      toast(String(e));
-                    }
-                  }}
-                >
-                  Export diagnostics (logs)
-                </button>
-                <button onClick={() => setNav("permissions")}>
-                  Permissions
-                </button>
-                <button onClick={replayOnboarding}>Replay onboarding</button>
-              </div>
+              {settingsTab === "privacy" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Privacy &amp; Diagnostics
+                    <span className="sub">
+                      Everything stays on your Mac. Export or inspect your data
+                      here.
+                    </span>
+                  </h2>
+                  <div className="actions wrap">
+                    <button
+                      className="primary"
+                      onClick={() => saveSettings(settings)}
+                    >
+                      Save settings
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const p = await invoke<string>("export_history");
+                          toast(`Exported → ${p}`);
+                        } catch (e) {
+                          toast(String(e));
+                        }
+                      }}
+                    >
+                      Export transcripts
+                    </button>
+                    <button onClick={() => invoke("open_data_dir")}>
+                      Open data folder
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke("open_logs_dir");
+                          toast("Opened logs folder for diagnostics");
+                        } catch (e) {
+                          toast(String(e));
+                        }
+                      }}
+                    >
+                      Export diagnostics (logs)
+                    </button>
+                    <button onClick={() => setNav("permissions")}>
+                      Permissions
+                    </button>
+                    <button onClick={replayOnboarding}>Replay onboarding</button>
+                  </div>
+                </section>
+              )}
             </div>
           )}
         </div>

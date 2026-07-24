@@ -34,7 +34,22 @@ interface YappyHouseProps {
   wordsToday?: number;
   /** Current day streak — from the real Insights rollup. Omitted → tile hidden. */
   streakDays?: number;
+  /**
+   * Companion tone (YV27): friendly | rude | rose — flavours Yappy's live mood
+   * label. Read from settings (passed by App), never a hardcoded constant.
+   */
+  companionTone?: string;
 }
+
+// YV27 — tone-keyed mood vocabulary. Same underlying state, different voice.
+type HouseTone = "friendly" | "rude" | "rose";
+type MoodKey = "listening" | "thinking" | "done" | "nap" | "work" | "idle";
+const MOODS: Record<HouseTone, Record<MoodKey, string>> = {
+  friendly: { listening: "listening", thinking: "thinking", done: "proud ♥", nap: "napping", work: "working", idle: "content" },
+  rude: { listening: "all ears", thinking: "hmm…", done: "not bad", nap: "do not disturb", work: "grinding", idle: "whatever" },
+  rose: { listening: "listening 🌹", thinking: "thinking of you", done: "adores you 🌹", nap: "dreaming", work: "working for you", idle: "missing you 🌹" },
+};
+const toHouseTone = (t?: string): HouseTone => (t === "rude" || t === "rose" ? t : "friendly");
 
 // Real system clock → sky phase. Prototype keyframes: 0 dawn · .25 day · .5 dusk
 // · .75 night (wraps). Map local time so dawn≈6am, noon≈day, 6pm≈dusk, midnight≈night.
@@ -44,9 +59,19 @@ function phaseFromClock(): number {
   return (((hoursDecimal - 6 + 24) % 24) / 24) % 1;
 }
 
-export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) {
+export default function YappyHouse({
+  wordsToday,
+  streakDays,
+  companionTone,
+}: YappyHouseProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const moodRef = useRef<HTMLSpanElement | null>(null);
+  // YV27 — keep the live tone in a ref so the mood label (set inside the
+  // mount-once render effect) reads the current tone without re-running the loop.
+  const toneRef = useRef<HouseTone>(toHouseTone(companionTone));
+  useEffect(() => {
+    toneRef.current = toHouseTone(companionTone);
+  }, [companionTone]);
 
   useEffect(() => {
     const stage = canvasRef.current;
@@ -644,18 +669,20 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
     function setMood() {
       const el = moodRef.current;
       if (!el) return;
-      const m =
+      const key: MoodKey =
         state.appState === "listening"
           ? "listening"
           : state.appState === "thinking"
             ? "thinking"
             : state.appState === "done"
-              ? "proud ♥"
+              ? "done"
               : state.activity === "sleep"
-                ? "napping"
+                ? "nap"
                 : state.activity === "work"
-                  ? "working"
-                  : "content";
+                  ? "work"
+                  : "idle";
+      // Tone read live from the ref — never a hardcoded label (YV27).
+      const m = MOODS[toneRef.current][key];
       if (el.textContent !== m) el.textContent = m;
     }
 

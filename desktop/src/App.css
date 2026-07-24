@@ -867,6 +867,49 @@ code {
   max-width: 640px;
 }
 
+/* YV27 · in-Settings segmented sub-nav — one panel at a time, no infinite scroll */
+.settings-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.subnav-item {
+  flex: 1 1 auto;
+  min-width: 88px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.subnav-item:hover {
+  color: var(--text);
+}
+
+.subnav-item.active {
+  background: var(--bg-card);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* YV13 · plain-language sectioned Settings */
 .settings-section {
   margin: 22px 0 2px;
