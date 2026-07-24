@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -158,6 +158,13 @@ struct AppState {
     venv_python: PathBuf,
     asr_worker: PathBuf,
     hotkey_registered: PLMutex<bool>,
+    /// Menu-bar (tray) handles, set once during setup after the tray is built.
+    /// Kept so state transitions can reflect into the dropdown + tooltip (YV26).
+    tray: PLMutex<Option<TrayIcon<Wry>>>,
+    /// The dynamic Start/Stop Dictation item (label follows `recording`).
+    tray_dictation: PLMutex<Option<MenuItem<Wry>>>,
+    /// The Hands-free check item (check follows the `hands_free` latch).
+    tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
 }
 
 fn data_dir() -> PathBuf {
@@ -221,6 +228,52 @@ fn build_status(state: &AppState) -> AppStatus {
 
 fn emit_status(app: &AppHandle, state: &AppState) {
     let _ = app.emit("status", &build_status(state));
+    sync_tray(app, state);
+}
+
+/// Reflect the live recording / busy / hands-free state into the menu-bar
+/// dropdown (Start↔Stop Dictation label, Hands-free check) and the tray tooltip
+/// (idle vs recording vs transcribing). Called from `emit_status`, so every
+/// state transition already funneling through it also refreshes the toolbar —
+/// keeping the menu-bar control in lockstep with the pill + hotkey (YV26).
+///
+/// muda menu / NSStatusItem mutations must run on the main thread on macOS, and
+/// `emit_status` is sometimes invoked from the ASR worker thread, so the actual
+/// updates are hopped onto the main thread with cheap Arc-backed handle clones.
+fn sync_tray(app: &AppHandle, state: &AppState) {
+    let recording = *state.recording.lock();
+    let busy = *state.busy.lock();
+    let hands_free = *state.hands_free.lock();
+    let dictation = state.tray_dictation.lock().clone();
+    let hf_item = state.tray_hands_free.lock().clone();
+    let tray = state.tray.lock().clone();
+    if dictation.is_none() && hf_item.is_none() && tray.is_none() {
+        return; // tray not built yet (early startup emit)
+    }
+    let _ = app.run_on_main_thread(move || {
+        if let Some(item) = dictation {
+            let _ = item.set_text(if recording {
+                "Stop Dictation"
+            } else {
+                "Start Dictation"
+            });
+        }
+        if let Some(item) = hf_item {
+            let _ = item.set_checked(hands_free);
+        }
+        if let Some(tray) = tray {
+            let tip = if recording && hands_free {
+                "Yap — hands-free recording"
+            } else if recording {
+                "Yap — recording"
+            } else if busy {
+                "Yap — transcribing…"
+            } else {
+                "Yap — hold fn to dictate"
+            };
+            let _ = tray.set_tooltip(Some(tip));
+        }
+    });
 }
 
 fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
@@ -874,6 +927,9 @@ pub fn run() {
         venv_python: venv_py,
         asr_worker: worker,
         hotkey_registered: PLMutex::new(false),
+        tray: PLMutex::new(None),
+        tray_dictation: PLMutex::new(None),
+        tray_hands_free: PLMutex::new(None),
     });
 
     tauri::Builder::default()
@@ -960,14 +1016,52 @@ pub fn run() {
                 });
             }
 
+            // Menu-bar dropdown (Wispr parity): a full control surface so Yap is
+            // driveable from the toolbar as well as the pill + hotkey (YV26).
+            // `toggle` label + `hands_free` check are refreshed live by sync_tray.
+            let recording_now = *state.recording.lock();
+            let dictation_i = MenuItem::with_id(
+                app,
+                "toggle",
+                if recording_now {
+                    "Stop Dictation"
+                } else {
+                    "Start Dictation"
+                },
+                true,
+                None::<&str>,
+            )?;
+            let hands_free_i = CheckMenuItem::with_id(
+                app,
+                "hands_free",
+                "Hands-free",
+                true,
+                *state.hands_free.lock(),
+                None::<&str>,
+            )?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
-            let toggle_i =
-                MenuItem::with_id(app, "toggle", "Start / Stop dictation", true, None::<&str>)?;
+            let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &toggle_i, &quit_i])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &dictation_i,
+                    &hands_free_i,
+                    &sep1,
+                    &show_i,
+                    &settings_i,
+                    &sep2,
+                    &quit_i,
+                ],
+            )?;
+            // Keep handles so state transitions can reflect into the dropdown.
+            *state.tray_dictation.lock() = Some(dictation_i);
+            *state.tray_hands_free.lock() = Some(hands_free_i);
             let icon = app.default_window_icon().cloned().ok_or("missing app icon")?;
 
-            let _tray = TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -983,6 +1077,36 @@ pub fn run() {
                             if let Some(w) = app.get_webview_window("main") {
                                 let _ = w.show();
                                 let _ = w.set_focus();
+                            }
+                        }
+                        "settings" => {
+                            // Open the app AND jump it to the Settings view.
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                            let _ = app.emit("navigate", "settings");
+                        }
+                        "hands_free" => {
+                            if *state.hands_free.lock() {
+                                // Turning hands-free OFF finalizes the take, mirroring
+                                // the physical "tap-to-end-hands-free" path — clear
+                                // both the app-side and PTT tap-side latches, then
+                                // transcribe what was captured.
+                                *state.hands_free.lock() = false;
+                                #[cfg(target_os = "macos")]
+                                ptt_macos::end_hands_free();
+                                stop_and_transcribe(app.clone(), state.clone());
+                            } else {
+                                // Turning hands-free ON: ensure a take is running,
+                                // then latch it so key-release / stop won't finalize.
+                                if !*state.recording.lock() && !*state.busy.lock() {
+                                    start_recording(app, &state);
+                                }
+                                if *state.recording.lock() {
+                                    *state.hands_free.lock() = true;
+                                }
+                                emit_status(app, &state);
                             }
                         }
                         "toggle" => {
@@ -1019,6 +1143,9 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // Retain the tray so its tooltip can be updated on state changes and
+            // so it isn't dropped when this setup scope ends.
+            *state.tray.lock() = Some(tray);
 
             emit_status(app.handle(), &state);
 
