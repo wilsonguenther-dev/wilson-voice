@@ -28,3 +28,6 @@ desktop/src-tauri/gen/
 
 # iCloud Desktop conflict copies (never commit — repo lives in ~/Desktop)
 * [0-9].*
+
+# Landing page is hand-authored source, not build output
+!site/dist/

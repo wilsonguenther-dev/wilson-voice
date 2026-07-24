@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yap — dictation that never leaves your Mac</title>
+<meta name="description" content="Yap is a free, on-device dictation app for macOS. Hold a key, talk, and it types — using a local Whisper model. Your voice and words never leave your machine.">
+<meta name="theme-color" content="#f3ead6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17110a" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Yap — dictation that never leaves your Mac">
+<meta property="og:description" content="Free, on-device dictation for macOS. Hold a key, talk, it types. Nothing leaves your Mac.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23bfe6ff'/%3E%3Ccircle cx='16' cy='17' r='9' fill='%23ffcf3f'/%3E%3Cpath d='M15 6l1 4 1-4z' fill='%23ef9a1e'/%3E%3Ccircle cx='19' cy='15' r='1.4' fill='%23241c13'/%3E%3Cpath d='M24 16l4 1.5-4 1.5z' fill='%23ef7d3c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="mark"><svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="17" r="9" fill="#ffcf3f"/><path d="M15 6l1 4 1-4z" fill="#ef9a1e"/><circle cx="19" cy="15" r="1.6" fill="#241c13"/><path d="M24 16l4 1.5-4 1.5z" fill="#ef7d3c"/></svg></span>
+      <span>Yap<span class="tag">on-device dictation</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#how" class="hide-sm">How it works</a>
+      <a href="#privacy" class="hide-sm">Privacy</a>
+      <a href="#social" class="hide-sm">What's next</a>
+      <a class="btn btn-primary" href="https://github.com/wilsonguenther-dev/wilson-voice/releases/download/v0.5.5/Yap-0.5.5-arm64.dmg" download>Download</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">Free · macOS · open source</span>
+        <h1>Talk. It types.<br>Nothing leaves<br>your Mac.</h1>
+        <p class="lede">Hold a key, speak, and Yap drops the text right where your cursor is — transcribed by a Whisper model running <b>entirely on your machine</b>.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/wilsonguenther-dev/wilson-voice/releases/download/v0.5.5/Yap-0.5.5-arm64.dmg" download>
+            Download for Mac <small>· v0.5.5 · .dmg</small>
+          </a>
+          <a class="btn btn-ghost" href="#how">See how it works</a>
+        </div>
+        <div class="req"><span>⌘</span><b>Apple Silicon</b> · macOS 13+ · notarized &amp; signed</div>
+        <div class="badge-row">
+          <span class="badge"><span class="dot"></span>No account</span>
+          <span class="badge"><span class="dot"></span>No cloud</span>
+          <span class="badge"><span class="dot"></span>No telemetry</span>
+          <span class="badge"><span class="dot"></span>Works offline</span>
+        </div>
+      </div>
+      <div class="scene">
+        <div class="cottage"><canvas id="yappy" width="880" height="880" aria-label="Yappy, a pixel chick, sitting in a cozy lamp-lit room"></canvas></div>
+        <div class="float-pill"><span class="wv"><i></i><i></i><i></i><i></i><i></i></span> Listening…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Three steps, no setup</span>
+        <h2>Dictate anywhere you can type.</h2>
+        <p>Yap lives in your menu bar and floats a tiny pill while you talk. It works in your editor, your terminal, Slack, the browser — anywhere with a text field.</p>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <div class="n">01</div>
+          <h3>Hold to talk</h3>
+          <p>Press and hold <span class="kbd">fn</span>. A pill appears and the waveform starts moving. Let go when you're done — or flip on hands-free.</p>
+        </div>
+        <div class="step reveal">
+          <div class="n">02</div>
+          <h3>It transcribes on-device</h3>
+          <p>A local Whisper model turns your speech into clean text in a few hundred milliseconds. The audio is processed in memory and deleted right after.</p>
+        </div>
+        <div class="step reveal">
+          <div class="n">03</div>
+          <h3>Text lands at your cursor</h3>
+          <p>Yap copies the result and pastes it into whatever you were typing in. Re-paste the last take anytime with <span class="kbd">⌃⌘V</span>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="features">
+        <div class="feat reveal"><div class="ic">🔒</div><h3>On-device Whisper</h3><p>Apple-MLX Whisper runs locally. After a one-time model download, transcription is fully offline.</p></div>
+        <div class="feat reveal"><div class="ic">🪶</div><h3>Floating pill</h3><p>A calm, always-there island shows you it's listening — with a live waveform that rests when you do.</p></div>
+        <div class="feat reveal"><div class="ic">🧹</div><h3>Smart cleanup</h3><p>Fillers and false starts get tidied automatically, so "um, so like—" becomes the sentence you meant.</p></div>
+        <div class="feat reveal"><div class="ic">🙌</div><h3>Hands-free mode</h3><p>Tap once to start, tap to stop. Great for long-form thinking out loud without holding a key.</p></div>
+        <div class="feat reveal"><div class="ic">📇</div><h3>Your dictionary</h3><p>Teach Yap the names, jargon, and spellings you use — so it stops guessing and starts knowing.</p></div>
+        <div class="feat reveal"><div class="ic">📜</div><h3>Local history</h3><p>Every transcript is searchable and stored only on your Mac. Delete one, clear all, export never.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRIVACY -->
+  <section id="privacy">
+    <div class="wrap">
+      <div class="privacy reveal">
+        <span class="eyebrow">The whole point</span>
+        <p class="lead" style="margin-top:14px">Your voice and your words <span class="hl">never leave your device</span> — because there's nowhere for them to go.</p>
+        <div class="facts">
+          <div class="fact"><span class="chk">✓</span><div><b>No account, ever</b><span>No sign-in, no email, no profile. You open the app and dictate.</span></div></div>
+          <div class="fact"><span class="chk">✓</span><div><b>No servers receive your data</b><span>We don't have an endpoint that could collect your speech or text. There's nothing to leak.</span></div></div>
+          <div class="fact"><span class="chk">✓</span><div><b>Audio is deleted immediately</b><span>The temporary recording is erased the moment transcription finishes — even if it fails.</span></div></div>
+          <div class="fact"><span class="chk">✓</span><div><b>You hold the keys</b><span>Transcripts live in a local database in your Library. Keep FileVault on and they're encrypted at rest.</span></div></div>
+        </div>
+        <p class="net"><b>The only network Yap ever touches:</b> a one-time model download on first run, and an update check. That's the complete list — no analytics, no telemetry, no crash reports. <a href="privacy.html">Read the full privacy policy →</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SOCIAL FUTURE -->
+  <section id="social">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="soon">◍ On the roadmap</span>
+        <h2 style="margin-top:16px">A little bird that grows with you.</h2>
+        <p>Yappy is the first of a set of collectible pixel creatures. Soon, Yap becomes a quiet, private feed where developers share <em>what they yapped about</em> — a daily note, a favorite quote, a streak — on your terms, never the raw transcript.</p>
+      </div>
+      <div class="creatures reveal">
+        <div class="crt"><span class="av" style="background:var(--chick)">🐥</span><small>Yappy</small></div>
+        <div class="crt"><span class="av" style="background:var(--koala)">🐨</span><small>Koala</small></div>
+        <div class="crt"><span class="av" style="background:var(--roo)">🦘</span><small>Kangaroo</small></div>
+        <div class="crt"><span class="av" style="background:var(--sala)">🦎</span><small>Salamander</small></div>
+        <div class="crt"><span class="av" style="background:var(--bug)">🐞</span><small>Ladybug</small></div>
+      </div>
+      <div class="social-grid">
+        <div>
+          <div class="facts" style="grid-template-columns:1fr">
+            <div class="fact"><span class="chk">◍</span><div><b>Private by default</b><span>A four-level share ladder — Private, Topic, Quote, Full — so you choose exactly what a post reveals.</span></div></div>
+            <div class="fact"><span class="chk">◍</span><div><b>Summaries, not transcripts</b><span>On-device summaries mean the feed shows the gist you approve, never the words you spoke.</span></div></div>
+            <div class="fact"><span class="chk">◍</span><div><b>Creatures react to your day</b><span>Your pixel pet levels up, shows a streak, and reacts to how much you shipped.</span></div></div>
+          </div>
+          <p style="color:var(--muted);font-size:.9rem;margin-top:20px;font-family:var(--mono)">Preview below — the feed is a concept, not shipped. The single-user app above is real and ready today.</p>
+        </div>
+        <div class="feedcard reveal" aria-hidden="true">
+          <div class="yap you">
+            <div class="h"><span class="av" style="background:var(--chick)">🐥</span><div><div class="nm">You <span class="c">· Yappy</span></div></div><span class="when">just now</span></div>
+            <p><span class="say">Yappy says</span> you shipped a notarized build and rethemed the whole app — the cozy version finally matches the chick.</p>
+          </div>
+          <div class="yap">
+            <div class="h"><span class="av" style="background:var(--koala)">🐨</span><div><div class="nm">Mira <span class="c">· Koala</span></div></div><span class="when">2h</span></div>
+            <p><span class="say">Koala mumbles that</span> Mira tuned three queries quietly killing prod.</p>
+          </div>
+          <div class="yap">
+            <div class="h"><span class="av" style="background:var(--sala)">🦎</span><div><div class="nm">Sol <span class="c">· Salamander</span></div></div><span class="when">4h</span></div>
+            <p><span class="say">Salamander hisses that</span> Sol rewrote the render pipeline. It was on fire. Now it's just warm.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOWNLOAD -->
+  <section class="download">
+    <div class="wrap">
+      <div class="band reveal">
+        <span class="eyebrow">Ready when you are</span>
+        <h2 style="margin-top:12px">Get Yap for Mac.</h2>
+        <p>Free and open source. Download the signed, notarized app and start dictating in under a minute.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/wilsonguenther-dev/wilson-voice/releases/download/v0.5.5/Yap-0.5.5-arm64.dmg" download>
+            Download Yap <small>· v0.5.5 · Apple Silicon</small>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/wilsonguenther-dev/wilson-voice">View on GitHub</a>
+        </div>
+        <div class="req">Requires macOS 13 Ventura or later on Apple Silicon. Notarized by Apple.</div>
+        <div class="opensource">Apache-2.0 licensed · builds locally · your data stays yours</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="mark"><svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="17" r="9" fill="#ffcf3f"/><path d="M15 6l1 4 1-4z" fill="#ef9a1e"/><circle cx="19" cy="15" r="1.6" fill="#241c13"/><path d="M24 16l4 1.5-4 1.5z" fill="#ef7d3c"/></svg></span><span>Yap</span></a>
+    <div class="links">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="https://github.com/wilsonguenther-dev/wilson-voice">GitHub</a>
+      <a href="https://github.com/wilsonguenther-dev/wilson-voice/issues/new">Feedback</a>
+      <a href="#" id="theme-toggle" role="button">Theme</a>
+    </div>
+    <div class="cr">Built by Wilson Guenther · © 2026</div>
+  </div>
+</footer>
+
+<script>
+// Cozy pixel-ish scene: Yappy the chick in a lamp-lit room, drawn crisp at DPR.
+(function(){
+  var c=document.getElementById('yappy'); if(!c) return;
+  var ctx=c.getContext('2d'); var S=880; // logical grid we draw against
+  var dark=matchMedia('(prefers-color-scheme: dark)').matches
+        || document.documentElement.getAttribute('data-theme')==='dark';
+  function P(x,y,w,h,col){ctx.fillStyle=col;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
+  function draw(){
+    dark=document.documentElement.getAttribute('data-theme')==='dark'
+      || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+    ctx.clearRect(0,0,S,S);
+    var wall = dark? '#2a2013':'#fdf3dd', wall2 = dark?'#221a0f':'#f7ead0';
+    var floor= dark? '#3a2c19':'#d9b483', floor2= dark?'#32261571':'#c99f6e';
+    // wall + floor
+    var g=ctx.createLinearGradient(0,0,0,S*0.66); g.addColorStop(0,wall);g.addColorStop(1,wall2);
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S*0.66);
+    P(0,S*0.66,S,S*0.34,floor);
+    for(var i=1;i<7;i++) P(0,S*0.66+i*46,S,3,floor2);
+    // warm light beam from the window
+    ctx.save();ctx.globalAlpha=dark?0.16:0.28;ctx.fillStyle='#ffd98a';
+    ctx.beginPath();ctx.moveTo(150,150);ctx.lineTo(430,150);ctx.lineTo(640,S*0.72);ctx.lineTo(250,S*0.72);ctx.closePath();ctx.fill();ctx.restore();
+    // window
+    P(150,120,260,240,dark?'#7c5a34':'#b98a52'); // frame
+    var sky=ctx.createLinearGradient(0,140,0,340); sky.addColorStop(0,'#bfe6ff');sky.addColorStop(1,'#e9f6ff');
+    ctx.fillStyle=sky;ctx.fillRect(168,138,224,204);
+    // sun + cloud
+    P(320,168,44,44,'#fff2ad'); ctx.fillStyle='#fff2ad';ctx.beginPath();ctx.arc(342,190,26,0,7);ctx.fill();
+    P(196,250,70,18,'#ffffff'); P(214,236,50,18,'#ffffff');
+    // muntins
+    P(276,138,8,204,dark?'#7c5a34':'#b98a52'); P(168,232,224,8,dark?'#7c5a34':'#b98a52');
+    // little shelf w/ plant on the right
+    P(560,300,150,10,dark?'#7c5a34':'#b98a52');
+    P(600,250,12,50,'#8a5a3c'); ctx.fillStyle=dark?'#4f7d52':'#67a86b';ctx.beginPath();ctx.arc(606,244,30,0,7);ctx.fill();
+    P(596,300,32,0,'#000');
+    // rug
+    ctx.fillStyle=dark?'#5a3b22':'#efc9a3';ctx.beginPath();ctx.ellipse(455,700,210,54,0,0,7);ctx.fill();
+    ctx.fillStyle=dark?'#6b4527':'#e6b98a';ctx.beginPath();ctx.ellipse(455,700,150,36,0,0,7);ctx.fill();
+    // ---- Yappy the chick ----
+    var cx=455, cy=560, r=118;
+    // shadow
+    ctx.fillStyle='rgba(80,50,20,'+(dark?0.35:0.16)+')';ctx.beginPath();ctx.ellipse(cx,cy+r-6,r*0.86,26,0,0,7);ctx.fill();
+    // feet
+    P(cx-42,cy+r-30,26,34,'#ef7d3c'); P(cx+16,cy+r-30,26,34,'#ef7d3c');
+    // body
+    ctx.fillStyle='#ffcf3f';ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.fill();
+    // belly highlight
+    ctx.fillStyle='#ffe08a';ctx.beginPath();ctx.arc(cx-8,cy+18,r*0.7,0,7);ctx.fill();
+    // wing
+    ctx.fillStyle='#f2b705';ctx.beginPath();ctx.ellipse(cx-r*0.62,cy+8,34,54,-0.3,0,7);ctx.fill();
+    // tuft (two spikes)
+    ctx.fillStyle='#f2b705';
+    ctx.beginPath();ctx.moveTo(cx-30,cy-r+18);ctx.lineTo(cx-20,cy-r-32);ctx.lineTo(cx-6,cy-r+14);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(cx+2,cy-r+16);ctx.lineTo(cx+16,cy-r-28);ctx.lineTo(cx+30,cy-r+18);ctx.closePath();ctx.fill();
+    // cheeks
+    ctx.fillStyle='rgba(239,125,60,0.28)';ctx.beginPath();ctx.arc(cx+52,cy+10,20,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-56,cy+10,18,0,7);ctx.fill();
+    // eyes
+    ctx.fillStyle='#241c13';ctx.beginPath();ctx.arc(cx+28,cy-24,13,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-20,cy-24,13,0,7);ctx.fill();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(cx+32,cy-28,4,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-16,cy-28,4,0,7);ctx.fill();
+    // beak
+    ctx.fillStyle='#ef7d3c';ctx.beginPath();ctx.moveTo(cx+2,cy+4);ctx.lineTo(cx+34,cy+16);ctx.lineTo(cx+2,cy+30);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#c85a1e';ctx.beginPath();ctx.moveTo(cx+2,cy+18);ctx.lineTo(cx+20,cy+22);ctx.lineTo(cx+2,cy+30);ctx.closePath();ctx.fill();
+  }
+  // crisp for DPR
+  var dpr=Math.min(devicePixelRatio||1,2);
+  c.width=S*dpr;c.height=S*dpr;c.style.width='100%';c.style.height='100%';
+  ctx.scale(dpr,dpr);
+  draw();
+  new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
+})();
+
+// Theme toggle (respects OS default; toggle stamps data-theme)
+(function(){
+  var t=document.getElementById('theme-toggle'); if(!t) return;
+  t.addEventListener('click',function(e){
+    e.preventDefault();
+    var cur=document.documentElement.getAttribute('data-theme');
+    var isDark = cur? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', isDark?'light':'dark');
+  });
+})();
+
+// Reveal on scroll
+(function(){
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches){document.querySelectorAll('.reveal').forEach(function(el){el.classList.add('in')});return;}
+  var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}})},{threshold:0.12});
+  document.querySelectorAll('.reveal').forEach(function(el){io.observe(el)});
+})();
+</script>
+</body>
+</html>
