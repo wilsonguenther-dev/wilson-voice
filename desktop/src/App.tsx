@@ -377,6 +377,11 @@ export default function App() {
       setFlash(e.payload);
       setTimeout(() => setFlash(null), 2800);
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
+    listen<string>("navigate", (e) => {
+      const dest = e.payload as Nav;
+      setNav(dest);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
