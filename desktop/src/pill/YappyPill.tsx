@@ -12,7 +12,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
-import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
+import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket, type Tone } from "./tone";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -38,10 +38,11 @@ const WORK: Record<ChatTone, Partial<Record<Bucket, string[]>>> = {
     epic: ["your whole story 🌹", "typing it all…", "every word matters…"],
   },
 };
-// live chatter tone tracks the configured tone (rude/friendly/rose); "off" falls back to friendly
-const CHAT_TONE: ChatTone = DEFAULT_TONE.tone === "off" ? "friendly" : DEFAULT_TONE.tone;
-const chatty = (w: number) => { const o = WORK[CHAT_TONE][bucketFor(w)]; return !!(o && o.length); };
-const workLine = (w: number, n: number) => { const o = WORK[CHAT_TONE][bucketFor(w)]; return o && o.length ? o[n % o.length] : ""; };
+// The live chatter tone tracks the user-selected companion tone (YV27, passed as
+// a prop from float-main); "off" or anything unexpected falls back to friendly.
+const chatToneFrom = (t: Tone): ChatTone => (t === "rude" || t === "rose" ? t : "friendly");
+const chatty = (w: number, ct: ChatTone) => { const o = WORK[ct][bucketFor(w)]; return !!(o && o.length); };
+const workLine = (w: number, n: number, ct: ChatTone) => { const o = WORK[ct][bucketFor(w)]; return o && o.length ? o[n % o.length] : ""; };
 // prop/persona keyed off the transcript word count
 const propFor = (w: number): Prop => { const b = bucketFor(w); return b === "medium" ? "pad" : (b === "long" || b === "epic") ? "desk" : "none"; };
 
@@ -72,9 +73,14 @@ class SOD {
 }
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-export default function YappyPill() {
+export default function YappyPill({ tone = DEFAULT_TONE.tone }: { tone?: Tone }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // YV27 — the selected companion tone drives every reactive line. Held in a ref
+  // so the long-lived rAF loop (mounted once) always reads the CURRENT tone when
+  // the user switches it live, without tearing down + re-creating the canvas.
+  const toneRef = useRef<Tone>(tone);
+  useEffect(() => { toneRef.current = tone; }, [tone]);
 
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
@@ -174,6 +180,8 @@ export default function YappyPill() {
     let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
     let voicedT = 0, liveSaid = -1;   // seconds of ACTUAL speech (gated on level) + highest live tier already reacted to
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
+    // current live companion tone (reads the ref so tone changes apply immediately)
+    const chatTone = (): ChatTone => chatToneFrom(toneRef.current);
 
     const ACC: Record<Phase, string> = { idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%", done: "152 69% 52%", sleepy: "230 20% 60%" };
     // listening → prop escalates by ESTIMATED words from actual speech (live); thinking/done → keyed off the transcript word count
@@ -185,8 +193,8 @@ export default function YappyPill() {
     function setPhase(p: Phase) {
       phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0;
       if (p === "listening") { moodT = 0; hop(1); say(""); voicedT = 0; liveSaid = -1; }
-      else if (p === "thinking") { moodT = 0; say(chatty(words) ? workLine(words, 0) : ""); }
-      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, DEFAULT_TONE, words)); }
+      else if (p === "thinking") { moodT = 0; const ct = chatTone(); say(chatty(words, ct) ? workLine(words, 0, ct) : ""); }
+      else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, { tone: toneRef.current, curseFilter: DEFAULT_TONE.curseFilter }, words)); }
       else { moodT = 0; say(""); }
     }
     const sparkle: Array<{ x: number; y: number; vx: number; vy: number; life: number; heart: boolean }> = [];
@@ -227,7 +235,7 @@ export default function YappyPill() {
       if (phase === "listening") {
         if (level > SPEAK_LEVEL) voicedT += dt;
         const liveTier = liveTierForWords(wordsFromVoiced(voicedT)); const idx = LIVE_TIERS.indexOf(liveTier);
-        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTier]; if (line) say(line[CHAT_TONE]); }
+        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTier]; if (line) say(line[chatTone()]); }
       } else voicedT = 0;
       const estWords = wordsFromVoiced(voicedT);
       const wantProp = wantPropFor(phase, words, estWords);
@@ -249,7 +257,7 @@ export default function YappyPill() {
       beakHold -= dt;
       if (phase === "done") beakFrame = 0;
       else if (beakHold <= 0) { let w = beakFrame; if (beakFrame === 0 && beak > .28) w = 1; else if (beakFrame === 1 && beak > .6) w = 2; else if (beakFrame >= 2 && beak < .42) w = 1; else if (beakFrame === 1 && beak < .12) w = 0; if (w !== beakFrame) { beakFrame = w; beakHold = .05; } }
-      if (phase === "thinking" && chatty(words)) { chatterTimer -= dt; if (chatterTimer <= 0) { chatterN++; say(workLine(words, chatterN)); chatterTimer = .9 + Math.random() * .5; } }
+      if (phase === "thinking" && chatty(words, chatTone())) { chatterTimer -= dt; if (chatterTimer <= 0) { chatterN++; say(workLine(words, chatterN, chatTone())); chatterTimer = .9 + Math.random() * .5; } }
       for (const p of sparkle) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 120 * dt; p.life -= dt * 1.2; }
       for (let i = sparkle.length - 1; i >= 0; i--) if (sparkle[i].life <= 0) sparkle.splice(i, 1);
 

@@ -53,6 +53,11 @@ pub struct AppSettings {
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
+    /// Yappy companion tone (YV27): friendly | rude | rose. Drives the pill +
+    /// house reactive lines/mood; the pill's curse filter stays independent.
+    /// Default "friendly".
+    #[serde(default = "default_companion_tone")]
+    pub companion_tone: String,
     /// Smart-dictation mode: auto | plain | list | email | code | notes.
     /// "auto" infers the mode from the frontmost app; any other value forces it.
     #[serde(default = "default_dictation_mode")]
@@ -88,6 +93,9 @@ fn default_ptt_binding() -> String {
 fn default_pill_style() -> String {
     "classic".into()
 }
+fn default_companion_tone() -> String {
+    "friendly".into()
+}
 fn default_dictation_mode() -> String {
     "auto".into()
 }
@@ -112,6 +120,7 @@ impl Default for AppSettings {
             ptt_binding: "fn_control".into(),
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
+            companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
             denoise: true,
@@ -1283,6 +1292,17 @@ mod tests {
         // YV12: denoise defaults ON for fresh installs and legacy JSON (serde default).
         assert!(AppSettings::default().denoise);
         assert!(parsed.denoise);
+        // YV27: companion_tone defaults to "friendly" for fresh installs and
+        // legacy JSON (written before the field existed) via serde default.
+        assert_eq!(AppSettings::default().companion_tone, "friendly");
+        assert_eq!(parsed.companion_tone, "friendly");
+        // A saved tone round-trips on the camelCase wire key.
+        let mut toned = AppSettings::default();
+        toned.companion_tone = "rude".into();
+        let tjson = serde_json::to_string(&toned).expect("serialize tone");
+        assert!(tjson.contains("\"companionTone\":\"rude\""));
+        let tback: AppSettings = serde_json::from_str(&tjson).expect("tone round-trip");
+        assert_eq!(tback.companion_tone, "rude");
 
         // A finished onboarding round-trips (camelCase key on the wire).
         let mut done = AppSettings::default();

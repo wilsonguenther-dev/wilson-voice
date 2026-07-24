@@ -13,6 +13,23 @@ type Nav =
   | "scratchpad"
   | "settings";
 
+// YV27 — Settings is split into labeled sub-sections switched by an in-Settings
+// sub-nav (segmented control) so the screen is no longer one infinite scroll.
+type SettingsTab =
+  | "companion"
+  | "dictation"
+  | "shortcut"
+  | "model"
+  | "privacy";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "companion", label: "Companion" },
+  { id: "dictation", label: "Dictation" },
+  { id: "shortcut", label: "Shortcut" },
+  { id: "model", label: "Model & Speed" },
+  { id: "privacy", label: "Privacy" },
+];
+
 interface AppSettings {
   model: string;
   language: string;
@@ -26,6 +43,11 @@ interface AppSettings {
   keepCmdShiftV?: boolean;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
+  /**
+   * Yappy companion tone (YV27): friendly | rude | rose. Drives the pill +
+   * house reactive lines/mood. Default "friendly".
+   */
+  companionTone?: string;
   /** auto | plain | list | email | code | notes */
   dictationMode?: string;
   /**
@@ -206,6 +228,8 @@ function StatusDot({ ok }: { ok: boolean }) {
 
 export default function App() {
   const [nav, setNav] = useState<Nav>("home");
+  // YV27 — which Settings sub-section is showing (segmented sub-nav).
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("companion");
   const [status, setStatus] = useState<AppStatus>({
     recording: false,
     busy: false,
@@ -882,6 +906,7 @@ export default function App() {
               <YappyHouse
                 wordsToday={insights?.wordsToday}
                 streakDays={insights?.streakDays}
+                companionTone={settings?.companionTone}
               />
 
               <div className="stats-row">
@@ -1357,7 +1382,25 @@ export default function App() {
 
           {nav === "settings" && settings && (
             <div className="settings">
+              {/* YV27 — sub-nav: one labeled section at a time, no infinite scroll. */}
+              <div className="settings-subnav" role="tablist" aria-label="Settings sections">
+                {SETTINGS_TABS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === t.id}
+                    className={settingsTab === t.id ? "subnav-tab active" : "subnav-tab"}
+                    onClick={() => setSettingsTab(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
               {/* ── Companion — the on-screen pet + HUD (surfaced first) ── */}
+              {settingsTab === "companion" && (
+              <div className="settings-group">
               <h2 className="settings-section">
                 Companion
                 <span className="sub">
@@ -1409,8 +1452,44 @@ export default function App() {
                   appears while you talk)
                 </span>
               </label>
+              <div className="panel">
+                <h3>Companion tone</h3>
+                <p>
+                  How Yappy talks back when you finish dictating. The pill and
+                  the Home habitat both follow this voice.
+                </p>
+                <div className="profile-row">
+                  {(
+                    [
+                      ["friendly", "Friendly", "Warm and encouraging"],
+                      ["rude", "Rude 😈", "Sassy roasts (kept clean)"],
+                      ["rose", "Rose 🌹", "Sweet and adoring"],
+                    ] as const
+                  ).map(([id, label, blurb]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={
+                        (settings.companionTone ?? "friendly") === id
+                          ? "profile active"
+                          : "profile"
+                      }
+                      onClick={() =>
+                        saveSettings({ ...settings, companionTone: id })
+                      }
+                    >
+                      <strong>{label}</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              </div>
+              )}
 
               {/* ── Dictation — how your speech becomes clean text ── */}
+              {settingsTab === "dictation" && (
+              <div className="settings-group">
               <h2 className="settings-section">
                 Dictation
                 <span className="sub">
@@ -1527,8 +1606,12 @@ export default function App() {
                   <option value="ht">Haitian Creole</option>
                 </select>
               </label>
+              </div>
+              )}
 
               {/* ── Shortcut — the key you hold to talk ── */}
+              {settingsTab === "shortcut" && (
+              <div className="settings-group">
               <h2 className="settings-section">
                 Shortcut
                 <span className="sub">The key you hold to start talking.</span>
@@ -1618,8 +1701,12 @@ export default function App() {
                   desktop. Yap also learns the words you use most over time.
                 </p>
               </div>
+              </div>
+              )}
 
               {/* ── Model & Speed — advanced tuning ── */}
+              {settingsTab === "model" && (
+              <div className="settings-group">
               <h2 className="settings-section">
                 Model &amp; Speed
                 <span className="sub">
@@ -1679,8 +1766,12 @@ export default function App() {
                   ))}
                 </select>
               </label>
+              </div>
+              )}
 
               {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
+              {settingsTab === "privacy" && (
+              <div className="settings-group">
               <h2 className="settings-section">
                 Privacy &amp; Diagnostics
                 <span className="sub">
@@ -1726,6 +1817,8 @@ export default function App() {
                 </button>
                 <button onClick={replayOnboarding}>Replay onboarding</button>
               </div>
+              </div>
+              )}
             </div>
           )}
         </div>

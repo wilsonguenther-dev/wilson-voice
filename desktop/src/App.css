@@ -867,6 +867,49 @@ code {
   max-width: 640px;
 }
 
+/* YV27 · in-Settings sub-nav (segmented control) — one section at a time so
+   Settings is no longer one long infinite scroll. */
+.settings-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+
+.subnav-tab {
+  flex: 1 1 auto;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.subnav-tab:hover {
+  color: var(--text);
+}
+
+.subnav-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Each sub-section keeps the same vertical rhythm as the flat list did. */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* YV13 · plain-language sectioned Settings */
 .settings-section {
   margin: 22px 0 2px;
