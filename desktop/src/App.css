@@ -700,6 +700,46 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+/* Insights charts (YV14) — hand-rolled inline SVG, no chart dep. */
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: 160px;
+}
+
+.chart-empty {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+}
+
+.heatmap-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.heatmap {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.heat-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 .kv {
   list-style: none;
   margin: 0;
