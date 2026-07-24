@@ -43,6 +43,10 @@ os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF / "hub"))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(HF / "transformers"))
 os.environ.setdefault("XDG_CACHE_HOME", str(CACHE))
 os.environ.setdefault("TMPDIR", str(TMP))
+# YV20/M4: "nothing leaves this machine" — never phone home with HF telemetry.
+# (HF_HUB_OFFLINE is set by the Rust launcher when the model is already cached,
+# so warm runs make zero huggingface.co calls; we inherit it here.)
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 try:
     os.chdir(SUPPORT)
 except OSError:

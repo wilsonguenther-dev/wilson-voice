@@ -67,7 +67,7 @@ fn refuse_desktop(label: &str, p: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_env(cmd: &mut Command, home: &Path) {
+fn apply_env(cmd: &mut Command, home: &Path, model: Option<&str>) {
     let cache = home.join("cache");
     let hf = cache.join("huggingface");
     let tmp = home.join("tmp");
@@ -85,11 +85,62 @@ fn apply_env(cmd: &mut Command, home: &Path) {
         .env("TMPDIR", &tmp)
         .env("TEMP", &tmp)
         .env("TMP", &tmp)
+        // YV20/M4: the app promise is "nothing leaves this machine" — never send
+        // HuggingFace usage telemetry, on any launch.
+        .env("HF_HUB_DISABLE_TELEMETRY", "1")
         .env_remove("PYTHONPATH")
         .env("PYTHONUNBUFFERED", "1");
+
+    // YV20/M4: once the model weights are already in the HF cache, go fully
+    // offline so a *warm* launch makes ZERO huggingface.co calls (no metadata
+    // revalidation). Only the very first download — when the snapshot is absent —
+    // is allowed to reach the network, so first-run model download still works.
+    let hub = hf.join("hub");
+    let offline = match model {
+        Some(m) => hf_snapshot_present(&hub, m),
+        None => hf_hub_has_snapshot(&hub),
+    };
+    if offline {
+        cmd.env("HF_HUB_OFFLINE", "1");
+    }
 }
 
-fn spawn_daemon(python: &Path, worker: &Path) -> Result<WarmDaemon, String> {
+/// HF hub cache directory name for a repo id: `"org/name"` → `"models--org--name"`.
+fn hf_repo_dir(model: &str) -> String {
+    format!("models--{}", model.replace('/', "--"))
+}
+
+/// A snapshots dir counts as populated when it holds at least one revision subdir
+/// (i.e. a completed download), meaning the weights are already local.
+fn snapshots_populated(snapshots: &Path) -> bool {
+    match std::fs::read_dir(snapshots) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).any(|e| e.path().is_dir()),
+        Err(_) => false,
+    }
+}
+
+/// True when a completed snapshot for `model` exists under the HF hub cache
+/// (`<hub>/models--…/snapshots/<rev>/`).
+fn hf_snapshot_present(hub: &Path, model: &str) -> bool {
+    if model.is_empty() {
+        return false;
+    }
+    snapshots_populated(&hub.join(hf_repo_dir(model)).join("snapshots"))
+}
+
+/// True when the HF hub cache already holds ANY model snapshot. Used only when
+/// the target model isn't known (e.g. a bare control ping) — offline is safe then.
+fn hf_hub_has_snapshot(hub: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(hub) else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("models--"))
+        .any(|e| snapshots_populated(&e.path().join("snapshots")))
+}
+
+fn spawn_daemon(python: &Path, worker: &Path, model: Option<&str>) -> Result<WarmDaemon, String> {
     refuse_desktop("python", &python.to_string_lossy())?;
     refuse_desktop("worker", &worker.to_string_lossy())?;
     if !python.exists() {
@@ -109,7 +160,7 @@ fn spawn_daemon(python: &Path, worker: &Path) -> Result<WarmDaemon, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    apply_env(&mut cmd, &home);
+    apply_env(&mut cmd, &home, model);
 
     let mut child = cmd
         .spawn()
@@ -202,10 +253,13 @@ fn request_line(daemon: &mut WarmDaemon, req: &serde_json::Value) -> Result<AsrR
     if resp.trim().is_empty() {
         return Err("daemon returned empty response".into());
     }
-    serde_json::from_str(resp.trim()).map_err(|e| format!("daemon JSON: {e} raw={resp}"))
+    // YV20/M2: never embed the raw response — it carries the transcript body.
+    // Log the parse error + payload size only, never the text.
+    serde_json::from_str(resp.trim())
+        .map_err(|e| format!("daemon JSON: {e} (payload {} bytes)", resp.trim().len()))
 }
 
-fn with_daemon<F, T>(python: &Path, worker: &Path, f: F) -> Result<T, String>
+fn with_daemon<F, T>(python: &Path, worker: &Path, model: Option<&str>, f: F) -> Result<T, String>
 where
     F: FnOnce(&mut WarmDaemon) -> Result<T, String>,
 {
@@ -227,7 +281,7 @@ where
             let _ = old.child.kill();
             let _ = old.child.wait();
         }
-        *guard = Some(spawn_daemon(python, worker)?);
+        *guard = Some(spawn_daemon(python, worker, model)?);
     }
 
     let daemon = guard.as_mut().unwrap();
@@ -250,7 +304,7 @@ pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: 
     std::thread::spawn(move || {
         // Small delay so UI/hotkeys register first
         std::thread::sleep(Duration::from_millis(600));
-        match with_daemon(&python, &worker, |d| {
+        match with_daemon(&python, &worker, Some(&model), |d| {
             let req = serde_json::json!({
                 "cmd": "preload",
                 "model": model,
@@ -267,7 +321,7 @@ pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: 
             Err(e) => log::warn!("ASR preload error: {e}"),
         }
         // Keepalive ping so we know daemon is still up after load
-        let _ = with_daemon(&python, &worker, |d| {
+        let _ = with_daemon(&python, &worker, Some(&model), |d| {
             request_line(d, &serde_json::json!({"cmd": "ping"}))
         });
     });
@@ -275,7 +329,7 @@ pub fn preload_async(python: PathBuf, worker: PathBuf, model: String, language: 
 
 /// Lightweight health probe (spawns daemon if needed).
 pub fn ping_daemon(python: &Path, worker: &Path) -> Result<bool, String> {
-    let r = with_daemon(python, worker, |d| {
+    let r = with_daemon(python, worker, None, |d| {
         request_line(d, &serde_json::json!({"cmd": "ping"}))
     })?;
     Ok(r.ok)
@@ -295,7 +349,7 @@ pub fn run_asr(
 
     // Prefer warm daemon. `vocab` biases decoding toward the user's terms
     // (Whisper initial_prompt); the worker joins it most-frequent-last.
-    let warm = with_daemon(python, worker, |d| {
+    let warm = with_daemon(python, worker, Some(model), |d| {
         let req = serde_json::json!({
             "cmd": "transcribe",
             "wav": wav.to_string_lossy(),
@@ -349,7 +403,7 @@ fn run_asr_oneshot(
         .arg(model)
         .arg("--language")
         .arg(language);
-    apply_env(&mut cmd, &home);
+    apply_env(&mut cmd, &home, Some(model));
     let output = cmd
         .output()
         .map_err(|e| format!("failed to spawn ASR worker: {e}"))?;
@@ -360,5 +414,51 @@ fn run_asr_oneshot(
         .rev()
         .find(|l| l.trim().starts_with('{'))
         .unwrap_or(stdout.trim());
-    serde_json::from_str(line).map_err(|e| format!("bad ASR JSON: {e}\nstdout={stdout}\nstderr={stderr}"))
+    // YV20/M2: stdout carries the transcript body — never log it. Report the
+    // parse error + stdout size only; stderr is worker diagnostics (no transcript).
+    serde_json::from_str(line).map_err(|e| {
+        format!(
+            "bad ASR JSON: {e} (stdout {} bytes)\nstderr={stderr}",
+            stdout.len()
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_dir_maps_slashes() {
+        assert_eq!(
+            hf_repo_dir("mlx-community/whisper-large-v3-turbo"),
+            "models--mlx-community--whisper-large-v3-turbo"
+        );
+        assert_eq!(hf_repo_dir("bare"), "models--bare");
+    }
+
+    #[test]
+    fn offline_only_when_snapshot_present() {
+        // Isolated temp hub cache — no snapshot yet → must stay ONLINE so the
+        // first-run download still works.
+        let hub = std::env::temp_dir().join(format!("yv20-hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&hub);
+        let model = "mlx-community/whisper-large-v3-turbo";
+        assert!(!hf_snapshot_present(&hub, model), "no cache dir → online");
+        assert!(!hf_hub_has_snapshot(&hub), "empty hub → online");
+
+        // Materialize a completed snapshot revision → now offline is safe.
+        let rev = hub
+            .join(hf_repo_dir(model))
+            .join("snapshots")
+            .join("deadbeef");
+        std::fs::create_dir_all(&rev).unwrap();
+        assert!(hf_snapshot_present(&hub, model), "populated snapshot → offline");
+        assert!(hf_hub_has_snapshot(&hub), "hub has a model → offline");
+        // An unknown/other model is still treated as not-cached (allow download).
+        assert!(!hf_snapshot_present(&hub, "other/model"));
+        assert!(!hf_snapshot_present(&hub, ""));
+
+        let _ = std::fs::remove_dir_all(&hub);
+    }
 }
