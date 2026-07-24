@@ -45,11 +45,18 @@ const workLine = (w: number, n: number) => { const o = WORK[CHAT_TONE][bucketFor
 // prop/persona keyed off the transcript word count
 const propFor = (w: number): Prop => { const b = bucketFor(w); return b === "medium" ? "pad" : (b === "long" || b === "epic") ? "desk" : "none"; };
 
-// ── LIVE escalation WHILE listening ── word count is unknown until the transcript
-// arrives, so react by how long you've been talking. quick → notes → desk → essay.
+// ── LIVE escalation WHILE listening ── the real word count is unknown until the
+// transcript arrives, so estimate it from how long you've ACTUALLY been speaking:
+// only voiced audio advances the tier — sitting in silence must NOT move it along.
 type LiveTier = "quick" | "notes" | "desk" | "essay";
 const LIVE_TIERS: LiveTier[] = ["quick", "notes", "desk", "essay"];
-const liveTierFor = (listenT: number): LiveTier => listenT < 4 ? "quick" : listenT < 9 ? "notes" : listenT < 16 ? "desk" : "essay";
+// live level (0..1) above this counts as speech; anything quieter is treated as silence
+const SPEAK_LEVEL = 0.08;
+// rough speaking rate → estimate words from seconds of actual voiced speech
+const WORDS_PER_SEC = 2.5;
+const wordsFromVoiced = (voicedSec: number): number => voicedSec * WORDS_PER_SEC;
+// live tier keyed off ESTIMATED words (not wall-clock elapsed): quick → notes → desk → essay
+const liveTierForWords = (estWords: number): LiveTier => estWords < 8 ? "quick" : estWords < 25 ? "notes" : estWords < 60 ? "desk" : "essay";
 const LIVE_PROP: Record<LiveTier, Prop> = { quick: "none", notes: "pad", desk: "desk", essay: "desk" };
 // tone-aware live line spoken the moment you cross into a new tier (quick has none)
 const LIVE_LINE: Partial<Record<LiveTier, Record<ChatTone, string>>> = {
@@ -162,19 +169,19 @@ export default function YappyPill() {
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
-    let listenT = 0, liveSaid = -1;   // seconds spent listening + highest live tier already reacted to
+    let voicedT = 0, liveSaid = -1;   // seconds of ACTUAL speech (gated on level) + highest live tier already reacted to
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     const ACC: Record<Phase, string> = { idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%", done: "152 69% 52%", sleepy: "230 20% 60%" };
-    // listening → prop escalates by how long you've talked (live); thinking/done → keyed off the transcript word count
-    const wantPropFor = (p: Phase, w: number, lt: number): Prop =>
-      p === "listening" ? LIVE_PROP[liveTierFor(lt)]
+    // listening → prop escalates by ESTIMATED words from actual speech (live); thinking/done → keyed off the transcript word count
+    const wantPropFor = (p: Phase, w: number, estWords: number): Prop =>
+      p === "listening" ? LIVE_PROP[liveTierForWords(estWords)]
         : (p === "thinking" || p === "done") ? propFor(w)
           : "none";
 
     function setPhase(p: Phase) {
       phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0;
-      if (p === "listening") { moodT = 0; hop(1); say(""); listenT = 0; liveSaid = -1; }
+      if (p === "listening") { moodT = 0; hop(1); say(""); voicedT = 0; liveSaid = -1; }
       else if (p === "thinking") { moodT = 0; say(chatty(words) ? workLine(words, 0) : ""); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, DEFAULT_TONE, words)); }
       else { moodT = 0; say(""); }
@@ -200,12 +207,15 @@ export default function YappyPill() {
       let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
       const active = phase === "listening" || phase === "thinking" || phase === "done";
       openV = R.open.update(dt, active ? 1 : 0); openV = Math.max(0, Math.min(1, openV));
-      // live escalation WHILE talking — a long dictation isn't just flapping wings; it reacts as you go
+      // live escalation WHILE talking — driven by ACTUAL speech, not a wall-clock timer: only
+      // frames above the speaking threshold advance the estimate, so silence never moves it along.
       if (phase === "listening") {
-        listenT += dt; const idx = LIVE_TIERS.indexOf(liveTierFor(listenT));
-        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTierFor(listenT)]; if (line) say(line[CHAT_TONE]); }
-      } else listenT = 0;
-      const wantProp = wantPropFor(phase, words, listenT);
+        if (level > SPEAK_LEVEL) voicedT += dt;
+        const liveTier = liveTierForWords(wordsFromVoiced(voicedT)); const idx = LIVE_TIERS.indexOf(liveTier);
+        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTier]; if (line) say(line[CHAT_TONE]); }
+      } else voicedT = 0;
+      const estWords = wordsFromVoiced(voicedT);
+      const wantProp = wantPropFor(phase, words, estWords);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
       mood += (moodT - mood) * Math.min(1, dt * 10);
       const grav = 2600;
