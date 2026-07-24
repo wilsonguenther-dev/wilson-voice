@@ -1,0 +1,793 @@
+/**
+ * YappyHouse — the living-habitat companion for the Home screen.
+ *
+ * A pixel "dollhouse": the chick Yappy lives a day inside a cosy cutaway room —
+ * sleeps in a nest, wakes, potters about, works at a typewriter desk, waters a
+ * plant — while a day → dusk → night → dawn window rolls by. Rendered on a low-res
+ * offscreen canvas (192×128) and upscaled NEAREST-NEIGHBOUR onto a display canvas
+ * for crisp pixels.
+ *
+ * This is a faithful port of docs/prototypes/yappy-house.html (the design SSOT) —
+ * SAME room / furniture / Yappy sprite / lighting engine. What changed for the app:
+ *   (1) Yappy is driven by the REAL Tauri app events the pill already uses —
+ *       "recording" / "status" (busy) / "transcript" / "audio_level" — NOT demo
+ *       buttons. Recording → hurries to the desk and works; busy → thinking; a
+ *       transcript landing → a brief happy reaction, then back to the ambient life.
+ *   (2) The sky phase follows the REAL system clock (new Date().getHours()).
+ *   (3) The stat strip shows only REAL numbers passed in (words today / streak).
+ *   (4) prefers-reduced-motion renders a single calm frame with no loop.
+ */
+import { useEffect, useRef } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+
+interface AppStatus {
+  recording: boolean;
+  busy: boolean;
+  message: string;
+}
+
+type YappyAppState = "idle" | "listening" | "thinking" | "done";
+
+interface YappyHouseProps {
+  /** Words dictated today — from the real Insights rollup. Omitted → tile hidden. */
+  wordsToday?: number;
+  /** Current day streak — from the real Insights rollup. Omitted → tile hidden. */
+  streakDays?: number;
+}
+
+// Real system clock → sky phase. Prototype keyframes: 0 dawn · .25 day · .5 dusk
+// · .75 night (wraps). Map local time so dawn≈6am, noon≈day, 6pm≈dusk, midnight≈night.
+function phaseFromClock(): number {
+  const d = new Date();
+  const hoursDecimal = d.getHours() + d.getMinutes() / 60;
+  return (((hoursDecimal - 6 + 24) % 24) / 24) % 1;
+}
+
+export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const moodRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    const stage = canvasRef.current;
+    if (!stage) return;
+    const dctx = stage.getContext("2d");
+    if (!dctx) return;
+    dctx.imageSmoothingEnabled = false;
+
+    // Low-res world; upscaled with nearest-neighbour for crisp pixels.
+    const W = 192,
+      H = 128,
+      S = 5;
+    const os = document.createElement("canvas");
+    os.width = W;
+    os.height = H;
+    const g = os.getContext("2d");
+    if (!g) return;
+    g.imageSmoothingEnabled = false;
+
+    const reduce = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+
+    // ---- pixel palette -----------------------------------------------------
+    const C = {
+      wallHi: "#f7e4ac",
+      wall: "#eccf92",
+      wallSh: "#d8b476",
+      wallDk: "#c39a5f",
+      floorHi: "#bd8151",
+      floor: "#a5673f",
+      floorSh: "#8a5334",
+      floorDk: "#6f3f27",
+      yolkHi: "#ffe483",
+      yolk: "#ffcf3f",
+      yolkSh: "#efa72c",
+      yolkDk: "#d3871d",
+      carrot: "#ff7a3c",
+      carrotDk: "#e85f24",
+      cheek: "#ff9d6a",
+      rose: "#ff6b8a",
+      eye: "#2b2118",
+      eyeHi: "#fff6e6",
+      wood: "#8a5a36",
+      woodHi: "#a5704a",
+      woodDk: "#5f3c22",
+      leaf: "#5fb35a",
+      leafHi: "#7fd06f",
+      leafDk: "#3f8f45",
+      pot: "#c96f43",
+      potHi: "#e08a5c",
+      metal: "#7d8c96",
+      metalHi: "#9fb0ba",
+      metalDk: "#586771",
+      paper: "#fff6e6",
+      paperSh: "#e7d9be",
+      straw: "#c9a45c",
+      strawDk: "#a17c3c",
+      rug: "#4c9aa6",
+      rugHi: "#69b6c1",
+      rugDk: "#37727c",
+      lampPole: "#6b5238",
+      shade: "#ffcf6b",
+      shadeHi: "#ffe6a6",
+      steam: "#fff",
+      coffee: "#6b4326",
+      cup: "#f1eabe",
+    };
+
+    // ---- helpers -----------------------------------------------------------
+    const px = (x: number, y: number, w: number, h: number, col: string) => {
+      g.fillStyle = col;
+      g.fillRect(x | 0, y | 0, w | 0, h | 0);
+    };
+    const dot = (x: number, y: number, col: string) => {
+      g.fillStyle = col;
+      g.fillRect(x | 0, y | 0, 1, 1);
+    };
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    const hex = (h: string): [number, number, number] => {
+      h = h.replace("#", "");
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16),
+      ];
+    };
+    const mix = (h1: string, h2: string, t: number) => {
+      const a = hex(h1),
+        b = hex(h2);
+      return `rgb(${Math.round(lerp(a[0], b[0], t))},${Math.round(
+        lerp(a[1], b[1], t),
+      )},${Math.round(lerp(a[2], b[2], t))})`;
+    };
+    // 2x2 ordered dither between two colours by threshold t (0..1)
+    const BAYER = [
+      [0, 2],
+      [3, 1],
+    ];
+    const ditherBand = (
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      cA: string,
+      cB: string,
+      t: number,
+    ) => {
+      for (let j = 0; j < h; j++)
+        for (let i = 0; i < w; i++) {
+          const th = (BAYER[j & 1][i & 1] + 0.5) / 4;
+          dot(x + i, y + j, t > th ? cB : cA);
+        }
+    };
+
+    // ---- day/night keyframes -----------------------------------------------
+    // phase: 0 dawn · .25 day · .5 dusk · .75 night (wraps)
+    interface SkyState {
+      top: string;
+      bot: string;
+      amb: string;
+      ambA: number;
+      lamp: number;
+      stars: number;
+    }
+    const SKY = [
+      { at: 0.0, top: "#f6a6a0", bot: "#ffd9a0", amb: "#ffb28a", ambA: 0.16, lamp: 0.15, stars: 0 }, // dawn
+      { at: 0.25, top: "#7ec8ff", bot: "#cdeeff", amb: "#fff2d8", ambA: 0.0, lamp: 0.0, stars: 0 }, // day
+      { at: 0.5, top: "#ff9d6b", bot: "#ffd27a", amb: "#ff8a4a", ambA: 0.22, lamp: 0.45, stars: 0 }, // dusk
+      { at: 0.75, top: "#171a3d", bot: "#2c3060", amb: "#1a2050", ambA: 0.42, lamp: 0.85, stars: 1 }, // night
+    ];
+    const skyAt = (p: number): SkyState => {
+      p = ((p % 1) + 1) % 1;
+      const seg = p * 4,
+        i = Math.floor(seg) % 4,
+        f = seg - Math.floor(seg);
+      const a = SKY[i],
+        b = SKY[(i + 1) % 4];
+      return {
+        top: mix(a.top, b.top, f),
+        bot: mix(a.bot, b.bot, f),
+        amb: mix(a.amb, b.amb, f),
+        ambA: lerp(a.ambA, b.ambA, f),
+        lamp: lerp(a.lamp, b.lamp, f),
+        stars: lerp(a.stars, b.stars, f),
+      };
+    };
+
+    // ---- static scene geometry ---------------------------------------------
+    const FLOOR_Y = 100; // top of the floor
+    const FEET_Y = 99; // where Yappy's feet rest
+    const WIN = { x: 26, y: 24, w: 46, h: 40 }; // window on the back wall
+    const STAR = Array.from({ length: 26 }, (_, i) => ({
+      x: WIN.x + 2 + ((i * 37) % (WIN.w - 4)),
+      y: WIN.y + 2 + ((i * 53) % (WIN.h - 14)),
+      tw: (i * 0.7) % 1,
+    }));
+    const DUST = Array.from({ length: 14 }, (_, i) => ({
+      o: (i * 0.61) % 1,
+      s: 0.3 + (i % 3) * 0.12,
+    }));
+
+    interface LampInfo {
+      lampX: number;
+      lampY: number;
+    }
+
+    // ---- scene drawing -----------------------------------------------------
+    function drawWindow(sky: SkyState, t: number) {
+      // sky gradient via 3 dithered bands
+      const x = WIN.x,
+        y = WIN.y,
+        w = WIN.w,
+        h = WIN.h;
+      px(x, y, w, h, sky.top);
+      ditherBand(
+        x,
+        y + Math.floor(h * 0.33),
+        w,
+        Math.ceil(h * 0.34),
+        sky.top,
+        sky.bot,
+        0.5,
+      );
+      px(x, y + Math.floor(h * 0.66), w, h - Math.floor(h * 0.66), sky.bot);
+      // stars at night
+      if (sky.stars > 0.05) {
+        for (const s of STAR) {
+          const tw = 0.5 + 0.5 * Math.sin(t * 2 + s.tw * 6.28);
+          if (tw * sky.stars > 0.35) dot(s.x, s.y, "#fff7e0");
+        }
+        // moon
+        px(x + w - 14, y + 6, 7, 7, "#f6f0cf");
+        px(x + w - 13, y + 7, 5, 5, "#fffbe6");
+        px(x + w - 9, y + 6, 3, 4, sky.top); // crescent bite
+      } else if (sky.lamp < 0.2) {
+        // daytime clouds + an occasional bird
+        const cx = x + 6 + ((t * 3) % (w + 14)) - 7;
+        px(cx, y + 8, 9, 3, "#ffffff");
+        px(cx + 3, y + 6, 7, 3, "#ffffff");
+        const bx = x + ((t * 9) % (w + 20)) - 10,
+          by = y + 14 + Math.sin(t * 2) * 2;
+        if (bx > x + 2 && bx < x + w - 4) {
+          dot(bx, by | 0, "#3a3a44");
+          dot(bx + 1, (by | 0) - 1, "#3a3a44");
+          dot(bx + 2, by | 0, "#3a3a44");
+        }
+      }
+      // sun at day/dawn/dusk
+      if (sky.stars < 0.4 && sky.lamp < 0.6) {
+        px(x + 8, y + 7, 6, 6, "#fff2b0");
+        px(x + 9, y + 8, 4, 4, "#ffe27a");
+      }
+      // window frame + mullions
+      const fr = C.wood;
+      for (let i = -1; i <= w; i++) {
+        dot(x + i, y - 1, C.woodDk);
+        dot(x + i, y + h, C.woodDk);
+      }
+      px(x - 2, y - 2, w + 4, 2, fr);
+      px(x - 2, y + h, w + 4, 2, fr);
+      px(x - 2, y - 2, 2, h + 4, fr);
+      px(x + w, y - 2, 2, h + 4, fr);
+      px(x + (w >> 1) - 1, y, 2, h, fr); // vertical mullion
+      px(x, y + (h >> 1) - 1, w, 2, fr); // horizontal mullion
+      // sill
+      px(x - 4, y + h + 1, w + 8, 3, C.woodHi);
+      px(x - 4, y + h + 4, w + 8, 1, C.woodDk);
+    }
+
+    function drawRoom(sky: SkyState, t: number): LampInfo {
+      // wall
+      px(0, 0, W, FLOOR_Y, C.wall);
+      // subtle wall shading: lighter toward the window, ambient-occlusion corners
+      for (let i = 0; i < 26; i++) {
+        const a = 1 - i / 26;
+        g!.globalAlpha = 0.5 * a;
+        px(0, 0, W, 1 + (i % 2), C.wallDk);
+      }
+      g!.globalAlpha = 1;
+      px(0, 0, 4, FLOOR_Y, C.wallDk);
+      px(W - 4, 0, 4, FLOOR_Y, C.wallSh);
+      // baseboard
+      px(0, FLOOR_Y - 3, W, 3, C.wallSh);
+      // floor
+      px(0, FLOOR_Y, W, H - FLOOR_Y, C.floor);
+      for (let x = 0; x < W; x += 8) {
+        px(x, FLOOR_Y, 1, H - FLOOR_Y, C.floorSh);
+      } // planks
+      px(0, FLOOR_Y, W, 1, C.floorHi);
+      // rug
+      const rx = 58,
+        rw = 78;
+      px(rx, H - 13, rw, 12, C.rug);
+      px(rx, H - 13, rw, 1, C.rugHi);
+      px(rx, H - 2, rw, 1, C.rugDk);
+      for (let x = rx + 4; x < rx + rw - 2; x += 10) px(x, H - 11, 2, 8, C.rugHi);
+
+      drawWindow(sky, t);
+
+      // framed picture on the wall (a tiny landscape)
+      px(96, 16, 20, 14, C.wood);
+      px(98, 18, 16, 10, "#bfe0d0");
+      px(98, 24, 16, 4, C.leafDk);
+      px(102, 20, 4, 4, "#ffe27a");
+
+      // wall shelf with two books
+      px(120, 30, 22, 2, C.wood);
+      px(123, 24, 3, 6, "#c65b6b");
+      px(127, 25, 3, 5, "#4c9aa6");
+      px(131, 24, 3, 6, "#e0a24a");
+
+      // --- plant (station: water) ---
+      px(80, 88, 10, 12, C.pot);
+      px(80, 88, 10, 2, C.potHi);
+      px(80, 98, 10, 2, C.floorDk);
+      const sway = Math.sin(t * 1.3) * 1;
+      px(84, 78, 2, 12, C.leafDk);
+      px(80 + sway, 74, 6, 6, C.leaf);
+      px(80 + sway, 74, 3, 3, C.leafHi);
+      px(86 + sway, 78, 6, 5, C.leaf);
+      px(86 + sway, 78, 3, 2, C.leafHi);
+      px(82 - sway, 80, 5, 5, C.leaf);
+
+      // --- nest / bed (station: sleep), bottom-left ---
+      const nx = 20,
+        ny = 90;
+      px(nx - 2, ny + 6, 26, 6, C.strawDk);
+      px(nx, ny + 2, 22, 8, C.straw);
+      px(nx, ny + 2, 22, 2, "#e0bd74");
+      px(nx + 2, ny + 5, 18, 5, "#7fa8c9"); // little blanket
+      px(nx + 2, ny + 5, 18, 1, "#a7c6e0");
+
+      // --- desk + typewriter (station: work), right ---
+      const dx = 126,
+        dy = 76;
+      px(dx, dy + 14, 4, 10, C.woodDk);
+      px(dx + 40, dy + 14, 4, 10, C.woodDk); // legs
+      px(dx - 2, dy + 8, 48, 6, C.wood);
+      px(dx - 2, dy + 8, 48, 2, C.woodHi); // top
+      // paper tray + a stack of filed pages
+      px(dx + 30, dy + 2, 12, 6, C.paper);
+      px(dx + 30, dy + 2, 12, 1, "#fff");
+      px(dx + 30, dy + 7, 12, 1, C.paperSh);
+      // typewriter
+      const tw = dx + 4;
+      px(tw, dy - 2, 20, 10, C.metal);
+      px(tw, dy - 2, 20, 2, C.metalHi);
+      px(tw, dy + 8, 20, 2, C.metalDk);
+      px(tw + 3, dy + 3, 14, 3, C.metalDk); // keys row
+      for (let k = 0; k < 6; k++) dot(tw + 4 + k * 2, dy + 4, C.metalHi);
+      px(tw + 5, dy - 6, 10, 5, C.paper);
+      px(tw + 5, dy - 6, 10, 1, "#fff"); // sheet in the roller
+      // coffee cup on the desk
+      px(dx + 34, dy + 3, 5, 5, C.cup);
+      px(dx + 34, dy + 3, 5, 1, "#fff");
+      px(dx + 39, dy + 4, 2, 2, C.cup);
+
+      // --- filing cabinet, far right ---
+      px(168, 70, 20, 30, C.metal);
+      px(168, 70, 20, 2, C.metalHi);
+      px(168, 98, 20, 2, C.metalDk);
+      px(170, 74, 16, 7, C.metalDk);
+      px(176, 77, 4, 2, C.metalHi);
+      px(170, 84, 16, 7, C.metalDk);
+      px(176, 87, 4, 2, C.metalHi);
+
+      // --- floor lamp, between desk & cabinet ---
+      px(160, 60, 2, 40, C.lampPole);
+      // shade drawn later within lighting so its glow reads
+      return { lampX: 161, lampY: 58 };
+    }
+
+    function drawLampShade(sky: SkyState) {
+      const on = sky.lamp;
+      const base = on > 0.3 ? C.shadeHi : C.shade;
+      px(156, 52, 12, 8, base);
+      px(156, 52, 12, 2, "#fff2c8");
+      px(157, 60, 10, 1, "#caa04a");
+    }
+
+    // ---- Yappy -------------------------------------------------------------
+    // pose: sleep|idle|walk|work|water|look|sip|happy ; face: -1 left / 1 right
+    // `energy` (0..1, from audio_level) boosts Yappy's motion while working.
+    function drawYappy(
+      x: number,
+      feetY: number,
+      pose: string,
+      t: number,
+      face: number,
+      energy: number,
+    ) {
+      x = Math.round(x);
+      const y = Math.round(feetY);
+      const bob =
+        pose === "walk"
+          ? Math.abs(Math.sin(t * 10)) * 2
+          : pose === "work"
+            ? Math.abs(Math.sin(t * 9)) * (1 + energy)
+            : Math.sin(t * 2.2) * 0.8; // breathing
+      const yb = Math.round(y - 12 - bob);
+      const blink = Math.sin(t * 0.9) * 0.5 + 0.5 > 0.94 ? 1 : 0;
+
+      if (pose === "sleep") {
+        // curled in the nest
+        const bx = x - 6,
+          by = y - 6;
+        px(bx, by, 12, 7, C.yolk);
+        px(bx, by, 12, 2, C.yolkHi);
+        px(bx, by + 6, 12, 1, C.yolkDk);
+        px(bx + 9, by + 1, 3, 3, C.yolkSh); // tucked head
+        px(bx + 2, by + 2, 3, 1, C.carrot); // beak tucked
+        dot(bx + 3, by + 2, C.eye); // closed eye (line)
+        // Zzz
+        const zt = (t * 0.6) % 3;
+        if (zt > 0.4) px(bx + 11, by - 3, 2, 1, "#fff");
+        if (zt > 1.2) px(bx + 13, by - 6, 2, 1, "#dfeafd");
+        if (zt > 2.0) px(bx + 15, by - 9, 3, 1, "#cfe0f7");
+        return;
+      }
+
+      const fx = face; // 1 right, -1 left
+      // feet
+      const step = pose === "walk" ? Math.sin(t * 10) : 0;
+      px(x - 3, y - 2, 2, 2, C.carrotDk);
+      px(x + 1, y - 2, 2, 2, C.carrotDk);
+      if (pose === "walk") {
+        px(x - 3, y - 2 + (step > 0 ? -1 : 0), 2, 2, C.carrot);
+        px(x + 1, y - 2 + (step < 0 ? -1 : 0), 2, 2, C.carrot);
+      }
+      // body (egg)
+      px(x - 5, yb + 3, 10, 9, C.yolk);
+      px(x - 4, yb + 1, 8, 3, C.yolk);
+      px(x - 5, yb + 3, 10, 2, C.yolkHi); // top light
+      px(x - 5, yb + 10, 10, 2, C.yolkSh); // belly shade
+      dot(x - 5, yb + 4, C.yolkDk);
+      dot(x + 4, yb + 4, C.yolkDk);
+      // wing
+      const wf =
+        pose === "work"
+          ? Math.sin(t * 16) * (2 + energy * 3)
+          : pose === "walk"
+            ? Math.sin(t * 10) * 1
+            : Math.sin(t * 2) * 0.6;
+      px(x + (fx > 0 ? 2 : -4), yb + 4 + (wf < 0 ? wf : 0), 3, 5, C.yolkSh);
+      if (pose === "water") px(x + fx * 4, yb + 2, 4, 3, C.metal); // watering can spout
+      // head + tuft
+      px(x - 4, yb - 4, 8, 6, C.yolk);
+      px(x - 4, yb - 4, 8, 2, C.yolkHi);
+      px(x - 1, yb - 6, 2, 2, C.yolkHi); // tuft
+      // cheek
+      px(x + fx * 2, yb - 1, 1, 1, C.cheek);
+      // eyes
+      const ex = x + (fx > 0 ? 1 : -3);
+      if (blink) {
+        px(ex, yb - 2, 2, 1, C.eye);
+      } else {
+        px(ex, yb - 3, 2, 2, C.eye);
+        dot(ex + (fx > 0 ? 1 : 0), yb - 3, C.eyeHi);
+      }
+      // beak
+      px(x + fx * 3, yb - 2, 2, 2, C.carrot);
+      px(x + fx * 3, yb - 1, 2, 1, C.carrotDk);
+
+      // pose-specific extras
+      if (pose === "work") {
+        // tiny note flying up from the typewriter every beat
+        if (((t * 3) | 0) % 2 === 0) px(x - fx * 2, yb - 8, 3, 3, C.paper);
+      }
+      if (pose === "happy") {
+        const hy = yb - 8 - Math.sin(t * 6) * 2;
+        px(x - 6, hy, 2, 2, C.rose);
+        px(x + 5, hy + 1, 2, 2, "#ff9db0");
+      }
+      if (pose === "water") {
+        // water droplets
+        if (((t * 4) | 0) % 2 === 0) {
+          dot(x + fx * 6, yb + 4, "#9fd6e6");
+          dot(x + fx * 6, yb + 7, "#9fd6e6");
+        }
+      }
+      if (pose === "sip") {
+        px(x + fx * 4, yb + 2, 3, 3, C.cup); // holding a cup
+        if (((t * 2) | 0) % 2 === 0) dot(x + fx * 5, yb - 1, "#fff");
+      }
+    }
+
+    // ---- lighting passes ---------------------------------------------------
+    // `energy` (0..1) brightens the daytime window beam while Yappy is at work.
+    function lighting(sky: SkyState, lamp: LampInfo, t: number, energy: number) {
+      // ambient tint (multiply-ish darken/tone)
+      if (sky.ambA > 0.001) {
+        g!.globalCompositeOperation = "multiply";
+        g!.globalAlpha = sky.ambA;
+        g!.fillStyle = sky.amb;
+        g!.fillRect(0, 0, W, H);
+        g!.globalAlpha = 1;
+        g!.globalCompositeOperation = "source-over";
+      }
+      // daytime window light-beam onto the floor
+      if (sky.lamp < 0.5) {
+        const strength = (1 - sky.lamp) * 0.5 * (1 + energy * 0.6);
+        g!.globalCompositeOperation = "lighter";
+        for (let i = 0; i < 22; i++) {
+          const yy = WIN.y + WIN.h + i * 3;
+          const spread = 6 + i * 1.6;
+          g!.globalAlpha = strength * (1 - i / 24) * 0.5;
+          g!.fillStyle = "#fff3c8";
+          g!.fillRect(WIN.x + 6 + i * 0.7, yy, WIN.w - 4 + spread, 3);
+        }
+        g!.globalAlpha = 1;
+        g!.globalCompositeOperation = "source-over";
+        // dust motes drifting in the beam
+        for (const d of DUST) {
+          const p = (d.o + t * 0.03) % 1;
+          const yy = WIN.y + WIN.h + p * (FLOOR_Y - (WIN.y + WIN.h));
+          const xx = WIN.x + 10 + p * 20 + Math.sin(t + d.o * 6) * 3;
+          g!.globalAlpha = strength * 0.9 * (0.4 + 0.6 * Math.sin(p * 3.14));
+          dot(xx | 0, yy | 0, "#fff7d8");
+        }
+        g!.globalAlpha = 1;
+      }
+      // lamp warm pool at dusk/night
+      if (lamp.lampX && sky.lamp > 0.15) {
+        const cx = lamp.lampX,
+          cy = lamp.lampY + 6,
+          r = 34;
+        const flick = 1 + Math.sin(t * 11) * 0.03 + Math.sin(t * 23) * 0.02;
+        const rg = g!.createRadialGradient(cx, cy, 2, cx, cy, r * flick);
+        rg.addColorStop(0, `rgba(255,214,140,${0.55 * sky.lamp})`);
+        rg.addColorStop(0.5, `rgba(255,190,110,${0.28 * sky.lamp})`);
+        rg.addColorStop(1, "rgba(255,190,110,0)");
+        g!.globalCompositeOperation = "lighter";
+        g!.fillStyle = rg;
+        g!.beginPath();
+        g!.arc(cx, cy, r * flick, 0, 6.29);
+        g!.fill();
+        g!.globalCompositeOperation = "source-over";
+      }
+      // vignette
+      const vg = g!.createRadialGradient(W / 2, H / 2 - 6, 40, W / 2, H / 2, 120);
+      vg.addColorStop(0, "rgba(0,0,0,0)");
+      vg.addColorStop(1, "rgba(20,10,30,0.34)");
+      g!.fillStyle = vg;
+      g!.fillRect(0, 0, W, H);
+    }
+
+    // ---- Yappy's daily director --------------------------------------------
+    interface Station {
+      x: number;
+      pose: string;
+      face?: number;
+    }
+    const STATIONS: Record<string, Station> = {
+      nest: { x: 26, pose: "sleep" },
+      window: { x: 52, pose: "look" },
+      plant: { x: 74, pose: "water" },
+      coffee: { x: 96, pose: "sip" },
+      desk: { x: 128, pose: "work", face: 1 },
+    };
+    const state = {
+      appState: "idle" as YappyAppState,
+      x: 26,
+      face: 1,
+      activity: "sleep",
+      station: "nest",
+      mode: "act" as "walk" | "act" | "idle",
+      tLeft: 3,
+    };
+
+    function pickNext(phase: number): string {
+      // night favours the nest; day favours desk/plant/window
+      const night = phase > 0.55 && phase < 0.95;
+      const pool = night
+        ? ["nest", "nest", "nest", "window", "desk"]
+        : ["desk", "plant", "window", "coffee", "desk", "window"];
+      return pool[(Math.random() * pool.length) | 0];
+    }
+
+    function moveToward(tx: number, dt: number) {
+      const spd = 22 * dt;
+      if (state.x < tx) {
+        state.x = Math.min(tx, state.x + spd);
+        state.face = 1;
+      } else {
+        state.x = Math.max(tx, state.x - spd);
+        state.face = -1;
+      }
+      state.activity = "walk";
+    }
+
+    function director(dt: number, phase: number) {
+      // App-state overrides the ambient routine.
+      const as = state.appState;
+      if (as === "listening" || as === "thinking" || as === "done") {
+        state.station = "desk";
+        const dx = STATIONS.desk.x;
+        if (Math.abs(state.x - dx) > 1.2) {
+          state.mode = "walk";
+          moveToward(dx, dt * 1.7);
+          return;
+        }
+        state.x = dx;
+        state.face = 1;
+        state.mode = "act";
+        state.activity = as === "done" ? "happy" : "work";
+        return;
+      }
+      // ambient FSM
+      state.tLeft -= dt;
+      if (state.mode === "walk") {
+        const tx = STATIONS[state.station].x;
+        moveToward(tx, dt);
+        if (Math.abs(state.x - tx) <= 1.2) {
+          state.x = tx;
+          state.mode = "act";
+          state.activity = STATIONS[state.station].pose;
+          state.face = STATIONS[state.station].face ?? state.face;
+          state.tLeft =
+            state.activity === "sleep" ? 6 : 3 + Math.random() * 3;
+        }
+        return;
+      }
+      if (state.tLeft <= 0) {
+        // choose a new station and walk there
+        let key = pickNext(phase);
+        if (key === state.station) key = pickNext(phase);
+        state.station = key;
+        state.mode = "walk";
+        state.activity = "walk";
+      }
+    }
+
+    // ---- live mood label (real state, not fabricated) ----------------------
+    function setMood() {
+      const el = moodRef.current;
+      if (!el) return;
+      const m =
+        state.appState === "listening"
+          ? "listening"
+          : state.appState === "thinking"
+            ? "thinking"
+            : state.appState === "done"
+              ? "proud ♥"
+              : state.activity === "sleep"
+                ? "napping"
+                : state.activity === "work"
+                  ? "working"
+                  : "content";
+      if (el.textContent !== m) el.textContent = m;
+    }
+
+    // ---- REAL app events → Yappy's app-state -------------------------------
+    let energy = 0; // audio_level 0..1
+    let doneUntil = 0; // ms; while > now, hold the "done" reaction
+    const unsubs: Array<() => void> = [];
+
+    const toIdleIfClear = () => {
+      if (Date.now() > doneUntil) state.appState = "idle";
+    };
+    invoke<AppStatus>("get_status")
+      .then((s) => {
+        state.appState = s.recording ? "listening" : s.busy ? "thinking" : "idle";
+      })
+      .catch(() => {});
+    listen<AppStatus>("status", (e) => {
+      const s = e.payload;
+      if (s.recording) state.appState = "listening";
+      else if (s.busy) state.appState = "thinking";
+      else toIdleIfClear();
+    }).then((u) => unsubs.push(u));
+    listen<boolean>("recording", (e) => {
+      if (e.payload) state.appState = "listening";
+    }).then((u) => unsubs.push(u));
+    listen<number>("audio_level", (e) => {
+      const v = typeof e.payload === "number" ? e.payload : 0;
+      energy = Math.max(0, Math.min(1, v));
+    }).then((u) => unsubs.push(u));
+    listen("transcript", () => {
+      // a transcript landed → a brief happy/done reaction, ~2s, then back to life
+      state.appState = "done";
+      doneUntil = Date.now() + 2000;
+    }).then((u) => unsubs.push(u));
+
+    // ---- main loop ---------------------------------------------------------
+    let last = 0,
+      tGlobal = 0,
+      raf = 0;
+
+    function render(phase: number) {
+      const sky = skyAt(phase);
+      g!.clearRect(0, 0, W, H);
+      const lamp = drawRoom(sky, tGlobal);
+      // shadow under Yappy
+      g!.globalAlpha = 0.18;
+      px(state.x - 6, FEET_Y - 1, 12, 2, "#20140a");
+      g!.globalAlpha = 1;
+      drawYappy(
+        state.x,
+        FEET_Y,
+        reduce ? "sleep" : state.activity,
+        tGlobal,
+        state.face,
+        state.activity === "work" ? energy : 0,
+      );
+      drawLampShade(sky);
+      lighting(sky, lamp, tGlobal, state.activity === "work" ? energy : 0);
+      // blit upscaled (nearest-neighbour)
+      dctx!.drawImage(os, 0, 0, W * S, H * S);
+    }
+
+    function frame(ms: number) {
+      const dt = last ? Math.min(0.05, (ms - last) / 1000) : 0.016;
+      last = ms;
+      tGlobal += dt;
+      const phase = phaseFromClock();
+
+      // drop the held "done" reaction once its window elapses
+      if (state.appState === "done" && Date.now() > doneUntil) {
+        state.appState = "idle";
+      }
+      director(dt, phase);
+      setMood();
+      render(phase);
+      raf = requestAnimationFrame(frame);
+    }
+
+    if (reduce) {
+      // one calm frame: Yappy asleep in the nest, sky from the real clock
+      state.x = 26;
+      state.activity = "sleep";
+      render(phaseFromClock());
+    } else {
+      raf = requestAnimationFrame(frame);
+    }
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      unsubs.forEach((u) => u());
+    };
+  }, []);
+
+  const showWords = typeof wordsToday === "number";
+  const showStreak = typeof streakDays === "number";
+
+  return (
+    <div className="yappy-house">
+      <span className="yh-tag">home · live</span>
+      <div className="yh-frame">
+        <canvas
+          ref={canvasRef}
+          className="yh-stage"
+          width={960}
+          height={640}
+          role="img"
+          aria-label="A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
+        />
+      </div>
+      <div className="yh-stats" aria-hidden>
+        {showWords && (
+          <div className="yh-stat">
+            <span className="yh-k">Words today</span>
+            <span className="yh-v">{Math.max(0, Math.round(wordsToday!))}</span>
+          </div>
+        )}
+        {showStreak && (
+          <div className="yh-stat">
+            <span className="yh-k">Day streak</span>
+            <span className="yh-v">
+              {Math.max(0, Math.round(streakDays!))}{" "}
+              <small>{streakDays === 1 ? "day" : "days"}</small>
+            </span>
+          </div>
+        )}
+        <div className="yh-stat">
+          <span className="yh-k">Mood</span>
+          <span className="yh-v" ref={moodRef}>
+            content
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
