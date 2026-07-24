@@ -15,17 +15,14 @@
     "core:window:deny-internal-toggle-maximize",
     "core:tray:default",
     "core:app:default",
-    "opener:default",
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
-    "shell:allow-open",
     "notification:default",
     "fs:default",
-    "store:default",
     "updater:default"
   ]
 }

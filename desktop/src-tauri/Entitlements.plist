@@ -6,14 +6,16 @@
 	<true/>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!-- Hardened runtime helpers for Tauri + cpal + Python sidecar spawn -->
+	<!-- Hardened runtime helpers for Tauri + cpal. NOTE: the two dylib-injection
+	     entitlements (library-validation off + dyld env vars) are deliberately
+	     NOT granted — they would let DYLD_INSERT_LIBRARIES load an attacker dylib
+	     into this non-sandboxed, Accessibility-trusted, keystroke-synthesizing
+	     process (a TCC-inheritance escalation). MLX/JIT runs in the separate
+	     Python child (its own signature); setting env vars for that child via
+	     Command.env() does not need the dyld entitlement. -->
 	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
 	<true/>
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
-	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
 	<true/>
 </dict>
 </plist>
