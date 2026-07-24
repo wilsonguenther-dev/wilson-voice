@@ -378,7 +378,8 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     let _ = app.emit("recording", false);
     if let Some(active) = state.recorder.lock().take() {
         let path = active.wav_path.clone();
-        let _ = record::stop_recording(active);
+        // Discarded take — no ASR, so skip the Silero isolation pass entirely.
+        let _ = record::stop_recording(active, None);
         let _ = std::fs::remove_file(path);
     }
     *state.last_error.lock() = Some("Dictation cancelled (key while holding)".into());
@@ -424,7 +425,18 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
         let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
-            let rec = record::stop_recording(active)?;
+            // YV29 voice isolation — hand `stop_recording` the cached Silero VAD
+            // model (gated behind the `denoise` setting) ONLY when it already
+            // exists on disk. We never download on the hot path; the one-time
+            // fetch runs in a startup background thread (see setup). A missing
+            // model → None → the energy-VAD path, so an utterance is never lost.
+            let iso_model = if settings.denoise {
+                let p = record::silero_model_path(&data_dir());
+                p.exists().then_some(p)
+            } else {
+                None
+            };
+            let rec = record::stop_recording(active, iso_model)?;
             // YV20/M3: from here on the wav is deleted on ANY exit (success, the
             // gates below, or the ASR/DB `?` failures) — never leaked on error.
             let _wav_cleanup = WavCleanup(rec.wav_path.clone());
@@ -439,11 +451,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             );
             // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
             // voiced time. Skip ASR entirely so Whisper never hallucinates
-            // repetitive garbage ("WPM-SERV-SERV…") on silence.
-            if !dictation::has_enough_speech(rec.voiced_seconds) {
+            // repetitive garbage ("WPM-SERV-SERV…") on silence. YV29 STRENGTHENS
+            // this: Silero VAD (`speech_present`) also rejects a clip it finds no
+            // speech in — catching steady-noise cases the energy RMS gate scores
+            // as voiced. `speech_present` is true whenever Silero is unavailable,
+            // so a missing model never drops a real utterance.
+            if !dictation::has_enough_speech(rec.voiced_seconds) || !rec.speech_present {
                 log::info!(
-                    "no-speech gate: voiced={:.2}s below threshold — skipping ASR",
-                    rec.voiced_seconds
+                    "no-speech gate: voiced={:.2}s speech_present={} below threshold — skipping ASR",
+                    rec.voiced_seconds,
+                    rec.speech_present
                 );
                 return Ok(None);
             }
@@ -918,6 +935,16 @@ pub fn run() {
     if swept > 0 {
         log::info!("startup: swept {swept} stale voice wav(s) from recordings dir");
     }
+
+    // YV29: fetch the Silero VAD model ONCE in the background (never HuggingFace —
+    // a direct URL, cached under Application Support, then OFFLINE forever). Off
+    // the hot path so it never delays a dictation; the capture pipeline only uses
+    // the model if it's already on disk and falls back to the energy VAD if not.
+    std::thread::spawn(|| {
+        if let Some(p) = record::ensure_silero_model(&data_dir()) {
+            log::info!("startup: silero VAD model ready at {}", p.display());
+        }
+    });
 
     // NEVER resolve ASR to ~/Desktop — that triggers Desktop folder TCC on every stop.
     // Prefer pre-built Application Support venv; seed worker file only (no Desktop read).
