@@ -87,7 +87,3 @@ pub fn request_microphone_access() -> bool {
     drop(stream);
     got.lock().map(|g| *g).unwrap_or(false)
 }
-
-pub fn microphone_authorized() -> Option<bool> {
-    Some(microphone_ready())
-}

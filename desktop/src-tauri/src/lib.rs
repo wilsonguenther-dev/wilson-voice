@@ -771,6 +771,41 @@ fn setup_asr_venv() -> Result<String, String> {
     asr_paths::setup_local_venv()
 }
 
+/// Open the transcript DB without panicking at launch. A transient failure
+/// (another instance briefly holding the lock, disk momentarily full) is retried
+/// once after a short backoff; if it still fails we degrade to an in-memory DB so
+/// the app stays usable this session — history won't persist, but the process
+/// never crashes on startup. (Genuine corruption is already self-healed inside
+/// `Database::open` via quarantine.)
+fn open_db_graceful(db_path: std::path::PathBuf) -> Database {
+    match Database::open(db_path.clone()) {
+        Ok(db) => db,
+        Err(e) => {
+            log::error!("DB open failed ({e}); retrying once after backoff");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            match Database::open(db_path) {
+                Ok(db) => {
+                    log::info!("DB opened on retry");
+                    db
+                }
+                Err(e2) => {
+                    log::error!(
+                        "DB open failed again ({e2}); running with an IN-MEMORY DB — \
+                         transcripts will NOT persist this session"
+                    );
+                    Database::open_in_memory().unwrap_or_else(|e3| {
+                        // Opening an in-memory SQLite DB does not realistically fail;
+                        // if it does, the sqlite runtime itself is unusable. Exit
+                        // gracefully with a logged reason instead of panicking.
+                        log::error!("in-memory DB fallback also failed ({e3}); exiting");
+                        std::process::exit(1);
+                    })
+                }
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
@@ -801,7 +836,7 @@ pub fn run() {
         );
     }
     let db_path = data_dir().join("wilson_voice.db");
-    let db = Database::open(db_path).expect("sqlite open failed");
+    let db = open_db_graceful(db_path);
     let legacy = data_dir().join("history").join("transcripts.json");
     match db.migrate_json_if_needed(legacy) {
         Ok(n) if n > 0 => log::info!("migrated {n} legacy transcripts into SQLite"),
