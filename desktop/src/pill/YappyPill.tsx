@@ -79,6 +79,9 @@ export default function YappyPill() {
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
     const ctx = cv.getContext("2d")!;
+    // prefers-reduced-motion: render ONE calm static frame (resting pill, mouth
+    // closed, level 0) instead of the 60fps loop — matches YappyHouse.
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     // ── wide scene buffer: the world fills its full width so it fills the pill ──
     const PW = 176, PH = 44, GY = 30, FX = 88, FY = 18;   // face at (FX,FY); grass starts at GY
@@ -189,18 +192,30 @@ export default function YappyPill() {
     const sparkle: Array<{ x: number; y: number; vx: number; vy: number; life: number; heart: boolean }> = [];
     function burst() { for (let i = 0; i < 10; i++) { const a = Math.random() * 6.28, sp = 26 + Math.random() * 40; sparkle.push({ x: 0, y: -4, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 24, life: 1, heart: i % 3 === 0 }); } }
 
+    // A synchronous cleanup can run before these listen() promises resolve
+    // (StrictMode double-mount + Home-tab remounts). A `dead` flag unsubscribes
+    // any listener that lands after teardown so no native listener leaks.
+    let dead = false;
     const unsubs: Array<() => void> = [];
     invoke<AppStatus>("get_status").then((s) => setPhase(s.recording ? "listening" : s.busy ? "thinking" : "idle")).catch(() => {});
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
-    listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => unsubs.push(u));
-    listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => unsubs.push(u));
-    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); }).then((u) => unsubs.push(u));
-    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + 1600; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, 1600); }).then((u) => unsubs.push(u));
+    listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + 1600; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, 1600); }).then((u) => (dead ? u() : unsubs.push(u)));
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
-    let raf = 0;
+    let raf = 0, lastDraw = 0;
+    // While idle/sleepy (silent mic, no hops or sparkles in flight) throttle the
+    // redraw to ~18fps instead of 60 — idle breathing/drift stays perceptible but
+    // this always-on pill stops burning a full-rate rAF. Active states run full-rate.
+    const IDLE_FRAME_MS = 55;
     function loop(ts: number) {
+      if (!reduce) raf = requestAnimationFrame(loop);   // schedule next frame (never under reduced-motion)
+      const idleThrottle = (phase === "idle" || phase === "sleepy") && level < 0.02 && sparkle.length === 0 && J.phase === "ground";
+      if (idleThrottle && lastDraw && ts - lastDraw < IDLE_FRAME_MS) return;   // skip this redraw, keep the rAF alive
+      lastDraw = ts;
       const dt = Math.min(.05, (ts - tPrev) / 1000 || 0); tPrev = ts; elapsed += dt; idleFor += dt;
       if (phase === "idle" && idleFor > 12) setPhase("sleepy");
       if (blinkT < 0) { nextBlink -= dt; if (nextBlink <= 0) blinkT = 0; }
@@ -271,10 +286,11 @@ export default function YappyPill() {
       // speech bubble above the capsule
       bubble.style.left = cx + "px";
       bubble.style.top = (y0 - 10) + "px";
-      raf = requestAnimationFrame(loop);
     }
-    raf = requestAnimationFrame(loop);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); unsubs.forEach((u) => u()); };
+    // reduced-motion → paint one calm static frame and never loop; else run the rAF.
+    if (reduce) loop(performance.now());
+    else raf = requestAnimationFrame(loop);
+    return () => { dead = true; cancelAnimationFrame(raf); ro.disconnect(); unsubs.forEach((u) => u()); };
   }, []);
 
   return (

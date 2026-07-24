@@ -75,9 +75,13 @@ export default function Onboarding({
   }, [step]);
 
   useEffect(() => {
+    // A synchronous cleanup can run before these listen() promises resolve
+    // (StrictMode double-mount). A `dead` flag unsubscribes any listener that
+    // lands after teardown so no native listener leaks.
+    let dead = false;
     const unsubs: Array<() => void> = [];
     listen<boolean>("recording", (e) => setRecording(e.payload)).then((u) =>
-      unsubs.push(u),
+      dead ? u() : unsubs.push(u),
     );
     listen<TranscriptEntry>("transcript", (e) => {
       if (stepRef.current === "calibration") {
@@ -85,8 +89,11 @@ export default function Onboarding({
         setBusy(false);
         setNote("Voice sample captured — Yap will use it to personalize.");
       }
-    }).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+    };
   }, []);
 
   async function requestMic() {

@@ -17,9 +17,14 @@ interface Settings { pillStyle?: string }
 function Float() {
   const [style, setStyle] = useState<string>("classic");
   useEffect(() => {
+    // A synchronous cleanup can run before the listen() promise resolves
+    // (StrictMode double-mount). A `dead` flag unsubscribes a listener that
+    // lands after teardown so no native listener leaks.
+    let dead = false;
+    const unsubs: Array<() => void> = [];
     invoke<Settings>("get_settings").then((s) => setStyle(s.pillStyle || "classic")).catch(() => {});
-    const un = listen<Settings>("settings", (e) => setStyle(e.payload?.pillStyle || "classic"));
-    return () => { un.then((u) => u()); };
+    listen<Settings>("settings", (e) => setStyle(e.payload?.pillStyle || "classic")).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
   return style === "yappy" ? <YappyPill /> : <ClassicPill />;
 }

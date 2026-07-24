@@ -662,6 +662,10 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
     // ---- REAL app events → Yappy's app-state -------------------------------
     let energy = 0; // audio_level 0..1
     let doneUntil = 0; // ms; while > now, hold the "done" reaction
+    // A synchronous cleanup can run before these listen() promises resolve
+    // (StrictMode double-mount + Home-tab remounts). A `dead` flag unsubscribes
+    // any listener that lands after teardown so no native listener leaks.
+    let dead = false;
     const unsubs: Array<() => void> = [];
 
     const toIdleIfClear = () => {
@@ -677,24 +681,29 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
       if (s.recording) state.appState = "listening";
       else if (s.busy) state.appState = "thinking";
       else toIdleIfClear();
-    }).then((u) => unsubs.push(u));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => {
       if (e.payload) state.appState = "listening";
-    }).then((u) => unsubs.push(u));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<number>("audio_level", (e) => {
       const v = typeof e.payload === "number" ? e.payload : 0;
       energy = Math.max(0, Math.min(1, v));
-    }).then((u) => unsubs.push(u));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen("transcript", () => {
       // a transcript landed → a brief happy/done reaction, ~2s, then back to life
       state.appState = "done";
       doneUntil = Date.now() + 2000;
-    }).then((u) => unsubs.push(u));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
 
     // ---- main loop ---------------------------------------------------------
     let last = 0,
       tGlobal = 0,
-      raf = 0;
+      raf = 0,
+      lastDraw = 0;
+    // While idle (no active dictation + silent mic) throttle the redraw to ~18fps
+    // instead of 60 — the ambient pottering/breathing stays perceptible but this
+    // always-on panel stops burning a full-rate rAF. Active states run full-rate.
+    const IDLE_FRAME_MS = 55;
 
     function render(phase: number) {
       const sky = skyAt(phase);
@@ -719,8 +728,16 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
     }
 
     function frame(ms: number) {
+      // idle throttle: skip this frame's redraw (but keep the rAF alive) until the
+      // ~18fps budget elapses, whenever no dictation is active and the mic is quiet.
+      const idleNow = state.appState === "idle" && energy < 0.02;
+      if (idleNow && lastDraw && ms - lastDraw < IDLE_FRAME_MS) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
       const dt = last ? Math.min(0.05, (ms - last) / 1000) : 0.016;
       last = ms;
+      lastDraw = ms;
       tGlobal += dt;
       const phase = phaseFromClock();
 
@@ -744,6 +761,7 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
     }
 
     return () => {
+      dead = true;
       if (raf) cancelAnimationFrame(raf);
       unsubs.forEach((u) => u());
     };
@@ -765,7 +783,7 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
           aria-label="A pixel-art cutaway of Yappy's cottage room: a nest, a typewriter desk, a plant, and a window showing the sky. The chick Yappy moves through daily routines and hurries to the desk to work while you dictate."
         />
       </div>
-      <div className="yh-stats" aria-hidden>
+      <div className="yh-stats">
         {showWords && (
           <div className="yh-stat">
             <span className="yh-k">Words today</span>
@@ -783,7 +801,8 @@ export default function YappyHouse({ wordsToday, streakDays }: YappyHouseProps) 
         )}
         <div className="yh-stat">
           <span className="yh-k">Mood</span>
-          <span className="yh-v" ref={moodRef}>
+          {/* live Mood is announced to assistive tech as Yappy's state changes */}
+          <span className="yh-v" ref={moodRef} aria-live="polite">
             content
           </span>
         </div>

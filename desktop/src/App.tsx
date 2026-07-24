@@ -347,9 +347,13 @@ export default function App() {
 
   useEffect(() => {
     refreshAll();
+    // A synchronous cleanup can run before these listen() promises resolve
+    // (StrictMode double-mount). A `dead` flag unsubscribes any listener that
+    // lands after teardown so no native listener leaks.
+    let dead = false;
     const unsubs: Array<() => void> = [];
     listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
-      unsubs.push(u),
+      dead ? u() : unsubs.push(u),
     );
     listen<boolean>("recording", (e) =>
       setStatus((s) => ({
@@ -359,7 +363,7 @@ export default function App() {
           ? "Recording… release fn⌃ or click Stop"
           : s.message,
       })),
-    ).then((u) => unsubs.push(u));
+    ).then((u) => (dead ? u() : unsubs.push(u)));
     listen<TranscriptEntry>("transcript", async (e) => {
       setHistory((h) => [e.payload, ...h.filter((x) => x.id !== e.payload.id)]);
       try {
@@ -368,12 +372,15 @@ export default function App() {
       } catch {
         /* ignore */
       }
-    }).then((u) => unsubs.push(u));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<string>("paste_outcome", (e) => {
       setFlash(e.payload);
       setTimeout(() => setFlash(null), 2800);
-    }).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+    };
   }, [refreshAll]);
 
   useEffect(() => {
@@ -663,6 +670,7 @@ export default function App() {
             <button
               key={id}
               className={nav === id ? "nav-item active" : "nav-item"}
+              aria-current={nav === id ? "page" : undefined}
               onClick={() => setNav(id)}
             >
               <span>{label}</span>

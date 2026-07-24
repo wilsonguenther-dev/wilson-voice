@@ -26,6 +26,12 @@ export default function ClassicPill() {
   const doneTimer = useRef<number | null>(null);
 
   useEffect(() => {
+    // prefers-reduced-motion: paint one calm static frame (level 0, waveform at
+    // rest) instead of the per-frame --level animation loop.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      pillRef.current?.style.setProperty("--level", "0");
+      return;
+    }
     let raf = 0;
     const loop = () => {
       smoothRef.current += (levelRef.current - smoothRef.current) * 0.3;
@@ -38,6 +44,10 @@ export default function ClassicPill() {
 
   useEffect(() => {
     invoke<AppStatus>("get_status").then(setStatus).catch(() => {});
+    // A synchronous cleanup can run before these listen() promises resolve
+    // (StrictMode double-mount). A `dead` flag unsubscribes any listener that
+    // lands after teardown so no native listener leaks.
+    let dead = false;
     const unsubs: Array<() => void> = [];
     const apply = (s: AppStatus) => {
       setStatus(s);
@@ -49,18 +59,21 @@ export default function ClassicPill() {
       }
       prevBusy.current = s.busy;
     };
-    listen<AppStatus>("status", (e) => apply(e.payload)).then((u) => unsubs.push(u));
+    listen<AppStatus>("status", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) =>
       setStatus((s) => {
         if (!e.payload) levelRef.current = 0;
         return { ...s, recording: e.payload };
       }),
-    ).then((u) => unsubs.push(u));
+    ).then((u) => (dead ? u() : unsubs.push(u)));
     listen<number>("audio_level", (e) => {
       const v = typeof e.payload === "number" ? e.payload : 0;
       levelRef.current = Math.max(0, Math.min(1, v));
-    }).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+    };
   }, []);
 
   const live = status.recording;
