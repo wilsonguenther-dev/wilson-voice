@@ -468,13 +468,17 @@ export default function App() {
     }
   }
 
-  // YV15 — apply a push-to-talk binding + keep the human label in sync. Shared by
-  // the preset chips and the key-capture control so both stay consistent. The
-  // dictation engine (ptt_macos CGEvent tap) binds the fn (Globe) key, so the
-  // persisted value is always one of the supported ids: fn | fn_control | both.
-  function applyBinding(id: string) {
+  // YV15/YV22 — apply a push-to-talk binding + keep the human label in sync.
+  // Shared by the preset chips and the key-capture control so both stay
+  // consistent. The dictation engine (ptt_macos CGEvent tap) binds the fn (Globe)
+  // key, so the persisted value is always one of the supported ids:
+  // fn | fn_control | both. Persist via saveSettings so the change survives quit
+  // AND re-binds the live PTT engine in-session — the backend save_settings
+  // command calls ptt_macos::set_binding, so a remapped shortcut works
+  // immediately instead of only after a relaunch.
+  async function applyBinding(id: string) {
     if (!settings) return;
-    setSettings({
+    await saveSettings({
       ...settings,
       pttBinding: id,
       hotkeyLabel: id === "fn" ? "fn" : id === "both" ? "fn / fn⌃" : "fn⌃",
@@ -1381,7 +1385,7 @@ export default function App() {
                   type="checkbox"
                   checked={settings.showFloatingPill ?? true}
                   onChange={(e) =>
-                    setSettings({
+                    saveSettings({
                       ...settings,
                       showFloatingPill: e.target.checked,
                     })
@@ -1441,7 +1445,7 @@ export default function App() {
                   type="checkbox"
                   checked={settings.denoise ?? true}
                   onChange={(e) =>
-                    setSettings({ ...settings, denoise: e.target.checked })
+                    saveSettings({ ...settings, denoise: e.target.checked })
                   }
                 />
                 <span>
@@ -1488,7 +1492,7 @@ export default function App() {
                   type="checkbox"
                   checked={settings.autoPaste}
                   onChange={(e) =>
-                    setSettings({ ...settings, autoPaste: e.target.checked })
+                    saveSettings({ ...settings, autoPaste: e.target.checked })
                   }
                 />
                 <span>
@@ -1501,7 +1505,7 @@ export default function App() {
                 <select
                   value={settings.language}
                   onChange={(e) =>
-                    setSettings({ ...settings, language: e.target.value })
+                    saveSettings({ ...settings, language: e.target.value })
                   }
                 >
                   <option value="en">English</option>
@@ -1587,7 +1591,7 @@ export default function App() {
                     type="checkbox"
                     checked={settings.keepCmdShiftV ?? false}
                     onChange={(e) =>
-                      setSettings({
+                      saveSettings({
                         ...settings,
                         keepCmdShiftV: e.target.checked,
                       })
@@ -1627,7 +1631,7 @@ export default function App() {
                           : undefined
                       }
                       onClick={() =>
-                        setSettings({
+                        saveSettings({
                           ...settings,
                           speedProfile: p.id,
                           model: p.model,
@@ -1652,7 +1656,7 @@ export default function App() {
                 <select
                   value={settings.model}
                   onChange={(e) =>
-                    setSettings({ ...settings, model: e.target.value })
+                    saveSettings({ ...settings, model: e.target.value })
                   }
                 >
                   {MODELS.map((m) => (
