@@ -1082,11 +1082,15 @@ pub fn run() {
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
 
-            // Accessory (agent) app: no Dock icon AND — the actual fix — lets the
-            // NSPanel Dictate island float over OTHER apps' fullscreen Spaces in a
-            // packaged build (a .regular app cannot). Pairs with LSUIElement=true.
+            // Regular app so Yap shows in the Dock, Launchpad, and Applications — it
+            // has a real main window (and a social layer coming), not just a menubar
+            // agent. The floating Dictate pill STILL hovers over other apps' fullscreen
+            // Spaces: that comes from the NSPanel's collection behavior
+            // (canJoinAllSpaces + fullScreenAuxiliary + nonactivating, see float_pill.rs),
+            // which works regardless of activation policy — not from being .accessory.
+            // LSUIElement is false in Info.plist to match.
             #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();

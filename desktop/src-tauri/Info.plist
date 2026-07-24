@@ -6,11 +6,11 @@
 	<string>Yap</string>
 	<key>CFBundleName</key>
 	<string>Yap</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Yap records your voice locally to transcribe dictation with Whisper. Audio never leaves your Mac.</string>
+	<key>LSUIElement</key>
+	<false/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Yap pastes transcribed text into the app you're typing in.</string>
-	<key>LSUIElement</key>
-	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Yap records your voice locally to transcribe dictation with Whisper. Audio never leaves your Mac.</string>
 </dict>
 </plist>

@@ -1,21 +1,21 @@
 :root {
   color-scheme: light dark;
   /* Liquid-glass-ish tokens (macOS Tahoe-inspired; CSS fallback for WebView) */
-  --bg: #f4f2ee;
-  --bg-side: rgba(255, 255, 255, 0.45);
-  --bg-card: rgba(255, 255, 255, 0.62);
-  --bg-elev: rgba(255, 255, 255, 0.72);
-  --glass: rgba(255, 255, 255, 0.55);
+  --bg: #f8f0e0;
+  --bg-side: rgba(255, 251, 244, 0.5);
+  --bg-card: rgba(255, 252, 246, 0.66);
+  --bg-elev: rgba(255, 253, 248, 0.75);
+  --glass: rgba(255, 252, 246, 0.55);
   --glass-border: rgba(255, 255, 255, 0.55);
-  --border: rgba(20, 18, 14, 0.1);
-  --text: #16140f;
-  --muted: #6b655c;
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.12);
+  --border: rgba(74, 48, 20, 0.12);
+  --text: #2c2216;
+  --muted: #8a7658;
+  --accent: #ef7d3c;
+  --accent-soft: rgba(239, 125, 60, 0.14);
   --danger: #be123c;
   --warn: #b45309;
   --radius: 16px;
-  --shadow: 0 12px 40px rgba(20, 18, 14, 0.08);
+  --shadow: 0 12px 40px rgba(74, 48, 20, 0.1);
   --blur: 28px;
   font-family:
     "SF Pro Text",
@@ -33,18 +33,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0b0d11;
-    --bg-side: rgba(22, 26, 34, 0.55);
-    --bg-card: rgba(28, 32, 42, 0.55);
-    --bg-elev: rgba(36, 42, 54, 0.65);
-    --glass: rgba(28, 32, 42, 0.5);
-    --glass-border: rgba(255, 255, 255, 0.1);
-    --border: rgba(255, 255, 255, 0.1);
-    --text: #f2f4f8;
-    --muted: #9aa3b5;
-    --accent: #2dd4bf;
-    --accent-soft: rgba(45, 212, 191, 0.14);
-    --shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    --bg: #201811;
+    --bg-side: rgba(40, 32, 26, 0.55);
+    --bg-card: rgba(48, 40, 32, 0.55);
+    --bg-elev: rgba(58, 48, 38, 0.65);
+    --glass: rgba(44, 36, 28, 0.5);
+    --glass-border: rgba(255, 238, 214, 0.12);
+    --border: rgba(255, 238, 214, 0.12);
+    --text: #f4e9d6;
+    --muted: #b6a184;
+    --accent: #ff9a5c;
+    --accent-soft: rgba(255, 154, 92, 0.16);
+    --shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   }
 }
 
