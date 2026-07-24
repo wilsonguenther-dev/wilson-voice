@@ -301,6 +301,11 @@
     rug:"#4c9aa6", rugHi:"#69b6c1", rugDk:"#37727c",
     lampPole:"#6b5238", shade:"#ffcf6b", shadeHi:"#ffe6a6",
     steam:"#fff", coffee:"#6b4326", cup:"#f1eabe",
+    beakHi:"#ffb06a", eyeShine:"#ffffff",
+    bedFrame:"#7a4b2e", bedFrameHi:"#9a6540", bedFrameDk:"#553019",
+    quilt:"#e0857a", quiltHi:"#f2a89b", quiltDk:"#b8615a", pillow:"#fbf3e2", pillowSh:"#e4d6bb",
+    chair:"#7a4b2e", chairHi:"#9a6540", chairDk:"#553019",
+    floorGrain:"#96592f", floorGrainDk:"#7c4a28",
   };
 
   // ---- helpers -------------------------------------------------------------
@@ -392,14 +397,17 @@
     px(0,0,4,FLOOR_Y, C.wallDk); px(W-4,0,4,FLOOR_Y, C.wallSh);
     // baseboard
     px(0, FLOOR_Y-3, W, 3, C.wallSh);
-    // floor
+    // floor — wide planks with seams + wood grain
     px(0, FLOOR_Y, W, H-FLOOR_Y, C.floor);
-    for (let x=0;x<W;x+=8){ px(x, FLOOR_Y, 1, H-FLOOR_Y, C.floorSh); }   // planks
     px(0, FLOOR_Y, W, 1, C.floorHi);
-    // rug
-    const rx=58, rw=78;
-    px(rx, H-13, rw, 12, C.rug); px(rx, H-13, rw, 1, C.rugHi); px(rx, H-2, rw, 1, C.rugDk);
-    for (let x=rx+4;x<rx+rw-2;x+=10) px(x, H-11, 2, 8, C.rugHi);
+    px(0, FLOOR_Y+1, W, 1, C.floorSh);
+    for (let sx=0; sx<W; sx+=18) px(sx, FLOOR_Y+2, 1, H-FLOOR_Y-2, C.floorDk);        // plank seams
+    for (let gy=FLOOR_Y+4; gy<H; gy+=3) for (let gx=(gy*5)%11; gx<W; gx+=17) px(gx, gy, 7, 1, C.floorGrain); // grain streaks
+    // rug — bordered with a diamond weave
+    const rx=50, rw=92, ry=H-15;
+    px(rx, ry, rw, 14, C.rugDk); px(rx+1, ry+1, rw-2, 12, C.rug);
+    px(rx+1, ry+1, rw-2, 1, C.rugHi); px(rx+2, ry+2, rw-4, 1, C.rug);
+    for (let dp=rx+8; dp<rx+rw-6; dp+=13){ dot(dp+1,ry+5,C.rugHi); px(dp,ry+6,3,3,C.rugHi); dot(dp+1,ry+9,C.rugHi); }
 
     drawWindow(sky, t);
 
@@ -419,12 +427,14 @@
     px(86+sway, 78, 6, 5, C.leaf); px(86+sway,78,3,2,C.leafHi);
     px(82-sway, 80, 5, 5, C.leaf);
 
-    // --- nest / bed (station: sleep), bottom-left ---
-    const nx=20, ny=90;
-    px(nx-2, ny+6, 26, 6, C.strawDk);
-    px(nx, ny+2, 22, 8, C.straw); px(nx, ny+2, 22, 2, "#e0bd74");
-    px(nx+2, ny+5, 18, 5, "#7fa8c9"); // little blanket
-    px(nx+2, ny+5, 18, 1, "#a7c6e0");
+    // --- bed (station: sleep), bottom-left ---
+    const bx=8, bby=85;
+    px(bx-2, bby+1, 4, 15, C.bedFrame); px(bx-2,bby+1,4,1,C.bedFrameHi);        // headboard
+    px(bx+32, bby+6, 4, 10, C.bedFrame); px(bx+32,bby+6,4,1,C.bedFrameHi);      // footboard
+    px(bx, bby+13, 34, 3, C.bedFrameDk);                                         // frame base
+    px(bx+1, bby+6, 32, 7, C.quilt); px(bx+1,bby+6,32,1,C.quiltHi); px(bx+1,bby+12,32,1,C.quiltDk); // quilt
+    for (let q=bx+4;q<bx+32;q+=6){ dot(q,bby+8,C.quiltHi); dot(q+2,bby+10,C.quiltDk); }              // stitching
+    px(bx+2, bby+2, 12, 5, C.pillow); px(bx+2,bby+2,12,1,"#fff"); px(bx+2,bby+6,12,1,C.pillowSh);    // pillow
 
     // --- desk + typewriter (station: work), right ---
     const dx=126, dy=76;
@@ -440,6 +450,11 @@
     px(tw+5, dy-6, 10, 5, C.paper); px(tw+5, dy-6, 10, 1, "#fff"); // sheet in the roller
     // coffee cup on the desk
     px(dx+34, dy+3, 5, 5, C.cup); px(dx+34, dy+3, 5, 1, "#fff"); px(dx+39, dy+4, 2, 2, C.cup);
+    // desk chair (Yappy perches here to work)
+    const chx=dx-6;
+    px(chx-2, dy+2, 3, 13, C.chair); px(chx-2,dy+2,3,1,C.chairHi);            // backrest
+    px(chx-4, dy+12, 11, 3, C.chair); px(chx-4,dy+12,11,1,C.chairHi);         // seat
+    px(chx-3, dy+15, 2, 8, C.chairDk); px(chx+4, dy+15, 2, 8, C.chairDk);     // legs
 
     // --- filing cabinet, far right ---
     px(168, 70, 20, 30, C.metal); px(168,70,20,2,C.metalHi); px(168,98,20,2,C.metalDk);
@@ -462,71 +477,68 @@
   // pose: sleep|idle|walk|work|water|look|sip|happy ; face: -1 left / 1 right
   function drawYappy(x, feetY, pose, t, face){
     x = Math.round(x); const y = Math.round(feetY);
-    const bob = pose==="walk" ? Math.abs(Math.sin(t*10))*2
-              : pose==="work" ? Math.abs(Math.sin(t*9))*1
-              : Math.sin(t*2.2)*0.8;                    // breathing
-    const yb = Math.round(y - 12 - bob);
-    const blink = (Math.sin(t*0.9)*0.5+0.5) > 0.94 ? 1 : 0;
+    const breathe = Math.sin(t*2.2)*0.6;
+    const blink = (Math.sin(t*0.7)*0.5+0.5) > 0.93;
 
-    if (pose==="sleep"){
-      // curled in the nest
-      const bx = x-6, by = y-6;
-      px(bx, by, 12, 7, C.yolk); px(bx, by, 12, 2, C.yolkHi); px(bx, by+6, 12, 1, C.yolkDk);
-      px(bx+9, by+1, 3, 3, C.yolkSh);                 // tucked head
-      px(bx+2, by+2, 3, 1, C.carrot);                 // beak tucked
-      dot(bx+3, by+2, C.eye);                         // closed eye (line)
-      // Zzz
-      const zt = (t*0.6)%3;
-      if (zt>0.4) px(bx+11, by-3, 2, 1, "#fff");
-      if (zt>1.2) px(bx+13, by-6, 2, 1, "#dfeafd");
-      if (zt>2.0) px(bx+15, by-9, 3, 1, "#cfe0f7");
+    // ===== SLEEP: curled on the bed, head tucked =====
+    if (pose === "sleep"){
+      const cx = x, cy = y - 9;                       // resting on the mattress
+      const rows=[4,7,9,9,8,6];
+      for(let r=0;r<rows.length;r++){const hw=rows[r]; px(cx-hw, cy-5+r, hw*2, 1, C.yolk); dot(cx-hw,cy-5+r,C.yolkDk); dot(cx+hw-1,cy-5+r,C.yolkDk);}
+      px(cx-7, cy-5, 15, 1, C.yolkHi);                // back light
+      px(cx-5, cy, 11, 1, C.yolkSh);                  // under shade
+      px(cx-5, cy-4, 6, 3, C.yolkSh);                 // folded wing
+      px(cx+3, cy-3, 5, 4, C.yolk); px(cx+3,cy-3,5,1,C.yolkHi);   // tucked head
+      px(cx+4, cy-1, 3, 1, C.eye);                    // closed eye
+      px(cx+7, cy-1, 2, 2, C.carrot);                 // resting beak
+      const zt=(t*0.7)%3;
+      if(zt>0.3) dot(cx+9, cy-6, "#cfe0f7");
+      if(zt>1.1) px(cx+11, cy-9, 2,1, "#bcd4f2");
+      if(zt>1.9) px(cx+13, cy-12, 2,1, "#a9c6ee");
       return;
     }
 
-    const fx = face; // 1 right, -1 left
-    // feet
-    const step = pose==="walk" ? Math.sin(t*10) : 0;
-    px(x-3, y-2, 2, 2, C.carrotDk); px(x+1, y-2, 2, 2, C.carrotDk);
-    if (pose==="walk"){ px(x-3, y-2+ (step>0?-1:0), 2, 2, C.carrot); px(x+1, y-2+(step<0?-1:0),2,2,C.carrot); }
-    // body (egg)
-    px(x-5, yb+3, 10, 9, C.yolk);
-    px(x-4, yb+1, 8, 3, C.yolk);
-    px(x-5, yb+3, 10, 2, C.yolkHi);            // top light
-    px(x-5, yb+10, 10, 2, C.yolkSh);           // belly shade
-    dot(x-5, yb+4, C.yolkDk); dot(x+4, yb+4, C.yolkDk);
-    // wing
-    const wf = pose==="work" ? Math.sin(t*16)*2 : pose==="walk" ? Math.sin(t*10)*1 : Math.sin(t*2)*0.6;
-    px(x + (fx>0?2:-4), yb+4 + (wf<0?wf:0), 3, 5, C.yolkSh);
-    if (pose==="water") px(x + fx*4, yb+2, 4, 3, C.metal); // watering can spout
-    // head + tuft
-    px(x-4, yb-4, 8, 6, C.yolk); px(x-4, yb-4, 8, 2, C.yolkHi);
-    px(x-1, yb-6, 2, 2, C.yolkHi);             // tuft
-    // cheek
-    px(x + fx*2, yb-1, 1, 1, C.cheek);
-    // eyes
-    const ex = x + (fx>0?1:-3);
-    if (blink){ px(ex, yb-2, 2, 1, C.eye); }
-    else { px(ex, yb-3, 2, 2, C.eye); dot(ex + (fx>0?1:0), yb-3, C.eyeHi); }
-    // beak
-    px(x + fx*3, yb-2, 2, 2, C.carrot); px(x+fx*3, yb-1, 2, 1, C.carrotDk);
+    // ===== WORK: side profile on the chair, beak + wings at the keys =====
+    if (pose === "work"){
+      const bob = Math.abs(Math.sin(t*7))*1;
+      const by = Math.round(y - 15 - bob);
+      const rows=[3,5,6,7,7,7,7,6,6,5,4];
+      for(let r=0;r<rows.length;r++){const hw=rows[r]; px(x-hw+1, by+r, hw*2, 1, C.yolk); dot(x-hw+1,by+r,C.yolkDk); dot(x+hw,by+r,C.yolkDk);}
+      px(x-5, by, 12, 1, C.yolkHi); px(x-4, by+9, 10, 1, C.yolkSh);
+      px(x-8, by+3, 3, 4, C.yolkSh); px(x-9, by+4, 2, 2, C.yolkDk);   // tail (back)
+      px(x+3, by-2, 5, 5, C.yolk); px(x+3, by-2, 5, 1, C.yolkHi);     // head to desk
+      px(x, by-4, 2, 3, C.yolkHi);                                    // tuft
+      if(blink) px(x+5, by, 2, 1, C.eye); else { px(x+5, by-1, 2, 2, C.eye); dot(x+6, by-1, C.eyeShine); }
+      px(x+7, by, 3, 2, C.carrot); px(x+7, by+1, 3, 1, C.carrotDk);   // beak to keys
+      const tap = Math.sin(t*16)>0 ? 0 : 1;
+      px(x+3, by+6+tap, 4, 2, C.yolkSh); dot(x+3, by+6+tap, C.yolkDk); // wing tapping
+      if((t*3|0)%2===0) px(x+9, by-5, 3, 3, C.paper);                 // focus spark
+      return;
+    }
 
-    // pose-specific extras
-    if (pose==="work"){
-      // tiny note flying up from the typewriter every beat
-      if ((t*3|0)%2===0) px(x-fx*2, yb-8, 3, 3, C.paper);
-    }
-    if (pose==="happy"){
-      const hy = yb - 8 - (Math.sin(t*6)*2);
-      px(x-6, hy, 2, 2, C.rose); px(x+5, hy+1, 2, 2, "#ff9db0");
-    }
-    if (pose==="water"){
-      // water droplets
-      if ((t*4|0)%2===0){ dot(x+fx*6, yb+4, "#9fd6e6"); dot(x+fx*6, yb+7, "#9fd6e6"); }
-    }
-    if (pose==="sip"){
-      px(x+fx*4, yb+2, 3, 3, C.cup);         // holding a cup
-      if ((t*2|0)%2===0) dot(x+fx*5, yb-1, "#fff");
-    }
+    // ===== FRONT-FACING chick: idle / look / walk / water / sip / happy =====
+    const hop = pose==="walk" ? Math.abs(Math.sin(t*9))*2 : 0;
+    const by = Math.round(y - 18 - breathe - hop);
+    const step = pose==="walk" ? Math.sin(t*9) : 0;
+    px(x-4, y-2+(step>0?-1:0), 3, 2, C.carrot); dot(x-4,y-1,C.carrotDk); dot(x-2,y-1,C.carrotDk);
+    px(x+2, y-2+(step<0?-1:0), 3, 2, C.carrot); dot(x+2,y-1,C.carrotDk); dot(x+4,y-1,C.carrotDk);
+    const BODY=[3,5,6,7,7,7,7,7,7,7,6,6,5,4,3];
+    for(let r=0;r<BODY.length;r++){const hw=BODY[r]; px(x-hw, by+r, hw*2, 1, C.yolk); dot(x-hw,by+r,C.yolkDk); dot(x+hw-1,by+r,C.yolkDk);}
+    px(x-6, by+1, 3, 4, C.yolkHi); px(x-7, by+5, 2, 4, C.yolkHi);     // upper-left light
+    px(x+3, by+8, 4, 5, C.yolkSh); px(x-6, by+12, 12, 2, C.yolkSh);   // lower-right + belly shade
+    px(x-1, by-3, 2, 3, C.yolk); dot(x-3, by-1, C.yolkSh); dot(x+2, by-1, C.yolkHi); dot(x-1,by-4,C.yolkHi); // tuft
+    const flap = pose==="happy" ? Math.abs(Math.sin(t*10))*3 : Math.sin(t*2)*0.6;
+    px(x-8, by+5-(flap<0?flap:0), 2, 5, C.yolkSh); dot(x-8, by+5, C.yolkDk);
+    px(x+6, by+5-(pose==="happy"?flap:0), 2, 5, C.yolkSh); dot(x+7, by+5, C.yolkDk);
+    const eyY=by+5;
+    if(blink){ px(x-4,eyY+1,3,1,C.eye); px(x+1,eyY+1,3,1,C.eye); }
+    else { px(x-4,eyY,3,3,C.eye); px(x+1,eyY,3,3,C.eye); dot(x-3,eyY,C.eyeShine); dot(x+2,eyY,C.eyeShine); }
+    px(x-1, by+9, 2, 2, C.carrot); dot(x-1,by+10,C.carrotDk); dot(x,by+10,C.carrotDk); dot(x-1,by+9,C.beakHi); // beak
+    dot(x-5, by+8, C.cheek); dot(x+4, by+8, C.cheek);   // cheeks
+
+    if(pose==="water"){ px(x+7,by+4,4,3,C.metal); px(x+7,by+4,4,1,C.metalHi); px(x+11,by+5,2,1,C.metalDk); if((t*4|0)%2===0){dot(x+12,by+8,"#9fd6e6"); dot(x+12,by+11,"#9fd6e6");} }
+    if(pose==="sip"){ px(x+6,by+7,4,4,C.cup); px(x+6,by+7,4,1,"#fff"); if((t*2|0)%2===0) dot(x+7,by+4,"#fff"); }
+    if(pose==="happy"){ const hy=Math.round(by-4-Math.sin(t*6)*2); px(x-9,hy,2,2,C.rose); px(x+8,hy+1,2,2,"#ff9db0"); dot(x-1,by+11,C.carrotDk); }
   }
   const C_rose = "#ff6b8a";
 
@@ -586,7 +598,7 @@
     window: { x:52,  pose:"look"  },
     plant:  { x:74,  pose:"water" },
     coffee: { x:96,  pose:"sip"   },
-    desk:   { x:128, pose:"work", face:1 },
+    desk:   { x:121, pose:"work", face:1 },
   };
   const NAMES = Object.keys(STATIONS);
   const state = {
