@@ -398,9 +398,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 settings.dictation_mode,
                 settings.cleanup_level
             );
-            // Always copy first (Wispr Flow: never lose text)
+            // Always copy first (Wispr Flow: never lose text). The wrong-target
+            // guard (YV21) inside copy_and_maybe_paste re-checks the frontmost app
+            // against `source_app` immediately before ⌘V and falls back to
+            // clipboard-only if the user switched apps during the ASR delay.
             let want_paste = settings.auto_paste && focus::should_auto_paste();
-            let outcome = paste::copy_and_maybe_paste(&app2, &text, want_paste);
+            let outcome =
+                paste::copy_and_maybe_paste(&app2, &text, want_paste, source_app.as_deref());
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
             log::info!(
@@ -680,7 +684,10 @@ async fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
     // thread (3s freeze, then "paste timed out"). spawn_blocking keeps the async
     // runtime unblocked while the short main-thread hop completes.
     tauri::async_runtime::spawn_blocking(move || {
-        let o = paste::copy_and_maybe_paste(&app, &text, true);
+        // Explicit user re-paste of a stored entry: the current frontmost app IS
+        // the intended target, so pass `None` — the YV21 source-app guard does
+        // not apply here.
+        let o = paste::copy_and_maybe_paste(&app, &text, true, None);
         if o.copied {
             Ok(o.message)
         } else {

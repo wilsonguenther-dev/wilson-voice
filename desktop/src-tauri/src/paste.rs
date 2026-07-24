@@ -25,12 +25,42 @@ pub struct PasteOutcome {
     pub message: String,
 }
 
+/// YV21 (audit M1): decide whether it is safe to synthesize ⌘V.
+///
+/// The transcript is auto-pasted 1–3s after key-release, inside the ASR thread.
+/// If the user switched apps during that delay, ⌘V would land in the WRONG app
+/// (a privacy leak). `source_app` is the frontmost app captured at record start;
+/// `current_app` is the frontmost app sampled immediately before ⌘V. We only
+/// paste when we can positively confirm the SAME app is still frontmost. Any
+/// uncertainty (either identity unknown/empty, or a genuinely different app) is
+/// treated as a mismatch → clipboard-only, so we never paste into another app.
+pub fn is_same_paste_target(source_app: Option<&str>, current_app: Option<&str>) -> bool {
+    match (source_app, current_app) {
+        (Some(a), Some(b)) => {
+            let a = a.trim();
+            let b = b.trim();
+            !a.is_empty() && a.eq_ignore_ascii_case(b)
+        }
+        _ => false,
+    }
+}
+
 /// Always copy. Paste only when Accessibility is granted, **on the main thread**.
 ///
 /// After a successful auto-paste the user's *prior* clipboard is restored (like
 /// Wispr) so dictation never silently clobbers what they had copied. On paste
 /// failure the transcript is left on the clipboard so they can ⌘V manually.
-pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> PasteOutcome {
+/// `source_app` is the frontmost app captured at dictation time (record start).
+/// When it is `Some`, the wrong-target guard (YV21) is enforced: we sample the
+/// current frontmost app immediately before ⌘V and only paste if it still
+/// matches. Pass `None` for explicit user re-pastes (e.g. `paste_entry`), where
+/// the current frontmost app IS the intended target and no guard applies.
+pub fn copy_and_maybe_paste(
+    app: &AppHandle,
+    text: &str,
+    want_paste: bool,
+    source_app: Option<&str>,
+) -> PasteOutcome {
     // Snapshot the existing clipboard before we overwrite it. (Text only for now;
     // image/file restore is a tracked follow-up.)
     let prior = app.clipboard().read_text().ok();
@@ -55,6 +85,22 @@ pub fn copy_and_maybe_paste(app: &AppHandle, text: &str, want_paste: bool) -> Pa
             pasted: false,
             message: "Copied. Enable Accessibility for Yap to auto-paste.".into(),
         };
+    }
+
+    // YV21 (audit M1): guard against a wrong-target paste. `source_app` was the
+    // frontmost app at record start; sample the CURRENT frontmost app right
+    // before synthesizing ⌘V. If the user switched apps during the ASR delay,
+    // fall back to clipboard-only — the text is already copied, so nothing is
+    // lost and it never lands in a different app.
+    if let Some(dictated) = source_app {
+        let current = crate::focus::frontmost_app_name();
+        if !is_same_paste_target(Some(dictated), current.as_deref()) {
+            return PasteOutcome {
+                copied: true,
+                pasted: false,
+                message: "Copied — you switched apps, so I didn't paste".into(),
+            };
+        }
     }
 
     match paste_frontmost_on_main(app) {
@@ -196,4 +242,27 @@ fn paste_cmd_v_main_thread() -> Result<(), String> {
 pub fn paste_frontmost() -> Result<(), String> {
     // Without AppHandle we cannot hop threads — only call from main.
     paste_cmd_v_main_thread()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_same_paste_target;
+
+    #[test]
+    fn same_paste_target_decision() {
+        // Same app still frontmost → paste is allowed (case/whitespace tolerant).
+        assert!(is_same_paste_target(Some("Notes"), Some("Notes")));
+        assert!(is_same_paste_target(Some("Notes"), Some("notes")));
+        assert!(is_same_paste_target(Some(" Slack "), Some("slack")));
+
+        // User switched apps during the ASR delay → mismatch → clipboard-only.
+        assert!(!is_same_paste_target(Some("Notes"), Some("Messages")));
+
+        // Unknown identity on either side is NOT a confirmed match → do not paste.
+        assert!(!is_same_paste_target(Some("Notes"), None));
+        assert!(!is_same_paste_target(None, Some("Notes")));
+        assert!(!is_same_paste_target(None, None));
+        assert!(!is_same_paste_target(Some(""), Some("")));
+        assert!(!is_same_paste_target(Some("   "), Some("   ")));
+    }
 }
