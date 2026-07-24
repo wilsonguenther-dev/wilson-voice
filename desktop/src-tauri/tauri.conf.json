@@ -58,7 +58,7 @@
       "endpoints": [
         "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE1MEYxMzRGNjU4MDlENkUKUldSdW5ZQmxUeE1QRlhQbnZybTB0SjlYWlVnaHk3MVZ1T3A0VWpnS3VGaG9meXlyblc2cG9ET2sK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEyMDkwMjQ0QTYxQUQ4MjgKUldRbzJCcW1SQUlKb254VWtEc28wY2oyREZWZUFqQkxkYVBMdXRQVm9SQm55WWg0c2dXZnJmTC8K",
       "windows": {
         "installMode": "passive"
       }
