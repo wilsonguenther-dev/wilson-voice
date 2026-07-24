@@ -231,6 +231,10 @@ export default function App() {
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  // YV15 — key-capture for the push-to-talk shortcut. `capturing` arms a global
+  // keydown listener; `captureHint` shows the live result / validation message.
+  const [capturing, setCapturing] = useState(false);
+  const [captureHint, setCaptureHint] = useState<string | null>(null);
 
   // Read the live query without making `refreshAll` depend on it — otherwise the
   // mount effect that registers event listeners re-runs on every keystroke,
@@ -239,6 +243,59 @@ export default function App() {
   useEffect(() => {
     queryRef.current = query;
   }, [query]);
+
+  // YV15 — while the "Set shortcut" control is armed, record the next combo the
+  // user presses and map it to a supported push-to-talk binding. The dictation
+  // engine binds the fn (Globe) key via a CGEvent tap, so only fn / fn⌃ are wired
+  // end-to-end — Control is the reliably-detectable half of the fn⌃ gesture, so a
+  // Control-inclusive combo maps to fn_control. Anything else (bare letters, or a
+  // modifier we can't wire) is reported rather than silently persisted.
+  useEffect(() => {
+    if (!capturing) return;
+    function onKey(e: KeyboardEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setCapturing(false);
+        setCaptureHint("Cancelled — shortcut unchanged.");
+        return;
+      }
+      const fn =
+        e.key === "Fn" ||
+        e.code === "Fn" ||
+        (typeof e.getModifierState === "function" && e.getModifierState("Fn"));
+      const ctrl = e.ctrlKey;
+      const isModifierKey =
+        e.key === "Control" ||
+        e.key === "Fn" ||
+        e.key === "Meta" ||
+        e.key === "Alt" ||
+        e.key === "Shift";
+      if (ctrl && !e.metaKey && !e.altKey) {
+        // fn⌃ gesture — Control is the detectable half; fn is required to talk.
+        applyBinding("fn_control");
+        setCaptureHint("Shortcut set to fn + Control (fn⌃).");
+        setCapturing(false);
+      } else if (fn) {
+        applyBinding("fn");
+        setCaptureHint(
+          "Shortcut set to fn. Tip: set Keyboard → “Press 🌐 to → Do Nothing” so fn doesn’t open emoji.",
+        );
+        setCapturing(false);
+      } else if (!isModifierKey) {
+        setCaptureHint(
+          "That’s not a hold key. Hold fn, or fn together with Control.",
+        );
+      } else {
+        setCaptureHint(
+          "Only fn-based shortcuts are wired for dictation. Hold fn, or fn + Control.",
+        );
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturing, settings]);
 
   const loadHistory = useCallback(async (q?: string) => {
     const h = await invoke<TranscriptEntry[]>("get_history", {
@@ -408,6 +465,19 @@ export default function App() {
     } catch (e) {
       toast(String(e));
     }
+  }
+
+  // YV15 — apply a push-to-talk binding + keep the human label in sync. Shared by
+  // the preset chips and the key-capture control so both stay consistent. The
+  // dictation engine (ptt_macos CGEvent tap) binds the fn (Globe) key, so the
+  // persisted value is always one of the supported ids: fn | fn_control | both.
+  function applyBinding(id: string) {
+    if (!settings) return;
+    setSettings({
+      ...settings,
+      pttBinding: id,
+      hotkeyLabel: id === "fn" ? "fn" : id === "both" ? "fn / fn⌃" : "fn⌃",
+    });
   }
 
   // YV9 — persist onboarding completion (+ optional calibration sample) so the
@@ -1465,24 +1535,47 @@ export default function App() {
                           ? "profile active"
                           : "profile"
                       }
-                      onClick={() =>
-                        setSettings({
-                          ...settings,
-                          pttBinding: id,
-                          hotkeyLabel:
-                            id === "fn"
-                              ? "fn"
-                              : id === "both"
-                                ? "fn / fn⌃"
-                                : "fn⌃",
-                        })
-                      }
+                      onClick={() => applyBinding(id)}
                     >
                       <strong>{label}</strong>
                       <span>{blurb}</span>
                     </button>
                   ))}
                 </div>
+                {/* YV15 — record the next combo instead of picking a preset. */}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    marginTop: 12,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className={capturing ? "primary" : "ghost"}
+                    aria-pressed={capturing}
+                    onClick={() => {
+                      setCaptureHint(
+                        capturing
+                          ? null
+                          : "Listening… hold your shortcut now (Esc to cancel).",
+                      );
+                      setCapturing((c) => !c);
+                    }}
+                  >
+                    {capturing ? "Listening… press your keys" : "Set shortcut"}
+                  </button>
+                  <span className="muted">
+                    Currently <strong>{settings.hotkeyLabel}</strong>
+                  </span>
+                </div>
+                {captureHint && (
+                  <p className="muted" style={{ marginTop: 8 }}>
+                    {captureHint}
+                  </p>
+                )}
                 <label className="toggle" style={{ marginTop: 12 }}>
                   <input
                     type="checkbox"
