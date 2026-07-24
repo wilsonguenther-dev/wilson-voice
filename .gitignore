@@ -25,3 +25,6 @@ desktop/src-tauri/gen/
 
 # autonomous build-loop logs/locks
 .loop/
+
+# iCloud Desktop conflict copies (never commit — repo lives in ~/Desktop)
+* [0-9].*
