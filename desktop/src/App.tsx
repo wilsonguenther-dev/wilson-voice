@@ -95,8 +95,37 @@ interface Insights {
   wpmSampleSessions?: number;
 }
 
+interface DayCount {
+  date: string;
+  words: number;
+  sessions: number;
+}
+
 function fmtInt(n: number | undefined | null) {
   return Math.max(0, Math.round(n ?? 0)).toLocaleString();
+}
+
+// GitHub-style intensity bucket (0 = empty, 1..4 = increasing) from a value
+// relative to the window's peak. Kept pure so the heatmap render stays cheap.
+function heatLevel(words: number, max: number): number {
+  if (words <= 0 || max <= 0) return 0;
+  const r = words / max;
+  if (r > 0.66) return 4;
+  if (r > 0.33) return 3;
+  if (r > 0.1) return 2;
+  return 1;
+}
+
+// Month label for a "YYYY-MM" key from monthly_series.
+function formatMonth(ym: string) {
+  try {
+    return new Date(ym + "-15T12:00:00").toLocaleDateString(undefined, {
+      month: "short",
+      year: "2-digit",
+    });
+  } catch {
+    return ym;
+  }
 }
 
 interface DictEntry {
@@ -189,6 +218,8 @@ export default function App() {
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
+  const [dailySeries, setDailySeries] = useState<DayCount[]>([]);
+  const [monthlySeries, setMonthlySeries] = useState<DayCount[]>([]);
   const [dictionary, setDictionary] = useState<DictEntry[]>([]);
   const [scratch, setScratch] = useState<ScratchNote[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -227,16 +258,20 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, dict, notes] = await Promise.all([
+      const [s, st, ins, daily, monthly, dict, notes] = await Promise.all([
         invoke<AppSettings>("get_settings"),
         invoke<AppStatus>("get_status"),
         invoke<Insights>("get_insights"),
+        invoke<DayCount[]>("daily_series", { days: 365 }),
+        invoke<DayCount[]>("monthly_series", { months: 12 }),
         invoke<DictEntry[]>("list_dictionary"),
         invoke<ScratchNote[]>("list_scratch"),
       ]);
       setSettings(s);
       setStatus(st);
       setInsights(ins);
+      setDailySeries(daily);
+      setMonthlySeries(monthly);
       setDictionary(dict);
       setScratch(notes);
       setBootError(null);
@@ -329,7 +364,14 @@ export default function App() {
   // mutation that already succeeded.
   async function refreshInsights() {
     try {
-      setInsights(await invoke("get_insights"));
+      const [ins, daily, monthly] = await Promise.all([
+        invoke<Insights>("get_insights"),
+        invoke<DayCount[]>("daily_series", { days: 365 }),
+        invoke<DayCount[]>("monthly_series", { months: 12 }),
+      ]);
+      setInsights(ins);
+      setDailySeries(daily);
+      setMonthlySeries(monthly);
     } catch {
       /* leave stale insights; the mutation itself succeeded */
     }
@@ -458,6 +500,39 @@ export default function App() {
   const maxWeek = useMemo(
     () => Math.max(1, ...(insights?.wordsLast7.map((d) => d.words) ?? [1])),
     [insights],
+  );
+
+  // Daily words bar chart — last ~30 days (dailySeries is oldest-first, len 365).
+  const daily30 = useMemo(() => dailySeries.slice(-30), [dailySeries]);
+  const maxDaily30 = useMemo(
+    () => Math.max(1, ...daily30.map((d) => d.words)),
+    [daily30],
+  );
+
+  // GitHub-style activity heatmap — lay the contiguous 365-day series into
+  // week-columns × weekday-rows, aligning the first cell to its real weekday.
+  const heat = useMemo(() => {
+    if (dailySeries.length === 0) {
+      return { cols: 0, cells: [] as { d: DayCount; col: number; row: number }[], max: 0 };
+    }
+    const wd0 = new Date(dailySeries[0].date + "T12:00:00").getDay(); // 0=Sun
+    const max = Math.max(1, ...dailySeries.map((d) => d.words));
+    const cells = dailySeries.map((d, i) => {
+      const g = wd0 + i;
+      return { d, col: Math.floor(g / 7), row: g % 7 };
+    });
+    const cols = Math.ceil((wd0 + dailySeries.length) / 7);
+    return { cols, cells, max };
+  }, [dailySeries]);
+  const hasActivity = useMemo(
+    () => dailySeries.some((d) => d.words > 0),
+    [dailySeries],
+  );
+
+  // Monthly words bar chart — last 12 months.
+  const maxMonthly = useMemo(
+    () => Math.max(1, ...monthlySeries.map((d) => d.words)),
+    [monthlySeries],
   );
 
   const needsPerms = perms && !perms.allCriticalOk;
@@ -947,6 +1022,121 @@ export default function App() {
                   </p>
                 </div>
               </div>
+
+              <div className="panel" style={{ marginTop: 16 }}>
+                <h3>Daily words · last 30 days</h3>
+                {daily30.some((d) => d.words > 0) ? (
+                  <svg
+                    className="chart-svg"
+                    viewBox="0 0 640 160"
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label="Words dictated per day over the last 30 days"
+                  >
+                    {daily30.map((d, i) => {
+                      const step = 640 / Math.max(1, daily30.length);
+                      const bw = step * 0.66;
+                      const h = (d.words / maxDaily30) * 148;
+                      return (
+                        <rect
+                          key={d.date}
+                          x={i * step + (step - bw) / 2}
+                          y={156 - h}
+                          width={bw}
+                          height={Math.max(d.words > 0 ? 2 : 0, h)}
+                          fill="var(--accent)"
+                        >
+                          <title>
+                            {formatDay(d.date)} — {d.words.toLocaleString()} words
+                          </title>
+                        </rect>
+                      );
+                    })}
+                  </svg>
+                ) : (
+                  <p className="muted chart-empty">
+                    No dictation yet. Hold your hotkey and start talking — your
+                    daily words will chart here.
+                  </p>
+                )}
+              </div>
+
+              <div className="panel" style={{ marginTop: 16 }}>
+                <h3>Activity · last 365 days</h3>
+                {hasActivity ? (
+                  <div className="heatmap-wrap">
+                    <svg
+                      className="heatmap"
+                      viewBox={`0 0 ${heat.cols * 13} ${7 * 13}`}
+                      preserveAspectRatio="xMinYMid meet"
+                      role="img"
+                      aria-label="Daily dictation activity heatmap for the last year"
+                    >
+                      {heat.cells.map(({ d, col, row }) => {
+                        const lvl = heatLevel(d.words, heat.max);
+                        const op = [0, 0.28, 0.5, 0.75, 1][lvl];
+                        return (
+                          <rect
+                            key={d.date}
+                            x={col * 13}
+                            y={row * 13}
+                            width={10}
+                            height={10}
+                            rx={2}
+                            fill={lvl === 0 ? "var(--bg-elev)" : "var(--accent)"}
+                            fillOpacity={lvl === 0 ? 1 : op}
+                          >
+                            <title>
+                              {formatDay(d.date)} — {d.words.toLocaleString()} words
+                            </title>
+                          </rect>
+                        );
+                      })}
+                    </svg>
+                    <div className="heat-legend">
+                      <span>Less</span>
+                      {[0, 1, 2, 3, 4].map((lvl) => (
+                        <span
+                          key={lvl}
+                          className="heat-swatch"
+                          style={{
+                            background:
+                              lvl === 0 ? "var(--bg-elev)" : "var(--accent)",
+                            opacity: lvl === 0 ? 1 : [0, 0.28, 0.5, 0.75, 1][lvl],
+                          }}
+                        />
+                      ))}
+                      <span>More</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="muted chart-empty">
+                    A year of dictation lights up here — one square per day, brighter
+                    the more you say.
+                  </p>
+                )}
+              </div>
+
+              {monthlySeries.some((d) => d.words > 0) && (
+                <div className="panel" style={{ marginTop: 16 }}>
+                  <h3>Words by month · last 12 months</h3>
+                  <div className="bars">
+                    {monthlySeries.map((d) => (
+                      <div key={d.date} className="bar-row">
+                        <span className="bar-label">{formatMonth(d.date)}</span>
+                        <div className="bar-track">
+                          <div
+                            className="bar-fill"
+                            style={{ width: `${(d.words / maxMonthly) * 100}%` }}
+                          />
+                        </div>
+                        <span className="bar-n">{d.words.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {insights.topApps.length > 0 && (
                 <div className="panel" style={{ marginTop: 16 }}>
                   <h3>Top apps</h3>

@@ -18,7 +18,7 @@ mod permissions;
 mod ptt_macos;
 mod record;
 
-use db::{Database, DictEntry, Insights, ScratchNote, TranscriptEntry};
+use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
@@ -561,6 +561,23 @@ fn get_insights(state: State<'_, Arc<AppState>>) -> Result<Insights, String> {
     state.db.insights()
 }
 
+/// Contiguous, zero-filled day-by-day words/sessions series (oldest first) for the
+/// last `days` days. Feeds the Insights daily bar chart + the activity heatmap.
+#[tauri::command]
+fn daily_series(state: State<'_, Arc<AppState>>, days: i64) -> Result<Vec<DayCount>, String> {
+    state.db.daily_series(days)
+}
+
+/// Contiguous, zero-filled month-by-month rollup (oldest first, "YYYY-MM") for the
+/// last `months` months. Feeds the Insights monthly bar chart / long-range views.
+#[tauri::command]
+fn monthly_series(
+    state: State<'_, Arc<AppState>>,
+    months: i64,
+) -> Result<Vec<DayCount>, String> {
+    state.db.monthly_series(months)
+}
+
 #[tauri::command]
 fn list_dictionary(state: State<'_, Arc<AppState>>) -> Result<Vec<DictEntry>, String> {
     state.db.list_dictionary()
@@ -807,6 +824,8 @@ pub fn run() {
             hide_float_pill,
             setup_asr_venv,
             get_insights,
+            daily_series,
+            monthly_series,
             list_dictionary,
             add_dictionary_term,
             delete_dictionary_term,
