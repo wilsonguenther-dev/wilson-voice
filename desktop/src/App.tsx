@@ -561,7 +561,8 @@ export default function App() {
               {nav === "dictionary" &&
                 "Custom spellings applied after each transcription."}
               {nav === "scratchpad" && "Park text and assemble prompts."}
-              {nav === "settings" && "Model, language, auto-paste."}
+              {nav === "settings" &&
+                "Your companion, dictation, shortcut, and privacy — all in plain language."}
             </p>
           </div>
           <div className={pillClass}>{status.message}</div>
@@ -1073,120 +1074,23 @@ export default function App() {
 
           {nav === "settings" && settings && (
             <div className="settings">
-              <div className="panel">
-                <h3>Speed profile (local MLX — no AWS required)</h3>
-                <p className="muted">
-                  Warm daemon keeps the model loaded. Use <strong>Fast</strong>{" "}
-                  during heavy coding so dictation does not fight your session
-                  for Metal/RAM. AWS GPUs are for offline fine-tune / batch —
-                  not every dictation.
-                </p>
-                <div className="actions wrap" style={{ marginTop: 10 }}>
-                  {PROFILES.map((p) => (
-                    <button
-                      key={p.id}
-                      className={
-                        (settings.speedProfile || "balanced") === p.id
-                          ? "primary"
-                          : undefined
-                      }
-                      onClick={() =>
-                        setSettings({
-                          ...settings,
-                          speedProfile: p.id,
-                          model: p.model,
-                        })
-                      }
-                      title={p.blurb}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="muted tiny" style={{ marginTop: 8 }}>
-                  {
-                    PROFILES.find(
-                      (p) => p.id === (settings.speedProfile || "balanced"),
-                    )?.blurb
-                  }
-                </p>
-              </div>
-              <label className="field">
-                <span>Whisper model (override)</span>
-                <select
-                  value={settings.model}
-                  onChange={(e) =>
-                    setSettings({ ...settings, model: e.target.value })
-                  }
-                >
-                  {MODELS.map((m) => (
-                    <option key={m} value={m}>
-                      {m.replace("mlx-community/", "")}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Language</span>
-                <select
-                  value={settings.language}
-                  onChange={(e) =>
-                    setSettings({ ...settings, language: e.target.value })
-                  }
-                >
-                  <option value="en">English</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="ht">Haitian Creole</option>
-                </select>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.autoPaste}
-                  onChange={(e) =>
-                    setSettings({ ...settings, autoPaste: e.target.checked })
-                  }
-                />
-                <span>
-                  Auto-paste after transcription (needs Accessibility)
+              {/* ── Companion — the on-screen pet + HUD (surfaced first) ── */}
+              <h2 className="settings-section">
+                Companion
+                <span className="sub">
+                  How Yap looks and feels while you talk.
                 </span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.showFloatingPill ?? true}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      showFloatingPill: e.target.checked,
-                    })
-                  }
-                />
-                <span>
-                  Always show Dictate island (glass HUD; also appears while
-                  recording)
-                </span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.denoise ?? true}
-                  onChange={(e) =>
-                    setSettings({ ...settings, denoise: e.target.checked })
-                  }
-                />
-                <span>
-                  Suppress background noise (RNNoise — fans, hum, keyboard)
-                </span>
-              </label>
+              </h2>
               <div className="panel">
                 <h3>Pill style</h3>
-                <p>Pick your Dictate companion — it switches live.</p>
+                <p>
+                  Pick your companion — the little helper that appears when you
+                  dictate. It switches live, so try both.
+                </p>
                 <div className="profile-row">
                   {(
                     [
-                      ["classic", "Classic", "Obsidian waveform capsule"],
+                      ["classic", "Classic", "A sleek waveform capsule"],
                       ["yappy", "Yappy 🐥", "A pixel pet in a little world"],
                     ] as const
                   ).map(([id, label, blurb]) => (
@@ -1206,21 +1110,46 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.showFloatingPill ?? true}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      showFloatingPill: e.target.checked,
+                    })
+                  }
+                />
+                <span>
+                  Keep the companion on screen at all times (otherwise it only
+                  appears while you talk)
+                </span>
+              </label>
+
+              {/* ── Dictation — how your speech becomes clean text ── */}
+              <h2 className="settings-section">
+                Dictation
+                <span className="sub">
+                  How your speech is cleaned up and formatted.
+                </span>
+              </h2>
               <div className="panel">
                 <h3>Dictation mode</h3>
                 <p>
-                  Auto adapts formatting to the app you’re typing into; pick a
-                  fixed mode to force it. Text is never lost.
+                  Auto shapes your text to fit whatever app you’re typing into.
+                  Pick a fixed mode to always format the same way. Your words
+                  are never dropped.
                 </p>
                 <div className="profile-row">
                   {(
                     [
-                      ["auto", "Auto", "Adapt to the focused app"],
-                      ["plain", "Plain", "Verbatim — no reformatting"],
+                      ["auto", "Auto", "Match the app I’m typing into"],
+                      ["plain", "Plain", "Exactly what I said, no changes"],
                       ["list", "List", "Turn spoken lists into bullets"],
-                      ["email", "Email", "Compose-friendly formatting"],
-                      ["code", "Code", "Leave identifiers untouched"],
-                      ["notes", "Notes", "Note-taking formatting"],
+                      ["email", "Email", "Tidy formatting for messages"],
+                      ["code", "Code", "Leave code and names untouched"],
+                      ["notes", "Notes", "Formatting for quick notes"],
                     ] as const
                   ).map(([id, label, blurb]) => (
                     <button
@@ -1241,18 +1170,31 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.denoise ?? true}
+                  onChange={(e) =>
+                    setSettings({ ...settings, denoise: e.target.checked })
+                  }
+                />
+                <span>
+                  <strong>Denoise</strong> — remove steady background noise like
+                  fans, hum, and keyboard clatter before transcribing
+                </span>
+              </label>
               <div className="panel">
                 <h3>Auto-cleanup</h3>
                 <p>
-                  How much Yap polishes each transcript. None pastes the raw
-                  words verbatim; higher levels remove fillers, fix spoken
-                  self-corrections, and format. Text is never lost.
+                  How much Yap tidies each transcript. None pastes your exact
+                  words; higher levels drop “um”s, fix things you re-said, and
+                  format the result. Your words are never dropped.
                 </p>
                 <div className="profile-row">
                   {(
                     [
-                      ["none", "None", "Raw — paste exactly as spoken"],
-                      ["light", "Light", "Fillers + self-corrections"],
+                      ["none", "None", "Exactly as spoken"],
+                      ["light", "Light", "Remove filler + fix re-dos"],
                       ["medium", "Medium", "Light + smart formatting"],
                       ["high", "High", "Medium + AI polish"],
                     ] as const
@@ -1275,13 +1217,47 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.autoPaste}
+                  onChange={(e) =>
+                    setSettings({ ...settings, autoPaste: e.target.checked })
+                  }
+                />
+                <span>
+                  Paste my words automatically when I finish talking (needs
+                  Accessibility permission)
+                </span>
+              </label>
+              <label className="field">
+                <span>Language I speak</span>
+                <select
+                  value={settings.language}
+                  onChange={(e) =>
+                    setSettings({ ...settings, language: e.target.value })
+                  }
+                >
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="ht">Haitian Creole</option>
+                </select>
+              </label>
+
+              {/* ── Shortcut — the key you hold to talk ── */}
+              <h2 className="settings-section">
+                Shortcut
+                <span className="sub">The key you hold to start talking.</span>
+              </h2>
               <div className="panel">
                 <h3>Hold-to-talk key</h3>
                 <p>
-                  Default is <strong>fn + Control</strong>. Hold to talk;
-                  double-tap to latch hands-free; tap again to stop. Needs
-                  Accessibility. Set Keyboard → “Press 🌐 key to” →{" "}
-                  <strong>Do Nothing</strong>.
+                  Default is <strong>fn + Control</strong>. Hold it to talk,
+                  double-tap to keep it running hands-free, then tap again to
+                  stop. Needs Accessibility permission. Tip: set Keyboard →
+                  “Press 🌐 key to” → <strong>Do Nothing</strong> so the Globe
+                  key doesn’t open emoji.
                 </p>
                 <div className="profile-row">
                   {(
@@ -1328,14 +1304,83 @@ export default function App() {
                       })
                     }
                   />
-                  <span>Also keep ⌘⇧V as secondary hold</span>
+                  <span>Also let me hold ⌘⇧V as a backup</span>
                 </label>
                 <p style={{ marginTop: 12 }}>
-                  <strong>{settings.hotkeyLabel}</strong> — island stays
-                  bottom-center and rides every Space swipe. Dictionary harvest
-                  improves jargon over time.
+                  Currently set to <strong>{settings.hotkeyLabel}</strong>. The
+                  companion stays bottom-center and follows you across every
+                  desktop. Yap also learns the words you use most over time.
                 </p>
               </div>
+
+              {/* ── Model & Speed — advanced tuning ── */}
+              <h2 className="settings-section">
+                Model &amp; Speed
+                <span className="sub">
+                  Advanced — leave these as-is unless dictation feels slow.
+                </span>
+              </h2>
+              <div className="panel">
+                <h3>Speed vs. accuracy</h3>
+                <p className="muted">
+                  Yap keeps your voice model loaded so dictation starts the
+                  moment you press your key. Choose <strong>Fast</strong> when
+                  your Mac is busy, or a higher-accuracy option when you want the
+                  cleanest text. Everything runs on your Mac.
+                </p>
+                <div className="actions wrap" style={{ marginTop: 10 }}>
+                  {PROFILES.map((p) => (
+                    <button
+                      key={p.id}
+                      className={
+                        (settings.speedProfile || "balanced") === p.id
+                          ? "primary"
+                          : undefined
+                      }
+                      onClick={() =>
+                        setSettings({
+                          ...settings,
+                          speedProfile: p.id,
+                          model: p.model,
+                        })
+                      }
+                      title={p.blurb}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="muted tiny" style={{ marginTop: 8 }}>
+                  {
+                    PROFILES.find(
+                      (p) => p.id === (settings.speedProfile || "balanced"),
+                    )?.blurb
+                  }
+                </p>
+              </div>
+              <label className="field">
+                <span>Voice model (advanced override)</span>
+                <select
+                  value={settings.model}
+                  onChange={(e) =>
+                    setSettings({ ...settings, model: e.target.value })
+                  }
+                >
+                  {MODELS.map((m) => (
+                    <option key={m} value={m}>
+                      {m.replace("mlx-community/", "")}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {/* ── Privacy & Diagnostics — your data lives on your Mac ── */}
+              <h2 className="settings-section">
+                Privacy &amp; Diagnostics
+                <span className="sub">
+                  Everything stays on your Mac. Export or inspect your data here.
+                </span>
+              </h2>
               <div className="actions wrap">
                 <button
                   className="primary"
