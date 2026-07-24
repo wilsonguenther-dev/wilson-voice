@@ -1147,10 +1147,17 @@ pub fn run() {
             // Keep handles so state transitions can reflect into the dropdown.
             *state.tray_dictation.lock() = Some(dictation_i);
             *state.tray_hands_free.lock() = Some(hands_free_i);
-            let icon = app.default_window_icon().cloned().ok_or("missing app icon")?;
+            // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
+            // lets macOS tint it for the light/dark menu bar — a full-color app icon
+            // crammed into the status bar looks wrong (that was the "terrible toolbar").
+            let icon = tauri::image::Image::from_bytes(include_bytes!(
+                "../icons/tray-template.png"
+            ))
+            .map_err(|e| format!("tray template icon: {e}"))?;
 
             let tray = TrayIconBuilder::new()
                 .icon(icon)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Yap — hold fn to dictate")
