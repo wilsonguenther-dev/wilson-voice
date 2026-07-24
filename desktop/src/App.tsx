@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Onboarding from "./Onboarding";
+import YappyHouse from "./home/YappyHouse";
 import "./App.css";
 
 type Nav =
@@ -861,6 +862,11 @@ export default function App() {
 
           {nav === "home" && (
             <>
+              <YappyHouse
+                wordsToday={insights?.wordsToday}
+                streakDays={insights?.streakDays}
+              />
+
               <div className="stats-row">
                 <div className="stat glass">
                   <div className="stat-n">{fmtInt(insights?.totalWords)}</div>
