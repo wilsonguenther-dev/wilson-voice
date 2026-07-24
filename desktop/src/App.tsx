@@ -40,6 +40,12 @@ interface AppSettings {
    * before the 16 kHz downsample. Default on.
    */
   denoise?: boolean;
+  /**
+   * Auto-mute the whole Mac's system output while dictating (backend
+   * `mute_while_dictating`, YV28). Silences music/video/notifications for the
+   * take, then restores the exact prior mute + volume on stop. Default on.
+   */
+  muteWhileDictating?: boolean;
   /** First-run onboarding completed (YV9). Shows the onboarding flow when false. */
   onboarded?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */
@@ -1464,6 +1470,23 @@ export default function App() {
                 <span>
                   <strong>Denoise</strong> — remove steady background noise like
                   fans, hum, and keyboard clatter before transcribing
+                </span>
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.muteWhileDictating ?? true}
+                  onChange={(e) =>
+                    saveSettings({
+                      ...settings,
+                      muteWhileDictating: e.target.checked,
+                    })
+                  }
+                />
+                <span>
+                  <strong>Mute the Mac while dictating</strong> — silence system
+                  audio so nothing plays over you, and restore your exact volume
+                  when you stop
                 </span>
               </label>
               <div className="panel">

@@ -17,6 +17,7 @@ mod permissions;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
 mod record;
+mod sysaudio;
 
 use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
@@ -69,6 +70,13 @@ pub struct AppSettings {
     /// denoiser itself falls back to the raw audio on any degeneracy.
     #[serde(default = "default_true")]
     pub denoise: bool,
+    /// Auto-mute the whole Mac's system output while dictating (YV28). On record
+    /// start we snapshot + mute the default output device so nothing plays over
+    /// the user; on stop / cancel / error / exit we restore the EXACT prior mute
+    /// + volume. Defaults on; the restore is unconditional so the Mac is never
+    /// left muted even if this is toggled off mid-take.
+    #[serde(default = "default_true")]
+    pub mute_while_dictating: bool,
     /// First-run onboarding completed (YV9). While false the UI shows the
     /// welcome → permissions → voice-calibration flow; set true on finish.
     #[serde(default)]
@@ -115,6 +123,7 @@ impl Default for AppSettings {
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
             denoise: true,
+            mute_while_dictating: true,
             onboarded: false,
             calibration_sample: None,
         }
@@ -153,6 +162,10 @@ struct AppState {
     /// Hands-free latch (double-tap fn⌃); release keys but keep recording.
     hands_free: PLMutex<bool>,
     recorder: PLMutex<Option<record::ActiveRecording>>,
+    /// System-output state captured when we muted the Mac for a take (YV28).
+    /// `Some` only while a recording has the output muted; restored + cleared on
+    /// stop / cancel / error / exit so the Mac is never left muted.
+    saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
     last_error: PLMutex<Option<String>>,
     venv_python: PathBuf,
@@ -285,6 +298,31 @@ fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
         .show();
 }
 
+/// Mute the Mac's whole system output for the duration of a take (YV28), gated
+/// by the `mute_while_dictating` setting. Snapshots the prior mute + volume into
+/// `state.saved_audio` so `restore_system_output` can put it back verbatim.
+fn mute_system_output(state: &AppState) {
+    if !state.settings.lock().mute_while_dictating {
+        return;
+    }
+    if let Some(saved) = sysaudio::mute_and_save() {
+        *state.saved_audio.lock() = Some(saved);
+        log::info!("system output muted for dictation");
+    }
+}
+
+/// Restore the system output to its pre-dictation state (YV28). Unconditional
+/// by design — it always puts back whatever `mute_system_output` saved,
+/// regardless of the current setting, so the Mac is NEVER left muted (covers
+/// stop, cancel, every error path, and app exit). No-op if nothing was muted.
+fn restore_system_output(state: &AppState) {
+    let saved = state.saved_audio.lock().take();
+    if let Some(saved) = saved {
+        sysaudio::restore(saved);
+        log::info!("system output restored after dictation");
+    }
+}
+
 fn start_recording(app: &AppHandle, state: &AppState) {
     if *state.recording.lock() || *state.busy.lock() {
         return;
@@ -299,6 +337,9 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             *state.recorder.lock() = Some(active);
             *state.recording.lock() = true;
             *state.last_error.lock() = None;
+            // YV28: silence the whole Mac so nothing plays over the user while
+            // they talk. Restored the instant recording stops (see below).
+            mute_system_output(state);
             log::info!("recording started");
             let _ = app.emit("recording", true);
             emit_status(app, state);
@@ -332,6 +373,8 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     }
     *state.recording.lock() = false;
     *state.hands_free.lock() = false;
+    // YV28: un-mute the Mac the moment the take ends (cancel path).
+    restore_system_output(state);
     let _ = app.emit("recording", false);
     if let Some(active) = state.recorder.lock().take() {
         let path = active.wav_path.clone();
@@ -354,6 +397,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         return;
     }
     *state.recording.lock() = false;
+    // YV28: un-mute the Mac immediately on release — restore the exact prior
+    // mute + volume BEFORE the (async) transcription so audio comes right back.
+    restore_system_output(&state);
     let _ = app.emit("recording", false);
 
     let active = state.recorder.lock().take();
@@ -922,6 +968,7 @@ pub fn run() {
         busy: PLMutex::new(false),
         hands_free: PLMutex::new(false),
         recorder: PLMutex::new(None),
+        saved_audio: PLMutex::new(None),
         db,
         last_error: PLMutex::new(None),
         venv_python: venv_py,
@@ -1248,6 +1295,9 @@ pub fn run() {
             // the tray Quit item also checkpoints before app.exit(0).
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    // YV28 safety net: never leave the Mac muted if we exit
+                    // mid-take. Restores the saved output state (no-op otherwise).
+                    restore_system_output(&state);
                     state.db.checkpoint();
                 }
             }
