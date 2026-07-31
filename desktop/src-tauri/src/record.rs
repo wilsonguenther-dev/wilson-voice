@@ -21,15 +21,20 @@ pub type LevelHandle = Arc<AtomicU32>;
 
 /// Every clip is written — and every ASR engine is fed — at 16 kHz mono.
 const TARGET_RATE: u32 = 16_000;
+/// Shortest take worth transcribing: 30 ms at the target rate. Below this it was
+/// a stray tap, not speech (this used to be a "wav smaller than 1 kB" check —
+/// same threshold, measured on the in-memory buffer now).
+const MIN_CLIP_SAMPLES: usize = TARGET_RATE as usize * 30 / 1000;
 
 pub struct ActiveRecording {
     stop: Arc<AtomicBool>,
-    pub wav_path: PathBuf,
+    wav_path: PathBuf,
     started: Instant,
     pub level: LevelHandle,
-    /// The user's denoise setting, captured at arm time and applied when the
-    /// clip is finished in `stop_recording` (the DSP chain moved off the
-    /// capture thread with YV35 — the persistent stream only buffers).
+    /// The user's denoise setting, captured at arm time and applied in
+    /// `finalize_take` — the one DSP stage that genuinely cannot stream (YV37:
+    /// high-pass, AGC accumulation and the 16 kHz resample all run inline on
+    /// the capture frames, so only the finalize remains after release).
     denoise: bool,
     /// YV35 telemetry: key-press → capture-start, in ms.
     capture_start_ms: i64,
@@ -43,7 +48,15 @@ impl ActiveRecording {
 }
 
 pub struct RecordingResult {
-    pub wav_path: PathBuf,
+    /// The take as 16 kHz mono `[-1, 1]` floats — DSP'd during capture (YV37)
+    /// and handed STRAIGHT to the ASR engine. Nothing on the transcribe path
+    /// touches the disk any more: the clip used to be written, read back,
+    /// sometimes rewritten and re-decoded before a single sample reached
+    /// Whisper.
+    pub samples: Vec<f32>,
+    /// History/recovery WAV for this take, written on a background thread while
+    /// ASR runs (YV37) and unlinked when this drops — see `ClipWav`.
+    pub clip: ClipWav,
     /// VOICED seconds (energy VAD) — the denominator for WPM. This is real
     /// speaking time: leading/trailing silence and long thinking pauses are
     /// excluded, natural inter-word gaps are kept. NOT the raw clip length
@@ -129,41 +142,25 @@ pub fn stop_recording(
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Disarm { reply: reply_tx })?;
     let captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
-    finish_clip(
-        &active.wav_path,
-        captured.samples,
-        captured.sample_rate,
-        captured.channels,
-        active.denoise,
-    )?;
+    // Everything that CAN stream already ran on the capture frames (YV37); this
+    // only finishes the take — apply the accumulated AGC gain, de-click the
+    // edges, optionally denoise — and yields the 16 kHz mono buffer ASR reads.
+    let mut samples = finalize_take(captured, active.denoise)?;
 
-    if !active.wav_path.exists() {
-        return Err(
-            "No audio file — click Allow once for Microphone (Yap) in the system dialog, then enable it under System Settings → Privacy → Microphone."
-                .into(),
-        );
-    }
-    let meta = std::fs::metadata(&active.wav_path).map_err(|e| e.to_string())?;
-    if meta.len() < 1000 {
-        // YV20/M3: the caller returns early here — delete the tiny clip now so a
-        // sub-second tap never leaves a voice wav behind on disk.
-        let _ = std::fs::remove_file(&active.wav_path);
+    if samples.len() < MIN_CLIP_SAMPLES {
+        // Sub-second tap: no wav was ever written for it (the recovery write is
+        // spawned below, after the take is known good), so nothing to clean up.
         return Err(format!(
-            "Audio too short ({} bytes) — hold longer, or allow Microphone for Yap.",
-            meta.len()
+            "Audio too short ({} ms) — hold longer, or allow Microphone for Yap.",
+            samples.len() * 1000 / TARGET_RATE as usize
         ));
     }
     // WPM denominator = real voiced time. Fall back to the raw clip length only
     // when VAD can't find speech (near-silent capture) so WPM never divides by ~0.
-    let clip_seconds = wav_duration_seconds(&active.wav_path).unwrap_or(hold_wall_seconds);
-    // Read the finished (mono, 16 kHz i16) clip back ONCE for both the energy VAD
-    // (WPM denominator) and the Silero voice-isolation pass below.
-    let (samples, rate) = read_wav_mono_f32(&active.wav_path).unwrap_or_default();
-    let voiced = if rate > 0 {
-        voiced_seconds(&samples, rate)
-    } else {
-        0.0
-    };
+    let clip_seconds = samples.len() as f64 / TARGET_RATE as f64;
+    // Both the energy VAD (WPM denominator) and the Silero voice-isolation pass
+    // below read the SAME in-memory buffer — no wav read-back (YV37).
+    let voiced = voiced_seconds(&samples, TARGET_RATE);
     let speech_seconds = if voiced >= 0.1 { voiced } else { clip_seconds };
 
     // YV36 — Silero VAD voice isolation through the WARM engine loaded once at
@@ -171,22 +168,20 @@ pub fn stop_recording(
     // disk / the load failed, and ANY inference failure falls back to the
     // energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
     let mut speech_present = true;
-    if let (Some(warm), true) = (isolation_vad, rate > 0 && !samples.is_empty()) {
-        match warm.isolate(&samples, rate) {
+    if let Some(warm) = isolation_vad {
+        match warm.isolate(&samples, TARGET_RATE) {
             Ok(iso) => {
                 speech_present = iso.has_speech;
-                // (b) Trim the ASR wav to the voiced span so Whisper decodes only
-                // the speech (never trim to empty — if Silero found speech we keep
-                // its padded span; a rewrite failure is non-fatal, ASR still reads
-                // the untrimmed clip). We do NOT touch `voiced`/`speech_seconds`:
+                // (b) Trim the ASR buffer to the voiced span so Whisper decodes
+                // only the speech (never trim to empty — if Silero found speech we
+                // keep its padded span). Since YV37 this is a plain in-memory swap
+                // instead of a wav rewrite. We do NOT touch `voiced`/`speech_seconds`:
                 // WPM stays anchored to the energy VAD over the full utterance.
                 let did_trim = iso.trimmed.is_some();
                 if iso.has_speech {
-                    if let Some(trimmed) = iso.trimmed.as_ref() {
+                    if let Some(trimmed) = iso.trimmed {
                         if !trimmed.is_empty() {
-                            if let Err(e) = write_wav_i16(&active.wav_path, rate, trimmed) {
-                                log::warn!("YV36 trim rewrite failed (keeping full clip): {e}");
-                            }
+                            samples = trimmed;
                         }
                     }
                 }
@@ -204,8 +199,14 @@ pub fn stop_recording(
         }
     }
 
+    // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
+    // runs alongside transcription + paste instead of sitting between key-release
+    // and ASR (YV37). The guard unlinks it when the take is done.
+    let clip = ClipWav::spawn(active.wav_path, samples.clone());
+
     Ok(RecordingResult {
-        wav_path: active.wav_path,
+        samples,
+        clip,
         speech_seconds: speech_seconds.max(0.05),
         // The TRUE voiced value — no clip-length fallback, so a silent tap reads
         // 0.0 and the no-speech gate can reject it before ASR.
@@ -241,37 +242,46 @@ pub fn sweep_stale_wavs(dir: &Path) -> usize {
     removed
 }
 
-fn wav_duration_seconds(path: &PathBuf) -> Option<f64> {
-    let reader = hound::WavReader::open(path).ok()?;
-    let spec = reader.spec();
-    let samples = reader.duration() as f64;
-    let rate = spec.sample_rate as f64;
-    if rate <= 0.0 {
-        return None;
-    }
-    Some(samples / rate)
+/// The take's history/recovery WAV. YV37 moved this write OFF the critical path:
+/// `spawn` hands the finished 16 kHz samples to a background thread that writes
+/// while ASR + paste run on the in-memory buffer, instead of the release→ASR gap
+/// paying for it. Dropping the guard unlinks the file — YV20/M3: the clip is
+/// disposable and never outlives the pipeline, on success or error alike — and
+/// joins the writer first so the delete can never race it and leak a wav.
+pub struct ClipWav {
+    path: PathBuf,
+    writer: Option<thread::JoinHandle<()>>,
 }
 
-/// Read the (mono, i16) WAV back into `[-1, 1]` floats plus its sample rate.
-/// Returns `(vec, 0)` on any read failure so callers can treat rate==0 as "no
-/// audio" and fall back. Used by both the energy VAD and the Silero pass.
-fn read_wav_mono_f32(path: &PathBuf) -> Option<(Vec<f32>, u32)> {
-    let mut reader = hound::WavReader::open(path).ok()?;
-    let spec = reader.spec();
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            // i64 shift: 1i32 << 31 overflows the sign bit for 32-bit WAV. (Prod
-            // only ever writes 16-bit, but keep this correct for foreign inputs.)
-            let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .filter_map(|s| s.ok())
-                .map(|s| s as f32 * scale)
-                .collect()
+impl ClipWav {
+    fn spawn(path: PathBuf, samples: Vec<f32>) -> Self {
+        let target = path.clone();
+        let writer = thread::Builder::new()
+            .name("wv-clip-wav".into())
+            .spawn(
+                move || match write_wav_i16(&target, TARGET_RATE, &samples) {
+                    Ok(()) => log::info!("wrote {} samples → {}", samples.len(), target.display()),
+                    // Non-fatal by design: the transcript comes from memory now, so a
+                    // failed history write can never cost the user their words.
+                    Err(e) => log::warn!("history wav write failed (transcript unaffected): {e}"),
+                },
+            )
+            .ok();
+        Self { path, writer }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ClipWav {
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
         }
-        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-    };
-    Some((samples, spec.sample_rate))
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Read a WAV off disk as the 16 kHz mono `[-1, 1]` f32 buffer the embedded ASR
@@ -436,13 +446,24 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 
 const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 const NO_SAMPLES_ERR: &str = "No samples captured. Enable Microphone for Yap in System Settings.";
+const NO_AUDIO_ERR: &str = "No audio captured — click Allow once for Microphone (Yap) in the system dialog, then enable it under System Settings → Privacy → Microphone.";
 
-/// One take's raw capture, exactly as the device delivered it (interleaved, at
-/// the native rate) — the DSP chain runs later, in `finish_clip`.
+/// One take as it comes off the capture worker. Since YV37 the frames are
+/// already downmixed, high-passed and resampled to 16 kHz *during* capture, so
+/// this is nearly the finished ASR buffer — `finalize_take` only levels, fades
+/// and (optionally) denoises it.
 struct CapturedAudio {
+    /// 16 kHz mono, high-passed — streamed frame by frame while the user spoke.
     samples: Vec<f32>,
+    /// The same take as raw mono at `sample_rate`, untouched by any filter. The
+    /// never-lose-audio fallback: if the streamed buffer is empty or went
+    /// non-finite, `finalize_take` rebuilds the clip from this instead.
+    raw: Vec<f32>,
+    /// Native capture rate — the rate `raw` is at (`samples` is always 16 kHz).
     sample_rate: u32,
-    channels: u16,
+    /// Soft-AGC gain accumulated over the take, applied at finalize. `1.0` means
+    /// "leave the level alone" (silence / degenerate input).
+    gain: f32,
 }
 
 enum CaptureCmd {
@@ -537,38 +558,37 @@ impl<D: Clone, C: Clone> DeviceConfigCache<D, C> {
 /// the worker thread (`cpal::Stream` is not `Send`) and kept across takes.
 struct LiveStream {
     _stream: cpal::Stream,
-    sample_rate: u32,
-    channels: u16,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    /// Streaming DSP + buffers, written by the audio callback (YV37).
+    dsp: Arc<Mutex<StreamDsp>>,
     capturing: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
 }
 
 impl LiveStream {
-    /// Begin a take: drop anything the callback saw while idle, zero the meter,
-    /// then open the gate.
+    /// Begin a take: drop anything the callback saw while idle (and every bit of
+    /// the previous take's DSP state), zero the meter, then open the gate.
     fn begin(&self) {
-        if let Ok(mut buf) = self.buffer.lock() {
-            buf.clear();
+        if let Ok(mut dsp) = self.dsp.lock() {
+            dsp.reset();
         }
         capture_level().store(0, Ordering::Relaxed);
         self.capturing.store(true, Ordering::SeqCst);
     }
 
-    /// End a take: close the gate and take the raw interleaved buffer.
+    /// End a take: close the gate and take the streamed 16 kHz buffer (plus its
+    /// raw fallback and AGC stats) off the DSP state.
     fn end(&self) -> CapturedAudio {
         self.capturing.store(false, Ordering::SeqCst);
         capture_level().store(0, Ordering::Relaxed);
-        let samples = self
-            .buffer
+        self.dsp
             .lock()
-            .map(|mut buf| std::mem::take(&mut *buf))
-            .unwrap_or_default();
-        CapturedAudio {
-            samples,
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-        }
+            .map(|mut dsp| dsp.take())
+            .unwrap_or_else(|_| CapturedAudio {
+                samples: Vec::new(),
+                raw: Vec::new(),
+                sample_rate: TARGET_RATE,
+                gain: 1.0,
+            })
     }
 
     fn is_capturing(&self) -> bool {
@@ -706,19 +726,19 @@ fn open_stream(
     let sample_format = supported.sample_format();
     let conf: cpal::StreamConfig = supported.into();
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let dsp = Arc::new(Mutex::new(StreamDsp::new(sample_rate, channels)));
     let capturing = Arc::new(AtomicBool::new(false));
     let failed = Arc::new(AtomicBool::new(false));
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
-            build_capture_stream::<f32>(&device, conf, &buffer, &capturing, &failed)
+            build_capture_stream::<f32>(&device, conf, &dsp, &capturing, &failed)
         }
         cpal::SampleFormat::I16 => {
-            build_capture_stream::<i16>(&device, conf, &buffer, &capturing, &failed)
+            build_capture_stream::<i16>(&device, conf, &dsp, &capturing, &failed)
         }
         cpal::SampleFormat::U16 => {
-            build_capture_stream::<u16>(&device, conf, &buffer, &capturing, &failed)
+            build_capture_stream::<u16>(&device, conf, &dsp, &capturing, &failed)
         }
         other => Err(format!(
             "Unsupported sample format {other:?}. Try a different input device."
@@ -746,22 +766,22 @@ fn open_stream(
 
     Ok(LiveStream {
         _stream: stream,
-        sample_rate,
-        channels,
-        buffer,
+        dsp,
         capturing,
         failed,
     })
 }
 
 /// Build the input stream for one sample format. The callback converts to f32,
-/// feeds the HUD meter and appends to the take buffer — but ONLY while a take is
-/// armed, so the persistent stream costs nothing (and retains nothing) between
-/// dictations. A stream error flips `failed`, which makes the next arm reopen.
+/// feeds the HUD meter and pushes the frame through the streaming DSP (YV37:
+/// downmix → high-pass → AGC accumulation → 16 kHz resample, all incremental)
+/// — but ONLY while a take is armed, so the persistent stream costs nothing
+/// (and retains nothing) between dictations. A stream error flips `failed`,
+/// which makes the next arm reopen.
 fn build_capture_stream<T>(
     device: &cpal::Device,
     conf: cpal::StreamConfig,
-    buffer: &Arc<Mutex<Vec<f32>>>,
+    dsp: &Arc<Mutex<StreamDsp>>,
     capturing: &Arc<AtomicBool>,
     failed: &Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String>
@@ -769,7 +789,7 @@ where
     T: cpal::SizedSample + Send + 'static,
     f32: cpal::FromSample<T>,
 {
-    let buffer = buffer.clone();
+    let dsp = dsp.clone();
     let capturing = capturing.clone();
     let failed_cb = failed.clone();
     let level = capture_level().clone();
@@ -785,8 +805,8 @@ where
                 scratch.clear();
                 scratch.extend(data.iter().map(|&s| s.to_sample::<f32>()));
                 push_level(&level, &scratch);
-                if let Ok(mut v) = buffer.lock() {
-                    v.extend_from_slice(&scratch);
+                if let Ok(mut dsp) = dsp.lock() {
+                    dsp.push(&scratch);
                 }
             },
             move |e| {
@@ -798,54 +818,281 @@ where
         .map_err(|e| format!("mic stream: {e}"))
 }
 
-/// Turn one take's raw capture into the 16 kHz mono WAV the ASR path reads.
-/// Unchanged from the pre-YV35 capture thread's tail — YV35 only moved it off
-/// the audio thread onto the caller that stops the take.
-fn finish_clip(
-    wav_path: &PathBuf,
-    raw: Vec<f32>,
+// ── Streaming DSP (YV37) ────────────────────────────────────────────────────
+// Everything that can run per-frame now does, INSIDE the capture path, so the
+// release→ASR gap no longer pays for the whole clip's DSP: each callback's
+// frames are downmixed, high-passed (biquad state carried across frames), fed
+// to the AGC accumulator and resampled to 16 kHz incrementally. What is left at
+// stop is only what genuinely needs the whole take: the AGC gain, the edge fade
+// and the optional RNNoise pass.
+//
+// The raw mono capture is kept alongside the streamed buffer as the
+// never-lose-audio fallback — if the streamed output is empty or ever went
+// non-finite, `finalize_take` rebuilds the clip from the raw samples with the
+// batch chain instead of losing the utterance.
+
+/// One take's streaming DSP state + buffers. Lives behind the capture stream's
+/// mutex and is written by the audio callback.
+struct StreamDsp {
     sample_rate: u32,
     channels: u16,
-    denoise: bool,
-) -> Result<(), String> {
-    if raw.is_empty() {
-        return Err(NO_SAMPLES_ERR.into());
+    high_pass: Option<Biquad>,
+    resampler: StreamResampler,
+    /// AGC accumulation: running sum of squares / count / peak over the
+    /// high-passed take, so the gain is known the instant the user releases.
+    sum_sq: f64,
+    counted: usize,
+    peak: f32,
+    /// Cleared the moment a non-finite sample is seen — AGC then leaves the
+    /// level alone rather than acting on garbage stats.
+    finite: bool,
+    /// 16 kHz mono, high-passed — the ASR buffer, built during capture.
+    out: Vec<f32>,
+    /// Raw mono at the native rate — the fallback (see above).
+    raw: Vec<f32>,
+    /// Reused downmix scratch so a callback allocates nothing steady-state.
+    mono: Vec<f32>,
+}
+
+impl StreamDsp {
+    fn new(sample_rate: u32, channels: u16) -> Self {
+        Self {
+            sample_rate,
+            channels,
+            high_pass: Biquad::high_pass(sample_rate, HIGH_PASS_HZ),
+            resampler: StreamResampler::new(sample_rate, TARGET_RATE),
+            sum_sq: 0.0,
+            counted: 0,
+            peak: 0.0,
+            finite: true,
+            out: Vec::new(),
+            raw: Vec::new(),
+            mono: Vec::new(),
+        }
     }
 
-    let mono = if channels <= 1 {
-        raw
-    } else {
-        let ch = channels as usize;
-        raw.chunks(ch)
-            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
-            .collect()
-    };
-    // Signal hygiene (Tier 0, docs/research/voice-isolation.md) — cheap pure DSP
-    // applied at the NATIVE rate BEFORE the 16 kHz downsample: kill sub-80 Hz
-    // rumble/hum, lift a quiet voice toward a consistent level (peak-limited, no
-    // clipping), then de-click the PTT press/release edges. Each stage returns
-    // its input unchanged on degenerate audio, so a bad clip never NaNs the path.
-    let mono = high_pass(&mono, sample_rate, HIGH_PASS_HZ);
-    let mono = normalize_rms(&mono, NORMALIZE_TARGET_DBFS);
-    let mono = edge_fade(&mono, sample_rate, EDGE_FADE_MS);
-    // Denoise (Tier 1, docs/research/voice-isolation.md) — RNNoise over the
-    // native-rate buffer AFTER hygiene, still BEFORE the 16 kHz downsample.
-    // Gated by the user's `denoise` setting; the function itself falls back to
-    // its input on any degeneracy so a bad clip never loses the utterance.
-    let mono = if denoise {
-        denoise_rnnoise(&mono, sample_rate)
-    } else {
-        mono
-    };
-    let resampled = if sample_rate == TARGET_RATE {
-        mono
-    } else {
-        resample_linear(&mono, sample_rate, TARGET_RATE)
-    };
+    /// Drop the previous take entirely (buffers AND filter/resampler state) so
+    /// no audio — and no biquad tail — ever bleeds from one dictation into the
+    /// next.
+    fn reset(&mut self) {
+        *self = Self::new(self.sample_rate, self.channels);
+    }
 
-    write_wav_i16(wav_path, TARGET_RATE, &resampled)?;
-    log::info!("wrote {} samples → {}", resampled.len(), wav_path.display());
-    Ok(())
+    /// Push one callback's interleaved native-rate frames through the chain.
+    fn push(&mut self, interleaved: &[f32]) {
+        if interleaved.is_empty() {
+            return;
+        }
+        self.mono.clear();
+        let ch = self.channels.max(1) as usize;
+        if ch <= 1 {
+            self.mono.extend_from_slice(interleaved);
+        } else {
+            self.mono.extend(
+                interleaved
+                    .chunks(ch)
+                    .map(|c| c.iter().sum::<f32>() / c.len() as f32),
+            );
+        }
+        // Fallback copy first — kept exactly as captured.
+        self.raw.extend_from_slice(&self.mono);
+
+        // Signal hygiene (Tier 0, docs/research/voice-isolation.md) at the NATIVE
+        // rate: kill sub-80 Hz rumble/hum before anything else looks at the frame.
+        // A filter that goes non-finite leaves the frame unfiltered (and resets
+        // its own state) rather than poisoning the buffer.
+        if let Some(hp) = self.high_pass.as_mut() {
+            hp.process(&mut self.mono);
+        }
+        for &s in self.mono.iter() {
+            if !s.is_finite() {
+                self.finite = false;
+                continue;
+            }
+            self.sum_sq += (s as f64) * (s as f64);
+            self.counted += 1;
+            let a = s.abs();
+            if a > self.peak {
+                self.peak = a;
+            }
+        }
+        // …and straight down to 16 kHz, frame by frame: the ASR buffer is
+        // essentially ready the moment the key comes up.
+        self.resampler.push(&self.mono, &mut self.out);
+    }
+
+    /// Close the take: flush the resampler's tail and hand the buffers over.
+    fn take(&mut self) -> CapturedAudio {
+        self.resampler.finish(&mut self.out);
+        let rms = if self.finite && self.counted > 0 {
+            (self.sum_sq / self.counted as f64).sqrt() as f32
+        } else {
+            0.0
+        };
+        let gain = if self.finite {
+            agc_gain(rms, self.peak, NORMALIZE_TARGET_DBFS)
+        } else {
+            1.0
+        };
+        let captured = CapturedAudio {
+            samples: std::mem::take(&mut self.out),
+            raw: std::mem::take(&mut self.raw),
+            sample_rate: self.sample_rate,
+            gain,
+        };
+        self.reset();
+        captured
+    }
+}
+
+/// Finish a streamed take into the 16 kHz mono buffer the ASR engine consumes:
+/// apply the accumulated AGC gain, de-click the PTT press/release edges, then
+/// (optionally) denoise. Every stage returns its input unchanged on degenerate
+/// audio, and an unusable streamed buffer falls back to the raw capture, so a
+/// take is never lost to DSP.
+fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, String> {
+    let CapturedAudio {
+        samples,
+        raw,
+        sample_rate,
+        gain,
+    } = captured;
+    if samples.is_empty() && raw.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
+    }
+    let leveled = if samples.is_empty() || samples.iter().any(|s| !s.is_finite()) {
+        log::warn!(
+            "YV37 streamed DSP unusable ({} samples) — rebuilding the clip from the raw capture",
+            samples.len()
+        );
+        fallback_chain(&raw, sample_rate)
+    } else {
+        apply_gain(&samples, gain)
+    };
+    let faded = edge_fade(&leveled, TARGET_RATE, EDGE_FADE_MS);
+    // Denoise (Tier 1, docs/research/voice-isolation.md) — RNNoise, gated by the
+    // user's `denoise` setting. It is the one stage that cannot stream cheaply
+    // (48 kHz round-trip over the whole clip), and it falls back to its input on
+    // any degeneracy so a bad clip never loses the utterance.
+    let out = if denoise {
+        denoise_rnnoise(&faded, TARGET_RATE)
+    } else {
+        faded
+    };
+    if out.is_empty() {
+        return Err(NO_AUDIO_ERR.into());
+    }
+    Ok(out)
+}
+
+/// Never-lose-audio path: the pre-YV37 batch chain over the untouched raw mono
+/// capture, used only when the streamed buffer came back unusable.
+fn fallback_chain(raw: &[f32], sample_rate: u32) -> Vec<f32> {
+    let hp = high_pass(raw, sample_rate, HIGH_PASS_HZ);
+    let leveled = normalize_rms(&hp, NORMALIZE_TARGET_DBFS);
+    if sample_rate == TARGET_RATE {
+        leveled
+    } else {
+        resample_linear(&leveled, sample_rate, TARGET_RATE)
+    }
+}
+
+/// Scale a buffer, hard-limited to `[-1, 1]` as a safety net.
+fn apply_gain(samples: &[f32], gain: f32) -> Vec<f32> {
+    samples
+        .iter()
+        .map(|&s| (s * gain).clamp(-1.0, 1.0))
+        .collect()
+}
+
+/// Linear resampler that can be fed in arbitrary frames and produces EXACTLY
+/// what `resample_linear` would over the concatenated input (asserted in the
+/// tests) — the capture path streams through this, the fallback path still runs
+/// the batch function.
+///
+/// It emits an output sample as soon as both of its input neighbours have
+/// arrived, keeping only the couple of input samples the next output still needs
+/// (so a long hold costs nothing extra), and `finish` flushes the tail with the
+/// same clamped last-neighbour rule the batch version uses.
+struct StreamResampler {
+    /// Input samples per output sample (`from / to`).
+    ratio: f64,
+    /// Retained input, `pending[0]` being global input index `base`.
+    pending: Vec<f32>,
+    base: u64,
+    /// Index of the next output sample to emit.
+    next_out: u64,
+    /// Total input samples seen so far.
+    seen: u64,
+}
+
+impl StreamResampler {
+    fn new(from: u32, to: u32) -> Self {
+        let ratio = if from == 0 || to == 0 {
+            1.0
+        } else {
+            from as f64 / to as f64
+        };
+        Self {
+            ratio,
+            pending: Vec::new(),
+            base: 0,
+            next_out: 0,
+            seen: 0,
+        }
+    }
+
+    /// Feed one frame, appending every output sample it completes.
+    fn push(&mut self, frame: &[f32], out: &mut Vec<f32>) {
+        if frame.is_empty() {
+            return;
+        }
+        self.pending.extend_from_slice(frame);
+        self.seen += frame.len() as u64;
+        // Only emit outputs the batch version would also emit for the input seen
+        // so far — the trailing partial sample is dropped there, and `finish`
+        // decides it here.
+        let ready = (self.seen as f64 / self.ratio).floor() as u64;
+        while self.next_out < ready {
+            let src = self.next_out as f64 * self.ratio;
+            let i0 = src.floor() as u64;
+            // Needs its right-hand neighbour; wait for the next frame otherwise.
+            if i0 + 1 >= self.seen {
+                break;
+            }
+            let k = (i0 - self.base) as usize;
+            let t = (src - i0 as f64) as f32;
+            out.push(self.pending[k] * (1.0 - t) + self.pending[k + 1] * t);
+            self.next_out += 1;
+        }
+        // Release everything before the next output's left neighbour.
+        let next_src = self.next_out as f64 * self.ratio;
+        let keep_from = next_src.floor() as u64;
+        let drop = keep_from.saturating_sub(self.base) as usize;
+        let drop = drop.min(self.pending.len());
+        if drop > 0 {
+            self.pending.drain(..drop);
+            self.base += drop as u64;
+        }
+    }
+
+    /// Flush the tail (the last output sample clamps to the final input sample,
+    /// exactly like `resample_linear`).
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        let total = (self.seen as f64 / self.ratio).floor() as u64;
+        while self.next_out < total {
+            let src = self.next_out as f64 * self.ratio;
+            let i0 = src.floor() as u64;
+            let k = (i0 - self.base) as usize;
+            if k >= self.pending.len() {
+                break;
+            }
+            let k1 = (k + 1).min(self.pending.len() - 1);
+            let t = (src - i0 as f64) as f32;
+            out.push(self.pending[k] * (1.0 - t) + self.pending[k1] * t);
+            self.next_out += 1;
+        }
+    }
 }
 
 fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
@@ -882,45 +1129,88 @@ const NORMALIZE_TARGET_DBFS: f32 = -20.0;
 /// Edge de-click fade length (ms) at clip start/end.
 const EDGE_FADE_MS: f32 = 5.0;
 
-/// Second-order (biquad) Butterworth high-pass at `cutoff_hz`. Removes DC offset,
-/// mains hum, and low rumble. Returns the input unchanged on degenerate input or
-/// if the filter ever goes non-finite.
-fn high_pass(samples: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
-    if samples.is_empty()
-        || sample_rate == 0
-        || cutoff_hz <= 0.0
-        || cutoff_hz >= sample_rate as f32 / 2.0
-    {
-        return samples.to_vec();
-    }
-    // RBJ cookbook high-pass coefficients (Q = 1/√2 → maximally flat passband).
-    let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / sample_rate as f32;
-    let (sin_w0, cos_w0) = w0.sin_cos();
-    let q = std::f32::consts::FRAC_1_SQRT_2;
-    let alpha = sin_w0 / (2.0 * q);
-    let a0 = 1.0 + alpha;
-    if a0 == 0.0 || !a0.is_finite() {
-        return samples.to_vec();
-    }
-    let b0 = ((1.0 + cos_w0) / 2.0) / a0;
-    let b1 = (-(1.0 + cos_w0)) / a0;
-    let b2 = b0;
-    let a1 = (-2.0 * cos_w0) / a0;
-    let a2 = (1.0 - alpha) / a0;
+/// Second-order (biquad) Butterworth high-pass, Direct Form I. The state lives
+/// in the struct so the SAME filter can run over a whole clip at once (the
+/// fallback chain) or across the capture frames as they arrive (YV37) with
+/// identical output.
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+}
 
-    let mut out = Vec::with_capacity(samples.len());
-    // Direct Form I state.
-    let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-    for &x0 in samples {
-        let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        if !y0.is_finite() {
-            return samples.to_vec();
+impl Biquad {
+    /// High-pass at `cutoff_hz`; `None` for a degenerate rate/cutoff, which
+    /// callers treat as "leave the audio alone".
+    fn high_pass(sample_rate: u32, cutoff_hz: f32) -> Option<Self> {
+        if sample_rate == 0 || cutoff_hz <= 0.0 || cutoff_hz >= sample_rate as f32 / 2.0 {
+            return None;
         }
-        out.push(y0);
-        x2 = x1;
-        x1 = x0;
-        y2 = y1;
-        y1 = y0;
+        // RBJ cookbook high-pass coefficients (Q = 1/√2 → maximally flat passband).
+        let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / sample_rate as f32;
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let alpha = sin_w0 / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        if a0 == 0.0 || !a0.is_finite() {
+            return None;
+        }
+        Some(Self {
+            b0: ((1.0 + cos_w0) / 2.0) / a0,
+            b1: (-(1.0 + cos_w0)) / a0,
+            b2: ((1.0 + cos_w0) / 2.0) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha) / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        })
+    }
+
+    /// Filter a frame in place. Returns false if the biquad went non-finite: it
+    /// then stops at that sample (the rest of the frame passes through
+    /// unfiltered) and clears its state, so one bad sample can never poison the
+    /// rest of the take — the batch caller falls back to the input outright.
+    fn process(&mut self, frame: &mut [f32]) -> bool {
+        for slot in frame.iter_mut() {
+            let x0 = *slot;
+            let y0 = self.b0 * x0 + self.b1 * self.x1 + self.b2 * self.x2
+                - self.a1 * self.y1
+                - self.a2 * self.y2;
+            if !y0.is_finite() {
+                self.x1 = 0.0;
+                self.x2 = 0.0;
+                self.y1 = 0.0;
+                self.y2 = 0.0;
+                return false;
+            }
+            self.x2 = self.x1;
+            self.x1 = x0;
+            self.y2 = self.y1;
+            self.y1 = y0;
+            *slot = y0;
+        }
+        true
+    }
+}
+
+/// Batch high-pass over a whole buffer (the fallback chain + the DSP tests).
+/// Returns the input unchanged on degenerate input or if the filter ever goes
+/// non-finite.
+fn high_pass(samples: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
+    let Some(mut filter) = Biquad::high_pass(sample_rate, cutoff_hz) else {
+        return samples.to_vec();
+    };
+    let mut out = samples.to_vec();
+    if !filter.process(&mut out) {
+        return samples.to_vec();
     }
     out
 }
@@ -946,9 +1236,25 @@ fn normalize_rms(samples: &[f32], target_dbfs: f32) -> Vec<f32> {
         }
     }
     let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
-    // Silence / near-silence guard (~-80 dBFS): nothing to lift, avoid blowup.
-    if !rms.is_finite() || rms < 1e-4 || peak <= 0.0 {
+    let gain = agc_gain(rms, peak, target_dbfs);
+    if gain == 1.0 {
         return samples.to_vec();
+    }
+    let out = apply_gain(samples, gain);
+    if out.iter().any(|v| !v.is_finite()) {
+        return samples.to_vec();
+    }
+    out
+}
+
+/// The soft-AGC gain for a take, from its level stats. Shared so the streaming
+/// path (stats accumulated frame by frame during capture, YV37) and the batch
+/// fallback lift a quiet voice by exactly the same amount. `1.0` means "leave
+/// the level alone" — silence, or anything degenerate.
+fn agc_gain(rms: f32, peak: f32, target_dbfs: f32) -> f32 {
+    // Silence / near-silence guard (~-80 dBFS): nothing to lift, avoid blowup.
+    if !rms.is_finite() || rms < 1e-4 || !peak.is_finite() || peak <= 0.0 {
+        return 1.0;
     }
     let target_rms = 10.0f32.powf(target_dbfs / 20.0);
     // Gain toward target, but never enough to push the loudest sample past ~full
@@ -960,16 +1266,9 @@ fn normalize_rms(samples: &[f32], target_dbfs: f32) -> Vec<f32> {
         .min(64.0)
         .max(0.0);
     if !gain.is_finite() {
-        return samples.to_vec();
+        return 1.0;
     }
-    let out: Vec<f32> = samples
-        .iter()
-        .map(|&s| (s * gain).clamp(-1.0, 1.0))
-        .collect();
-    if out.iter().any(|v| !v.is_finite()) {
-        return samples.to_vec();
-    }
-    out
+    gain
 }
 
 /// Short linear fade-in/out over `fade_ms` at each edge to de-click the
@@ -1088,7 +1387,7 @@ fn denoise_rnnoise(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     restored
 }
 
-fn write_wav_i16(path: &PathBuf, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
+fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
     let spec = WavSpec {
         channels: 1,
         sample_rate,
@@ -1528,6 +1827,243 @@ mod tests {
         let one = edge_fade(&[0.7], NATIVE_SR, EDGE_FADE_MS);
         assert_eq!(one.len(), 1);
         assert!(one[0].is_finite());
+    }
+
+    // ── Streaming DSP (YV37) ────────────────────────────────────────────────
+    // The capture path now filters + resamples frame by frame instead of running
+    // the whole chain after key-release. The bar these tests hold it to: framing
+    // must not change the audio at all — streaming an arbitrarily chopped-up
+    // take must produce EXACTLY what the batch chain produced over the whole
+    // buffer — and an unusable streamed buffer must still yield the utterance.
+
+    /// Split `input` into frames of the given (repeating) sizes — a stand-in for
+    /// the ragged buffer sizes cpal actually hands the callback.
+    fn frames<'a>(input: &'a [f32], sizes: &[usize]) -> Vec<&'a [f32]> {
+        let mut out = Vec::new();
+        let mut rest = input;
+        let mut i = 0;
+        while !rest.is_empty() {
+            let n = sizes[i % sizes.len()].min(rest.len()).max(1);
+            let (head, tail) = rest.split_at(n);
+            out.push(head);
+            rest = tail;
+            i += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn stream_resampler_matches_batch_for_every_framing() {
+        // 48/44.1 kHz mics downsampling to 16 kHz, the already-16 kHz identity
+        // case, and an upsample for good measure — each fed in even, ragged and
+        // single-sample frames.
+        for (from, to) in [
+            (48_000u32, 16_000u32),
+            (44_100, 16_000),
+            (16_000, 16_000),
+            (8_000, 16_000),
+        ] {
+            let input = tone_at(from, 0.05, 220.0, 0.5);
+            let batch = resample_linear(&input, from, to);
+            for sizes in [vec![512], vec![480, 137, 1, 999], vec![1], vec![7, 3]] {
+                let mut stream = StreamResampler::new(from, to);
+                let mut out = Vec::new();
+                for frame in frames(&input, &sizes) {
+                    stream.push(frame, &mut out);
+                }
+                stream.finish(&mut out);
+                assert_eq!(
+                    out.len(),
+                    batch.len(),
+                    "{from}→{to} in {sizes:?}-sized frames must yield the batch length"
+                );
+                assert!(
+                    out.iter().zip(&batch).all(|(a, b)| a == b),
+                    "{from}→{to} in {sizes:?}-sized frames must be sample-identical to the batch resample"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_resampler_emits_during_capture_and_holds_no_backlog() {
+        // The point of YV37: 16 kHz samples exist WHILE the user speaks, not
+        // after release — and the retained input never grows with hold length.
+        let input = tone_at(NATIVE_SR, 0.5, 220.0, 0.4);
+        let mut stream = StreamResampler::new(NATIVE_SR, SR);
+        let mut out = Vec::new();
+        let mut after_first = 0usize;
+        for (i, frame) in frames(&input, &[512]).into_iter().enumerate() {
+            stream.push(frame, &mut out);
+            if i == 0 {
+                after_first = out.len();
+            }
+            assert!(
+                stream.pending.len() <= 512 + 4,
+                "retained input must stay bounded, got {}",
+                stream.pending.len()
+            );
+        }
+        assert!(
+            after_first > 100,
+            "the first 512-frame callback should already produce ~170 samples at 16 kHz, got {after_first}"
+        );
+        stream.finish(&mut out);
+        let expected = input.len() / 3; // 48 kHz → 16 kHz
+        assert!(
+            out.len().abs_diff(expected) <= 2,
+            "expected ~{expected} samples, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn streaming_high_pass_matches_the_batch_filter() {
+        // The biquad carries its state across callbacks — otherwise every frame
+        // boundary would restart the filter and click.
+        let input = tone_at(NATIVE_SR, 0.2, 25.0, 0.5);
+        let batch = high_pass(&input, NATIVE_SR, HIGH_PASS_HZ);
+        let mut filter = Biquad::high_pass(NATIVE_SR, HIGH_PASS_HZ).expect("valid cutoff");
+        let mut streamed = Vec::new();
+        for frame in frames(&input, &[441, 64, 1, 2048]) {
+            let mut chunk = frame.to_vec();
+            assert!(filter.process(&mut chunk), "clean audio must filter");
+            streamed.extend_from_slice(&chunk);
+        }
+        assert_eq!(streamed.len(), batch.len());
+        assert!(
+            streamed.iter().zip(&batch).all(|(a, b)| a == b),
+            "per-frame filtering must equal filtering the whole take at once"
+        );
+        // A degenerate rate/cutoff has no filter at all (callers pass audio through).
+        assert!(Biquad::high_pass(0, HIGH_PASS_HZ).is_none());
+        assert!(Biquad::high_pass(NATIVE_SR, 0.0).is_none());
+        assert!(Biquad::high_pass(NATIVE_SR, NATIVE_SR as f32).is_none());
+    }
+
+    #[test]
+    fn stream_dsp_downmixes_and_resamples_frames_as_they_arrive() {
+        // Stereo 48 kHz in (what a MacBook mic hands the callback) → mono 16 kHz
+        // out, produced incrementally, with the raw mono fallback kept alongside.
+        let mono_in = tone_at(NATIVE_SR, 0.3, 200.0, 0.02);
+        let interleaved: Vec<f32> = mono_in
+            .iter()
+            .flat_map(|&s| [s * 0.5, s * 1.5]) // channel average == the mono input
+            .collect();
+        let mut dsp = StreamDsp::new(NATIVE_SR, 2);
+        let mut mid_capture = 0usize;
+        for (i, frame) in frames(&interleaved, &[1024, 512, 130])
+            .into_iter()
+            .enumerate()
+        {
+            dsp.push(frame);
+            if i == 1 {
+                mid_capture = dsp.out.len();
+            }
+        }
+        assert!(
+            mid_capture > 0,
+            "16 kHz samples must exist mid-hold, not only after release"
+        );
+        let captured = dsp.take();
+        assert_eq!(captured.sample_rate, NATIVE_SR);
+        assert_eq!(
+            captured.raw.len(),
+            mono_in.len(),
+            "the raw fallback keeps every captured mono sample"
+        );
+        assert!(
+            captured
+                .raw
+                .iter()
+                .zip(&mono_in)
+                .all(|(a, b)| (a - b).abs() < 1e-6),
+            "downmix must average the channels"
+        );
+        let expected = mono_in.len() / 3;
+        assert!(
+            captured.samples.len().abs_diff(expected) <= 2,
+            "expected ~{expected} samples at 16 kHz, got {}",
+            captured.samples.len()
+        );
+        assert!(captured.samples.iter().all(|s| s.is_finite()));
+        // A quiet take is lifted, never attenuated to nothing.
+        assert!(captured.gain > 1.0, "quiet take should get AGC gain");
+        // …and the state is gone with the take: the next dictation starts clean.
+        assert!(dsp.out.is_empty() && dsp.raw.is_empty());
+    }
+
+    #[test]
+    fn finalize_levels_fades_and_never_loses_the_take() {
+        let quiet = tone_at(SR, 0.5, 220.0, 0.02);
+        let gain = agc_gain(rms(&quiet), max_abs(&quiet), NORMALIZE_TARGET_DBFS);
+        let captured = CapturedAudio {
+            samples: quiet.clone(),
+            raw: Vec::new(),
+            sample_rate: SR,
+            gain,
+        };
+        let out = finalize_take(captured, false).expect("a normal take finalizes");
+        assert_eq!(
+            out.len(),
+            quiet.len(),
+            "finalize must not change the length"
+        );
+        assert!(out[0].abs() < 1e-6, "edges are de-clicked");
+        assert!(
+            (to_dbfs(rms(&out)) - NORMALIZE_TARGET_DBFS).abs() < 3.0,
+            "AGC gain accumulated during capture must land near the target, got {:.1} dBFS",
+            to_dbfs(rms(&out))
+        );
+        assert!(max_abs(&out) <= 1.0 && out.iter().all(|s| s.is_finite()));
+
+        // Never lose audio: a streamed buffer that went non-finite falls back to
+        // the raw capture (native rate, unfiltered) instead of losing the take.
+        let raw = tone_at(NATIVE_SR, 0.5, 220.0, 0.3);
+        let mut broken = tone_at(SR, 0.5, 220.0, 0.3);
+        broken[100] = f32::NAN;
+        let out = finalize_take(
+            CapturedAudio {
+                samples: broken,
+                raw: raw.clone(),
+                sample_rate: NATIVE_SR,
+                gain: 1.0,
+            },
+            false,
+        )
+        .expect("the fallback still produces the utterance");
+        let expected = raw.len() / 3;
+        assert!(
+            out.len().abs_diff(expected) <= 2,
+            "fallback must resample the raw capture to 16 kHz, got {}",
+            out.len()
+        );
+        assert!(out.iter().all(|s| s.is_finite()) && rms(&out) > 0.0);
+
+        // An empty streamed buffer takes the same fallback…
+        let out = finalize_take(
+            CapturedAudio {
+                samples: Vec::new(),
+                raw,
+                sample_rate: NATIVE_SR,
+                gain: 1.0,
+            },
+            false,
+        )
+        .expect("empty streamed buffer falls back to raw");
+        assert!(!out.is_empty());
+        // …and a take with NO audio at all is an actionable error, never silence.
+        let err = finalize_take(
+            CapturedAudio {
+                samples: Vec::new(),
+                raw: Vec::new(),
+                sample_rate: NATIVE_SR,
+                gain: 1.0,
+            },
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("Microphone"), "got {err}");
     }
 
     // ── Denoise (Tier 1) ────────────────────────────────────────────────────
