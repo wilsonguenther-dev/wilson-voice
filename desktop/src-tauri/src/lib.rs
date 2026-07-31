@@ -10,6 +10,7 @@ mod db;
 mod dictation;
 mod float_pill;
 mod focus;
+mod latency;
 mod logging;
 mod mic_auth;
 mod models;
@@ -508,13 +509,19 @@ fn transcribe_native(
 ) -> Result<transcription::AsrOutput, String> {
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
+    // YV40: load and decode are timed apart — the load is 0 on the warm path and
+    // seconds on a cold one, so folding them together (as `asr_model` used to)
+    // made the decode span unreadable on exactly the take that is slowest.
+    let load_ms = started.elapsed().as_millis() as i64;
     // The "Language I speak" setting used to reach Whisper as the sidecar's
     // `--language`; it now rides the engine's own language hint (YV34) so the
     // picker keeps working. Blank = autodetect.
     let language = Some(language.trim())
         .filter(|l| !l.is_empty())
         .map(str::to_string);
+    let decode_started = std::time::Instant::now();
     let text = manager.transcribe(samples, language)?;
+    let decode_ms = decode_started.elapsed().as_millis() as i64;
     if text.trim().is_empty() {
         return Err("Empty transcript".into());
     }
@@ -522,6 +529,8 @@ fn transcribe_native(
         text,
         backend: "native".into(),
         seconds: started.elapsed().as_secs_f64(),
+        load_ms,
+        decode_ms,
     })
 }
 
@@ -626,7 +635,6 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 rec.samples,
                 &settings.language,
             )?;
-            let t_asr = t_release.elapsed().as_millis() as i64;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
             let raw_text = asr.text;
@@ -651,6 +659,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // stage is guarded so a non-empty transcript can never become empty (falls
             // back to its input on any error/empty result — "never lose text").
             let cleanup_level = dictation::CleanupLevel::from_setting(&settings.cleanup_level);
+            let t_cleanup = std::time::Instant::now();
             let text = dictation::run_cleanup(
                 &raw_text,
                 cleanup_level,
@@ -658,6 +667,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
                 dictation::polish_llm,
             );
+            let cleanup_ms = t_cleanup.elapsed().as_millis() as i64;
             log::info!(
                 "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
                 cleanup_level,
@@ -678,18 +688,30 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
             }
             let want_paste = settings.auto_paste && !stale && focus::should_auto_paste();
+            let t_paste = std::time::Instant::now();
             let outcome =
                 paste::copy_and_maybe_paste(&app2, &text, want_paste, source_app.as_deref());
+            let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
+            // YV40: the whole take as disjoint spans in one stable key=value
+            // line (see `latency`) — press side, capture, DSP finalize, ASR load
+            // vs decode, cleanup, paste — instead of the old cumulative mix.
             log::info!(
-                "latency hold→clipboard={}ms (press→capture={}ms dsp={} asr_done={} asr_model={:.0}ms) backend={}",
-                pipeline_ms,
-                rec.capture_start_ms,
-                t_dsp,
-                t_asr,
-                asr.seconds * 1000.0,
-                asr.backend
+                "{}",
+                latency::PipelineSpans {
+                    hold_clipboard_ms: pipeline_ms,
+                    press_capture_ms: rec.capture_start_ms,
+                    capture_ms: (rec.hold_wall_seconds * 1000.0).round() as i64,
+                    samples_ready_ms: t_dsp,
+                    asr_load_ms: asr.load_ms,
+                    asr_decode_ms: asr.decode_ms,
+                    cleanup_ms,
+                    paste_ms,
+                    backend: &asr.backend,
+                    pasted: outcome.pasted,
+                }
+                .summary_line()
             );
             // Store BOTH the polished text and the raw ASR transcript (YV10).
             let entry = db.insert_transcript_at(
