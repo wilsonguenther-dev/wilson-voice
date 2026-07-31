@@ -173,12 +173,20 @@ pub struct AppStatus {
     pub busy: bool,
     pub last_error: Option<String>,
     pub message: String,
+    /// The LEGACY Python sidecar is genuinely runnable (venv under Application
+    /// Support that actually imports mlx_whisper) — not merely "some file exists
+    /// at the resolved python path". See [`legacy_asr_ready`].
     pub python_ok: bool,
     pub worker_ok: bool,
     pub accessibility: bool,
     pub hotkey_registered: bool,
     #[serde(default)]
     pub hands_free: bool,
+    /// YV33 — dictation can actually run right now: the selected embedded model
+    /// is downloaded, or the legacy venv is genuinely importable. The UI shows
+    /// "Ready" only when this is true; otherwise it routes to the model step.
+    #[serde(default)]
+    pub model_ready: bool,
 }
 
 struct AppState {
@@ -196,6 +204,11 @@ struct AppState {
     last_error: PLMutex<Option<String>>,
     venv_python: PathBuf,
     asr_worker: PathBuf,
+    /// Memoized [`legacy_asr_ready`] answer. The probe spawns a process, and
+    /// `build_status` runs on every state transition, so it is computed at most
+    /// once per run (and invalidated by `setup_asr_venv`, the only thing that
+    /// can change the answer).
+    legacy_asr_ok: PLMutex<Option<bool>>,
     hotkey_registered: PLMutex<bool>,
     /// Menu-bar (tray) handles, set once during setup after the tray is built.
     /// Kept so state transitions can reflect into the dropdown + tooltip (YV26).
@@ -234,6 +247,62 @@ impl Drop for WavCleanup {
     }
 }
 
+/// YV33 — is the LEGACY Python sidecar genuinely runnable? `venv_python.exists()`
+/// was never an answer: `asr_paths::resolve_python` falls back to
+/// `/usr/bin/python3`, the Command Line Tools shim, which exists on every Mac,
+/// can never `import mlx_whisper`, and pops a developer-tools installer if
+/// executed. So only the Application Support venv is even probed, and it must
+/// actually import the module. Memoized — the probe spawns a process and this
+/// runs on every status emit.
+fn legacy_asr_ready(state: &AppState) -> bool {
+    if let Some(cached) = *state.legacy_asr_ok.lock() {
+        return cached;
+    }
+    let ok = state.venv_python.starts_with(data_dir())
+        && state.venv_python.is_file()
+        && state.asr_worker.is_file()
+        && asr_paths::python_has_mlx(&state.venv_python);
+    *state.legacy_asr_ok.lock() = Some(ok);
+    ok
+}
+
+/// Can a take actually be transcribed right now? True when the selected
+/// embedded model is downloaded (the YV32 primary path) or the legacy sidecar
+/// is genuinely installed. False means "Model needed", never "Ready".
+fn model_ready(state: &AppState) -> bool {
+    let native = state.settings.lock().native_model.clone();
+    native_model_ready(&native).is_some() || legacy_asr_ready(state)
+}
+
+/// The status-line policy, pure so the "Ready" honesty rule is testable without
+/// an AppState. `model_ready` false outranks everything except live
+/// recording/transcribing/errors: a fresh install with no model must say so.
+fn status_message(
+    recording: bool,
+    hands_free: bool,
+    busy: bool,
+    last_error: Option<&str>,
+    model_ready: bool,
+    accessibility: bool,
+    ptt: &str,
+) -> String {
+    if recording && hands_free {
+        format!("Hands-free… tap {ptt} to stop")
+    } else if recording {
+        format!("Recording… release {ptt} or click Stop")
+    } else if busy {
+        "Transcribing with local Whisper…".into()
+    } else if let Some(err) = last_error {
+        format!("Error: {err}")
+    } else if !model_ready {
+        "Model needed — download a speech model to start".into()
+    } else if !accessibility {
+        format!("Ready — {ptt} (enable Accessibility)")
+    } else {
+        format!("Ready — hold {ptt} · double-tap hands-free")
+    }
+}
+
 fn build_status(state: &AppState) -> AppStatus {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
@@ -242,31 +311,27 @@ fn build_status(state: &AppState) -> AppStatus {
     let accessibility = permissions::is_accessibility_trusted();
     let hotkey_registered = *state.hotkey_registered.lock();
     let ptt = state.settings.lock().hotkey_label.clone();
-    let message = if recording && hands_free {
-        format!("Hands-free… tap {ptt} to stop")
-    } else if recording {
-        format!("Recording… release {ptt} or click Stop")
-    } else if busy {
-        "Transcribing with local Whisper…".into()
-    } else if let Some(ref err) = last_error {
-        format!("Error: {err}")
-    } else if !state.venv_python.exists() {
-        "ASR venv missing — see Permissions".into()
-    } else if !accessibility {
-        format!("Ready — {ptt} (enable Accessibility)")
-    } else {
-        format!("Ready — hold {ptt} · double-tap hands-free")
-    };
+    let ready = model_ready(state);
+    let message = status_message(
+        recording,
+        hands_free,
+        busy,
+        last_error.as_deref(),
+        ready,
+        accessibility,
+        &ptt,
+    );
     AppStatus {
         recording,
         busy,
         last_error,
         message,
-        python_ok: state.venv_python.exists(),
+        python_ok: legacy_asr_ready(state),
         worker_ok: state.asr_worker.exists(),
         accessibility,
         hotkey_registered,
         hands_free,
+        model_ready: ready,
     }
 }
 
@@ -842,7 +907,16 @@ fn get_status(state: State<'_, Arc<AppState>>) -> AppStatus {
 
 #[tauri::command]
 fn get_permissions(state: State<'_, Arc<AppState>>) -> PermissionReport {
-    permissions::report(&state.venv_python, &state.asr_worker, false)
+    // YV33: the ASR row reports the engine that actually runs — a downloaded
+    // embedded model — instead of probing a python that may not exist.
+    let native = state.settings.lock().native_model.clone();
+    permissions::report(
+        &state.venv_python,
+        &state.asr_worker,
+        false,
+        native_model_ready(&native).is_some(),
+        &data_dir(),
+    )
 }
 
 #[tauri::command]
@@ -1053,9 +1127,19 @@ fn show_main(app: AppHandle) {
     }
 }
 
+/// Legacy Python-sidecar installer. YV33: async + off-thread. It shells out to
+/// `python -m venv` and `pip install mlx-whisper` — minutes of blocking work
+/// that froze the entire UI while this was a synchronous command running on the
+/// main thread. The embedded GGUF engine replaces it (nothing in the UI invokes
+/// it any more); it stays for existing venv installs and can no longer freeze
+/// anything. Also clears the memoized legacy probe, since it just changed.
 #[tauri::command]
-fn setup_asr_venv() -> Result<String, String> {
-    asr_paths::setup_local_venv()
+async fn setup_asr_venv(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let out = tauri::async_runtime::spawn_blocking(asr_paths::setup_local_venv)
+        .await
+        .map_err(|e| format!("ASR setup task failed: {e}"))?;
+    *state.legacy_asr_ok.lock() = None;
+    out
 }
 
 // --- Embedded ASR model management (YV31) ---
@@ -1282,6 +1366,7 @@ pub fn run() {
         last_error: PLMutex::new(None),
         venv_python: venv_py,
         asr_worker: worker,
+        legacy_asr_ok: PLMutex::new(None),
         hotkey_registered: PLMutex::new(false),
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
@@ -1678,7 +1763,35 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::AppSettings;
+    use super::{status_message, AppSettings};
+
+    // YV33: "Ready" is a claim about being able to transcribe. With no usable
+    // model the status line must say a model is needed — the old rule ("a file
+    // exists at the resolved python path") reported Ready on every fresh Mac,
+    // where that path is the non-functional /usr/bin/python3 CLT shim.
+    #[test]
+    fn status_says_model_needed_until_a_model_is_ready() {
+        let no_model = status_message(false, false, false, None, false, true, "fn⌃");
+        assert!(no_model.contains("Model needed"), "{no_model}");
+        assert!(!no_model.contains("Ready"), "{no_model}");
+
+        let ready = status_message(false, false, false, None, true, true, "fn⌃");
+        assert!(ready.starts_with("Ready — hold fn⌃"), "{ready}");
+
+        // Accessibility is a paste-only concern: still Ready, with a nudge.
+        let no_ax = status_message(false, false, false, None, true, false, "fn⌃");
+        assert!(no_ax.starts_with("Ready —"), "{no_ax}");
+        assert!(no_ax.contains("Accessibility"), "{no_ax}");
+
+        // Live states and hard errors still outrank the model gate.
+        assert!(status_message(true, false, false, None, false, true, "fn⌃").contains("Recording"));
+        assert!(status_message(true, true, false, None, false, true, "fn⌃").contains("Hands-free"));
+        assert!(
+            status_message(false, false, true, None, false, true, "fn⌃").contains("Transcribing")
+        );
+        let err = status_message(false, false, false, Some("boom"), true, true, "fn⌃");
+        assert_eq!(err, "Error: boom");
+    }
 
     // YV9: onboarding gate must default to false so a fresh install shows the
     // first-run flow, and older settings.json (written before the field existed)

@@ -6,8 +6,13 @@ import { listen } from "@tauri-apps/api/event";
 // app while AppSettings.onboarded is false. Self-contained: it invokes the
 // existing permission + recording commands directly and does its own live
 // polling / event wiring so App.tsx stays a thin gate.
+//
+// YV33 — the app ships with NO model, so a "Get your model" step now sits
+// between permissions and calibration: nothing downstream (calibration, the
+// hotkey) can work until a catalog model is on disk and selected. The same step
+// is re-openable from the main app when status.modelReady goes false.
 
-type Step = "welcome" | "permissions" | "calibration" | "done";
+export type Step = "welcome" | "permissions" | "model" | "calibration" | "done";
 
 interface PermissionReport {
   accessibility: boolean;
@@ -25,30 +30,86 @@ interface TranscriptEntry {
   wordCount: number;
 }
 
+/** One catalog model as `list_models` reports it (camelCase on the wire). */
+interface ModelEntry {
+  id: string;
+  name: string;
+  description: string;
+  architecture: string;
+  filename: string;
+  quant: string;
+  sizeBytes: number;
+  downloaded: boolean;
+  selected: boolean;
+  recommended: boolean;
+  recommendedRank: number | null;
+}
+
+/** `model_download_progress` payload (plain serde — snake_case on the wire). */
+interface DownloadProgress {
+  model_id: string;
+  downloaded: number;
+  total: number;
+}
+
 const CALIBRATION_PHRASE =
   "The quick brown fox jumps over the lazy dog, and Yap is listening.";
 
-const STEP_ORDER: Step[] = ["welcome", "permissions", "calibration", "done"];
+const STEP_ORDER: Step[] = [
+  "welcome",
+  "permissions",
+  "model",
+  "calibration",
+  "done",
+];
+
+/** How many recommended models to surface. Choice, not a catalog dump. */
+const MODEL_PICKS = 2;
+
+/**
+ * Hard ceiling on one calibration take (transcribe + paste is ~1 s on Metal, and
+ * the backend's own transcribe timeout is 120 s for a wedged native call). Before
+ * this, `busy` was cleared ONLY by the success event: any failure the UI never
+ * heard about — a killed worker, a lost event, a backend that died mid-take —
+ * left "Transcribing…" spinning forever. Busy must always be self-clearing.
+ */
+const CALIBRATION_WATCHDOG_MS = 90_000;
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
 }
 
+function fmtSize(bytes: number) {
+  const gb = bytes / 1e9;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
 export default function Onboarding({
   onFinish,
   onSkip,
+  initialStep = "welcome",
 }: {
   /** Finish onboarding; sample is the captured calibration phrase (or null). */
   onFinish: (sample: string | null) => void;
   /** Dismiss without recording anything (still marks onboarded). */
   onSkip: () => void;
+  /** Open straight onto a step — the main app jumps here to fix "Model needed". */
+  initialStep?: Step;
 }) {
-  const [step, setStep] = useState<Step>("welcome");
+  const [step, setStep] = useState<Step>(initialStep);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sample, setSample] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Calibration failure (backend `transcript_error`, or the watchdog below).
+  // Shown inline with a Retry button so a failed take is a dead end no longer.
+  const [calibError, setCalibError] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelEntry[]>([]);
+  const [modelError, setModelError] = useState<string | null>(null);
+  /** Catalog id currently downloading, plus its live byte progress. */
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
 
   const refreshPerms = useCallback(async () => {
     try {
@@ -87,14 +148,55 @@ export default function Onboarding({
       if (stepRef.current === "calibration") {
         setSample(e.payload.text);
         setBusy(false);
+        setCalibError(null);
         setNote("Voice sample captured — Yap will use it to personalize.");
       }
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV33 — the other half of "busy": the backend emits this whenever a take
+    // fails to produce a transcript, so the failure clears the spinner and shows
+    // its reason instead of the overlay waiting on a success that never comes.
+    listen<{ message: string }>("transcript_error", (e) => {
+      setBusy(false);
+      setCalibError(e.payload?.message || "Transcription failed.");
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<DownloadProgress>("model_download_progress", (e) =>
+      setProgress(e.payload),
+    ).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
     };
   }, []);
+
+  // Watchdog: busy is never clearable by success alone. If neither `transcript`
+  // nor `transcript_error` lands within the ceiling, clear it into a visible,
+  // retryable error rather than leaving the user staring at "Transcribing…".
+  useEffect(() => {
+    if (!busy) return;
+    const t = setTimeout(() => {
+      setBusy(false);
+      setCalibError(
+        "Transcription timed out — the speech model may still be loading. Retry.",
+      );
+    }, CALIBRATION_WATCHDOG_MS);
+    return () => clearTimeout(t);
+  }, [busy]);
+
+  const refreshModels = useCallback(async () => {
+    try {
+      setModels(await invoke<ModelEntry[]>("list_models"));
+      setModelError(null);
+    } catch (e) {
+      setModelError(String(e));
+    }
+  }, []);
+
+  // Load the catalog for the model step, and again for the recap on `done` so
+  // the summary reflects what is actually on disk.
+  useEffect(() => {
+    if (step !== "model" && step !== "done") return;
+    refreshModels();
+  }, [step, refreshModels]);
 
   async function requestMic() {
     try {
@@ -114,16 +216,43 @@ export default function Onboarding({
     setTimeout(refreshPerms, 800);
   }
 
+  // Download a catalog model (resumable + sha256-verified in Rust), then select
+  // it so the engine loads it. Progress arrives on `model_download_progress`.
+  async function downloadModel(id: string) {
+    setDownloading(id);
+    setProgress({ model_id: id, downloaded: 0, total: 0 });
+    setModelError(null);
+    try {
+      await invoke("download_model", { id });
+      await invoke("select_model", { id });
+    } catch (e) {
+      setModelError(String(e));
+    }
+    setDownloading(null);
+    setProgress(null);
+    await refreshModels();
+  }
+
+  async function selectModel(id: string) {
+    try {
+      await invoke("select_model", { id });
+    } catch (e) {
+      setModelError(String(e));
+    }
+    await refreshModels();
+  }
+
   // Calibration uses the existing manual_toggle recording command: first tap
   // starts capture, second tap stops + transcribes. The transcript event above
   // carries the captured phrase back.
   async function toggleCalibration() {
     try {
       if (recording) setBusy(true);
+      setCalibError(null);
       await invoke("manual_toggle");
     } catch (e) {
       setBusy(false);
-      setNote(String(e));
+      setCalibError(String(e));
     }
   }
 
@@ -139,6 +268,20 @@ export default function Onboarding({
 
   const micOk = !!perms?.microphone;
   const axOk = !!perms?.accessibility;
+
+  // The models we actually offer: recommended first (by catalog rank), padded
+  // with the rest so an unranked catalog still shows something to download.
+  const picks = [...models]
+    .sort((a, b) => {
+      if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+      return (a.recommendedRank ?? 99) - (b.recommendedRank ?? 99);
+    })
+    .slice(0, MODEL_PICKS);
+  const modelReady = models.some((m) => m.downloaded && m.selected);
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+      : 0;
 
   return (
     <div className="onboard-overlay" role="dialog" aria-modal="true">
@@ -167,8 +310,9 @@ export default function Onboarding({
               leaves this machine.
             </p>
             <p className="muted">
-              Two quick steps: grant macOS permissions, then record a short
-              calibration phrase so Yap learns your voice.
+              Three quick steps: grant macOS permissions, download your speech
+              model, then record a short calibration phrase so Yap learns your
+              voice.
             </p>
             <div className="onboard-actions">
               <button className="primary" onClick={goNext}>
@@ -222,6 +366,90 @@ export default function Onboarding({
           </div>
         )}
 
+        {step === "model" && (
+          <div className="onboard-step">
+            <h1>Get your model</h1>
+            <p className="onboard-lede">
+              Yap transcribes on this Mac, so it needs a speech model on disk.
+              Download one once — after that, dictation works offline and
+              nothing leaves this machine.
+            </p>
+            <ul className="onboard-models">
+              {picks.map((m) => (
+                <li key={m.id} className={m.downloaded ? "ok" : "bad"}>
+                  <StatusDot ok={m.downloaded} />
+                  <div>
+                    <strong>
+                      {m.name}{" "}
+                      <span className="muted tiny">
+                        {fmtSize(m.sizeBytes)} · {m.quant}
+                      </span>
+                    </strong>
+                    <p>{m.description}</p>
+                    {downloading === m.id ? (
+                      <div
+                        className="onboard-bar"
+                        role="progressbar"
+                        aria-valuenow={pct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <span style={{ width: `${pct}%` }} />
+                        <em className="muted tiny">
+                          Downloading… {pct}%
+                          {progress && progress.total > 0
+                            ? ` (${fmtSize(progress.downloaded)} of ${fmtSize(progress.total)})`
+                            : ""}
+                        </em>
+                      </div>
+                    ) : m.downloaded && m.selected ? (
+                      <button disabled>Downloaded ✓ · in use</button>
+                    ) : m.downloaded ? (
+                      <button
+                        onClick={() => selectModel(m.id)}
+                        disabled={!!downloading}
+                      >
+                        Use this model
+                      </button>
+                    ) : (
+                      <button
+                        className="primary"
+                        onClick={() => downloadModel(m.id)}
+                        disabled={!!downloading}
+                      >
+                        Download
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {picks.length === 0 && (
+              <p className="muted tiny">Loading the model catalog…</p>
+            )}
+            {modelError && (
+              <p className="onboard-error">
+                {modelError}{" "}
+                <button className="ghost" onClick={refreshModels}>
+                  Retry
+                </button>
+              </p>
+            )}
+            <div className="onboard-actions">
+              <button className="ghost" onClick={goBack} disabled={!!downloading}>
+                Back
+              </button>
+              <button
+                className="primary"
+                onClick={goNext}
+                disabled={!modelReady || !!downloading}
+              >
+                {modelReady ? "Continue" : "Download a model to continue"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {step === "calibration" && (
           <div className="onboard-step">
             <h1>Calibrate your voice</h1>
@@ -251,6 +479,20 @@ export default function Onboarding({
                 <p>{sample}</p>
               </div>
             )}
+            {calibError && (
+              <p className="onboard-error">
+                {calibError}{" "}
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    setCalibError(null);
+                    if (!recording) toggleCalibration();
+                  }}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
             {note && <p className="muted tiny">{note}</p>}
             <div className="onboard-actions">
               <button className="ghost" onClick={goBack}>
@@ -277,6 +519,9 @@ export default function Onboarding({
               </li>
               <li className={axOk ? "ok" : "bad"}>
                 <StatusDot ok={axOk} /> Accessibility
+              </li>
+              <li className={modelReady ? "ok" : "bad"}>
+                <StatusDot ok={modelReady} /> Speech model
               </li>
               <li className={sample ? "ok" : "bad"}>
                 <StatusDot ok={!!sample} /> Voice sample
