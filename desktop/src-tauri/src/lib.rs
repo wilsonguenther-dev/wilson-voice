@@ -14,6 +14,7 @@ mod logging;
 mod mic_auth;
 mod models;
 mod paste;
+mod paste_tx;
 mod permissions;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
@@ -27,6 +28,7 @@ use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -189,6 +191,11 @@ struct AppState {
     /// model asset is on disk (or forever, if the download/load fails), which
     /// is the explicit energy-VAD fallback.
     vad: PLMutex<Option<Arc<vad::WarmVad>>>,
+    /// YV39 cancellation generation. Every cancel/interrupt bumps it; the
+    /// transcribe worker captures it when the take stops and re-checks it right
+    /// before the paste, so a dictation the user cancelled while ASR was still
+    /// running can never land ⌘V in their app seconds later.
+    paste_generation: AtomicU64,
     /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
     /// and its idle-unload watcher; backs the model-management commands. Since
     /// YV34 it is the app's ONLY transcriber (see `stop_and_transcribe`).
@@ -416,6 +423,11 @@ fn start_recording(app: &AppHandle, state: &AppState) {
 
 /// Discard in-flight take (FN interrupt / cancel) — no ASR.
 fn cancel_recording(app: &AppHandle, state: &AppState) {
+    // YV39: bump BEFORE the recording check. A cancel that arrives while a
+    // previous take is still transcribing finds `recording` already false and
+    // returns below — but that take must still be invalidated, or its ⌘V lands
+    // seconds after the user cancelled.
+    state.paste_generation.fetch_add(1, Ordering::SeqCst);
     if !*state.recording.lock() {
         return;
     }
@@ -542,6 +554,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let state2 = state.clone();
     // Capture focused app *before* we steal focus with notifications / main window.
     let source_app = focus::frontmost_app_name();
+    // YV39: the generation this take belongs to. Re-checked immediately before
+    // the paste — a cancel during ASR bumps it and the transcript is copied
+    // only, never pasted.
+    let generation = state.paste_generation.load(Ordering::SeqCst);
     let t_release = std::time::Instant::now();
 
     std::thread::spawn(move || {
@@ -653,7 +669,15 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // guard (YV21) inside copy_and_maybe_paste re-checks the frontmost app
             // against `source_app` immediately before ⌘V and falls back to
             // clipboard-only if the user switched apps during the ASR delay.
-            let want_paste = settings.auto_paste && focus::should_auto_paste();
+            // YV39 cancellation guard: a stale take (cancelled while this one
+            // was transcribing) is copied but NEVER pasted.
+            let stale = state2.paste_generation.load(Ordering::SeqCst) != generation;
+            if stale {
+                log::warn!(
+                    "stale dictation (cancelled during transcription) — copy only, no paste"
+                );
+            }
+            let want_paste = settings.auto_paste && !stale && focus::should_auto_paste();
             let outcome =
                 paste::copy_and_maybe_paste(&app2, &text, want_paste, source_app.as_deref());
             // North-star metric: release hotkey → text on clipboard
@@ -1246,6 +1270,7 @@ pub fn run() {
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
         vad: PLMutex::new(None),
+        paste_generation: AtomicU64::new(0),
         transcription: transcription::TranscriptionManager::new(),
     });
 
