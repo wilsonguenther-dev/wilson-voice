@@ -137,6 +137,9 @@ const BATCHES = {
   ],
 };
 
+// yap11 resume after YV30 merged solo (session-limit interruption 2026-07-31)
+BATCHES.yap11b = BATCHES.yap11.slice(1);
+
 let A = {};
 try { A = typeof args === 'string' ? JSON.parse(args) : (args || {}); } catch (e) { A = {}; }
 const runLabel = A.runLabel || 'yap';
