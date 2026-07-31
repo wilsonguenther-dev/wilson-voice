@@ -3,8 +3,8 @@
 //! Same crate + version Handy ships: `transcribe-cpp 0.1.3`, built with the
 //! Metal backend on macOS (see Cargo.toml target table). It exposes `load()` /
 //! `transcribe()` and nothing else; the warm lifecycle around it lives in
-//! `transcription`, which YV32 wired into the dictation pipeline as the primary
-//! path (the Python sidecar is now the fallback).
+//! `transcription`, which YV32 wired into the dictation pipeline and YV34 made
+//! the app's only ASR path (the Python sidecar is gone).
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -62,10 +62,22 @@ pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
 }
 
 /// Batch-transcribe 16 kHz mono f32 samples into text.
-pub fn transcribe(engine: &mut AsrEngine, samples_16k_mono: &[f32]) -> Result<String, String> {
+///
+/// `language` is the user's "Language I speak" setting as an ISO code, carried
+/// over from the deleted sidecar's `--language` flag (YV34) so the picker keeps
+/// working; `None` leaves transcribe-cpp on autodetect.
+pub fn transcribe(
+    engine: &mut AsrEngine,
+    samples_16k_mono: &[f32],
+    language: Option<&str>,
+) -> Result<String, String> {
+    let options = RunOptions {
+        language: language.map(str::to_string),
+        ..RunOptions::default()
+    };
     engine
         .session
-        .run(samples_16k_mono, &RunOptions::default())
+        .run(samples_16k_mono, &options)
         .map(|t| t.text)
         .map_err(|e| format!("transcription failed: {e}"))
 }

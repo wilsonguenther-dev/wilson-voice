@@ -2,7 +2,8 @@
 //!
 //! Identity that must appear in System Settings is the **app bundle**:
 //!   com.wilsonguenther.wilson-voice  ("Wilson Voice")
-//! Never tell users to enable "Python" for this product.
+//! Yap execs no helper interpreter, so that bundle is the ONLY row users ever
+//! need to enable.
 
 use serde::Serialize;
 use std::process::Command;
@@ -16,7 +17,7 @@ pub struct PermissionReport {
     pub microphone: bool,
     /// ffmpeg present on PATH
     pub ffmpeg_ok: bool,
-    /// Python ASR venv + worker present
+    /// A speech model is on disk, so the embedded engine can transcribe
     pub asr_ok: bool,
     pub asr_detail: String,
     /// Human summary for UI
@@ -94,63 +95,29 @@ pub fn microphone_probe() -> (bool, String) {
     }
 }
 
-/// Can this install transcribe? YV33: the embedded GGUF engine is the primary
-/// path, so a downloaded model (`native_ready`) is the answer on its own. The
-/// legacy Python sidecar is only consulted as a fallback, and only when the
-/// resolved interpreter is the Application Support venv — the resolver's
-/// `/usr/bin/python3` fallback is the Command Line Tools shim, which exists on
-/// every Mac, cannot import mlx_whisper, and pops a developer-tools installer
-/// when executed (this probe runs on a 1.2 s poll during onboarding).
-pub fn asr_probe(
-    python: &std::path::Path,
-    worker: &std::path::Path,
-    native_ready: bool,
-    venv_root: &std::path::Path,
-) -> (bool, String) {
+/// Can this install transcribe? YV34: the embedded GGUF engine is the ONLY
+/// path, so a downloaded model (`native_ready`) is the whole answer. Purely a
+/// value check — it spawns nothing, which is what makes the 1.2 s onboarding
+/// poll safe (the old probe exec'd an interpreter on every tick).
+pub fn asr_probe(native_ready: bool) -> (bool, String) {
     if native_ready {
-        return (
+        (
             true,
             "Speech model downloaded — embedded engine ready".into(),
-        );
-    }
-    if !python.starts_with(venv_root) || !python.is_file() {
-        return (
+        )
+    } else {
+        (
             false,
             "No speech model on disk yet — click Get a speech model.".into(),
-        );
+        )
     }
-    if !worker.exists() {
-        return (
-            false,
-            format!("Missing ASR worker at {} (should auto-seed)", worker.display()),
-        );
-    }
-    if !crate::asr_paths::python_has_mlx(python) {
-        return (
-            false,
-            format!(
-                "Legacy venv at {} lacks mlx-whisper — click Get a speech model.",
-                python.display()
-            ),
-        );
-    }
-    (
-        true,
-        format!("Legacy ASR venv ready ({})", python.display()),
-    )
 }
 
-pub fn report(
-    python: &std::path::Path,
-    worker: &std::path::Path,
-    prompt_accessibility: bool,
-    native_ready: bool,
-    venv_root: &std::path::Path,
-) -> PermissionReport {
+pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionReport {
     let accessibility = macos::accessibility_trusted(prompt_accessibility);
     let (microphone, mic_detail) = microphone_probe();
     let ffmpeg_ok = true; // no longer required — cpal in-process
-    let (asr_ok, asr_detail) = asr_probe(python, worker, native_ready, venv_root);
+    let (asr_ok, asr_detail) = asr_probe(native_ready);
 
     let mut parts = Vec::new();
     if !accessibility {

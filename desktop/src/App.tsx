@@ -34,13 +34,10 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 ];
 
 interface AppSettings {
-  model: string;
   language: string;
   autoPaste: boolean;
   hotkeyLabel: string;
   showFloatingPill: boolean;
-  /** fast | balanced | max */
-  speedProfile: string;
   /** fn | fn_control | both */
   pttBinding?: string;
   keepCmdShiftV?: boolean;
@@ -83,14 +80,11 @@ interface AppStatus {
   busy: boolean;
   lastError: string | null;
   message: string;
-  /** Legacy Python sidecar genuinely importable — NOT "a python file exists". */
-  pythonOk: boolean;
-  workerOk: boolean;
   accessibility: boolean;
   hotkeyRegistered: boolean;
   /**
    * YV33 — dictation can actually run: the selected embedded model is
-   * downloaded (or the legacy venv is genuinely installed). False means the app
+   * downloaded. Since YV34 that is the only ASR path, so false means the app
    * shows a "Model needed" route into the onboarding model step, never "Ready".
    */
   modelReady: boolean;
@@ -183,37 +177,6 @@ interface ScratchNote {
   updatedAt: string;
 }
 
-const MODELS = [
-  "mlx-community/whisper-tiny-mlx",
-  "mlx-community/whisper-base-mlx",
-  "mlx-community/whisper-small-mlx",
-  "mlx-community/whisper-large-v3-turbo",
-  "mlx-community/whisper-medium-mlx",
-  "mlx-community/whisper-large-v3-mlx",
-];
-
-const PROFILES: { id: string; label: string; blurb: string; model: string }[] =
-  [
-    {
-      id: "fast",
-      label: "Fast",
-      blurb: "whisper-small-mlx — best during heavy coding (lowest local load)",
-      model: "mlx-community/whisper-small-mlx",
-    },
-    {
-      id: "balanced",
-      label: "Balanced",
-      blurb: "large-v3-turbo — default accuracy, warm daemon",
-      model: "mlx-community/whisper-large-v3-turbo",
-    },
-    {
-      id: "max",
-      label: "Max",
-      blurb: "large-v3-mlx — slowest, highest accuracy (long notes)",
-      model: "mlx-community/whisper-large-v3-mlx",
-    },
-  ];
-
 function formatTime(iso: string) {
   try {
     return new Date(iso).toLocaleString(undefined, {
@@ -252,8 +215,6 @@ export default function App() {
     busy: false,
     lastError: null,
     message: "Loading…",
-    pythonOk: false,
-    workerOk: false,
     accessibility: false,
     hotkeyRegistered: false,
     modelReady: false,
@@ -792,7 +753,7 @@ export default function App() {
               {nav === "home" &&
                 "Hold fn⌃ · double-tap hands-free · tap again to stop. Local Whisper; history in SQLite."}
               {nav === "permissions" &&
-                "macOS must grant these to Yap (not Python). Without them, dictation or paste fails."}
+                "macOS must grant these to Yap itself. Without them, dictation or paste fails."}
               {nav === "insights" &&
                 "Local analytics from your SQLite history — nothing leaves this Mac."}
               {nav === "dictionary" &&
@@ -831,19 +792,19 @@ export default function App() {
                 <p>
                   Bundle id <code>com.wilsonguenther.wilson-voice</code> must
                   appear as <strong>Yap</strong> in System Settings →
-                  Privacy &amp; Security. Do not enable “Python” for this
-                  product.
+                  Privacy &amp; Security. Yap runs no helper process, so that
+                  one row is the only thing you ever enable.
                 </p>
                 <p className="muted">{perms?.summary}</p>
                 <div className="actions">
                   <button className="primary" onClick={refreshPerms}>
                     Re-check permissions
                   </button>
-                  {/* YV33 — replaces "Install local ASR", which invoked a
-                      synchronous command that ran `python -m venv` + `pip
-                      install` on the main thread and froze the app for minutes.
-                      The embedded GGUF engine needs a downloaded model instead,
-                      so this routes to the model step. */}
+                  {/* YV33 — replaces "Install local ASR", the button that
+                      bootstrapped the (now deleted, YV34) Python sidecar and
+                      froze the app for minutes doing it. The embedded GGUF
+                      engine needs a downloaded model instead, so this routes to
+                      the model step. */}
                   <button onClick={() => setSetupStep("model")}>
                     {status.modelReady ? "Manage speech model" : "Get a speech model"}
                   </button>
@@ -938,8 +899,9 @@ export default function App() {
                   <div>
                     <strong>Mic capture</strong>
                     <p>
-                      In-process audio (cpal) so TCC lists <strong>Yap</strong>, not
-                      Python or ffmpeg. Click Dictate once to trigger the system prompt.
+                      In-process audio (cpal) so TCC lists <strong>Yap</strong>,
+                      not a helper process. Click Dictate once to trigger the
+                      system prompt.
                     </p>
                   </div>
                 </li>
@@ -1804,68 +1766,45 @@ export default function App() {
                 </section>
               )}
 
-              {/* ── Advanced — model & speed tuning ── */}
+              {/* ── Advanced — the speech model ──
+                  YV34 retired the speed-profile buttons and the "Voice model
+                  (advanced override)" list: both picked a repo id for the
+                  deleted Python sidecar. Speed vs. accuracy is now a property
+                  of which embedded model you download, so this routes to the
+                  one place that choice lives. */}
               {settingsTab === "advanced" && (
                 <section className="settings-panel">
                   <h2 className="settings-section">
-                    Advanced — Model &amp; Speed
+                    Advanced — Speech model
                     <span className="sub">
-                      Leave these as-is unless dictation feels slow.
+                      Leave this as-is unless dictation feels slow or misses
+                      words.
                     </span>
                   </h2>
                   <div className="panel">
                     <h3>Speed vs. accuracy</h3>
                     <p className="muted">
-                      Yap keeps your voice model loaded so dictation starts the
-                      moment you press your key. Choose <strong>Fast</strong>{" "}
-                      when your Mac is busy, or a higher-accuracy option when you
-                      want the cleanest text. Everything runs on your Mac.
+                      Yap transcribes inside the app itself — no helper process,
+                      nothing installed on the side, nothing off this Mac. Your
+                      model is kept loaded so dictation starts the moment you
+                      press your key. Smaller models are faster and lighter;
+                      larger ones are more accurate on long or technical
+                      dictation.
                     </p>
-                    <div className="actions wrap" style={{ marginTop: 10 }}>
-                      {PROFILES.map((p) => (
-                        <button
-                          key={p.id}
-                          className={
-                            (settings.speedProfile || "balanced") === p.id
-                              ? "primary"
-                              : undefined
-                          }
-                          onClick={() =>
-                            saveSettings({
-                              ...settings,
-                              speedProfile: p.id,
-                              model: p.model,
-                            })
-                          }
-                          title={p.blurb}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
+                    <div className="actions" style={{ marginTop: 10 }}>
+                      <button
+                        className="primary"
+                        onClick={() => setSetupStep("model")}
+                      >
+                        {status.modelReady
+                          ? "Manage speech model"
+                          : "Get a speech model"}
+                      </button>
                     </div>
                     <p className="muted tiny" style={{ marginTop: 8 }}>
-                      {
-                        PROFILES.find(
-                          (p) => p.id === (settings.speedProfile || "balanced"),
-                        )?.blurb
-                      }
+                      {perms?.asrDetail}
                     </p>
                   </div>
-                  <label className="field">
-                    <span>Voice model (advanced override)</span>
-                    <select
-                      value={settings.model}
-                      onChange={(e) =>
-                        saveSettings({ ...settings, model: e.target.value })
-                      }
-                    >
-                      {MODELS.map((m) => (
-                        <option key={m} value={m}>
-                          {m.replace("mlx-community/", "")}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                 </section>
               )}
 

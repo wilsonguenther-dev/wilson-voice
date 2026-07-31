@@ -329,8 +329,8 @@ export default function Onboarding({
           <div className="onboard-step">
             <h1>Grant permissions</h1>
             <p className="onboard-lede">
-              macOS must allow <strong>Yap</strong> (not Python) to use these.
-              Status updates live as you enable each one.
+              macOS must allow <strong>Yap</strong> itself to use these. Status
+              updates live as you enable each one.
             </p>
             <ul className="onboard-perms">
               <li className={micOk ? "ok" : "bad"}>

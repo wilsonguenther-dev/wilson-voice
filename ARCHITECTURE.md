@@ -13,10 +13,10 @@ proprietary “Wilson foundation models.” Modes = scale/speed profiles.
 | Shell | Tauri 2 + React + Rust | Native tray, hotkey, Accessibility, small surface |
 | Production embed | `custom-protocol` feature **required** | Without it: blank white UI (loads localhost:1420) |
 | Signing | Apple Development: Wilson Guenther | Mic TCC sticks across rebuilds; ad-hoc re-prompts |
-| Mic identity | In-process cpal in the app binary | TCC attributes to bundle id, not Python |
+| Mic identity | In-process cpal in the app binary | TCC attributes to bundle id, not a helper process |
 | ASR paths | `~/Library/Application Support/WilsonVoice/` only | Desktop path = Files & Folders spam every stop |
-| ASR runtime | Warm Python daemon (`asr_worker.py --serve`) | Keep MLX `ModelHolder` mapped; avoid cold import tax |
-| Models | Fast/Balanced/Max → small / large-v3-turbo / large-v3 MLX | Scales, not separate foundations |
+| ASR runtime | In-process GGUF engine (`transcribe-cpp`, Metal) kept warm by `TranscriptionManager` | No sidecar to spawn, no IPC, no venv to bootstrap on a user's Mac |
+| Models | Bundled catalog, downloaded on demand from the in-app model manager | One selector (`nativeModel`); size is the speed/accuracy dial |
 | Personalization now | Dictionary + vocab harvest from history | Cheap; no GPU train required |
 | Personalization later | Offline LoRA on corrections corpus | Nights only; optional remote worker for train |
 | Data plane | SQLite WAL + FTS5 | Single-user local; typed Tauri commands |

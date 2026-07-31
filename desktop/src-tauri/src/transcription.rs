@@ -17,10 +17,10 @@
 //! An idle watcher unloads the engine after [`IDLE_UNLOAD_AFTER`] of no use so a
 //! background Yap doesn't hold ~1 GB of model resident all day.
 //!
-//! YV32 puts this on the live dictation path as the primary transcriber (see
-//! `lib::transcribe_native`) and behind the headless `--transcribe-file` CLI;
-//! the Python/MLX sidecar is now only the fallback. A few lifecycle helpers are
-//! still driven by the model-management commands alone.
+//! YV32 put this on the live dictation path and behind the headless
+//! `--transcribe-file` CLI; YV34 deleted the Python sidecar, so this is now the
+//! ONLY transcriber in the app. A few lifecycle helpers are still driven by the
+//! model-management commands alone.
 #![allow(dead_code)]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -48,13 +48,31 @@ const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// [`asr_engine::AsrEngine`]; the trait exists so the lifecycle above can be
 /// tested without a multi-hundred-MB GGUF download.
 pub trait Transcriber: Send + 'static {
-    fn transcribe(&mut self, samples_16k_mono: &[f32]) -> Result<String, String>;
+    fn transcribe(
+        &mut self,
+        samples_16k_mono: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String>;
 }
 
 impl Transcriber for asr_engine::AsrEngine {
-    fn transcribe(&mut self, samples_16k_mono: &[f32]) -> Result<String, String> {
-        asr_engine::transcribe(self, samples_16k_mono)
+    fn transcribe(
+        &mut self,
+        samples_16k_mono: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        asr_engine::transcribe(self, samples_16k_mono, language)
     }
+}
+
+/// One finished transcription as the dictation pipeline consumes it: the text
+/// plus how it was produced. `backend` / `seconds` are persisted on the
+/// transcript row and drive the latency logging (YV34 — this used to live in
+/// the deleted `asr` sidecar client).
+pub struct AsrOutput {
+    pub text: String,
+    pub backend: String,
+    pub seconds: f64,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
@@ -272,14 +290,19 @@ impl TranscriptionManager {
             .map_err(|e| format!("ASR model load task failed: {e}"))?
     }
 
-    /// Transcribe 16 kHz mono f32 samples with the warm engine.
+    /// Transcribe 16 kHz mono f32 samples with the warm engine. `language` is
+    /// the user's spoken-language ISO code, or `None` to autodetect.
     ///
     /// The engine is taken OUT of the mutex for the duration (no lock is held
     /// across the native call) and runs on its own thread so the wait can be
     /// bounded: on timeout this returns `Err` and abandons the engine — the
     /// worker thread owns it and drops it whenever it finally returns, so the
     /// next transcription simply reloads. It can never hang the caller.
-    pub fn transcribe(&self, samples_16k_mono: Vec<f32>) -> Result<String, String> {
+    pub fn transcribe(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+    ) -> Result<String, String> {
         self.touch();
         if samples_16k_mono.is_empty() {
             return Ok(String::new());
@@ -296,7 +319,7 @@ impl TranscriptionManager {
             // Panic containment: on unwind the engine is dropped instead of
             // returned, so a poisoned native session is never reused.
             let sent = match catch_unwind(AssertUnwindSafe(|| {
-                engine.engine.transcribe(&samples_16k_mono)
+                engine.engine.transcribe(&samples_16k_mono, language.as_deref())
             })) {
                 Ok(result) => (Some(engine), result),
                 Err(p) => (
@@ -384,10 +407,17 @@ mod tests {
         text: String,
         delay: Duration,
         panics: bool,
+        /// Language hint the manager handed to the engine on the last run.
+        seen_language: Arc<Mutex<Option<String>>>,
     }
 
     impl Transcriber for StubEngine {
-        fn transcribe(&mut self, _samples: &[f32]) -> Result<String, String> {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            language: Option<&str>,
+        ) -> Result<String, String> {
+            *self.seen_language.lock() = language.map(str::to_string);
             if self.panics {
                 panic!("stub engine exploded");
             }
@@ -407,11 +437,23 @@ mod tests {
     }
 
     fn stub_loader(text: &'static str, delay: Duration, panics: bool) -> EngineLoader {
+        stub_loader_recording(text, delay, panics, Arc::new(Mutex::new(None)))
+    }
+
+    /// Same stub, but the caller keeps the handle the engine records its
+    /// language hint into.
+    fn stub_loader_recording(
+        text: &'static str,
+        delay: Duration,
+        panics: bool,
+        seen_language: Arc<Mutex<Option<String>>>,
+    ) -> EngineLoader {
         Arc::new(move |_path: &Path| {
             Ok(Box::new(StubEngine {
                 text: text.to_string(),
                 delay,
                 panics,
+                seen_language: seen_language.clone(),
             }) as Box<dyn Transcriber>)
         })
     }
@@ -433,7 +475,7 @@ mod tests {
         assert!(!m.is_loaded());
         assert!(m.loaded_model().is_none());
         assert_eq!(
-            m.transcribe(vec![0.0; 16]).unwrap_err(),
+            m.transcribe(vec![0.0; 16], None).unwrap_err(),
             "no ASR model is loaded"
         );
         let s = m.status();
@@ -445,7 +487,7 @@ mod tests {
             .expect("load");
         assert!(m.is_loaded());
         assert_eq!(m.loaded_model().as_deref(), Some("stub/model"));
-        assert_eq!(m.transcribe(vec![0.1; 16]).unwrap(), "hello from the stub");
+        assert_eq!(m.transcribe(vec![0.1; 16], None).unwrap(), "hello from the stub");
         // Still warm after use — the engine is returned to the slot.
         assert!(m.is_loaded());
 
@@ -503,7 +545,7 @@ mod tests {
         );
         m.load("stub/model", &path).expect("load");
 
-        let err = m.transcribe(vec![0.2; 16]).unwrap_err();
+        let err = m.transcribe(vec![0.2; 16], None).unwrap_err();
         assert!(err.contains("panicked"), "unexpected error: {err}");
         // A panicked engine is never put back — the next use reloads.
         assert!(!m.is_loaded());
@@ -521,7 +563,7 @@ mod tests {
         m.load("stub/model", &path).expect("load");
 
         let started = std::time::Instant::now();
-        let err = m.transcribe(vec![0.3; 16]).unwrap_err();
+        let err = m.transcribe(vec![0.3; 16], None).unwrap_err();
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -542,15 +584,38 @@ mod tests {
             Duration::from_secs(5),
         );
         m.load("stub/model", &path).expect("load");
-        assert_eq!(m.transcribe(Vec::new()).unwrap(), "");
+        assert_eq!(m.transcribe(Vec::new(), None).unwrap(), "");
 
         // Using it across the idle window keeps it resident (each use touches
         // the idle timer), unlike the idle-unload test above.
         for _ in 0..6 {
             std::thread::sleep(Duration::from_millis(50));
-            assert_eq!(m.transcribe(vec![0.4; 8]).unwrap(), "warm");
+            assert_eq!(m.transcribe(vec![0.4; 8], None).unwrap(), "warm");
         }
         assert!(m.is_loaded(), "an actively used engine must stay warm");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// YV34: the "Language I speak" setting used to reach Whisper as the Python
+    /// sidecar's `--language`. With the sidecar gone it must reach the embedded
+    /// engine instead, or the picker silently stops doing anything.
+    #[test]
+    fn language_hint_reaches_the_engine() {
+        let path = stub_model_file("stub.gguf");
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let m = manager(
+            stub_loader_recording("hola", Duration::ZERO, false, seen.clone()),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        m.load("stub/model", &path).expect("load");
+
+        m.transcribe(vec![0.5; 16], Some("es".into())).expect("run");
+        assert_eq!(seen.lock().as_deref(), Some("es"));
+
+        // No selection stays on autodetect rather than forcing a language.
+        m.transcribe(vec![0.5; 16], None).expect("run");
+        assert_eq!(*seen.lock(), None);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

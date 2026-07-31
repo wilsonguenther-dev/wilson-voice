@@ -245,7 +245,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS transcripts (
               id TEXT PRIMARY KEY,
               text TEXT NOT NULL,
-              backend TEXT NOT NULL DEFAULT 'mlx',
+              backend TEXT NOT NULL DEFAULT 'native',
               asr_seconds REAL NOT NULL DEFAULT 0,
               word_count INTEGER NOT NULL DEFAULT 0,
               source_app TEXT,
@@ -608,8 +608,14 @@ impl Database {
     }
 
     /// Top-N dictionary terms by hit count, ordered so the MOST-frequent is LAST
-    /// (Whisper `initial_prompt` weights later tokens more heavily; the worker
-    /// also keeps the tail when it truncates to the token budget).
+    /// (a decoder prompt weights later tokens more heavily).
+    ///
+    /// YV34 removed its only caller with the Python sidecar: that was the
+    /// `initial_prompt` vocabulary bias, and the embedded engine exposes no
+    /// prompt hook yet. The query + its test are kept intact so wiring one up is
+    /// a one-line change rather than a re-implementation; `apply_dictionary`
+    /// (post-ASR substitution) is unaffected and still runs on every take.
+    #[allow(dead_code)]
     pub fn top_dictionary_terms(&self, limit: i64) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -1296,7 +1302,7 @@ mod tests {
         // Generate WAL frames, then checkpoint(TRUNCATE) → wal file shrinks to 0.
         db.insert_transcript(
             "hello world one two three".into(),
-            "mlx".into(),
+            "native".into(),
             1.0,
             2.0,
             100,
@@ -1325,7 +1331,7 @@ mod tests {
         let entry = db
             .insert_transcript_at(
                 "the report is done".into(),
-                "mlx".into(),
+                "native".into(),
                 1.0,
                 2.0,
                 100,
@@ -1345,7 +1351,7 @@ mod tests {
 
         // Default: with no raw supplied, raw_text mirrors the final text.
         let plain = db
-            .insert_transcript("plain text".into(), "mlx".into(), 1.0, 1.0, 0, None)
+            .insert_transcript("plain text".into(), "native".into(), 1.0, 1.0, 0, None)
             .unwrap();
         assert_eq!(plain.raw_text.as_deref(), Some("plain text"));
 
@@ -1363,7 +1369,7 @@ mod tests {
         // Create + populate, then close.
         {
             let db = Database::open(path.clone()).unwrap();
-            db.insert_transcript("keep this".into(), "mlx".into(), 1.0, 1.0, 10, None)
+            db.insert_transcript("keep this".into(), "native".into(), 1.0, 1.0, 10, None)
                 .unwrap();
         }
         // Reopening a VALID db must not quarantine it, and data must survive.
@@ -1470,9 +1476,9 @@ mod tests {
     #[test]
     fn total_words_and_sessions_are_exact() {
         let (db, dir) = fresh_db("total");
-        db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(2), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(1), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(2), "native".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(1), "native".into(), 0.5, 1.0, 0, None).unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.total_words, 6, "total words must sum every session");
         assert_eq!(ins.total_sessions, 3);
@@ -1484,11 +1490,11 @@ mod tests {
     fn wpm_is_speech_weighted_and_excludes_legacy_zero_rows() {
         let (db, dir) = fresh_db("wpm");
         // 30 words / 30s + 30 words / 30s = 60 words / 60s = exactly 60 WPM.
-        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
-        db.insert_transcript(words(30), "mlx".into(), 5.0, 30.0, 0, None).unwrap();
+        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None).unwrap();
+        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None).unwrap();
         // A legacy row with NO measured speech (speech_seconds = 0). It contributes
         // 100 words to total, but MUST NOT enter the WPM math (no speaking time).
-        db.insert_transcript(words(100), "mlx".into(), 9.0, 0.0, 0, None).unwrap();
+        db.insert_transcript(words(100), "native".into(), 9.0, 0.0, 0, None).unwrap();
 
         let ins = db.insights().unwrap();
         assert_eq!(ins.total_words, 160, "all words count toward the total");
@@ -1510,12 +1516,12 @@ mod tests {
     fn wpm_is_clamped_against_transient_fooled_short_speech() {
         let (db, dir) = fresh_db("wpmclamp");
         // Normal session: 60 words / 60s = 60 WPM.
-        db.insert_transcript(words(60), "mlx".into(), 5.0, 60.0, 0, None).unwrap();
+        db.insert_transcript(words(60), "native".into(), 5.0, 60.0, 0, None).unwrap();
         // Pathological: 200 words but only 0.3s "voiced" (a loud transient fooled
         // the VAD). Un-clamped this single session is 40,000 WPM and would drag the
         // pooled average to ~259. The word-count floor caps its speaking time at
         // 200/400*60 = 30s → pooled = 260 words / ((60+30)/60) min = 173.3 WPM.
-        db.insert_transcript(words(200), "mlx".into(), 3.0, 0.3, 0, None).unwrap();
+        db.insert_transcript(words(200), "native".into(), 3.0, 0.3, 0, None).unwrap();
 
         let ins = db.insights().unwrap();
         assert!(ins.avg_wpm <= 400.0 + 1e-6, "WPM must be capped, got {}", ins.avg_wpm);
@@ -1539,9 +1545,9 @@ mod tests {
         let (db, dir) = fresh_db("today");
         // Anchor the "today" row at local noon too, so an insert landing a
         // microsecond before local midnight can't race the day boundary.
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None)
+        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None)
             .unwrap();
-        db.insert_transcript_at(words(100), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None)
+        db.insert_transcript_at(words(100), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None)
             .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.words_today, 10, "words_today must exclude prior days");
@@ -1555,11 +1561,11 @@ mod tests {
     fn streak_counts_consecutive_days_including_today() {
         let (db, dir) = fresh_db("streak");
         for n in [0, 1, 2] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
+            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         // A gap, then an old day — must not extend the current streak.
-        db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None)
+        db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None)
             .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.streak_days, 3, "today + 2 prior consecutive days");
@@ -1573,7 +1579,7 @@ mod tests {
         let (db, dir) = fresh_db("grace");
         // Active yesterday/-2/-3 but NOT today → streak still counts (day not over).
         for n in [1, 2, 3] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
+            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         let ins = db.insights().unwrap();
@@ -1587,7 +1593,7 @@ mod tests {
         let (db, dir) = fresh_db("longest");
         // Current run of 2 (yesterday, -2), older run of 4 (-5..-8).
         for n in [1, 2, 5, 6, 7, 8] {
-            db.insert_transcript_at(words(5), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
+            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
                 .unwrap();
         }
         let ins = db.insights().unwrap();
@@ -1600,9 +1606,9 @@ mod tests {
     #[test]
     fn daily_series_is_contiguous_and_zero_filled() {
         let (db, dir) = fresh_db("series");
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None).unwrap();
-        db.insert_transcript_at(words(20), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None).unwrap();
-        db.insert_transcript_at(words(30), "mlx".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None).unwrap();
+        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None).unwrap();
+        db.insert_transcript_at(words(20), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None).unwrap();
+        db.insert_transcript_at(words(30), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None).unwrap();
 
         let s = db.daily_series(7).unwrap();
         assert_eq!(s.len(), 7, "series must have exactly one entry per requested day");
@@ -1649,9 +1655,9 @@ mod tests {
     fn monthly_series_rolls_up_and_zero_fills() {
         let (db, dir) = fresh_db("monthly");
         // this month, and 2 months back — 1 month back is intentionally left empty.
-        db.insert_transcript_at(words(10), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
-        db.insert_transcript_at(words(7), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
-        db.insert_transcript_at(words(40), "mlx".into(), 0.5, 2.0, 0, None, months_ago_15th(2), None).unwrap();
+        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
+        db.insert_transcript_at(words(7), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
+        db.insert_transcript_at(words(40), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(2), None).unwrap();
 
         let s = db.monthly_series(3).unwrap();
         assert_eq!(s.len(), 3, "one entry per requested month");
@@ -1675,8 +1681,8 @@ mod tests {
         let (db, dir) = fresh_db("delete");
 
         // History: delete one, then clear all.
-        let a = db.insert_transcript(words(3), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(4), "mlx".into(), 0.5, 1.0, 0, None).unwrap();
+        let a = db.insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None).unwrap();
         assert_eq!(db.list_transcripts(50, None).unwrap().len(), 2);
         db.delete_transcript(&a.id).unwrap();
         let after = db.list_transcripts(50, None).unwrap();
