@@ -98,6 +98,51 @@ pub fn catalog_model(model_id: &str) -> Option<&'static CatalogModel> {
     catalog().models.iter().find(|m| m.id == model_id)
 }
 
+/// The catalog's top recommendation (lowest `recommended_rank`) — the model a
+/// fresh install selects (YV31's `native_model` default).
+pub fn recommended_model() -> &'static CatalogModel {
+    catalog()
+        .models
+        .iter()
+        .filter(|m| m.recommended)
+        .min_by_key(|m| m.recommended_rank.unwrap_or(u32::MAX))
+        .or_else(|| catalog().models.first())
+        .expect("bundled catalog is never empty")
+}
+
+/// Where a model's default-quant file lives on disk, whether or not it exists.
+pub fn model_path(model: &CatalogModel) -> Option<PathBuf> {
+    model.default_file().map(|f| models_dir().join(&f.filename))
+}
+
+/// A model counts as downloaded when its default-quant file is present at the
+/// full expected size — the cheap check (the sha256 was already verified at
+/// download time, before the `.partial` was renamed into place).
+pub fn is_downloaded(model: &CatalogModel) -> bool {
+    let Some(file) = model.default_file() else {
+        return false;
+    };
+    std::fs::metadata(models_dir().join(&file.filename))
+        .map(|m| m.is_file() && m.len() == file.size_bytes)
+        .unwrap_or(false)
+}
+
+/// Remove a downloaded model's file and any interrupted `.partial` sibling.
+pub fn delete_downloaded(model: &CatalogModel) -> Result<(), String> {
+    let file = model
+        .default_file()
+        .ok_or_else(|| format!("catalog model '{}' lists no files", model.id))?;
+    let dest = models_dir().join(&file.filename);
+    let partial = partial_path(&dest);
+    if let Err(e) = std::fs::remove_file(&dest) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("delete {}: {e}", dest.display()));
+        }
+    }
+    let _ = std::fs::remove_file(partial);
+    Ok(())
+}
+
 /// Ordered download URLs for one file: Hugging Face `resolve/<sha>` first
 /// (immutable, CDN-friendly), then each mirror at the same pinned revision.
 pub fn download_urls(model: &CatalogModel, file: &ModelFile) -> Vec<String> {
@@ -409,6 +454,20 @@ mod tests {
         assert_eq!(ranks[0], Some(1));
         assert_eq!(ranks[1], Some(2));
         assert!(cat.models[2].id.contains("whisper-tiny"));
+    }
+
+    #[test]
+    fn recommended_model_is_rank_one_and_resolves_to_a_path() {
+        let m = recommended_model();
+        assert!(m.recommended, "the default selection must be recommended");
+        assert_eq!(m.recommended_rank, Some(1));
+        // The path a download lands at / the manager loads from.
+        let path = model_path(m).expect("recommended model resolves a file");
+        assert!(path.starts_with(models_dir()));
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            m.default_file().unwrap().filename
+        );
     }
 
     #[test]
