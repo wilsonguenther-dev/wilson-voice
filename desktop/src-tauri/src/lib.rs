@@ -39,9 +39,19 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
+/// YV41: the container-level `serde(default)` (backed by the `Default` impl
+/// below) means a field missing from settings.json falls back to its default
+/// instead of failing the whole load — a partial store can never reset a user's
+/// config. Individually *invalid* fields are handled by `salvage_settings`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
+    /// YV41 settings-schema marker for one-time forward migrations. Fresh
+    /// installs stamp the current version; a store written before the field
+    /// existed reads as version 0 (see `apply_settings_migrations`) and is
+    /// migrated + rewritten once.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub language: String,
     pub auto_paste: bool,
     pub hotkey_label: String,
@@ -100,6 +110,14 @@ pub struct AppSettings {
     pub native_model: String,
 }
 
+/// Current settings-schema version (YV41). Bump this ONLY together with a new
+/// arm in `apply_settings_migrations` that upgrades stores written at the
+/// previous version.
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CURRENT_SETTINGS_SCHEMA_VERSION
+}
 fn default_ptt_binding() -> String {
     "fn_control".into()
 }
@@ -127,6 +145,7 @@ fn default_native_model() -> String {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "fn⌃".into(),
@@ -807,9 +826,184 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 /// Write settings.json (the single on-disk copy every settings writer goes
 /// through — `save_settings` and the YV31 model commands).
 fn persist_settings(settings: &AppSettings) -> Result<(), String> {
-    let path = data_dir().join("settings.json");
-    let s = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, s).map_err(|e| e.to_string())
+    write_settings_file(&data_dir().join("settings.json"), settings)
+}
+
+/// YV41 durable settings write, split from `persist_settings` so it is testable
+/// against a temp dir. Two guarantees:
+///
+/// 1. **Merge forward.** The frontend round-trips the whole `AppSettings`
+///    object on every save, which silently drops any key this build does not
+///    know about (e.g. one written by a newer version before a downgrade). Keys
+///    already on disk that the serialized struct does not carry are re-added
+///    here, so a save can never delete another build's settings.
+/// 2. **Atomic.** The bytes land in a sibling `.tmp` file that is fsynced and
+///    then renamed over the target, so a crash or power loss mid-write leaves
+///    either the old file or the new one — never the truncated file that the
+///    loader would have to quarantine.
+fn write_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    if let (Some(next), Some(prev)) = (
+        value.as_object_mut(),
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .as_ref()
+            .and_then(|v| v.as_object().cloned()),
+    ) {
+        for (key, stored) in prev {
+            next.entry(key).or_insert(stored);
+        }
+    }
+    let s = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+
+    // Same directory as the target — rename is only atomic within a filesystem.
+    let tmp = path.with_extension("json.tmp");
+    let write_tmp = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(s.as_bytes())?;
+        f.sync_all()
+    };
+    if let Err(e) = write_tmp() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write {} failed: {e}", tmp.display()));
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename {} -> {} failed: {e}", tmp.display(), path.display())
+    })
+}
+
+/// YV41 startup read of settings.json. The old `from_str(..).ok().unwrap_or_default()`
+/// threw away EVERY setting — hotkey, model, companion tone, the onboarded flag —
+/// on any single unparseable field. The rules now:
+///
+/// * missing file → defaults (fresh install, nothing to rewrite);
+/// * whole-file garbage (not JSON, or not a JSON object) → defaults, with the
+///   corrupt file kept aside as `settings.json.bak` (never silently deleted);
+/// * one bad field → `salvage_settings` keeps every other stored field;
+/// * an older schema → `apply_settings_migrations` upgrades it and rewrites the
+///   file once, atomically.
+fn load_settings(path: &Path) -> AppSettings {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return AppSettings::default();
+    };
+    let stored: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v @ serde_json::Value::Object(_)) => v,
+        Ok(_) => {
+            quarantine_settings(path, "settings.json is not a JSON object");
+            return AppSettings::default();
+        }
+        Err(e) => {
+            quarantine_settings(path, &format!("settings.json is not valid JSON ({e})"));
+            return AppSettings::default();
+        }
+    };
+
+    let mut settings: AppSettings = match serde_json::from_value(stored.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("settings.json did not parse as a whole ({e}); salvaging field by field");
+            salvage_settings(&stored)
+        }
+    };
+
+    if apply_settings_migrations(&mut settings, &stored) {
+        match write_settings_file(path, &settings) {
+            Ok(()) => log::info!(
+                "settings migrated to schema v{CURRENT_SETTINGS_SCHEMA_VERSION} and rewritten"
+            ),
+            Err(e) => log::warn!("settings migration could not be persisted ({e})"),
+        }
+    }
+    settings
+}
+
+/// Move an unusable settings.json aside instead of overwriting it — the user's
+/// (or a support session's) only copy of what was on disk. Mirrors the DB's
+/// corrupt-file quarantine in `Database::open`.
+fn quarantine_settings(path: &Path, why: &str) {
+    let bak = path.with_extension("json.bak");
+    match std::fs::rename(path, &bak) {
+        Ok(()) => log::error!(
+            "{why}; kept the corrupt file at {} and starting from defaults",
+            bak.display()
+        ),
+        Err(e) => log::error!("{why}; could not keep a .bak copy ({e}); starting from defaults"),
+    }
+}
+
+/// Rebuild settings from a stored object that failed to deserialize as a whole.
+/// Every stored field that is individually valid is kept; only the broken values
+/// (a wrong type, or a value written by a newer build) fall back to their
+/// default. One bad field can therefore never reset the rest of the config.
+/// Ported from Handy's `salvage_settings` (their #1619).
+fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
+    let Some(stored_map) = stored.as_object() else {
+        log::warn!("stored settings are not a JSON object; falling back to defaults");
+        return AppSettings::default();
+    };
+
+    let mut merged = serde_json::to_value(AppSettings::default())
+        .expect("default settings serialize to a JSON object");
+
+    for (key, value) in stored_map {
+        let previous = merged
+            .as_object_mut()
+            .expect("merged settings stay an object")
+            .insert(key.clone(), value.clone());
+        if serde_json::from_value::<AppSettings>(merged.clone()).is_err() {
+            // Log the key only — values can carry dictated text or paths.
+            log::warn!("dropping invalid settings field '{key}', keeping its default");
+            let map = merged
+                .as_object_mut()
+                .expect("merged settings stay an object");
+            match previous {
+                Some(previous) => map.insert(key.clone(), previous),
+                None => map.remove(key),
+            };
+        }
+    }
+
+    serde_json::from_value(merged).unwrap_or_else(|e| {
+        log::warn!("failed to reassemble salvaged settings ({e}); falling back to defaults");
+        AppSettings::default()
+    })
+}
+
+/// One-time forward migrations for stores written by an older schema. Returns
+/// true when `settings` was changed and the file should be rewritten. Reads the
+/// version off the RAW stored value: a store written before the field existed
+/// has no `schemaVersion` key and is version 0, even though serde has already
+/// defaulted the struct field to the current version.
+///
+/// Must stay idempotent — it runs on every launch until the rewrite lands.
+fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json::Value) -> bool {
+    let stored_version = stored
+        .get("schemaVersion")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    if stored_version >= CURRENT_SETTINGS_SCHEMA_VERSION {
+        return false;
+    }
+
+    // v0 → v1: a pre-YV41 store can name a model the bundled catalog does not
+    // have — the retired Python-sidecar ids (YV34), or a newer catalog's model
+    // after a downgrade. An unknown id can never be downloaded or loaded, so the
+    // app would sit at "Model needed" forever with no way back; point it at the
+    // catalog's recommendation once.
+    if models::catalog_model(&settings.native_model).is_none() {
+        log::warn!(
+            "settings migration v{stored_version}→v{CURRENT_SETTINGS_SCHEMA_VERSION}: \
+             model '{}' is not in the bundled catalog; selecting the recommended model",
+            settings.native_model
+        );
+        settings.native_model = default_native_model();
+    }
+
+    settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
+    true
 }
 
 #[tauri::command]
@@ -1270,13 +1464,9 @@ pub fn run() {
     }
     let db = Arc::new(db);
 
-    let settings: AppSettings = {
-        let p = data_dir().join("settings.json");
-        std::fs::read_to_string(p)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    };
+    // YV41: never reset a whole config over one bad field — salvage what parses,
+    // quarantine a wholly corrupt file, migrate older schemas forward.
+    let settings: AppSettings = load_settings(&data_dir().join("settings.json"));
 
     let state = Arc::new(AppState {
         settings: PLMutex::new(settings),
@@ -1734,7 +1924,23 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{status_message, AppSettings};
+    use super::{
+        apply_settings_migrations, load_settings, salvage_settings, status_message,
+        write_settings_file, AppSettings, CURRENT_SETTINGS_SCHEMA_VERSION,
+    };
+
+    /// A fresh per-test directory (tests run in parallel — never share one).
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("yv41-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The defaults as they land on disk, as a mutable JSON object.
+    fn default_settings_json() -> serde_json::Value {
+        serde_json::to_value(AppSettings::default()).unwrap()
+    }
 
     // YV33: "Ready" is a claim about being able to transcribe. With no usable
     // model the status line must say a model is needed — the old rule ("a file
@@ -1832,5 +2038,219 @@ mod tests {
         assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
         let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
         assert_eq!(nback.native_model, "handy-computer/whisper-tiny-gguf");
+    }
+
+    // YV41: ONE unparseable field used to throw away the entire settings.json
+    // (hotkey, model, tone, the onboarded flag). Salvage keeps every field that
+    // is individually valid and defaults only the broken ones.
+    #[test]
+    fn salvage_keeps_every_valid_field_when_one_is_corrupt() {
+        let mut stored = default_settings_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("onboarded".into(), serde_json::json!(true));
+        map.insert("pttBinding".into(), serde_json::json!("fn"));
+        map.insert(
+            "nativeModel".into(),
+            serde_json::json!("handy-computer/whisper-tiny-gguf"),
+        );
+        map.insert(
+            "calibrationSample".into(),
+            serde_json::json!("the quick brown fox"),
+        );
+        // A value with the wrong type, and one a newer build could have written.
+        map.insert("denoise".into(), serde_json::json!("sometimes"));
+        map.insert("companionTone".into(), serde_json::json!(42));
+
+        // Precondition: this is exactly the whole-store parse failure that used
+        // to reset everything to defaults.
+        assert!(serde_json::from_value::<AppSettings>(stored.clone()).is_err());
+
+        let salvaged = salvage_settings(&stored);
+        assert!(salvaged.onboarded, "the onboarded flag must survive");
+        assert_eq!(salvaged.ptt_binding, "fn");
+        assert_eq!(salvaged.native_model, "handy-computer/whisper-tiny-gguf");
+        assert_eq!(
+            salvaged.calibration_sample.as_deref(),
+            Some("the quick brown fox")
+        );
+        // Only the two broken fields fall back.
+        assert!(salvaged.denoise);
+        assert_eq!(salvaged.companion_tone, "friendly");
+    }
+
+    // A key this build has never heard of (written by a newer version) is
+    // ignored, not treated as corruption.
+    #[test]
+    fn salvage_tolerates_unknown_keys() {
+        let mut stored = default_settings_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert(
+            "fieldFromTheFuture".into(),
+            serde_json::json!({ "nested": true }),
+        );
+        map.insert("language".into(), serde_json::json!("fr"));
+        map.insert("cleanupLevel".into(), serde_json::json!(7));
+
+        let salvaged = salvage_settings(&stored);
+        assert_eq!(salvaged.language, "fr");
+        assert_eq!(salvaged.cleanup_level, "light");
+    }
+
+    // End-to-end through the file: one bad field, everything else survives, and
+    // the good file is NOT quarantined.
+    #[test]
+    fn load_settings_salvages_one_bad_field_instead_of_resetting_everything() {
+        let dir = temp_dir("salvage");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "schemaVersion": 1,
+                "language": "en",
+                "autoPaste": true,
+                "hotkeyLabel": "fn",
+                "showFloatingPill": true,
+                "pttBinding": "fn",
+                "onboarded": true,
+                "nativeModel": "handy-computer/whisper-tiny-gguf",
+                "cleanupLevel": ["high"]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+        assert!(loaded.onboarded);
+        assert_eq!(loaded.ptt_binding, "fn");
+        assert_eq!(loaded.native_model, "handy-computer/whisper-tiny-gguf");
+        assert_eq!(loaded.cleanup_level, "light", "only the bad field defaults");
+        assert!(path.exists(), "a salvageable file is not quarantined");
+        assert!(!dir.join("settings.json.bak").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A wholly corrupt file (truncated by a crash mid-write, or not even an
+    // object) falls back to defaults, but is KEPT as .bak — never deleted.
+    #[test]
+    fn load_settings_quarantines_a_corrupt_file_as_bak() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("settings.json");
+        let bak = dir.join("settings.json.bak");
+
+        for garbage in [r#"{"language": "en", "autoPas"#, r#""not an object""#] {
+            let _ = std::fs::remove_file(&bak);
+            std::fs::write(&path, garbage).unwrap();
+
+            let loaded = load_settings(&path);
+            assert_eq!(
+                serde_json::to_value(&loaded).unwrap(),
+                default_settings_json(),
+                "corrupt store falls back to defaults"
+            );
+            assert!(!path.exists(), "the corrupt file is moved aside");
+            assert_eq!(
+                std::fs::read_to_string(&bak).unwrap(),
+                garbage,
+                "the corrupt bytes are kept verbatim for recovery"
+            );
+        }
+
+        // Missing file (fresh install) is not an error and leaves no .bak.
+        let _ = std::fs::remove_file(&bak);
+        assert!(!load_settings(&path).onboarded);
+        assert!(!bak.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The write is atomic (temp file + rename in the same dir, no leftovers) and
+    // merges unknown keys forward, so a save from a build that does not know a
+    // field cannot delete it.
+    #[test]
+    fn settings_write_is_atomic_and_merges_unknown_keys_forward() {
+        let dir = temp_dir("write");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"language": "de", "fieldFromTheFuture": {"nested": true}}"#,
+        )
+        .unwrap();
+
+        let mut settings = AppSettings::default();
+        settings.language = "en".into();
+        settings.onboarded = true;
+        write_settings_file(&path, &settings).expect("atomic write");
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["language"], serde_json::json!("en"));
+        assert_eq!(on_disk["onboarded"], serde_json::json!(true));
+        assert_eq!(
+            on_disk["fieldFromTheFuture"],
+            serde_json::json!({ "nested": true }),
+            "a key this build does not know must survive the save"
+        );
+        assert!(
+            !dir.join("settings.json.tmp").exists(),
+            "the temp file is renamed into place, not left behind"
+        );
+        assert_eq!(load_settings(&path).language, "en");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // YV41 schema versioning: a store written before the field existed is
+    // version 0, gets migrated + rewritten ONCE, and is left alone afterwards.
+    #[test]
+    fn schema_version_migration_runs_once_then_stops() {
+        let dir = temp_dir("migrate");
+        let path = dir.join("settings.json");
+        // A pre-YV41 store naming the retired Python-sidecar model id.
+        std::fs::write(
+            &path,
+            r#"{
+                "language": "en",
+                "autoPaste": true,
+                "hotkeyLabel": "fn⌃",
+                "showFloatingPill": true,
+                "onboarded": true,
+                "nativeModel": "whisper-large-v3-turbo"
+            }"#,
+        )
+        .unwrap();
+
+        let migrated = load_settings(&path);
+        assert_eq!(migrated.schema_version, CURRENT_SETTINGS_SCHEMA_VERSION);
+        assert!(migrated.onboarded, "migration keeps the user's config");
+        assert_eq!(
+            migrated.native_model,
+            super::default_native_model(),
+            "a model the bundled catalog does not have is reset once"
+        );
+
+        // The rewrite landed, so the next launch is a no-op.
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            stored["schemaVersion"],
+            serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
+        );
+        let mut again: AppSettings = serde_json::from_value(stored.clone()).unwrap();
+        assert!(
+            !apply_settings_migrations(&mut again, &stored),
+            "a current-schema store must not be rewritten on every read"
+        );
+
+        // A version-0 store whose model IS in the catalog keeps its selection —
+        // the migration only touches what it cannot resolve.
+        let keeps = serde_json::json!({
+            "language": "en",
+            "nativeModel": "handy-computer/whisper-tiny-gguf",
+        });
+        let mut settings: AppSettings = serde_json::from_value(keeps.clone()).unwrap();
+        assert!(apply_settings_migrations(&mut settings, &keeps));
+        assert_eq!(settings.native_model, "handy-computer/whisper-tiny-gguf");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

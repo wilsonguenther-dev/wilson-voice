@@ -86,9 +86,14 @@ fn run_transcribe(wav: &Path) -> Result<String, String> {
 
 /// The selected `native_model` from the app's settings, if any is written yet.
 fn selected_model() -> Option<&'static models::CatalogModel> {
-    let raw = std::fs::read_to_string(crate::data_dir().join("settings.json")).ok()?;
-    let settings: crate::AppSettings = serde_json::from_str(&raw).ok()?;
-    models::catalog_model(&settings.native_model)
+    let path = crate::data_dir().join("settings.json");
+    if !path.exists() {
+        return None;
+    }
+    // YV41: go through the salvaging loader — a headless run must honour the
+    // same selection the app shows, instead of ignoring a whole settings file
+    // over one field it cannot parse.
+    models::catalog_model(&crate::load_settings(&path).native_model)
 }
 
 /// Resolve a usable model file: the selection when it's on disk, else the

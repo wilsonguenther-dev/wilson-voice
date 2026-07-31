@@ -34,6 +34,12 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 ];
 
 interface AppSettings {
+  /**
+   * Settings-schema marker (backend `schema_version`, YV41). The UI never sets
+   * it — it is read off get_settings and spread straight back on save so the
+   * backend's migration state round-trips untouched.
+   */
+  schemaVersion?: number;
   language: string;
   autoPaste: boolean;
   hotkeyLabel: string;
