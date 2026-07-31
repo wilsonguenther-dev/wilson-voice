@@ -1,6 +1,6 @@
 [package]
 name = "wilson-voice"
-version = "0.5.5"
+version = "0.6.0"
 description = "Wilson Voice — local dictation desktop app (Wispr Flow alternative)"
 authors = ["Wilson Guenther"]
 edition = "2021"

@@ -208,6 +208,10 @@ function StatusDot({ ok }: { ok: boolean }) {
 
 export default function App() {
   const [nav, setNav] = useState<Nav>("home");
+  const [userName, setUserName] = useState("");
+  useEffect(() => {
+    invoke<string>("user_display_name").then(setUserName).catch(() => {});
+  }, []);
   // YV27 — which Settings sub-panel is showing (segmented sub-nav).
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("companion");
   const [status, setStatus] = useState<AppStatus>({
@@ -692,7 +696,7 @@ export default function App() {
           </div>
           <div>
             <div className="brand-name">Yap</div>
-            <div className="brand-tag">v0.5.5 · local · private</div>
+            <div className="brand-tag">v0.6.0 · local · private</div>
           </div>
         </div>
 
@@ -742,7 +746,7 @@ export default function App() {
         <header className="main-head">
           <div>
             <h1>
-              {nav === "home" && "Welcome back, Wilson"}
+              {nav === "home" && (userName ? `Welcome back, ${userName}` : "Welcome back")}
               {nav === "permissions" && "Permissions"}
               {nav === "insights" && "Insights"}
               {nav === "dictionary" && "Dictionary"}

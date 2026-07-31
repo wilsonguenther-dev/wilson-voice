@@ -1169,6 +1169,22 @@ fn open_db_graceful(db_path: std::path::PathBuf) -> Database {
     }
 }
 
+
+/// First name of the macOS account (`id -F` full name), for UI greetings.
+/// Empty string when unavailable — the UI must not assume a name exists.
+#[tauri::command]
+fn user_display_name() -> String {
+    std::process::Command::new("id")
+        .arg("-F")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .and_then(|full| full.split_whitespace().next().map(str::to_string))
+        .unwrap_or_default()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // YV32 headless mode (`--transcribe-file <wav>`): transcribe with the
@@ -1276,6 +1292,7 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            user_display_name,
             get_settings,
             save_settings,
             get_history,
@@ -1600,7 +1617,7 @@ pub fn run() {
                 });
             });
 
-            log::info!("Wilson Voice v0.5.5 — NSPanel Dictate island (tauri-nspanel)");
+            log::info!("Yap v0.6.0 — NSPanel Dictate island (tauri-nspanel)");
             Ok(())
         })
         .build(tauri::generate_context!())
