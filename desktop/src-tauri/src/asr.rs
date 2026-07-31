@@ -22,6 +22,19 @@ const TRANSCRIBE_TIMEOUT_SECS: u64 = 30;
 const PRELOAD_TIMEOUT_SECS: u64 = 900;
 const CONTROL_TIMEOUT_SECS: u64 = 15; // ping / status / unknown
 
+/// Hard ceiling on the cold one-shot fallback (YV32). `Command::output()` has
+/// NO timeout, so a first-run mlx_whisper model download (~1.6 GB) inside the
+/// transcribe call used to hang the whole take forever with the UI stuck on
+/// "Transcribing…". Generous — a cold spawn genuinely includes a model load —
+/// but bounded, so the pipeline always returns.
+const ONESHOT_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long we wait to reap a killed child before giving up on it. Killing is
+/// normally instant; a process wedged in an uninterruptible syscall must not
+/// block the daemon lock holder.
+const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll step for the bounded child waits above.
+const CHILD_POLL: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Deserialize)]
 pub struct AsrResult {
     pub ok: bool,
@@ -138,6 +151,81 @@ fn hf_hub_has_snapshot(hub: &Path) -> bool {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().starts_with("models--"))
         .any(|e| snapshots_populated(&e.path().join("snapshots")))
+}
+
+/// Kill a child and reap it without blocking forever (YV32). Every `wait()` on
+/// the ASR path goes through here so a wedged worker can't stall the caller; if
+/// the reap doesn't land inside [`REAP_TIMEOUT`] we log and move on (the process
+/// is already killed; the OS cleans it up).
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + REAP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            log::warn!("ASR child pid={} did not reap in time", child.id());
+            return;
+        }
+        thread::sleep(CHILD_POLL);
+    }
+}
+
+/// `Command::output()` with a hard deadline (YV32). Streams stdout/stderr on
+/// reader threads (so a full pipe buffer can never deadlock the wait) and polls
+/// for exit until `timeout`, killing the child and erroring out instead of
+/// hanging the pipeline.
+fn output_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn ASR worker: {e}"))?;
+    let mut stdout = child.stdout.take().map(drain_pipe);
+    let mut stderr = child.stderr.take().map(drain_pipe);
+
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => return Err(format!("ASR worker wait failed: {e}")),
+        }
+        if std::time::Instant::now() >= deadline {
+            kill_and_reap(&mut child);
+            return Err(format!("ASR worker timed out after {}s", timeout.as_secs()));
+        }
+        thread::sleep(CHILD_POLL);
+    };
+    // The child is gone, so both pipes are at EOF — these joins return at once.
+    let stdout = stdout
+        .take()
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr
+        .take()
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Read a child pipe to EOF on its own thread (see [`output_with_timeout`]).
+fn drain_pipe<R: std::io::Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    })
 }
 
 fn spawn_daemon(python: &Path, worker: &Path, model: Option<&str>) -> Result<WarmDaemon, String> {
@@ -278,8 +366,7 @@ where
     if need_spawn {
         if let Some(mut old) = guard.take() {
             let _ = old.stdin.write_all(b"{\"cmd\":\"quit\"}\n");
-            let _ = old.child.kill();
-            let _ = old.child.wait();
+            kill_and_reap(&mut old.child);
         }
         *guard = Some(spawn_daemon(python, worker, model)?);
     }
@@ -291,8 +378,7 @@ where
             // Kill broken daemon so next call respawns
             log::warn!("daemon request failed, resetting: {e}");
             if let Some(mut old) = guard.take() {
-                let _ = old.child.kill();
-                let _ = old.child.wait();
+                kill_and_reap(&mut old.child);
             }
             Err(e)
         }
@@ -396,9 +482,8 @@ fn run_asr_oneshot(
         .arg("--language")
         .arg(language);
     apply_env(&mut cmd, &home, Some(model));
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to spawn ASR worker: {e}"))?;
+    // YV32: bounded — never `Command::output()` on the ASR path (see ONESHOT_TIMEOUT).
+    let output = output_with_timeout(&mut cmd, ONESHOT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let line = stdout
@@ -419,6 +504,28 @@ fn run_asr_oneshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_output_captures_and_kills_on_timeout() {
+        // Normal completion: stdout is captured, exit status preserved.
+        let mut ok = Command::new("/bin/sh");
+        ok.arg("-c").arg("printf 'hello yv32'");
+        let out = output_with_timeout(&mut ok, Duration::from_secs(30)).expect("child runs");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello yv32");
+
+        // A hung child is killed at the deadline instead of blocking forever.
+        let mut hang = Command::new("/bin/sh");
+        hang.arg("-c").arg("sleep 60");
+        let started = std::time::Instant::now();
+        let err = output_with_timeout(&mut hang, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "must return on its own timeout, took {:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn repo_dir_maps_slashes() {

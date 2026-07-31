@@ -1,10 +1,10 @@
 //! Embedded ASR engine (YV30) — transcribe-cpp (GGUF/ggml native inference).
 //!
 //! Same crate + version Handy ships: `transcribe-cpp 0.1.3`, built with the
-//! Metal backend on macOS (see Cargo.toml target table). This module is the
-//! foundation only — it exposes `load()` / `transcribe()` and nothing else;
-//! wiring it into the dictation pipeline (replacing the Python sidecar) is a
-//! later item, so the pub API is intentionally unreferenced for now.
+//! Metal backend on macOS (see Cargo.toml target table). It exposes `load()` /
+//! `transcribe()` and nothing else; the warm lifecycle around it lives in
+//! `transcription`, which YV32 wired into the dictation pipeline as the primary
+//! path (the Python sidecar is now the fallback).
 #![allow(dead_code)]
 
 use std::path::Path;
