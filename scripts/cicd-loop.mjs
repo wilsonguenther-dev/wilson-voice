@@ -142,7 +142,8 @@ try { A = typeof args === 'string' ? JSON.parse(args) : (args || {}); } catch (e
 const runLabel = A.runLabel || 'yap';
 const batch = Array.isArray(A.batch) && A.batch.length ? A.batch : (BATCHES[runLabel] || BATCHES.yap);
 
-const GUARD = `HARD RULES: implement ONLY this one item — no scope creep, no unrelated refactors, no stubs/mock data, targeted minimal diffs matching surrounding style. Repo: ${REPO}. Trunk is main. Use the authenticated gh CLI (account wilsonguenther-dev). Never edit main directly. If you cannot make the LOCAL gate pass, STOP and report opened=false — do NOT open a broken PR.`;
+const GUARD = `HARD RULES: implement ONLY this one item — no scope creep, no unrelated refactors, no stubs/mock data, targeted minimal diffs matching surrounding style. Repo: ${REPO}. Trunk is main. Use the authenticated gh CLI (account wilsonguenther-dev). Never edit main directly. If you cannot make the LOCAL gate pass, STOP and report opened=false — do NOT open a broken PR.
+SCREENSHOT RULE (Wilson standard): if the change affects anything USER-VISIBLE (desktop/src UI, the pill, onboarding, site/), capture screenshot(s) of the rendered result — for React views run the vite dev server and screenshot with Playwright (npx playwright screenshot or a tiny script); for site/ screenshot the built page. Save small PNGs under docs/pr-screenshots/<ITEM-ID>/ ON THE BRANCH, and embed them in the PR body via their raw.githubusercontent branch URL with one annotation line each ("what changed here"). Pure-Rust/no-UI changes skip this.`;
 
 function buildPrompt(item) {
   const branch = 'fix/' + item.id.toLowerCase();
