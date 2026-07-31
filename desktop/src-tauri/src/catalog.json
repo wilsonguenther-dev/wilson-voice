@@ -1,0 +1,329 @@
+{
+ "catalog_version": 2,
+ "generated_at": "2026-07-23T10:15:59+00:00",
+ "mirrors": [
+  "https://blob.handy.computer"
+ ],
+ "models": [
+  {
+   "id": "handy-computer/parakeet-unified-en-0.6b-gguf",
+   "revision": "7e948f21b7bdbac698d3318db9d350f1096f3b6c",
+   "slug": "parakeet-unified-en-0.6b",
+   "name": "Parakeet Unified EN 0.6B",
+   "architecture": "parakeet",
+   "family": "parakeet",
+   "parameters": "0.6B",
+   "description": "Fast, accurate live English transcription",
+   "base_model": "nvidia/parakeet-unified-en-0.6b",
+   "license": "cc-by-4.0",
+   "language_count": 1,
+   "languages": [
+    "en"
+   ],
+   "capabilities": {
+    "streaming": true,
+    "translate": false,
+    "lang_detect": false,
+    "timestamps": "token"
+   },
+   "speed_score": 79,
+   "accuracy_score": 90,
+   "files": [
+    {
+     "filename": "parakeet-unified-en-0.6b-Q4_K_M.gguf",
+     "quant": "Q4_K_M",
+     "size_bytes": 477274496,
+     "sha256": "a8bf3de2b393bd14ead5a858c3748d5e3b07a20fdeabdd3b498fba4f463fa929"
+    },
+    {
+     "filename": "parakeet-unified-en-0.6b-Q5_K_M.gguf",
+     "quant": "Q5_K_M",
+     "size_bytes": 540795264,
+     "sha256": "f9def6f9b4e83ab7d006df3e1b676dfa1f973a3b6da232a9c99fcaa66bcd2836"
+    },
+    {
+     "filename": "parakeet-unified-en-0.6b-Q6_K.gguf",
+     "quant": "Q6_K",
+     "size_bytes": 602191232,
+     "sha256": "912c42ec3fd1afa31b7eda45684577feadf413249ca767fa912a89c4810e38d0"
+    },
+    {
+     "filename": "parakeet-unified-en-0.6b-Q8_0.gguf",
+     "quant": "Q8_0",
+     "size_bytes": 731357568,
+     "sha256": "4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795"
+    },
+    {
+     "filename": "parakeet-unified-en-0.6b-F16.gguf",
+     "quant": "F16",
+     "size_bytes": 1239114240,
+     "sha256": "4a284b229bff9dc66aa00666fdcc2419c0f82a5adb5a36f7a48a4e0713c35492"
+    },
+    {
+     "filename": "parakeet-unified-en-0.6b-F32.gguf",
+     "quant": "F32",
+     "size_bytes": 2473323520,
+     "sha256": "81d3a8c7676324a4dae977dac0f5900dc1468755fdf3b5369261bb759f17fdf3"
+    }
+   ],
+   "default_quant": "Q8_0",
+   "recommended": true,
+   "recommended_rank": 1
+  },
+  {
+   "id": "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf",
+   "revision": "6d44e540bc31b0de1dbe174a3cea87f53a7f22fb",
+   "slug": "nemotron-3.5-asr-streaming-0.6b",
+   "name": "Nemotron Streaming 3.5",
+   "architecture": "parakeet",
+   "family": "nemotron",
+   "parameters": "0.6B",
+   "description": "Live multilingual transcription across 28 languages",
+   "base_model": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+   "license": "other",
+   "language_count": 28,
+   "languages": [
+    "en",
+    "es",
+    "fr",
+    "it",
+    "pt",
+    "nl",
+    "de",
+    "tr",
+    "ru",
+    "ar",
+    "hi",
+    "ja",
+    "ko",
+    "vi",
+    "uk",
+    "pl",
+    "sv",
+    "cs",
+    "nb",
+    "da",
+    "bg",
+    "fi",
+    "hr",
+    "sk",
+    "zh",
+    "hu",
+    "ro",
+    "et"
+   ],
+   "capabilities": {
+    "streaming": true,
+    "translate": false,
+    "lang_detect": true,
+    "timestamps": "token"
+   },
+   "speed_score": 84,
+   "accuracy_score": 82,
+   "files": [
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+     "quant": "Q4_K_M",
+     "size_bytes": 495831520,
+     "sha256": "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd"
+    },
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf",
+     "quant": "Q5_K_M",
+     "size_bytes": 559647200,
+     "sha256": "86429e8c4f7fdcf9b3312269ad1ca6669478ba7805331c4aea7a2e33e9910d65"
+    },
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-Q6_K.gguf",
+     "quant": "Q6_K",
+     "size_bytes": 621356512,
+     "sha256": "4ff802c6207c4a7df23242003fd2aa849a1ab02bba6bc80c3db02e7e82606c28"
+    },
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
+     "quant": "Q8_0",
+     "size_bytes": 751094240,
+     "sha256": "b94545b313b3223fda7b2857a52681da813935c2127643d1e9ff0c23d988089c"
+    },
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-F16.gguf",
+     "quant": "F16",
+     "size_bytes": 1277750240,
+     "sha256": "f21a0cea64d232981def7f8f2b7ab322459703a2e89359962c042c57159755b1"
+    },
+    {
+     "filename": "nemotron-3.5-asr-streaming-0.6b-F32.gguf",
+     "quant": "F32",
+     "size_bytes": 2552277984,
+     "sha256": "fbbc82e8e1084301a670fbc4d79c69c0c8980da506352fd83e74a182f38f5b78"
+    }
+   ],
+   "default_quant": "Q8_0",
+   "recommended": true,
+   "recommended_rank": 2
+  },
+  {
+   "id": "handy-computer/whisper-tiny-gguf",
+   "revision": "6687f30c99641ee265df421e582354adbc8848fc",
+   "slug": "whisper-tiny",
+   "name": "Whisper Tiny",
+   "architecture": "whisper",
+   "family": "whisper",
+   "parameters": "38M",
+   "description": "99-language speech-to-text with translation, auto language detection, segment-level timestamps.",
+   "base_model": "openai/whisper-tiny",
+   "license": "apache-2.0",
+   "language_count": 99,
+   "languages": [
+    "en",
+    "zh",
+    "de",
+    "es",
+    "ru",
+    "ko",
+    "fr",
+    "ja",
+    "pt",
+    "tr",
+    "pl",
+    "ca",
+    "nl",
+    "ar",
+    "sv",
+    "it",
+    "id",
+    "hi",
+    "fi",
+    "vi",
+    "he",
+    "uk",
+    "el",
+    "ms",
+    "cs",
+    "ro",
+    "da",
+    "hu",
+    "ta",
+    "no",
+    "th",
+    "ur",
+    "hr",
+    "bg",
+    "lt",
+    "la",
+    "mi",
+    "ml",
+    "cy",
+    "sk",
+    "te",
+    "fa",
+    "lv",
+    "bn",
+    "sr",
+    "az",
+    "sl",
+    "kn",
+    "et",
+    "mk",
+    "br",
+    "eu",
+    "is",
+    "hy",
+    "ne",
+    "mn",
+    "bs",
+    "kk",
+    "sq",
+    "sw",
+    "gl",
+    "mr",
+    "pa",
+    "si",
+    "km",
+    "sn",
+    "yo",
+    "so",
+    "af",
+    "oc",
+    "ka",
+    "be",
+    "tg",
+    "sd",
+    "gu",
+    "am",
+    "yi",
+    "lo",
+    "uz",
+    "fo",
+    "ht",
+    "ps",
+    "tk",
+    "nn",
+    "mt",
+    "sa",
+    "lb",
+    "my",
+    "bo",
+    "tl",
+    "mg",
+    "as",
+    "tt",
+    "haw",
+    "ln",
+    "ha",
+    "ba",
+    "jw",
+    "su"
+   ],
+   "capabilities": {
+    "streaming": false,
+    "translate": true,
+    "lang_detect": true,
+    "timestamps": "segment"
+   },
+   "speed_score": 100,
+   "accuracy_score": 61,
+   "files": [
+    {
+     "filename": "whisper-tiny-Q4_K_M.gguf",
+     "quant": "Q4_K_M",
+     "size_bytes": 43621792,
+     "sha256": "86e1100470df173fa9079f941e33e4d52d11c03923407dd1ec51fd1937d8e609"
+    },
+    {
+     "filename": "whisper-tiny-Q5_K_M.gguf",
+     "quant": "Q5_K_M",
+     "size_bytes": 44211616,
+     "sha256": "72cfa8ee436a635a5b6fb373cc056a828b9efe96d32d6eb8769ed3cc5b429719"
+    },
+    {
+     "filename": "whisper-tiny-Q6_K.gguf",
+     "quant": "Q6_K",
+     "size_bytes": 44838304,
+     "sha256": "e23e79dbc42e90171e050b0e7da00f07e41343547ef09d86588324b3c5672413"
+    },
+    {
+     "filename": "whisper-tiny-Q8_0.gguf",
+     "quant": "Q8_0",
+     "size_bytes": 45981088,
+     "sha256": "325b9c7997cd1eff81ef709d55766565e71be696130cc3a3d444713798706834"
+    },
+    {
+     "filename": "whisper-tiny-F16.gguf",
+     "quant": "F16",
+     "size_bytes": 80135360,
+     "sha256": "5b44043278b47d3b6e56fb16c6bc5bb0aa16f2e69086f4d67175ed0a30d6a987"
+    },
+    {
+     "filename": "whisper-tiny-F32.gguf",
+     "quant": "F32",
+     "size_bytes": 152997824,
+     "sha256": "f5e0ecdd9967173fdede25ceb7e5159b3294f05b8dc0c87b0876fccd36f18982"
+    }
+   ],
+   "default_quant": "Q8_0",
+   "recommended": false,
+   "recommended_rank": null
+  }
+ ]
+}
