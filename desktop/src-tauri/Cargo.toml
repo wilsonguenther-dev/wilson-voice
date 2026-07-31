@@ -36,12 +36,16 @@ hound = "3.5.1"
 # over the captured clip before the 16 kHz downsample (YV12). default-features
 # off drops its optional hdf5/ndarray/train tooling; we only need DenoiseState.
 nnnoiseless = { version = "0.5.2", default-features = false }
-# Silero VAD (YV29) voice isolation — pure-Rust ONNX inference via tract (no
-# native onnxruntime/ort dylib, so it links cleanly into the app + CI). The small
-# Silero VAD onnx model is loaded from Application Support (downloaded once from a
-# direct URL, then OFFLINE — never HuggingFace); a missing/broken model falls back
-# safely to the energy-VAD path so an utterance is never lost.
-tract-onnx = "0.21"
+# Silero VAD (YV36) voice isolation — the same crate + pinned fork Handy ships.
+# It runs Silero v4 through `ort` (onnxruntime, statically linked — nothing to
+# install) and is loaded ONCE at startup into a warm VAD held by the app state.
+# It replaces the YV29 pure-Rust ONNX interpreter, which could never even
+# analyse the Silero v5 graph ("Failed analyse for node #5 If_0") and re-loaded
+# + re-failed on EVERY dictation (see src/vad.rs for the full history and the
+# fallback rules). The model is cached under Application Support (once from
+# a direct URL, then OFFLINE — never HuggingFace); a missing/broken model falls
+# back safely to the energy-VAD path so an utterance is never lost.
+vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
 # Embedded ASR engine (YV30) — same crate + version Handy ships for GGUF/ggml
 # native inference. Base dep is static CPU-only (no features); the macOS target

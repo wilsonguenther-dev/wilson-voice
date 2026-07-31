@@ -20,6 +20,7 @@ mod ptt_macos;
 mod record;
 mod sysaudio;
 mod transcription;
+mod vad;
 
 use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
@@ -182,6 +183,12 @@ struct AppState {
     tray_dictation: PLMutex<Option<MenuItem<Wry>>>,
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
+    /// Warm Silero VAD (YV36) — loaded ONCE from disk during startup (see the
+    /// background thread in `run()`) and reused by every dictation, instead of
+    /// re-loading + re-failing an ONNX graph on each clip. `None` until the
+    /// model asset is on disk (or forever, if the download/load fails), which
+    /// is the explicit energy-VAD fallback.
+    vad: PLMutex<Option<Arc<vad::WarmVad>>>,
     /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
     /// and its idle-unload watcher; backs the model-management commands. Since
     /// YV34 it is the app's ONLY transcriber (see `stop_and_transcribe`).
@@ -546,18 +553,17 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
         let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
-            // YV29 voice isolation — hand `stop_recording` the cached Silero VAD
-            // model (gated behind the `denoise` setting) ONLY when it already
-            // exists on disk. We never download on the hot path; the one-time
-            // fetch runs in a startup background thread (see setup). A missing
-            // model → None → the energy-VAD path, so an utterance is never lost.
-            let iso_model = if settings.denoise {
-                let p = record::silero_model_path(&data_dir());
-                p.exists().then_some(p)
+            // YV36 voice isolation — borrow the WARM Silero VAD built once at
+            // startup (gated behind the `denoise` setting). Nothing is loaded,
+            // downloaded or analysed on the hot path; `None` (model still
+            // downloading, load failed, or denoise off) → the energy-VAD path,
+            // so an utterance is never lost.
+            let iso_vad = if settings.denoise {
+                state2.vad.lock().clone()
             } else {
                 None
             };
-            let rec = record::stop_recording(active, iso_model)?;
+            let rec = record::stop_recording(active, iso_vad.as_deref())?;
             // YV20/M3: from here on the wav is deleted on ANY exit (success, the
             // gates below, or the ASR/DB `?` failures) — never leaked on error.
             let _wav_cleanup = WavCleanup(rec.wav_path.clone());
@@ -1210,16 +1216,6 @@ pub fn run() {
         log::info!("startup: swept {swept} stale voice wav(s) from recordings dir");
     }
 
-    // YV29: fetch the Silero VAD model ONCE in the background (never HuggingFace —
-    // a direct URL, cached under Application Support, then OFFLINE forever). Off
-    // the hot path so it never delays a dictation; the capture pipeline only uses
-    // the model if it's already on disk and falls back to the energy VAD if not.
-    std::thread::spawn(|| {
-        if let Some(p) = record::ensure_silero_model(&data_dir()) {
-            log::info!("startup: silero VAD model ready at {}", p.display());
-        }
-    });
-
     let db_path = data_dir().join("wilson_voice.db");
     let db = open_db_graceful(db_path);
     let legacy = data_dir().join("history").join("transcripts.json");
@@ -1251,8 +1247,32 @@ pub fn run() {
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
+        vad: PLMutex::new(None),
         transcription: transcription::TranscriptionManager::new(),
     });
+
+    // YV36: fetch the Silero v4 VAD model ONCE in the background (never
+    // HuggingFace — a direct URL, sha256-checked, cached under Application
+    // Support, then OFFLINE forever), then build the WARM VAD once and park it
+    // in the app state. Both steps are off the hot path so they never delay a
+    // dictation, and a failure at either step simply leaves `state.vad` as
+    // `None` → the capture pipeline stays on the energy VAD.
+    {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            let Some(path) = vad::ensure_model(&data_dir()) else {
+                log::warn!("startup: no silero VAD model — energy VAD only");
+                return;
+            };
+            match vad::WarmVad::load(&path) {
+                Ok(warm) => {
+                    *state.vad.lock() = Some(Arc::new(warm));
+                    log::info!("startup: warm silero VAD loaded from {}", path.display());
+                }
+                Err(e) => log::warn!("startup: silero VAD load failed, energy VAD only: {e}"),
+            }
+        });
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
