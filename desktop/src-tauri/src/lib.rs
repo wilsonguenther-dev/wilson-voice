@@ -369,7 +369,10 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     // Do NOT call mic_auth::request_microphone_access here — that is Permissions-only.
     // Opening the real capture stream is enough for TCC (Allow once after install).
     let denoise = state.settings.lock().denoise;
-    match record::start_recording(data_dir().join("recordings"), denoise) {
+    // YV35: anchor the press→capture_start span on the physical key-down when
+    // this take came from the PTT hold (None for tray/button/hands-free starts).
+    let pressed_at = ptt_macos::press_started_at();
+    match record::start_recording(data_dir().join("recordings"), denoise, pressed_at) {
         Ok(active) => {
             let level = active.level.clone();
             let stop_flag = active.stop_flag();
@@ -648,8 +651,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
             log::info!(
-                "latency hold→clipboard={}ms (wav={} asr_done={} asr_model={:.0}ms) backend={}",
+                "latency hold→clipboard={}ms (press→capture={}ms wav={} asr_done={} asr_model={:.0}ms) backend={}",
                 pipeline_ms,
+                rec.capture_start_ms,
                 t_wav,
                 t_asr,
                 asr.seconds * 1000.0,
