@@ -7,6 +7,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
+use parking_lot::{Condvar, Mutex as PLMutex};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -26,8 +27,46 @@ const TARGET_RATE: u32 = 16_000;
 /// same threshold, measured on the in-memory buffer now).
 const MIN_CLIP_SAMPLES: usize = TARGET_RATE as usize * 30 / 1000;
 
+/// The take's stop signal (YV38) — what the HUD level thread parks on instead of
+/// re-reading a flag every 50 ms. `stop_recording` (and the cancel path through
+/// it) flips it once and wakes every waiter, so a waiter learns the hold ended
+/// within microseconds of key-release rather than up to a poll interval later.
+/// `wait_stopped` still takes a tick because the one waiter has periodic work of
+/// its own (the ~20 fps level emit) — the tick is that waiter's own cadence, it
+/// is never a poll of the stop state.
+#[derive(Default)]
+pub struct StopSignal {
+    stopped: PLMutex<bool>,
+    woken: Condvar,
+}
+
+impl StopSignal {
+    /// Wake every waiter — the take is over. Idempotent.
+    fn stop(&self) {
+        *self.stopped.lock() = true;
+        self.woken.notify_all();
+    }
+
+    /// Park until the take stops or `tick` elapses, whichever comes first.
+    /// `true` = the take has stopped and the caller should wind down.
+    pub fn wait_stopped(&self, tick: Duration) -> bool {
+        let mut stopped = self.stopped.lock();
+        if *stopped {
+            return true;
+        }
+        self.woken.wait_for(&mut stopped, tick);
+        *stopped
+    }
+
+    /// Has the take already stopped? Never parks — the signal assertions read it.
+    #[cfg(test)]
+    fn is_stopped(&self) -> bool {
+        *self.stopped.lock()
+    }
+}
+
 pub struct ActiveRecording {
-    stop: Arc<AtomicBool>,
+    stop: Arc<StopSignal>,
     wav_path: PathBuf,
     started: Instant,
     pub level: LevelHandle,
@@ -41,8 +80,8 @@ pub struct ActiveRecording {
 }
 
 impl ActiveRecording {
-    /// Shared stop flag — false while recording, true after stop.
-    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+    /// Shared stop signal — waiters park on it and are woken when the take ends.
+    pub fn stop_signal(&self) -> Arc<StopSignal> {
         self.stop.clone()
     }
 }
@@ -120,7 +159,7 @@ pub fn start_recording(
     );
 
     Ok(ActiveRecording {
-        stop: Arc::new(AtomicBool::new(false)),
+        stop: Arc::new(StopSignal::default()),
         wav_path,
         started,
         level: capture_level().clone(),
@@ -134,7 +173,9 @@ pub fn stop_recording(
     isolation_vad: Option<&vad::WarmVad>,
 ) -> Result<RecordingResult, String> {
     let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
-    active.stop.store(true, Ordering::SeqCst);
+    // YV38: signal (not a flag another thread has to notice) — the HUD level
+    // thread is woken here, on release, instead of up to 50 ms afterwards.
+    active.stop.stop();
     active.level.store(0, Ordering::Relaxed);
 
     // Stop buffering and take the raw capture off the persistent worker; the
@@ -1505,6 +1546,33 @@ mod tests {
             "arm took {:?} — it should return on the worker's signal",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn stop_signal_wakes_waiters_immediately_on_release() {
+        let stop = Arc::new(StopSignal::default());
+        assert!(!stop.is_stopped());
+        // A tick with no stop expires as a plain timeout — the waiter keeps its
+        // own cadence and learns nothing has changed.
+        assert!(!stop.wait_stopped(Duration::from_millis(10)));
+
+        let signaller = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            signaller.stop();
+        });
+        let started = Instant::now();
+        // A long tick must NOT be waited out: the condvar wakes on the signal,
+        // which is the whole point of YV38 (the old flag was read every 50 ms).
+        assert!(stop.wait_stopped(Duration::from_secs(5)));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "stop took {:?} — it should wake on the signal, not on the tick",
+            started.elapsed()
+        );
+        // Already stopped → returns without parking at all.
+        assert!(stop.is_stopped());
+        assert!(stop.wait_stopped(Duration::from_secs(30)));
     }
 
     #[test]
