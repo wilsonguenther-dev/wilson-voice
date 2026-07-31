@@ -27,7 +27,6 @@ fi
 echo "codesign identity: $IDENTITY"
 
 killall wilson-voice 2>/dev/null || true
-pkill -f "asr_worker.py --serve" 2>/dev/null || true
 sleep 1
 rm -rf "$HOME/Desktop/Wilson Voice.app" "$HOME/Applications/Wilson Voice.app" "$APP_DST"
 

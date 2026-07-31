@@ -4,9 +4,7 @@
 //! Optional legacy ⌘⇧V via Carbon global-shortcut.
 //! HUD: floating float.html pill, parked bottom-center (no cursor chase).
 
-mod asr;
 mod asr_engine;
-mod asr_paths;
 mod cli;
 mod db;
 mod dictation;
@@ -40,15 +38,11 @@ use tauri_plugin_notification::NotificationExt;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    pub model: String,
     pub language: String,
     pub auto_paste: bool,
     pub hotkey_label: String,
     /// Always show HUD; also auto-shows while recording even if false.
     pub show_floating_pill: bool,
-    /// fast | balanced | max — maps to model; user can still override model.
-    #[serde(default = "default_speed_profile")]
-    pub speed_profile: String,
     /// fn | fn_control | both — CGEvent FN PTT (not Carbon).
     #[serde(default = "default_ptt_binding")]
     pub ptt_binding: String,
@@ -96,16 +90,12 @@ pub struct AppSettings {
     #[serde(default)]
     pub calibration_sample: Option<String>,
     /// Selected embedded (GGUF) ASR model — a `models::catalog()` repo id
-    /// (YV31). Defaults to the catalog's recommended model. Independent of
-    /// `model` (the MLX sidecar repo id) while the native engine is being
-    /// brought up; the dictation path still runs on `model`.
+    /// (YV31). Since YV34 deleted the Python sidecar this is THE model the
+    /// dictation path runs on; there is no other ASR selector.
     #[serde(default = "default_native_model")]
     pub native_model: String,
 }
 
-fn default_speed_profile() -> String {
-    "balanced".into()
-}
 fn default_ptt_binding() -> String {
     "fn_control".into()
 }
@@ -133,14 +123,11 @@ fn default_native_model() -> String {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            // Balanced: large-v3-turbo — warm daemon keeps it snappy
-            model: "mlx-community/whisper-large-v3-turbo".into(),
             language: "en".into(),
             auto_paste: true,
             hotkey_label: "fn⌃".into(),
             // Always-on glass island rides all Spaces
             show_floating_pill: true,
-            speed_profile: "balanced".into(),
             ptt_binding: "fn_control".into(),
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
@@ -156,16 +143,6 @@ impl Default for AppSettings {
     }
 }
 
-/// Resolve model from speed profile when user picks a profile button.
-/// IDs must match real mlx-community HF repos (…-mlx for most sizes).
-pub fn model_for_profile(profile: &str) -> &'static str {
-    match profile {
-        "fast" => "mlx-community/whisper-small-mlx",
-        "max" => "mlx-community/whisper-large-v3-mlx",
-        _ => "mlx-community/whisper-large-v3-turbo", // balanced
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatus {
@@ -173,18 +150,13 @@ pub struct AppStatus {
     pub busy: bool,
     pub last_error: Option<String>,
     pub message: String,
-    /// The LEGACY Python sidecar is genuinely runnable (venv under Application
-    /// Support that actually imports mlx_whisper) — not merely "some file exists
-    /// at the resolved python path". See [`legacy_asr_ready`].
-    pub python_ok: bool,
-    pub worker_ok: bool,
     pub accessibility: bool,
     pub hotkey_registered: bool,
     #[serde(default)]
     pub hands_free: bool,
     /// YV33 — dictation can actually run right now: the selected embedded model
-    /// is downloaded, or the legacy venv is genuinely importable. The UI shows
-    /// "Ready" only when this is true; otherwise it routes to the model step.
+    /// is downloaded. The UI shows "Ready" only when this is true; otherwise it
+    /// routes to the model step.
     #[serde(default)]
     pub model_ready: bool,
 }
@@ -202,13 +174,6 @@ struct AppState {
     saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
     last_error: PLMutex<Option<String>>,
-    venv_python: PathBuf,
-    asr_worker: PathBuf,
-    /// Memoized [`legacy_asr_ready`] answer. The probe spawns a process, and
-    /// `build_status` runs on every state transition, so it is computed at most
-    /// once per run (and invalidated by `setup_asr_venv`, the only thing that
-    /// can change the answer).
-    legacy_asr_ok: PLMutex<Option<bool>>,
     hotkey_registered: PLMutex<bool>,
     /// Menu-bar (tray) handles, set once during setup after the tray is built.
     /// Kept so state transitions can reflect into the dropdown + tooltip (YV26).
@@ -218,9 +183,8 @@ struct AppState {
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
     /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
-    /// and its idle-unload watcher; backs the model-management commands. YV32
-    /// puts it on the dictation path as the PRIMARY transcriber — the MLX
-    /// sidecar is now only the fallback (see `stop_and_transcribe`).
+    /// and its idle-unload watcher; backs the model-management commands. Since
+    /// YV34 it is the app's ONLY transcriber (see `stop_and_transcribe`).
     transcription: transcription::TranscriptionManager,
 }
 
@@ -247,31 +211,12 @@ impl Drop for WavCleanup {
     }
 }
 
-/// YV33 — is the LEGACY Python sidecar genuinely runnable? `venv_python.exists()`
-/// was never an answer: `asr_paths::resolve_python` falls back to
-/// `/usr/bin/python3`, the Command Line Tools shim, which exists on every Mac,
-/// can never `import mlx_whisper`, and pops a developer-tools installer if
-/// executed. So only the Application Support venv is even probed, and it must
-/// actually import the module. Memoized — the probe spawns a process and this
-/// runs on every status emit.
-fn legacy_asr_ready(state: &AppState) -> bool {
-    if let Some(cached) = *state.legacy_asr_ok.lock() {
-        return cached;
-    }
-    let ok = state.venv_python.starts_with(data_dir())
-        && state.venv_python.is_file()
-        && state.asr_worker.is_file()
-        && asr_paths::python_has_mlx(&state.venv_python);
-    *state.legacy_asr_ok.lock() = Some(ok);
-    ok
-}
-
-/// Can a take actually be transcribed right now? True when the selected
-/// embedded model is downloaded (the YV32 primary path) or the legacy sidecar
-/// is genuinely installed. False means "Model needed", never "Ready".
+/// Can a take actually be transcribed right now? YV34 leaves exactly one
+/// answer: the selected embedded model is downloaded. False means "Model
+/// needed", never "Ready".
 fn model_ready(state: &AppState) -> bool {
     let native = state.settings.lock().native_model.clone();
-    native_model_ready(&native).is_some() || legacy_asr_ready(state)
+    native_model_ready(&native).is_some()
 }
 
 /// The status-line policy, pure so the "Ready" honesty rule is testable without
@@ -326,8 +271,6 @@ fn build_status(state: &AppState) -> AppStatus {
         busy,
         last_error,
         message,
-        python_ok: legacy_asr_ready(state),
-        worker_ok: state.asr_worker.exists(),
         accessibility,
         hotkey_registered,
         hands_free,
@@ -516,8 +459,9 @@ impl Drop for WorkerBusyGuard {
 pub const TRANSCRIPT_ERROR_EVENT: &str = "transcript_error";
 
 /// The selected embedded model when it is actually downloaded, as
-/// `(catalog id, on-disk path)`. `None` means the native engine can't run yet
-/// (nothing fetched) and the caller falls back to the Python sidecar.
+/// `(catalog id, on-disk path)`. `None` means nothing has been fetched yet, so
+/// no take can be transcribed at all (YV34 — there is no sidecar to fall back
+/// to any more).
 fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
     let model = models::catalog_model(native_model)?;
     if !models::is_downloaded(model) {
@@ -526,17 +470,17 @@ fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
     models::model_path(model).map(|path| (model.id.clone(), path))
 }
 
-/// Transcribe a captured clip with the embedded GGUF engine (YV32's primary
-/// path): decode the 16 kHz mono clip, load the model into the warm manager (a
-/// no-op when it is already resident), and run it. Both the load and the
-/// transcription are already bounded + panic-contained by the manager, so this
-/// can fail but can never hang.
+/// Transcribe a captured clip with the embedded GGUF engine — since YV34 the
+/// app's only ASR path: decode the 16 kHz mono clip, load the model into the
+/// warm manager (a no-op when it is already resident), and run it. Both the
+/// load and the transcription are already bounded + panic-contained by the
+/// manager, so this can fail but can never hang.
 fn transcribe_native(
     manager: &transcription::TranscriptionManager,
     model_id: &str,
     model_path: &Path,
     wav: &Path,
-) -> Result<asr::AsrOutput, String> {
+) -> Result<transcription::AsrOutput, String> {
     let samples = record::read_wav_16k_mono(wav)?;
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
@@ -544,7 +488,7 @@ fn transcribe_native(
     if text.trim().is_empty() {
         return Err("Empty transcript".into());
     }
-    Ok(asr::AsrOutput {
+    Ok(transcription::AsrOutput {
         text,
         backend: "native".into(),
         seconds: started.elapsed().as_secs_f64(),
@@ -575,8 +519,6 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     emit_status(&app, &state);
 
     let settings = state.settings.lock().clone();
-    let venv = state.venv_python.clone();
-    let worker = state.asr_worker.clone();
     let db = state.db.clone();
     let app2 = app.clone();
     let state2 = state.clone();
@@ -633,37 +575,18 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
                 return Ok(None);
             }
-            // YV32 — the embedded GGUF engine is the PRIMARY transcriber: it runs
-            // in-process (no Python, no venv, no HuggingFace download) whenever the
-            // selected native model is on disk. The MLX sidecar stays as a fallback
-            // but is only attempted when its venv actually exists; on a fresh Mac
-            // it never does, and spawning it there produced the confusing
-            // "ASR Python missing" hang the audit caught. With neither available we
-            // fail fast with an actionable message instead of pretending.
-            let asr = match native_model_ready(&settings.native_model) {
-                Some((model_id, model_path)) => {
-                    transcribe_native(&state2.transcription, &model_id, &model_path, &rec.wav_path)?
-                }
-                None if venv.exists() => {
-                    // Bias Whisper toward the user's learned vocabulary/jargon
-                    // BEFORE it decodes (initial_prompt), most-frequent-last.
-                    let vocab = db.top_dictionary_terms(60).unwrap_or_default();
-                    asr::run_asr(
-                        &venv,
-                        &worker,
-                        &rec.wav_path,
-                        &settings.model,
-                        &settings.language,
-                        &vocab,
-                    )?
-                }
-                None => {
-                    return Err(
-                        "No speech model installed — open Settings → Models and download one."
-                            .into(),
-                    )
-                }
+            // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
+            // in-process (no interpreter, no HuggingFace download) on the
+            // selected native model. With nothing downloaded we fail fast with an
+            // actionable message instead of pretending; the `transcript_error`
+            // emit below is what unspins any UI waiting on this take.
+            let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
+                return Err(
+                    "No speech model installed — open Settings → Models and download one.".into(),
+                );
             };
+            let asr =
+                transcribe_native(&state2.transcription, &model_id, &model_path, &rec.wav_path)?;
             let t_asr = t_release.elapsed().as_millis() as i64;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
@@ -831,27 +754,6 @@ fn save_settings(
     settings: AppSettings,
 ) -> Result<(), String> {
     let mut next = settings;
-    // Keep model aligned with speed profile when profile is one of the known names
-    if matches!(next.speed_profile.as_str(), "fast" | "balanced" | "max") {
-        let want = model_for_profile(&next.speed_profile);
-        // Only auto-map if current model is one of our known profile models (don't clobber custom)
-        let known = [
-            "mlx-community/whisper-small-mlx",
-            "mlx-community/whisper-base-mlx",
-            "mlx-community/whisper-tiny-mlx",
-            "mlx-community/whisper-large-v3-turbo",
-            "mlx-community/whisper-large-v3-mlx",
-            "mlx-community/whisper-medium-mlx",
-            // legacy aliases from earlier builds
-            "mlx-community/whisper-small",
-            "mlx-community/whisper-base",
-            "mlx-community/whisper-large-v3",
-            "mlx-community/whisper-medium",
-        ];
-        if known.iter().any(|m| *m == next.model) {
-            next.model = want.into();
-        }
-    }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
         "fn" => "fn".into(),
@@ -871,13 +773,6 @@ fn save_settings(
     {
         ptt_macos::set_binding(ptt_macos::PttBinding::from_settings(&next.ptt_binding));
     }
-    // Re-preload the active model in background (warm daemon)
-    asr::preload_async(
-        state.venv_python.clone(),
-        state.asr_worker.clone(),
-        next.model.clone(),
-        next.language.clone(),
-    );
     Ok(())
 }
 
@@ -907,16 +802,12 @@ fn get_status(state: State<'_, Arc<AppState>>) -> AppStatus {
 
 #[tauri::command]
 fn get_permissions(state: State<'_, Arc<AppState>>) -> PermissionReport {
-    // YV33: the ASR row reports the engine that actually runs — a downloaded
-    // embedded model — instead of probing a python that may not exist.
+    // YV33/YV34: the ASR row reports the engine that actually runs — a
+    // downloaded embedded model. Nothing here spawns a process, so the 1.2 s
+    // onboarding poll is now free (it used to exec the CLT python shim and pop
+    // a developer-tools dialog on every tick).
     let native = state.settings.lock().native_model.clone();
-    permissions::report(
-        &state.venv_python,
-        &state.asr_worker,
-        false,
-        native_model_ready(&native).is_some(),
-        &data_dir(),
-    )
+    permissions::report(false, native_model_ready(&native).is_some())
 }
 
 #[tauri::command]
@@ -1127,21 +1018,6 @@ fn show_main(app: AppHandle) {
     }
 }
 
-/// Legacy Python-sidecar installer. YV33: async + off-thread. It shells out to
-/// `python -m venv` and `pip install mlx-whisper` — minutes of blocking work
-/// that froze the entire UI while this was a synchronous command running on the
-/// main thread. The embedded GGUF engine replaces it (nothing in the UI invokes
-/// it any more); it stays for existing venv installs and can no longer freeze
-/// anything. Also clears the memoized legacy probe, since it just changed.
-#[tauri::command]
-async fn setup_asr_venv(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let out = tauri::async_runtime::spawn_blocking(asr_paths::setup_local_venv)
-        .await
-        .map_err(|e| format!("ASR setup task failed: {e}"))?;
-    *state.legacy_asr_ok.lock() = None;
-    out
-}
-
 // --- Embedded ASR model management (YV31) ---
 
 /// One bundled-catalog model as the model manager sees it: catalog metadata
@@ -1312,21 +1188,6 @@ pub fn run() {
         }
     });
 
-    // NEVER resolve ASR to ~/Desktop — that triggers Desktop folder TCC on every stop.
-    // Prefer pre-built Application Support venv; seed worker file only (no Desktop read).
-    let (venv_py, worker) = asr_paths::resolve_paths();
-    if !venv_py.exists() || !asr_paths::python_has_mlx(&venv_py) {
-        log::warn!(
-            "ASR venv not ready at {} — user should click Install local ASR once",
-            venv_py.display()
-        );
-    } else {
-        log::info!(
-            "ASR ready python={} worker={}",
-            venv_py.display(),
-            worker.display()
-        );
-    }
     let db_path = data_dir().join("wilson_voice.db");
     let db = open_db_graceful(db_path);
     let legacy = data_dir().join("history").join("transcripts.json");
@@ -1345,16 +1206,6 @@ pub fn run() {
             .unwrap_or_default()
     };
 
-    // Warm ASR daemon + preload model in background (biggest speed win)
-    if venv_py.exists() {
-        asr::preload_async(
-            venv_py.clone(),
-            worker.clone(),
-            settings.model.clone(),
-            settings.language.clone(),
-        );
-    }
-
     let state = Arc::new(AppState {
         settings: PLMutex::new(settings),
         recording: PLMutex::new(false),
@@ -1364,9 +1215,6 @@ pub fn run() {
         saved_audio: PLMutex::new(None),
         db,
         last_error: PLMutex::new(None),
-        venv_python: venv_py,
-        asr_worker: worker,
-        legacy_asr_ok: PLMutex::new(None),
         hotkey_registered: PLMutex::new(false),
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
@@ -1427,7 +1275,6 @@ pub fn run() {
             request_microphone,
             show_float_pill,
             hide_float_pill,
-            setup_asr_venv,
             get_insights,
             daily_series,
             monthly_series,
@@ -1767,8 +1614,8 @@ mod tests {
 
     // YV33: "Ready" is a claim about being able to transcribe. With no usable
     // model the status line must say a model is needed — the old rule ("a file
-    // exists at the resolved python path") reported Ready on every fresh Mac,
-    // where that path is the non-functional /usr/bin/python3 CLT shim.
+    // exists at the resolved interpreter path") reported Ready on every fresh
+    // Mac, where that path was the non-functional Command Line Tools shim.
     #[test]
     fn status_says_model_needed_until_a_model_is_ready() {
         let no_model = status_message(false, false, false, None, false, true, "fn⌃");
@@ -1802,8 +1649,12 @@ mod tests {
         assert!(AppSettings::default().calibration_sample.is_none());
 
         // Legacy settings JSON with no `onboarded` / `calibrationSample` keys.
+        // YV34: it also still carries the retired sidecar keys (`model`,
+        // `speedProfile`), which must be ignored rather than fail the parse —
+        // every existing install has them on disk.
         let legacy = r#"{
-            "model": "mlx-community/whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",
+            "speedProfile": "balanced",
             "language": "en",
             "autoPaste": true,
             "hotkeyLabel": "fn⌃",

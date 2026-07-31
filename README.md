@@ -66,13 +66,15 @@ cd ~/Desktop/wilson-voice/desktop
 npm run desktop:dev
 ```
 
-## One app, one sidecar
+## One app, no sidecar
 
 Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window
 (Home / Insights / Dictionary / Settings) plus an always-on-top Dictate pill.
-On-device ASR runs in one embedded Python sidecar, `python/asr_worker.py`
-(MLX Whisper), spawned from an Application-Support venv — it decodes audio
-in-process (no `ffmpeg` binary) and needs no PATH.
+On-device ASR runs **inside the app binary** — a native GGUF engine
+(`transcribe-cpp`, Metal) driven by `src-tauri/src/transcription.rs`. There is
+no interpreter, no virtual environment, and no helper process: audio is decoded
+in-process (no `ffmpeg` binary) and the speech model is downloaded once from the
+in-app model manager.
 
 > The former standalone `wilson_voice/` rumps/pynput menu-bar app was removed in
 > favour of this single Tauri app (recoverable from git history). Nothing in the

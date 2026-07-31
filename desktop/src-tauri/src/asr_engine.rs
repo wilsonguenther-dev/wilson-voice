@@ -3,8 +3,8 @@
 //! Same crate + version Handy ships: `transcribe-cpp 0.1.3`, built with the
 //! Metal backend on macOS (see Cargo.toml target table). It exposes `load()` /
 //! `transcribe()` and nothing else; the warm lifecycle around it lives in
-//! `transcription`, which YV32 wired into the dictation pipeline as the primary
-//! path (the Python sidecar is now the fallback).
+//! `transcription`, which YV32 wired into the dictation pipeline and YV34 made
+//! the app's only ASR path (the Python sidecar is gone).
 #![allow(dead_code)]
 
 use std::path::Path;

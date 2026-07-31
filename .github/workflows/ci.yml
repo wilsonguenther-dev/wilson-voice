@@ -9,27 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# YV34 deleted the Python ASR sidecar (and with it the python-asr job that
+# compiled + tested it). Transcription is native Rust now, so the Tauri job
+# below is the whole gate.
 jobs:
-  python-asr:
-    name: Python ASR sidecar
-    # Fast suite is numpy-only stdlib (no MLX/Metal) — Linux is cheaper + faster.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Compile sidecar
-        run: python -m py_compile python/asr_worker.py
-      - name: Lint (ruff, informational)
-        run: |
-          pip install ruff
-          ruff check python tests || true
-      - name: Unit tests (fast, no MLX)
-        run: |
-          pip install numpy pytest
-          pytest -m "not heavy"
-
   desktop:
     name: Tauri build (Rust + frontend)
     runs-on: macos-14

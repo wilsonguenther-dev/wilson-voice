@@ -17,10 +17,10 @@
 //! An idle watcher unloads the engine after [`IDLE_UNLOAD_AFTER`] of no use so a
 //! background Yap doesn't hold ~1 GB of model resident all day.
 //!
-//! YV32 puts this on the live dictation path as the primary transcriber (see
-//! `lib::transcribe_native`) and behind the headless `--transcribe-file` CLI;
-//! the Python/MLX sidecar is now only the fallback. A few lifecycle helpers are
-//! still driven by the model-management commands alone.
+//! YV32 put this on the live dictation path and behind the headless
+//! `--transcribe-file` CLI; YV34 deleted the Python sidecar, so this is now the
+//! ONLY transcriber in the app. A few lifecycle helpers are still driven by the
+//! model-management commands alone.
 #![allow(dead_code)]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -55,6 +55,16 @@ impl Transcriber for asr_engine::AsrEngine {
     fn transcribe(&mut self, samples_16k_mono: &[f32]) -> Result<String, String> {
         asr_engine::transcribe(self, samples_16k_mono)
     }
+}
+
+/// One finished transcription as the dictation pipeline consumes it: the text
+/// plus how it was produced. `backend` / `seconds` are persisted on the
+/// transcript row and drive the latency logging (YV34 — this used to live in
+/// the deleted `asr` sidecar client).
+pub struct AsrOutput {
+    pub text: String,
+    pub backend: String,
+    pub seconds: f64,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
