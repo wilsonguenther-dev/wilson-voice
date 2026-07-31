@@ -43,6 +43,18 @@ nnnoiseless = { version = "0.5.2", default-features = false }
 # safely to the energy-VAD path so an utterance is never lost.
 tract-onnx = "0.21"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
+# Embedded ASR engine (YV30) — same crate + version Handy ships for GGUF/ggml
+# native inference. Base dep is static CPU-only (no features); the macOS target
+# table below adds the Metal backend, mirroring Handy's per-platform posture.
+transcribe-cpp = { version = "0.1.3", default-features = false }
+# Verified model downloader (YV30): resumable HTTP + mandatory sha256 check.
+reqwest = { version = "0.12", features = ["stream"] }
+sha2 = "0.10"
+# Tauri already pulls tokio; "time" adds the stall-timeout/backoff primitives.
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+transcribe-cpp = { version = "0.1.3", default-features = false, features = ["metal"] }
 
 [features]
 default = ["custom-protocol", "macos-private-api"]

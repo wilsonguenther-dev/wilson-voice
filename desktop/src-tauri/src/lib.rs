@@ -5,6 +5,7 @@
 //! HUD: floating float.html pill, parked bottom-center (no cursor chase).
 
 mod asr;
+mod asr_engine;
 mod asr_paths;
 mod db;
 mod dictation;
@@ -12,6 +13,7 @@ mod float_pill;
 mod focus;
 mod logging;
 mod mic_auth;
+mod models;
 mod paste;
 mod permissions;
 #[cfg(target_os = "macos")]

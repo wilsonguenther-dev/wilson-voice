@@ -1,0 +1,495 @@
+//! Bundled ASR model catalog + verified downloader (YV30).
+//!
+//! `catalog.json` is compiled into the binary (`include_str!`) so the app
+//! ships a complete model list with zero network access. Entries are copied
+//! verbatim from Handy's generated catalog — the top-2 recommended GGUF models
+//! plus Whisper Tiny (smallest, used by tests) — each with a pinned revision,
+//! per-quant byte sizes and sha256 hashes. The hashes compiled into the binary
+//! are the trust anchor: every download is sha256-verified before the
+//! `.partial` file is renamed into place, regardless of which host served it.
+//!
+//! Foundation only — nothing is wired into the dictation pipeline yet, so the
+//! pub API is intentionally unreferenced for now.
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+
+const CATALOG_JSON: &str = include_str!("catalog.json");
+
+/// Emitted on every download progress step (typed payload below).
+pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "model_download_progress";
+
+/// How long a single chunk read may hang before the attempt is abandoned.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Full passes over the URL list before giving up (the `.partial` file is kept
+/// so a later call resumes where this one died).
+const MAX_ATTEMPTS: u32 = 4;
+/// Progress events are throttled to one per this many bytes (plus the final one).
+const PROGRESS_EMIT_STEP: u64 = 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Catalog {
+    /// Base URLs tried after Hugging Face. The full file URL is
+    /// `{mirror}/{repo_id}/{revision}/{filename}` — the same three values that
+    /// form the HF resolve URL, so a mirror is a plain static host.
+    pub mirrors: Vec<String>,
+    pub models: Vec<CatalogModel>,
+}
+
+/// One model as written in `catalog.json`. Only the fields we need are
+/// declared; serde ignores the rest (slug, languages, scores, …).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogModel {
+    /// HF repo id, e.g. `handy-computer/whisper-tiny-gguf`.
+    pub id: String,
+    /// Commit sha the catalog's sizes/hashes were generated from. Both HF and
+    /// mirror URLs pin it, so downloaded bytes provably match the hashes
+    /// regardless of source.
+    pub revision: String,
+    pub name: String,
+    pub description: String,
+    pub architecture: String,
+    pub files: Vec<ModelFile>,
+    pub default_quant: Option<String>,
+    #[serde(default)]
+    pub recommended: bool,
+    pub recommended_rank: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelFile {
+    pub filename: String,
+    pub quant: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+impl CatalogModel {
+    /// The file for `default_quant`, falling back to the first listed file.
+    pub fn default_file(&self) -> Option<&ModelFile> {
+        self.default_quant
+            .as_deref()
+            .and_then(|q| self.files.iter().find(|f| f.quant == q))
+            .or_else(|| self.files.first())
+    }
+}
+
+/// The bundled catalog, parsed once.
+pub fn catalog() -> &'static Catalog {
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str(CATALOG_JSON)
+            .expect("bundled catalog.json is valid JSON matching the catalog schema")
+    })
+}
+
+/// Look up a catalog model by repo id.
+pub fn catalog_model(model_id: &str) -> Option<&'static CatalogModel> {
+    catalog().models.iter().find(|m| m.id == model_id)
+}
+
+/// Ordered download URLs for one file: Hugging Face `resolve/<sha>` first
+/// (immutable, CDN-friendly), then each mirror at the same pinned revision.
+pub fn download_urls(model: &CatalogModel, file: &ModelFile) -> Vec<String> {
+    let mut urls = vec![format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        model.id, model.revision, file.filename
+    )];
+    for mirror in &catalog().mirrors {
+        urls.push(format!(
+            "{}/{}/{}/{}",
+            mirror.trim_end_matches('/'),
+            model.id,
+            model.revision,
+            file.filename
+        ));
+    }
+    urls
+}
+
+/// Where downloaded models live: `<data_dir>/WilsonVoice/models` (same
+/// Application Support root as the rest of the app — never ~/Desktop).
+pub fn models_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("WilsonVoice")
+        .join("models")
+}
+
+// ---------------------------------------------------------------------------
+// sha256 verification
+// ---------------------------------------------------------------------------
+
+/// Streaming sha256 of a file, as lowercase hex.
+pub fn sha256_hex(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("open {} for hashing: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("read {} for hashing: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Verify a file's sha256 against the catalog's expected hex digest.
+pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
+    let actual = sha256_hex(path)?;
+    if actual.eq_ignore_ascii_case(expected_hex) {
+        Ok(())
+    } else {
+        Err(format!(
+            "sha256 mismatch for {}: expected {expected_hex}, got {actual}",
+            path.display()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resume / rename logic (sync, unit-tested; the async downloader drives it)
+// ---------------------------------------------------------------------------
+
+/// The in-progress sibling of `dest`: same name with `.partial` appended.
+pub fn partial_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_os_string();
+    name.push(".partial");
+    PathBuf::from(name)
+}
+
+/// Byte offset to resume from. A partial at least as large as the expected
+/// total can never complete into a valid file, so it is deleted and the
+/// download restarts from zero.
+pub fn resume_offset(partial: &Path, total_bytes: u64) -> u64 {
+    match std::fs::metadata(partial) {
+        Ok(m) if total_bytes > 0 && m.len() >= total_bytes => {
+            let _ = std::fs::remove_file(partial);
+            0
+        }
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
+}
+
+/// MANDATORY verification gate: hash the completed `.partial`, and only on a
+/// match rename it into place. A corrupted partial is deleted so the next
+/// attempt starts clean — corrupt bytes are never left to "resume" into.
+pub fn finalize_download(partial: &Path, dest: &Path, expected_sha256: &str) -> Result<(), String> {
+    if let Err(e) = verify_sha256(partial, expected_sha256) {
+        let _ = std::fs::remove_file(partial);
+        return Err(e);
+    }
+    std::fs::rename(partial, dest).map_err(|e| {
+        format!(
+            "rename {} -> {} failed: {e}",
+            partial.display(),
+            dest.display()
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Async downloader
+// ---------------------------------------------------------------------------
+
+/// Typed payload for [`MODEL_DOWNLOAD_PROGRESS_EVENT`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelDownloadProgress {
+    pub model_id: String,
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+/// Download a catalog model's default-quant file into [`models_dir`], emitting
+/// [`ModelDownloadProgress`] events. Returns the verified on-disk path.
+pub async fn download_model(app: &AppHandle, model_id: &str) -> Result<PathBuf, String> {
+    let model =
+        catalog_model(model_id).ok_or_else(|| format!("unknown catalog model '{model_id}'"))?;
+    let file = model
+        .default_file()
+        .ok_or_else(|| format!("catalog model '{model_id}' lists no files"))?;
+    let urls = download_urls(model, file);
+    let dest = models_dir().join(&file.filename);
+
+    let app = app.clone();
+    let id = model_id.to_string();
+    let mut last_emitted: Option<u64> = None;
+    download_file(&urls, &dest, file.size_bytes, &file.sha256, |downloaded, total| {
+        // Throttle: first, final, and one per PROGRESS_EMIT_STEP in between.
+        let due = match last_emitted {
+            None => true,
+            Some(prev) => downloaded >= total || downloaded.saturating_sub(prev) >= PROGRESS_EMIT_STEP,
+        };
+        if due {
+            last_emitted = Some(downloaded);
+            let _ = app.emit(
+                MODEL_DOWNLOAD_PROGRESS_EVENT,
+                &ModelDownloadProgress {
+                    model_id: id.clone(),
+                    downloaded,
+                    total,
+                },
+            );
+        }
+    })
+    .await
+}
+
+/// Resumable, verified download: tries each URL in order, resuming from the
+/// `.partial` file via HTTP Range, retrying full passes with exponential
+/// backoff, abandoning any attempt whose next chunk stalls past
+/// [`STALL_TIMEOUT`]. The file only ever appears at `dest` after its sha256
+/// matched `expected_sha256`.
+pub async fn download_file<F>(
+    urls: &[String],
+    dest: &Path,
+    size_bytes: u64,
+    expected_sha256: &str,
+    mut progress: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    // Already downloaded and intact — done (guards double-clicks and re-runs).
+    if dest.is_file() && verify_sha256(dest, expected_sha256).is_ok() {
+        progress(size_bytes, size_bytes);
+        return Ok(dest.to_path_buf());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let partial = partial_path(dest);
+    let client = reqwest::Client::new();
+    let mut last_err = "no download URLs configured".to_string();
+
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            // 1s, 2s, 4s … between full passes over the URL list.
+            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+        }
+        for url in urls {
+            match download_attempt(&client, url, &partial, size_bytes, &mut progress).await {
+                Ok(()) => {
+                    finalize_download(&partial, dest, expected_sha256)?;
+                    return Ok(dest.to_path_buf());
+                }
+                Err(e) => {
+                    log::warn!("model download attempt failed ({url}): {e}");
+                    last_err = e;
+                }
+            }
+        }
+    }
+    // The .partial survives for a future resume.
+    Err(format!(
+        "download failed after {MAX_ATTEMPTS} attempts: {last_err}"
+    ))
+}
+
+/// One streaming pass against one URL, appending to the `.partial` file.
+async fn download_attempt<F>(
+    client: &reqwest::Client,
+    url: &str,
+    partial: &Path,
+    total: u64,
+    progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, u64),
+{
+    let mut downloaded = resume_offset(partial, total);
+    let mut req = client.get(url);
+    if downloaded > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={downloaded}-"));
+    }
+    let resp = tokio::time::timeout(STALL_TIMEOUT, req.send())
+        .await
+        .map_err(|_| format!("request to {url} timed out"))?
+        .map_err(|e| format!("request to {url} failed: {e}"))?;
+    let resp = resp
+        .error_for_status()
+        .map_err(|e| format!("{url} returned error status: {e}"))?;
+
+    // Server honored the Range → append; anything else → restart from zero.
+    let resuming = downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !resuming {
+        downloaded = 0;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(resuming)
+        .write(true)
+        .truncate(!resuming)
+        .open(partial)
+        .map_err(|e| format!("open {}: {e}", partial.display()))?;
+
+    progress(downloaded, total);
+    let mut resp = resp;
+    loop {
+        let chunk = tokio::time::timeout(STALL_TIMEOUT, resp.chunk())
+            .await
+            .map_err(|_| format!("download from {url} stalled at {downloaded} bytes"))?
+            .map_err(|e| format!("read from {url} failed: {e}"))?;
+        let Some(bytes) = chunk else { break };
+        file.write_all(&bytes)
+            .map_err(|e| format!("write {}: {e}", partial.display()))?;
+        downloaded += bytes.len() as u64;
+        progress(downloaded, total);
+    }
+    file.sync_all()
+        .map_err(|e| format!("sync {}: {e}", partial.display()))?;
+
+    if total > 0 && downloaded != total {
+        return Err(format!(
+            "short read from {url}: got {downloaded} of {total} bytes"
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests (no network)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yap-yv30-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn catalog_parses_with_required_fields() {
+        let cat = catalog();
+        assert!(!cat.mirrors.is_empty(), "catalog must list a mirror");
+        assert_eq!(cat.models.len(), 3, "top-2 recommended + whisper-tiny");
+        for m in &cat.models {
+            assert!(!m.id.is_empty());
+            assert!(!m.name.is_empty());
+            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert!(!m.files.is_empty(), "{}: no files", m.id);
+            for f in &m.files {
+                assert!(f.filename.ends_with(".gguf"), "{}: {}", m.id, f.filename);
+                assert!(f.size_bytes > 0, "{}: {} has no size", m.id, f.filename);
+                assert_eq!(f.sha256.len(), 64, "{}: {} bad sha256", m.id, f.filename);
+                assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+            assert!(m.default_file().is_some(), "{}: default_quant unresolvable", m.id);
+        }
+        // Handy's top-2 recommended set, plus the smallest whisper for tests.
+        let ranks: Vec<Option<u32>> = cat.models.iter().map(|m| m.recommended_rank).collect();
+        assert_eq!(ranks[0], Some(1));
+        assert_eq!(ranks[1], Some(2));
+        assert!(cat.models[2].id.contains("whisper-tiny"));
+    }
+
+    #[test]
+    fn download_urls_are_hf_then_mirror_at_pinned_revision() {
+        let m = catalog_model("handy-computer/whisper-tiny-gguf").expect("whisper-tiny in catalog");
+        let f = m.default_file().unwrap();
+        let urls = download_urls(m, f);
+        assert!(urls.len() >= 2, "expected HF + at least one mirror");
+        assert_eq!(
+            urls[0],
+            format!(
+                "https://huggingface.co/{}/resolve/{}/{}",
+                m.id, m.revision, f.filename
+            )
+        );
+        for u in &urls[1..] {
+            assert!(u.starts_with("https://"), "bad mirror url {u}");
+            assert!(u.contains(&m.revision), "mirror url must pin the revision");
+            assert!(u.ends_with(&f.filename));
+        }
+    }
+
+    #[test]
+    fn sha256_verifier_rejects_corrupted_bytes() {
+        let dir = temp_dir();
+        let path = dir.join("fixture.bin");
+        let payload = b"yap yv30 fixture payload";
+        std::fs::write(&path, payload).unwrap();
+        let expected = hex_of(payload);
+
+        assert!(verify_sha256(&path, &expected).is_ok());
+        // Flip bytes → same length, different content → must be rejected.
+        std::fs::write(&path, b"yap yv30 fixture corrupt").unwrap();
+        let err = verify_sha256(&path, &expected).unwrap_err();
+        assert!(err.contains("sha256 mismatch"), "unexpected error: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn partial_path_appends_partial_suffix() {
+        let dest = Path::new("/tmp/models/whisper-tiny-Q8_0.gguf");
+        assert_eq!(
+            partial_path(dest),
+            PathBuf::from("/tmp/models/whisper-tiny-Q8_0.gguf.partial")
+        );
+    }
+
+    #[test]
+    fn resume_offset_resumes_valid_partial_and_resets_oversized() {
+        let dir = temp_dir();
+        let partial = dir.join("model.gguf.partial");
+
+        // No partial → start at zero.
+        assert_eq!(resume_offset(&partial, 100), 0);
+
+        // Valid partial smaller than total → resume from its length.
+        std::fs::write(&partial, vec![0u8; 40]).unwrap();
+        assert_eq!(resume_offset(&partial, 100), 40);
+        assert!(partial.is_file(), "valid partial must be kept");
+
+        // Partial >= total can never verify → deleted, restart from zero.
+        std::fs::write(&partial, vec![0u8; 100]).unwrap();
+        assert_eq!(resume_offset(&partial, 100), 0);
+        assert!(!partial.exists(), "oversized partial must be removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_renames_only_verified_bytes_into_place() {
+        let dir = temp_dir();
+        let dest = dir.join("model.gguf");
+        let partial = partial_path(&dest);
+        let payload = b"pretend this is a gguf model";
+        let good_sha = hex_of(payload);
+
+        // Corrupted partial: rejected, partial deleted, dest never appears.
+        std::fs::write(&partial, b"corrupted download bytes!!!!").unwrap();
+        assert!(finalize_download(&partial, &dest, &good_sha).is_err());
+        assert!(!partial.exists(), "corrupt partial must be removed");
+        assert!(!dest.exists(), "corrupt bytes must never land at dest");
+
+        // Verified partial: renamed into place atomically.
+        std::fs::write(&partial, payload).unwrap();
+        finalize_download(&partial, &dest, &good_sha).expect("verified rename");
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
