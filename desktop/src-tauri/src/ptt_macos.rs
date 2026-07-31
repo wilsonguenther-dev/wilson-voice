@@ -191,6 +191,17 @@ pub fn set_binding(binding: PttBinding) {
     }
 }
 
+/// When the combo currently being held went down (YV35) — the anchor for the
+/// press→capture_start latency span. `Some` while a press is live (the hold-arm
+/// timer fires `Start` well before the release clears it), `None` for every
+/// non-PTT start (tray, pill button, hands-free latch) so the caller falls back
+/// to measuring from its own start request.
+pub fn press_started_at() -> Option<Instant> {
+    let state = GLOBAL_STATE.lock().clone()?;
+    let pressed = *state.press_at.lock();
+    pressed
+}
+
 /// End hands-free from OUTSIDE the tap (pill / Home button / sidebar / tray Stop).
 ///
 /// The PTT state machine keeps its own `hands_free` latch (an `AtomicBool`)

@@ -9,8 +9,9 @@ use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Shared peak level 0..=1000 for HUD (updated every audio callback window).
@@ -21,10 +22,15 @@ const TARGET_RATE: u32 = 16_000;
 
 pub struct ActiveRecording {
     stop: Arc<AtomicBool>,
-    join: Option<JoinHandle<Result<(), String>>>,
     pub wav_path: PathBuf,
-    started: std::time::Instant,
+    started: Instant,
     pub level: LevelHandle,
+    /// The user's denoise setting, captured at arm time and applied when the
+    /// clip is finished in `stop_recording` (the DSP chain moved off the
+    /// capture thread with YV35 — the persistent stream only buffers).
+    denoise: bool,
+    /// YV35 telemetry: key-press → capture-start, in ms.
+    capture_start_ms: i64,
 }
 
 impl ActiveRecording {
@@ -57,57 +63,77 @@ pub struct RecordingResult {
     /// no speech at all — the one case energy VAD can miss (e.g. a steady fan the
     /// RMS gate counts as "voiced"). The gate rejects a clip when this is false.
     pub speech_present: bool,
+    /// YV35 telemetry: key-press → capture-start, in ms. Carried through from
+    /// `ActiveRecording` so the single latency log line can also show the press
+    /// side of the pipeline — it used to be invisible, and used to include a
+    /// fixed start-poll wait paid on every take.
+    pub capture_start_ms: i64,
 }
 
-pub fn start_recording(dir: PathBuf, denoise: bool) -> Result<ActiveRecording, String> {
+/// Arm a take on the persistent capture worker (YV35).
+///
+/// The worker keeps the cpal input stream — and its cached device + stream
+/// config — alive across dictations, so a keypress no longer pays device open +
+/// stream build + `play()`. Arming is an event handshake: we block only until
+/// the worker acknowledges the stream is live and buffering (microseconds on the
+/// warm path), bounded by `ARM_TIMEOUT` so a wedged or denied device surfaces an
+/// error instead of hanging the hotkey. This used to be a fixed third-of-a-second poll loop
+/// paid on EVERY take, because a healthy capture thread never finishes.
+///
+/// `pressed_at` is the instant the PTT combo went down when the caller knows it
+/// — the anchor for the press→capture_start span. `None` (tray/button starts)
+/// measures from this call instead.
+pub fn start_recording(
+    dir: PathBuf,
+    denoise: bool,
+    pressed_at: Option<Instant>,
+) -> Result<ActiveRecording, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let wav_path = dir.join(format!("{}.wav", Uuid::new_v4()));
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_t = stop.clone();
-    let path_t = wav_path.clone();
-    let level: LevelHandle = Arc::new(AtomicU32::new(0));
-    let level_t = level.clone();
+    // The hold clock starts at the request, NOT after the handshake, so
+    // `hold_wall_seconds` reports the real press→release wall time.
+    let started = Instant::now();
 
-    let join = thread::Builder::new()
-        .name("wv-record".into())
-        .spawn(move || record_loop(path_t, stop_t, level_t, denoise))
-        .map_err(|e| format!("spawn record thread: {e}"))?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    dispatch(CaptureCmd::Arm { reply: reply_tx })?;
+    await_reply(&reply_rx, ARM_TIMEOUT, "arm")?;
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(350);
-    while !join.is_finished() && std::time::Instant::now() < deadline {
-        thread::sleep(std::time::Duration::from_millis(20));
-    }
-    if join.is_finished() {
-        return match join.join() {
-            Ok(Ok(())) => Err("Recording stopped immediately".into()),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err("Recording thread panicked".into()),
-        };
-    }
+    let capture_start_ms = pressed_at.unwrap_or(started).elapsed().as_millis() as i64;
+    log::info!(
+        "capture armed: press→capture_start={capture_start_ms}ms (arm_wait={}ms)",
+        started.elapsed().as_millis()
+    );
 
     Ok(ActiveRecording {
-        stop,
-        join: Some(join),
+        stop: Arc::new(AtomicBool::new(false)),
         wav_path,
-        started: std::time::Instant::now(),
-        level,
+        started,
+        level: capture_level().clone(),
+        denoise,
+        capture_start_ms,
     })
 }
 
 pub fn stop_recording(
-    mut active: ActiveRecording,
+    active: ActiveRecording,
     isolation_model: Option<PathBuf>,
 ) -> Result<RecordingResult, String> {
     let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
     active.stop.store(true, Ordering::SeqCst);
     active.level.store(0, Ordering::Relaxed);
-    if let Some(j) = active.join.take() {
-        match j.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err("Recording thread panicked".into()),
-        }
-    }
+
+    // Stop buffering and take the raw capture off the persistent worker; the
+    // stream itself stays open for the next take (see `capture_worker_loop`).
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    dispatch(CaptureCmd::Disarm { reply: reply_tx })?;
+    let captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
+    finish_clip(
+        &active.wav_path,
+        captured.samples,
+        captured.sample_rate,
+        captured.channels,
+        active.denoise,
+    )?;
 
     if !active.wav_path.exists() {
         return Err(
@@ -183,6 +209,7 @@ pub fn stop_recording(
         voiced_seconds: voiced,
         hold_wall_seconds,
         speech_present,
+        capture_start_ms: active.capture_start_ms,
     })
 }
 
@@ -378,113 +405,408 @@ fn push_level(level: &LevelHandle, chunk: &[f32]) {
     }
 }
 
-fn record_loop(
-    wav_path: PathBuf,
-    stop: Arc<AtomicBool>,
-    level: LevelHandle,
-    denoise: bool,
-) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = host.default_input_device().ok_or_else(|| {
-        "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.".to_string()
-    })?;
+// ── Persistent capture worker (YV35) ────────────────────────────────────────
+// One long-lived thread owns the cpal input stream and keeps it — plus the
+// device + stream config it was opened with — alive ACROSS dictations, so a
+// keypress pays no device open, no `build_input_stream` and no `play()`. Arm and
+// stop are event handshakes over channels: the caller is released the moment the
+// worker acknowledges, which replaces the fixed start poll (a third of a second,
+// paid on EVERY take, because a healthy capture thread never finishes) and the
+// 50 ms stop poll of the old per-take capture thread.
+//
+// The stream is closed after `IDLE_CLOSE` without a take so the macOS mic
+// indicator never stays lit for a session Yap isn't recording in; the next take
+// reopens it straight from the cached device + config. Any stream error (device
+// unplugged, sample-rate change) invalidates the cache AND drops the stream, so
+// the next arm re-queries the hardware instead of feeding off a dead device.
 
-    let supported = device.default_input_config().map_err(|e| {
-        format!(
-            "Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings."
-        )
-    })?;
+/// Bounded wait for the worker to confirm the stream is live and buffering.
+/// Microseconds on the warm path; only a cold open (or a permission prompt) gets
+/// anywhere near it. On expiry the caller surfaces the error (`transcript_error`).
+const ARM_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bounded wait for the worker to hand the captured buffer back on release.
+const DISARM_TIMEOUT: Duration = Duration::from_secs(5);
+/// Close the persistent stream after this long without a take (mic indicator off).
+const IDLE_CLOSE: Duration = Duration::from_secs(60);
+/// How often the idle worker wakes to test the idle window.
+const IDLE_TICK: Duration = Duration::from_secs(5);
+
+const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
+const NO_SAMPLES_ERR: &str = "No samples captured. Enable Microphone for Yap in System Settings.";
+
+/// One take's raw capture, exactly as the device delivered it (interleaved, at
+/// the native rate) — the DSP chain runs later, in `finish_clip`.
+struct CapturedAudio {
+    samples: Vec<f32>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+enum CaptureCmd {
+    /// Begin buffering into the persistent stream (opening it if needed).
+    Arm {
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+    /// Stop buffering and hand back the take. The stream STAYS open.
+    Disarm {
+        reply: mpsc::SyncSender<Result<CapturedAudio, String>>,
+    },
+}
+
+/// The HUD level meter, shared by every take: only one capture is ever in
+/// flight, and the persistent stream's callback outlives any single recording.
+fn capture_level() -> &'static LevelHandle {
+    static LEVEL: OnceLock<LevelHandle> = OnceLock::new();
+    LEVEL.get_or_init(|| Arc::new(AtomicU32::new(0)))
+}
+
+/// Wait for a worker acknowledgement — the event signal that replaced YV35's
+/// fixed poll loops. Returns the instant the worker answers; the bounded timeout
+/// keeps a wedged or permission-denied device from hanging the hotkey forever.
+/// Pure over the channel → unit tested.
+fn await_reply<T>(
+    rx: &mpsc::Receiver<Result<T, String>>,
+    timeout: Duration,
+    what: &str,
+) -> Result<T, String> {
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(e),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "Microphone {what} timed out after {}ms — check Yap's Microphone permission under System Settings → Privacy.",
+            timeout.as_millis()
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(format!("Microphone {what} failed — capture worker stopped."))
+        }
+    }
+}
+
+/// Name-keyed cache of the input device + the stream config it accepted. The HAL
+/// property queries behind `default_input_config` cost tens of ms per open on
+/// macOS (worse on USB/Bluetooth) and land straight on the keypress→capture path
+/// whenever the persistent stream has to be reopened. Keyed by device name so
+/// switching the system default misses naturally; `invalidate` is called on ANY
+/// open or stream error so a stale rate/format self-heals on the next take.
+/// Generic over the device/config types so the logic is unit-testable without
+/// touching audio hardware.
+struct DeviceConfigCache<D, C> {
+    entry: Option<(String, D, C)>,
+}
+
+impl<D: Clone, C: Clone> DeviceConfigCache<D, C> {
+    fn new() -> Self {
+        Self { entry: None }
+    }
+
+    /// Cached device + config for `name`, or `None` on a miss. An empty name is
+    /// NEVER a hit: cpal reports it when it cannot identify the device, and
+    /// caching under it would pin an unknown device forever.
+    fn get(&self, name: &str) -> Option<(D, C)> {
+        match &self.entry {
+            Some((cached, device, config)) if !name.is_empty() && cached == name => {
+                Some((device.clone(), config.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn store(&mut self, name: String, device: D, config: C) {
+        if name.is_empty() {
+            self.entry = None;
+            return;
+        }
+        self.entry = Some((name, device, config));
+    }
+
+    fn invalidate(&mut self) {
+        self.entry = None;
+    }
+
+    /// Whether anything is cached at all — the invalidation assertions read it.
+    #[cfg(test)]
+    fn is_cached(&self) -> bool {
+        self.entry.is_some()
+    }
+}
+
+/// The live cpal input stream plus everything its callback writes into. Owned by
+/// the worker thread (`cpal::Stream` is not `Send`) and kept across takes.
+struct LiveStream {
+    _stream: cpal::Stream,
+    sample_rate: u32,
+    channels: u16,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    capturing: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+}
+
+impl LiveStream {
+    /// Begin a take: drop anything the callback saw while idle, zero the meter,
+    /// then open the gate.
+    fn begin(&self) {
+        if let Ok(mut buf) = self.buffer.lock() {
+            buf.clear();
+        }
+        capture_level().store(0, Ordering::Relaxed);
+        self.capturing.store(true, Ordering::SeqCst);
+    }
+
+    /// End a take: close the gate and take the raw interleaved buffer.
+    fn end(&self) -> CapturedAudio {
+        self.capturing.store(false, Ordering::SeqCst);
+        capture_level().store(0, Ordering::Relaxed);
+        let samples = self
+            .buffer
+            .lock()
+            .map(|mut buf| std::mem::take(&mut *buf))
+            .unwrap_or_default();
+        CapturedAudio {
+            samples,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+        }
+    }
+
+    fn is_capturing(&self) -> bool {
+        self.capturing.load(Ordering::SeqCst)
+    }
+
+    fn has_failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+}
+
+/// Send a command to the persistent worker, spawning (or respawning) it when it
+/// is not running — a worker that died took its stream with it, so the next
+/// command transparently gets a fresh one.
+fn dispatch(cmd: CaptureCmd) -> Result<(), String> {
+    static WORKER: OnceLock<Mutex<Option<mpsc::Sender<CaptureCmd>>>> = OnceLock::new();
+    let slot = WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "capture worker lock poisoned".to_string())?;
+
+    let mut cmd = cmd;
+    if let Some(tx) = guard.as_ref() {
+        match tx.send(cmd) {
+            Ok(()) => return Ok(()),
+            // Receiver gone → the worker thread is dead; respawn below.
+            Err(mpsc::SendError(returned)) => {
+                cmd = returned;
+                *guard = None;
+            }
+        }
+    }
+
+    let (tx, rx) = mpsc::channel::<CaptureCmd>();
+    thread::Builder::new()
+        .name("wv-capture".into())
+        .spawn(move || capture_worker_loop(rx))
+        .map_err(|e| format!("spawn capture worker: {e}"))?;
+    tx.send(cmd)
+        .map_err(|_| "capture worker exited immediately".to_string())?;
+    *guard = Some(tx);
+    Ok(())
+}
+
+/// The worker thread: owns the persistent stream + the device/config cache and
+/// answers every arm/stop with an explicit signal (never a poll).
+fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
+    let mut cache: DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig> =
+        DeviceConfigCache::new();
+    let mut live: Option<LiveStream> = None;
+    let mut idle_since = Instant::now();
+
+    loop {
+        match rx.recv_timeout(IDLE_TICK) {
+            Ok(CaptureCmd::Arm { reply }) => {
+                // A stream whose device errored (unplugged, format changed) is
+                // useless — drop it and re-query the hardware from scratch.
+                if live.as_ref().is_some_and(LiveStream::has_failed) {
+                    log::warn!("capture stream reported a device error — reopening cold");
+                    live = None;
+                    cache.invalidate();
+                }
+                if live.is_none() {
+                    match open_stream(&mut cache) {
+                        Ok(stream) => live = Some(stream),
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+                if let Some(stream) = live.as_ref() {
+                    if stream.is_capturing() {
+                        log::warn!("arm while already capturing — dropping the orphaned take");
+                    }
+                    stream.begin();
+                    let _ = reply.send(Ok(()));
+                }
+            }
+            Ok(CaptureCmd::Disarm { reply }) => {
+                idle_since = Instant::now();
+                let captured = match live.as_ref() {
+                    Some(stream) => Ok(stream.end()),
+                    None => Err(NO_SAMPLES_ERR.to_string()),
+                };
+                let _ = reply.send(captured);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let idle = live.as_ref().is_some_and(|s| !s.is_capturing());
+                if idle && idle_since.elapsed() >= IDLE_CLOSE {
+                    live = None;
+                    log::info!(
+                        "capture stream closed after {}s idle (mic indicator off)",
+                        IDLE_CLOSE.as_secs()
+                    );
+                }
+            }
+            // Every sender is gone (process teardown) — release the stream.
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Open the input stream, reusing the cached device + config when the system
+/// default is the same one we opened last time. Any failure invalidates the
+/// cache so the next attempt re-queries the hardware.
+fn open_stream(
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+) -> Result<LiveStream, String> {
+    let opened_at = Instant::now();
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or_else(|| NO_MIC_ERR.to_string())?;
+    let dev_name = device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_default();
+
+    let cached = cache.get(&dev_name);
+    let was_cached = cached.is_some();
+    let (device, supported) = match cached {
+        Some((device, config)) => (device, config),
+        None => {
+            let config = device.default_input_config().map_err(|e| {
+                cache.invalidate();
+                format!("Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings.")
+            })?;
+            (device, config)
+        }
+    };
 
     let sample_rate = supported.sample_rate();
     let channels = supported.channels();
     let sample_format = supported.sample_format();
     let conf: cpal::StreamConfig = supported.into();
 
-    let dev_name = device
-        .description()
-        .map(|d| d.name().to_string())
-        .unwrap_or_else(|_| "default".into());
-    log::info!("mic device={dev_name} format={sample_format:?} rate={sample_rate} ch={channels}");
-
-    let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let samples_cb = samples.clone();
-    let level_cb = level.clone();
-    let err_fn = |e| log::error!("cpal stream error: {e}");
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let capturing = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => device
-            .build_input_stream(
-                conf.clone(),
-                move |data: &[f32], _| {
-                    push_level(&level_cb, data);
-                    if let Ok(mut v) = samples_cb.lock() {
-                        v.extend_from_slice(data);
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("mic stream f32: {e}"))?,
+        cpal::SampleFormat::F32 => {
+            build_capture_stream::<f32>(&device, conf, &buffer, &capturing, &failed)
+        }
         cpal::SampleFormat::I16 => {
-            let level_cb = level.clone();
-            let samples_cb = samples.clone();
-            device
-                .build_input_stream(
-                    conf.clone(),
-                    move |data: &[i16], _| {
-                        let f: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                        push_level(&level_cb, &f);
-                        if let Ok(mut v) = samples_cb.lock() {
-                            v.extend(f);
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("mic stream i16: {e}"))?
+            build_capture_stream::<i16>(&device, conf, &buffer, &capturing, &failed)
         }
         cpal::SampleFormat::U16 => {
-            let level_cb = level.clone();
-            let samples_cb = samples.clone();
-            device
-                .build_input_stream(
-                    conf,
-                    move |data: &[u16], _| {
-                        let f: Vec<f32> = data
-                            .iter()
-                            .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
-                            .collect();
-                        push_level(&level_cb, &f);
-                        if let Ok(mut v) = samples_cb.lock() {
-                            v.extend(f);
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("mic stream u16: {e}"))?
+            build_capture_stream::<u16>(&device, conf, &buffer, &capturing, &failed)
         }
-        other => {
-            return Err(format!(
-                "Unsupported sample format {other:?}. Try a different input device."
-            ));
+        other => Err(format!(
+            "Unsupported sample format {other:?}. Try a different input device."
+        )),
+    };
+    let stream = match stream {
+        Ok(stream) => stream,
+        Err(e) => {
+            cache.invalidate();
+            return Err(e);
         }
     };
-
-    stream
-        .play()
-        .map_err(|e| format!("mic start failed ({e}). Allow Microphone for Yap."))?;
-
-    while !stop.load(Ordering::SeqCst) {
-        thread::sleep(std::time::Duration::from_millis(50));
+    if let Err(e) = stream.play() {
+        cache.invalidate();
+        return Err(format!("mic start failed ({e}). Allow Microphone for Yap."));
     }
-    drop(stream);
-    level.store(0, Ordering::Relaxed);
 
-    let raw = samples.lock().map_err(|e| e.to_string())?.clone();
+    log::info!(
+        "mic device={dev_name} format={sample_format:?} rate={sample_rate} ch={channels} cached_config={was_cached} open_ms={}",
+        opened_at.elapsed().as_millis()
+    );
+    // The device accepted this config — remember it so the next reopen skips the
+    // HAL property queries entirely.
+    cache.store(dev_name, device, supported);
+
+    Ok(LiveStream {
+        _stream: stream,
+        sample_rate,
+        channels,
+        buffer,
+        capturing,
+        failed,
+    })
+}
+
+/// Build the input stream for one sample format. The callback converts to f32,
+/// feeds the HUD meter and appends to the take buffer — but ONLY while a take is
+/// armed, so the persistent stream costs nothing (and retains nothing) between
+/// dictations. A stream error flips `failed`, which makes the next arm reopen.
+fn build_capture_stream<T>(
+    device: &cpal::Device,
+    conf: cpal::StreamConfig,
+    buffer: &Arc<Mutex<Vec<f32>>>,
+    capturing: &Arc<AtomicBool>,
+    failed: &Arc<AtomicBool>,
+) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample + Send + 'static,
+    f32: cpal::FromSample<T>,
+{
+    let buffer = buffer.clone();
+    let capturing = capturing.clone();
+    let failed_cb = failed.clone();
+    let level = capture_level().clone();
+    let mut scratch: Vec<f32> = Vec::new();
+
+    device
+        .build_input_stream(
+            conf,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                if !capturing.load(Ordering::SeqCst) {
+                    return;
+                }
+                scratch.clear();
+                scratch.extend(data.iter().map(|&s| s.to_sample::<f32>()));
+                push_level(&level, &scratch);
+                if let Ok(mut v) = buffer.lock() {
+                    v.extend_from_slice(&scratch);
+                }
+            },
+            move |e| {
+                log::error!("cpal stream error: {e}");
+                failed_cb.store(true, Ordering::SeqCst);
+            },
+            None,
+        )
+        .map_err(|e| format!("mic stream: {e}"))
+}
+
+/// Turn one take's raw capture into the 16 kHz mono WAV the ASR path reads.
+/// Unchanged from the pre-YV35 capture thread's tail — YV35 only moved it off
+/// the audio thread onto the caller that stops the take.
+fn finish_clip(
+    wav_path: &PathBuf,
+    raw: Vec<f32>,
+    sample_rate: u32,
+    channels: u16,
+    denoise: bool,
+) -> Result<(), String> {
     if raw.is_empty() {
-        return Err("No samples captured. Enable Microphone for Yap in System Settings.".into());
+        return Err(NO_SAMPLES_ERR.into());
     }
 
     let mono = if channels <= 1 {
@@ -518,7 +840,7 @@ fn record_loop(
         resample_linear(&mono, sample_rate, TARGET_RATE)
     };
 
-    write_wav_i16(&wav_path, TARGET_RATE, &resampled)?;
+    write_wav_i16(wav_path, TARGET_RATE, &resampled)?;
     log::info!("wrote {} samples → {}", resampled.len(), wav_path.display());
     Ok(())
 }
@@ -1084,6 +1406,121 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / SR as f32).sin())
             .collect()
+    }
+
+    // ── Persistent capture worker (YV35) ────────────────────────────────────
+    // The cpal stream itself needs hardware, but the two pieces of logic that
+    // decide how fast (and how safely) a keypress reaches capture are pure: the
+    // device/config cache and the arm/stop signal wait that replaced the fixed
+    // start poll. Both are exercised here with stand-in device/config types.
+
+    /// Stand-ins for `cpal::Device` / `cpal::SupportedStreamConfig`.
+    type TestCache = DeviceConfigCache<&'static str, u32>;
+
+    #[test]
+    fn config_cache_hits_only_the_same_named_device() {
+        let mut cache: TestCache = DeviceConfigCache::new();
+        assert!(!cache.is_cached());
+        assert_eq!(
+            cache.get("MacBook Pro Microphone"),
+            None,
+            "cold cache misses"
+        );
+
+        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
+        assert!(cache.is_cached());
+        assert_eq!(
+            cache.get("MacBook Pro Microphone"),
+            Some(("builtin", 48_000)),
+            "same device reuses the cached config (no HAL query on reopen)"
+        );
+        // A different default input device must NOT reuse another device's
+        // rate/format — that would open the stream misconfigured.
+        assert_eq!(cache.get("AirPods Pro"), None);
+        // An unidentifiable device (cpal returns an empty name) never hits.
+        assert_eq!(cache.get(""), None);
+    }
+
+    #[test]
+    fn config_cache_invalidates_on_device_error_and_restores() {
+        let mut cache: TestCache = DeviceConfigCache::new();
+        cache.store("AirPods Pro".into(), "bt", 24_000);
+        assert!(cache.get("AirPods Pro").is_some());
+
+        // Stream/open error (device unplugged, rate changed) → drop everything
+        // so the next arm re-queries the hardware.
+        cache.invalidate();
+        assert!(!cache.is_cached());
+        assert_eq!(cache.get("AirPods Pro"), None);
+
+        // …and the next successful open re-populates it.
+        cache.store("AirPods Pro".into(), "bt", 16_000);
+        assert_eq!(cache.get("AirPods Pro"), Some(("bt", 16_000)));
+
+        // Re-storing under a NEW device replaces the entry (one device cached).
+        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
+        assert_eq!(cache.get("AirPods Pro"), None);
+        assert_eq!(
+            cache.get("MacBook Pro Microphone"),
+            Some(("builtin", 48_000))
+        );
+    }
+
+    #[test]
+    fn config_cache_never_stores_an_empty_device_name() {
+        let mut cache: TestCache = DeviceConfigCache::new();
+        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
+        // An unnamed device must clear the cache rather than pin an unknown
+        // device under "" (which would then hit for every unnamed device).
+        cache.store(String::new(), "mystery", 8_000);
+        assert!(!cache.is_cached());
+        assert_eq!(cache.get(""), None);
+    }
+
+    #[test]
+    fn arm_signal_returns_as_soon_as_the_worker_answers() {
+        let (tx, rx) = mpsc::sync_channel::<Result<u8, String>>(1);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let _ = tx.send(Ok(7));
+        });
+        let started = Instant::now();
+        assert_eq!(await_reply(&rx, Duration::from_secs(3), "arm"), Ok(7));
+        // Signalled, not polled: nowhere near the old fixed start-poll wait.
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "arm took {:?} — it should return on the worker's signal",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn arm_signal_surfaces_worker_errors_verbatim() {
+        let (tx, rx) = mpsc::sync_channel::<Result<u8, String>>(1);
+        tx.send(Err(NO_MIC_ERR.to_string())).unwrap();
+        assert_eq!(
+            await_reply(&rx, Duration::from_secs(3), "arm"),
+            Err(NO_MIC_ERR.to_string()),
+            "a mic/permission failure must reach the user unchanged"
+        );
+    }
+
+    #[test]
+    fn arm_signal_is_bounded_and_reports_a_dead_worker() {
+        // Nothing ever answers → bounded timeout, not a hung hotkey.
+        let (keep_alive, rx) = mpsc::sync_channel::<Result<u8, String>>(1);
+        let started = Instant::now();
+        let timed_out = await_reply(&rx, Duration::from_millis(60), "arm").unwrap_err();
+        assert!(timed_out.contains("timed out"), "got {timed_out}");
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(keep_alive);
+
+        // Worker thread died before answering → distinct, actionable error.
+        let (tx, rx) = mpsc::sync_channel::<Result<u8, String>>(1);
+        drop(tx);
+        let dead = await_reply(&rx, Duration::from_secs(3), "stop").unwrap_err();
+        assert!(dead.contains("capture worker stopped"), "got {dead}");
     }
 
     #[test]
