@@ -200,22 +200,22 @@ for (let i = 0; i < batch.length; i++) {
   const item = batch[i];
   phase('Build');
   log(`[${item.id}] BUILD (${i + 1}/${batch.length}): ${item.title}`);
-  const build = await agent(buildPrompt(item), { label: `build:${item.id}`, phase: 'Build', schema: BUILD_SCHEMA, effort: 'high' });
+  const build = await agent(buildPrompt(item), { label: `build:${item.id}`, phase: 'Build', schema: BUILD_SCHEMA, effort: 'high', model: 'opus' });
   if (!build || !build.opened || !build.prNumber) { results.push({ id: item.id, status: 'no-pr', notes: build && build.notes }); log(`[${item.id}] no PR: ${build && build.notes}`); continue; }
   phase('CI+Review');
-  let review = await agent(reviewPrompt(item, build), { label: `review:${item.id}`, phase: 'CI+Review', schema: REVIEW_SCHEMA, effort: 'high' });
+  let review = await agent(reviewPrompt(item, build), { label: `review:${item.id}`, phase: 'CI+Review', schema: REVIEW_SCHEMA, effort: 'high', model: 'opus' });
   let round = 0;
   while (review && (!review.ciGreen || review.verdict === 'FAIL') && round < MAX_FIX_ROUNDS) {
     round++;
     phase('Fix');
     log(`[${item.id}] FIX round ${round}`);
-    await agent(fixPrompt(item, build, review), { label: `fix:${item.id}:r${round}`, phase: 'Fix', schema: BUILD_SCHEMA, effort: 'high' });
+    await agent(fixPrompt(item, build, review), { label: `fix:${item.id}:r${round}`, phase: 'Fix', schema: BUILD_SCHEMA, effort: 'high', model: 'opus' });
     phase('CI+Review');
-    review = await agent(reviewPrompt(item, build), { label: `review:${item.id}:r${round}`, phase: 'CI+Review', schema: REVIEW_SCHEMA, effort: 'high' });
+    review = await agent(reviewPrompt(item, build), { label: `review:${item.id}:r${round}`, phase: 'CI+Review', schema: REVIEW_SCHEMA, effort: 'high', model: 'opus' });
   }
   const green = review && review.ciGreen && review.verdict === 'PASS' && !review.scopeCreep;
   let merged = null;
-  if (green) { phase('Merge'); merged = await agent(mergePrompt(item, build), { label: `merge:${item.id}`, phase: 'Merge', schema: MERGE_SCHEMA }); }
+  if (green) { phase('Merge'); merged = await agent(mergePrompt(item, build), { label: `merge:${item.id}`, phase: 'Merge', schema: MERGE_SCHEMA, model: 'sonnet' }); }
   else log(`[${item.id}] NOT merged — left open for a human`);
   results.push({ id: item.id, prNumber: build.prNumber, prUrl: build.prUrl, ciGreen: review && review.ciGreen, verdict: review && review.verdict, fixRounds: round, merged: merged && merged.merged, status: merged && merged.merged ? 'merged' : 'open' });
   log(`[${item.id}] → ${merged && merged.merged ? 'MERGED' : 'LEFT OPEN'}`);
