@@ -73,6 +73,11 @@ pub struct AsrOutput {
     pub text: String,
     pub backend: String,
     pub seconds: f64,
+    /// YV40 latency span: model load into the warm engine, in ms — `0` whenever
+    /// the model was already resident (the warm path).
+    pub load_ms: i64,
+    /// YV40 latency span: the decode itself, in ms (excludes the load above).
+    pub decode_ms: i64,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
