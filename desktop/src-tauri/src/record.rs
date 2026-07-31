@@ -14,6 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::vad;
+
 /// Shared peak level 0..=1000 for HUD (updated every audio callback window).
 pub type LevelHandle = Arc<AtomicU32>;
 
@@ -55,7 +57,7 @@ pub struct RecordingResult {
     pub voiced_seconds: f64,
     /// Wall-clock hold (press→release), for latency telemetry only.
     pub hold_wall_seconds: f64,
-    /// YV29 voice isolation — Silero VAD's verdict on whether the clip actually
+    /// YV36 voice isolation — Silero VAD's verdict on whether the clip actually
     /// contains speech, used to STRENGTHEN the no-speech gate (complementing the
     /// energy VAD above). `true` whenever Silero is unavailable/errored (safe
     /// fallback: never reject on a missing model), `true` when Silero found a
@@ -116,7 +118,7 @@ pub fn start_recording(
 
 pub fn stop_recording(
     active: ActiveRecording,
-    isolation_model: Option<PathBuf>,
+    isolation_vad: Option<&vad::WarmVad>,
 ) -> Result<RecordingResult, String> {
     let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
     active.stop.store(true, Ordering::SeqCst);
@@ -164,12 +166,13 @@ pub fn stop_recording(
     };
     let speech_seconds = if voiced >= 0.1 { voiced } else { clip_seconds };
 
-    // YV29 — Silero VAD voice isolation. Only when a model asset is available;
-    // ANY failure (missing model, tract error, no samples) falls back to the
+    // YV36 — Silero VAD voice isolation through the WARM engine loaded once at
+    // startup (`vad::WarmVad`, held in the app state). `None` means no model on
+    // disk / the load failed, and ANY inference failure falls back to the
     // energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
     let mut speech_present = true;
-    if let (Some(model), true) = (isolation_model.as_ref(), rate > 0 && !samples.is_empty()) {
-        match silero_isolate(&samples, rate, model) {
+    if let (Some(warm), true) = (isolation_vad, rate > 0 && !samples.is_empty()) {
+        match warm.isolate(&samples, rate) {
             Ok(iso) => {
                 speech_present = iso.has_speech;
                 // (b) Trim the ASR wav to the voiced span so Whisper decodes only
@@ -182,13 +185,13 @@ pub fn stop_recording(
                     if let Some(trimmed) = iso.trimmed.as_ref() {
                         if !trimmed.is_empty() {
                             if let Err(e) = write_wav_i16(&active.wav_path, rate, trimmed) {
-                                log::warn!("YV29 trim rewrite failed (keeping full clip): {e}");
+                                log::warn!("YV36 trim rewrite failed (keeping full clip): {e}");
                             }
                         }
                     }
                 }
                 log::info!(
-                    "YV29 silero: has_speech={} voiced={:.2}s trimmed={}",
+                    "YV36 silero: has_speech={} voiced={:.2}s trimmed={}",
                     iso.has_speech,
                     iso.voiced_seconds,
                     did_trim
@@ -196,7 +199,7 @@ pub fn stop_recording(
             }
             Err(e) => {
                 // Safe fallback — energy VAD alone decides the gate.
-                log::warn!("YV29 silero unavailable, using energy VAD: {e}");
+                log::warn!("YV36 silero unavailable, using energy VAD: {e}");
             }
         }
     }
@@ -1085,295 +1088,6 @@ fn denoise_rnnoise(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     restored
 }
 
-// ── Voice isolation / Silero VAD (Tier 2, docs/research/voice-isolation.md) ──
-// Precise, model-based speech detection over the finished 16 kHz clip. Silero VAD
-// is a tiny ONNX model run through `tract` (PURE Rust — no native onnxruntime, so
-// it links into the app and CI with nothing to install). We use it for two things
-// (both fed by ONE pass): (a) a stronger no-speech gate — reject a clip Silero
-// finds no speech in, catching steady-noise cases the energy RMS gate scores as
-// voiced; and (b) trimming the audio handed to ASR down to the voiced span so
-// Whisper never decodes (and hallucinates on) leading/trailing non-speech.
-//
-// The segment→gate/trim DECISION logic is factored into small pure functions
-// (`probs_to_segments`, `has_speech`, `voiced_span`, `trim_to_voiced`) so it is
-// deterministic and unit-tested below on synthetic segment lists. The ONNX
-// inference is best-effort: any failure returns `Err` and the caller falls back
-// to the energy-VAD path — the utterance is never lost.
-
-/// Silero VAD's fixed operating rate.
-const SILERO_SR: u32 = 16_000;
-/// Silero's only allowed analysis window at 16 kHz — 512 samples (32 ms).
-const SILERO_CHUNK: usize = 512;
-/// Per-chunk speech-probability threshold: a chunk counts as speech at/above this.
-const SILERO_SPEECH_THRESHOLD: f32 = 0.5;
-/// Bridge silence gaps up to this many chunks (~256 ms) inside one utterance so a
-/// natural inter-word pause doesn't split (or trim out of) the voiced span.
-const SILERO_MAX_GAP_CHUNKS: usize = 8;
-/// Drop speech runs shorter than this many chunks (~64 ms) as spurious blips
-/// (a keystroke/click), so they never register as speech on their own.
-const SILERO_MIN_SPEECH_CHUNKS: usize = 2;
-/// Pad the trimmed voiced span by this many chunks (~96 ms) each side so onsets
-/// and trailing consonants survive the trim.
-const SILERO_PAD_CHUNKS: usize = 3;
-/// Minimum total voiced samples for a clip to count as containing speech (the
-/// gate). ~150 ms at 16 kHz — below this it's a click/noise-only tap.
-const SILERO_MIN_SPEECH_SAMPLES: usize = SILERO_SR as usize * 150 / 1000;
-
-/// A contiguous voiced region in sample indices `[start, end)` over the clip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Segment {
-    start: usize,
-    end: usize,
-}
-
-/// Threshold a per-chunk speech-probability track into voiced `Segment`s (in
-/// SAMPLE indices), bridging short silence gaps and dropping too-short blips.
-/// Pure + deterministic → unit tested with synthetic probability lists.
-fn probs_to_segments(
-    probs: &[f32],
-    chunk: usize,
-    threshold: f32,
-    min_speech_chunks: usize,
-    max_gap_chunks: usize,
-) -> Vec<Segment> {
-    if probs.is_empty() || chunk == 0 {
-        return Vec::new();
-    }
-    // 1. Per-chunk voiced mask.
-    let voiced: Vec<bool> = probs.iter().map(|&p| p >= threshold).collect();
-    // 2. Collect raw voiced runs [start_chunk, end_chunk).
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0;
-    while i < voiced.len() {
-        if voiced[i] {
-            let start = i;
-            while i < voiced.len() && voiced[i] {
-                i += 1;
-            }
-            runs.push((start, i));
-        } else {
-            i += 1;
-        }
-    }
-    if runs.is_empty() {
-        return Vec::new();
-    }
-    // 3. Bridge runs separated by a gap ≤ max_gap_chunks.
-    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(runs.len());
-    for run in runs {
-        match merged.last_mut() {
-            Some(last) if run.0 - last.1 <= max_gap_chunks => last.1 = run.1,
-            _ => merged.push(run),
-        }
-    }
-    // 4. Drop runs shorter than min_speech_chunks, convert to sample indices.
-    merged
-        .into_iter()
-        .filter(|(s, e)| e - s >= min_speech_chunks.max(1))
-        .map(|(s, e)| Segment {
-            start: s * chunk,
-            end: e * chunk,
-        })
-        .collect()
-}
-
-/// Total voiced samples across all segments.
-fn segments_voiced_samples(segs: &[Segment]) -> usize {
-    segs.iter().map(|s| s.end.saturating_sub(s.start)).sum()
-}
-
-/// (a) Gate decision: does the clip hold at least `min_samples` of voiced audio?
-fn has_speech(segs: &[Segment], min_samples: usize) -> bool {
-    segments_voiced_samples(segs) >= min_samples
-}
-
-/// The padded voiced span [first_start-pad, last_end+pad) clamped to `[0, len)`,
-/// or `None` when there are no segments. Pure → unit tested.
-fn voiced_span(segs: &[Segment], len: usize, pad: usize) -> Option<(usize, usize)> {
-    if segs.is_empty() || len == 0 {
-        return None;
-    }
-    let first = segs.iter().map(|s| s.start).min().unwrap_or(0);
-    let last = segs.iter().map(|s| s.end).max().unwrap_or(len);
-    let start = first.saturating_sub(pad);
-    let end = last.saturating_add(pad).min(len);
-    if end <= start {
-        return None;
-    }
-    Some((start, end))
-}
-
-/// (b) Trim a buffer to its padded voiced span. If there are NO segments the
-/// input is returned UNCHANGED (never lose the utterance). Pure → unit tested.
-fn trim_to_voiced(samples: &[f32], segs: &[Segment], pad: usize) -> Vec<f32> {
-    match voiced_span(segs, samples.len(), pad) {
-        Some((start, end)) => samples[start..end].to_vec(),
-        None => samples.to_vec(),
-    }
-}
-
-/// Result of a Silero isolation pass over one clip.
-struct Isolation {
-    /// (a) Gate: true when Silero found ≥ the minimum voiced audio.
-    has_speech: bool,
-    /// Silero-measured voiced seconds (telemetry / logging only).
-    voiced_seconds: f64,
-    /// (b) The trimmed-to-voiced buffer to write back for ASR — `None` when
-    /// nothing should be rewritten (no speech, or trim == whole clip).
-    trimmed: Option<Vec<f32>>,
-}
-
-/// Where the Silero VAD model asset lives under Application Support.
-pub fn silero_model_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("models").join("silero_vad.onnx")
-}
-
-/// Direct (NON-HuggingFace, per YV20) URL for the small Silero VAD ONNX model.
-const SILERO_MODEL_URL: &str =
-    "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
-
-/// Ensure the Silero VAD model is cached under Application Support, returning its
-/// path when present. Downloads ONCE via the system `curl` from a direct URL if
-/// missing (best-effort, offline-safe: on any failure we return `None` and the
-/// pipeline falls back to the energy VAD). After the first success it is OFFLINE
-/// forever — the cached file is used and never re-fetched. Call off the hot path
-/// (e.g. a background thread at startup).
-pub fn ensure_silero_model(data_dir: &Path) -> Option<PathBuf> {
-    let path = silero_model_path(data_dir);
-    if path.exists()
-        && std::fs::metadata(&path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false)
-    {
-        return Some(path);
-    }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Best-effort single download; never blocks the utterance, never panics.
-    let tmp = path.with_extension("onnx.part");
-    let status = std::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "--max-time",
-            "30",
-            "-o",
-            &tmp.to_string_lossy(),
-            SILERO_MODEL_URL,
-        ])
-        .status();
-    match status {
-        Ok(s)
-            if s.success()
-                && std::fs::metadata(&tmp)
-                    .map(|m| m.len() > 0)
-                    .unwrap_or(false) =>
-        {
-            if std::fs::rename(&tmp, &path).is_ok() {
-                log::info!("YV29 silero model cached at {}", path.display());
-                Some(path)
-            } else {
-                let _ = std::fs::remove_file(&tmp);
-                None
-            }
-        }
-        other => {
-            let _ = std::fs::remove_file(&tmp);
-            log::warn!("YV29 silero model download skipped/failed: {other:?}");
-            None
-        }
-    }
-}
-
-/// Run the Silero VAD ONNX model over a 16 kHz mono clip → one speech probability
-/// per 512-sample chunk. Pure-Rust inference via `tract`. Returns `Err` on any
-/// model/tract failure so the caller falls back to the energy VAD. Runs the v5
-/// Silero interface (`input` [1,512], `state` [2,1,128], `sr` scalar → `output`,
-/// `stateN`); a model with a different signature simply errors and falls back.
-fn silero_probs(samples: &[f32], model_path: &Path) -> Result<Vec<f32>, String> {
-    use tract_onnx::prelude::*;
-
-    if samples.len() < SILERO_CHUNK {
-        return Err("clip shorter than one Silero chunk".into());
-    }
-    let model = tract_onnx::onnx()
-        .model_for_path(model_path)
-        .map_err(|e| format!("load silero model: {e}"))?
-        .with_input_fact(0, f32::fact([1, SILERO_CHUNK]).into())
-        .map_err(|e| format!("silero input fact: {e}"))?
-        .with_input_fact(1, f32::fact([2, 1, 128]).into())
-        .map_err(|e| format!("silero state fact: {e}"))?
-        .with_input_fact(2, i64::fact([1]).into())
-        .map_err(|e| format!("silero sr fact: {e}"))?
-        .into_optimized()
-        .map_err(|e| format!("optimize silero: {e}"))?
-        .into_runnable()
-        .map_err(|e| format!("runnable silero: {e}"))?;
-
-    // Recurrent LSTM state, carried chunk-to-chunk; starts at zero.
-    let mut state = Tensor::zero::<f32>(&[2, 1, 128]).map_err(|e| e.to_string())?;
-    let sr = tensor1(&[SILERO_SR as i64]);
-
-    let n_chunks = samples.len() / SILERO_CHUNK;
-    let mut probs = Vec::with_capacity(n_chunks);
-    for c in 0..n_chunks {
-        let base = c * SILERO_CHUNK;
-        let input =
-            tract_ndarray::Array2::from_shape_fn((1, SILERO_CHUNK), |(_, k)| samples[base + k])
-                .into_tensor();
-        let outputs = model
-            .run(tvec!(input.into(), state.clone().into(), sr.clone().into()))
-            .map_err(|e| format!("silero run: {e}"))?;
-        // output[0] = speech prob, output[1] = next state.
-        let prob = outputs[0]
-            .to_scalar::<f32>()
-            .map_err(|e| format!("silero output: {e}"))?;
-        probs.push(*prob);
-        state = outputs[1].clone().into_tensor();
-    }
-    Ok(probs)
-}
-
-/// Full Silero isolation pass: infer per-chunk probs, threshold into voiced
-/// segments, then compute the gate decision + the trimmed-to-voiced buffer.
-/// Returns `Err` on inference failure (caller falls back to energy VAD).
-fn silero_isolate(samples: &[f32], rate: u32, model_path: &Path) -> Result<Isolation, String> {
-    if rate != SILERO_SR {
-        // The clip is written at 16 kHz; anything else means an unexpected path.
-        return Err(format!("silero needs {SILERO_SR} Hz, got {rate}"));
-    }
-    let probs = silero_probs(samples, model_path)?;
-    let segs = probs_to_segments(
-        &probs,
-        SILERO_CHUNK,
-        SILERO_SPEECH_THRESHOLD,
-        SILERO_MIN_SPEECH_CHUNKS,
-        SILERO_MAX_GAP_CHUNKS,
-    );
-    let voiced_samples = segments_voiced_samples(&segs);
-    let has = has_speech(&segs, SILERO_MIN_SPEECH_SAMPLES);
-    let voiced_seconds = voiced_samples as f64 / rate as f64;
-    // Only propose a trim when there IS speech and the span is a real subset of
-    // the clip (otherwise leave the clip untouched — never lose the utterance).
-    let trimmed = if has {
-        match voiced_span(&segs, samples.len(), SILERO_CHUNK * SILERO_PAD_CHUNKS) {
-            Some((s, e)) if e - s < samples.len() => Some(trim_to_voiced(
-                samples,
-                &segs,
-                SILERO_CHUNK * SILERO_PAD_CHUNKS,
-            )),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    Ok(Isolation {
-        has_speech: has,
-        voiced_seconds,
-        trimmed,
-    })
-}
-
 fn write_wav_i16(path: &PathBuf, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
     let spec = WavSpec {
         channels: 1,
@@ -1953,155 +1667,5 @@ mod tests {
                 .all(|(&a, &b)| a.to_bits() == b.to_bits()),
             "non-finite input must be returned byte-identical (unchanged)"
         );
-    }
-
-    // ── Voice isolation / Silero VAD decision logic (Tier 2) ─────────────────
-    // The ONNX inference needs a model asset (absent in CI), so it's exercised at
-    // runtime with a safe fallback. What we CAN pin deterministically is the pure
-    // segments→gate/trim logic that turns Silero's per-chunk probabilities into a
-    // keep/reject + trim decision. These tests drive it with synthetic prob/segment
-    // lists — no model, no I/O.
-
-    const CH: usize = SILERO_CHUNK; // 512 samples / chunk
-
-    #[test]
-    fn probs_all_silence_yield_no_segments() {
-        let probs = vec![0.05f32; 20];
-        let segs = probs_to_segments(&probs, CH, SILERO_SPEECH_THRESHOLD, 2, 8);
-        assert!(segs.is_empty(), "silence must produce no voiced segments");
-        assert!(!has_speech(&segs, SILERO_MIN_SPEECH_SAMPLES));
-    }
-
-    #[test]
-    fn probs_all_speech_yield_one_full_segment() {
-        let probs = vec![0.9f32; 20];
-        let segs = probs_to_segments(&probs, CH, SILERO_SPEECH_THRESHOLD, 2, 8);
-        assert_eq!(segs.len(), 1, "continuous speech is one segment");
-        assert_eq!(
-            segs[0],
-            Segment {
-                start: 0,
-                end: 20 * CH
-            }
-        );
-        assert!(has_speech(&segs, SILERO_MIN_SPEECH_SAMPLES));
-    }
-
-    #[test]
-    fn short_gap_between_speech_is_bridged() {
-        // speech(6) | gap(3 ≤ max_gap=8) | speech(6) → ONE segment spanning both.
-        let mut probs = vec![0.9f32; 6];
-        probs.extend(vec![0.1f32; 3]);
-        probs.extend(vec![0.9f32; 6]);
-        let segs = probs_to_segments(&probs, CH, SILERO_SPEECH_THRESHOLD, 2, 8);
-        assert_eq!(segs.len(), 1, "a short gap must be bridged, got {segs:?}");
-        assert_eq!(
-            segs[0],
-            Segment {
-                start: 0,
-                end: 15 * CH
-            }
-        );
-    }
-
-    #[test]
-    fn long_gap_between_speech_splits_into_two_segments() {
-        // speech(6) | gap(12 > max_gap=8) | speech(6) → TWO segments.
-        let mut probs = vec![0.9f32; 6];
-        probs.extend(vec![0.1f32; 12]);
-        probs.extend(vec![0.9f32; 6]);
-        let segs = probs_to_segments(&probs, CH, SILERO_SPEECH_THRESHOLD, 2, 8);
-        assert_eq!(segs.len(), 2, "a long gap must split, got {segs:?}");
-        assert_eq!(
-            segs[0],
-            Segment {
-                start: 0,
-                end: 6 * CH
-            }
-        );
-        assert_eq!(
-            segs[1],
-            Segment {
-                start: 18 * CH,
-                end: 24 * CH
-            }
-        );
-    }
-
-    #[test]
-    fn one_chunk_blip_is_dropped_below_min_speech() {
-        // A single voiced chunk (below min_speech_chunks=2) surrounded by silence
-        // is a click/keystroke, not speech → dropped.
-        let mut probs = vec![0.05f32; 5];
-        probs.push(0.95);
-        probs.extend(vec![0.05f32; 5]);
-        let segs = probs_to_segments(&probs, CH, SILERO_SPEECH_THRESHOLD, 2, 8);
-        assert!(
-            segs.is_empty(),
-            "a 1-chunk blip must be dropped, got {segs:?}"
-        );
-    }
-
-    #[test]
-    fn has_speech_honors_the_minimum_voiced_samples() {
-        // Below the 150 ms floor → not speech; above it → speech.
-        let tiny = vec![Segment { start: 0, end: 100 }]; // 100 samples ≪ 2400
-        assert!(!has_speech(&tiny, SILERO_MIN_SPEECH_SAMPLES));
-        let enough = vec![Segment {
-            start: 0,
-            end: SILERO_MIN_SPEECH_SAMPLES + 1,
-        }];
-        assert!(has_speech(&enough, SILERO_MIN_SPEECH_SAMPLES));
-        assert!(
-            !has_speech(&[], SILERO_MIN_SPEECH_SAMPLES),
-            "empty → no speech"
-        );
-    }
-
-    #[test]
-    fn voiced_span_pads_and_clamps_to_bounds() {
-        let segs = vec![Segment {
-            start: 1000,
-            end: 2000,
-        }];
-        // Pad 500 each side, well within [0, 5000).
-        assert_eq!(voiced_span(&segs, 5000, 500), Some((500, 2500)));
-        // Pad that would run past the edges is clamped, never out of range.
-        assert_eq!(voiced_span(&segs, 5000, 5000), Some((0, 5000)));
-        // No segments → no span.
-        assert_eq!(voiced_span(&[], 5000, 500), None);
-    }
-
-    #[test]
-    fn trim_keeps_only_the_voiced_span() {
-        // 500 silence | 1000 "speech" (0.7) | 500 silence, one segment over the
-        // middle. Trim with no padding must keep exactly the voiced middle.
-        let mut buf = vec![0.0f32; 500];
-        buf.extend(vec![0.7f32; 1000]);
-        buf.extend(vec![0.0f32; 500]);
-        let segs = vec![Segment {
-            start: 500,
-            end: 1500,
-        }];
-        let trimmed = trim_to_voiced(&buf, &segs, 0);
-        assert_eq!(trimmed.len(), 1000, "leading/trailing silence removed");
-        assert!(
-            trimmed.iter().all(|&s| (s - 0.7).abs() < 1e-6),
-            "kept the voiced body"
-        );
-    }
-
-    #[test]
-    fn trim_with_no_segments_returns_input_unchanged() {
-        // NEVER lose the utterance: no detected speech → return the clip as-is so
-        // the energy-VAD gate decides, and ASR still sees the full audio.
-        let buf = vec![0.3f32; 800];
-        assert_eq!(trim_to_voiced(&buf, &[], SILERO_PAD_CHUNKS * CH), buf);
-    }
-
-    #[test]
-    fn probs_to_segments_is_safe_on_empty_input() {
-        assert!(probs_to_segments(&[], CH, 0.5, 2, 8).is_empty());
-        assert!(probs_to_segments(&[0.9, 0.9], 0, 0.5, 2, 8).is_empty());
     }
 }
