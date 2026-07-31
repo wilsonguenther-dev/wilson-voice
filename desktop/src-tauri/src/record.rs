@@ -168,7 +168,7 @@ pub fn stop_recording(
     // disk / the load failed, and ANY inference failure falls back to the
     // energy-VAD path with `speech_present = true` so an utterance is NEVER lost.
     let mut speech_present = true;
-    if let (Some(warm), false) = (isolation_vad, samples.is_empty()) {
+    if let Some(warm) = isolation_vad {
         match warm.isolate(&samples, TARGET_RATE) {
             Ok(iso) => {
                 speech_present = iso.has_speech;
