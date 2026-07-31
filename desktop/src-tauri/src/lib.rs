@@ -20,6 +20,7 @@ mod permissions;
 mod ptt_macos;
 mod record;
 mod sysaudio;
+mod transcription;
 
 use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
@@ -93,6 +94,12 @@ pub struct AppSettings {
     /// personalization (initial_prompt biasing / future voice adaptation).
     #[serde(default)]
     pub calibration_sample: Option<String>,
+    /// Selected embedded (GGUF) ASR model — a `models::catalog()` repo id
+    /// (YV31). Defaults to the catalog's recommended model. Independent of
+    /// `model` (the MLX sidecar repo id) while the native engine is being
+    /// brought up; the dictation path still runs on `model`.
+    #[serde(default = "default_native_model")]
+    pub native_model: String,
 }
 
 fn default_speed_profile() -> String {
@@ -116,6 +123,11 @@ fn default_cleanup_level() -> String {
 fn default_true() -> bool {
     true
 }
+/// Fresh installs (and settings written before YV31) select the catalog's
+/// recommended model — one source of truth, no hardcoded id to drift.
+fn default_native_model() -> String {
+    models::recommended_model().id.clone()
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -138,6 +150,7 @@ impl Default for AppSettings {
             mute_while_dictating: true,
             onboarded: false,
             calibration_sample: None,
+            native_model: default_native_model(),
         }
     }
 }
@@ -190,6 +203,10 @@ struct AppState {
     tray_dictation: PLMutex<Option<MenuItem<Wry>>>,
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
+    /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
+    /// and its idle-unload watcher; backs the model-management commands. NOT on
+    /// the dictation path yet — that still runs through the MLX sidecar.
+    transcription: transcription::TranscriptionManager,
 }
 
 fn data_dir() -> PathBuf {
@@ -658,6 +675,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 
 // --- Commands ---
 
+/// Write settings.json (the single on-disk copy every settings writer goes
+/// through — `save_settings` and the YV31 model commands).
+fn persist_settings(settings: &AppSettings) -> Result<(), String> {
+    let path = data_dir().join("settings.json");
+    let s = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(path, s).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
@@ -698,9 +723,7 @@ fn save_settings(
         _ => "fn⌃".into(),
     };
     *state.settings.lock() = next.clone();
-    let path = data_dir().join("settings.json");
-    let s = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
-    std::fs::write(path, s).map_err(|e| e.to_string())?;
+    persist_settings(&next)?;
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live).
     let _ = app.emit("settings", &next);
     if next.show_floating_pill {
@@ -964,6 +987,110 @@ fn setup_asr_venv() -> Result<String, String> {
     asr_paths::setup_local_venv()
 }
 
+// --- Embedded ASR model management (YV31) ---
+
+/// One bundled-catalog model as the model manager sees it: catalog metadata
+/// merged with on-disk (downloaded) and selection state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub architecture: String,
+    /// Default-quant file that gets downloaded for this model.
+    pub filename: String,
+    pub quant: String,
+    pub size_bytes: u64,
+    pub downloaded: bool,
+    pub selected: bool,
+    pub recommended: bool,
+    pub recommended_rank: Option<u32>,
+}
+
+/// The bundled catalog merged with downloaded + selected state. Offline: the
+/// catalog is compiled into the binary and "downloaded" is a file-system check.
+#[tauri::command]
+async fn list_models(state: State<'_, Arc<AppState>>) -> Result<Vec<ModelEntry>, String> {
+    let selected = state.settings.lock().native_model.clone();
+    Ok(models::catalog()
+        .models
+        .iter()
+        .filter_map(|m| {
+            let file = m.default_file()?;
+            Some(ModelEntry {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                description: m.description.clone(),
+                architecture: m.architecture.clone(),
+                filename: file.filename.clone(),
+                quant: file.quant.clone(),
+                size_bytes: file.size_bytes,
+                downloaded: models::is_downloaded(m),
+                selected: m.id == selected,
+                recommended: m.recommended,
+                recommended_rank: m.recommended_rank,
+            })
+        })
+        .collect())
+}
+
+/// Download a catalog model's default-quant file (resumable, sha256-verified),
+/// emitting `model_download_progress` events. Returns the on-disk path.
+#[tauri::command]
+async fn download_model(app: AppHandle, id: String) -> Result<String, String> {
+    let path = models::download_model(&app, &id).await?;
+    log::info!("model '{id}' downloaded to {}", path.display());
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Select the embedded ASR model. Persists `native_model` and drops a warm
+/// engine of a DIFFERENT model so the next use loads the new selection.
+#[tauri::command]
+async fn select_model(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    let model =
+        models::catalog_model(&id).ok_or_else(|| format!("unknown catalog model '{id}'"))?;
+    let next = {
+        let mut settings = state.settings.lock();
+        settings.native_model = model.id.clone();
+        settings.clone()
+    };
+    persist_settings(&next)?;
+    let _ = app.emit("settings", &next);
+    if state.transcription.loaded_model().as_deref() != Some(model.id.as_str()) {
+        state.transcription.unload();
+    }
+    log::info!("embedded ASR model selected: {}", model.id);
+    Ok(())
+}
+
+/// Delete a downloaded model's file (and any interrupted `.partial`). Unloads
+/// it first if it is the warm one, so the bytes aren't in use.
+#[tauri::command]
+async fn delete_model(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let model =
+        models::catalog_model(&id).ok_or_else(|| format!("unknown catalog model '{id}'"))?;
+    if state.transcription.loaded_model().as_deref() == Some(model.id.as_str()) {
+        state.transcription.unload();
+    }
+    models::delete_downloaded(model)?;
+    log::info!("model '{}' deleted from disk", model.id);
+    Ok(())
+}
+
+/// Warm-engine lifecycle snapshot: what is resident, whether a load or a
+/// transcription is in flight, and how close the idle watcher is to unloading.
+#[tauri::command]
+async fn engine_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<transcription::EngineStatus, String> {
+    Ok(state.transcription.status())
+}
+
 /// Open the transcript DB without panicking at launch. A transient failure
 /// (another instance briefly holding the lock, disk momentarily full) is retried
 /// once after a short backoff; if it still fails we degrade to an in-memory DB so
@@ -1081,6 +1208,7 @@ pub fn run() {
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
+        transcription: transcription::TranscriptionManager::new(),
     });
 
     tauri::Builder::default()
@@ -1154,7 +1282,12 @@ pub fn run() {
             recompute_stats,
             open_privacy_settings,
             manual_toggle,
-            show_main
+            show_main,
+            list_models,
+            download_model,
+            select_model,
+            delete_model,
+            engine_status
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
@@ -1517,5 +1650,18 @@ mod tests {
         assert!(tjson.contains("\"companionTone\":\"rude\""));
         let tback: AppSettings = serde_json::from_str(&tjson).expect("tone round-trip");
         assert_eq!(tback.companion_tone, "rude");
+
+        // YV31: nativeModel defaults to the catalog's recommended model for
+        // fresh installs AND for legacy JSON written before the field existed,
+        // and round-trips on its camelCase wire key.
+        let recommended = crate::models::recommended_model().id.clone();
+        assert_eq!(AppSettings::default().native_model, recommended);
+        assert_eq!(parsed.native_model, recommended);
+        let mut native = AppSettings::default();
+        native.native_model = "handy-computer/whisper-tiny-gguf".into();
+        let njson = serde_json::to_string(&native).expect("serialize native model");
+        assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
+        let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
+        assert_eq!(nback.native_model, "handy-computer/whisper-tiny-gguf");
     }
 }
