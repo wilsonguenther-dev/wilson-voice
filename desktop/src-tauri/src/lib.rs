@@ -480,11 +480,18 @@ fn transcribe_native(
     model_id: &str,
     model_path: &Path,
     wav: &Path,
+    language: &str,
 ) -> Result<transcription::AsrOutput, String> {
     let samples = record::read_wav_16k_mono(wav)?;
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
-    let text = manager.transcribe(samples)?;
+    // The "Language I speak" setting used to reach Whisper as the sidecar's
+    // `--language`; it now rides the engine's own language hint (YV34) so the
+    // picker keeps working. Blank = autodetect.
+    let language = Some(language.trim())
+        .filter(|l| !l.is_empty())
+        .map(str::to_string);
+    let text = manager.transcribe(samples, language)?;
     if text.trim().is_empty() {
         return Err("Empty transcript".into());
     }
@@ -585,8 +592,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     "No speech model installed — open Settings → Models and download one.".into(),
                 );
             };
-            let asr =
-                transcribe_native(&state2.transcription, &model_id, &model_path, &rec.wav_path)?;
+            let asr = transcribe_native(
+                &state2.transcription,
+                &model_id,
+                &model_path,
+                &rec.wav_path,
+                &settings.language,
+            )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).

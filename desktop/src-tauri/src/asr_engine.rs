@@ -62,10 +62,22 @@ pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
 }
 
 /// Batch-transcribe 16 kHz mono f32 samples into text.
-pub fn transcribe(engine: &mut AsrEngine, samples_16k_mono: &[f32]) -> Result<String, String> {
+///
+/// `language` is the user's "Language I speak" setting as an ISO code, carried
+/// over from the deleted sidecar's `--language` flag (YV34) so the picker keeps
+/// working; `None` leaves transcribe-cpp on autodetect.
+pub fn transcribe(
+    engine: &mut AsrEngine,
+    samples_16k_mono: &[f32],
+    language: Option<&str>,
+) -> Result<String, String> {
+    let options = RunOptions {
+        language: language.map(str::to_string),
+        ..RunOptions::default()
+    };
     engine
         .session
-        .run(samples_16k_mono, &RunOptions::default())
+        .run(samples_16k_mono, &options)
         .map(|t| t.text)
         .map_err(|e| format!("transcription failed: {e}"))
 }
