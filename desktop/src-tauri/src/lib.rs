@@ -7,6 +7,7 @@
 mod asr;
 mod asr_engine;
 mod asr_paths;
+mod cli;
 mod db;
 mod dictation;
 mod float_pill;
@@ -26,7 +27,7 @@ use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -204,8 +205,9 @@ struct AppState {
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
     /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
-    /// and its idle-unload watcher; backs the model-management commands. NOT on
-    /// the dictation path yet — that still runs through the MLX sidecar.
+    /// and its idle-unload watcher; backs the model-management commands. YV32
+    /// puts it on the dictation path as the PRIMARY transcriber — the MLX
+    /// sidecar is now only the fallback (see `stop_and_transcribe`).
     transcription: transcription::TranscriptionManager,
 }
 
@@ -442,6 +444,48 @@ impl Drop for WorkerBusyGuard {
     }
 }
 
+/// Emitted whenever a take fails to produce a transcript (YV32). Before this the
+/// error path only logged + notified, so the UI had NOTHING to listen to: the
+/// onboarding overlay clears its "Transcribing…" state on `transcript` alone and
+/// spun forever on any ASR failure. Payload: `{ message }`.
+pub const TRANSCRIPT_ERROR_EVENT: &str = "transcript_error";
+
+/// The selected embedded model when it is actually downloaded, as
+/// `(catalog id, on-disk path)`. `None` means the native engine can't run yet
+/// (nothing fetched) and the caller falls back to the Python sidecar.
+fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
+    let model = models::catalog_model(native_model)?;
+    if !models::is_downloaded(model) {
+        return None;
+    }
+    models::model_path(model).map(|path| (model.id.clone(), path))
+}
+
+/// Transcribe a captured clip with the embedded GGUF engine (YV32's primary
+/// path): decode the 16 kHz mono clip, load the model into the warm manager (a
+/// no-op when it is already resident), and run it. Both the load and the
+/// transcription are already bounded + panic-contained by the manager, so this
+/// can fail but can never hang.
+fn transcribe_native(
+    manager: &transcription::TranscriptionManager,
+    model_id: &str,
+    model_path: &Path,
+    wav: &Path,
+) -> Result<asr::AsrOutput, String> {
+    let samples = record::read_wav_16k_mono(wav)?;
+    let started = std::time::Instant::now();
+    manager.load(model_id, model_path)?;
+    let text = manager.transcribe(samples)?;
+    if text.trim().is_empty() {
+        return Err("Empty transcript".into());
+    }
+    Ok(asr::AsrOutput {
+        text,
+        backend: "native".into(),
+        seconds: started.elapsed().as_secs_f64(),
+    })
+}
+
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // Hands-free: ignore key-release; only stop on explicit tap / button
     if *state.hands_free.lock() {
@@ -524,17 +568,37 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
                 return Ok(None);
             }
-            // Bias Whisper toward the user's learned vocabulary/jargon BEFORE it
-            // decodes (initial_prompt), ordered most-frequent-last.
-            let vocab = db.top_dictionary_terms(60).unwrap_or_default();
-            let asr = asr::run_asr(
-                &venv,
-                &worker,
-                &rec.wav_path,
-                &settings.model,
-                &settings.language,
-                &vocab,
-            )?;
+            // YV32 — the embedded GGUF engine is the PRIMARY transcriber: it runs
+            // in-process (no Python, no venv, no HuggingFace download) whenever the
+            // selected native model is on disk. The MLX sidecar stays as a fallback
+            // but is only attempted when its venv actually exists; on a fresh Mac
+            // it never does, and spawning it there produced the confusing
+            // "ASR Python missing" hang the audit caught. With neither available we
+            // fail fast with an actionable message instead of pretending.
+            let asr = match native_model_ready(&settings.native_model) {
+                Some((model_id, model_path)) => {
+                    transcribe_native(&state2.transcription, &model_id, &model_path, &rec.wav_path)?
+                }
+                None if venv.exists() => {
+                    // Bias Whisper toward the user's learned vocabulary/jargon
+                    // BEFORE it decodes (initial_prompt), most-frequent-last.
+                    let vocab = db.top_dictionary_terms(60).unwrap_or_default();
+                    asr::run_asr(
+                        &venv,
+                        &worker,
+                        &rec.wav_path,
+                        &settings.model,
+                        &settings.language,
+                        &vocab,
+                    )?
+                }
+                None => {
+                    return Err(
+                        "No speech model installed — open Settings → Models and download one."
+                            .into(),
+                    )
+                }
+            };
             let t_asr = t_release.elapsed().as_millis() as i64;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
@@ -660,6 +724,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             Err(e) => {
                 log::error!("pipeline failed: {e}");
                 *state2.last_error.lock() = Some(e.clone());
+                // YV32: tell the UI, not just the log. Any view waiting on a
+                // transcript (onboarding calibration, the pill) can now clear its
+                // busy state and show the reason instead of spinning forever.
+                let _ = app2.emit(
+                    TRANSCRIPT_ERROR_EVENT,
+                    serde_json::json!({ "message": e.clone() }),
+                );
                 notify(&app2, "Yap — Failed", e);
             }
         }
@@ -1128,6 +1199,13 @@ fn open_db_graceful(db_path: std::path::PathBuf) -> Database {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // YV32 headless mode (`--transcribe-file <wav>`): transcribe with the
+    // embedded engine, print the text, exit. Handled FIRST so no window, tray,
+    // hotkey tap, or app logger is ever created for a one-shot CLI run.
+    if let Some(code) = cli::handle_args() {
+        std::process::exit(code);
+    }
+
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
     logging::init(&data_dir());

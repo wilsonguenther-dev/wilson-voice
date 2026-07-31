@@ -8,8 +8,9 @@
 //! are the trust anchor: every download is sha256-verified before the
 //! `.partial` file is renamed into place, regardless of which host served it.
 //!
-//! Foundation only — nothing is wired into the dictation pipeline yet, so the
-//! pub API is intentionally unreferenced for now.
+//! YV32 reads this from the dictation path (which catalog model is downloaded
+//! and where its file lives) and from the headless CLI, which auto-downloads
+//! the smallest entry when nothing is on disk yet.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,18 @@ pub fn recommended_model() -> &'static CatalogModel {
         .iter()
         .filter(|m| m.recommended)
         .min_by_key(|m| m.recommended_rank.unwrap_or(u32::MAX))
+        .or_else(|| catalog().models.first())
+        .expect("bundled catalog is never empty")
+}
+
+/// The catalog's smallest download — what the headless `--transcribe-file` mode
+/// auto-fetches when nothing is on disk yet (fastest possible cold gate).
+pub fn smallest_model() -> &'static CatalogModel {
+    catalog()
+        .models
+        .iter()
+        .filter(|m| m.default_file().is_some())
+        .min_by_key(|m| m.default_file().map(|f| f.size_bytes).unwrap_or(u64::MAX))
         .or_else(|| catalog().models.first())
         .expect("bundled catalog is never empty")
 }
@@ -263,22 +276,16 @@ pub struct ModelDownloadProgress {
 /// Download a catalog model's default-quant file into [`models_dir`], emitting
 /// [`ModelDownloadProgress`] events. Returns the verified on-disk path.
 pub async fn download_model(app: &AppHandle, model_id: &str) -> Result<PathBuf, String> {
-    let model =
-        catalog_model(model_id).ok_or_else(|| format!("unknown catalog model '{model_id}'"))?;
-    let file = model
-        .default_file()
-        .ok_or_else(|| format!("catalog model '{model_id}' lists no files"))?;
-    let urls = download_urls(model, file);
-    let dest = models_dir().join(&file.filename);
-
     let app = app.clone();
     let id = model_id.to_string();
     let mut last_emitted: Option<u64> = None;
-    download_file(&urls, &dest, file.size_bytes, &file.sha256, |downloaded, total| {
+    download_model_with(model_id, |downloaded, total| {
         // Throttle: first, final, and one per PROGRESS_EMIT_STEP in between.
         let due = match last_emitted {
             None => true,
-            Some(prev) => downloaded >= total || downloaded.saturating_sub(prev) >= PROGRESS_EMIT_STEP,
+            Some(prev) => {
+                downloaded >= total || downloaded.saturating_sub(prev) >= PROGRESS_EMIT_STEP
+            }
         };
         if due {
             last_emitted = Some(downloaded);
@@ -293,6 +300,23 @@ pub async fn download_model(app: &AppHandle, model_id: &str) -> Result<PathBuf, 
         }
     })
     .await
+}
+
+/// The AppHandle-free core of [`download_model`]: same resumable, sha256-verified
+/// fetch with a caller-supplied progress sink. Used by the headless CLI, which
+/// has no Tauri app to emit events into.
+pub async fn download_model_with<F>(model_id: &str, progress: F) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    let model =
+        catalog_model(model_id).ok_or_else(|| format!("unknown catalog model '{model_id}'"))?;
+    let file = model
+        .default_file()
+        .ok_or_else(|| format!("catalog model '{model_id}' lists no files"))?;
+    let urls = download_urls(model, file);
+    let dest = models_dir().join(&file.filename);
+    download_file(&urls, &dest, file.size_bytes, &file.sha256, progress).await
 }
 
 /// Resumable, verified download: tries each URL in order, resuming from the
@@ -467,6 +491,28 @@ mod tests {
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             m.default_file().unwrap().filename
+        );
+    }
+
+    #[test]
+    fn smallest_model_is_the_cheapest_download() {
+        let m = smallest_model();
+        let size = m.default_file().unwrap().size_bytes;
+        for other in &catalog().models {
+            if let Some(f) = other.default_file() {
+                assert!(
+                    size <= f.size_bytes,
+                    "{} is smaller than {}",
+                    other.id,
+                    m.id
+                );
+            }
+        }
+        // Whisper Tiny today — the model the headless gate auto-downloads.
+        assert!(
+            m.id.contains("whisper-tiny"),
+            "unexpected smallest: {}",
+            m.id
         );
     }
 

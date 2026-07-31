@@ -17,8 +17,10 @@
 //! An idle watcher unloads the engine after [`IDLE_UNLOAD_AFTER`] of no use so a
 //! background Yap doesn't hold ~1 GB of model resident all day.
 //!
-//! Foundation only — YV31 does NOT touch the live dictation path (still the
-//! Python/MLX sidecar), so parts of this API are unreferenced for now.
+//! YV32 puts this on the live dictation path as the primary transcriber (see
+//! `lib::transcribe_native`) and behind the headless `--transcribe-file` CLI;
+//! the Python/MLX sidecar is now only the fallback. A few lifecycle helpers are
+//! still driven by the model-management commands alone.
 #![allow(dead_code)]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};

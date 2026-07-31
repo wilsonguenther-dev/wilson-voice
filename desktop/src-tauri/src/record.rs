@@ -16,6 +16,9 @@ use uuid::Uuid;
 /// Shared peak level 0..=1000 for HUD (updated every audio callback window).
 pub type LevelHandle = Arc<AtomicU32>;
 
+/// Every clip is written — and every ASR engine is fed — at 16 kHz mono.
+const TARGET_RATE: u32 = 16_000;
+
 pub struct ActiveRecording {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<(), String>>>,
@@ -239,6 +242,49 @@ fn read_wav_mono_f32(path: &PathBuf) -> Option<(Vec<f32>, u32)> {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
     };
     Some((samples, spec.sample_rate))
+}
+
+/// Read a WAV off disk as the 16 kHz mono `[-1, 1]` f32 buffer the embedded ASR
+/// engine consumes (YV32). Our own clips are already mono/16 kHz (see
+/// `record_loop`), so this is a straight read for the dictation path; a foreign
+/// file (the CLI's `--transcribe-file`, a test fixture) is downmixed and
+/// linearly resampled with the same helper the capture path uses.
+pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
+    let mut reader =
+        hound::WavReader::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let spec = reader.spec();
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 * scale)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+    };
+    if interleaved.is_empty() || spec.sample_rate == 0 {
+        return Err(format!("no audio samples in {}", path.display()));
+    }
+    let mono = if spec.channels <= 1 {
+        interleaved
+    } else {
+        let ch = spec.channels as usize;
+        interleaved
+            .chunks(ch)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect()
+    };
+    let out = if spec.sample_rate == TARGET_RATE {
+        mono
+    } else {
+        resample_linear(&mono, spec.sample_rate, TARGET_RATE)
+    };
+    if out.is_empty() {
+        return Err(format!("no audio samples in {}", path.display()));
+    }
+    Ok(out)
 }
 
 /// Energy-based VAD → seconds of actual speech. Frame the signal (20 ms), take
@@ -466,14 +512,13 @@ fn record_loop(
     } else {
         mono
     };
-    let target_rate = 16_000u32;
-    let resampled = if sample_rate == target_rate {
+    let resampled = if sample_rate == TARGET_RATE {
         mono
     } else {
-        resample_linear(&mono, sample_rate, target_rate)
+        resample_linear(&mono, sample_rate, TARGET_RATE)
     };
 
-    write_wav_i16(&wav_path, target_rate, &resampled)?;
+    write_wav_i16(&wav_path, TARGET_RATE, &resampled)?;
     log::info!("wrote {} samples → {}", resampled.len(), wav_path.display());
     Ok(())
 }
@@ -1070,6 +1115,49 @@ mod tests {
         // Missing dir is a safe no-op.
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(sweep_stale_wavs(&dir), 0);
+    }
+
+    /// The committed E2E fixture (`--transcribe-file` gate): a `say`-generated
+    /// clip of "The quick brown fox jumps over the lazy dog." — see
+    /// tests/fixtures/README.md.
+    #[test]
+    fn fixture_wav_loads_as_16k_mono() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("quick-brown-fox-16k.wav");
+        let samples = read_wav_16k_mono(&fixture).expect("fixture reads");
+        let seconds = samples.len() as f64 / SR as f64;
+        assert!(
+            (1.0..10.0).contains(&seconds),
+            "fixture should be a short phrase, got {seconds:.2}s"
+        );
+        assert!(samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        assert!(
+            voiced_seconds(&samples, SR) > 0.5,
+            "fixture must contain speech"
+        );
+    }
+
+    #[test]
+    fn wav_loader_downsamples_and_rejects_empty() {
+        let dir = std::env::temp_dir().join(format!("yv32-wav-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 1 s at 32 kHz (32k samples) → 16k samples at the 16 kHz target rate.
+        let path = dir.join("tone32k.wav");
+        write_wav_i16(&path, 32_000, &tone(2.0, 220.0, 0.4)).unwrap();
+        let out = read_wav_16k_mono(&path).expect("32 kHz wav reads");
+        let expected = SR as usize;
+        assert!(
+            out.len().abs_diff(expected) <= 2,
+            "expected ~{expected} samples at 16 kHz, got {}",
+            out.len()
+        );
+        // A zero-sample wav is an error, never a silent empty transcription.
+        let empty = dir.join("empty.wav");
+        write_wav_i16(&empty, SR, &[]).unwrap();
+        assert!(read_wav_16k_mono(&empty).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -10,6 +10,9 @@ build/
 venv/
 *.wav
 *.aiff
+# …except the committed ASR test fixtures: synthetic `say` speech (YV32's
+# headless E2E gate), never captured user audio.
+!desktop/src-tauri/tests/fixtures/*.wav
 .DS_Store
 logs/
 *.log
