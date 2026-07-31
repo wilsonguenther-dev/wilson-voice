@@ -285,10 +285,15 @@ where
         }
         for url in urls {
             match download_attempt(&client, url, &partial, size_bytes, &mut progress).await {
-                Ok(()) => {
-                    finalize_download(&partial, dest, expected_sha256)?;
-                    return Ok(dest.to_path_buf());
-                }
+                Ok(()) => match finalize_download(&partial, dest, expected_sha256) {
+                    Ok(()) => return Ok(dest.to_path_buf()),
+                    // Verification failure (finalize deleted the partial) counts as a
+                    // failed attempt — fall back to the remaining URLs/attempts.
+                    Err(e) => {
+                        log::warn!("model download verification failed ({url}): {e}");
+                        last_err = e;
+                    }
+                },
                 Err(e) => {
                     log::warn!("model download attempt failed ({url}): {e}");
                     last_err = e;

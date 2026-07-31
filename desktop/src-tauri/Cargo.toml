@@ -48,7 +48,7 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.
 # table below adds the Metal backend, mirroring Handy's per-platform posture.
 transcribe-cpp = { version = "0.1.3", default-features = false }
 # Verified model downloader (YV30): resumable HTTP + mandatory sha256 check.
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.13", features = ["stream"] }
 sha2 = "0.10"
 # Tauri already pulls tokio; "time" adds the stall-timeout/backoff primitives.
 tokio = { version = "1", features = ["time"] }
