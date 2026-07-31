@@ -22,6 +22,16 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-updater = "2"
+# YV42: a second launch of Yap.app must never become a second PROCESS — two
+# instances fight over the CGEvent FN tap, the global shortcuts, the pasteboard
+# transaction and the SQLite WAL. This plugin hands the argv to the running app
+# (which just focuses its window) and exits the duplicate. Registered FIRST in
+# run(), the way Handy does it, so the guard is in place before any other plugin
+# takes a lock the duplicate would also grab.
+tauri-plugin-single-instance = "2.4.3"
+# YV42 launch-at-login (macOS LaunchAgent), driven by the `autostart` setting so
+# the toggle — not whatever a previous install wrote — is authoritative.
+tauri-plugin-autostart = "2.5.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 parking_lot = "0.12"

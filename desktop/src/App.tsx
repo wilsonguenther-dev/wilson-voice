@@ -79,6 +79,12 @@ interface AppSettings {
   onboarded?: boolean;
   /** Calibration phrase captured during onboarding, kept for later personalization. */
   calibrationSample?: string | null;
+  /**
+   * Launch Yap at login (backend `autostart`, YV42). Installs a macOS
+   * LaunchAgent through tauri-plugin-autostart. Default off — the backend
+   * applies it the moment this saves, and re-applies it on every launch.
+   */
+  autostart?: boolean;
 }
 
 interface AppStatus {
@@ -1785,10 +1791,10 @@ export default function App() {
               {settingsTab === "advanced" && (
                 <section className="settings-panel">
                   <h2 className="settings-section">
-                    Advanced — Speech model
+                    Advanced
                     <span className="sub">
-                      Leave this as-is unless dictation feels slow or misses
-                      words.
+                      Your speech model and how Yap starts up. Leave this as-is
+                      unless dictation feels slow or misses words.
                     </span>
                   </h2>
                   <div className="panel">
@@ -1814,6 +1820,28 @@ export default function App() {
                     <p className="muted tiny" style={{ marginTop: 8 }}>
                       {perms?.asrDetail}
                     </p>
+                  </div>
+                  {/* YV42 — launch at login. Off by default; nothing installs a
+                      login item behind your back. */}
+                  <div className="panel">
+                    <h3>Startup</h3>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.autostart ?? false}
+                        onChange={(e) =>
+                          saveSettings({
+                            ...settings,
+                            autostart: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>
+                        <strong>Launch Yap at login</strong> — Yap has to be
+                        running to catch your hold-to-talk key, so start it
+                        automatically when you sign in
+                      </span>
+                    </label>
                   </div>
                 </section>
               )}

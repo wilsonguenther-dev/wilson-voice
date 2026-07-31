@@ -108,6 +108,12 @@ pub struct AppSettings {
     /// dictation path runs on; there is no other ASR selector.
     #[serde(default = "default_native_model")]
     pub native_model: String,
+    /// Launch Yap at login (YV42), applied through tauri-plugin-autostart's
+    /// macOS LaunchAgent. Defaults OFF — nothing installs a login item behind
+    /// the user's back; the toggle is applied immediately on save and re-applied
+    /// at every startup so this setting, not a stale LaunchAgent, is the truth.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -162,6 +168,7 @@ impl Default for AppSettings {
             onboarded: false,
             calibration_sample: None,
             native_model: default_native_model(),
+            autostart: false,
         }
     }
 }
@@ -1037,6 +1044,8 @@ fn save_settings(
     {
         ptt_macos::set_binding(ptt_macos::PttBinding::from_settings(&next.ptt_binding));
     }
+    // YV42: the login item follows the toggle immediately, not on next launch.
+    apply_autostart(&app, next.autostart);
     Ok(())
 }
 
@@ -1271,11 +1280,50 @@ fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) {
     }
 }
 
-#[tauri::command]
-fn show_main(app: AppHandle) {
+/// Bring the main window forward. Shared by the `show_main` command and the
+/// YV42 single-instance handler (a second launch focuses this window instead of
+/// starting a rival process).
+fn focus_main_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+#[tauri::command]
+fn show_main(app: AppHandle) {
+    focus_main_window(&app);
+}
+
+/// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
+/// tauri-plugin-autostart. Called at startup and on every save so the setting,
+/// not a LaunchAgent left behind by an older install or a moved .app, is the
+/// source of truth. A login item that cannot be written is logged, never
+/// surfaced as a settings error: the rest of the save already landed.
+fn apply_autostart(app: &AppHandle, enabled: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    // Only touch the plist when it actually disagrees — this runs on every
+    // launch and on every unrelated settings save.
+    match manager.is_enabled() {
+        Ok(current) if current == enabled => return,
+        Err(e) => log::warn!("could not read the launch-at-login state ({e}); applying anyway"),
+        _ => {}
+    }
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    match result {
+        Ok(()) => log::info!(
+            "launch at login {}",
+            if enabled { "enabled" } else { "disabled" }
+        ),
+        Err(e) => log::warn!(
+            "could not {} launch at login: {e}",
+            if enabled { "enable" } else { "disable" }
+        ),
     }
 }
 
@@ -1534,6 +1582,25 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // YV42 single instance — MUST stay the FIRST plugin (Handy's order): a
+        // second `open -a Yap` is caught here and handed to the running app
+        // before any other plugin in this chain has taken a lock the duplicate
+        // would grab too. Two live processes would fight over the CGEvent FN
+        // tap, the ⌃⌘V global shortcut, the pasteboard transaction and the
+        // SQLite WAL. The headless `--transcribe-file` run never reaches this
+        // builder (cli::handle_args exits above), so a CLI transcription still
+        // works while the app is open.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            log::info!("second instance launched — focusing the running app");
+            focus_main_window(app);
+        }))
+        // YV42 launch at login. The LaunchAgent variant is the macOS-supported
+        // one (no deprecated login-item AppleScript); the `autostart` setting is
+        // applied in setup() below and on every save, so it stays authoritative.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         // Auto-update: checks the GitHub Releases updater manifest (see
@@ -1623,6 +1690,11 @@ pub fn run() {
             // LSUIElement is false in Info.plist to match.
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+            // YV42: re-assert launch-at-login from the persisted setting, so the
+            // toggle stays authoritative even if the .app moved (which strands
+            // the old LaunchAgent) or an older install left one behind.
+            apply_autostart(app.handle(), state.settings.lock().autostart);
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -2038,6 +2110,42 @@ mod tests {
         assert!(njson.contains("\"nativeModel\":\"handy-computer/whisper-tiny-gguf\""));
         let nback: AppSettings = serde_json::from_str(&njson).expect("native round-trip");
         assert_eq!(nback.native_model, "handy-computer/whisper-tiny-gguf");
+    }
+
+    // YV42: launch-at-login is OFF unless the user asked for it — a fresh
+    // install and a store written before the field existed must both read
+    // false, so no LaunchAgent is ever installed behind the user's back. When
+    // it IS on it round-trips (and survives salvage) on its wire key.
+    #[test]
+    fn autostart_defaults_off_and_round_trips() {
+        assert!(!AppSettings::default().autostart);
+
+        let legacy = r#"{
+            "language": "en",
+            "autoPaste": true,
+            "hotkeyLabel": "fn⌃",
+            "showFloatingPill": true
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(
+            !parsed.autostart,
+            "a pre-YV42 store must not enable autostart"
+        );
+
+        let mut on = AppSettings::default();
+        on.autostart = true;
+        let json = serde_json::to_string(&on).expect("serialize autostart");
+        assert!(json.contains("\"autostart\":true"));
+        let back: AppSettings = serde_json::from_str(&json).expect("autostart round-trip");
+        assert!(back.autostart);
+
+        // A different field being corrupt must not silently turn it back off.
+        let mut stored = serde_json::to_value(&on).expect("autostart settings to value");
+        stored
+            .as_object_mut()
+            .unwrap()
+            .insert("denoise".into(), serde_json::json!("sometimes"));
+        assert!(salvage_settings(&stored).autostart);
     }
 
     // YV41: ONE unparseable field used to throw away the entire settings.json
