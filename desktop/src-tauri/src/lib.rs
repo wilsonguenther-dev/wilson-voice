@@ -355,6 +355,13 @@ fn restore_system_output(state: &AppState) {
     }
 }
 
+/// Mic-level HUD cadence: the float pill's waveform redraws at 20 frames per
+/// second, so the level thread emits one `audio_level` per frame. This is a
+/// render rate, not a wait on anything — the take's end arrives as a signal
+/// (see `record::StopSignal`), never by re-reading state on a timer.
+const HUD_FPS: u64 = 20;
+const HUD_FRAME: std::time::Duration = std::time::Duration::from_millis(1_000 / HUD_FPS);
+
 fn start_recording(app: &AppHandle, state: &AppState) {
     if *state.recording.lock() || *state.busy.lock() {
         return;
@@ -368,7 +375,7 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     match record::start_recording(data_dir().join("recordings"), denoise, pressed_at) {
         Ok(active) => {
             let level = active.level.clone();
-            let stop_flag = active.stop_flag();
+            let stop = active.stop_signal();
             *state.recorder.lock() = Some(active);
             *state.recording.lock() = true;
             *state.last_error.lock() = None;
@@ -380,14 +387,20 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             emit_status(app, state);
             // Wispr-style: glass island appears for the hold
             float_pill::show_for_recording(app);
-            // Stream mic levels to float HUD (~20 fps)
+            // Stream mic levels to the float HUD at HUD_FPS. YV38: the thread
+            // parks on the take's stop signal between frames instead of sleeping
+            // a fixed slice and re-reading a flag, so key-release ends the meter
+            // immediately (it used to keep drawing for up to one frame after the
+            // hold, and the zeroing frame landed that late too).
             let app_lv = app.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
-                while !stop_flag.load(Ordering::SeqCst) {
+                loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if stop.wait_stopped(HUD_FRAME) {
+                        break;
+                    }
                 }
                 let _ = app_lv.emit("audio_level", 0.0);
             });
@@ -1259,6 +1272,30 @@ pub fn run() {
         });
     }
 
+    // YV38: warm the ASR engine at launch instead of making the user's FIRST
+    // take pay the multi-second model load. No delay in front of it — the load
+    // is blocking, so it goes straight onto the blocking pool (never the main
+    // thread), and it is a no-op when no model has been downloaded yet. The load
+    // is already panic-contained + idempotent inside the manager (and the idle
+    // watcher unloads it again after 15 minutes of no dictation), so the only
+    // thing this changes is WHO pays for the cold load.
+    {
+        let state = state.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let native = state.settings.lock().native_model.clone();
+            let Some((model_id, model_path)) = native_model_ready(&native) else {
+                log::info!("startup: no downloaded ASR model — engine preload skipped");
+                return;
+            };
+            match state.transcription.load(&model_id, &model_path) {
+                Ok(()) => log::info!("startup: ASR engine preloaded ({model_id})"),
+                Err(e) => {
+                    log::warn!("startup: ASR engine preload failed ({e}) — the take path retries")
+                }
+            }
+        });
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
@@ -1592,13 +1629,15 @@ pub fn run() {
 
             // Global ⌃⌘V (Paste Last Transcript, always on) + optional ⌘⇧V
             // dictation toggle (off by default).
-            let handle = app.handle().clone();
-            let state_hk = state.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(600));
-                let h = handle.clone();
-                let st = state_hk.clone();
-                let _ = handle.run_on_main_thread(move || {
+            // YV38: no fixed startup delay. `run_on_main_thread` queues this on
+            // the event loop, so registration happens the moment the loop is
+            // running — which is exactly the event the old 600 ms sleep was
+            // guessing at, except the shortcuts are live from launch instead of
+            // dead for the first half-second.
+            {
+                let h = app.handle().clone();
+                let st = state.clone();
+                let _ = app.handle().run_on_main_thread(move || {
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
                     let paste_sc =
@@ -1624,7 +1663,7 @@ pub fn run() {
                         }
                     }
                 });
-            });
+            }
 
             log::info!("Yap v0.6.0 — NSPanel Dictate island (tauri-nspanel)");
             Ok(())

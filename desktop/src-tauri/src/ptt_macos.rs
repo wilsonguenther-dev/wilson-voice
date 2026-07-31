@@ -363,7 +363,11 @@ fn on_combo_down(state: &TapState) {
     *state.press_at.lock() = Some(Instant::now());
     state.hold_armed.store(false, Ordering::SeqCst);
 
-    // Arm hold after HOLD_ARM_MS if still held
+    // Arm hold after HOLD_ARM_MS if still held. YV38: this wait is NOT latency
+    // slack that could be signalled away — it IS the gesture, the window that
+    // separates a tap (hands-free toggle) from a hold (push-to-talk). There is
+    // no earlier event that can decide which one the user meant, so the duration
+    // itself is the constraint.
     let cb = state.callback.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(HOLD_ARM_MS));
