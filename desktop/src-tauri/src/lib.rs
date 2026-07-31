@@ -204,20 +204,6 @@ fn data_dir() -> PathBuf {
     p
 }
 
-/// RAII guard (YV20/M3) that unlinks the captured voice WAV when it drops —
-/// covering EVERY exit of the transcribe closure (success, the no-speech /
-/// hallucination gates, and — crucially — the ASR / DB `Err` early-returns).
-/// Before this, an ASR or DB failure left a `.wav` of the user's voice on disk
-/// forever, contradicting "nothing leaves this machine". The clip is always
-/// disposable, so cleanup is unconditional.
-struct WavCleanup(PathBuf);
-
-impl Drop for WavCleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
 /// answer: the selected embedded model is downloaded. False means "Model
 /// needed", never "Ready".
@@ -426,10 +412,9 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     restore_system_output(state);
     let _ = app.emit("recording", false);
     if let Some(active) = state.recorder.lock().take() {
-        let path = active.wav_path.clone();
         // Discarded take — no ASR, so skip the Silero isolation pass entirely.
+        // The returned clip guard unlinks the recovery wav as it drops here.
         let _ = record::stop_recording(active, None);
-        let _ = std::fs::remove_file(path);
     }
     *state.last_error.lock() = Some("Dictation cancelled (key while holding)".into());
     emit_status(app, state);
@@ -480,19 +465,22 @@ fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
     models::model_path(model).map(|path| (model.id.clone(), path))
 }
 
-/// Transcribe a captured clip with the embedded GGUF engine — since YV34 the
-/// app's only ASR path: decode the 16 kHz mono clip, load the model into the
-/// warm manager (a no-op when it is already resident), and run it. Both the
-/// load and the transcription are already bounded + panic-contained by the
-/// manager, so this can fail but can never hang.
+/// Transcribe a captured take with the embedded GGUF engine — since YV34 the
+/// app's only ASR path: load the model into the warm manager (a no-op when it is
+/// already resident) and run it over the take's samples. Both the load and the
+/// transcription are already bounded + panic-contained by the manager, so this
+/// can fail but can never hang.
+///
+/// YV37: `samples` are the 16 kHz mono floats the capture path already produced
+/// in memory. The clip is no longer written, read back and re-decoded from disk
+/// before ASR sees a single sample.
 fn transcribe_native(
     manager: &transcription::TranscriptionManager,
     model_id: &str,
     model_path: &Path,
-    wav: &Path,
+    samples: Vec<f32>,
     language: &str,
 ) -> Result<transcription::AsrOutput, String> {
-    let samples = record::read_wav_16k_mono(wav)?;
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
     // The "Language I speak" setting used to reach Whisper as the sidecar's
@@ -564,17 +552,18 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 None
             };
             let rec = record::stop_recording(active, iso_vad.as_deref())?;
-            // YV20/M3: from here on the wav is deleted on ANY exit (success, the
-            // gates below, or the ASR/DB `?` failures) — never leaked on error.
-            let _wav_cleanup = WavCleanup(rec.wav_path.clone());
-            let t_wav = t_release.elapsed().as_millis() as i64;
+            // YV20/M3: `rec.clip` unlinks the history wav on ANY exit of this
+            // closure (success, the gates below, or the ASR/DB `?` failures) —
+            // never leaked on error. YV37: that wav is written on a background
+            // thread from here on, so it is off the release→ASR path entirely.
+            let t_dsp = t_release.elapsed().as_millis() as i64;
             log::info!(
-                "wav ready: {} speech={:.2}s voiced={:.2}s hold_wall={:.2}s wav_ms={}",
-                rec.wav_path.display(),
+                "samples ready: {} speech={:.2}s voiced={:.2}s hold_wall={:.2}s dsp_ms={}",
+                rec.clip.path().display(),
                 rec.speech_seconds,
                 rec.voiced_seconds,
                 rec.hold_wall_seconds,
-                t_wav
+                t_dsp
             );
             // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
             // voiced time. Skip ASR entirely so Whisper never hallucinates
@@ -605,7 +594,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &state2.transcription,
                 &model_id,
                 &model_path,
-                &rec.wav_path,
+                rec.samples,
                 &settings.language,
             )?;
             let t_asr = t_release.elapsed().as_millis() as i64;
@@ -657,10 +646,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
             log::info!(
-                "latency hold→clipboard={}ms (press→capture={}ms wav={} asr_done={} asr_model={:.0}ms) backend={}",
+                "latency hold→clipboard={}ms (press→capture={}ms dsp={} asr_done={} asr_model={:.0}ms) backend={}",
                 pipeline_ms,
                 rec.capture_start_ms,
-                t_wav,
+                t_dsp,
                 t_asr,
                 asr.seconds * 1000.0,
                 asr.backend
@@ -676,8 +665,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 chrono::Utc::now(),
                 Some(raw_text),
             )?;
-            // Hygiene: the wav is dropped by `_wav_cleanup` on scope exit (audio
-            // stays local only during the process, on success and on error alike).
+            // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
+            // (audio stays local only during the process, success or error alike).
             Ok(Some((entry, outcome, pipeline_ms)))
         })();
 
@@ -867,10 +856,7 @@ fn daily_series(state: State<'_, Arc<AppState>>, days: i64) -> Result<Vec<DayCou
 /// Contiguous, zero-filled month-by-month rollup (oldest first, "YYYY-MM") for the
 /// last `months` months. Feeds the Insights monthly bar chart / long-range views.
 #[tauri::command]
-fn monthly_series(
-    state: State<'_, Arc<AppState>>,
-    months: i64,
-) -> Result<Vec<DayCount>, String> {
+fn monthly_series(state: State<'_, Arc<AppState>>, months: i64) -> Result<Vec<DayCount>, String> {
     state.db.monthly_series(months)
 }
 
@@ -1178,7 +1164,6 @@ fn open_db_graceful(db_path: std::path::PathBuf) -> Database {
         }
     }
 }
-
 
 /// First name of the macOS account (`id -F` full name), for UI greetings.
 /// Empty string when unavailable — the UI must not assume a name exists.
@@ -1736,7 +1721,10 @@ mod tests {
         assert!(json.contains("\"calibrationSample\":\"the quick brown fox\""));
         let back: AppSettings = serde_json::from_str(&json).expect("round-trip");
         assert!(back.onboarded);
-        assert_eq!(back.calibration_sample.as_deref(), Some("the quick brown fox"));
+        assert_eq!(
+            back.calibration_sample.as_deref(),
+            Some("the quick brown fox")
+        );
 
         // YV27: a chosen companion tone round-trips on the camelCase wire key.
         let mut toned = AppSettings::default();
