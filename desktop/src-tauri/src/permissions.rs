@@ -94,43 +94,63 @@ pub fn microphone_probe() -> (bool, String) {
     }
 }
 
-pub fn asr_probe(python: &std::path::Path, worker: &std::path::Path) -> (bool, String) {
+/// Can this install transcribe? YV33: the embedded GGUF engine is the primary
+/// path, so a downloaded model (`native_ready`) is the answer on its own. The
+/// legacy Python sidecar is only consulted as a fallback, and only when the
+/// resolved interpreter is the Application Support venv — the resolver's
+/// `/usr/bin/python3` fallback is the Command Line Tools shim, which exists on
+/// every Mac, cannot import mlx_whisper, and pops a developer-tools installer
+/// when executed (this probe runs on a 1.2 s poll during onboarding).
+pub fn asr_probe(
+    python: &std::path::Path,
+    worker: &std::path::Path,
+    native_ready: bool,
+    venv_root: &std::path::Path,
+) -> (bool, String) {
+    if native_ready {
+        return (
+            true,
+            "Speech model downloaded — embedded engine ready".into(),
+        );
+    }
+    if !python.starts_with(venv_root) || !python.is_file() {
+        return (
+            false,
+            "No speech model on disk yet — click Get a speech model.".into(),
+        );
+    }
     if !worker.exists() {
         return (
             false,
             format!("Missing ASR worker at {} (should auto-seed)", worker.display()),
         );
     }
-    if !python.exists() {
-        return (
-            false,
-            format!(
-                "Missing ASR Python at {}. Click Install local ASR (one-time, stays off Desktop).",
-                python.display()
-            ),
-        );
-    }
     if !crate::asr_paths::python_has_mlx(python) {
         return (
             false,
             format!(
-                "Python at {} lacks mlx-whisper. Click Install local ASR.",
+                "Legacy venv at {} lacks mlx-whisper — click Get a speech model.",
                 python.display()
             ),
         );
     }
-    (true, format!("ASR ready ({})", python.display()))
+    (
+        true,
+        format!("Legacy ASR venv ready ({})", python.display()),
+    )
 }
 
 pub fn report(
     python: &std::path::Path,
     worker: &std::path::Path,
     prompt_accessibility: bool,
+    native_ready: bool,
+    venv_root: &std::path::Path,
 ) -> PermissionReport {
     let accessibility = macos::accessibility_trusted(prompt_accessibility);
     let (microphone, mic_detail) = microphone_probe();
     let ffmpeg_ok = true; // no longer required — cpal in-process
-    let (asr_ok, asr_detail) = asr_probe(python, worker);
+    let (asr_ok, asr_detail) = asr_probe(python, worker, native_ready, venv_root);
 
     let mut parts = Vec::new();
     if !accessibility {
@@ -142,7 +162,7 @@ pub fn report(
         parts.push("Microphone not ready");
     }
     if !asr_ok {
-        parts.push("ASR not ready");
+        parts.push("Speech model needed");
     }
 
     // Mic + ASR are critical for dictation. Accessibility only for paste (clipboard always works).

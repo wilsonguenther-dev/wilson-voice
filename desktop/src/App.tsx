@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import Onboarding from "./Onboarding";
+import Onboarding, { type Step as OnboardStep } from "./Onboarding";
 import YappyHouse from "./home/YappyHouse";
 import "./App.css";
 
@@ -83,10 +83,17 @@ interface AppStatus {
   busy: boolean;
   lastError: string | null;
   message: string;
+  /** Legacy Python sidecar genuinely importable — NOT "a python file exists". */
   pythonOk: boolean;
   workerOk: boolean;
   accessibility: boolean;
   hotkeyRegistered: boolean;
+  /**
+   * YV33 — dictation can actually run: the selected embedded model is
+   * downloaded (or the legacy venv is genuinely installed). False means the app
+   * shows a "Model needed" route into the onboarding model step, never "Ready".
+   */
+  modelReady: boolean;
 }
 
 interface PermissionReport {
@@ -249,6 +256,7 @@ export default function App() {
     workerOk: false,
     accessibility: false,
     hotkeyRegistered: false,
+    modelReady: false,
   });
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
@@ -266,6 +274,9 @@ export default function App() {
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  // YV33 — re-open the onboarding overlay on a specific step (the "Model
+  // needed" route). null = not showing it.
+  const [setupStep, setSetupStep] = useState<OnboardStep | null>(null);
   // YV15 — key-capture for the push-to-talk shortcut. `capturing` arms a global
   // keydown listener; `captureHint` shows the live result / validation message.
   const [capturing, setCapturing] = useState(false);
@@ -410,6 +421,12 @@ export default function App() {
     listen<string>("paste_outcome", (e) => {
       setFlash(e.payload);
       setTimeout(() => setFlash(null), 2800);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV33 — a failed take must be visible IN the app, not only as a macOS
+    // notification the user may have muted (or never sees while Yap is focused).
+    listen<{ message: string }>("transcript_error", (e) => {
+      setFlash(e.payload?.message || "Transcription failed");
+      setTimeout(() => setFlash(null), 4000);
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
     listen<string>("navigate", (e) => {
@@ -686,6 +703,25 @@ export default function App() {
     );
   }
 
+  // YV33 — the same overlay, re-opened on one step, is how an already-onboarded
+  // install fixes "Model needed" (no model on disk = nothing can transcribe).
+  if (settings && setupStep) {
+    return (
+      <Onboarding
+        initialStep={setupStep}
+        onFinish={(sample) => {
+          setSetupStep(null);
+          finishOnboarding(sample);
+          refreshAll();
+        }}
+        onSkip={() => {
+          setSetupStep(null);
+          refreshAll();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -771,7 +807,16 @@ export default function App() {
 
         {flash && <div className="toast">{flash}</div>}
 
-        {needsPerms && nav === "home" && (
+        {/* YV33 — no usable model means dictation cannot run at all, so this
+            outranks the permissions banner and routes straight to the download
+            step instead of leaving the user to discover it mid-take. */}
+        {!status.modelReady && (
+          <div className="banner warn" onClick={() => setSetupStep("model")}>
+            Model needed — download a speech model to start dictating
+          </div>
+        )}
+
+        {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
             for Yap
@@ -794,19 +839,13 @@ export default function App() {
                   <button className="primary" onClick={refreshPerms}>
                     Re-check permissions
                   </button>
-                  <button
-                    onClick={async () => {
-                      toast("Installing local ASR… (one-time network)");
-                      try {
-                        const msg = await invoke<string>("setup_asr_venv");
-                        toast(msg);
-                      } catch (e) {
-                        toast(String(e));
-                      }
-                      await refreshPerms();
-                    }}
-                  >
-                    Install local ASR
+                  {/* YV33 — replaces "Install local ASR", which invoked a
+                      synchronous command that ran `python -m venv` + `pip
+                      install` on the main thread and froze the app for minutes.
+                      The embedded GGUF engine needs a downloaded model instead,
+                      so this routes to the model step. */}
+                  <button onClick={() => setSetupStep("model")}>
+                    {status.modelReady ? "Manage speech model" : "Get a speech model"}
                   </button>
                   <button
                     onClick={async () => {
@@ -907,8 +946,13 @@ export default function App() {
                 <li className={perms?.asrOk ? "ok" : "bad"}>
                   <StatusDot ok={!!perms?.asrOk} />
                   <div>
-                    <strong>Local Whisper (MLX)</strong>
+                    <strong>Speech model</strong>
                     <p className="muted">{perms?.asrDetail}</p>
+                    {!status.modelReady && (
+                      <button onClick={() => setSetupStep("model")}>
+                        Get a speech model
+                      </button>
+                    )}
                   </div>
                 </li>
               </ul>
