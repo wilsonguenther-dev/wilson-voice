@@ -20,6 +20,7 @@ type Nav =
 type SettingsTab =
   | "companion"
   | "dictation"
+  | "snippets"
   | "audio"
   | "shortcut"
   | "advanced"
@@ -28,6 +29,7 @@ type SettingsTab =
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "companion", label: "Companion" },
   { id: "dictation", label: "Dictation" },
+  { id: "snippets", label: "Snippets" },
   { id: "audio", label: "Audio" },
   { id: "shortcut", label: "Shortcut" },
   { id: "advanced", label: "Advanced" },
@@ -70,6 +72,12 @@ interface AppSettings {
    * add dictionary → backtrack → formatting → local-LLM polish. Default "light".
    */
   cleanupLevel?: string;
+  /**
+   * Where snippet triggers may fire (backend `snippet_scope`, YV48): "inline"
+   * (anywhere in the transcript, the default) or "utterance" (only when the
+   * trigger phrase is the whole utterance).
+   */
+  snippetScope?: string;
   /**
    * Denoise the captured clip with RNNoise before transcription (backend
    * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)
@@ -263,6 +271,19 @@ interface DictCandidate {
   createdAt: string;
 }
 
+/**
+ * YV48 — a saved trigger phrase and the text it expands to. Expansion runs on
+ * the dictation path after cleanup; disabled snippets stay listed but never
+ * match.
+ */
+interface Snippet {
+  id: string;
+  trigger: string;
+  expansion: string;
+  enabled: boolean;
+  createdAt: string;
+}
+
 interface ScratchNote {
   id: string;
   title: string;
@@ -338,6 +359,13 @@ export default function App() {
   // YV47 — the history entry open in "Fix transcription", and its draft text.
   const [fixingId, setFixingId] = useState<string | null>(null);
   const [fixDraft, setFixDraft] = useState("");
+  // YV48 — saved snippets plus the "add" draft and the row being edited.
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [newTrigger, setNewTrigger] = useState("");
+  const [newExpansion, setNewExpansion] = useState("");
+  const [editingSnippetId, setEditingSnippetId] = useState<string | null>(null);
+  const [editTrigger, setEditTrigger] = useState("");
+  const [editExpansion, setEditExpansion] = useState("");
   const [scratch, setScratch] = useState<ScratchNote[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [query, setQuery] = useState("");
@@ -447,7 +475,7 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, daily, monthly, dict, cands, notes, fails] =
+      const [s, st, ins, daily, monthly, dict, cands, snips, notes, fails] =
         await Promise.all([
           invoke<AppSettings>("get_settings"),
           invoke<AppStatus>("get_status"),
@@ -456,6 +484,7 @@ export default function App() {
           invoke<DayCount[]>("monthly_series", { months: 12 }),
           invoke<DictEntry[]>("list_dictionary"),
           invoke<DictCandidate[]>("list_dict_candidates"),
+          invoke<Snippet[]>("list_snippets"),
           invoke<ScratchNote[]>("list_scratch"),
           invoke<FailedDictation[]>("list_failed_dictations"),
         ]);
@@ -466,6 +495,7 @@ export default function App() {
       setMonthlySeries(monthly);
       setDictionary(dict);
       setCandidates(cands);
+      setSnippets(snips);
       setScratch(notes);
       setFailed(fails);
       setBootError(null);
@@ -836,6 +866,64 @@ export default function App() {
       setEditingTermId(null);
       setDictionary(await invoke("list_dictionary"));
       toast("Dictionary term updated");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  // YV48 — snippets CRUD. Every mutation re-lists so the order (enabled first,
+  // then A→Z) matches what the matcher will actually run with.
+  async function addSnippet() {
+    if (!newTrigger.trim() || !newExpansion.trim()) return;
+    try {
+      await invoke("add_snippet", {
+        trigger: newTrigger.trim(),
+        expansion: newExpansion,
+      });
+      setNewTrigger("");
+      setNewExpansion("");
+      setSnippets(await invoke("list_snippets"));
+      toast("Snippet saved");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  function startEditSnippet(s: Snippet) {
+    setEditingSnippetId(s.id);
+    setEditTrigger(s.trigger);
+    setEditExpansion(s.expansion);
+  }
+
+  async function saveEditSnippet() {
+    if (!editingSnippetId || !editTrigger.trim() || !editExpansion.trim()) return;
+    try {
+      await invoke("update_snippet", {
+        id: editingSnippetId,
+        trigger: editTrigger.trim(),
+        expansion: editExpansion,
+      });
+      setEditingSnippetId(null);
+      setSnippets(await invoke("list_snippets"));
+      toast("Snippet updated");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  async function toggleSnippet(s: Snippet) {
+    try {
+      await invoke("set_snippet_enabled", { id: s.id, enabled: !s.enabled });
+      setSnippets(await invoke("list_snippets"));
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  async function removeSnippet(id: string) {
+    try {
+      await invoke("delete_snippet", { id });
+      setSnippets((all) => all.filter((s) => s.id !== id));
     } catch (e) {
       toast(String(e));
     }
@@ -2256,6 +2344,173 @@ export default function App() {
                       <option value="ht">Haitian Creole</option>
                     </select>
                   </label>
+                </section>
+              )}
+
+              {/* ── Snippets (YV48) — spoken triggers expand to saved text ── */}
+              {settingsTab === "snippets" && (
+                <section className="settings-panel">
+                  <h2 className="settings-section">
+                    Snippets
+                    <span className="sub">
+                      Say a short phrase, paste the whole thing.
+                    </span>
+                  </h2>
+                  <div className="panel">
+                    <h3>New snippet</h3>
+                    <p>
+                      Say the trigger while dictating and Yap pastes the
+                      expansion instead — your email, your address, a sign-off.
+                      Matching ignores capitalisation and only fires on whole
+                      words.
+                    </p>
+                    <div className="snip-add">
+                      <input
+                        placeholder="Trigger phrase (e.g. my email)"
+                        value={newTrigger}
+                        onChange={(e) => setNewTrigger(e.target.value)}
+                        aria-label="Trigger phrase"
+                      />
+                      <textarea
+                        placeholder="Expands to… (multiple lines are fine)"
+                        value={newExpansion}
+                        onChange={(e) => setNewExpansion(e.target.value)}
+                        rows={3}
+                        aria-label="Expansion text"
+                      />
+                      <button
+                        className="primary"
+                        onClick={addSnippet}
+                        disabled={!newTrigger.trim() || !newExpansion.trim()}
+                      >
+                        Add snippet
+                      </button>
+                    </div>
+                  </div>
+                  <div className="panel">
+                    <h3>Where triggers fire</h3>
+                    <p>
+                      Inline replaces the phrase wherever you say it. Whole
+                      utterance is stricter — the trigger only expands when it is
+                      the entire thing you said.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          [
+                            "inline",
+                            "Inline",
+                            "Anywhere in what I said",
+                          ],
+                          [
+                            "utterance",
+                            "Whole utterance",
+                            "Only when I say just the trigger",
+                          ],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.snippetScope ?? "inline") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, snippetScope: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {snippets.length === 0 ? (
+                    <div className="panel">
+                      <p className="tiny">
+                        No snippets yet. Add one above and it takes effect on
+                        your next dictation.
+                      </p>
+                    </div>
+                  ) : (
+                    <ul className="snip-list">
+                      {snippets.map((s) => (
+                        <li key={s.id}>
+                          {editingSnippetId === s.id ? (
+                            <div className="snip-edit">
+                              <input
+                                value={editTrigger}
+                                onChange={(e) => setEditTrigger(e.target.value)}
+                                aria-label="Trigger phrase"
+                                autoFocus
+                              />
+                              <textarea
+                                value={editExpansion}
+                                onChange={(e) =>
+                                  setEditExpansion(e.target.value)
+                                }
+                                rows={3}
+                                aria-label="Expansion text"
+                              />
+                              <div className="snip-actions">
+                                <button
+                                  className="primary"
+                                  onClick={saveEditSnippet}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  className="ghost"
+                                  onClick={() => setEditingSnippetId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="snip-body">
+                                <strong>{s.trigger}</strong>
+                                <pre className="snip-expansion">
+                                  {s.expansion}
+                                </pre>
+                                {!s.enabled && (
+                                  <div className="tiny">
+                                    Off — this one never expands
+                                  </div>
+                                )}
+                              </div>
+                              <div className="snip-actions">
+                                <label className="toggle inline">
+                                  <input
+                                    type="checkbox"
+                                    checked={s.enabled}
+                                    onChange={() => toggleSnippet(s)}
+                                    aria-label={`Enable ${s.trigger}`}
+                                  />
+                                  <span>On</span>
+                                </label>
+                                <button
+                                  className="ghost"
+                                  onClick={() => startEditSnippet(s)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="ghost danger"
+                                  onClick={() => removeSnippet(s.id)}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
               )}
 

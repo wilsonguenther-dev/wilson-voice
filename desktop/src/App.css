@@ -1217,6 +1217,84 @@ button.star.on {
   background: var(--bg-card);
 }
 
+/* ── YV48 · Snippets ─────────────────────────────────────────────────── */
+.snip-add,
+.snip-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.snip-add input,
+.snip-add textarea,
+.snip-edit input,
+.snip-edit textarea {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  padding: 0.6rem 0.75rem;
+  outline: none;
+  resize: vertical;
+}
+
+.snip-add button {
+  align-self: flex-start;
+}
+
+.snip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snip-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.snip-body {
+  min-width: 0;
+}
+
+.snip-expansion {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.snip-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.snip-edit {
+  width: 100%;
+}
+
+.toggle.inline {
+  align-items: center;
+  gap: 6px;
+  padding: 0.42rem 0.55rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 @media (max-width: 860px) {
   .shell {
     grid-template-columns: 1fr;

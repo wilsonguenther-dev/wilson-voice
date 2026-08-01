@@ -22,12 +22,13 @@ mod permissions;
 mod ptt_macos;
 mod record;
 mod secure_input;
+mod snippets;
 mod sysaudio;
 mod transcription;
 mod vad;
 
 use db::{
-    Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights, ScratchNote,
+    Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights, ScratchNote, Snippet,
     TranscriptEntry,
 };
 use parking_lot::Mutex as PLMutex;
@@ -93,6 +94,11 @@ pub struct AppSettings {
     /// `dictation::CleanupLevel` / `run_cleanup`).
     #[serde(default = "default_cleanup_level")]
     pub cleanup_level: String,
+    /// Where snippet triggers may fire (YV48): `inline` (anywhere in the
+    /// transcript, the default) or `utterance` (only when the trigger is the
+    /// WHOLE utterance). See `snippets::SnippetScope`.
+    #[serde(default = "default_snippet_scope")]
+    pub snippet_scope: String,
     /// Denoise the captured clip with RNNoise before transcription (YV12).
     /// Suppresses steady background noise (fans, hum, keyboard) over the
     /// native-rate buffer before the 16 kHz downsample. Defaults on; the
@@ -172,6 +178,9 @@ fn default_dictation_mode() -> String {
 fn default_cleanup_level() -> String {
     "light".into()
 }
+fn default_snippet_scope() -> String {
+    "inline".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -197,6 +206,7 @@ impl Default for AppSettings {
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
+            snippet_scope: "inline".into(),
             denoise: true,
             mute_while_dictating: true,
             onboarded: false,
@@ -917,6 +927,23 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // space only when the character before the caret needs one. Purely
             // additive (casing + at most one space), so "never lose text" holds.
             let text = dictation::join_with_context(&text, cursor_context.as_deref());
+            // YV48 snippets: expand saved trigger phrases AFTER cleanup and
+            // before the clipboard. Its own stage — never inside the dictionary
+            // closure above, and never on the history command paths — so only a
+            // live dictation can expand. A DB/matcher failure degrades to the
+            // un-expanded text: the transcript always pastes.
+            let text = match db.snippet_rules() {
+                Ok(rules) if !rules.is_empty() => snippets::expand_snippets(
+                    &text,
+                    &rules,
+                    snippets::SnippetScope::from_setting(&settings.snippet_scope),
+                ),
+                Ok(_) => text,
+                Err(e) => {
+                    log::warn!("snippets unavailable ({e}) — pasting text unexpanded");
+                    text
+                }
+            };
             let cleanup_ms = t_cleanup.elapsed().as_millis() as i64;
             log::info!(
                 "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
@@ -1597,6 +1624,45 @@ fn promote_dict_candidate(
 #[tauri::command]
 fn dismiss_dict_candidate(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
     state.db.dismiss_dict_candidate(&id)
+}
+
+/// YV48 — saved `trigger phrase → expansion` snippets (Settings → Snippets).
+#[tauri::command]
+fn list_snippets(state: State<'_, Arc<AppState>>) -> Result<Vec<Snippet>, String> {
+    state.db.list_snippets()
+}
+
+#[tauri::command]
+fn add_snippet(
+    state: State<'_, Arc<AppState>>,
+    trigger: String,
+    expansion: String,
+) -> Result<Snippet, String> {
+    state.db.add_snippet(trigger, expansion)
+}
+
+#[tauri::command]
+fn update_snippet(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    trigger: String,
+    expansion: String,
+) -> Result<(), String> {
+    state.db.update_snippet(&id, trigger, expansion)
+}
+
+#[tauri::command]
+fn set_snippet_enabled(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    state.db.set_snippet_enabled(&id, enabled)
+}
+
+#[tauri::command]
+fn delete_snippet(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    state.db.delete_snippet(&id)
 }
 
 #[tauri::command]
@@ -2303,6 +2369,11 @@ pub fn run() {
             list_dict_candidates,
             promote_dict_candidate,
             dismiss_dict_candidate,
+            list_snippets,
+            add_snippet,
+            update_snippet,
+            set_snippet_enabled,
+            delete_snippet,
             list_scratch,
             save_scratch,
             delete_scratch,
