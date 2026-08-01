@@ -834,6 +834,16 @@ const CONTINUATION_CUES: &[&str] = &["next", "finally", "lastly"];
 /// only fire at a clause boundary and only when at least three of them line up.
 const ENUM_CUES: &[&str] = &["also", "plus", "and then", "another thing"];
 
+/// Function words that can never OPEN a list item. "one of the things I noticed …
+/// two of the servers were down" satisfies the monotone rule by accident; the token
+/// right after the cue is the cheapest place to tell a quantity phrase from an
+/// enumeration. Deliberately excludes articles ("first, the report goes out" is a
+/// real item) — only words that cannot begin a dictated item at all.
+const NON_ITEM_OPENERS: &[&str] = &[
+    "of", "or", "and", "but", "that", "which", "who", "whom", "than", "as", "because", "if",
+    "though", "although", "while", "whether",
+];
+
 /// One enumeration cue found in the token stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cue {
@@ -866,6 +876,14 @@ fn detect_and_format_list(text: &str) -> Option<String> {
         // Two-item lists are the easiest to hallucinate out of prose ("one coffee
         // and two bagels"), so they additionally need real content per item.
         if items.len() == 2 && items.iter().any(|it| it.len() < 2) {
+            return None;
+        }
+        // A cue that opens no item is a quantity, not an enumerator ("one OF the
+        // things …"), so the whole chain is a misread.
+        if items
+            .iter()
+            .any(|it| it.first().is_some_and(|t| NON_ITEM_OPENERS.contains(&token_core(t).as_str())))
+        {
             return None;
         }
         return render_list(&tokens[..chain[0].start], &items, bulleted);
@@ -1227,6 +1245,14 @@ mod tests {
         assert_eq!(format_dictation(prose), prose);
         // A cue chain that never starts at 1 is not a list either.
         let prose = "we shipped it second time around and third parties noticed";
+        assert_eq!(format_dictation(prose), prose);
+    }
+
+    #[test]
+    fn list_ignores_cues_that_open_no_item() {
+        // A monotone "one … two" satisfied by accident: both are quantities, and
+        // neither opens an item ("of the things", "of the servers").
+        let prose = "one of the things I noticed was that two of the servers were down";
         assert_eq!(format_dictation(prose), prose);
     }
 
