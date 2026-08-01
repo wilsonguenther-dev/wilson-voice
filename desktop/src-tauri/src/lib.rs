@@ -20,6 +20,9 @@ mod models;
 mod paste;
 mod paste_tx;
 mod permissions;
+// The JSONL contract with the `yap-polish` sidecar. Compiled into BOTH binaries
+// from this one file (see the module docs) so the two ends cannot drift.
+mod polish_protocol;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
 mod record;

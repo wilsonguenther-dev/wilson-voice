@@ -38,7 +38,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
+          workspaces: desktop
+
+      # YV60: the polish sidecar. `bundle.externalBin` resolves
+      # `binaries/yap-polish` to `binaries/yap-polish-<target-triple>`, and
+      # tauri-build checks for that file on EVERY `cargo build` of the app — not
+      # just at bundle time — so this has to run before the compile gate below.
+      # It is signed and notarized with the app because it lives inside the
+      # bundle.
+      - name: Build + stage the yap-polish sidecar
+        working-directory: desktop
+        run: |
+          cargo build -p yap-polish --release
+          TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p src-tauri/binaries
+          cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
+          ls -l "src-tauri/binaries/yap-polish-${TRIPLE}"
 
       # Fast-fail compile gate before the heavier bundling/signing step.
       - name: Compile Rust (release)

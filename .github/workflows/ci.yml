@@ -35,9 +35,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # YV60 made `desktop/` a Cargo workspace (src-tauri + yap-polish), so the
+      # lockfile and target dir live there now.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
+          workspaces: desktop
+
+      # YV60: the polish sidecar is a SEPARATE link unit because the app already
+      # statically links transcribe-cpp's ggml and llama-cpp-sys-2 vendors its
+      # own. This step is the standing proof that the two never meet: if anyone
+      # moves llama-cpp-2 into src-tauri, the duplicate ggml symbols fail here.
+      # It runs FIRST because `bundle.externalBin` makes the staged binary a
+      # precondition of every `cargo build` of the app, not just `tauri build`.
+      - name: Build + stage the yap-polish sidecar
+        working-directory: desktop
+        run: |
+          cargo build -p yap-polish --release
+          TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p src-tauri/binaries
+          cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
+      # Reuses the artifacts just built, so this costs seconds. It runs the
+      # protocol tests a SECOND time — from inside the sidecar, where the shared
+      # `polish_protocol.rs` is compiled by the other end of the wire.
+      - name: cargo test (yap-polish)
+        working-directory: desktop
+        run: cargo test -p yap-polish --release
 
       - name: rustfmt (informational)
         working-directory: desktop/src-tauri

@@ -45,6 +45,11 @@ pub struct Catalog {
     /// form the HF resolve URL, so a mirror is a plain static host.
     pub mirrors: Vec<String>,
     pub models: Vec<CatalogModel>,
+    /// Optional LLM polish models for the `yap-polish` sidecar (YV60). A
+    /// separate list on purpose: these are NOT ASR models and must never appear
+    /// in the transcription model manager or be picked by `recommended_model`.
+    #[serde(default)]
+    pub polish_models: Vec<PolishCatalogModel>,
 }
 
 /// One model as written in `catalog.json`. Only the fields we need are
@@ -109,6 +114,100 @@ pub fn recommended_model() -> &'static CatalogModel {
         .min_by_key(|m| m.recommended_rank.unwrap_or(u32::MAX))
         .or_else(|| catalog().models.first())
         .expect("bundled catalog is never empty")
+}
+
+// ---------------------------------------------------------------------------
+// Polish models (YV60) — the `yap-polish` sidecar's GGUF, installed the same
+// resumable + sha256-verified way as the ASR models. NOTHING SHIPS IN THE DMG:
+// with no file on disk the parent never spawns the sidecar and the polish stage
+// stays the no-op it is today.
+// ---------------------------------------------------------------------------
+
+/// One polish model. Unlike [`CatalogModel`] there is exactly one quant per
+/// entry (Q4_K_M — the size/quality point the latency budget is written
+/// against), so the id names the file rather than the repo.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PolishCatalogModel {
+    /// Stable local id, e.g. `qwen2.5-1.5b-instruct-q4_k_m` — what the
+    /// `polish_model` setting stores.
+    pub id: String,
+    /// Hugging Face repo the file is fetched from.
+    pub repo: String,
+    /// Commit sha the size + hash below were taken from. Pinned, so the bytes
+    /// are reproducible even if the repo's `main` moves.
+    pub revision: String,
+    pub name: String,
+    pub parameters: String,
+    /// SPDX id. Apache-2.0 for both Qwen2.5 entries — a non-OSI license (Gemma,
+    /// LFM) would have to be passed downstream by an app heading to open source.
+    pub license: String,
+    pub description: String,
+    pub file: ModelFile,
+    #[serde(default)]
+    pub recommended: bool,
+    pub recommended_rank: Option<u32>,
+}
+
+/// Every polish model in the bundled catalog.
+pub fn polish_models() -> &'static [PolishCatalogModel] {
+    &catalog().polish_models
+}
+
+/// Look up a polish model by its catalog id.
+pub fn polish_model(id: &str) -> Option<&'static PolishCatalogModel> {
+    catalog().polish_models.iter().find(|m| m.id == id)
+}
+
+/// The default polish model (lowest `recommended_rank`) — the 1.5B primary.
+pub fn recommended_polish_model() -> Option<&'static PolishCatalogModel> {
+    catalog()
+        .polish_models
+        .iter()
+        .filter(|m| m.recommended)
+        .min_by_key(|m| m.recommended_rank.unwrap_or(u32::MAX))
+}
+
+/// Where a polish model's file lives, whether or not it exists — the same
+/// models directory the ASR GGUFs use.
+pub fn polish_model_path(model: &PolishCatalogModel) -> PathBuf {
+    models_dir().join(&model.file.filename)
+}
+
+/// Present at its full expected size (the sha256 was verified at download time,
+/// before the `.partial` was renamed into place).
+pub fn is_polish_downloaded(model: &PolishCatalogModel) -> bool {
+    std::fs::metadata(polish_model_path(model))
+        .map(|m| m.is_file() && m.len() == model.file.size_bytes)
+        .unwrap_or(false)
+}
+
+/// Download URLs for a polish model: Hugging Face at the pinned revision only.
+/// The mirrors in this catalog host Handy's ASR repos, not Qwen's — pointing at
+/// them would just add a 404 to every attempt.
+pub fn polish_download_urls(model: &PolishCatalogModel) -> Vec<String> {
+    vec![format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        model.repo, model.revision, model.file.filename
+    )]
+}
+
+/// Fetch a polish model through the same resumable, sha256-verified path as the
+/// ASR models. Returns the verified on-disk path.
+pub async fn download_polish_model_with<F>(id: &str, progress: F) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    let model = polish_model(id).ok_or_else(|| format!("unknown polish model '{id}'"))?;
+    let urls = polish_download_urls(model);
+    let dest = polish_model_path(model);
+    download_file(
+        &urls,
+        &dest,
+        model.file.size_bytes,
+        &model.file.sha256,
+        progress,
+    )
+    .await
 }
 
 /// The catalog's smallest download — what the headless `--transcribe-file` mode
@@ -478,6 +577,64 @@ mod tests {
         assert_eq!(ranks[0], Some(1));
         assert_eq!(ranks[1], Some(2));
         assert!(cat.models[2].id.contains("whisper-tiny"));
+    }
+
+    /// YV60: the polish entries are a SEPARATE list — an LLM that leaked into
+    /// `models` would be offered as a transcription engine, and could even be
+    /// picked by `smallest_model()` on a fresh headless run.
+    #[test]
+    fn polish_catalog_is_pinned_and_never_mixed_into_the_asr_list() {
+        let polish = polish_models();
+        assert_eq!(polish.len(), 2, "1.5B primary + 0.5B fast tier");
+        for m in polish {
+            assert!(!m.id.is_empty());
+            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert!(
+                m.revision.chars().all(|c| c.is_ascii_hexdigit()),
+                "{}: revision must be a sha",
+                m.id
+            );
+            assert!(m.repo.starts_with("Qwen/"), "{}: unexpected repo", m.id);
+            assert_eq!(m.license, "apache-2.0", "{}: OSI license required", m.id);
+            assert!(m.file.filename.ends_with(".gguf"), "{}", m.file.filename);
+            assert!(m.file.size_bytes > 0, "{}: no size", m.id);
+            assert_eq!(m.file.sha256.len(), 64, "{}: bad sha256", m.id);
+            assert!(m.file.sha256.chars().all(|c| c.is_ascii_hexdigit()));
+            // The id names the file it installs, so a settings value maps to
+            // exactly one blob on disk.
+            assert_eq!(m.file.filename, format!("{}.gguf", m.id));
+            assert!(
+                catalog_model(&m.id).is_none(),
+                "{} must not be reachable as an ASR model",
+                m.id
+            );
+        }
+        // The documented pair, at the documented sizes (spec §2.2).
+        let primary = recommended_polish_model().expect("a default polish model");
+        assert_eq!(primary.id, "qwen2.5-1.5b-instruct-q4_k_m");
+        assert_eq!(primary.file.size_bytes, 1_117_320_736);
+        let fast = polish_model("qwen2.5-0.5b-instruct-q4_k_m").expect("fast tier in catalog");
+        assert_eq!(fast.file.size_bytes, 491_400_032);
+        assert!(fast.file.size_bytes < primary.file.size_bytes);
+    }
+
+    #[test]
+    fn polish_download_url_pins_the_hf_revision() {
+        let m = recommended_polish_model().expect("a default polish model");
+        let urls = polish_download_urls(m);
+        assert_eq!(
+            urls,
+            vec![format!(
+                "https://huggingface.co/{}/resolve/{}/{}",
+                m.repo, m.revision, m.file.filename
+            )]
+        );
+        // Installed alongside the ASR GGUFs, never bundled into the app.
+        assert!(polish_model_path(m).starts_with(models_dir()));
+        assert_eq!(
+            polish_model_path(m).file_name().unwrap().to_string_lossy(),
+            m.file.filename
+        );
     }
 
     #[test]
