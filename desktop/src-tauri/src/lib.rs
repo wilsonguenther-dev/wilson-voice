@@ -8,7 +8,9 @@ mod asr_engine;
 mod cli;
 mod command_mode;
 mod db;
-mod dictation;
+// Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
+// the real pipeline from an integration test (YV59).
+pub mod dictation;
 mod float_pill;
 mod focus;
 mod latency;
