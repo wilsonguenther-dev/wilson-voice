@@ -289,9 +289,16 @@ pub fn sweep_stale_wavs(dir: &Path) -> usize {
 /// paying for it. Dropping the guard unlinks the file — YV20/M3: the clip is
 /// disposable and never outlives the pipeline, on success or error alike — and
 /// joins the writer first so the delete can never race it and leak a wav.
+///
+/// YV52 is the ONE exception: a take whose transcription failed hands its clip
+/// to `keep_for_recovery`, which moves the wav aside so the user can retry ASR
+/// on the same audio instead of re-speaking it.
 pub struct ClipWav {
     path: PathBuf,
     writer: Option<thread::JoinHandle<()>>,
+    /// Set by `keep_for_recovery` — the file has been moved out from under this
+    /// guard, so `Drop` must not try to unlink it.
+    kept: bool,
 }
 
 impl ClipWav {
@@ -308,11 +315,37 @@ impl ClipWav {
                 },
             )
             .ok();
-        Self { path, writer }
+        Self {
+            path,
+            writer,
+            kept: false,
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// YV52 — preserve this take's audio for a retry instead of unlinking it.
+    ///
+    /// The background write is joined first (so the wav is complete), then the
+    /// file is MOVED into `dir` — deliberately not the recordings dir, which
+    /// `sweep_stale_wavs` empties at every startup and would destroy exactly the
+    /// clips a recovery needs. Returns the new path. On any failure the guard is
+    /// left armed, so a clip that could not be preserved is still unlinked.
+    pub fn keep_for_recovery(&mut self, dir: &Path) -> Result<PathBuf, String> {
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| format!("clip has no file name: {}", self.path.display()))?;
+        let target = dir.join(name);
+        std::fs::rename(&self.path, &target).map_err(|e| e.to_string())?;
+        self.kept = true;
+        Ok(target)
     }
 }
 
@@ -320,6 +353,9 @@ impl Drop for ClipWav {
     fn drop(&mut self) {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
+        }
+        if self.kept {
+            return;
         }
         let _ = std::fs::remove_file(&self.path);
     }

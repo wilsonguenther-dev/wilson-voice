@@ -160,6 +160,20 @@ interface TranscriptEntry {
 }
 
 /**
+ * YV52 — a take whose transcription failed, with its audio still on disk. The
+ * clip is kept for `FAILED_TAKE_RETENTION_DAYS` (7) so the user can re-run ASR
+ * on it instead of re-speaking; retrying converts it into a TranscriptEntry.
+ */
+interface FailedDictation {
+  id: string;
+  wavPath: string;
+  speechSeconds: number;
+  error: string;
+  sourceApp?: string | null;
+  createdAt: string;
+}
+
+/**
  * YV51 — the raw take to re-paste for "Undo AI edit", or null when there is no
  * AI edit to undo (no stored raw, a blank raw, or a raw that matches what was
  * pasted). Mirrors `dictation::undo_ai_edit_text` in the Rust pipeline — same
@@ -306,6 +320,11 @@ export default function App() {
   });
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
+  // YV52 — failed takes whose audio is still recoverable, and the one the live
+  // error toast is offering "Retry" for (cleared with the toast itself).
+  const [failed, setFailed] = useState<FailedDictation[]>([]);
+  const [retryId, setRetryId] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dailySeries, setDailySeries] = useState<DayCount[]>([]);
   const [monthlySeries, setMonthlySeries] = useState<DayCount[]>([]);
@@ -411,6 +430,13 @@ export default function App() {
     setHistory(h);
   }, []);
 
+  // YV52 — the recoverable takes. Kept separate from `loadHistory` because the
+  // backend purges expired clips on this call, so it must not ride the
+  // search-as-you-type debounce.
+  const loadFailed = useCallback(async () => {
+    setFailed(await invoke<FailedDictation[]>("list_failed_dictations"));
+  }, []);
+
   const refreshPerms = useCallback(async () => {
     try {
       setPerms(await invoke<PermissionReport>("get_permissions"));
@@ -421,8 +447,8 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, daily, monthly, dict, cands, notes] = await Promise.all(
-        [
+      const [s, st, ins, daily, monthly, dict, cands, notes, fails] =
+        await Promise.all([
           invoke<AppSettings>("get_settings"),
           invoke<AppStatus>("get_status"),
           invoke<Insights>("get_insights"),
@@ -431,8 +457,8 @@ export default function App() {
           invoke<DictEntry[]>("list_dictionary"),
           invoke<DictCandidate[]>("list_dict_candidates"),
           invoke<ScratchNote[]>("list_scratch"),
-        ],
-      );
+          invoke<FailedDictation[]>("list_failed_dictations"),
+        ]);
       setSettings(s);
       setStatus(st);
       setInsights(ins);
@@ -441,6 +467,7 @@ export default function App() {
       setDictionary(dict);
       setCandidates(cands);
       setScratch(notes);
+      setFailed(fails);
       setBootError(null);
       await loadHistory(queryRef.current);
       await refreshPerms();
@@ -488,10 +515,21 @@ export default function App() {
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — a failed take must be visible IN the app, not only as a macOS
     // notification the user may have muted (or never sees while Yap is focused).
-    listen<{ message: string }>("transcript_error", (e) => {
-      setFlash(e.payload?.message || "Transcription failed");
-      setTimeout(() => setFlash(null), 4000);
-    }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV52 — the take's audio is kept when it fails, so the payload carries the
+    // recoverable row: the toast turns into "… Retry", and the take shows up in
+    // the History recovery section until it is retried or discarded.
+    listen<{ message: string; failed?: FailedDictation | null }>(
+      "transcript_error",
+      (e) => {
+        setFlash(e.payload?.message || "Transcription failed");
+        setTimeout(() => setFlash(null), 4000);
+        const row = e.payload?.failed;
+        if (!row) return;
+        setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
+        setRetryId(row.id);
+        setTimeout(() => setRetryId((id) => (id === row.id ? null : id)), 4000);
+      },
+    ).then((u) => (dead ? u() : unsubs.push(u)));
     // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
     listen<string>("navigate", (e) => {
       const dest = e.payload as Nav;
@@ -594,6 +632,41 @@ export default function App() {
       return;
     }
     await refreshInsights();
+  }
+
+  // YV52 — re-run ASR on a failed take's saved clip. On success the row leaves
+  // the recovery list and becomes a normal history entry (the backend does the
+  // conversion), with the recovered text on the clipboard.
+  async function retryFailed(id: string) {
+    if (retrying) return;
+    setRetrying(id);
+    try {
+      const entry = await invoke<TranscriptEntry>("retry_failed_dictation", {
+        id,
+      });
+      setFailed((f) => f.filter((x) => x.id !== id));
+      setRetryId((cur) => (cur === id ? null : cur));
+      setHistory((h) => [entry, ...h.filter((x) => x.id !== entry.id)]);
+      toast(`Recovered ${entry.wordCount} words — copied to clipboard`);
+      await refreshInsights();
+    } catch (e) {
+      toast(String(e));
+      // The clip may have been dropped (audio gone) — resync either way.
+      await loadFailed().catch(() => {});
+    } finally {
+      setRetrying(null);
+    }
+  }
+
+  // YV52 — throw a failed take away: the row and its audio both go.
+  async function discardFailed(id: string) {
+    try {
+      await invoke("discard_failed_dictation", { id });
+      setFailed((f) => f.filter((x) => x.id !== id));
+      setRetryId((cur) => (cur === id ? null : cur));
+    } catch (e) {
+      toast(String(e));
+    }
   }
 
   async function clearAll() {
@@ -1035,7 +1108,23 @@ export default function App() {
           <div className={pillClass}>{status.message}</div>
         </header>
 
-        {flash && <div className="toast">{flash}</div>}
+        {flash && (
+          <div className="toast">
+            <span>{flash}</span>
+            {/* YV52 — the take that just failed still has its audio: retry runs
+                ASR again on that clip (the model may have finished downloading,
+                or the engine recovered) instead of making the user re-speak. */}
+            {retryId && (
+              <button
+                className="toast-retry"
+                disabled={retrying === retryId}
+                onClick={() => retryFailed(retryId)}
+              >
+                {retrying === retryId ? "Retrying…" : "Retry"}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
             behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
@@ -1318,6 +1407,55 @@ export default function App() {
                   Clear
                 </button>
               </div>
+
+              {/* YV52 — takes whose transcription failed. The audio is still on
+                  disk, so nothing was lost: retry re-runs ASR on that same clip,
+                  discard throws the row and its audio away. Clips are purged
+                  automatically after 7 days. */}
+              {failed.length > 0 && (
+                <section className="failed-takes">
+                  <div className="failed-head">
+                    <h3>Failed dictations</h3>
+                    <span className="tiny">
+                      Audio kept for 7 days — retry when the engine is ready,
+                      nothing was lost.
+                    </span>
+                  </div>
+                  <ul className="feed">
+                    {failed.map((f) => (
+                      <li key={f.id} className="card failed">
+                        <div className="card-meta">
+                          <span>
+                            {formatTime(f.createdAt)}
+                            {f.sourceApp ? ` · ${f.sourceApp}` : ""}
+                          </span>
+                          <span>
+                            {f.speechSeconds > 0
+                              ? `${f.speechSeconds.toFixed(1)}s of audio`
+                              : "audio saved"}
+                          </span>
+                        </div>
+                        <p className="failed-why">{f.error}</p>
+                        <div className="actions">
+                          <button
+                            className="primary"
+                            disabled={retrying === f.id}
+                            onClick={() => retryFailed(f.id)}
+                          >
+                            {retrying === f.id ? "Retrying…" : "Retry"}
+                          </button>
+                          <button
+                            className="ghost danger"
+                            onClick={() => discardFailed(f.id)}
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
 
               {history.length === 0 ? (
                 <div className="empty">

@@ -8,7 +8,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -77,6 +77,33 @@ pub struct Correction {
     /// The form the user typed instead.
     pub term: String,
 }
+
+/// YV52 — a take whose transcription FAILED, kept so the user can retry it.
+///
+/// The audio the pipeline had already written is parked outside the recordings
+/// dir and pointed at by `wav_path`; nothing about the take's words is stored
+/// (there are none — that is the whole point of the row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedDictation {
+    pub id: String,
+    /// Absolute path to the preserved 16 kHz mono WAV.
+    pub wav_path: String,
+    /// Voiced seconds of the take, carried over to the transcript row a
+    /// successful retry writes (so WPM stays honest for a recovered take).
+    pub speech_seconds: f64,
+    /// The failure the user saw ("No speech model installed — …").
+    pub error: String,
+    /// The app that was focused when the take was captured.
+    pub source_app: Option<String>,
+    /// When the take was SPOKEN — a retry keeps this, not the retry instant.
+    pub created_at: DateTime<Utc>,
+}
+
+/// YV52 — how long a failed take's audio is kept before it is purged, matching
+/// the app's "audio never lingers" privacy stance: recoverable for a week, gone
+/// after that whether or not the user ever retried it.
+pub const FAILED_TAKE_RETENTION_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -440,6 +467,19 @@ impl Database {
               dismissed INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL
             );
+
+            -- YV52 dictation recovery: takes whose transcription failed, with
+            -- the preserved WAV so ASR can be re-run on the same audio.
+            CREATE TABLE IF NOT EXISTS failed_dictations (
+              id TEXT PRIMARY KEY,
+              wav_path TEXT NOT NULL,
+              speech_seconds REAL NOT NULL DEFAULT 0,
+              error TEXT NOT NULL,
+              source_app TEXT,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_failed_dictations_created
+              ON failed_dictations(created_at DESC);
 
             CREATE TABLE IF NOT EXISTS scratchpad (
               id TEXT PRIMARY KEY,
@@ -863,6 +903,150 @@ impl Database {
     }
 
     /// Starred terms first (always-bias), then usage-ranked by hits (YV47).
+    /// YV52 — remember a take whose transcription failed, so it can be retried
+    /// later against the WAV already on disk. `wav_path` must already be parked
+    /// outside the recordings dir (see `record::ClipWav::keep_for_recovery`).
+    pub fn record_failed_dictation(
+        &self,
+        wav_path: &Path,
+        speech_seconds: f64,
+        error: &str,
+        source_app: Option<String>,
+    ) -> Result<FailedDictation, String> {
+        let row = FailedDictation {
+            id: Uuid::new_v4().to_string(),
+            wav_path: wav_path.to_string_lossy().to_string(),
+            speech_seconds: speech_seconds.max(0.0),
+            error: error.to_string(),
+            source_app,
+            created_at: Utc::now(),
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO failed_dictations
+             (id, wav_path, speech_seconds, error, source_app, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id,
+                row.wav_path,
+                row.speech_seconds,
+                row.error,
+                row.source_app,
+                row.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(row)
+    }
+
+    /// YV52 — recoverable takes, newest first.
+    pub fn list_failed_dictations(&self) -> Result<Vec<FailedDictation>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at
+                 FROM failed_dictations ORDER BY created_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], map_failed_dictation)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// YV52 — one recoverable take, or `None` once it has been retried/discarded.
+    pub fn get_failed_dictation(&self, id: &str) -> Result<Option<FailedDictation>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at
+             FROM failed_dictations WHERE id = ?1",
+            params![id],
+            map_failed_dictation,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV52 — drop a recoverable take. Returns the WAV path that is now orphaned
+    /// so the caller can unlink the audio (the row is the only reference to it).
+    pub fn delete_failed_dictation(&self, id: &str) -> Result<Option<String>, String> {
+        let path = self.get_failed_dictation(id)?.map(|r| r.wav_path);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
+    /// YV52 retention — drop every recoverable take older than `cutoff`,
+    /// returning their WAV paths so the caller can delete the audio. Callers
+    /// pass `Utc::now() - Duration::days(FAILED_TAKE_RETENTION_DAYS)`; the seam
+    /// exists so the cutoff itself is testable without waiting a week.
+    pub fn purge_failed_dictations(&self, cutoff: DateTime<Utc>) -> Result<Vec<String>, String> {
+        let stale: Vec<(String, String)> = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT id, wav_path, created_at FROM failed_dictations")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            // Compare as instants, not as strings: created_at is RFC3339 but the
+            // offset is not guaranteed to be the same on every row.
+            rows.flatten()
+                .filter(|(_, _, created)| parse_dt(created.clone()) < cutoff)
+                .map(|(id, wav, _)| (id, wav))
+                .collect()
+        };
+        let mut purged = Vec::with_capacity(stale.len());
+        for (id, wav) in stale {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+            purged.push(wav);
+        }
+        Ok(purged)
+    }
+
+    /// YV52 — a retry succeeded: write the transcript row the take should have
+    /// produced and drop the failed row, so a recovered take can never sit in
+    /// both lists. The recovered entry keeps the ORIGINAL take's timestamp,
+    /// speech seconds and source app, so it lands in history where the user
+    /// expects it instead of at the moment they pressed Retry.
+    pub fn convert_failed_dictation(
+        &self,
+        id: &str,
+        text: String,
+        backend: String,
+        asr_seconds: f64,
+        raw_text: Option<String>,
+    ) -> Result<TranscriptEntry, String> {
+        let row = self
+            .get_failed_dictation(id)?
+            .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+        let entry = self.insert_transcript_at(
+            text,
+            backend,
+            asr_seconds,
+            row.speech_seconds,
+            0,
+            row.source_app,
+            row.created_at,
+            raw_text,
+        )?;
+        self.delete_failed_dictation(id)?;
+        Ok(entry)
+    }
+
     pub fn list_dictionary(&self) -> Result<Vec<DictEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -1556,6 +1740,18 @@ fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> 
         source_app: row.get(7)?,
         created_at: parse_dt(row.get::<_, String>(8)?),
         raw_text: row.get(9)?,
+    })
+}
+
+fn map_failed_dictation(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailedDictation> {
+    // id, wav_path, speech_seconds, error, source_app, created_at
+    Ok(FailedDictation {
+        id: row.get(0)?,
+        wav_path: row.get(1)?,
+        speech_seconds: row.get(2)?,
+        error: row.get(3)?,
+        source_app: row.get(4)?,
+        created_at: parse_dt(row.get::<_, String>(5)?),
     })
 }
 
@@ -2290,6 +2486,144 @@ mod tests {
             !db.list_scratch().unwrap().iter().any(|n| n.id == note.id),
             "delete_scratch did not remove the note"
         );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- YV52 dictation recovery -----------------------------------------
+
+    /// A failed take becomes a RECOVERABLE row: the WAV is remembered with the
+    /// error the user saw, and it does not pollute transcript history.
+    #[test]
+    fn failed_take_becomes_a_recoverable_row() {
+        let (db, dir) = fresh_db("yv52-failed");
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"riff").unwrap();
+
+        let row = db
+            .record_failed_dictation(
+                &wav,
+                3.5,
+                "No speech model installed — open Settings → Models and download one.",
+                Some("Mail".into()),
+            )
+            .unwrap();
+
+        let listed = db.list_failed_dictations().unwrap();
+        assert_eq!(listed.len(), 1, "failed take was not kept for recovery");
+        assert_eq!(listed[0].id, row.id);
+        assert_eq!(listed[0].wav_path, wav.to_string_lossy());
+        assert_eq!(listed[0].speech_seconds, 3.5);
+        assert!(listed[0].error.contains("No speech model installed"));
+        assert_eq!(listed[0].source_app.as_deref(), Some("Mail"));
+        // A failure is NOT a dictation — nothing lands in history yet.
+        assert!(db.list_transcripts(50, None).unwrap().is_empty());
+
+        // Discard hands back the orphaned WAV so the caller can unlink it.
+        let orphan = db.delete_failed_dictation(&row.id).unwrap();
+        assert_eq!(orphan.as_deref(), Some(wav.to_string_lossy().as_ref()));
+        assert!(db.list_failed_dictations().unwrap().is_empty());
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A successful retry CONVERTS the row: it leaves the recoverable list and
+    /// enters history as a normal entry, keeping the moment it was spoken.
+    #[test]
+    fn successful_retry_converts_the_row_to_history() {
+        let (db, dir) = fresh_db("yv52-retry");
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"riff").unwrap();
+        let spoken = days_ago_noon(2);
+
+        let row = db
+            .record_failed_dictation(&wav, 4.0, "Empty transcript", Some("Notes".into()))
+            .unwrap();
+        // Backdate to when the take was actually spoken (production stamps the
+        // row at the moment of failure, which is the same thing).
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE failed_dictations SET created_at = ?1 WHERE id = ?2",
+                params![spoken.to_rfc3339(), row.id],
+            )
+            .unwrap();
+        }
+
+        let entry = db
+            .convert_failed_dictation(
+                &row.id,
+                "ship the recovery item".into(),
+                "native".into(),
+                1.25,
+                Some("ship the uh recovery item".into()),
+            )
+            .unwrap();
+
+        assert_eq!(entry.text, "ship the recovery item");
+        assert_eq!(entry.raw_text.as_deref(), Some("ship the uh recovery item"));
+        // Carried over from the failed take, not invented at retry time.
+        assert_eq!(entry.speech_seconds, 4.0);
+        assert_eq!(entry.source_app.as_deref(), Some("Notes"));
+        assert_eq!(entry.created_at, spoken);
+
+        let history = db.list_transcripts(50, None).unwrap();
+        assert_eq!(history.len(), 1, "recovered take is missing from history");
+        assert_eq!(history[0].id, entry.id);
+        assert!(
+            db.list_failed_dictations().unwrap().is_empty(),
+            "a recovered take must not stay in the failed list"
+        );
+        // Retrying the same id twice can't duplicate the entry.
+        assert!(db
+            .convert_failed_dictation(&row.id, "again".into(), "native".into(), 1.0, None)
+            .is_err());
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Retention: failed takes older than the 7-day cutoff are purged (and their
+    /// WAVs handed back for deletion); anything inside the window survives.
+    #[test]
+    fn purge_honors_the_seven_day_cutoff() {
+        let (db, dir) = fresh_db("yv52-purge");
+        let old_wav = dir.join("old.wav");
+        let fresh_wav = dir.join("fresh.wav");
+        std::fs::write(&old_wav, b"riff").unwrap();
+        std::fs::write(&fresh_wav, b"riff").unwrap();
+
+        let old = db
+            .record_failed_dictation(&old_wav, 1.0, "Empty transcript", None)
+            .unwrap();
+        let recent = db
+            .record_failed_dictation(&fresh_wav, 1.0, "Empty transcript", None)
+            .unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            // 8 days old — one day past retention; and 6 days old — inside it.
+            for (id, age) in [(&old.id, 8), (&recent.id, 6)] {
+                conn.execute(
+                    "UPDATE failed_dictations SET created_at = ?1 WHERE id = ?2",
+                    params![(Utc::now() - Duration::days(age)).to_rfc3339(), id],
+                )
+                .unwrap();
+            }
+        }
+
+        let cutoff = Utc::now() - Duration::days(FAILED_TAKE_RETENTION_DAYS);
+        let purged = db.purge_failed_dictations(cutoff).unwrap();
+        assert_eq!(
+            purged,
+            vec![old_wav.to_string_lossy().to_string()],
+            "purge must return exactly the expired WAVs to unlink"
+        );
+
+        let left = db.list_failed_dictations().unwrap();
+        assert_eq!(left.len(), 1, "purge took a take inside the 7-day window");
+        assert_eq!(left[0].id, recent.id);
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
