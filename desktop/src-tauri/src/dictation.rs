@@ -776,78 +776,402 @@ fn replace_ci_ascii(haystack: &str, needle: &str, replacement: &str) -> String {
     out
 }
 
-/// Enumerator cue words that, at the start of a clause, mark a new list item.
-/// Deliberately excludes weak connectors ("then", "also") to avoid firing on prose.
-const CUES: &[&str] = &[
-    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth", "fourthly",
-    "fifth", "sixth", "seventh", "next", "finally", "lastly",
+// ---------------------------------------------------------------------------
+// List formatting v2 (YV57) — rules R7–R11 of
+// `docs/research/wispr-formatting-deep-dive.md`.
+//
+// v1 split the utterance on punctuation and only inspected the FIRST word of each
+// clause, so it fired on NONE of Wispr's documented examples: real ASR output has
+// no commas (one clause ⇒ instant bail) and the cue table had no numeric words.
+//
+// v2 scans the TOKEN stream instead (R8) and takes its safety from a monotone cue
+// sequence — "one" is only a cue when a later "two" resolves — which is what keeps
+// "I want one coffee and a bagel" prose. Text BEFORE the first cue is preserved as
+// a lead-in line (R9); v1 silently dropped it, which would have been a text-loss
+// bug the moment detection started working. Everything here stays pure, and mode
+// gating stays with `should_format` (R11): `Code`/`Plain` never reach this code.
+// ---------------------------------------------------------------------------
+
+/// Spoken cardinals that can open a list item ("… are one finish the report two …"),
+/// paired with their position in the enumeration (R7).
+const NUMERIC_CUES: &[(&str, usize)] = &[
+    ("one", 1),
+    ("two", 2),
+    ("three", 3),
+    ("four", 4),
+    ("five", 5),
+    ("six", 6),
+    ("seven", 7),
+    ("eight", 8),
+    ("nine", 9),
+    ("ten", 10),
 ];
 
-/// If the text is clearly an enumerated list (>= 2 cue-led clauses), return it as a
-/// numbered list. Otherwise `None` so the caller keeps it as prose.
+/// Ordinal cues — v1's table, completed through "tenth" (R7).
+const ORDINAL_CUES: &[(&str, usize)] = &[
+    ("first", 1),
+    ("firstly", 1),
+    ("second", 2),
+    ("secondly", 2),
+    ("third", 3),
+    ("thirdly", 3),
+    ("fourth", 4),
+    ("fourthly", 4),
+    ("fifth", 5),
+    ("sixth", 6),
+    ("seventh", 7),
+    ("eighth", 8),
+    ("ninth", 9),
+    ("tenth", 10),
+];
+
+/// Cues that continue a sequence without naming their own position. They may only
+/// EXTEND a chain that already resolved 1 and 2 — on their own they are far too
+/// common in prose ("… and finally we shipped it").
+const CONTINUATION_CUES: &[&str] = &["next", "finally", "lastly"];
+
+/// Non-sequential enumeration cues (R10). Nothing about them is monotone, so they
+/// only fire at a clause boundary and only when at least three of them line up.
+const ENUM_CUES: &[&str] = &["also", "plus", "and then", "another thing"];
+
+/// Function words that can never OPEN a list item. "one of the things I noticed …
+/// two of the servers were down" satisfies the monotone rule by accident; the token
+/// right after the cue is the cheapest place to tell a quantity phrase from an
+/// enumeration. Deliberately excludes articles ("first, the report goes out" is a
+/// real item) — only words that cannot begin a dictated item at all.
+const NON_ITEM_OPENERS: &[&str] = &[
+    "of", "or", "and", "but", "that", "which", "who", "whom", "than", "as", "because", "if",
+    "though", "although", "while", "whether",
+];
+
+/// Conjunctions that can never CLOSE a list item. An item trailing off in "and"/"or"
+/// means the clause kept going, which is the tell of counted quantities rather than
+/// a dictated enumeration: "one dog two cats AND three birds", "number one in the
+/// league AND number two in scoring". Real items end on their own content.
+const DANGLING_CONJUNCTIONS: &[&str] = &["and", "or"];
+
+/// Nouns that ANNOUNCE an enumeration when they appear in the lead-in ("my top
+/// GOALS are one … two …", "grocery LIST one … two …"). Positive evidence that the
+/// speaker set up a list, which is what separates listing from counting.
+const LIST_ANNOUNCING_NOUNS: &[&str] = &[
+    "list", "lists", "checklist", "things", "goals", "steps", "reasons", "items", "tasks",
+    "priorities", "options", "ideas", "plan", "plans", "agenda", "questions", "topics",
+];
+
+/// Present-tense listing verbs. Directly ahead of the first cue they are the spoken
+/// form of a colon: "the plan IS one … two …", "my goals ARE one … two …". Past
+/// tense is narration ("he WAS number one in the league"), so it is not here.
+const LIST_ANNOUNCING_VERBS: &[&str] = &["is", "are", "include", "includes"];
+
+/// Words that turn a bullet noun into a shape instruction: "write it IN bullets",
+/// "USE bullet points". Without one, a bare "bullets" is a thing being talked about.
+const BULLET_INSTRUCTION_MARKERS: &[&str] =
+    &["in", "as", "use", "using", "with", "into", "make", "format", "formatted"];
+
+/// Determiners that make "bullet points" a referring noun phrase — something the
+/// speaker is talking ABOUT ("THE bullet points are one … two …"), never shape.
+const BULLET_DETERMINERS: &[&str] =
+    &["the", "these", "those", "my", "your", "our", "their", "his", "her", "its"];
+
+/// One enumeration cue found in the token stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cue {
+    /// Index of the cue's first token.
+    start: usize,
+    /// How many whitespace tokens the cue spans ("number one" spans 2).
+    len: usize,
+    /// Position in the enumeration; `None` for a continuation cue.
+    value: Option<usize>,
+}
+
+/// If the text is clearly an enumerated list, render it (lead-in line + items).
+/// Otherwise `None` so the caller keeps it as prose.
 fn detect_and_format_list(text: &str) -> Option<String> {
-    let clauses: Vec<String> = text
-        .split(|c| c == ',' || c == '.' || c == ';' || c == '\n')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if clauses.len() < 2 {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.len() < 4 {
         return None;
     }
 
-    let mut items: Vec<String> = Vec::new();
-    let mut started = false;
-    for clause in &clauses {
-        let (is_cue, rest) = strip_leading_cue(clause);
-        if is_cue {
-            started = true;
-            items.push(rest);
-        } else if started {
-            // Continuation of the current item (e.g. "first," then the content clause).
-            if let Some(last) = items.last_mut() {
-                if last.is_empty() {
-                    *last = clause.clone();
-                } else {
-                    last.push_str(", ");
-                    last.push_str(clause);
-                }
+    // Path 1 — a monotone numeric/ordinal chain (R7/R8): numbered by default.
+    if let Some(chain) = resolve_chain(&scan_cues(&tokens)) {
+        let mut items: Vec<&[&str]> = Vec::with_capacity(chain.len());
+        for (i, cue) in chain.iter().enumerate() {
+            let end = chain.get(i + 1).map_or(tokens.len(), |next| next.start);
+            items.push(&tokens[cue.start + cue.len..end]);
+        }
+        // Two-item lists are the easiest to hallucinate out of prose ("one coffee
+        // and two bagels"), so they additionally need real content per item.
+        if items.len() == 2 && items.iter().any(|it| it.len() < 2) {
+            return None;
+        }
+        // A cue that opens no item is a quantity, not an enumerator ("one OF the
+        // things …"), so the whole chain is a misread.
+        if items
+            .iter()
+            .any(|it| it.first().is_some_and(|t| NON_ITEM_OPENERS.contains(&token_core(t).as_str())))
+        {
+            return None;
+        }
+        // An item that trails off in a conjunction is a clause still running, not an
+        // item that ended — quantity prose ("I have one dog two cats AND three
+        // birds") rather than an enumeration.
+        if items.iter().any(|it| {
+            it.last().is_some_and(|t| DANGLING_CONJUNCTIONS.contains(&token_core(t).as_str()))
+        }) {
+            return None;
+        }
+        // An explicit "bullet point(s)" instruction picks the marker. It is shape,
+        // not content, so it is only honored — and only consumed — as the tail of
+        // the LEAD-IN, ahead of the first cue. Everywhere else, including earlier in
+        // the lead-in, those words are ordinary content and must survive.
+        let head = &tokens[..chain[0].start];
+        let (bulleted, lead_in) = take_bullet_cue(head);
+        // A monotone chain is necessary but nowhere near sufficient: ordinary
+        // counting prose ("I ate one apple two oranges three bananas") satisfies it
+        // too. The speaker has to have marked the enumeration somehow.
+        if !has_enumeration_evidence(&tokens, &chain, head, bulleted) {
+            return None;
+        }
+        return render_list(&lead_in, &items, bulleted);
+    }
+
+    // Path 2 — three or more clause-boundary enumeration cues (R10): bulleted.
+    let enums = scan_enum_cues(&tokens);
+    if enums.len() >= 3 {
+        let mut items: Vec<&[&str]> = vec![&tokens[..enums[0].start]];
+        for (i, cue) in enums.iter().enumerate() {
+            let end = enums.get(i + 1).map_or(tokens.len(), |next| next.start);
+            items.push(&tokens[cue.start + cue.len..end]);
+        }
+        if items.iter().any(|it| it.len() < 2) {
+            return None;
+        }
+        return render_list(&[], &items, true);
+    }
+
+    None
+}
+
+/// Scan the token stream for numeric/ordinal/digit/continuation cues (R8). A cue
+/// must be a whole token — never a substring — so "someone" and "seventh-inning"
+/// are inert.
+fn scan_cues(tokens: &[&str]) -> Vec<Cue> {
+    let mut cues = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let core = token_core(tokens[i]);
+        // "number one", "number two" … consume both tokens so the cardinal inside
+        // can't also register as a cue of its own.
+        if core == "number" {
+            if let Some(value) = tokens.get(i + 1).and_then(|t| cue_value(&token_core(t))) {
+                cues.push(Cue { start: i, len: 2, value: Some(value) });
+                i += 2;
+                continue;
             }
         }
+        if let Some(value) = digit_cue_value(tokens[i]).or_else(|| cue_value(&core)) {
+            cues.push(Cue { start: i, len: 1, value: Some(value) });
+        } else if CONTINUATION_CUES.contains(&core.as_str()) {
+            cues.push(Cue { start: i, len: 1, value: None });
+        }
+        i += 1;
     }
+    cues
+}
 
-    let items: Vec<String> = items
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    // Require at least two real, cue-led items before calling it a list.
-    if items.len() < 2 {
+/// Scan for non-sequential enumeration cues (R10). Boundary-gated: with no monotone
+/// sequence to lean on, only a preceding `,` `.` `;` `:` (or the utterance start)
+/// separates "also" the enumerator from "also" the adverb.
+fn scan_enum_cues(tokens: &[&str]) -> Vec<Cue> {
+    let mut cues = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if at_clause_boundary(tokens, i) {
+            if let Some(len) = enum_cue_len(&tokens[i..]) {
+                cues.push(Cue { start: i, len, value: None });
+                i += len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    cues
+}
+
+/// Resolve the longest monotone cue chain: an anchor at position 1, then each next
+/// position in turn (R8). Continuation cues only extend a chain that already holds
+/// 1 and 2. Returns `None` unless at least two cues resolve.
+fn resolve_chain(cues: &[Cue]) -> Option<Vec<Cue>> {
+    for (i, anchor) in cues.iter().enumerate() {
+        if anchor.value != Some(1) {
+            continue;
+        }
+        let mut chain = vec![*anchor];
+        let mut want = 2;
+        for cue in &cues[i + 1..] {
+            match cue.value {
+                Some(v) if v == want => {
+                    chain.push(*cue);
+                    want += 1;
+                }
+                None if chain.len() >= 2 => chain.push(*cue),
+                _ => {}
+            }
+        }
+        if chain.len() >= 2 {
+            return Some(chain);
+        }
+    }
+    None
+}
+
+/// Render the lead-in (R9) and the items (R10). `None` when any item is empty —
+/// an empty item means we misread prose, so prose is what the caller keeps.
+fn render_list(lead_in: &[&str], items: &[&[&str]], bulleted: bool) -> Option<String> {
+    let items: Vec<String> = items.iter().map(|it| clean_item(&it.join(" "))).collect();
+    if items.iter().any(|item| item.is_empty()) {
         return None;
     }
-
-    let mut out = String::new();
+    let mut out = clean_lead_in(&lead_in.join(" "));
     for (i, item) in items.iter().enumerate() {
-        if i > 0 {
+        if i > 0 || !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&format!("{}. {}", i + 1, capitalize(item)));
+        if bulleted {
+            out.push_str("- ");
+        } else {
+            out.push_str(&format!("{}. ", i + 1));
+        }
+        out.push_str(item);
     }
     Some(out)
 }
 
-/// If `clause` begins with an enumerator cue, return `(true, remainder)` with the cue
-/// stripped; otherwise `(false, clause)`.
-fn strip_leading_cue(clause: &str) -> (bool, String) {
-    let mut parts = clause.splitn(2, char::is_whitespace);
-    let first = parts.next().unwrap_or("");
-    let first_norm = first
-        .trim_matches(|c: char| !c.is_alphanumeric())
-        .to_lowercase();
-    if CUES.contains(&first_norm.as_str()) {
-        (true, parts.next().unwrap_or("").trim().to_string())
-    } else {
-        (false, clause.to_string())
+/// Lead-in line (R9): the text before the first cue, capitalized and given a `:`
+/// when it carries no terminal punctuation of its own. Empty ⇒ no lead-in line.
+fn clean_lead_in(text: &str) -> String {
+    let trimmed = text
+        .trim()
+        .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | '-') || c.is_whitespace());
+    if trimmed.is_empty() {
+        return String::new();
     }
+    let mut lead = capitalize(trimmed);
+    if !lead.ends_with(|c: char| matches!(c, '.' | '!' | '?')) {
+        lead.push(':');
+    }
+    lead
+}
+
+/// Item text (R10): separators trimmed, capitalized, and stripped of a trailing
+/// period unless the item is more than one sentence.
+fn clean_item(text: &str) -> String {
+    let mut item = text
+        .trim()
+        .trim_start_matches(|c: char| matches!(c, ',' | ';' | ':' | '.') || c.is_whitespace())
+        .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':') || c.is_whitespace())
+        .to_string();
+    if let Some(head) = item.strip_suffix('.') {
+        if !head.contains(|c: char| matches!(c, '.' | '!' | '?')) {
+            item = head.trim_end().to_string();
+        }
+    }
+    capitalize(item.trim())
+}
+
+/// Positive evidence that a resolved chain is an enumeration and not counted
+/// quantities. A bare cardinal is how an ASR renders EVERY spoken number, so a chain
+/// of them proves nothing on its own — the speaker has to have marked the list:
+/// an explicit shape instruction, a lead-in that announces one, cues sitting on
+/// clause boundaries, or a cue form that is itself an enumerator. Ordinals and
+/// dictated digit markers are that last case: nobody counts apples in "firsts".
+fn has_enumeration_evidence(
+    tokens: &[&str],
+    chain: &[Cue],
+    lead_in: &[&str],
+    bulleted: bool,
+) -> bool {
+    bulleted
+        || chain.first().is_some_and(|cue| is_enumerative_form(tokens[cue.start]))
+        || chain.iter().all(|cue| at_clause_boundary(tokens, cue.start))
+        || lead_in.iter().any(|t| LIST_ANNOUNCING_NOUNS.contains(&token_core(t).as_str()))
+        || lead_in.last().is_some_and(|t| LIST_ANNOUNCING_VERBS.contains(&token_core(t).as_str()))
+}
+
+/// True when the cue token marks an enumeration by its own form — an ordinal word
+/// ("first") or a dictated digit marker ("1.") — rather than a bare cardinal.
+fn is_enumerative_form(token: &str) -> bool {
+    digit_cue_value(token).is_some()
+        || ORDINAL_CUES.iter().any(|(cue, _)| *cue == token_core(token))
+}
+
+/// Strip an explicit "bullet point(s)" / "bullets" instruction from a LEAD-IN,
+/// reporting whether one was spoken (R10). Numbered stays the default; bullets are
+/// opt-in.
+///
+/// The instruction is only recognized as the TAIL of the lead-in — directly ahead of
+/// the first cue, where "… in bullet points one X two Y" is unambiguously shape — and
+/// only in a form no speaker uses for content: "bullet point(s)" without a determiner
+/// in front of it ("THE bullet points are one …" is a noun phrase), or a bare
+/// "bullets" behind an instruction marker ("in bullets", never "buy bullets").
+/// Anything else is left alone, in the lead-in exactly as in an item body.
+fn take_bullet_cue<'a>(tokens: &[&'a str]) -> (bool, Vec<&'a str>) {
+    let mut end = tokens.len();
+    let core = |i: usize| token_core(tokens[i]);
+    if end >= 2 && core(end - 2) == "bullet" && matches!(core(end - 1).as_str(), "point" | "points")
+    {
+        // "the/my/those bullet points" is something being referred to, not shape.
+        if end >= 3 && BULLET_DETERMINERS.contains(&core(end - 3).as_str()) {
+            return (false, tokens.to_vec());
+        }
+        end -= 2;
+    } else if end >= 2
+        && core(end - 1) == "bullets"
+        && BULLET_INSTRUCTION_MARKERS.contains(&core(end - 2).as_str())
+    {
+        end -= 1;
+    } else {
+        return (false, tokens.to_vec());
+    }
+    // The marker that introduced the instruction is shape too ("write it IN bullet
+    // points" leaves "write it", not "write it in").
+    if end > 0 && BULLET_INSTRUCTION_MARKERS.contains(&core(end - 1).as_str()) {
+        end -= 1;
+    }
+    (true, tokens[..end].to_vec())
+}
+
+/// Enumeration position of a cue word, cardinals first then ordinals.
+fn cue_value(word: &str) -> Option<usize> {
+    NUMERIC_CUES
+        .iter()
+        .chain(ORDINAL_CUES.iter())
+        .find(|(cue, _)| *cue == word)
+        .map(|(_, value)| *value)
+}
+
+/// Enumeration position of a dictated digit marker — `1.` … `10.` (or `1)`). The
+/// trailing mark is required: a bare "2" is a quantity far more often than a cue.
+fn digit_cue_value(token: &str) -> Option<usize> {
+    let digits = token.strip_suffix('.').or_else(|| token.strip_suffix(')'))?;
+    let value: usize = digits.parse().ok()?;
+    (1..=10).contains(&value).then_some(value)
+}
+
+/// Length (in tokens) of the enumeration cue starting at `rest`, if any.
+fn enum_cue_len(rest: &[&str]) -> Option<usize> {
+    ENUM_CUES.iter().find_map(|phrase| {
+        let words: Vec<&str> = phrase.split(' ').collect();
+        (rest.len() >= words.len()
+            && words.iter().enumerate().all(|(i, w)| token_core(rest[i]) == *w))
+        .then_some(words.len())
+    })
+}
+
+/// True when the token at `i` opens a clause: the utterance start, or right after
+/// a token that ended one.
+fn at_clause_boundary(tokens: &[&str], i: usize) -> bool {
+    i == 0 || tokens[i - 1].ends_with(|c: char| matches!(c, ',' | '.' | ';' | ':'))
 }
 
 /// Capitalize the first alphabetic character; leaves the rest untouched.
@@ -946,6 +1270,311 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert_eq!(format_dictation("   "), "");
+    }
+
+    // --- List formatting v2 (YV57, rules R7–R11) --------------------------
+    //
+    // The three inputs below are Wispr's own documented examples — measured
+    // failures #1–#3 of the deep-dive (`docs/research/wispr-formatting-deep-dive.md`
+    // §1.1), on which the v1 detector fired exactly zero times.
+
+    #[test]
+    fn list_from_unpunctuated_numeric_cues() {
+        // Real ASR output: no punctuation anywhere, cues mid-utterance (R7/R8).
+        let out = format_dictation(
+            "My top goals this week are one finish the report two send the presentation",
+        );
+        assert_eq!(
+            out,
+            "My top goals this week are:\n1. Finish the report\n2. Send the presentation"
+        );
+    }
+
+    #[test]
+    fn list_from_comma_punctuated_numeric_cues() {
+        // Same utterance with the commas an ASR sometimes emits → same list.
+        let out = format_dictation(
+            "My top goals this week are, one, finish the report, two, send the presentation.",
+        );
+        assert_eq!(
+            out,
+            "My top goals this week are:\n1. Finish the report\n2. Send the presentation"
+        );
+    }
+
+    #[test]
+    fn list_from_ordinal_cues_preserves_lead_in() {
+        // The lead-in is kept as its own line ending in ':' — v1 dropped it (R9).
+        let out = format_dictation(
+            "we need to do three things first ship the build second email the client third update the docs",
+        );
+        assert_eq!(
+            out,
+            "We need to do three things:\n1. Ship the build\n2. Email the client\n3. Update the docs"
+        );
+        let lead_in = out.lines().next().unwrap();
+        assert_eq!(lead_in, "We need to do three things:");
+        assert!(lead_in.ends_with(':'));
+    }
+
+    #[test]
+    fn list_requires_monotone_cue_sequence() {
+        // "one" with no later "two" is a quantity, not a cue — prose is preserved.
+        let prose = "I want one coffee and a bagel";
+        assert_eq!(format_dictation(prose), prose);
+        // A cue chain that never starts at 1 is not a list either.
+        let prose = "we shipped it second time around and third parties noticed";
+        assert_eq!(format_dictation(prose), prose);
+    }
+
+    #[test]
+    fn list_ignores_cues_that_open_no_item() {
+        // A monotone "one … two" satisfied by accident: both are quantities, and
+        // neither opens an item ("of the things", "of the servers").
+        let prose = "one of the things I noticed was that two of the servers were down";
+        assert_eq!(format_dictation(prose), prose);
+    }
+
+    #[test]
+    fn list_bullets_only_on_explicit_cue() {
+        // Numbered is the default for a numeric/ordinal chain…
+        assert_eq!(
+            format_dictation("grocery list one whole milk two brown eggs three sourdough bread"),
+            "Grocery list:\n1. Whole milk\n2. Brown eggs\n3. Sourdough bread"
+        );
+        // …and the marker only flips on an explicit spoken instruction, which is
+        // itself removed from the text (it's shape, not content).
+        assert_eq!(
+            format_dictation(
+                "grocery list bullet points one whole milk two brown eggs three sourdough bread"
+            ),
+            "Grocery list:\n- Whole milk\n- Brown eggs\n- Sourdough bread"
+        );
+        // The instruction alone never manufactures a list out of prose.
+        let prose = "I filled in the bullet points on the slide before lunch";
+        assert_eq!(format_dictation(prose), prose);
+    }
+
+    #[test]
+    fn spoken_bullet_words_inside_items_are_content_not_shape() {
+        // "bullets" here is a thing being bought, not a marker instruction: it must
+        // survive verbatim AND leave the list numbered.
+        assert_eq!(
+            format_dictation(
+                "my top goals this week are one buy more bullets two clean the gun three go home"
+            ),
+            "My top goals this week are:\n1. Buy more bullets\n2. Clean the gun\n3. Go home"
+        );
+        // Same for "bullet points" as the object of an item.
+        assert_eq!(
+            format_dictation(
+                "the plan is one order bullet points from supply two label them three ship"
+            ),
+            "The plan is:\n1. Order bullet points from supply\n2. Label them\n3. Ship"
+        );
+    }
+
+    #[test]
+    fn spoken_bullet_words_in_the_lead_in_are_content_not_shape() {
+        // "the bullet points" is the SUBJECT of the lead-in, not a marker request:
+        // both words survive and the list stays numbered.
+        assert_eq!(
+            format_dictation("the bullet points are one ship it two email them"),
+            "The bullet points are:\n1. Ship it\n2. Email them"
+        );
+        // "buy bullets" is a purchase. Nothing may be consumed, nothing flipped to a
+        // bullet marker — with no evidence of an enumeration this stays prose.
+        let prose = "I need to buy bullets one nine millimeter two forty five three shotgun shells";
+        assert_eq!(format_dictation(prose), prose);
+        // Shape is still honored where it IS an instruction: on the tail of the
+        // lead-in, and behind a marker for the bare "bullets" form.
+        assert_eq!(
+            format_dictation("write it in bullets one ship the build two email the client"),
+            "Write it:\n- Ship the build\n- Email the client"
+        );
+    }
+
+    #[test]
+    fn counting_prose_without_enumeration_evidence_stays_prose() {
+        // Ascending cardinals are how an ASR writes down ordinary counting, and the
+        // speaker marked no list in any of these: no shape instruction, no
+        // announcing lead-in, no clause boundaries, no enumerator cue form. Every
+        // one of them used to be rewritten (and word-scrambled) into a list.
+        for prose in [
+            "I ate one apple two oranges three bananas",
+            "chapter one was slow chapter two was better",
+            "she scored one goal in the first half two goals in the second half",
+            "I gave one dollar to my brother two days later he gave it back",
+            "on the one hand it rained on the other hand two people still showed up",
+        ] {
+            assert_eq!(format_dictation(prose), prose, "{prose:?} was mangled into a list");
+        }
+    }
+
+    #[test]
+    fn quantity_prose_with_ascending_cardinals_stays_prose() {
+        // Three ascending cardinals satisfy the monotone rule by accident; each of
+        // these is one clause counting things, and every one of them leaves an item
+        // dangling on a conjunction — the tell that the clause never ended.
+        for prose in [
+            "I have one dog two cats and three birds",
+            "the recipe needs one egg two cups of flour and three tablespoons of sugar",
+            "one hundred and two people came to the show and three hundred left",
+            "he was number one in the league and number two in scoring",
+        ] {
+            assert_eq!(format_dictation(prose), prose, "{prose:?} was mangled into a list");
+        }
+    }
+
+    #[test]
+    fn list_never_drops_input_words() {
+        // Property: every input token formatting is not allowed to consume survives,
+        // as many times as it was spoken. The ONLY exemption is the enumeration cue
+        // vocabulary — a spoken "one"/"first" BECOMES the "1." marker. No length
+        // filter, so dropping a one- or two-character word ("a", "at") fails too.
+        //
+        // The one other exemption is the shape-instruction span, and it is read back
+        // from the implementation's OWN span for each input (see
+        // `content_token_counts`) rather than from a word list — so a bullet-word the
+        // pipeline eats anywhere it did not contract to fails the property.
+        const FIXED: &[&str] = &[
+            "My top goals this week are one finish the report two send the presentation",
+            "My top goals this week are, one, finish the report, two, send the presentation.",
+            "we need to do three things first ship the build second email the client third update the docs",
+            "first, buy milk, second, buy eggs, third, buy bread",
+            "1. finish the report 2. send the presentation 3. book the room",
+            "I want one coffee and a bagel",
+            "The weather today is nice and I think we should go for a walk before it gets dark.",
+            "my top goals this week are one buy more bullets two clean the gun three go home",
+            "the plan is one order bullet points from supply two label them three ship",
+            "I have one dog two cats and three birds",
+            "he was number one in the league and number two in scoring",
+            "the bullet points are one ship it two email them",
+            "I need to buy bullets one nine millimeter two forty five three shotgun shells",
+            "write it in bullets one ship the build two email the client",
+            "I ate one apple two oranges three bananas",
+            "chapter one was slow chapter two was better",
+        ];
+        let generated = generated_list_utterances();
+        for input in FIXED.iter().map(|s| (*s).to_string()).chain(generated.iter().cloned()) {
+            let out = format_dictation(&input);
+            for (word, spoken) in content_token_counts(&input) {
+                let kept = count_tokens(&out, &word);
+                assert!(
+                    kept >= spoken,
+                    "content word {word:?} spoken {spoken}× but kept {kept}× in {input:?} → {out:?}"
+                );
+            }
+        }
+        // …and the generated corpus has to actually reach the list path, or the
+        // property above would be satisfied by never formatting anything at all.
+        let listed = generated.iter().filter(|i| format_dictation(i).contains('\n')).count();
+        assert!(
+            listed * 2 > generated.len(),
+            "only {listed}/{} generated utterances formatted as lists",
+            generated.len()
+        );
+    }
+
+    /// Multiset of the input tokens formatting must preserve — everything but the
+    /// enumeration cue vocabulary (at every length) and the shape-instruction span
+    /// the detector actually recognizes in THIS input.
+    ///
+    /// That span is computed by asking the implementation, not by excluding words
+    /// from a curated list: whatever `take_bullet_cue` declines to consume stays
+    /// under the property, so widening it later re-breaks this test rather than
+    /// silently passing. (The corpus carries no fillers or self-corrections, so the
+    /// token stream `clean_backtrack` hands the detector is the input stream.)
+    fn content_token_counts(text: &str) -> Vec<(String, usize)> {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        let mut bump = |word: String, delta: isize| {
+            if word.is_empty() || is_cue_word(&word) {
+                return;
+            }
+            match counts.iter_mut().find(|(w, _)| *w == word) {
+                Some((_, n)) => *n = n.saturating_add_signed(delta),
+                None if delta > 0 => counts.push((word, delta as usize)),
+                None => {}
+            }
+        };
+        for token in &tokens {
+            bump(token_core(token), 1);
+        }
+        if let Some(chain) = resolve_chain(&scan_cues(&tokens)) {
+            let lead_in = &tokens[..chain[0].start];
+            let (spoken, kept) = take_bullet_cue(lead_in);
+            if spoken {
+                for token in &lead_in[kept.len()..] {
+                    bump(token_core(token), -1);
+                }
+            }
+        }
+        counts.retain(|(_, n)| *n > 0);
+        counts
+    }
+
+    /// How many whitespace tokens of `text` have `word` as their core.
+    fn count_tokens(text: &str, word: &str) -> usize {
+        text.split_whitespace().filter(|t| token_core(t) == word).count()
+    }
+
+    fn is_cue_word(word: &str) -> bool {
+        cue_value(word).is_some()
+            || CONTINUATION_CUES.contains(&word)
+            || ENUM_CUES.iter().any(|c| c.split(' ').any(|w| w == word))
+            // "number one" consumes both of its tokens.
+            || word == "number"
+    }
+
+    /// Interleave enumeration cues with random content tokens: a 0–4 word lead-in,
+    /// then 2–4 items of 1–4 words each, cued by cardinals, ordinals or dictated
+    /// digit markers. Deterministic (fixed seed), so a failure is always replayable.
+    fn generated_list_utterances() -> Vec<String> {
+        // Ordinary words only — nothing the pipeline is allowed to consume: no cue
+        // words, no fillers, no self-correction markers. Short words are in on
+        // purpose: a dropped "a" or "at" has to fail the property too. Lead-ins draw
+        // from this same vocabulary as item bodies — including the bullet words, so
+        // the generator can build the very lead-ins that used to lose them.
+        const CONTENT: &[&str] = &[
+            "a", "at", "id", "go", "my", "the", "buy", "milk", "eggs", "report", "client",
+            "docs", "gun", "bullet", "bullets", "point", "points", "ship", "email", "call",
+            "mom", "list", "goals", "things", "plan", "steps",
+        ];
+        const CUE_FORMS: [[&str; 4]; 3] = [
+            ["one", "two", "three", "four"],
+            ["first", "second", "third", "fourth"],
+            ["1.", "2.", "3.", "4."],
+        ];
+        let mut state = 0x5EED_1357_2468_ACE1_u64;
+        let pick = |state: &mut u64, n: usize| (next_rand(state) % n as u64) as usize;
+        let mut out = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let forms = CUE_FORMS[pick(&mut state, CUE_FORMS.len())];
+            let item_count = 2 + pick(&mut state, 3);
+            let mut words: Vec<&str> = Vec::new();
+            for _ in 0..pick(&mut state, 5) {
+                words.push(CONTENT[pick(&mut state, CONTENT.len())]);
+            }
+            for form in forms.iter().take(item_count) {
+                words.push(form);
+                for _ in 0..=pick(&mut state, 4) {
+                    words.push(CONTENT[pick(&mut state, CONTENT.len())]);
+                }
+            }
+            out.push(words.join(" "));
+        }
+        out
+    }
+
+    /// Deterministic xorshift64 — no dev-dependency, and the same corpus every run.
+    fn next_rand(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
     }
 
     #[test]
@@ -1335,3 +1964,4 @@ mod tests {
         assert_eq!(out2, "1. Buy milk\n2. Buy eggs");
     }
 }
+
