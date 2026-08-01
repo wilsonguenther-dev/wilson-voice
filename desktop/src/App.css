@@ -1,3 +1,12 @@
+@font-face {
+  /* Departure Mono (OFL) — the pixel voice of Yappy's world. Numerals,
+     eyebrows, and metadata only; body text stays native SF. */
+  font-family: "Departure Mono";
+  src: url("./assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
   /* Liquid-glass-ish tokens (macOS Tahoe-inspired; CSS fallback for WebView) */
@@ -12,6 +21,11 @@
   --muted: #8a7658;
   --accent: #ef7d3c;
   --accent-soft: rgba(239, 125, 60, 0.14);
+  /* Data/second voice: the pill-world sky. Orange = action, sky = information. */
+  --accent-data: #4ba3d8;
+  --accent-data-soft: rgba(75, 163, 216, 0.16);
+  --mono: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: 10px;
   --danger: #be123c;
   --warn: #b45309;
   --radius: 16px;
@@ -44,6 +58,8 @@
     --muted: #b6a184;
     --accent: #ff9a5c;
     --accent-soft: rgba(255, 154, 92, 0.16);
+    --accent-data: #8fd6ff;
+    --accent-data-soft: rgba(143, 214, 255, 0.14);
     --shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   }
 }
@@ -272,6 +288,9 @@ body:has(.float-pill),
 }
 
 .brand-tag {
+  font-family: var(--mono);
+  white-space: nowrap;
+  font-size: 0.62rem;
   font-size: 0.72rem;
   color: var(--muted);
 }
@@ -660,11 +679,13 @@ code {
 }
 
 .stat-n {
-  font-size: 1.45rem;
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-family: var(--mono);
+  font-size: 1.35rem;
+  font-weight: 400;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   min-height: 1.2em;
+  color: var(--accent-data);
 }
 
 .stat-l {
@@ -739,7 +760,9 @@ code {
   display: flex;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
   margin-bottom: 8px;
 }
 
@@ -753,6 +776,26 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* History rows: the words are the artifact — actions surface on approach.
+   Focus-within keeps every control reachable by keyboard. */
+.card .actions {
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.card:hover .actions,
+.card:focus-within .actions {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .card .actions { transition: none; transform: none; }
+}
+.card p {
+  font-size: 0.95rem;
+  line-height: 1.55;
 }
 
 .actions.wrap {
@@ -797,7 +840,7 @@ code {
 
 .bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent-data), var(--accent));
   border-radius: 999px;
   min-width: 2px;
 }
@@ -1539,8 +1582,9 @@ button.star.on {
      and the Dictate button frame together above the fold on a normal-height
      window. Capping the width keeps the 3:2 stage from growing taller than its
      max-height below, so it needs no letterboxing to stay crisp. */
-  max-width: 474px;
-  margin: 4px auto 20px;
+  /* yap15: the habitat IS Home's hero — full measure, room to live in. */
+  max-width: 640px;
+  margin: 4px auto 24px;
 }
 .yappy-house .yh-tag {
   position: absolute;
@@ -1550,7 +1594,7 @@ button.star.on {
   z-index: 2;
   background: #6f3f27;
   color: #ffe9c6;
-  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
