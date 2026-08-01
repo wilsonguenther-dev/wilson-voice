@@ -20,6 +20,7 @@ mod permissions;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
 mod record;
+mod secure_input;
 mod sysaudio;
 mod transcription;
 mod vad;
@@ -189,6 +190,14 @@ pub struct AppStatus {
     /// routes to the model step.
     #[serde(default)]
     pub model_ready: bool,
+    /// YV43 — another app holds macOS Secure Input, so the fn PTT event tap is
+    /// blind and the hotkey cannot fire. True means the UI must SAY so instead
+    /// of continuing to advertise "hold fn⌃".
+    #[serde(default)]
+    pub secure_input_blocked: bool,
+    /// The holder + workaround line for the banner. `None` when not blocked.
+    #[serde(default)]
+    pub secure_input_detail: Option<String>,
 }
 
 struct AppState {
@@ -212,6 +221,10 @@ struct AppState {
     tray_dictation: PLMutex<Option<MenuItem<Wry>>>,
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
+    /// YV43 — latest Secure Input watchdog snapshot. Written ONLY by the
+    /// watchdog thread on an edge; read by every `build_status`, so the pill,
+    /// the banner and the tray tooltip all agree.
+    secure_input: PLMutex<secure_input::SecureInputStatus>,
     /// Warm Silero VAD (YV36) — loaded ONCE from disk during startup (see the
     /// background thread in `run()`) and reused by every dictation, instead of
     /// re-loading + re-failing an ONNX graph on each clip. `None` until the
@@ -249,6 +262,11 @@ fn model_ready(state: &AppState) -> bool {
 /// The status-line policy, pure so the "Ready" honesty rule is testable without
 /// an AppState. `model_ready` false outranks everything except live
 /// recording/transcribing/errors: a fresh install with no model must say so.
+///
+/// YV43: `secure_input_blocked` outranks the model + accessibility lines for the
+/// same honesty reason — while another app holds Secure Input the fn tap is
+/// blind, so telling the user to "hold fn⌃" is telling them to do something that
+/// physically cannot work.
 fn status_message(
     recording: bool,
     hands_free: bool,
@@ -256,6 +274,7 @@ fn status_message(
     last_error: Option<&str>,
     model_ready: bool,
     accessibility: bool,
+    secure_input_blocked: bool,
     ptt: &str,
 ) -> String {
     if recording && hands_free {
@@ -266,6 +285,8 @@ fn status_message(
         "Transcribing with local Whisper…".into()
     } else if let Some(err) = last_error {
         format!("Error: {err}")
+    } else if secure_input_blocked {
+        secure_input::BLOCKED_MESSAGE.into()
     } else if !model_ready {
         "Model needed — download a speech model to start".into()
     } else if !accessibility {
@@ -284,6 +305,7 @@ fn build_status(state: &AppState) -> AppStatus {
     let hotkey_registered = *state.hotkey_registered.lock();
     let ptt = state.settings.lock().hotkey_label.clone();
     let ready = model_ready(state);
+    let secure = state.secure_input.lock().clone();
     let message = status_message(
         recording,
         hands_free,
@@ -291,6 +313,7 @@ fn build_status(state: &AppState) -> AppStatus {
         last_error.as_deref(),
         ready,
         accessibility,
+        secure.blocked,
         &ptt,
     );
     AppStatus {
@@ -302,6 +325,8 @@ fn build_status(state: &AppState) -> AppStatus {
         hotkey_registered,
         hands_free,
         model_ready: ready,
+        secure_input_blocked: secure.blocked,
+        secure_input_detail: secure.blocked.then(|| secure.detail()),
     }
 }
 
@@ -323,6 +348,7 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let recording = *state.recording.lock();
     let busy = *state.busy.lock();
     let hands_free = *state.hands_free.lock();
+    let secure_input_blocked = state.secure_input.lock().blocked;
     let dictation = state.tray_dictation.lock().clone();
     let hf_item = state.tray_hands_free.lock().clone();
     let tray = state.tray.lock().clone();
@@ -341,12 +367,18 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
             let _ = item.set_checked(hands_free);
         }
         if let Some(tray) = tray {
+            // YV43: the idle tooltip must not keep saying "hold fn" while
+            // Secure Input has the tap blind — that is the exact instruction
+            // that silently does nothing. Live states still win: they are
+            // already-running takes, not an invitation to press the key.
             let tip = if recording && hands_free {
                 "Yap — hands-free recording"
             } else if recording {
                 "Yap — recording"
             } else if busy {
                 "Yap — transcribing…"
+            } else if secure_input_blocked {
+                secure_input::BLOCKED_MESSAGE
             } else {
                 "Yap — hold fn to dictate"
             };
@@ -1529,6 +1561,7 @@ pub fn run() {
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
+        secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
         vad: PLMutex::new(None),
         paste_generation: AtomicU64::new(0),
         transcription: transcription::TranscriptionManager::new(),
@@ -1936,6 +1969,21 @@ pub fn run() {
                 log::info!("PTT hybrid started ({})", binding.label());
             }
 
+            // YV43: watch for the one condition that kills the tap above without
+            // any error — another app enabling macOS Secure Input. The watchdog
+            // only calls back on an edge, so this is a state write + one status
+            // emit per episode, not per poll. There is no Carbon fallback to
+            // wire: RegisterEventHotKey cannot express the fn modifier that
+            // every Yap binding uses, so the honest status IS the remedy.
+            {
+                let st = state.clone();
+                let h = app.handle().clone();
+                secure_input::start(move |snapshot| {
+                    *st.secure_input.lock() = snapshot;
+                    emit_status(&h, &st);
+                });
+            }
+
             // Global ⌃⌘V (Paste Last Transcript, always on) + optional ⌘⇧V
             // dictation toggle (off by default).
             // YV38: no fixed startup delay. `run_on_main_thread` queues this on
@@ -2020,26 +2068,63 @@ mod tests {
     // Mac, where that path was the non-functional Command Line Tools shim.
     #[test]
     fn status_says_model_needed_until_a_model_is_ready() {
-        let no_model = status_message(false, false, false, None, false, true, "fn⌃");
+        let no_model = status_message(false, false, false, None, false, true, false, "fn⌃");
         assert!(no_model.contains("Model needed"), "{no_model}");
         assert!(!no_model.contains("Ready"), "{no_model}");
 
-        let ready = status_message(false, false, false, None, true, true, "fn⌃");
+        let ready = status_message(false, false, false, None, true, true, false, "fn⌃");
         assert!(ready.starts_with("Ready — hold fn⌃"), "{ready}");
 
         // Accessibility is a paste-only concern: still Ready, with a nudge.
-        let no_ax = status_message(false, false, false, None, true, false, "fn⌃");
+        let no_ax = status_message(false, false, false, None, true, false, false, "fn⌃");
         assert!(no_ax.starts_with("Ready —"), "{no_ax}");
         assert!(no_ax.contains("Accessibility"), "{no_ax}");
 
         // Live states and hard errors still outrank the model gate.
-        assert!(status_message(true, false, false, None, false, true, "fn⌃").contains("Recording"));
-        assert!(status_message(true, true, false, None, false, true, "fn⌃").contains("Hands-free"));
         assert!(
-            status_message(false, false, true, None, false, true, "fn⌃").contains("Transcribing")
+            status_message(true, false, false, None, false, true, false, "fn⌃")
+                .contains("Recording")
         );
-        let err = status_message(false, false, false, Some("boom"), true, true, "fn⌃");
+        assert!(
+            status_message(true, true, false, None, false, true, false, "fn⌃")
+                .contains("Hands-free")
+        );
+        assert!(
+            status_message(false, false, true, None, false, true, false, "fn⌃")
+                .contains("Transcribing")
+        );
+        let err = status_message(false, false, false, Some("boom"), true, true, false, "fn⌃");
         assert_eq!(err, "Error: boom");
+    }
+
+    // YV43: while another app holds Secure Input the fn tap is blind, so the
+    // idle line must never keep advertising the key — it must name the cause.
+    #[test]
+    fn status_reports_secure_input_instead_of_advertising_the_dead_hotkey() {
+        let blocked = status_message(false, false, false, None, true, true, true, "fn⌃");
+        assert_eq!(blocked, crate::secure_input::BLOCKED_MESSAGE);
+        assert!(!blocked.contains("Ready"), "{blocked}");
+
+        // It also outranks the model gate — pointing a user at a download does
+        // not fix a keyboard they cannot reach the app with.
+        let blocked_no_model = status_message(false, false, false, None, false, true, true, "fn⌃");
+        assert_eq!(blocked_no_model, crate::secure_input::BLOCKED_MESSAGE);
+
+        // But a live take and a real error still win: those describe what just
+        // happened, not an instruction the user cannot follow.
+        assert!(
+            status_message(true, false, false, None, true, true, true, "fn⌃").contains("Recording")
+        );
+        assert_eq!(
+            status_message(false, false, false, Some("boom"), true, true, true, "fn⌃"),
+            "Error: boom"
+        );
+
+        // Cleared → straight back to the normal Ready line.
+        assert!(
+            status_message(false, false, false, None, true, true, false, "fn⌃")
+                .starts_with("Ready — hold fn⌃")
+        );
     }
 
     // YV9: onboarding gate must default to false so a fresh install shows the
