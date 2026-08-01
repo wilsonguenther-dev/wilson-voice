@@ -130,6 +130,77 @@ pub fn copy_and_maybe_paste(
     }
 }
 
+/// YV49 command mode: carry out "delete that" by pressing Delete on the
+/// frontmost app, NOT by pasting an empty string.
+///
+/// Two reasons this is a keystroke instead of a paste: an empty pasteboard is a
+/// no-op in several apps (so the selection would survive a "delete that"), and
+/// a delete has no business overwriting whatever the user has on their
+/// clipboard. It reuses the same two guards as the paste path — Accessibility
+/// must be granted, and the app that was frontmost when the command started
+/// must still be frontmost — because a stray Delete in the WRONG app destroys
+/// text just as effectively as a wrong paste.
+pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutcome {
+    if !permissions::is_accessibility_trusted() {
+        return PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: "Enable Accessibility for Yap to edit your selection.".into(),
+        };
+    }
+    if let Some(started_in) = source_app {
+        let current = crate::focus::frontmost_app_name();
+        if !is_same_paste_target(Some(started_in), current.as_deref()) {
+            return PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: "You switched apps, so I didn't delete anything".into(),
+            };
+        }
+    }
+    match post_delete_on_main(app) {
+        Ok(()) => PasteOutcome {
+            copied: false,
+            pasted: true,
+            message: "Deleted in frontmost app".into(),
+        },
+        Err(e) => {
+            log::error!(
+                "delete failed: {e} (frontmost={})",
+                crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into())
+            );
+            PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: format!("Couldn't delete ({e})."),
+            }
+        }
+    }
+}
+
+/// Synthetic keystrokes are main-thread-only (see the SIGTRAP note at the top),
+/// so the chord is scheduled there and its result handed back over a channel —
+/// the same shape `paste_tx::publish_and_paste` uses for ⌘V.
+#[cfg(target_os = "macos")]
+fn post_delete_on_main(app: &AppHandle) -> Result<(), String> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(cg::post_delete());
+    })
+    .map_err(|e| format!("schedule main-thread delete: {e}"))?;
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "delete timed out waiting for main thread".to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn post_delete_on_main(_app: &AppHandle) -> Result<(), String> {
+    Err("delete only implemented on macOS".into())
+}
+
 /// macOS virtual keycodes (ANSI layout — independent of current input source).
 ///
 /// `pub(crate)` since YV39: `paste_tx` posts the chord on the main thread as
@@ -148,6 +219,9 @@ pub(crate) mod cg {
     pub const CG_HID_EVENT_TAP: u32 = 0; // kCGHIDEventTap
     pub const K_VK_ANSI_V: CGKeyCode = 0x09;
     pub const K_VK_COMMAND: CGKeyCode = 0x37;
+    /// kVK_Delete — the Delete/Backspace key. With a selection active every
+    /// macOS text control deletes the selection (YV49 "delete that").
+    pub const K_VK_DELETE: CGKeyCode = 0x33;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
@@ -205,6 +279,34 @@ pub(crate) mod cg {
             if !cmd_up.is_null() {
                 CGEventPost(CG_HID_EVENT_TAP, cmd_up);
                 CFRelease(cmd_up);
+            }
+
+            CFRelease(source);
+        }
+        Ok(())
+    }
+
+    /// Post a bare Delete keypress (YV49 command mode). No modifier flags — the
+    /// selection itself is what makes this a "delete the selection".
+    pub(crate) fn post_delete() -> Result<(), String> {
+        unsafe {
+            let source = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_HID);
+            if source.is_null() {
+                return Err("CGEventSourceCreate failed".into());
+            }
+
+            let down = CGEventCreateKeyboardEvent(source, K_VK_DELETE, true);
+            if down.is_null() {
+                CFRelease(source);
+                return Err("delete down event null".into());
+            }
+            CGEventPost(CG_HID_EVENT_TAP, down);
+            CFRelease(down);
+
+            let up = CGEventCreateKeyboardEvent(source, K_VK_DELETE, false);
+            if !up.is_null() {
+                CGEventPost(CG_HID_EVENT_TAP, up);
+                CFRelease(up);
             }
 
             CFRelease(source);

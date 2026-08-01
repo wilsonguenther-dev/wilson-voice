@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 const KCG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
 const KCG_EVENT_FLAG_MASK_CONTROL: u64 = 0x0004_0000;
+const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+const KCG_EVENT_FLAG_MASK_ALTERNATE: u64 = 0x0008_0000;
 
 const KCG_EVENT_FLAGS_CHANGED: u32 = 12;
 const KCG_EVENT_KEY_DOWN: u32 = 10;
@@ -58,6 +60,41 @@ impl PttBinding {
     }
 }
 
+/// The EXTRA modifier that turns a normal push-to-talk press into a command-mode
+/// press (YV49) — one that edits the current selection instead of typing.
+///
+/// This rides ON TOP of whichever [`PttBinding`] is configured: the default
+/// `Command` variant means fn⌃⌘ when the PTT binding is fn⌃ and fn⌘ when it is
+/// bare fn. The plain binding keeps working untouched — a press without the
+/// extra modifier is still ordinary dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandBinding {
+    /// Default: hold the PTT combo with ⌘.
+    Command,
+    /// Alternate: hold the PTT combo with ⌥ (for users who already bind ⌘ + fn).
+    Option,
+    /// Command mode off — every press dictates.
+    Off,
+}
+
+impl CommandBinding {
+    pub fn from_settings(s: &str) -> Self {
+        match s {
+            "option" | "alt" => Self::Option,
+            "off" | "none" => Self::Off,
+            _ => Self::Command, // default: + ⌘
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Command => "+⌘",
+            Self::Option => "+⌥",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttEvent {
     /// Start recording (hold armed or hands-free latch on).
@@ -76,6 +113,13 @@ type Callback = Arc<dyn Fn(PttEvent) + Send + Sync + 'static>;
 
 struct TapState {
     binding: Mutex<PttBinding>,
+    /// Which extra modifier makes a press a command-mode press (YV49).
+    command_binding: Mutex<CommandBinding>,
+    /// Whether the press currently in flight was a command-mode press. Latched
+    /// on key-DOWN — the hold-arm timer fires `Start` up to `HOLD_ARM_MS` later
+    /// and the user may lift ⌘ while speaking, so the modifier state at that
+    /// point is not the answer.
+    command_mode: AtomicBool,
     callback: Callback,
     /// Combo currently physically held.
     combo_down: AtomicBool,
@@ -149,16 +193,19 @@ mod ffi {
     pub const KEYBOARD_EVENT_KEYCODE: u32 = 9;
 }
 
-pub fn start(binding: PttBinding, callback: Callback) {
+pub fn start(binding: PttBinding, command_binding: CommandBinding, callback: Callback) {
     if RUNNING.swap(true, Ordering::SeqCst) {
         if let Some(s) = GLOBAL_STATE.lock().as_ref() {
             *s.binding.lock() = binding;
+            *s.command_binding.lock() = command_binding;
         }
         return;
     }
 
     let state = Arc::new(TapState {
         binding: Mutex::new(binding),
+        command_binding: Mutex::new(command_binding),
+        command_mode: AtomicBool::new(false),
         callback,
         combo_down: AtomicBool::new(false),
         interrupted: AtomicBool::new(false),
@@ -191,6 +238,28 @@ pub fn set_binding(binding: PttBinding) {
     }
 }
 
+/// Change the command-mode modifier live (Settings save), like `set_binding`.
+pub fn set_command_binding(binding: CommandBinding) {
+    if let Some(s) = GLOBAL_STATE.lock().as_ref() {
+        *s.command_binding.lock() = binding;
+        log::info!("command-mode binding → {:?}", binding);
+    }
+}
+
+/// Was the press that produced the current take a COMMAND-MODE press (YV49)?
+///
+/// Read by the `Start` handler: `true` means "edit the selection", `false` means
+/// ordinary dictation. Latched at key-down, so it stays true for the whole take
+/// even after the user lifts the extra modifier. Always `false` when no tap is
+/// running (tray / pill / hands-free starts).
+pub fn command_mode_active() -> bool {
+    GLOBAL_STATE
+        .lock()
+        .as_ref()
+        .map(|s| s.command_mode.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
 /// When the combo currently being held went down (YV35) — the anchor for the
 /// press→capture_start latency span. `Some` while a press is live (the hold-arm
 /// timer fires `Start` well before the release clears it), `None` for every
@@ -216,6 +285,7 @@ pub fn end_hands_free() {
     if let Some(s) = GLOBAL_STATE.lock().as_ref() {
         s.hands_free.store(false, Ordering::SeqCst);
         s.hold_armed.store(false, Ordering::SeqCst);
+        s.command_mode.store(false, Ordering::SeqCst);
         s.press_gen.fetch_add(1, Ordering::SeqCst);
         *s.press_at.lock() = None;
         *s.last_tap_at.lock() = None;
@@ -278,11 +348,15 @@ unsafe extern "C" fn tap_callback(
         || (hid_flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN != 0);
     let control = (flags & KCG_EVENT_FLAG_MASK_CONTROL != 0)
         || (hid_flags & KCG_EVENT_FLAG_MASK_CONTROL != 0);
+    let command = (flags & KCG_EVENT_FLAG_MASK_COMMAND != 0)
+        || (hid_flags & KCG_EVENT_FLAG_MASK_COMMAND != 0);
+    let option = (flags & KCG_EVENT_FLAG_MASK_ALTERNATE != 0)
+        || (hid_flags & KCG_EVENT_FLAG_MASK_ALTERNATE != 0);
 
     if event_type == KCG_EVENT_FLAGS_CHANGED {
         // Any flags-changed event may be an fn or Control edge — re-evaluate the
         // combo unconditionally; handle_combo_edge no-ops when nothing changed.
-        handle_combo_edge(state, fn_down, control);
+        handle_combo_edge(state, fn_down, control, command, option);
     } else if event_type == KCG_EVENT_KEY_DOWN {
         if state.combo_down.load(Ordering::SeqCst)
             && !state.hands_free.load(Ordering::SeqCst)
@@ -313,7 +387,19 @@ fn combo_wanted(binding: PttBinding, fn_down: bool, control: bool) -> bool {
     }
 }
 
-fn handle_combo_edge(state: &TapState, fn_down: bool, control: bool) {
+/// Does the extra modifier held right now mean COMMAND MODE (YV49)?
+///
+/// Pure so the binding policy is testable without a CGEvent tap. `Off` disables
+/// command mode entirely, which is why it can never be true for `Off`.
+fn command_wanted(binding: CommandBinding, command: bool, option: bool) -> bool {
+    match binding {
+        CommandBinding::Command => command,
+        CommandBinding::Option => option,
+        CommandBinding::Off => false,
+    }
+}
+
+fn handle_combo_edge(state: &TapState, fn_down: bool, control: bool, command: bool, option: bool) {
     let binding = *state.binding.lock();
     let want = combo_wanted(binding, fn_down, control);
     let was = state.combo_down.load(Ordering::SeqCst);
@@ -331,15 +417,21 @@ fn handle_combo_edge(state: &TapState, fn_down: bool, control: bool) {
     }
 
     if want {
-        on_combo_down(state);
+        on_combo_down(state, command, option);
     } else {
         on_combo_up(state);
     }
 }
 
-fn on_combo_down(state: &TapState) {
+fn on_combo_down(state: &TapState, command: bool, option: bool) {
     state.combo_down.store(true, Ordering::SeqCst);
     state.interrupted.store(false, Ordering::SeqCst);
+    // YV49: latch command mode for this press before anything else can read it.
+    let command_binding = *state.command_binding.lock();
+    state.command_mode.store(
+        command_wanted(command_binding, command, option),
+        Ordering::SeqCst,
+    );
 
     // Tap while hands-free → end latch (this press is consumed)
     if state.hands_free.load(Ordering::SeqCst) {
@@ -440,4 +532,59 @@ fn on_combo_up(state: &TapState) {
     }
 
     log::debug!("PTT medium release ignored ({duration:?})");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{combo_wanted, command_wanted, CommandBinding, PttBinding};
+
+    /// YV49: the command-mode modifier must ride ON TOP of the existing PTT
+    /// bindings — adding ⌘ can never stop a normal press from starting.
+    #[test]
+    fn command_modifier_does_not_break_the_ptt_bindings() {
+        for binding in [
+            PttBinding::Fn,
+            PttBinding::FnControl,
+            PttBinding::FnOrFnControl,
+        ] {
+            let plain = combo_wanted(binding, true, true);
+            // The command modifier is not part of `combo_wanted` at all, so the
+            // same fn/Control state still starts the take.
+            assert_eq!(combo_wanted(binding, true, true), plain);
+        }
+        assert!(combo_wanted(PttBinding::FnControl, true, true));
+        assert!(!combo_wanted(PttBinding::FnControl, true, false));
+    }
+
+    #[test]
+    fn command_binding_selects_the_extra_modifier() {
+        // Default: ⌘ arms command mode, ⌥ does not.
+        assert!(command_wanted(CommandBinding::Command, true, false));
+        assert!(!command_wanted(CommandBinding::Command, false, true));
+        // Settings-chosen alternate binding.
+        assert!(command_wanted(CommandBinding::Option, false, true));
+        assert!(!command_wanted(CommandBinding::Option, true, false));
+        // Off means every press dictates, whatever is held.
+        assert!(!command_wanted(CommandBinding::Off, true, true));
+        // No extra modifier → ordinary dictation.
+        assert!(!command_wanted(CommandBinding::Command, false, false));
+    }
+
+    #[test]
+    fn command_binding_from_settings() {
+        assert_eq!(
+            CommandBinding::from_settings("command"),
+            CommandBinding::Command
+        );
+        assert_eq!(
+            CommandBinding::from_settings("option"),
+            CommandBinding::Option
+        );
+        assert_eq!(CommandBinding::from_settings("off"), CommandBinding::Off);
+        // Unknown / missing values fall back to the default.
+        assert_eq!(
+            CommandBinding::from_settings("nonsense"),
+            CommandBinding::Command
+        );
+    }
 }

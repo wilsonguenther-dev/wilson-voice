@@ -78,6 +78,32 @@ mod ax {
         }
     }
 
+    /// Text currently selected in the focused element, via AXSelectedText.
+    ///
+    /// YV49 (command mode) reads the thing the user is about to edit. `None`
+    /// when nothing is focused, the element does not expose a selection, or the
+    /// selection is empty/whitespace — the caller treats all three the same
+    /// way: there is nothing to act on, so no take starts.
+    pub fn selected_text() -> Option<String> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let key = CFString::new("AXFocusedUIElement");
+            let mut focused: CFTypeRef = std::ptr::null_mut();
+            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || focused.is_null() {
+                return None;
+            }
+            let el = focused as AXUIElementRef;
+            let selection = attr_string(el, "AXSelectedText").filter(|s| !s.trim().is_empty());
+            CFRelease(focused);
+            selection
+        }
+    }
+
     /// Frontmost application title via AX (no NSWorkspace dep).
     pub fn frontmost_app_name() -> Option<String> {
         unsafe {
@@ -115,6 +141,23 @@ pub fn should_auto_paste() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+/// The current selection in the focused text control (YV49 command mode).
+/// `None` whenever Accessibility is denied or nothing is selected — command
+/// mode then refuses to start rather than editing something it cannot see.
+pub fn selected_text() -> Option<String> {
+    if !crate::permissions::is_accessibility_trusted() {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ax::selected_text()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

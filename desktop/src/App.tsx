@@ -47,6 +47,12 @@ interface AppSettings {
   showFloatingPill: boolean;
   /** fn | fn_control | both */
   pttBinding?: string;
+  /**
+   * Command mode (YV49): the EXTRA modifier held with `pttBinding` that makes a
+   * press edit the current selection instead of typing. command (⌘, default) |
+   * option (⌥) | off. Plain dictation is unaffected either way.
+   */
+  commandBinding?: string;
   keepCmdShiftV?: boolean;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
@@ -2200,6 +2206,50 @@ export default function App() {
                       every desktop. Yap also learns the words you use most over
                       time.
                     </p>
+                  </div>
+                  {/* YV49 — command mode: the same hold, plus one modifier,
+                      edits the text you already selected instead of typing. */}
+                  <div className="panel">
+                    <h3>Command mode</h3>
+                    <p>
+                      Select some text, then hold{" "}
+                      <strong>
+                        {settings.hotkeyLabel}
+                        {(settings.commandBinding ?? "command") === "option"
+                          ? "⌥"
+                          : "⌘"}
+                      </strong>{" "}
+                      and say what to do with it — “make it a list”, “make it
+                      uppercase”, “wrap in quotes”, “replace Monday with
+                      Tuesday”, “delete that”. Yap only runs commands it knows
+                      exactly; anything else is ignored so your text is never
+                      guessed at.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["command", "⌘", "Hold your key plus Command"],
+                          ["option", "⌥", "Hold your key plus Option"],
+                          ["off", "Off", "Every hold just dictates"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.commandBinding ?? "command") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, commandBinding: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </section>
               )}
