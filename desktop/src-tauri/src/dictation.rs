@@ -488,24 +488,6 @@ impl CleanupLevel {
     }
 }
 
-/// LLM polish stage — **guarded NO-OP STUB** (YV10 architecture only).
-///
-/// The eventual implementation will call a small local instruct model (MLX-LM;
-/// Qwen2.5-1.5B/3B-Instruct or Llama-3.2-3B-Instruct, 4-bit) to "recreate exactly
-/// what the user would have typed" — Wispr Flow's second pass (see
-/// docs/research/wispr-parity.md §1, P0). Downloading/wiring that model is a
-/// later runtime setup step; **no model is fetched here**.
-///
-/// Contract for the future implementation: it MUST be fallible and map any
-/// error/timeout to `None` so [`run_cleanup`] falls back to its input — and it
-/// must NEVER return `Some("")`. Returning `None` today makes the stage a safe
-/// no-op that leaves the transcript untouched.
-pub fn polish_llm(_text: &str) -> Option<String> {
-    // No local model yet → no-op. When wired: run inference under a timeout and
-    // return `None` on any failure so the pipeline keeps the input text.
-    None
-}
-
 /// Run the ordered cleanup pipeline over a raw transcript.
 ///
 /// Stages, in order (each gated by `level`, each guarded so it can never empty a
@@ -515,8 +497,11 @@ pub fn polish_llm(_text: &str) -> Option<String> {
 ///   2. backtrack cleanup — [`clean_backtrack`] (fillers + spoken self-corrections).
 ///   3. rules formatting — `format_dictation` (list detection), respecting `mode`,
 ///      then [`apply_spoken_marks`] (punctuation-by-name + line/paragraph commands).
-///   4. LLM polish — `polish` (production passes [`polish_llm`], a guarded no-op stub
-///      that falls back to the input on any error/timeout).
+///   4. LLM polish — `polish` (YV61: production passes the validated stage,
+///      `polish::polish_llm` bound to this take's mode and settings; it returns
+///      `None` on any refusal, timeout, crash or failed validation, and `None`
+///      is exactly "keep the rules text"). The stage is a no-op with no polish
+///      model installed, which is the default.
 ///
 /// `level == None` short-circuits to a verbatim raw passthrough.
 pub fn run_cleanup<D, P>(
@@ -632,14 +617,14 @@ pub fn undo_ai_edit_text<'a>(polished: &str, raw: Option<&'a str>) -> Option<&'a
 // ---------------------------------------------------------------------------
 
 /// Standalone, meaning-free filler tokens that are always safe to drop.
-const FILLER_TOKENS: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "hmm"];
+pub(crate) const FILLER_TOKENS: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "hmm"];
 
 /// Discourse particles (YV58) — hedges that carry no meaning when they are used as
 /// PARTICLES and full content words otherwise ("I like the plan", "sort of blue").
 /// [`is_discourse_particle`] decides which occurrence is which; the word alone is
 /// never enough. "i mean" is NOT here: it retracts a clause, so it lives in
 /// [`CORRECTION_MARKERS`].
-const DISCOURSE_PARTICLES: &[&str] = &[
+pub(crate) const DISCOURSE_PARTICLES: &[&str] = &[
     "like",
     "you know",
     "sort of",
@@ -652,7 +637,7 @@ const DISCOURSE_PARTICLES: &[&str] = &[
 /// Clause-retraction markers (YV58) — order-insensitive: both "wait no" and its
 /// reversal "no wait" retract. Listed longest-first so a specific phrase is tried
 /// before a shorter one it contains.
-const CORRECTION_MARKERS: &[&str] = &[
+pub(crate) const CORRECTION_MARKERS: &[&str] = &[
     "let me rephrase",
     "sorry i meant",
     "scratch that",
@@ -2327,11 +2312,11 @@ mod tests {
         // …and the pipeline honours that gate end to end.
         let raw = "print open paren value close paren period";
         assert_eq!(
-            run_cleanup(raw, CleanupLevel::High, DictationMode::Code, no_dict, polish_llm),
+            run_cleanup(raw, CleanupLevel::High, DictationMode::Code, no_dict, no_polish),
             raw
         );
         assert_eq!(
-            run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, polish_llm),
+            run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, no_polish),
             "print (value)."
         );
     }
@@ -2356,6 +2341,13 @@ mod tests {
     /// Identity dictionary stage (no vocabulary changes) for pipeline tests.
     fn no_dict(t: &str) -> String {
         t.to_string()
+    }
+
+    /// Stage 4 with no polish model installed — the production default, and
+    /// what every stage-1-to-3 test below wants. The real stage and its
+    /// fail-closed behaviour live in `polish.rs` (YV61).
+    fn no_polish(_t: &str) -> Option<String> {
+        None
     }
 
     #[test]
@@ -2418,10 +2410,10 @@ mod tests {
     fn cleanup_level_gates_which_stages_run() {
         let raw = "um first, buy milk, second, buy eggs";
         // Light: backtrack runs (filler removed) but NOT list formatting.
-        let light = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        let light = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
         assert_eq!(light, "first, buy milk, second, buy eggs");
         // Medium: formatting also runs → numbered list.
-        let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, polish_llm);
+        let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, no_polish);
         assert_eq!(medium, "1. Buy milk\n2. Buy eggs");
     }
 
@@ -2432,7 +2424,7 @@ mod tests {
         // Light cleanup dropped the filler → raw differs → undo is offered, and
         // it hands back the VERBATIM raw (fillers included), not a re-clean.
         let raw = "um the report is uh done";
-        let polished = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        let polished = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
         assert_ne!(polished, raw);
         assert_eq!(undo_ai_edit_text(&polished, Some(raw)), Some(raw));
     }
@@ -2442,11 +2434,11 @@ mod tests {
         // Auto-Cleanup = None is a verbatim passthrough, so there is nothing to
         // undo — the tray item / shortcut / history button must stay disabled.
         let raw = "the report is done";
-        let polished = run_cleanup(raw, CleanupLevel::None, DictationMode::Notes, no_dict, polish_llm);
+        let polished = run_cleanup(raw, CleanupLevel::None, DictationMode::Notes, no_dict, no_polish);
         assert_eq!(polished, raw);
         assert_eq!(undo_ai_edit_text(&polished, Some(raw)), None);
         // Same when every enabled stage was a no-op on already-clean text.
-        let clean = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        let clean = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
         assert_eq!(undo_ai_edit_text(&clean, Some(raw)), None);
     }
 
@@ -2589,13 +2581,12 @@ mod tests {
     }
 
     #[test]
-    fn llm_polish_stub_is_a_guarded_noop() {
-        // The stub never rewrites text today.
-        assert_eq!(polish_llm("hello world"), None);
-        // A failing/empty LLM result must never lose text: High level with a stub
-        // that returns None keeps the pre-LLM (formatted) result.
+    fn llm_polish_stage_is_guarded() {
+        // A declined LLM result must never lose text: High level with a stage
+        // that returns None keeps the pre-LLM (formatted) result. That is the
+        // whole contract `polish.rs` fails closed into (YV61).
         let raw = "first, buy milk, second, buy eggs";
-        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, polish_llm);
+        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, no_polish);
         assert_eq!(out, "1. Buy milk\n2. Buy eggs");
         // An LLM stage that erroneously returns empty is ignored (guarded).
         let out2 = run_cleanup(
