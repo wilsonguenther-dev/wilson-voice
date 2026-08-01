@@ -513,7 +513,8 @@ pub fn polish_llm(_text: &str) -> Option<String> {
 ///   1. `apply_dictionary` — user vocabulary/replacement (supplied as a closure so
 ///      this stays pure/testable; production passes `Database::apply_dictionary`).
 ///   2. backtrack cleanup — [`clean_backtrack`] (fillers + spoken self-corrections).
-///   3. `format_dictation` — smart formatting (list detection), respecting `mode`.
+///   3. rules formatting — `format_dictation` (list detection), respecting `mode`,
+///      then [`apply_spoken_marks`] (punctuation-by-name + line/paragraph commands).
 ///   4. LLM polish — `polish` (production passes [`polish_llm`], a guarded no-op stub
 ///      that falls back to the input on any error/timeout).
 ///
@@ -552,10 +553,20 @@ where
             text = out;
         }
     }
-    // Stage 3 — smart formatting. `format_dictation` also runs a backtrack pass
+    // Stage 3 — rules formatting. `format_dictation` also runs a backtrack pass
     // internally, so at Medium/High the standalone Stage 2 above is idempotent.
-    if level.runs_format() && should_format(mode) {
-        let out = format_dictation(&text);
+    if level.runs_format() {
+        if should_format(mode) {
+            let out = format_dictation(&text);
+            if !out.trim().is_empty() {
+                text = out;
+            }
+        }
+        // Spoken marks (R1/R2) run LAST of the rules: they are the only stage that
+        // introduces line breaks, and the ones before it normalise whitespace.
+        // `apply_spoken_marks` carries its own mode gate (inert in `Code`), so
+        // punctuation dictated by name still lands in `Plain`.
+        let out = apply_spoken_marks(&text, mode);
         if !out.trim().is_empty() {
             text = out;
         }
@@ -602,7 +613,7 @@ pub fn undo_ai_edit_text<'a>(polished: &str, raw: Option<&'a str>) -> Option<&'a
 }
 
 // ---------------------------------------------------------------------------
-// Backtrack v1 (YV6) — rule-based filler + self-correction cleanup (on-device).
+// Backtrack v2 (YV58) — rule-based filler + self-correction cleanup (on-device).
 //
 // A conservative, PURE first pass that mirrors Wispr Flow's "Backtrack" for the
 // obvious, low-risk cases while a local-LLM pass (P0 backlog) does the rest. It
@@ -611,15 +622,82 @@ pub fn undo_ai_edit_text<'a>(polished: &str, raw: Option<&'a str>) -> Option<&'a
 // if a rule would leave nothing, the original text is returned unchanged. Kept
 // intentionally narrow: it only fires where intent is clear, never rewriting
 // meaning or touching ordinary prose.
+//
+// v2 widens the closed vocabulary without widening the risk: markers are
+// order-insensitive ("wait no" as well as "no wait") and a one-word correction of
+// the SAME category swaps that word instead of dropping the clause ("Tuesday,
+// wait no, Friday" → "… Friday"); the hedge list grows to `like`, `you know`,
+// `sort of`, `kind of`, `i guess`, `basically`, `literally`, each removed only
+// where it is a discourse particle and never inside a quoted span.
 // ---------------------------------------------------------------------------
 
 /// Standalone, meaning-free filler tokens that are always safe to drop.
 const FILLER_TOKENS: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "hmm"];
 
-/// Comma-parenthetical discourse fillers — removed ONLY when clearly non-semantic,
-/// i.e. bounded by commas on both sides (", like," → ","), which is the signal that
-/// they're a hedge rather than a real word (the verb "like", "you know" as content).
-const DISCOURSE_FILLERS: &[&str] = &[", like,", ", you know,", ", i mean,"];
+/// Discourse particles (YV58) — hedges that carry no meaning when they are used as
+/// PARTICLES and full content words otherwise ("I like the plan", "sort of blue").
+/// [`is_discourse_particle`] decides which occurrence is which; the word alone is
+/// never enough. "i mean" is NOT here: it retracts a clause, so it lives in
+/// [`CORRECTION_MARKERS`].
+const DISCOURSE_PARTICLES: &[&str] = &[
+    "like",
+    "you know",
+    "sort of",
+    "kind of",
+    "i guess",
+    "basically",
+    "literally",
+];
+
+/// Clause-retraction markers (YV58) — order-insensitive: both "wait no" and its
+/// reversal "no wait" retract. Listed longest-first so a specific phrase is tried
+/// before a shorter one it contains.
+const CORRECTION_MARKERS: &[&str] = &[
+    "let me rephrase",
+    "sorry i meant",
+    "scratch that",
+    "wait no",
+    "no wait",
+    "i mean",
+];
+
+/// Weekday names — one of the categories a one-word restatement can swap: in
+/// "Tuesday, wait no, Friday" the day is replaced, the clause is not dropped.
+const WEEKDAYS: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
+
+/// Month names — the second swappable category. "may" and "march" are left out on
+/// purpose: as a modal and a verb they are ordinary prose far more often than they
+/// are dates, and a wrong swap rewrites the sentence ("we may meet" → "we June meet").
+const MONTHS: &[&str] = &[
+    "january",
+    "february",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// The kind of thing a token names. Two tokens of the SAME category are
+/// interchangeable, which is what makes a one-word restatement a swap rather than
+/// a clause retraction. Deliberately tiny: a wrong swap silently changes meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenCategory {
+    Weekday,
+    Month,
+    Number,
+}
 
 /// Conservative rule-based backtrack cleanup: apply spoken self-corrections, then
 /// strip fillers. Guarded so a non-empty input can never become empty.
@@ -639,14 +717,11 @@ pub fn clean_backtrack(text: &str) -> String {
     cleaned.to_string()
 }
 
-/// Remove filler words: comma-bounded discourse hedges first, then standalone
-/// pure-filler tokens ("um", "uh", …) anywhere in the utterance.
+/// Remove filler words: discourse particles first, then standalone pure-filler
+/// tokens ("um", "uh", …) anywhere in the utterance.
 fn remove_fillers(text: &str) -> String {
-    let mut s = text.to_string();
-    for phrase in DISCOURSE_FILLERS {
-        s = replace_ci_ascii(&s, phrase, ",");
-    }
-    s.split_whitespace()
+    remove_discourse_particles(text)
+        .split_whitespace()
         .filter(|tok| !is_pure_filler(tok))
         .collect::<Vec<_>>()
         .join(" ")
@@ -657,17 +732,107 @@ fn is_pure_filler(token: &str) -> bool {
     FILLER_TOKENS.contains(&token_core(token).as_str())
 }
 
-/// Apply the unambiguous self-correction triggers: clause-retraction markers
-/// ("scratch that", "no wait") drop the retracted clause; a numeric "actually"
-/// restatement ("coffee at 2 actually 3" → "coffee at 3") swaps the value.
+/// Drop every occurrence of a [`DISCOURSE_PARTICLES`] phrase that
+/// [`is_discourse_particle`] accepts. One removal shifts every later offset (and
+/// can expose the next particle: ", like, you know,"), so the scan restarts after
+/// each edit; it always terminates because the string strictly shrinks.
+fn remove_discourse_particles(text: &str) -> String {
+    let mut s = text.to_string();
+    'restart: loop {
+        for particle in DISCOURSE_PARTICLES {
+            let mut from = 0;
+            while let Some(pos) = find_ci_ascii(s.as_bytes(), particle.as_bytes(), from) {
+                let end = pos + particle.len();
+                if is_discourse_particle(&s, pos, end) {
+                    s = strip_particle(&s, pos, end);
+                    continue 'restart;
+                }
+                from = pos + 1;
+            }
+        }
+        break;
+    }
+    s
+}
+
+/// Whether the occurrence at `start..end` is a discourse particle — i.e. safe to
+/// delete — rather than a content word. True ONLY when it is a whole word that is
+/// either comma-bounded (", like," — the spoken form of a parenthetical hedge) or
+/// sentence-initial with a following comma ("Basically, we should ship"), and never
+/// inside a quoted span, where the speaker is reporting words rather than hedging.
+fn is_discourse_particle(text: &str, start: usize, end: usize) -> bool {
+    // Whole-word only: "like" but not "likely", "unlike".
+    if text[..start].chars().next_back().is_some_and(char::is_alphanumeric)
+        || text[end..].chars().next().is_some_and(char::is_alphanumeric)
+    {
+        return false;
+    }
+    if is_inside_quotes(text, start) {
+        return false;
+    }
+    let before = text[..start].trim_end();
+    let after = text[end..].trim_start();
+    // The hedge always closes with a comma; what precedes it decides which shape
+    // this is — a mid-sentence parenthetical or the opener of a sentence.
+    if !after.starts_with(',') {
+        return false;
+    }
+    before.ends_with(',')
+        || before.is_empty()
+        || before.ends_with(SENTENCE_ENDERS)
+        || before.ends_with('\n')
+}
+
+/// Delete the particle at `start..end` plus the comma that closed it, re-joining
+/// the two sides. When the particle opened a sentence its capitalization moves to
+/// the word that now starts it ("Basically, we ship" → "We ship").
+fn strip_particle(text: &str, start: usize, end: usize) -> String {
+    let head = text[..start].trim_end();
+    let mut tail = text[end..].trim_start();
+    if let Some(rest) = tail.strip_prefix(',') {
+        tail = rest.trim_start();
+    }
+    let opened_sentence =
+        head.is_empty() || head.ends_with(SENTENCE_ENDERS) || head.ends_with('\n');
+    let particle_was_capitalized = text[start..end].starts_with(char::is_uppercase);
+    let tail = if opened_sentence && particle_was_capitalized {
+        capitalize(tail)
+    } else {
+        tail.to_string()
+    };
+    match (head.is_empty(), tail.is_empty()) {
+        (true, _) => tail,
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head} {tail}"),
+    }
+}
+
+/// True when the byte offset `at` sits inside a quoted span. Straight quotes toggle;
+/// curly quotes open and close explicitly.
+fn is_inside_quotes(text: &str, at: usize) -> bool {
+    let mut open = false;
+    for c in text[..at].chars() {
+        match c {
+            '"' => open = !open,
+            '\u{201c}' => open = true,
+            '\u{201d}' => open = false,
+            _ => {}
+        }
+    }
+    open
+}
+
+/// Apply the unambiguous self-correction triggers: every [`CORRECTION_MARKERS`]
+/// phrase retracts what precedes it (or swaps a single same-category word), and an
+/// "actually" restatement ("coffee at 2 actually 3" → "coffee at 3") swaps the value.
 fn apply_self_correction(text: &str) -> String {
     let mut s = text.to_string();
-    for marker in ["scratch that", "no wait"] {
+    for marker in CORRECTION_MARKERS {
         if let Some(corrected) = apply_clause_correction(&s, marker) {
             s = corrected;
         }
     }
-    if let Some(corrected) = apply_numeric_actually(&s) {
+    if let Some(corrected) = apply_actually_restatement(&s) {
         s = corrected;
     }
     s
@@ -677,9 +842,11 @@ fn apply_self_correction(text: &str) -> String {
 /// correction), drop the retracted clause that precedes it, and preserve any
 /// earlier clauses. Fires ONLY when the marker clearly begins a new clause
 /// (preceded by a boundary), so it can never chop content out of plain prose.
+/// A one-word correction that names the same KIND of thing as a word in the
+/// retracted clause is spliced in place instead ("Tuesday, wait no, Friday").
 /// Returns `None` (no change) when the pattern isn't a safe, obvious correction.
 fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
-    let pos = find_ci_ascii(text.as_bytes(), marker.as_bytes(), 0)?;
+    let pos = find_marker(text, marker)?;
     let before = &text[..pos];
     let after = text[pos + marker.len()..]
         .trim_start_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?') || c.is_whitespace())
@@ -696,6 +863,11 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
     // Everything up to (and including) the boundary before the retracted clause.
     let core_before =
         before_trim.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | '\n') || c.is_whitespace());
+    // Same-category restatement first: the speaker replaced ONE word, not the
+    // clause, so keep the clause and swap that word.
+    if let Some(spliced) = splice_same_category(core_before, after) {
+        return Some(spliced);
+    }
     let head = match core_before.rfind(|c: char| matches!(c, ',' | '.' | ';' | '\n')) {
         Some(i) => core_before[..=i].trim().to_string(),
         None => String::new(),
@@ -712,16 +884,70 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
     }
 }
 
-/// Numeric restatement via "actually": when the tokens flanking "actually" are
-/// both plain numbers, replace the first with the second and drop "actually"
-/// ("coffee at 2 actually 3" → "coffee at 3"). Restricting to numbers keeps it
-/// safe — it never fires on the adverb ("I actually think …").
-fn apply_numeric_actually(text: &str) -> Option<String> {
+/// Byte offset of the first WHOLE-WORD occurrence of `marker`, so "i mean" never
+/// matches inside "sorry i meant" and "dash" never matches inside "dashboard".
+fn find_marker(text: &str, marker: &str) -> Option<usize> {
+    let mut from = 0;
+    loop {
+        let pos = find_ci_ascii(text.as_bytes(), marker.as_bytes(), from)?;
+        let end = pos + marker.len();
+        let bounded = !text[..pos].chars().next_back().is_some_and(char::is_alphanumeric)
+            && !text[end..].chars().next().is_some_and(char::is_alphanumeric);
+        if bounded {
+            return Some(pos);
+        }
+        from = pos + 1;
+    }
+}
+
+/// Splice a ONE-WORD correction into the retracted clause when it names the same
+/// category as a word already in it ("let's meet Tuesday" + "Friday" → "let's meet
+/// Friday"). Anything longer is a restatement of the whole clause, which the caller
+/// handles by retraction — so this stays a swap of a single, interchangeable word.
+fn splice_same_category(retracted: &str, correction: &str) -> Option<String> {
+    let mut words = correction.split_whitespace();
+    let word = words.next()?;
+    if words.next().is_some() {
+        return None;
+    }
+    let category = token_category(word)?;
+    let mut tokens: Vec<&str> = retracted.split_whitespace().collect();
+    let target = tokens.iter().rposition(|t| token_category(t) == Some(category))?;
+    tokens[target] = word;
+    let out = tokens.join(" ");
+    (!out.trim().is_empty()).then_some(out)
+}
+
+/// The category a token belongs to, if it is one of the few kinds of word a spoken
+/// restatement can swap outright. Everything else is `None` — no category, no swap.
+fn token_category(token: &str) -> Option<TokenCategory> {
+    let core = token_core(token);
+    if core.is_empty() {
+        return None;
+    }
+    if WEEKDAYS.contains(&core.as_str()) {
+        return Some(TokenCategory::Weekday);
+    }
+    if MONTHS.contains(&core.as_str()) {
+        return Some(TokenCategory::Month);
+    }
+    if is_numeric_token(token) {
+        return Some(TokenCategory::Number);
+    }
+    None
+}
+
+/// Restatement via "actually": when the tokens flanking "actually" name the same
+/// category (two numbers, two weekdays, …), replace the first with the second and
+/// drop "actually" ("coffee at 2 actually 3" → "coffee at 3"). Requiring a shared
+/// category keeps it safe — it never fires on the adverb ("I actually enjoyed …").
+fn apply_actually_restatement(text: &str) -> Option<String> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     for i in 1..tokens.len().saturating_sub(1) {
+        let category = token_category(tokens[i - 1]);
         if token_core(tokens[i]) == "actually"
-            && is_numeric_token(tokens[i - 1])
-            && is_numeric_token(tokens[i + 1])
+            && category.is_some()
+            && category == token_category(tokens[i + 1])
         {
             let mut out: Vec<&str> = Vec::with_capacity(tokens.len() - 2);
             out.extend_from_slice(&tokens[..i - 1]);
@@ -761,19 +987,231 @@ fn find_ci_ascii(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     })
 }
 
-/// Case-insensitive ASCII substring replacement built on [`find_ci_ascii`]. Only
-/// ASCII needles/replacements — matches land on char boundaries so slicing is safe.
-fn replace_ci_ascii(haystack: &str, needle: &str, replacement: &str) -> String {
-    let (hay, need) = (haystack.as_bytes(), needle.as_bytes());
-    let mut out = String::with_capacity(haystack.len());
-    let mut last = 0;
-    while let Some(pos) = find_ci_ascii(hay, need, last) {
-        out.push_str(&haystack[last..pos]);
-        out.push_str(replacement);
-        last = pos + need.len();
+// ---------------------------------------------------------------------------
+// Spoken marks (YV58) — rules R1/R2 of
+// `docs/research/wispr-formatting-deep-dive.md`.
+//
+// Punctuation dictated BY NAME becomes the glyph and the words disappear
+// ("see you exclamation point" → "see you!"), and the line/paragraph commands
+// become real breaks ("new line" → `\n`, "new paragraph" → `\n\n`).
+//
+// Everything here is deterministic and pure. Three guards keep it off ordinary
+// prose: the name must be a standalone token, it must not follow a determiner
+// (that is "the Jurassic period", not a command), and a terminal mark is dropped
+// rather than doubled when the text already ends in one. `Code` mode is inert —
+// identifiers and string literals are full of these words.
+//
+// The pass runs per LINE, so breaks it (or the list renderer) inserted survive.
+// ---------------------------------------------------------------------------
+
+/// How a glyph attaches to the words around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkKind {
+    /// Attaches to the word BEFORE it, space after: `you!`, `7.`, `50%`.
+    Trailing,
+    /// Attaches to the word AFTER it, space before: `(note`, `#ship`.
+    Leading,
+    /// No space on either side: `R&D`, `and/or`, `wilson@example.com`.
+    Tight,
+    /// Alternates leading → trailing so a pair wraps the words between them.
+    Quote,
+    /// A line break (R2) — `\n` or `\n\n`.
+    Break,
+}
+
+/// Spoken punctuation names → glyph (R1), plus the line/paragraph commands (R2).
+/// The set is Wispr's documented one; matching is greedy over the token stream, so
+/// a name never has to be listed shorter-first.
+const SPOKEN_MARKS: &[(&str, &str, MarkKind)] = &[
+    ("start a new paragraph", "\n\n", MarkKind::Break),
+    ("new paragraph", "\n\n", MarkKind::Break),
+    ("skip a line", "\n\n", MarkKind::Break),
+    ("new line", "\n", MarkKind::Break),
+    ("period", ".", MarkKind::Trailing),
+    ("comma", ",", MarkKind::Trailing),
+    ("question mark", "?", MarkKind::Trailing),
+    ("exclamation point", "!", MarkKind::Trailing),
+    ("exclamation mark", "!", MarkKind::Trailing),
+    ("colon", ":", MarkKind::Trailing),
+    ("semicolon", ";", MarkKind::Trailing),
+    ("ellipsis", "\u{2026}", MarkKind::Trailing),
+    ("percent sign", "%", MarkKind::Trailing),
+    ("degree symbol", "\u{b0}", MarkKind::Trailing),
+    ("quotation mark", "\"", MarkKind::Quote),
+    ("apostrophe", "'", MarkKind::Tight),
+    ("dash", "-", MarkKind::Tight),
+    ("em dash", "\u{2014}", MarkKind::Tight),
+    ("asterisk", "*", MarkKind::Tight),
+    ("ampersand", "&", MarkKind::Tight),
+    ("slash", "/", MarkKind::Tight),
+    ("forward slash", "/", MarkKind::Tight),
+    ("backslash", "\\", MarkKind::Tight),
+    ("underscore", "_", MarkKind::Tight),
+    ("tilde", "~", MarkKind::Tight),
+    ("plus sign", "+", MarkKind::Tight),
+    ("minus sign", "-", MarkKind::Tight),
+    ("equals sign", "=", MarkKind::Tight),
+    ("at symbol", "@", MarkKind::Tight),
+    ("at sign", "@", MarkKind::Tight),
+    ("hashtag", "#", MarkKind::Leading),
+    ("open parenthesis", "(", MarkKind::Leading),
+    ("open paren", "(", MarkKind::Leading),
+    ("close parenthesis", ")", MarkKind::Trailing),
+    ("close paren", ")", MarkKind::Trailing),
+    ("open angle bracket", "<", MarkKind::Leading),
+    ("close angle bracket", ">", MarkKind::Trailing),
+];
+
+/// Longest name in [`SPOKEN_MARKS`], in whitespace tokens ("start a new paragraph").
+const MAX_MARK_TOKENS: usize = 4;
+
+/// Words that turn a following mark name back into content: a determiner makes it
+/// the NOUN the speaker is talking about ("a DASH of salt", "the NEW LINE of
+/// products"), and "to" makes it the VERB ("I need to DASH to the store"). Nobody
+/// dictates a punctuation command straight after one, so this gates every name.
+const MARK_BLOCKING_LEAD_INS: &[&str] = &[
+    "a", "an", "the", "this", "that", "these", "those", "each", "every", "another", "my", "your",
+    "our", "their", "his", "her", "its", "no", "to",
+];
+
+/// A mark name followed by "of" heads a noun phrase ("PERIOD of time", "DASH of
+/// salt") — the one word that never follows a dictated punctuation command.
+const MARK_BLOCKING_FOLLOWER: &str = "of";
+
+/// Apply spoken punctuation names (R1) and line/paragraph commands (R2).
+///
+/// Pure, and inert in `Code` mode — dictated identifiers really do contain
+/// "underscore" and "slash" as words. Guarded like every other stage: a non-empty
+/// transcript can never come back empty.
+pub fn apply_spoken_marks(text: &str, mode: DictationMode) -> String {
+    if mode == DictationMode::Code {
+        return text.to_string();
     }
-    out.push_str(&haystack[last..]);
+    let out = text
+        .split('\n')
+        .map(apply_marks_to_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if out.trim().is_empty() && !text.trim().is_empty() {
+        return text.to_string();
+    }
     out
+}
+
+/// One line of [`apply_spoken_marks`]: walk the tokens, emitting glyphs for the
+/// mark names and the words verbatim for everything else.
+fn apply_marks_to_line(line: &str) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut space_before_next = false;
+    let mut quote_open = true;
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some((len, glyph, kind)) = match_spoken_mark(&tokens, i) {
+            if emit_mark(&mut out, glyph, kind, &mut quote_open, &mut space_before_next) {
+                i += len;
+                continue;
+            }
+        }
+        if space_before_next {
+            out.push(' ');
+        }
+        out.push_str(tokens[i]);
+        space_before_next = true;
+        i += 1;
+    }
+    out
+}
+
+/// Longest mark name starting at token `i`, as `(token count, glyph, kind)`.
+/// `None` when the tokens are ordinary words — including a real name that a
+/// determiner turned back into content.
+fn match_spoken_mark(tokens: &[&str], i: usize) -> Option<(usize, &'static str, MarkKind)> {
+    for len in (1..=MAX_MARK_TOKENS.min(tokens.len() - i)).rev() {
+        let key = tokens[i..i + len]
+            .iter()
+            .map(|t| mark_token_key(t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(&(_, glyph, kind)) = SPOKEN_MARKS.iter().find(|(name, _, _)| *name == key) else {
+            continue;
+        };
+        let blocked_before =
+            i > 0 && MARK_BLOCKING_LEAD_INS.contains(&mark_token_key(tokens[i - 1]).as_str());
+        let blocked_after = tokens
+            .get(i + len)
+            .is_some_and(|t| mark_token_key(t) == MARK_BLOCKING_FOLLOWER);
+        if blocked_before || blocked_after {
+            return None;
+        }
+        return Some((len, glyph, kind));
+    }
+    None
+}
+
+/// Comparable form of a token for mark matching: lowercased, outer punctuation
+/// stripped, an inner hyphen normalised to a space ("Em-Dash." → "em dash").
+fn mark_token_key(token: &str) -> String {
+    token_core(token).replace('-', " ")
+}
+
+/// Write one mark into `out`. Returns `false` when it cannot be applied — nothing
+/// precedes a trailing mark, or a break would open the line — and the caller then
+/// keeps the spoken words as literal text rather than losing them.
+fn emit_mark(
+    out: &mut String,
+    glyph: &str,
+    kind: MarkKind,
+    quote_open: &mut bool,
+    space_before_next: &mut bool,
+) -> bool {
+    let kind = match kind {
+        MarkKind::Quote => {
+            let resolved = if *quote_open { MarkKind::Leading } else { MarkKind::Trailing };
+            *quote_open = !*quote_open;
+            resolved
+        }
+        other => other,
+    };
+    match kind {
+        MarkKind::Break => {
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            if out.is_empty() {
+                return false;
+            }
+            // Consecutive breaks widen the gap instead of stacking blank lines.
+            let existing = out.chars().rev().take_while(|&c| c == '\n').count();
+            for _ in existing..glyph.len() {
+                out.push('\n');
+            }
+            *space_before_next = false;
+        }
+        MarkKind::Leading => {
+            if *space_before_next && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(glyph);
+            *space_before_next = false;
+        }
+        MarkKind::Trailing | MarkKind::Tight => {
+            if out.is_empty() || out.ends_with('\n') {
+                // Nothing to attach to — treat the words as content.
+                return false;
+            }
+            // Never double a mark: "see you exclamation point period" ends "you!".
+            let doubled = out.ends_with(glyph)
+                || (SENTENCE_ENDERS.iter().any(|c| glyph.ends_with(*c))
+                    && out.ends_with(SENTENCE_ENDERS));
+            if !doubled {
+                out.push_str(glyph);
+            }
+            *space_before_next = kind == MarkKind::Trailing;
+        }
+        MarkKind::Quote => unreachable!("Quote is resolved to Leading/Trailing above"),
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,6 +2127,212 @@ mod tests {
         assert_eq!(
             format_dictation("um the report is uh done"),
             "the report is done"
+        );
+    }
+
+    // --- Backtrack v2 (YV58) ----------------------------------------------
+
+    #[test]
+    fn backtrack_wait_no_reversed_marker() {
+        // Measured failure #5 of the deep-dive: the reversed marker now retracts,
+        // and a one-word same-category correction swaps the DAY, not the clause.
+        assert_eq!(
+            clean_backtrack("let's meet Tuesday, wait no, Friday"),
+            "let's meet Friday"
+        );
+        assert_eq!(
+            clean_backtrack("let's meet Tuesday, no wait, Friday"),
+            "let's meet Friday"
+        );
+        // The other new markers retract their clause the same way v1 ones did.
+        assert_eq!(
+            clean_backtrack("ship it Monday, sorry I meant, ship it Thursday"),
+            "ship it Thursday"
+        );
+        assert_eq!(
+            clean_backtrack("send the deck today, let me rephrase, send the deck tonight"),
+            "send the deck tonight"
+        );
+        assert_eq!(
+            clean_backtrack("the invoice is due April, i mean, June"),
+            "the invoice is due June"
+        );
+    }
+
+    #[test]
+    fn backtrack_keeps_i_actually_enjoyed_the_movie() {
+        // [DOC] negative case: "actually" as an adverb has no category on either
+        // side, so the restatement rule must not fire.
+        let doc = "I actually enjoyed the movie";
+        assert_eq!(clean_backtrack(doc), doc);
+        // The categorised restatement still fires either side of it.
+        assert_eq!(clean_backtrack("coffee at 2 actually 3"), "coffee at 3");
+        assert_eq!(
+            clean_backtrack("standup is Tuesday actually Thursday"),
+            "standup is Thursday"
+        );
+    }
+
+    #[test]
+    fn backtrack_drops_hedges_only_where_they_are_particles() {
+        // Comma-bounded and sentence-initial hedges go…
+        assert_eq!(
+            clean_backtrack("we should, sort of, rewrite the intro"),
+            "we should, rewrite the intro"
+        );
+        assert_eq!(
+            clean_backtrack("Basically, the migration is done"),
+            "The migration is done"
+        );
+        assert_eq!(
+            clean_backtrack("it was, kind of, slow and, i guess, expensive"),
+            "it was, slow and, expensive"
+        );
+        // …the same words as content stay.
+        let content = "I like the plan and it is sort of blue";
+        assert_eq!(clean_backtrack(content), content);
+        let literal = "the file is literally 4 gigabytes";
+        assert_eq!(clean_backtrack(literal), literal);
+        // Never inside a quoted span — there the speaker is reporting words.
+        let quoted = "he said \"well, like, whatever\" and left";
+        assert_eq!(clean_backtrack(quoted), quoted);
+    }
+
+    #[test]
+    fn backtrack_never_empties_non_empty_input() {
+        // Property: over utterances built from every trigger vocabulary v2 knows —
+        // fillers, hedges, markers, mark names — cleanup always returns text.
+        for input in generated_backtrack_utterances() {
+            let cleaned = clean_backtrack(&input);
+            assert!(
+                !cleaned.trim().is_empty(),
+                "clean_backtrack emptied {input:?}"
+            );
+            for mode in [DictationMode::Notes, DictationMode::Plain, DictationMode::Code] {
+                let marked = apply_spoken_marks(&cleaned, mode);
+                assert!(
+                    !marked.trim().is_empty(),
+                    "apply_spoken_marks emptied {cleaned:?} in {mode:?}"
+                );
+            }
+        }
+    }
+
+    /// Deterministic pseudo-random utterances mixing content words with every
+    /// trigger vocabulary the backtrack/marks rules recognize.
+    fn generated_backtrack_utterances() -> Vec<String> {
+        const CONTENT: &[&str] = &["ship", "the", "report", "Friday", "at", "7", "to", "Jeisil"];
+        const TRIGGERS: &[&str] = &[
+            "um", "uh", "like,", ",", "you know,", "scratch that,", "wait no,", "no wait,",
+            "i mean,", "basically,", "period", "comma", "new line", "new paragraph",
+            "exclamation point", "quotation mark", "at symbol",
+        ];
+        let mut state = 0x5eed_1958_u64;
+        let mut out = Vec::with_capacity(240);
+        for len in 1..=12usize {
+            for _ in 0..20 {
+                let words: Vec<&str> = (0..len)
+                    .map(|_| {
+                        let r = next_rand(&mut state);
+                        if r.is_multiple_of(3) {
+                            TRIGGERS[(r >> 8) as usize % TRIGGERS.len()]
+                        } else {
+                            CONTENT[(r >> 8) as usize % CONTENT.len()]
+                        }
+                    })
+                    .collect();
+                out.push(words.join(" "));
+            }
+        }
+        out
+    }
+
+    // --- Spoken marks (YV58, R1/R2) ---------------------------------------
+
+    #[test]
+    fn spoken_marks_exclamation_and_period() {
+        // Wispr's verbatim example. ("seven" → "7" is R6 digit normalization, a
+        // separate rule — R1 owns the glyphs and the removal of their names.)
+        assert_eq!(
+            apply_spoken_marks(
+                "I can't wait to see you exclamation point Let's meet at 7 period",
+                DictationMode::Chat
+            ),
+            "I can't wait to see you! Let's meet at 7."
+        );
+        // A terminal mark is never doubled onto another one.
+        assert_eq!(
+            apply_spoken_marks("see you question mark period", DictationMode::Notes),
+            "see you?"
+        );
+        // Tight and paired glyphs attach the way they are typed.
+        assert_eq!(
+            apply_spoken_marks("email wilson at symbol drivia dot dev", DictationMode::Notes),
+            "email wilson@drivia dot dev"
+        );
+        assert_eq!(
+            apply_spoken_marks(
+                "she said quotation mark ship it quotation mark today",
+                DictationMode::Notes
+            ),
+            "she said \"ship it\" today"
+        );
+        // A determiner in front (noun), "to" in front (verb) or "of" behind (noun
+        // phrase) all mean the speaker is TALKING about the mark, not dictating it.
+        for content in [
+            "the period was long and a dash of salt",
+            "the new line of products ships in June",
+            "I need to dash to the store",
+            "the Jurassic period of the dinosaurs",
+        ] {
+            assert_eq!(apply_spoken_marks(content, DictationMode::Notes), content);
+        }
+    }
+
+    #[test]
+    fn spoken_marks_new_line_and_new_paragraph() {
+        // R2: the command owns the break only — casing/`?` are other rules' work.
+        assert_eq!(
+            apply_spoken_marks(
+                "When is reading club new line should be tomorrow",
+                DictationMode::Chat
+            ),
+            "When is reading club\nshould be tomorrow"
+        );
+        for command in ["new paragraph", "start a new paragraph", "skip a line"] {
+            let spoken = format!("first thought {command} second thought");
+            assert_eq!(
+                apply_spoken_marks(&spoken, DictationMode::Notes),
+                "first thought\n\nsecond thought",
+                "{command} did not open a paragraph"
+            );
+        }
+        // Breaks the list renderer already made survive the pass.
+        assert_eq!(
+            apply_spoken_marks("1. Buy milk\n2. Buy eggs", DictationMode::Notes),
+            "1. Buy milk\n2. Buy eggs"
+        );
+        // A command with nothing before it stays as spoken text — never lose words.
+        assert_eq!(
+            apply_spoken_marks("new line ship it", DictationMode::Notes),
+            "new line ship it"
+        );
+    }
+
+    #[test]
+    fn spoken_marks_are_inert_in_code_mode() {
+        // Identifiers and paths are full of these words — `Code` never rewrites.
+        let code = "let new line equals sign underscore period value";
+        assert_eq!(apply_spoken_marks(code, DictationMode::Code), code);
+        // …and the pipeline honours that gate end to end.
+        let raw = "print open paren value close paren period";
+        assert_eq!(
+            run_cleanup(raw, CleanupLevel::High, DictationMode::Code, no_dict, polish_llm),
+            raw
+        );
+        assert_eq!(
+            run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, polish_llm),
+            "print (value)."
         );
     }
 
