@@ -24,6 +24,13 @@
   /* Data/second voice: the pill-world sky. Orange = action, sky = information. */
   --accent-data: #4ba3d8;
   --accent-data-soft: rgba(75, 163, 216, 0.16);
+  /* Activity heatmap ramp (YV55) — a warm amber climb out of the soil, so an
+     empty day is the page itself and a loud day is the accent ember. */
+  --heat-0: rgba(74, 48, 20, 0.07);
+  --heat-1: #f6dcb4;
+  --heat-2: #f2b878;
+  --heat-3: #ef7d3c;
+  --heat-4: #c4551c;
   --mono: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --radius-sm: 10px;
   --danger: #be123c;
@@ -60,6 +67,11 @@
     --accent-soft: rgba(255, 154, 92, 0.16);
     --accent-data: #8fd6ff;
     --accent-data-soft: rgba(143, 214, 255, 0.14);
+    --heat-0: rgba(255, 238, 214, 0.07);
+    --heat-1: #5c3a1d;
+    --heat-2: #9a5c26;
+    --heat-3: #d97f38;
+    --heat-4: #ff9a5c;
     --shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   }
 }
@@ -880,7 +892,9 @@ code {
   gap: 4px;
   align-self: flex-end;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 
 .heat-swatch {
@@ -888,6 +902,56 @@ code {
   height: 10px;
   border-radius: 2px;
   display: inline-block;
+}
+
+/* YV55 — the year grid gets its own scale marks and one summary line, so the
+   squares are read instead of counted. */
+.heat-month {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--muted);
+}
+
+.heat-summary {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* A run of months with nothing said in them is one line, not twelve bars. */
+.quiet-months {
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* Top apps (YV55): label / bar / value, same grid as every other bar list but
+   room for a real app name and a two-part value. */
+.bars.apps .bar-row {
+  grid-template-columns: minmax(0, 116px) 1fr 104px;
+}
+
+.bars.apps .bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+/* Every numeral in Insights speaks in the pixel voice, in the data colour —
+   the words stay native SF so the numbers are what the eye lands on. */
+.insights .bar-n,
+.insights .kv strong,
+.insights .heat-summary strong {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-data);
+}
+
+.insights .bar-n {
+  font-size: 0.72rem;
 }
 
 .kv {

@@ -237,12 +237,35 @@ function heatLevel(words: number, max: number): number {
   return 1;
 }
 
+// YV55 — warm amber ramp for the activity heatmap, indexed by heatLevel bucket.
+// Empty is the soil the page already sits on; full is the accent ember, so the
+// year reads as one material instead of a blue grid pasted onto it.
+const HEAT_FILL = [
+  "var(--heat-0)",
+  "var(--heat-1)",
+  "var(--heat-2)",
+  "var(--heat-3)",
+  "var(--heat-4)",
+];
+
 // Month label for a "YYYY-MM" key from monthly_series.
 function formatMonth(ym: string) {
   try {
     return new Date(ym + "-15T12:00:00").toLocaleDateString(undefined, {
       month: "short",
       year: "2-digit",
+    });
+  } catch {
+    return ym;
+  }
+}
+
+// Bare month name for a "YYYY-MM" key — "short" for heatmap ticks, "long" for
+// the collapsed-quiet-months line.
+function monthName(ym: string, style: "short" | "long" = "short") {
+  try {
+    return new Date(ym + "-15T12:00:00").toLocaleDateString(undefined, {
+      month: style,
     });
   } catch {
     return ym;
@@ -313,6 +336,18 @@ function formatDay(d: string) {
   try {
     return new Date(d + "T12:00:00").toLocaleDateString(undefined, {
       weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return d;
+  }
+}
+
+// Weekday-less day label ("Jul 29") for dense one-line summaries.
+function formatDayShort(d: string) {
+  try {
+    return new Date(d + "T12:00:00").toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
     });
@@ -1077,7 +1112,12 @@ export default function App() {
   // week-columns × weekday-rows, aligning the first cell to its real weekday.
   const heat = useMemo(() => {
     if (dailySeries.length === 0) {
-      return { cols: 0, cells: [] as { d: DayCount; col: number; row: number }[], max: 0 };
+      return {
+        cols: 0,
+        cells: [] as { d: DayCount; col: number; row: number }[],
+        months: [] as { key: string; label: string; col: number }[],
+        max: 0,
+      };
     }
     const wd0 = new Date(dailySeries[0].date + "T12:00:00").getDay(); // 0=Sun
     const max = Math.max(1, ...dailySeries.map((d) => d.words));
@@ -1086,17 +1126,69 @@ export default function App() {
       return { d, col: Math.floor(g / 7), row: g % 7 };
     });
     const cols = Math.ceil((wd0 + dailySeries.length) / 7);
-    return { cols, cells, max };
+    // Month ticks (YV55): label the column each month starts in, dropping any
+    // label that would sit on top of the previous one or run off the last
+    // column (a clipped half-word is worse than no tick).
+    const months: { key: string; label: string; col: number }[] = [];
+    let lastYm = "";
+    for (const { d, col } of cells) {
+      const ym = d.date.slice(0, 7);
+      if (ym === lastYm) continue;
+      lastYm = ym;
+      const prev = months[months.length - 1];
+      if (prev && col - prev.col < 3) continue;
+      if (cols - col < 3) continue; // no room left to draw it in full
+      months.push({ key: ym, label: monthName(ym), col });
+    }
+    return { cols, cells, months, max };
   }, [dailySeries]);
   const hasActivity = useMemo(
     () => dailySeries.some((d) => d.words > 0),
     [dailySeries],
   );
 
-  // Monthly words bar chart — last 12 months.
-  const maxMonthly = useMemo(
-    () => Math.max(1, ...monthlySeries.map((d) => d.words)),
-    [monthlySeries],
+  // YV55 — one honest line for the exact window the heatmap draws, so the year
+  // grid is read rather than counted.
+  const heatSummary = useMemo(() => {
+    let words = 0;
+    let sessions = 0;
+    let best: DayCount | null = null;
+    for (const d of dailySeries) {
+      words += d.words;
+      sessions += d.sessions;
+      if (!best || d.words > best.words) best = d;
+    }
+    return { words, sessions, best: best && best.words > 0 ? best : null };
+  }, [dailySeries]);
+
+  // Monthly words bar chart — YV55: an empty month is not information, so the
+  // leading run of silent months collapses into one quiet line and only months
+  // that carry words are charted. The current month is always a row (today's
+  // ramp has to be visible even at zero) and the chart never shrinks below 3
+  // rows, so a young install still reads as a trend rather than a single bar.
+  const monthlyView = useMemo(() => {
+    if (monthlySeries.length === 0) {
+      return { rows: [] as DayCount[], quiet: 0, max: 1 };
+    }
+    const last = monthlySeries.length - 1;
+    const shown = new Set<number>();
+    monthlySeries.forEach((d, i) => {
+      if (d.words > 0 || i === last) shown.add(i);
+    });
+    for (let i = last; i >= 0 && shown.size < 3; i--) shown.add(i);
+    const rows = monthlySeries.filter((_, i) => shown.has(i));
+    const first = Math.min(...shown);
+    return {
+      rows,
+      quiet: first, // every month before the first shown one is silent
+      max: Math.max(1, ...rows.map((d) => d.words)),
+    };
+  }, [monthlySeries]);
+
+  // Top apps (YV55) — each row carries its own bar, scaled to the busiest app.
+  const maxApp = useMemo(
+    () => Math.max(1, ...(insights?.topApps.map((a) => a.words) ?? [1])),
+    [insights],
   );
 
   const needsPerms = perms && !perms.allCriticalOk;
@@ -1781,26 +1873,46 @@ export default function App() {
                 <h3>Activity · last 365 days</h3>
                 {hasActivity ? (
                   <div className="heatmap-wrap">
+                    <p className="heat-summary">
+                      <strong>{heatSummary.words.toLocaleString()}</strong> words
+                      · <strong>{heatSummary.sessions.toLocaleString()}</strong>{" "}
+                      sessions
+                      {heatSummary.best && (
+                        <>
+                          {" "}
+                          · best day{" "}
+                          <strong>{formatDayShort(heatSummary.best.date)}</strong>
+                        </>
+                      )}
+                    </p>
                     <svg
                       className="heatmap"
-                      viewBox={`0 0 ${heat.cols * 13} ${7 * 13}`}
+                      viewBox={`0 0 ${heat.cols * 13} ${7 * 13 + 14}`}
                       preserveAspectRatio="xMinYMid meet"
                       role="img"
                       aria-label="Daily dictation activity heatmap for the last year"
                     >
+                      {heat.months.map((m) => (
+                        <text
+                          key={m.key}
+                          className="heat-month"
+                          x={m.col * 13}
+                          y={10}
+                        >
+                          {m.label}
+                        </text>
+                      ))}
                       {heat.cells.map(({ d, col, row }) => {
                         const lvl = heatLevel(d.words, heat.max);
-                        const op = [0, 0.28, 0.5, 0.75, 1][lvl];
                         return (
                           <rect
                             key={d.date}
                             x={col * 13}
-                            y={row * 13}
+                            y={row * 13 + 14}
                             width={10}
                             height={10}
                             rx={2}
-                            fill={lvl === 0 ? "var(--bg-elev)" : "var(--accent)"}
-                            fillOpacity={lvl === 0 ? 1 : op}
+                            fill={HEAT_FILL[lvl]}
                           >
                             <title>
                               {formatDay(d.date)} — {d.words.toLocaleString()} words
@@ -1815,11 +1927,7 @@ export default function App() {
                         <span
                           key={lvl}
                           className="heat-swatch"
-                          style={{
-                            background:
-                              lvl === 0 ? "var(--bg-elev)" : "var(--accent)",
-                            opacity: lvl === 0 ? 1 : [0, 0.28, 0.5, 0.75, 1][lvl],
-                          }}
+                          style={{ background: HEAT_FILL[lvl] }}
                         />
                       ))}
                       <span>More</span>
@@ -1836,14 +1944,23 @@ export default function App() {
               {monthlySeries.some((d) => d.words > 0) && (
                 <div className="panel" style={{ marginTop: 16 }}>
                   <h3>Words by month · last 12 months</h3>
+                  {monthlyView.quiet > 0 && (
+                    <p className="quiet-months">
+                      {monthlyView.quiet} quiet{" "}
+                      {monthlyView.quiet === 1 ? "month" : "months"} before{" "}
+                      {monthName(monthlyView.rows[0].date, "long")}
+                    </p>
+                  )}
                   <div className="bars">
-                    {monthlySeries.map((d) => (
+                    {monthlyView.rows.map((d) => (
                       <div key={d.date} className="bar-row">
                         <span className="bar-label">{formatMonth(d.date)}</span>
                         <div className="bar-track">
                           <div
                             className="bar-fill"
-                            style={{ width: `${(d.words / maxMonthly) * 100}%` }}
+                            style={{
+                              width: `${(d.words / monthlyView.max) * 100}%`,
+                            }}
                           />
                         </div>
                         <span className="bar-n">{d.words.toLocaleString()}</span>
@@ -1856,16 +1973,24 @@ export default function App() {
               {insights.topApps.length > 0 && (
                 <div className="panel" style={{ marginTop: 16 }}>
                   <h3>Top apps</h3>
-                  <ul className="kv">
+                  <div className="bars apps">
                     {insights.topApps.map((a) => (
-                      <li key={a.app}>
-                        <span>{a.app}</span>
-                        <strong>
-                          {a.words.toLocaleString()} w · {a.sessions} sess
-                        </strong>
-                      </li>
+                      <div key={a.app} className="bar-row">
+                        <span className="bar-label" title={a.app}>
+                          {a.app}
+                        </span>
+                        <div className="bar-track">
+                          <div
+                            className="bar-fill"
+                            style={{ width: `${(a.words / maxApp) * 100}%` }}
+                          />
+                        </div>
+                        <span className="bar-n">
+                          {a.words.toLocaleString()} w · {a.sessions}
+                        </span>
+                      </div>
                     ))}
-                  </ul>
+                  </div>
                 </div>
               )}
             </div>
