@@ -87,6 +87,26 @@ interface AppSettings {
    */
   snippetScope?: string;
   /**
+   * The tone dial (backend `polish_styles`, YV62 / rule R14), keyed by dictation
+   * mode ("email", "chat", …) with "very casual" | "casual" | "default" |
+   * "formal" as values. A mode with no entry is "default". It adjusts
+   * capitalisation and punctuation density only — never word choice — and it
+   * reaches the RULES (the trailing-period rule R3), not just the local model.
+   */
+  polishStyles?: Record<string, string>;
+  /**
+   * The sign-off block appended to a take (backend `signature`, YV62 / R13),
+   * e.g. "Wilson — drivia.consulting". Empty by default. Pasted byte for byte
+   * after every other stage, so nothing can rewrite it.
+   */
+  signature?: string;
+  /**
+   * When that block is appended (backend `signature_mode`): "off" (the default
+   * — never) | "cue" (only when the take ends with "sign it") | "auto" (a cue,
+   * or any email that closes on a sign-off line).
+   */
+  signatureMode?: string;
+  /**
    * Denoise the captured clip with RNNoise before transcription (backend
    * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)
    * before the 16 kHz downsample. Default on.
@@ -408,6 +428,10 @@ export default function App() {
   const [editExpansion, setEditExpansion] = useState("");
   const [scratch, setScratch] = useState<ScratchNote[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // YV62 — the signature block is edited locally and saved on blur. A save per
+  // keystroke would rewrite settings.json on every character of a multi-line
+  // block; `null` means "show whatever is stored".
+  const [signatureDraft, setSignatureDraft] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -2459,6 +2483,112 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                  </div>
+                  {/* YV62 (R14) — the tone dial, per surface. It reaches the
+                      rules, not just the local model: Formal keeps the full
+                      stop, Very Casual drops it everywhere. */}
+                  <div className="panel">
+                    <h3>Tone</h3>
+                    <p>
+                      How formal each surface sounds. The dial only changes
+                      capitalisation and punctuation — never your words. Formal
+                      always keeps the full stop; Very casual drops it
+                      everywhere.
+                    </p>
+                    <div className="tone-dial">
+                      {(
+                        [
+                          ["email", "Email"],
+                          ["chat", "Chat and messaging"],
+                          ["notes", "Notes"],
+                          ["document", "Documents"],
+                          ["list", "Lists"],
+                          ["plain", "Plain"],
+                        ] as const
+                      ).map(([mode, label]) => (
+                        <label className="field" key={mode}>
+                          <span>{label}</span>
+                          <select
+                            value={settings.polishStyles?.[mode] ?? "default"}
+                            onChange={(e) =>
+                              saveSettings({
+                                ...settings,
+                                polishStyles: {
+                                  ...(settings.polishStyles ?? {}),
+                                  [mode]: e.target.value,
+                                },
+                              })
+                            }
+                          >
+                            <option value="very casual">Very casual</option>
+                            <option value="casual">Casual</option>
+                            <option value="default">Default</option>
+                            <option value="formal">Formal</option>
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  {/* YV62 (R13) — the sign-off block. Opt-in, and pasted byte
+                      for byte after every other stage so nothing rewrites it. */}
+                  <div className="panel">
+                    <h3>Signature</h3>
+                    <p>
+                      Your sign-off block, pasted exactly as you type it here.
+                      It is added last, after everything else, so nothing
+                      rewrites it — and Yap never writes one for you.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["off", "Off", "Never add a signature"],
+                          ["cue", "On cue", "Only when I say “sign it”"],
+                          [
+                            "auto",
+                            "Automatic",
+                            "On “sign it”, and on emails I end with “thanks”",
+                          ],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.signatureMode ?? "off") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, signatureMode: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <label className="field">
+                      <span>Signature</span>
+                      <textarea
+                        rows={2}
+                        placeholder="Wilson — drivia.consulting"
+                        aria-label="Signature block"
+                        value={signatureDraft ?? settings.signature ?? ""}
+                        onChange={(e) => setSignatureDraft(e.target.value)}
+                        onBlur={() => {
+                          if (
+                            signatureDraft !== null &&
+                            signatureDraft !== (settings.signature ?? "")
+                          ) {
+                            saveSettings({
+                              ...settings,
+                              signature: signatureDraft,
+                            });
+                          }
+                          setSignatureDraft(null);
+                        }}
+                      />
+                    </label>
                   </div>
                   <label className="toggle">
                     <input

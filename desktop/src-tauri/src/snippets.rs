@@ -163,9 +163,120 @@ fn expand_inline(text: &str, ranked: &[&SnippetRule]) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Signature (YV62) — R13's opt-in, byte-exact sign-off block.
+//
+// It lives HERE, in the snippet stage, and not in the cleanup pipeline, because
+// R13 is explicit about it: "Yap appends the user's configured sign-off block …
+// The signature is inserted AFTER the LLM stage, by `snippets.rs`, so the model
+// can never mangle it." A model that invents a signature is a correctness bug —
+// `polish::validate_polish` rejects one (V3/V5) — and the only block that ever
+// reaches the pasteboard is the configured string, copied verbatim.
+//
+// Default is `Off`: nothing is ever appended until the user asks for it.
+// ---------------------------------------------------------------------------
+
+/// When the configured signature block is appended (R13).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SignatureMode {
+    /// Never — the default, and what an install that never opens this setting has.
+    #[default]
+    Off,
+    /// Only when the user asks for it in the take ("sign it").
+    Cue,
+    /// On an explicit cue, and on any email that ends with a sign-off line.
+    Auto,
+}
+
+impl SignatureMode {
+    /// Parse the `signature_mode` setting. Unknown/empty values fall back to the
+    /// default (`Off`), mirroring the Settings control: `off | cue | auto`.
+    pub fn from_setting(setting: &str) -> Self {
+        match setting.trim().to_lowercase().as_str() {
+            "cue" => SignatureMode::Cue,
+            "auto" => SignatureMode::Auto,
+            _ => SignatureMode::Off,
+        }
+    }
+}
+
+/// Spoken phrases that ask for the signature explicitly (R13's "sign it").
+/// Recognised only as the TAIL of a take, so "sign off on the budget" is content.
+const SIGNATURE_CUES: &[&str] = &["sign me off", "sign it off", "sign it", "sign off"];
+
+/// Append the configured signature block, or leave the text exactly as it is.
+///
+/// Pure, and the LAST thing that touches a take. The block is copied BYTE FOR
+/// BYTE — it is never reflowed, re-cased or regenerated — which is the whole
+/// point of running it here rather than asking the model for a sign-off.
+///
+/// It is appended only when:
+///   * `sig_mode` is not `Off` and a signature is actually configured, AND
+///   * the take ends with a spoken cue ("sign it"), which is consumed, or
+///   * `sig_mode` is `Auto`, the take is an email, and it already ends with a
+///     sign-off line (`dictation::ends_with_signoff_line` — what R13's shape rule
+///     leaves behind).
+pub fn append_signature(
+    text: &str,
+    signature: &str,
+    sig_mode: SignatureMode,
+    mode: crate::dictation::DictationMode,
+) -> String {
+    if sig_mode == SignatureMode::Off || signature.trim().is_empty() {
+        return text.to_string();
+    }
+    let (body, cued) = take_signature_cue(text);
+    let wanted = cued
+        || (sig_mode == SignatureMode::Auto
+            && mode == crate::dictation::DictationMode::Email
+            && crate::dictation::ends_with_signoff_line(&body));
+    // "Never lose text" holds here too: a take that is nothing but the cue is
+    // left alone rather than replaced by a signature.
+    if !wanted || body.trim().is_empty() {
+        return text.to_string();
+    }
+    format!("{}\n{signature}", body.trim_end())
+}
+
+/// Strip a trailing signature cue, reporting whether one was there. The body
+/// keeps its own whitespace — the email shape's blank lines survive this.
+fn take_signature_cue(text: &str) -> (String, bool) {
+    let trimmed = text.trim_end().trim_end_matches(['.', ',', '!', '?']);
+    for cue in SIGNATURE_CUES {
+        let Some(at) = ci_suffix_start(trimmed, cue) else {
+            continue;
+        };
+        let head = &trimmed[..at];
+        // Word boundary ("resign it" is not "sign it"), and a take that is
+        // nothing BUT the cue keeps its words rather than becoming a signature.
+        if head.ends_with(is_word_char) || head.trim().is_empty() {
+            continue;
+        }
+        return (head.trim_end().to_string(), true);
+    }
+    (text.to_string(), false)
+}
+
+/// Case-insensitive suffix test — the mirror of [`ci_prefix_len`]. Returns the
+/// BYTE offset in `hay` where `needle` starts, else `None`. Compared char by char
+/// so a multi-byte lowercase mapping can never desync the offsets.
+fn ci_suffix_start(hay: &str, needle: &str) -> Option<usize> {
+    let mut chars = hay.char_indices().rev();
+    let mut at = hay.len();
+    for n in needle.chars().rev() {
+        let (i, c) = chars.next()?;
+        if !c.to_lowercase().eq(n.to_lowercase()) {
+            return None;
+        }
+        at = i;
+    }
+    Some(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dictation::DictationMode;
 
     fn rule(trigger: &str, expansion: &str) -> SnippetRule {
         SnippetRule {
@@ -269,5 +380,120 @@ mod tests {
         );
         assert_eq!(SnippetScope::from_setting(""), SnippetScope::Inline);
         assert_eq!(SnippetScope::from_setting("bogus"), SnippetScope::Inline);
+    }
+
+    // --- Signature (YV62, R13) -------------------------------------------
+
+    /// A signature with the two things a model most likes to invent in one: a
+    /// name it was never given and an address (which is also what makes an
+    /// invented copy of it fail `validate_polish`'s V5).
+    const SIGNATURE: &str = "Wilson Guenther\nwilson@drivia.consulting";
+
+    #[test]
+    fn signature_off_by_default_never_appended() {
+        // The shipped default is OFF, in the settings and in the parser.
+        let settings = crate::AppSettings::default();
+        assert_eq!(settings.signature, "");
+        assert_eq!(settings.signature_mode, "off");
+        assert_eq!(
+            SignatureMode::from_setting(&settings.signature_mode),
+            SignatureMode::Off
+        );
+        for unset in ["", "   ", "bogus"] {
+            assert_eq!(SignatureMode::from_setting(unset), SignatureMode::Off);
+        }
+        // Off means off: neither an email that ends on a sign-off line nor an
+        // explicit cue appends anything.
+        let signed_off = "The build is green\n\nThanks,";
+        assert_eq!(
+            append_signature(
+                signed_off,
+                SIGNATURE,
+                SignatureMode::Off,
+                DictationMode::Email
+            ),
+            signed_off
+        );
+        let cued = "the deck is attached sign it";
+        assert_eq!(
+            append_signature(cued, SIGNATURE, SignatureMode::Off, DictationMode::Email),
+            cued
+        );
+        // …and with the mode ON but nothing configured there is still no block.
+        assert_eq!(
+            append_signature(signed_off, "  ", SignatureMode::Auto, DictationMode::Email),
+            signed_off
+        );
+    }
+
+    #[test]
+    fn signature_auto_appends_after_a_signoff_line_only() {
+        // R13: `auto` fires on an email that closed itself with a sign-off.
+        assert_eq!(
+            append_signature(
+                "The build is green\n\nThanks,",
+                SIGNATURE,
+                SignatureMode::Auto,
+                DictationMode::Email
+            ),
+            format!("The build is green\n\nThanks,\n{SIGNATURE}")
+        );
+        // Never outside email, and never without the sign-off cue.
+        assert_eq!(
+            append_signature(
+                "The build is green\n\nThanks,",
+                SIGNATURE,
+                SignatureMode::Auto,
+                DictationMode::Chat
+            ),
+            "The build is green\n\nThanks,"
+        );
+        assert_eq!(
+            append_signature(
+                "The build is green",
+                SIGNATURE,
+                SignatureMode::Auto,
+                DictationMode::Email
+            ),
+            "The build is green"
+        );
+    }
+
+    #[test]
+    fn signature_cue_is_consumed_and_never_fires_on_content() {
+        // The spoken cue is shape, not words: it leaves the take.
+        assert_eq!(
+            append_signature(
+                "the deck is attached sign it.",
+                SIGNATURE,
+                SignatureMode::Cue,
+                DictationMode::Notes
+            ),
+            format!("the deck is attached\n{SIGNATURE}")
+        );
+        // A cue mid-sentence, a cue inside a longer word, and a take that is
+        // ONLY the cue all leave the text exactly as dictated.
+        for content in [
+            "sign off on the budget before Friday",
+            "they had to resign it after the audit",
+            "sign it",
+        ] {
+            assert_eq!(
+                append_signature(content, SIGNATURE, SignatureMode::Cue, DictationMode::Email),
+                content,
+                "{content:?} was treated as a cue"
+            );
+        }
+        // `cue` does NOT widen to auto's sign-off line.
+        let signed_off = "The build is green\n\nThanks,";
+        assert_eq!(
+            append_signature(
+                signed_off,
+                SIGNATURE,
+                SignatureMode::Cue,
+                DictationMode::Email
+            ),
+            signed_off
+        );
     }
 }

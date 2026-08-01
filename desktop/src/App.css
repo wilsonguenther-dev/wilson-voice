@@ -798,6 +798,7 @@ code {
 .toolbar input[type="search"],
 .field input,
 .field select,
+.field textarea,
 .dict-add input,
 .note-title,
 .scratch-editor textarea {
@@ -1395,6 +1396,27 @@ button.star.on {
   gap: 6px;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+/* YV62 — the signature block is the only multi-line field. It inherits the
+   field chrome above; these are the two things a textarea needs on top. */
+.field textarea {
+  font: inherit;
+  resize: vertical;
+}
+
+/* YV62 — the tone dial is one row per surface. Two columns so six modes read as
+   a compact table rather than a column of selects the length of the panel. */
+.tone-dial {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 12px;
+}
+
+/* A field stacked under other controls inside a panel needs the gap the
+   settings column supplies to the panels themselves. */
+.panel > .profile-row + .field {
+  margin-top: 12px;
 }
 
 .toggle {

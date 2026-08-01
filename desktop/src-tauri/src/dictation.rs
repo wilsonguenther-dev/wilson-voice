@@ -496,7 +496,10 @@ impl CleanupLevel {
 ///      this stays pure/testable; production passes `Database::apply_dictionary`).
 ///   2. backtrack cleanup — [`clean_backtrack`] (fillers + spoken self-corrections).
 ///   3. rules formatting — `format_dictation` (list detection), respecting `mode`,
-///      then [`apply_spoken_marks`] (punctuation-by-name + line/paragraph commands).
+///      then [`apply_spoken_marks`] (punctuation-by-name + line/paragraph commands),
+///      then the YV62 shape rules: [`format_email_shape`] in `Email` (R13) and
+///      the tone-dialled trailing-period rule (R3/R14), which is why `style` is a
+///      parameter — the dial reaches the RULES, not only the model's prompt.
 ///   4. LLM polish — `polish` (YV61: production passes the validated stage,
 ///      `polish::polish_llm` bound to this take's mode and settings; it returns
 ///      `None` on any refusal, timeout, crash or failed validation, and `None`
@@ -508,6 +511,7 @@ pub fn run_cleanup<D, P>(
     raw: &str,
     level: CleanupLevel,
     mode: DictationMode,
+    style: Style,
     apply_dictionary: D,
     polish: P,
 ) -> String
@@ -554,6 +558,23 @@ where
         let out = apply_spoken_marks(&text, mode);
         if !out.trim().is_empty() {
             text = out;
+        }
+        // R13 (YV62) — email shape. After the marks, so a spoken "period" is
+        // already a glyph when the sign-off is cut off the tail.
+        if mode == DictationMode::Email {
+            let out = format_email_shape(&text);
+            if !out.trim().is_empty() {
+                text = out;
+            }
+        }
+        // R3/R14 (YV62) — the tone-dialled trailing period, last of the rules:
+        // it decides about the FINAL character, so everything that can add one
+        // has to have run already. Inert in `Code`/`Plain`, which stay verbatim.
+        if should_format(mode) {
+            let out = strip_trailing_period(&text, mode, style);
+            if !out.trim().is_empty() {
+                text = out;
+            }
         }
     }
     // Stage 4 — local-LLM polish (guarded). `None`/empty ⇒ keep current text.
@@ -1597,6 +1618,264 @@ fn at_clause_boundary(tokens: &[&str], i: usize) -> bool {
     i == 0 || tokens[i - 1].ends_with(|c: char| matches!(c, ',' | '.' | ';' | ':'))
 }
 
+// ---------------------------------------------------------------------------
+// Email shape + tone dial (YV62) — rules R13/R14 of
+// `docs/research/wispr-formatting-deep-dive.md`.
+//
+// Both are RULES on purpose: they hold with the local-LLM stage off, which is
+// the default and the state of every install with no polish model downloaded.
+// The model only reflows what they already decided — `yap-polish`'s
+// `style_overlay` is handed the SAME dial position ([`Style::tag`]), so it is
+// asked for the tone the rules applied rather than for a second opinion.
+//
+// The signature is deliberately NOT here: R13 makes it opt-in and byte-exact, so
+// it is appended AFTER the model by `snippets::append_signature`, where nothing
+// can rewrite or invent it.
+// ---------------------------------------------------------------------------
+
+/// The tone dial (R14), configured per dictation mode (`AppSettings::polish_styles`).
+///
+/// It adjusts capitalization and punctuation density ONLY — never word choice,
+/// grammar or content — which is why its acceptance criterion is a differential
+/// test (`tone_formal_vs_very_casual_differ_only_in_caps_and_punctuation`) rather
+/// than a golden string.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Style {
+    /// Drop the trailing period everywhere, at any length.
+    VeryCasual,
+    /// Wispr's messaging rule widened to every app; still short dictations only.
+    Casual,
+    /// Wispr's documented default — messaging surfaces only.
+    #[default]
+    Default,
+    /// Never strip a terminal mark, in any app.
+    Formal,
+}
+
+impl Style {
+    /// Parse a `polish_styles` entry. Both spellings of a dial position are
+    /// accepted — the prompt/wire tag (`very casual`) and the id the Settings UI
+    /// and the fixture corpus use (`very_casual`) — and anything else, including
+    /// a mode with no entry at all, is [`Style::Default`].
+    pub fn from_setting(setting: &str) -> Self {
+        match setting.trim().to_lowercase().replace('_', " ").as_str() {
+            "very casual" => Style::VeryCasual,
+            "casual" => Style::Casual,
+            "formal" => Style::Formal,
+            _ => Style::Default,
+        }
+    }
+
+    /// The tag sent to the sidecar, where it selects `style_overlay`'s line of
+    /// the system prompt (§2.4). One source for the dial, both ends of it.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Style::VeryCasual => "very casual",
+            Style::Casual => "casual",
+            Style::Default => "default",
+            Style::Formal => "formal",
+        }
+    }
+}
+
+/// Sentences a dictation may carry and still count as "short" for R3.
+const MAX_CASUAL_SENTENCES: usize = 2;
+
+/// R3 — trailing-period suppression, widened by the tone dial.
+///
+/// Wispr's documented rule is messaging-only: in `Chat`, a dictation of ≤ 2
+/// sentences loses its final `.` — and only a `.`, never a `?` or `!`. The dial
+/// widens it: `Casual` applies it in any app, `VeryCasual` drops the length limit
+/// too, and `Formal` never strips at all.
+///
+/// Multi-line text is left alone whatever the dial says: a rendered list or an
+/// email shape owns its own punctuation, and this rule is about the single line
+/// the user is dictating into.
+fn strip_trailing_period(text: &str, mode: DictationMode, style: Style) -> String {
+    let trimmed = text.trim_end();
+    if style == Style::Formal || !trimmed.ends_with('.') || trimmed.ends_with("..") {
+        return text.to_string();
+    }
+    // `Default` keeps Wispr's messaging-surface restriction; the casual
+    // positions are what widen it to every app.
+    if style == Style::Default && mode != DictationMode::Chat {
+        return text.to_string();
+    }
+    if trimmed.contains('\n') {
+        return text.to_string();
+    }
+    if style != Style::VeryCasual
+        && trimmed
+            .matches(|c: char| SENTENCE_ENDERS.contains(&c))
+            .count()
+            > MAX_CASUAL_SENTENCES
+    {
+        return text.to_string();
+    }
+    trimmed[..trimmed.len() - 1].trim_end().to_string()
+}
+
+/// Greeting cues that OPEN a dictated email (R13). Distinct from
+/// [`EMAIL_GREETINGS`], which matches an already-typed line before the caret to
+/// recognise the surface; these match spoken words at the head of a take, so they
+/// carry no trailing space or comma. Longest phrase first.
+const EMAIL_GREETING_CUES: &[&str] = &[
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "dear",
+    "hello",
+    "hey",
+    "hi",
+];
+
+/// Sign-off cues that CLOSE one (R13), longest first so "thank you" wins over
+/// "thanks" and "best regards" over "best".
+const EMAIL_SIGNOFF_CUES: &[&str] = &[
+    "thank you so much",
+    "thanks so much",
+    "best regards",
+    "kind regards",
+    "thank you",
+    "talk soon",
+    "sincerely",
+    "regards",
+    "cheers",
+    "thanks",
+    "best",
+];
+
+/// Words that can follow a greeting cue WITHOUT being the person greeted — the
+/// take went straight into the body ("hey can you review this"), so the greeting
+/// line is the cue on its own.
+const NON_ADDRESSEE: &[&str] = &[
+    "i", "we", "you", "a", "an", "the", "this", "that", "it", "is", "are", "was", "just", "quick",
+    "so", "can", "could", "would", "should", "do", "did", "what", "when", "where", "why", "how",
+    "and", "but",
+];
+
+/// Words that turn a trailing sign-off cue back into ordinary content ("our
+/// best", "at best"). The cue only closes a mail when nothing in front of it
+/// claims it as a noun.
+const NON_SIGNOFF_PRECEDERS: &[&str] = &[
+    "our", "the", "your", "my", "his", "her", "their", "its", "a", "an", "very", "at", "of", "for",
+    "do", "doing", "did", "done", "was", "is", "are", "be", "been", "much", "so",
+];
+
+/// R13 — email shape: the greeting and the sign-off each get their own
+/// comma-terminated line, with a blank line between them and the body.
+///
+/// Pure, and conservative in both directions. An utterance with neither cue is
+/// returned untouched, and so is one that already carries line breaks — a
+/// rendered list or a spoken "new paragraph" has a shape of its own that this
+/// rule has no business re-cutting. Only the greeting and the sign-off are moved:
+/// the body's words, order and punctuation stay the speaker's.
+pub fn format_email_shape(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return text.to_string();
+    }
+    let (greeting, rest) = split_greeting(trimmed);
+    let (body, signoff) = split_signoff(&rest);
+    if greeting.is_none() && signoff.is_none() {
+        return text.to_string();
+    }
+    let mut blocks: Vec<String> = Vec::new();
+    if let Some(greeting) = &greeting {
+        blocks.push(format!("{},", capitalize(greeting)));
+    }
+    let body = body.trim();
+    if !body.is_empty() {
+        // A body that now opens a line of its own takes the sentence capital the
+        // greeting moved off it. With no greeting it is still the first thing in
+        // the take, so R5 owns its casing at the caret and this leaves it alone.
+        blocks.push(if greeting.is_some() {
+            capitalize(body)
+        } else {
+            body.to_string()
+        });
+    }
+    if let Some(signoff) = &signoff {
+        blocks.push(format!("{},", capitalize(signoff)));
+    }
+    blocks.join("\n\n")
+}
+
+/// Whether `text` closes on a rendered sign-off line (`Thanks,` alone on the last
+/// line) — what [`format_email_shape`] leaves behind, and the signal the opt-in
+/// signature stage (`snippets::append_signature`) keys off in `auto` mode.
+pub fn ends_with_signoff_line(text: &str) -> bool {
+    let Some(last) = text.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return false;
+    };
+    let Some(head) = last.trim().strip_suffix(',') else {
+        return false;
+    };
+    EMAIL_SIGNOFF_CUES.contains(&head.trim().to_lowercase().as_str())
+}
+
+/// Split a leading greeting ("hey Jordan") off the utterance, returning it
+/// stripped of punctuation plus the rest. The word after the cue is taken as the
+/// addressee only when it could be one — a name, not the first word of the body.
+fn split_greeting(text: &str) -> (Option<String>, String) {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    // A take that is ONLY a greeting has nothing to shape.
+    let Some(mut used) = EMAIL_GREETING_CUES.iter().find_map(|cue| {
+        let words: Vec<&str> = cue.split(' ').collect();
+        (tokens.len() > words.len()
+            && words
+                .iter()
+                .enumerate()
+                .all(|(i, w)| token_core(tokens[i]) == *w))
+        .then_some(words.len())
+    }) else {
+        return (None, text.to_string());
+    };
+    if let Some(next) = tokens.get(used) {
+        let core = token_core(next);
+        if !core.is_empty()
+            && core.chars().all(char::is_alphabetic)
+            && !NON_ADDRESSEE.contains(&core.as_str())
+        {
+            used += 1;
+        }
+    }
+    (Some(join_cores(&tokens[..used])), tokens[used..].join(" "))
+}
+
+/// Split a trailing sign-off ("… tomorrow thanks") off the utterance, returning
+/// the body plus the cue stripped of punctuation.
+fn split_signoff(text: &str) -> (String, Option<String>) {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let Some(len) = EMAIL_SIGNOFF_CUES.iter().find_map(|cue| {
+        let words: Vec<&str> = cue.split(' ').collect();
+        let at = tokens.len().checked_sub(words.len())?;
+        // The cue has to CLOSE the take with a body in front of it, and the word
+        // before it must not claim it as content.
+        (at > 0
+            && !NON_SIGNOFF_PRECEDERS.contains(&token_core(tokens[at - 1]).as_str())
+            && words
+                .iter()
+                .enumerate()
+                .all(|(i, w)| token_core(tokens[at + i]) == *w))
+        .then_some(words.len())
+    }) else {
+        return (text.to_string(), None);
+    };
+    let at = tokens.len() - len;
+    (tokens[..at].join(" "), Some(join_cores(&tokens[at..])))
+}
+
+/// Join tokens with the punctuation the ASR hung on them removed — a greeting or
+/// sign-off line supplies its own comma.
+fn join_cores(tokens: &[&str]) -> String {
+    tokens
+        .iter()
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Capitalize the first alphabetic character; leaves the rest untouched.
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -2312,11 +2591,25 @@ mod tests {
         // …and the pipeline honours that gate end to end.
         let raw = "print open paren value close paren period";
         assert_eq!(
-            run_cleanup(raw, CleanupLevel::High, DictationMode::Code, no_dict, no_polish),
+            run_cleanup(
+                raw,
+                CleanupLevel::High,
+                DictationMode::Code,
+                Style::Default,
+                no_dict,
+                no_polish
+            ),
             raw
         );
         assert_eq!(
-            run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, no_polish),
+            run_cleanup(
+                raw,
+                CleanupLevel::High,
+                DictationMode::Notes,
+                Style::Default,
+                no_dict,
+                no_polish
+            ),
             "print (value)."
         );
     }
@@ -2370,6 +2663,7 @@ mod tests {
             raw,
             CleanupLevel::None,
             DictationMode::Notes,
+            Style::Default,
             |_t| "REWRITTEN".to_string(),
             |_t| Some("POLISHED".to_string()),
         );
@@ -2394,7 +2688,14 @@ mod tests {
         };
         // Raw has: a dictionary miss (Drivea), a filler (um), and list intent.
         let raw = "um first, ship Drivea, second, buy eggs";
-        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, dict, llm);
+        let out = run_cleanup(
+            raw,
+            CleanupLevel::High,
+            DictationMode::Notes,
+            Style::Default,
+            dict,
+            llm,
+        );
 
         // Dictionary ran before the LLM stage (stages 1 → 4 ordering).
         assert_eq!(*order.borrow(), vec!["dictionary", "llm"]);
@@ -2410,10 +2711,24 @@ mod tests {
     fn cleanup_level_gates_which_stages_run() {
         let raw = "um first, buy milk, second, buy eggs";
         // Light: backtrack runs (filler removed) but NOT list formatting.
-        let light = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
+        let light = run_cleanup(
+            raw,
+            CleanupLevel::Light,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_eq!(light, "first, buy milk, second, buy eggs");
         // Medium: formatting also runs → numbered list.
-        let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, no_polish);
+        let medium = run_cleanup(
+            raw,
+            CleanupLevel::Medium,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_eq!(medium, "1. Buy milk\n2. Buy eggs");
     }
 
@@ -2424,7 +2739,14 @@ mod tests {
         // Light cleanup dropped the filler → raw differs → undo is offered, and
         // it hands back the VERBATIM raw (fillers included), not a re-clean.
         let raw = "um the report is uh done";
-        let polished = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
+        let polished = run_cleanup(
+            raw,
+            CleanupLevel::Light,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_ne!(polished, raw);
         assert_eq!(undo_ai_edit_text(&polished, Some(raw)), Some(raw));
     }
@@ -2434,11 +2756,25 @@ mod tests {
         // Auto-Cleanup = None is a verbatim passthrough, so there is nothing to
         // undo — the tray item / shortcut / history button must stay disabled.
         let raw = "the report is done";
-        let polished = run_cleanup(raw, CleanupLevel::None, DictationMode::Notes, no_dict, no_polish);
+        let polished = run_cleanup(
+            raw,
+            CleanupLevel::None,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_eq!(polished, raw);
         assert_eq!(undo_ai_edit_text(&polished, Some(raw)), None);
         // Same when every enabled stage was a no-op on already-clean text.
-        let clean = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, no_polish);
+        let clean = run_cleanup(
+            raw,
+            CleanupLevel::Light,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_eq!(undo_ai_edit_text(&clean, Some(raw)), None);
     }
 
@@ -2586,17 +2922,205 @@ mod tests {
         // that returns None keeps the pre-LLM (formatted) result. That is the
         // whole contract `polish.rs` fails closed into (YV61).
         let raw = "first, buy milk, second, buy eggs";
-        let out = run_cleanup(raw, CleanupLevel::High, DictationMode::Notes, no_dict, no_polish);
+        let out = run_cleanup(
+            raw,
+            CleanupLevel::High,
+            DictationMode::Notes,
+            Style::Default,
+            no_dict,
+            no_polish,
+        );
         assert_eq!(out, "1. Buy milk\n2. Buy eggs");
         // An LLM stage that erroneously returns empty is ignored (guarded).
         let out2 = run_cleanup(
             raw,
             CleanupLevel::High,
             DictationMode::Notes,
+            Style::Default,
             no_dict,
             |_t| Some("   ".to_string()),
         );
         assert_eq!(out2, "1. Buy milk\n2. Buy eggs");
     }
-}
 
+    // --- Email shape + tone dial (YV62, R13/R14) --------------------------
+
+    /// The rules stage at Medium — the LLM is off, which is the default, and R13
+    /// and R14 have to hold anyway.
+    fn rules(raw: &str, mode: DictationMode, style: Style) -> String {
+        run_cleanup(raw, CleanupLevel::Medium, mode, style, no_dict, no_polish)
+    }
+
+    /// Content words only: what R14 is forbidden to change.
+    fn content(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+
+    #[test]
+    fn email_greeting_gets_its_own_line_and_blank_line() {
+        // R13 [REP]: Gmail gets "Hello Jordan," on its own line; the body starts
+        // a paragraph under it.
+        assert_eq!(
+            rules(
+                "hey Jordan quick update the build is green",
+                DictationMode::Email,
+                Style::Default
+            ),
+            "Hey Jordan,\n\nQuick update the build is green"
+        );
+        // No addressee: the cue alone is the greeting line, the body is intact.
+        assert_eq!(
+            rules(
+                "hi can you review the deck before standup",
+                DictationMode::Email,
+                Style::Default
+            ),
+            "Hi,\n\nCan you review the deck before standup"
+        );
+        // The shape is Email's alone — Chat keeps the one-liner it dictated.
+        let chat = "hey Jordan quick update the build is green";
+        assert_eq!(rules(chat, DictationMode::Chat, Style::Default), chat);
+    }
+
+    #[test]
+    fn email_signoff_gets_its_own_line() {
+        // R13: the cue closes the mail on its own comma-terminated line, with a
+        // blank line above it.
+        assert_eq!(
+            rules(
+                "the numbers are attached and I will send the deck tomorrow thanks",
+                DictationMode::Email,
+                Style::Default
+            ),
+            "the numbers are attached and I will send the deck tomorrow\n\nThanks,"
+        );
+        // Greeting and sign-off together: three blocks, nothing else moved.
+        assert_eq!(
+            rules(
+                "hey Jordan the build is green talk soon",
+                DictationMode::Email,
+                Style::Default
+            ),
+            "Hey Jordan,\n\nThe build is green\n\nTalk soon,"
+        );
+        // Conservative in the other direction: a cue that is CONTENT is content.
+        for prose in [
+            "we should give it our best and ship it",
+            "thanks for turning the file around so fast",
+        ] {
+            assert_eq!(
+                rules(prose, DictationMode::Email, Style::Default),
+                prose,
+                "{prose:?} was re-cut"
+            );
+        }
+    }
+
+    #[test]
+    fn tone_formal_vs_very_casual_differ_only_in_caps_and_punctuation() {
+        // R14 [DOC]: the differential test IS the acceptance criterion — the dial
+        // may not touch word choice, grammar or content.
+        for (raw, mode) in [
+            ("sounds good to me.", DictationMode::Chat),
+            (
+                "I pushed the fix and the build is green.",
+                DictationMode::Notes,
+            ),
+            (
+                "hey Jordan the deck is attached thanks.",
+                DictationMode::Email,
+            ),
+        ] {
+            let formal = rules(raw, mode, Style::Formal);
+            let very_casual = rules(raw, mode, Style::VeryCasual);
+            assert_eq!(
+                content(&formal),
+                content(&very_casual),
+                "the dial changed the words of {raw:?}"
+            );
+        }
+        // …and it is not a no-op: on a short message the two dial positions do
+        // differ, in exactly one character.
+        let formal = rules("sounds good to me.", DictationMode::Chat, Style::Formal);
+        let very_casual = rules("sounds good to me.", DictationMode::Chat, Style::VeryCasual);
+        assert_eq!(formal, "sounds good to me.");
+        assert_eq!(very_casual, "sounds good to me");
+    }
+
+    #[test]
+    fn tone_formal_keeps_trailing_period_in_chat() {
+        // R14 [DOC]: Formal never strips, even on the surface R3 is written for.
+        assert_eq!(
+            rules("sounds good to me.", DictationMode::Chat, Style::Formal),
+            "sounds good to me."
+        );
+        // The dial positions R3 documents, on the same input.
+        assert_eq!(
+            rules("sounds good to me.", DictationMode::Chat, Style::Default),
+            "sounds good to me"
+        );
+        // Default is messaging-only; Casual widens it to every app.
+        assert_eq!(
+            rules("sounds good to me.", DictationMode::Notes, Style::Default),
+            "sounds good to me."
+        );
+        assert_eq!(
+            rules("sounds good to me.", DictationMode::Notes, Style::Casual),
+            "sounds good to me"
+        );
+        // Only a period — a question or an exclamation is the speaker's.
+        for kept in ["are we still on?", "ship it!"] {
+            assert_eq!(rules(kept, DictationMode::Chat, Style::VeryCasual), kept);
+        }
+        // Casual keeps the length limit; Very Casual drops it.
+        let long = "the build is green. I pushed the fix. review it when you can.";
+        assert_eq!(rules(long, DictationMode::Chat, Style::Casual), long);
+        assert_eq!(
+            rules(long, DictationMode::Chat, Style::VeryCasual),
+            "the build is green. I pushed the fix. review it when you can"
+        );
+        // `Code`/`Plain` stay verbatim whatever the dial says.
+        for verbatim in [DictationMode::Code, DictationMode::Plain] {
+            assert_eq!(
+                rules("value = compute().", verbatim, Style::VeryCasual),
+                "value = compute()."
+            );
+        }
+    }
+
+    #[test]
+    fn tone_dial_parses_both_spellings_and_defaults() {
+        // The Settings/corpus spelling and the prompt tag are the same position.
+        assert_eq!(Style::from_setting("very_casual"), Style::VeryCasual);
+        assert_eq!(Style::from_setting("Very Casual"), Style::VeryCasual);
+        assert_eq!(Style::from_setting("formal"), Style::Formal);
+        // Unset, blank or unknown is the documented default.
+        for unset in ["", "   ", "bogus"] {
+            assert_eq!(Style::from_setting(unset), Style::Default);
+        }
+        assert_eq!(Style::default(), Style::Default);
+        // The tag is what `yap-polish`'s `style_overlay` matches on.
+        assert_eq!(Style::VeryCasual.tag(), "very casual");
+        assert_eq!(Style::Default.tag(), "default");
+    }
+
+    #[test]
+    fn email_shape_never_re_cuts_text_that_already_has_one() {
+        // A rendered list, or a spoken "new paragraph", carries its own shape.
+        let list = "My top goals this week are:\n1. Finish the report\n2. Send the presentation";
+        assert_eq!(format_email_shape(list), list);
+        // A take with neither cue is returned byte for byte.
+        let prose = "the migration landed and the dashboard is quicker";
+        assert_eq!(format_email_shape(prose), prose);
+        // A greeting with nothing after it is not a shape either.
+        assert_eq!(format_email_shape("hey"), "hey");
+        // The sign-off predicate the signature stage keys off (R13).
+        assert!(ends_with_signoff_line("Body text\n\nThanks,"));
+        assert!(ends_with_signoff_line("Best regards,"));
+        assert!(!ends_with_signoff_line("Thanks for the review"));
+        assert!(!ends_with_signoff_line(""));
+    }
+}

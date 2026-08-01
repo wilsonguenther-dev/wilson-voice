@@ -17,10 +17,11 @@
 //! `expect_rules` is therefore the output of the pipeline with the LLM stage
 //! injected as a no-op, for EVERY case: it stays meaningful once a model is
 //! installed, and it records — honestly, with a note — what the rules stage does
-//! today for the rules that are specified but not yet built (R3/R4/R6, and the
-//! email/tone work of the next item). Those cases carry `owner: "pending"`, and a
-//! rules change that closes the gap fails `fixtures_rules_corpus_matches_expected`
-//! loudly, which is exactly what a golden corpus is for.
+//! today for the rules that are specified but not yet built (R4/R6, and R12's
+//! paragraph segmentation). Those cases carry `owner: "pending"`, and a rules
+//! change that closes the gap fails `fixtures_rules_corpus_matches_expected`
+//! loudly, which is exactly what a golden corpus is for — YV62 closing R3/R13/R14
+//! is what moved those cases to `owner: "rules"`.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -29,7 +30,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use wilson_voice_lib::dictation::{self, CleanupLevel, DictationMode};
+use wilson_voice_lib::dictation::{self, CleanupLevel, DictationMode, Style};
 use wilson_voice_lib::polish;
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,12 @@ fn mode_of(case: &Case) -> DictationMode {
     }
 }
 
+/// The case's tone-dial position (R14). `Style::from_setting` accepts the
+/// corpus's `very_casual` spelling as well as the prompt tag `very casual`.
+fn style_of(case: &Case) -> Style {
+    Style::from_setting(&case.style)
+}
+
 fn level_of(case: &Case) -> CleanupLevel {
     assert!(
         matches!(case.level.as_str(), "none" | "light" | "medium" | "high"),
@@ -154,6 +161,7 @@ fn pipeline(case: &Case, polish: impl Fn(&str) -> Option<String>) -> String {
         &case.input,
         level_of(case),
         mode_of(case),
+        style_of(case),
         |t| t.to_string(),
         polish,
     );
@@ -172,7 +180,10 @@ fn rules_output(case: &Case) -> String {
 /// (`PolishConfig::default().model == ""`).
 fn full_output(case: &Case) -> String {
     let mode = mode_of(case);
-    let config = polish::PolishConfig::default();
+    let config = polish::PolishConfig {
+        style: style_of(case),
+        ..Default::default()
+    };
     pipeline(case, |text| polish::polish_llm(text, mode, &config))
 }
 
@@ -388,8 +399,8 @@ fn fixtures_corpus_is_well_formed() {
             case.id,
             case.style
         );
-        // Parsing is the assertion for these two.
-        let _ = (mode_of(case), level_of(case));
+        // Parsing is the assertion for these three.
+        let _ = (mode_of(case), level_of(case), style_of(case));
         assert!(!shapes_of(case).is_empty(), "{}: declares no shape predicate", case.id);
         // A case whose every word is consumable or declared-dropped would make
         // `fixtures_never_lose_text` vacuously true for it.
