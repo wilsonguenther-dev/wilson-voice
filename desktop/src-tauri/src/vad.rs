@@ -377,31 +377,52 @@ pub fn model_path(data_dir: &Path) -> PathBuf {
 }
 
 /// Direct (NON-HuggingFace, per YV20) URL for the small Silero VAD ONNX model.
-/// Pinned to the **v4** release: that is the graph `vad-rs` drives (inputs
-/// `input`/`sr`/`h`/`c`) and it is byte-identical to the model Handy ships.
-const MODEL_URL: &str = "https://github.com/snakers4/silero-vad/raw/v4.0/files/silero_vad.onnx";
+/// The graph is the **v4** release — the one `vad-rs` drives (inputs
+/// `input`/`sr`/`h`/`c`), byte-identical to the model Handy ships.
+///
+/// YV45: the path is the immutable COMMIT the `v4.0` tag points at, not the tag
+/// itself. A tag can be moved; a commit sha cannot, so the URL and the hash
+/// below describe exactly one artifact forever.
+const SILERO_MODEL_URL: &str = "https://github.com/snakers4/silero-vad/raw/915dd3d639b8333a52e001af095f87c5b7f1e0ac/files/silero_vad.onnx";
 /// sha256 of that exact file — the trust anchor, same posture as the ASR model
 /// catalog. A wrong-version model is what made the old tract path fail forever,
-/// so it is checked before the file is ever installed.
-const MODEL_SHA256: &str = "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28";
+/// so it is checked before the file is ever installed AND every time a cached
+/// copy is picked up.
+const SILERO_MODEL_SHA256: &str =
+    "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28";
+
+/// The already-downloaded model — but only while it still hashes to
+/// [`SILERO_MODEL_SHA256`] (YV45). This is the same rule `models::download_file`
+/// applies to an ASR model already on disk: what is trusted is the pin, not the
+/// filename. A truncated, edited or older file is deleted and re-fetched rather
+/// than handed to the ONNX runtime. ~1.8 MB to hash, off the hot path.
+fn cached_model(path: &Path) -> Option<PathBuf> {
+    if !path.is_file() {
+        return None;
+    }
+    match models::verify_sha256(path, SILERO_MODEL_SHA256) {
+        Ok(()) => Some(path.to_path_buf()),
+        Err(e) => {
+            log::warn!("YV45 cached silero model rejected, re-fetching: {e}");
+            let _ = std::fs::remove_file(path);
+            None
+        }
+    }
+}
 
 /// Ensure the Silero VAD model is cached under Application Support, returning
-/// its path when present. Downloads ONCE via the system `curl` from a direct URL
-/// if missing (best-effort, offline-safe: on any failure we return `None` and
-/// the pipeline falls back to the energy VAD). After the first success it is
-/// OFFLINE forever — the cached file is used and never re-fetched. Call off the
-/// hot path (e.g. the startup background thread).
+/// its path when present. Downloads ONCE via the system `curl` from a pinned
+/// direct URL if missing (best-effort, offline-safe: on any failure we return
+/// `None` and the pipeline falls back to the energy VAD). After the first
+/// success it is OFFLINE forever — the verified cached file is used and never
+/// re-fetched. Call off the hot path (e.g. the startup background thread).
 pub fn ensure_model(data_dir: &Path) -> Option<PathBuf> {
     let path = model_path(data_dir);
     // Existing installs cached the unusable v5 graph (YV29) — drop it rather
     // than leave 2 MB of dead weight in Application Support forever.
     let _ = std::fs::remove_file(data_dir.join("models").join("silero_vad.onnx"));
-    if path.exists()
-        && std::fs::metadata(&path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false)
-    {
-        return Some(path);
+    if let Some(verified) = cached_model(&path) {
+        return Some(verified);
     }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -415,12 +436,12 @@ pub fn ensure_model(data_dir: &Path) -> Option<PathBuf> {
             "30",
             "-o",
             &tmp.to_string_lossy(),
-            MODEL_URL,
+            SILERO_MODEL_URL,
         ])
         .status();
     match status {
         Ok(s) if s.success() => {
-            if let Err(e) = models::verify_sha256(&tmp, MODEL_SHA256) {
+            if let Err(e) = models::verify_sha256(&tmp, SILERO_MODEL_SHA256) {
                 let _ = std::fs::remove_file(&tmp);
                 log::warn!("YV36 silero model rejected: {e}");
                 return None;
@@ -662,6 +683,65 @@ mod tests {
         // the energy-VAD gate decides, and ASR still sees the full audio.
         let buf = vec![0.3f32; 800];
         assert_eq!(trim_to_voiced(&buf, &[], PAD_FRAMES * FR), buf);
+    }
+
+    #[test]
+    fn silero_model_is_pinned_to_one_immutable_artifact() {
+        // YV45 supply chain: the model is fetched over the network and then run
+        // as an inference graph in-process, so BOTH halves of the pin have to
+        // stay exact — a commit-sha URL (never `master`/a tag/a branch) and a
+        // full lowercase sha256 to check the bytes against.
+        assert!(
+            SILERO_MODEL_URL.starts_with("https://"),
+            "model must be fetched over TLS: {SILERO_MODEL_URL}"
+        );
+        let rev = SILERO_MODEL_URL
+            .split("/raw/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .expect("URL carries a /raw/<rev>/ segment");
+        assert_eq!(
+            rev.len(),
+            40,
+            "URL must pin a 40-char commit sha, got a moving ref: {rev}"
+        );
+        assert!(
+            rev.chars().all(|c| c.is_ascii_hexdigit()),
+            "URL must pin a commit sha, got: {rev}"
+        );
+
+        assert_eq!(
+            SILERO_MODEL_SHA256.len(),
+            64,
+            "sha256 must be 64 hex chars: {SILERO_MODEL_SHA256}"
+        );
+        assert!(
+            SILERO_MODEL_SHA256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "sha256 must be lowercase hex: {SILERO_MODEL_SHA256}"
+        );
+    }
+
+    #[test]
+    fn cached_model_with_the_wrong_bytes_is_deleted_not_loaded() {
+        // The trust rule: a file already on disk is only used while it still
+        // hashes to the pin. An impostor must be rejected AND removed, so the
+        // next `ensure_model` re-fetches instead of loading it forever (the old
+        // check was size > 0, which any 20 bytes of garbage passed).
+        let data_dir = std::env::temp_dir().join(format!(
+            "yap-vad-pin-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = model_path(&data_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("scratch dir");
+        std::fs::write(&path, b"not the silero graph").expect("write impostor");
+
+        assert!(cached_model(&path).is_none(), "impostor must be rejected");
+        assert!(!path.exists(), "impostor must be deleted, not left cached");
+        assert!(cached_model(&path).is_none(), "absent model is not cached");
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[test]
