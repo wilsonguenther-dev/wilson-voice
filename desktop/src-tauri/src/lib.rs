@@ -260,6 +260,14 @@ struct AppState {
     tray_dictation: PLMutex<Option<MenuItem<Wry>>>,
     /// The Hands-free check item (check follows the `hands_free` latch).
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
+    /// YV51 — the "Undo AI Edit" item; its enabled state follows `undo_available`.
+    tray_paste_raw: PLMutex<Option<MenuItem<Wry>>>,
+    /// YV51 — does the newest take have a raw transcript that differs from the
+    /// polished text that was pasted? Gates the "Undo AI Edit" tray item and
+    /// ⌃⌘Z, so the action is only offered when there IS an AI edit to undo.
+    /// Cached (seeded at startup, rewritten as each take lands) so `sync_tray`
+    /// never touches the DB on a state transition.
+    undo_available: PLMutex<bool>,
     /// YV43 — latest Secure Input watchdog snapshot. Written ONLY by the
     /// watchdog thread on an edge; read by every `build_status`, so the pill,
     /// the banner and the tray tooltip all agree.
@@ -390,11 +398,19 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let secure_input_blocked = state.secure_input.lock().blocked;
     let dictation = state.tray_dictation.lock().clone();
     let hf_item = state.tray_hands_free.lock().clone();
+    let raw_item = state.tray_paste_raw.lock().clone();
+    let undo_available = *state.undo_available.lock();
     let tray = state.tray.lock().clone();
     if dictation.is_none() && hf_item.is_none() && tray.is_none() {
         return; // tray not built yet (early startup emit)
     }
     let _ = app.run_on_main_thread(move || {
+        // YV51: "Undo AI Edit" is greyed out unless the newest take actually has
+        // a raw that differs from what was pasted — an always-enabled item that
+        // silently does nothing is worse than a disabled one.
+        if let Some(item) = raw_item {
+            let _ = item.set_enabled(undo_available);
+        }
         if let Some(item) = dictation {
             let _ = item.set_text(if recording {
                 "Stop Dictation"
@@ -953,6 +969,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 } else {
                     *state2.last_error.lock() = None;
                 }
+                // YV51: this take is now the newest, so it decides whether
+                // "Undo AI Edit" has anything to undo. The tray item picks the
+                // new value up from the `emit_status` at the end of the take.
+                *state2.undo_available.lock() =
+                    dictation::undo_ai_edit_text(&entry.text, entry.raw_text.as_deref()).is_some();
                 let _ = app2.emit("transcript", &entry);
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 let _ = app2.emit(
@@ -1431,6 +1452,44 @@ fn paste_last_transcript(app: &AppHandle, state: &AppState) {
     });
 }
 
+/// YV51 "Undo AI edit" — re-paste the RAW take over the polished one the user
+/// just got. Backs the tray "Undo AI Edit" item and the global ⌃⌘Z shortcut.
+///
+/// Reads the newest row and hands the pair to [`dictation::undo_ai_edit_text`],
+/// which is the single source of truth for "is there an edit to undo?" (the same
+/// rule the tray enabled-state and the history button use). A `None` verdict is
+/// a logged no-op — never a paste — so this can't blank the user's text when
+/// Auto-Cleanup is off or the row predates the raw column. Like
+/// `paste_last_transcript` the ⌘V hop blocks the main thread, so the paste MUST
+/// run off-main via `spawn_blocking`, and no new history row is inserted.
+fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
+    let entry = match state.db.list_transcripts(1, None) {
+        Ok(entries) => entries.into_iter().next(),
+        Err(err) => {
+            log::warn!("undo ai edit: db read failed: {err}");
+            return;
+        }
+    };
+    let Some(entry) = entry else {
+        log::info!("undo ai edit: history is empty");
+        return;
+    };
+    let Some(raw) = dictation::undo_ai_edit_text(&entry.text, entry.raw_text.as_deref()) else {
+        log::info!("undo ai edit: raw matches the pasted text — nothing to undo");
+        return;
+    };
+    let raw = raw.to_string();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Explicit re-paste: the current frontmost app is the intended target,
+        // so pass `None` (the YV21 source-app guard does not apply here).
+        let o = paste::copy_and_maybe_paste(&app, &raw, true, None);
+        if !o.copied {
+            log::warn!("undo ai edit failed: {}", o.message);
+        }
+    });
+}
+
 #[tauri::command]
 async fn paste_entry(app: AppHandle, text: String) -> Result<String, String> {
     // MUST be async → runs OFF the main thread. copy_and_maybe_paste hops to the
@@ -1882,6 +1941,8 @@ pub fn run() {
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
+        tray_paste_raw: PLMutex::new(None),
+        undo_available: PLMutex::new(false),
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
         vad: PLMutex::new(None),
         paste_generation: AtomicU64::new(0),
@@ -1978,6 +2039,18 @@ pub fn run() {
                             }
                             return;
                         }
+                        // YV51 ⌃⌘Z — Undo AI edit: re-paste the raw take over
+                        // the polished one. Inert (logged no-op) when the raw
+                        // matches what was pasted.
+                        let undo_sc =
+                            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyZ);
+                        if shortcut == &undo_sc {
+                            if event.state == ShortcutState::Pressed {
+                                log::info!("⌃⌘Z pressed — undo ai edit (paste raw)");
+                                paste_raw_last_transcript(app, &state);
+                            }
+                            return;
+                        }
                         // Legacy secondary: ⌘⇧V (only if keep_cmd_shift_v)
                         if !state.settings.lock().keep_cmd_shift_v {
                             return;
@@ -2071,6 +2144,16 @@ pub fn run() {
             // driveable from the toolbar as well as the pill + hotkey (YV26).
             // `toggle` label + `hands_free` check are refreshed live by sync_tray.
             let recording_now = *state.recording.lock();
+            // YV51: seed the "Undo AI Edit" guard from the newest stored take so
+            // the item is correctly enabled/disabled on launch, not only after
+            // the first dictation of the session.
+            *state.undo_available.lock() = state
+                .db
+                .list_transcripts(1, None)
+                .ok()
+                .and_then(|e| e.into_iter().next())
+                .map(|e| dictation::undo_ai_edit_text(&e.text, e.raw_text.as_deref()).is_some())
+                .unwrap_or(false);
             let dictation_i = MenuItem::with_id(
                 app,
                 "toggle",
@@ -2100,6 +2183,16 @@ pub fn run() {
                 true,
                 Some("Ctrl+Cmd+V"),
             )?;
+            // YV51 "Undo AI Edit" (⌃⌘Z) — re-pastes the RAW take over the
+            // polished one. Starts disabled and is enabled by `sync_tray` only
+            // when the newest take's raw actually differs from what was pasted.
+            let paste_raw_i = MenuItem::with_id(
+                app,
+                "paste_raw",
+                "Undo AI Edit (Paste Raw)",
+                *state.undo_available.lock(),
+                Some("Ctrl+Cmd+Z"),
+            )?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
@@ -2118,6 +2211,7 @@ pub fn run() {
                 &[
                     &dictation_i,
                     &paste_last_i,
+                    &paste_raw_i,
                     &sep1,
                     &hands_free_i,
                     &sep2,
@@ -2133,6 +2227,7 @@ pub fn run() {
             // Keep handles so state transitions can reflect into the dropdown.
             *state.tray_dictation.lock() = Some(dictation_i);
             *state.tray_hands_free.lock() = Some(hands_free_i);
+            *state.tray_paste_raw.lock() = Some(paste_raw_i);
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -2174,6 +2269,9 @@ pub fn run() {
                         }
                         "paste_last" => {
                             paste_last_transcript(app, &state);
+                        }
+                        "paste_raw" => {
+                            paste_raw_last_transcript(app, &state);
                         }
                         "shortcuts" => {
                             // Open Settings and hint the Shortcut sub-tab.
@@ -2362,6 +2460,18 @@ pub fn run() {
                     match h.global_shortcut().register(paste_sc) {
                         Ok(()) => log::info!("⌃⌘V paste-last registered"),
                         Err(e) => log::warn!("⌃⌘V register failed: {e}"),
+                    }
+                    // YV51 ⌃⌘Z — Undo AI edit (paste the raw take). Also
+                    // registered unconditionally so the tray item's accelerator
+                    // fires system-wide. ⌃⌘Z is free on macOS (undo is ⌘Z and
+                    // redo is ⇧⌘Z), so it does not shadow an app shortcut; if
+                    // another app has claimed it, registration fails loudly here
+                    // and the tray item still works.
+                    let undo_sc =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyZ);
+                    match h.global_shortcut().register(undo_sc) {
+                        Ok(()) => log::info!("⌃⌘Z undo-ai-edit registered"),
+                        Err(e) => log::warn!("⌃⌘Z register failed: {e}"),
                     }
                     if !st.settings.lock().keep_cmd_shift_v {
                         log::info!("⌘⇧V secondary disabled");

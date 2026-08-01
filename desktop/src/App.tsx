@@ -151,6 +151,25 @@ interface TranscriptEntry {
   wordCount: number;
   createdAt: string;
   sourceApp?: string | null;
+  /**
+   * YV10 — the verbatim ASR transcript before the cleanup pipeline. `text` is
+   * the polished result that got pasted. Null only for legacy rows written
+   * before the column existed. Powers the YV51 "Paste raw" / undo action.
+   */
+  rawText?: string | null;
+}
+
+/**
+ * YV51 — the raw take to re-paste for "Undo AI edit", or null when there is no
+ * AI edit to undo (no stored raw, a blank raw, or a raw that matches what was
+ * pasted). Mirrors `dictation::undo_ai_edit_text` in the Rust pipeline — same
+ * trimmed comparison — so the button, the tray item and ⌃⌘Z agree on when the
+ * action is live.
+ */
+function undoAiEditText(e: TranscriptEntry): string | null {
+  const raw = e.rawText;
+  if (!raw || !raw.trim() || raw.trim() === e.text.trim()) return null;
+  return raw;
 }
 
 interface Insights {
@@ -1365,6 +1384,20 @@ export default function App() {
                             >
                               Paste
                             </button>
+                            {/* YV51: only offered when the cleanup pipeline
+                                actually changed this take — otherwise "Paste
+                                raw" would be a duplicate of Paste. */}
+                            {undoAiEditText(e) && (
+                              <button
+                                className="ghost"
+                                title="Paste exactly what you said, before auto-cleanup"
+                                onClick={() =>
+                                  pasteText(undoAiEditText(e) as string)
+                                }
+                              >
+                                Paste raw
+                              </button>
+                            )}
                             <button
                               className="ghost"
                               onClick={() => startFix(e)}
@@ -2006,15 +2039,35 @@ export default function App() {
                     <p>
                       How much Yap tidies each transcript. None pastes your exact
                       words; higher levels drop “um”s, fix things you re-said,
-                      and format the result. Your words are never dropped.
+                      and format the result. Your words are never dropped — Yap
+                      keeps the raw take too, so you can undo the edit with
+                      ⌃⌘Z, the menu-bar “Undo AI Edit” item, or “Paste raw” in
+                      History.
                     </p>
                     <div className="profile-row">
+                      {/* YV51 — blurbs describe what each level ACTUALLY runs
+                          today. The local-LLM polish stage is still a no-op
+                          stub (dictation::polish_llm), so High currently
+                          behaves exactly like Medium and must say so rather
+                          than advertise an "AI polish" that never runs. */}
                       {(
                         [
-                          ["none", "None", "Exactly as spoken"],
-                          ["light", "Light", "Remove filler + fix re-dos"],
-                          ["medium", "Medium", "Light + smart formatting"],
-                          ["high", "High", "Medium + AI polish"],
+                          ["none", "None", "Exactly as spoken, word for word"],
+                          [
+                            "light",
+                            "Light",
+                            "Your dictionary words, minus “um”s and things you re-said",
+                          ],
+                          [
+                            "medium",
+                            "Medium",
+                            "Light, plus spoken lists become real lists",
+                          ],
+                          [
+                            "high",
+                            "High",
+                            "Same as Medium for now — the AI polish pass isn’t wired up yet",
+                          ],
                         ] as const
                       ).map(([id, label, blurb]) => (
                         <button
