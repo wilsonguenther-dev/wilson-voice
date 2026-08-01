@@ -52,6 +52,7 @@ pub trait Transcriber: Send + 'static {
         &mut self,
         samples_16k_mono: &[f32],
         language: Option<&str>,
+        bias_prompt: Option<&str>,
     ) -> Result<String, String>;
 }
 
@@ -60,8 +61,9 @@ impl Transcriber for asr_engine::AsrEngine {
         &mut self,
         samples_16k_mono: &[f32],
         language: Option<&str>,
+        bias_prompt: Option<&str>,
     ) -> Result<String, String> {
-        asr_engine::transcribe(self, samples_16k_mono, language)
+        asr_engine::transcribe(self, samples_16k_mono, language, bias_prompt)
     }
 }
 
@@ -296,7 +298,9 @@ impl TranscriptionManager {
     }
 
     /// Transcribe 16 kHz mono f32 samples with the warm engine. `language` is
-    /// the user's spoken-language ISO code, or `None` to autodetect.
+    /// the user's spoken-language ISO code, or `None` to autodetect;
+    /// `bias_prompt` is the YV47 dictionary bias (see
+    /// [`asr_engine::build_bias_prompt`]), or `None` for an unbiased decode.
     ///
     /// The engine is taken OUT of the mutex for the duration (no lock is held
     /// across the native call) and runs on its own thread so the wait can be
@@ -307,6 +311,7 @@ impl TranscriptionManager {
         &self,
         samples_16k_mono: Vec<f32>,
         language: Option<String>,
+        bias_prompt: Option<String>,
     ) -> Result<String, String> {
         self.touch();
         if samples_16k_mono.is_empty() {
@@ -324,7 +329,11 @@ impl TranscriptionManager {
             // Panic containment: on unwind the engine is dropped instead of
             // returned, so a poisoned native session is never reused.
             let sent = match catch_unwind(AssertUnwindSafe(|| {
-                engine.engine.transcribe(&samples_16k_mono, language.as_deref())
+                engine.engine.transcribe(
+                    &samples_16k_mono,
+                    language.as_deref(),
+                    bias_prompt.as_deref(),
+                )
             })) {
                 Ok(result) => (Some(engine), result),
                 Err(p) => (
@@ -414,6 +423,8 @@ mod tests {
         panics: bool,
         /// Language hint the manager handed to the engine on the last run.
         seen_language: Arc<Mutex<Option<String>>>,
+        /// YV47 dictionary bias prompt handed to the engine on the last run.
+        seen_prompt: Arc<Mutex<Option<String>>>,
     }
 
     impl Transcriber for StubEngine {
@@ -421,8 +432,10 @@ mod tests {
             &mut self,
             _samples: &[f32],
             language: Option<&str>,
+            bias_prompt: Option<&str>,
         ) -> Result<String, String> {
             *self.seen_language.lock() = language.map(str::to_string);
+            *self.seen_prompt.lock() = bias_prompt.map(str::to_string);
             if self.panics {
                 panic!("stub engine exploded");
             }
@@ -442,16 +455,23 @@ mod tests {
     }
 
     fn stub_loader(text: &'static str, delay: Duration, panics: bool) -> EngineLoader {
-        stub_loader_recording(text, delay, panics, Arc::new(Mutex::new(None)))
+        stub_loader_recording(
+            text,
+            delay,
+            panics,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+        )
     }
 
-    /// Same stub, but the caller keeps the handle the engine records its
-    /// language hint into.
+    /// Same stub, but the caller keeps the handles the engine records its
+    /// language hint and YV47 bias prompt into.
     fn stub_loader_recording(
         text: &'static str,
         delay: Duration,
         panics: bool,
         seen_language: Arc<Mutex<Option<String>>>,
+        seen_prompt: Arc<Mutex<Option<String>>>,
     ) -> EngineLoader {
         Arc::new(move |_path: &Path| {
             Ok(Box::new(StubEngine {
@@ -459,6 +479,7 @@ mod tests {
                 delay,
                 panics,
                 seen_language: seen_language.clone(),
+                seen_prompt: seen_prompt.clone(),
             }) as Box<dyn Transcriber>)
         })
     }
@@ -480,7 +501,7 @@ mod tests {
         assert!(!m.is_loaded());
         assert!(m.loaded_model().is_none());
         assert_eq!(
-            m.transcribe(vec![0.0; 16], None).unwrap_err(),
+            m.transcribe(vec![0.0; 16], None, None).unwrap_err(),
             "no ASR model is loaded"
         );
         let s = m.status();
@@ -492,7 +513,10 @@ mod tests {
             .expect("load");
         assert!(m.is_loaded());
         assert_eq!(m.loaded_model().as_deref(), Some("stub/model"));
-        assert_eq!(m.transcribe(vec![0.1; 16], None).unwrap(), "hello from the stub");
+        assert_eq!(
+            m.transcribe(vec![0.1; 16], None, None).unwrap(),
+            "hello from the stub"
+        );
         // Still warm after use — the engine is returned to the slot.
         assert!(m.is_loaded());
 
@@ -550,7 +574,7 @@ mod tests {
         );
         m.load("stub/model", &path).expect("load");
 
-        let err = m.transcribe(vec![0.2; 16], None).unwrap_err();
+        let err = m.transcribe(vec![0.2; 16], None, None).unwrap_err();
         assert!(err.contains("panicked"), "unexpected error: {err}");
         // A panicked engine is never put back — the next use reloads.
         assert!(!m.is_loaded());
@@ -568,7 +592,7 @@ mod tests {
         m.load("stub/model", &path).expect("load");
 
         let started = std::time::Instant::now();
-        let err = m.transcribe(vec![0.3; 16], None).unwrap_err();
+        let err = m.transcribe(vec![0.3; 16], None, None).unwrap_err();
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -589,13 +613,13 @@ mod tests {
             Duration::from_secs(5),
         );
         m.load("stub/model", &path).expect("load");
-        assert_eq!(m.transcribe(Vec::new(), None).unwrap(), "");
+        assert_eq!(m.transcribe(Vec::new(), None, None).unwrap(), "");
 
         // Using it across the idle window keeps it resident (each use touches
         // the idle timer), unlike the idle-unload test above.
         for _ in 0..6 {
             std::thread::sleep(Duration::from_millis(50));
-            assert_eq!(m.transcribe(vec![0.4; 8], None).unwrap(), "warm");
+            assert_eq!(m.transcribe(vec![0.4; 8], None, None).unwrap(), "warm");
         }
         assert!(m.is_loaded(), "an actively used engine must stay warm");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
@@ -609,17 +633,54 @@ mod tests {
         let path = stub_model_file("stub.gguf");
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let m = manager(
-            stub_loader_recording("hola", Duration::ZERO, false, seen.clone()),
+            stub_loader_recording(
+                "hola",
+                Duration::ZERO,
+                false,
+                seen.clone(),
+                Arc::new(Mutex::new(None)),
+            ),
             Duration::from_secs(60),
             Duration::from_secs(5),
         );
         m.load("stub/model", &path).expect("load");
 
-        m.transcribe(vec![0.5; 16], Some("es".into())).expect("run");
+        m.transcribe(vec![0.5; 16], Some("es".into()), None)
+            .expect("run");
         assert_eq!(seen.lock().as_deref(), Some("es"));
 
         // No selection stays on autodetect rather than forcing a language.
-        m.transcribe(vec![0.5; 16], None).expect("run");
+        m.transcribe(vec![0.5; 16], None, None).expect("run");
+        assert_eq!(*seen.lock(), None);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// YV47: the dictionary bias prompt has to survive the whole warm-engine
+    /// hand-off (lease → worker thread → engine), or starring a term does
+    /// nothing to the decode.
+    #[test]
+    fn bias_prompt_reaches_the_engine() {
+        let path = stub_model_file("stub.gguf");
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let m = manager(
+            stub_loader_recording(
+                "drivia",
+                Duration::ZERO,
+                false,
+                Arc::new(Mutex::new(None)),
+                seen.clone(),
+            ),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        m.load("stub/model", &path).expect("load");
+
+        m.transcribe(vec![0.5; 16], None, Some("Drivia, Jeisil".into()))
+            .expect("run");
+        assert_eq!(seen.lock().as_deref(), Some("Drivia, Jeisil"));
+
+        // An empty dictionary means an unbiased decode, not an empty prompt.
+        m.transcribe(vec![0.5; 16], None, None).expect("run");
         assert_eq!(*seen.lock(), None);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

@@ -73,10 +73,11 @@ fn run_transcribe(wav: &Path) -> Result<String, String> {
     // bounded transcribe) — one process, one transcription, then exit.
     let manager = TranscriptionManager::new();
     manager.load(&model_id, &model_path)?;
-    // Autodetect the language: the gate must transcribe the same way on any
-    // machine, so it deliberately does NOT read the app's language setting
-    // (unlike the model selection, which mirrors the app on purpose).
-    let text = manager.transcribe(samples, None)?;
+    // Autodetect the language and decode unbiased: the gate must transcribe the
+    // same way on any machine, so it deliberately does NOT read the app's
+    // language setting or its dictionary (unlike the model selection, which
+    // mirrors the app on purpose).
+    let text = manager.transcribe(samples, None, None)?;
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("empty transcript".into());

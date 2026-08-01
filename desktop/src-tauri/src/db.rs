@@ -45,6 +45,37 @@ pub struct DictEntry {
     pub preferred: Option<String>,
     pub hits: i64,
     pub created_at: DateTime<Utc>,
+    /// YV47 — "always bias": a starred term is pinned to the head of the
+    /// ranking, is never purged, and is the last thing dropped when the decoder
+    /// prompt is capped.
+    #[serde(default)]
+    pub starred: bool,
+}
+
+/// YV47 — a word Yap noticed the user fixing, waiting to be accepted into the
+/// dictionary. Learned only from an explicit "Fix transcription" edit, never
+/// from guessing at the clipboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictCandidate {
+    pub id: String,
+    /// The form the user actually wants.
+    pub term: String,
+    /// What ASR produced, when the fix REPLACED a word (`None` when the user
+    /// typed in a word that was missing entirely).
+    pub wrong: Option<String>,
+    /// How many separate corrections produced this candidate.
+    pub use_count: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// YV47 — one word changed by a "Fix transcription" edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Correction {
+    /// What ASR produced, or `None` for a word the user inserted.
+    pub wrong: Option<String>,
+    /// The form the user typed instead.
+    pub term: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +181,126 @@ fn extract_learnable_tokens(text: &str) -> Vec<String> {
     out.sort();
     out.dedup();
     out.into_iter().take(40).collect()
+}
+
+/// Most candidates a single "Fix transcription" edit may produce.
+const MAX_CORRECTIONS_PER_EDIT: usize = 20;
+/// Above this many tokens per side the O(n·m) alignment below stops being worth
+/// it; a dictation that long is not a "fix one word" edit anyway.
+const MAX_DIFF_TOKENS: usize = 800;
+
+/// The word part of a token — punctuation and quotes stripped from both ends,
+/// but internal `_` / `-` / digits kept so `snake_case` and `GPT-4` survive.
+fn bare_token(t: &str) -> &str {
+    t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+}
+
+/// Is this word worth putting in front of the user as a dictionary candidate?
+///
+/// Unlike the ASR-side [`is_jargon_token`] harvest — which must reject plain
+/// first-capitalized words because Whisper capitalizes every sentence start —
+/// this runs on text the user TYPED, so a proper noun ("Jeisil", "Drivia") is a
+/// deliberate signal and is kept. Common lowercase fixes ("teh" → "the") are
+/// still dropped: they are typos, not vocabulary.
+fn is_candidate_term(t: &str) -> bool {
+    let n = t.chars().count();
+    if !(2..=48).contains(&n) {
+        return false;
+    }
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let starts_upper = t.chars().next().is_some_and(char::is_uppercase);
+    is_jargon_token(t) || starts_upper
+}
+
+/// Diff a transcript against the user's corrected version and extract the words
+/// they actually changed (YV47).
+///
+/// Token-level LCS alignment: everything outside the common subsequence is a
+/// run of removals paired positionally with a run of insertions. A pair is a
+/// substitution (`wrong` = what ASR heard); a leftover insertion is a word the
+/// user added. Comparison is on the bare token and case-SENSITIVE, so a pure
+/// casing fix ("drivia" → "Drivia") still registers as a correction.
+pub fn diff_corrections(original: &str, corrected: &str) -> Vec<Correction> {
+    let a: Vec<&str> = original.split_whitespace().map(bare_token).collect();
+    let b: Vec<&str> = corrected.split_whitespace().map(bare_token).collect();
+    if a.len() > MAX_DIFF_TOKENS || b.len() > MAX_DIFF_TOKENS {
+        return Vec::new();
+    }
+
+    // LCS table over tokens (rows = original, cols = corrected).
+    let (n, m) = (a.len(), b.len());
+    let mut lcs = vec![0u32; (n + 1) * (m + 1)];
+    let at = |i: usize, j: usize| i * (m + 1) + j;
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[at(i, j)] = if a[i] == b[j] {
+                lcs[at(i + 1, j + 1)] + 1
+            } else {
+                lcs[at(i + 1, j)].max(lcs[at(i, j + 1)])
+            };
+        }
+    }
+
+    // Walk the table into an edit script (equal / removed / inserted).
+    enum Op<'t> {
+        Eq,
+        Del(&'t str),
+        Ins(&'t str),
+    }
+    let mut script: Vec<Op> = Vec::with_capacity(n + m);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            script.push(Op::Eq);
+            i += 1;
+            j += 1;
+        } else if lcs[at(i + 1, j)] >= lcs[at(i, j + 1)] {
+            script.push(Op::Del(a[i]));
+            i += 1;
+        } else {
+            script.push(Op::Ins(b[j]));
+            j += 1;
+        }
+    }
+    script.extend(a[i..].iter().map(|t| Op::Del(t)));
+    script.extend(b[j..].iter().map(|t| Op::Ins(t)));
+
+    // Each maximal non-equal run is one edit: removals paired positionally with
+    // insertions (substitutions), any surplus insertion being an added word.
+    let mut out: Vec<Correction> = Vec::new();
+    let mut removed: Vec<&str> = Vec::new();
+    let mut added: Vec<&str> = Vec::new();
+    let flush = |removed: &mut Vec<&str>, added: &mut Vec<&str>, out: &mut Vec<Correction>| {
+        for (k, term) in added.iter().enumerate() {
+            if !is_candidate_term(term) {
+                continue;
+            }
+            let wrong = removed.get(k).copied().filter(|w| !w.is_empty());
+            if wrong.is_some_and(|w| w == *term) {
+                continue; // nothing actually changed for this word
+            }
+            out.push(Correction {
+                wrong: wrong.map(str::to_string),
+                term: (*term).to_string(),
+            });
+        }
+        removed.clear();
+        added.clear();
+    };
+    for op in &script {
+        match op {
+            Op::Eq => flush(&mut removed, &mut added, &mut out),
+            Op::Del(t) => removed.push(t),
+            Op::Ins(t) => added.push(t),
+        }
+    }
+    flush(&mut removed, &mut added, &mut out);
+
+    out.dedup();
+    out.truncate(MAX_CORRECTIONS_PER_EDIT);
+    out
 }
 
 /// Distinguishes a genuinely corrupt DB (safe to quarantine + recreate) from a
@@ -281,6 +432,15 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_dictionary_term ON dictionary(term);
 
+            CREATE TABLE IF NOT EXISTS dict_candidates (
+              id TEXT PRIMARY KEY,
+              term TEXT NOT NULL UNIQUE COLLATE NOCASE,
+              wrong TEXT,
+              use_count INTEGER NOT NULL DEFAULT 1,
+              dismissed INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS scratchpad (
               id TEXT PRIMARY KEY,
               title TEXT NOT NULL DEFAULT 'Note',
@@ -330,6 +490,12 @@ impl Database {
             "ALTER TABLE dictionary ADD COLUMN source TEXT NOT NULL DEFAULT 'harvest'",
             [],
         );
+        // YV47: "always bias" flag. Starred terms head the ranking, survive the
+        // purge below, and are the last thing dropped from the decoder prompt.
+        let _ = conn.execute(
+            "ALTER TABLE dictionary ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         // Seed default dictionary terms useful for Wilson
         {
@@ -360,9 +526,11 @@ impl Database {
             let seeds: std::collections::HashSet<String> =
                 SEED_TERMS.iter().map(|s| s.to_lowercase()).collect();
             let mut junk: Vec<String> = Vec::new();
-            // Only 'harvest' rows are purge candidates — manual + seed are safe.
+            // Only unstarred 'harvest' rows are purge candidates — manual, seed
+            // and starred (YV47 always-bias) rows are safe.
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT id, term FROM dictionary WHERE source = 'harvest' AND preferred IS NULL",
+                "SELECT id, term FROM dictionary
+                 WHERE source = 'harvest' AND preferred IS NULL AND starred = 0",
             ) {
                 if let Ok(rows) = stmt.query_map([], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -607,31 +775,6 @@ impl Database {
         Ok(learned)
     }
 
-    /// Top-N dictionary terms by hit count, ordered so the MOST-frequent is LAST
-    /// (a decoder prompt weights later tokens more heavily).
-    ///
-    /// YV34 removed its only caller with the Python sidecar: that was the
-    /// `initial_prompt` vocabulary bias, and the embedded engine exposes no
-    /// prompt hook yet. The query + its test are kept intact so wiring one up is
-    /// a one-line change rather than a re-implementation; `apply_dictionary`
-    /// (post-ASR substitution) is unaffected and still runs on every take.
-    #[allow(dead_code)]
-    pub fn top_dictionary_terms(&self, limit: i64) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT term FROM dictionary ORDER BY hits DESC, created_at ASC LIMIT ?1")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![limit], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        let mut terms = Vec::new();
-        for r in rows {
-            terms.push(r.map_err(|e| e.to_string())?);
-        }
-        terms.reverse(); // most-frequent last
-        Ok(terms)
-    }
-
     pub fn list_transcripts(&self, limit: i64, query: Option<String>) -> Result<Vec<TranscriptEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let q = query.unwrap_or_default().trim().to_string();
@@ -719,12 +862,13 @@ impl Database {
         Ok(())
     }
 
+    /// Starred terms first (always-bias), then usage-ranked by hits (YV47).
     pub fn list_dictionary(&self) -> Result<Vec<DictEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, term, preferred, hits, created_at FROM dictionary
-                 ORDER BY hits DESC, term COLLATE NOCASE ASC",
+                "SELECT id, term, preferred, hits, created_at, starred FROM dictionary
+                 ORDER BY starred DESC, hits DESC, term COLLATE NOCASE ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -735,6 +879,7 @@ impl Database {
                     preferred: row.get(2)?,
                     hits: row.get(3)?,
                     created_at: parse_dt(row.get::<_, String>(4)?),
+                    starred: row.get::<_, i64>(5)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -760,6 +905,7 @@ impl Database {
             preferred,
             hits: 0,
             created_at: Utc::now(),
+            starred: false,
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -777,10 +923,219 @@ impl Database {
         Ok(entry)
     }
 
+    /// Edit an existing entry in place (YV47 dictionary editing). Renaming onto
+    /// another row's term is rejected by the UNIQUE index rather than silently
+    /// merging the two.
+    pub fn update_dictionary_term(
+        &self,
+        id: &str,
+        term: String,
+        preferred: Option<String>,
+    ) -> Result<(), String> {
+        let term = term.trim().to_string();
+        if term.is_empty() {
+            return Err("empty term".into());
+        }
+        let preferred = preferred
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE dictionary SET term = ?2, preferred = ?3, source = 'manual'
+                 WHERE id = ?1",
+                params![id, term, preferred],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("no such dictionary term".into());
+        }
+        Ok(())
+    }
+
+    /// Star / unstar a term (YV47). Starred terms are pinned to the head of the
+    /// ranking and always make it into the decoder prompt.
+    pub fn set_dictionary_starred(&self, id: &str, starred: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE dictionary SET starred = ?2 WHERE id = ?1",
+                params![id, i64::from(starred)],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("no such dictionary term".into());
+        }
+        Ok(())
+    }
+
     pub fn delete_dictionary_term(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM dictionary WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Terms to bias the decoder with, LEAST important first (YV47).
+    ///
+    /// Ordering is starred → hits → age, and the list is reversed so the most
+    /// important term is last: a Whisper prompt weights later tokens more, and
+    /// both our own cap ([`crate::asr_engine::build_bias_prompt`]) and
+    /// transcribe-cpp's own `max_prev_context_tokens` truncation drop from the
+    /// FRONT, so the tail is what always survives.
+    ///
+    /// A term with a `preferred` form yields that form — biasing the decoder
+    /// toward the misheard spelling would defeat the point.
+    pub fn bias_terms(&self, limit: i64) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(NULLIF(preferred, ''), term) FROM dictionary
+                 ORDER BY starred DESC, hits DESC, created_at ASC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut terms: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for r in rows {
+            let t = r.map_err(|e| e.to_string())?;
+            if seen.insert(t.to_lowercase()) {
+                terms.push(t);
+            }
+        }
+        terms.reverse(); // most-important last
+        Ok(terms)
+    }
+
+    /// Apply a user's "Fix transcription" edit (YV47): rewrite the stored
+    /// transcript and turn the words they changed into dictionary candidates.
+    ///
+    /// This is the honest auto-learn signal — an explicit correction of a known
+    /// transcript, not a guess at what happened in someone else's text field.
+    pub fn record_correction(
+        &self,
+        transcript_id: &str,
+        corrected: &str,
+    ) -> Result<Vec<Correction>, String> {
+        let corrected = corrected.trim();
+        if corrected.is_empty() {
+            return Err("empty correction".into());
+        }
+        let now = Utc::now().to_rfc3339();
+        let corrections = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let original: String = conn
+                .query_row(
+                    "SELECT text FROM transcripts WHERE id = ?1",
+                    params![transcript_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if original.trim() == corrected {
+                return Ok(Vec::new());
+            }
+            conn.execute(
+                "UPDATE transcripts SET text = ?2, word_count = ?3 WHERE id = ?1",
+                params![transcript_id, corrected, word_count(corrected)],
+            )
+            .map_err(|e| e.to_string())?;
+
+            let corrections = diff_corrections(&original, corrected);
+            for c in &corrections {
+                // Skip anything the dictionary already knows: an existing
+                // wrong→right rewrite, or a term already listed on its own.
+                let known: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM dictionary
+                         WHERE (?1 IS NOT NULL AND term = ?1 COLLATE NOCASE
+                                AND preferred = ?2 COLLATE NOCASE)
+                            OR (?1 IS NULL AND term = ?2 COLLATE NOCASE)",
+                        params![c.wrong, c.term],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if known > 0 {
+                    continue;
+                }
+                conn.execute(
+                    "INSERT INTO dict_candidates (id, term, wrong, use_count, dismissed, created_at)
+                     VALUES (?1, ?2, ?3, 1, 0, ?4)
+                     ON CONFLICT(term) DO UPDATE SET
+                       use_count = use_count + 1,
+                       dismissed = 0,
+                       wrong = COALESCE(excluded.wrong, dict_candidates.wrong)",
+                    params![Uuid::new_v4().to_string(), c.term, c.wrong, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            corrections
+        };
+        // The edit changed word_count, so the rollups have to be rebuilt.
+        self.recompute_daily_stats()?;
+        Ok(corrections)
+    }
+
+    /// Pending "Yap noticed: …" suggestions, most-corrected first (YV47).
+    pub fn list_dict_candidates(&self, limit: i64) -> Result<Vec<DictCandidate>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, term, wrong, use_count, created_at FROM dict_candidates
+                 WHERE dismissed = 0
+                 ORDER BY use_count DESC, created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(DictCandidate {
+                    id: row.get(0)?,
+                    term: row.get(1)?,
+                    wrong: row.get(2)?,
+                    use_count: row.get(3)?,
+                    created_at: parse_dt(row.get::<_, String>(4)?),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// Accept a candidate into the dictionary (YV47). A substitution becomes a
+    /// `wrong → right` rewrite rule; an inserted word becomes a bias-only term.
+    pub fn promote_dict_candidate(&self, id: &str) -> Result<DictEntry, String> {
+        let (term, wrong) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT term, wrong FROM dict_candidates WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .map_err(|e| e.to_string())?
+        };
+        let entry = match wrong {
+            Some(w) => self.add_dictionary_term(w, Some(term))?,
+            None => self.add_dictionary_term(term, None)?,
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM dict_candidates WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(entry)
+    }
+
+    /// Hide a suggestion without learning it (YV47). Kept (not deleted) so the
+    /// same word isn't re-suggested on the next correction.
+    pub fn dismiss_dict_candidate(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE dict_candidates SET dismissed = 1 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1413,7 +1768,7 @@ mod tests {
             );
         }
         // Most-frequent term is LAST (Whisper weights later prompt tokens more).
-        let top = db.top_dictionary_terms(50).unwrap();
+        let top = db.bias_terms(50).unwrap();
         assert_eq!(top.last().map(String::as_str), Some("RunPod"), "not most-frequent-last: {top:?}");
 
         drop(db);
@@ -1441,6 +1796,233 @@ mod tests {
             .iter()
             .any(|d| d.term.eq_ignore_ascii_case("Anthropic"));
         assert!(present, "manual term 'Anthropic' was wrongly purged");
+
+        drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── YV47 auto-learning dictionary ────────────────────────────────────────
+
+    /// The correction diff is the whole auto-learn signal: it must pull the
+    /// words the user actually changed out of an edit, and nothing else.
+    #[test]
+    fn correction_diff_extracts_candidates() {
+        // Substitution of a proper noun — the canonical "Yap misheard it" case.
+        let out = diff_corrections(
+            "ship the Divya release with Jason today",
+            "ship the Drivia release with Jeisil today",
+        );
+        assert_eq!(
+            out,
+            vec![
+                Correction {
+                    wrong: Some("Divya".into()),
+                    term: "Drivia".into()
+                },
+                Correction {
+                    wrong: Some("Jason".into()),
+                    term: "Jeisil".into()
+                },
+            ],
+            "substituted proper nouns not extracted: {out:?}"
+        );
+
+        // A word typed in where ASR dropped one is a candidate with no `wrong`.
+        let out = diff_corrections("deploy to today", "deploy to Supabase today");
+        assert_eq!(
+            out,
+            vec![Correction {
+                wrong: None,
+                term: "Supabase".into()
+            }]
+        );
+
+        // Casing counts (Whisper lowercases jargon constantly)…
+        let out = diff_corrections("run the runpod job", "run the RunPod job");
+        assert_eq!(
+            out,
+            vec![Correction {
+                wrong: Some("runpod".into()),
+                term: "RunPod".into()
+            }]
+        );
+
+        // …but ordinary typo fixes and punctuation churn are NOT vocabulary.
+        assert!(diff_corrections("teh cat sat", "the cat sat").is_empty());
+        assert!(diff_corrections("hello there", "hello, there.").is_empty());
+        assert!(diff_corrections("same text", "same text").is_empty());
+    }
+
+    /// End to end: fixing a transcript rewrites it and leaves suggestions that
+    /// can be accepted into the dictionary (or dismissed).
+    #[test]
+    fn correction_feeds_candidates_into_the_dictionary() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = db
+            .insert_transcript(
+                "meet Divya at noon".into(),
+                "native".into(),
+                1.0,
+                1.0,
+                4,
+                None,
+            )
+            .unwrap();
+
+        let learned = db
+            .record_correction(&entry.id, "meet Drivia at noon")
+            .unwrap();
+        assert_eq!(learned.len(), 1, "correction not mined: {learned:?}");
+
+        // The stored transcript is now the corrected text.
+        let stored = db.list_transcripts(10, None).unwrap();
+        assert_eq!(stored[0].text, "meet Drivia at noon");
+
+        let candidates = db.list_dict_candidates(10).unwrap();
+        let c = candidates
+            .iter()
+            .find(|c| c.term == "Drivia")
+            .expect("no 'Drivia' candidate");
+        assert_eq!(c.wrong.as_deref(), Some("Divya"));
+        assert_eq!(c.use_count, 1);
+
+        // The same correction again is the SAME candidate, ranked higher.
+        let entry2 = db
+            .insert_transcript(
+                "meet Divya again".into(),
+                "native".into(),
+                1.0,
+                1.0,
+                3,
+                None,
+            )
+            .unwrap();
+        db.record_correction(&entry2.id, "meet Drivia again")
+            .unwrap();
+        let c = db
+            .list_dict_candidates(10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.term == "Drivia")
+            .expect("candidate vanished on repeat");
+        assert_eq!(c.use_count, 2, "repeat correction did not raise use_count");
+
+        // Accepting it installs the Divya → Drivia rewrite and clears the suggestion.
+        db.promote_dict_candidate(&c.id).unwrap();
+        assert_eq!(db.apply_dictionary("meet Divya").unwrap(), "meet Drivia");
+        assert!(
+            !db.list_dict_candidates(10)
+                .unwrap()
+                .iter()
+                .any(|x| x.term == "Drivia"),
+            "promoted candidate still suggested"
+        );
+
+        // A known rewrite is never suggested again.
+        let entry3 = db
+            .insert_transcript("Divya ships".into(), "native".into(), 1.0, 1.0, 2, None)
+            .unwrap();
+        db.record_correction(&entry3.id, "Drivia ships").unwrap();
+        assert!(
+            !db.list_dict_candidates(10)
+                .unwrap()
+                .iter()
+                .any(|x| x.term == "Drivia"),
+            "already-learned rewrite was re-suggested"
+        );
+    }
+
+    /// Ranking is what actually reaches the decoder: starred terms outrank
+    /// everything, then usage, and the most important term is LAST.
+    #[test]
+    fn bias_ranking_puts_starred_terms_last() {
+        let db = Database::open_in_memory().unwrap();
+        // Three terms, hits ascending: rare < middling < frequent.
+        db.add_dictionary_term("Rare".into(), None).unwrap();
+        db.add_dictionary_term("Middling".into(), None).unwrap();
+        db.add_dictionary_term("Frequent".into(), None).unwrap();
+        for _ in 0..2 {
+            db.learn_from_transcript("Mid_dling").unwrap(); // jargon token, harvested
+        }
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("UPDATE dictionary SET hits = 9 WHERE term = 'Frequent'", [])
+                .unwrap();
+            conn.execute("UPDATE dictionary SET hits = 4 WHERE term = 'Middling'", [])
+                .unwrap();
+        }
+
+        let ranked = db.bias_terms(50).unwrap();
+        let pos = |t: &str| ranked.iter().position(|x| x == t).expect("term missing");
+        assert!(
+            pos("Rare") < pos("Middling"),
+            "usage ranking wrong: {ranked:?}"
+        );
+        assert!(
+            pos("Middling") < pos("Frequent"),
+            "usage ranking wrong: {ranked:?}"
+        );
+
+        // Starring the LEAST-used term pins it past everything else.
+        let rare = db
+            .list_dictionary()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.term == "Rare")
+            .unwrap();
+        db.set_dictionary_starred(&rare.id, true).unwrap();
+        assert!(
+            db.list_dictionary()
+                .unwrap()
+                .first()
+                .is_some_and(|d| d.term == "Rare" && d.starred),
+            "starred term is not at the head of the list"
+        );
+        let ranked = db.bias_terms(50).unwrap();
+        assert_eq!(
+            ranked.last().map(String::as_str),
+            Some("Rare"),
+            "starred term is not the last (highest-weighted) prompt term: {ranked:?}"
+        );
+
+        // A rewrite biases toward the PREFERRED spelling, never the misheard one.
+        db.add_dictionary_term("Divya".into(), Some("Drivia".into()))
+            .unwrap();
+        let ranked = db.bias_terms(50).unwrap();
+        assert!(ranked.iter().any(|t| t == "Drivia"), "{ranked:?}");
+        assert!(!ranked.iter().any(|t| t == "Divya"), "{ranked:?}");
+    }
+
+    /// A starred term must survive the startup harvest purge — otherwise
+    /// "always bias" silently expires on the next launch.
+    #[test]
+    fn starred_term_survives_purge() {
+        let dir = std::env::temp_dir().join(format!("wv-star-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wilson_voice.db");
+
+        {
+            let db = Database::open(path.clone()).unwrap();
+            // A harvested, non-jargon row — exactly what the purge deletes.
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO dictionary (id, term, preferred, hits, created_at, source, starred)
+                     VALUES ('star-1', 'Keeps', NULL, 3, '2026-07-31T00:00:00Z', 'harvest', 1)",
+                    [],
+                )
+                .unwrap();
+            }
+        }
+        let db2 = Database::open(path.clone()).unwrap();
+        assert!(
+            db2.list_dictionary()
+                .unwrap()
+                .iter()
+                .any(|d| d.term == "Keeps" && d.starred),
+            "starred term was purged on reopen"
+        );
 
         drop(db2);
         let _ = std::fs::remove_dir_all(&dir);
