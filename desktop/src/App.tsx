@@ -217,10 +217,6 @@ interface DayCount {
   sessions: number;
 }
 
-function fmtInt(n: number | undefined | null) {
-  return Math.max(0, Math.round(n ?? 0)).toLocaleString();
-}
-
 // GitHub-style intensity bucket (0 = empty, 1..4 = increasing) from a value
 // relative to the window's peak. Kept pure so the heatmap render stays cheap.
 function heatLevel(words: number, max: number): number {
@@ -1181,7 +1177,7 @@ export default function App() {
             </h1>
             <p className="lede">
               {nav === "home" &&
-                "Hold fn⌃ · double-tap hands-free · tap again to stop. Local Whisper; history in SQLite."}
+                "Hold fn⌃ and talk — your words land where the cursor is."}
               {nav === "permissions" &&
                 "macOS must grant these to Yap itself. Without them, dictation or paste fails."}
               {nav === "insights" &&
@@ -1428,38 +1424,6 @@ export default function App() {
                 streakDays={insights?.streakDays}
                 companionTone={settings?.companionTone}
               />
-
-              <div className="stats-row">
-                <div className="stat glass">
-                  <div className="stat-n">{fmtInt(insights?.totalWords)}</div>
-                  <div className="stat-l">total words</div>
-                  <div className="stat-sub">
-                    {fmtInt(insights?.totalSessions)} sessions
-                  </div>
-                </div>
-                <div className="stat glass">
-                  <div className="stat-n">{fmtInt(insights?.avgWpm)}</div>
-                  <div className="stat-l">avg wpm</div>
-                  <div className="stat-sub">
-                    speech only · n=
-                    {fmtInt(insights?.wpmSampleSessions)}
-                  </div>
-                </div>
-                <div className="stat glass">
-                  <div className="stat-n">{fmtInt(insights?.streakDays)}</div>
-                  <div className="stat-l">day streak</div>
-                  <div className="stat-sub">
-                    best {fmtInt(insights?.longestStreak)}
-                  </div>
-                </div>
-                <div className="stat glass">
-                  <div className="stat-n">{fmtInt(insights?.wordsToday)}</div>
-                  <div className="stat-l">words today</div>
-                  <div className="stat-sub">
-                    {fmtInt(insights?.sessionsToday)} sessions
-                  </div>
-                </div>
-              </div>
 
               <button
                 className={
