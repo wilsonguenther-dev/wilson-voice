@@ -26,7 +26,10 @@ mod sysaudio;
 mod transcription;
 mod vad;
 
-use db::{Database, DayCount, DictCandidate, DictEntry, Insights, ScratchNote, TranscriptEntry};
+use db::{
+    Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights, ScratchNote,
+    TranscriptEntry,
+};
 use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
@@ -296,6 +299,15 @@ fn data_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&p);
     let _ = std::fs::create_dir_all(p.join("recordings"));
     p
+}
+
+/// Where a failed take's WAV is parked so it can be retried (YV52).
+///
+/// Deliberately NOT the recordings dir: `record::sweep_stale_wavs` empties that
+/// at every startup, which would destroy exactly the clips a recovery needs.
+/// Everything in here is purged after `db::FAILED_TAKE_RETENTION_DAYS`.
+fn recovery_dir() -> PathBuf {
+    data_dir().join("recovery")
 }
 
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
@@ -736,6 +748,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             app: app2.clone(),
             armed: true,
         };
+        // YV52 dictation recovery — the take's clip guard, parked here as soon
+        // as capture finishes so the `Err` arm below can PRESERVE the wav and
+        // record a recoverable row instead of letting the guard unlink it. On
+        // every other exit it is dropped at the end of this thread exactly as
+        // before, so a successful take's audio still never outlives the take.
+        let mut pending: Option<(record::ClipWav, f64, Option<String>)> = None;
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
         let result = (|| -> Result<TakeOutcome, String> {
@@ -763,6 +781,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 rec.hold_wall_seconds,
                 t_dsp
             );
+            // YV52: hand the clip guard to the failure arm (see `pending`). The
+            // wav still exists only for the life of this take on every path that
+            // is not an outright failure.
+            pending = Some((rec.clip, rec.speech_seconds, source_app.clone()));
             // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
             // voiced time. Skip ASR entirely so Whisper never hallucinates
             // repetitive garbage ("WPM-SERV-SERV…") on silence. YV29 STRENGTHENS
@@ -1014,12 +1036,23 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             Err(e) => {
                 log::error!("pipeline failed: {e}");
                 *state2.last_error.lock() = Some(e.clone());
+                // YV52: a failed take is never lost. Keep the wav the pipeline
+                // already wrote and record a recoverable row, so the user can
+                // retry ASR on the same audio (the engine may since have
+                // recovered, or the model finished downloading) instead of
+                // re-speaking it. `None` = the clip could not be preserved, and
+                // the toast/History simply have nothing to retry.
+                let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
+                    keep_failed_take(&db, clip, speech_seconds, src, &e)
+                });
                 // YV32: tell the UI, not just the log. Any view waiting on a
                 // transcript (onboarding calibration, the pill) can now clear its
                 // busy state and show the reason instead of spinning forever.
+                // The recoverable row rides along so the error toast can offer
+                // Retry on exactly this take.
                 let _ = app2.emit(
                     TRANSCRIPT_ERROR_EVENT,
-                    serde_json::json!({ "message": e.clone() }),
+                    serde_json::json!({ "message": e.clone(), "failed": recoverable }),
                 );
                 notify(&app2, "Yap — Failed", e);
             }
@@ -1032,6 +1065,69 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         // Reached the normal end — no soft-lock, disarm the panic guard.
         busy_guard.armed = false;
     });
+}
+
+/// YV52 — preserve a failed take: move its wav into the recovery dir and write
+/// the row that makes it retryable. Best-effort by design — a take that cannot
+/// be preserved (write failed, disk full, DB error) leaves the user exactly
+/// where they were before this feature existed, never worse, and never with a
+/// row pointing at audio that is not there.
+fn keep_failed_take(
+    db: &Database,
+    mut clip: record::ClipWav,
+    speech_seconds: f64,
+    source_app: Option<String>,
+    error: &str,
+) -> Option<FailedDictation> {
+    let path = match clip.keep_for_recovery(&recovery_dir()) {
+        Ok(path) => path,
+        Err(e) => {
+            log::warn!("failed take not recoverable (clip could not be kept): {e}");
+            return None;
+        }
+    };
+    match db.record_failed_dictation(&path, speech_seconds, error, source_app) {
+        Ok(row) => {
+            log::info!(
+                "YV52 recovery: kept failed take {} ({:.2}s) for retry",
+                row.id,
+                speech_seconds
+            );
+            Some(row)
+        }
+        Err(e) => {
+            // No row means nothing can ever reach this wav — don't leak audio.
+            log::warn!("failed-dictation row not written ({e}) — removing kept clip");
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+/// YV52 — expired recoverable takes are dropped with their audio. Called at
+/// startup and before every list, so the 7-day window holds in a long-running
+/// session too. Returns how many were purged.
+fn purge_expired_failed_takes(db: &Database) -> usize {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(db::FAILED_TAKE_RETENTION_DAYS);
+    match db.purge_failed_dictations(cutoff) {
+        Ok(paths) => {
+            for path in &paths {
+                let _ = std::fs::remove_file(path);
+            }
+            if !paths.is_empty() {
+                log::info!(
+                    "YV52 retention: purged {} failed take(s) older than {} days",
+                    paths.len(),
+                    db::FAILED_TAKE_RETENTION_DAYS
+                );
+            }
+            paths.len()
+        }
+        Err(e) => {
+            log::warn!("failed-take purge skipped: {e}");
+            0
+        }
+    }
 }
 
 // --- Commands ---
@@ -1374,6 +1470,114 @@ fn correct_transcript(
     text: String,
 ) -> Result<usize, String> {
     state.db.record_correction(&id, &text).map(|c| c.len())
+}
+
+/// YV52 — takes whose transcription failed and whose audio is still on disk.
+/// Expired ones are purged (audio included) before the list is built, so the
+/// UI can never offer a retry against a clip retention already removed.
+#[tauri::command]
+fn list_failed_dictations(state: State<'_, Arc<AppState>>) -> Result<Vec<FailedDictation>, String> {
+    purge_expired_failed_takes(&state.db);
+    state.db.list_failed_dictations()
+}
+
+/// YV52 — re-run ASR on a failed take's preserved clip. The common cause of the
+/// original failure is transient (no model downloaded yet, an engine that has
+/// since reloaded), so this is a real second chance rather than a replay.
+///
+/// On success the row CONVERTS: the transcript lands in history under the
+/// moment it was spoken, the recovery wav is unlinked, and the text is put on
+/// the clipboard — it is never auto-pasted, because the user is in Yap now, not
+/// in the app they dictated into.
+#[tauri::command]
+fn retry_failed_dictation(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<TranscriptEntry, String> {
+    let row = state
+        .db
+        .get_failed_dictation(&id)?
+        .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+    let wav = PathBuf::from(&row.wav_path);
+    if !wav.exists() {
+        // The audio is gone (purged, or cleaned up outside the app) — drop the
+        // row rather than leaving a Retry button that can only ever fail.
+        let _ = state.db.delete_failed_dictation(&id);
+        return Err("The audio for this take is no longer on disk".into());
+    }
+    let samples = record::read_wav_16k_mono(&wav)?;
+    let settings = state.settings.lock().clone();
+    let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
+        return Err("No speech model installed — open Settings → Models and download one.".into());
+    };
+    let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+        Ok(terms) => asr_engine::build_bias_prompt(&terms),
+        Err(e) => {
+            log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+            None
+        }
+    };
+    let asr = transcribe_native(
+        &state.transcription,
+        &model_id,
+        &model_path,
+        samples,
+        &settings.language,
+        bias_prompt,
+    )?;
+    let raw_text = asr.text;
+    if dictation::is_hallucinated_repetition(&raw_text) {
+        // YV20/M2: count only, never log the transcript body.
+        log::info!(
+            "retry hallucination gate: rejected degenerate output ({} chars)",
+            raw_text.chars().count()
+        );
+        return Err("Yap couldn't make sense of that clip — try dictating it again".into());
+    }
+    // Same cleanup pipeline as a live take, minus the caret context: the retry
+    // happens in Yap, so there is no cursor to join onto.
+    let text = dictation::run_cleanup(
+        &raw_text,
+        dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+        dictation::resolve_mode(
+            &settings.dictation_mode,
+            row.source_app.as_deref().unwrap_or_default(),
+        ),
+        |t| {
+            state
+                .db
+                .apply_dictionary(t)
+                .unwrap_or_else(|_| t.to_string())
+        },
+        dictation::polish_llm,
+    );
+    let entry = state.db.convert_failed_dictation(
+        &id,
+        text.clone(),
+        asr.backend,
+        asr.seconds,
+        Some(raw_text),
+    )?;
+    // The take's audio now follows the normal lifecycle: it is gone.
+    let _ = std::fs::remove_file(&wav);
+    let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+    log::info!(
+        "YV52 recovery: retry succeeded words={} ({})",
+        entry.word_count,
+        outcome.message
+    );
+    let _ = app.emit("transcript", &entry);
+    Ok(entry)
+}
+
+/// YV52 — throw a failed take away: the row and its audio both go.
+#[tauri::command]
+fn discard_failed_dictation(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    if let Some(path) = state.db.delete_failed_dictation(&id)? {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
 }
 
 /// YV47 — pending "Yap noticed: …" dictionary suggestions.
@@ -1925,6 +2129,11 @@ pub fn run() {
             log::warn!("could not record the legacy-migration flag ({e})");
         }
     }
+    // YV52 retention: recoverable takes (and their audio) live 7 days, then go —
+    // same "audio never lingers" rule as the sweep above, just with the window a
+    // retry needs. Runs after the DB is open and before anything can list them.
+    purge_expired_failed_takes(&db);
+
     let db = Arc::new(db);
 
     let state = Arc::new(AppState {
@@ -2088,6 +2297,9 @@ pub fn run() {
             set_dictionary_starred,
             delete_dictionary_term,
             correct_transcript,
+            list_failed_dictations,
+            retry_failed_dictation,
+            discard_failed_dictation,
             list_dict_candidates,
             promote_dict_candidate,
             dismiss_dict_candidate,

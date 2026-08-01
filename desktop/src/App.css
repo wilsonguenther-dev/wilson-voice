@@ -574,6 +574,56 @@ code {
   font-size: 0.82rem;
 }
 
+/* YV52 — "Retry" inside the failure toast: re-runs ASR on the clip the failed
+   take left behind, without making the user open History. */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toast-retry {
+  background: rgba(45, 212, 191, 0.16);
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  color: #a7f3d0;
+  border-radius: 8px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.toast-retry:disabled {
+  opacity: 0.6;
+}
+
+/* YV52 — recoverable takes above the transcript feed. */
+.failed-takes {
+  margin-bottom: 14px;
+}
+
+.failed-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.failed-head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--warn);
+}
+
+.card.failed {
+  border-color: color-mix(in srgb, var(--warn) 42%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-card));
+}
+
+.card.failed .failed-why {
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+
 .content {
   flex: 1;
   overflow: auto;
