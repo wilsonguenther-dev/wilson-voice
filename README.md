@@ -66,6 +66,25 @@ cd ~/Desktop/wilson-voice/desktop
 npm run desktop:dev
 ```
 
+### Build & signing
+
+`tauri.conf.json` commits **ad-hoc signing** (`bundle.macOS.signingIdentity: "-"`),
+so `npm run tauri build` works on any machine — no certificate, no keychain, and
+the `Entitlements.plist` still gets applied to the bundle. An ad-hoc signature
+changes on every rebuild, so macOS re-asks for Microphone / Accessibility /
+Input Monitoring after each local build; that is expected for a dev build.
+
+Real distribution signing comes from the environment and is never committed:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
+npm run tauri build
+```
+
+`APPLE_SIGNING_IDENTITY` overrides the value in `tauri.conf.json`, so the release
+workflow (which also sets `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` for
+notarization) signs with the Developer ID cert without any config change.
+
 ## One app, no sidecar
 
 Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window

@@ -1,4 +1,4 @@
-//! YV45 supply-chain + webview-hardening guards.
+//! YV45 supply-chain + webview-hardening guards (YV46 adds the signing guard).
 //!
 //! Both things these tests protect are one-character regressions that nothing
 //! else in the build would catch:
@@ -67,6 +67,34 @@ fn csp_is_a_real_policy_not_null() {
     assert_eq!(
         script_src, "script-src 'self'",
         "script-src must stay exactly `'self'`"
+    );
+}
+
+/// YV46: the committed config must never name a specific certificate. Only the
+/// ad-hoc pseudo-identity `"-"` (or nothing at all) is allowed here — a pinned
+/// `Apple Development: …` cert signs every contributor build with a personal
+/// certificate that only validates on the machines in that dev profile, and CI
+/// runners that do not hold it fail the codesign step outright. Release signing
+/// comes from `APPLE_SIGNING_IDENTITY`, which the Tauri CLI applies over this
+/// value (crates/tauri-cli ENVIRONMENT_VARIABLES.md).
+#[test]
+fn no_personal_signing_identity_is_committed() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let macos = &config["bundle"]["macOS"];
+    match &macos["signingIdentity"] {
+        serde_json::Value::Null => {}
+        serde_json::Value::String(id) => assert_eq!(
+            id, "-",
+            "only ad-hoc signing may be committed; set APPLE_SIGNING_IDENTITY at release time"
+        ),
+        other => panic!("signingIdentity must be a string or absent, got {other}"),
+    }
+    // Ad-hoc or not, the entitlements still have to be applied to the bundle.
+    assert_eq!(
+        macos["entitlements"].as_str(),
+        Some("Entitlements.plist"),
+        "the macOS bundle must keep its entitlements"
     );
 }
 

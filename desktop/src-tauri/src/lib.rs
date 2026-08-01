@@ -126,6 +126,15 @@ pub struct AppSettings {
     /// version is never offered again; any newer release still is.
     #[serde(default)]
     pub skipped_update_version: Option<String>,
+    /// YV46 first-run gate for the pre-SQLite `history/transcripts.json` import
+    /// (`Database::migrate_json_if_needed`). Backend-owned bookkeeping, not a
+    /// user preference: it flips to true after the one import attempt so no
+    /// later launch stats that path again. Every install created after the
+    /// SQLite switch simply flips it on its first launch with nothing to read.
+    /// `save_settings` re-asserts the stored value, so a UI save can never
+    /// clear it and re-arm the migration.
+    #[serde(default)]
+    pub legacy_json_migrated: bool,
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -183,6 +192,7 @@ impl Default for AppSettings {
             autostart: false,
             check_updates: true,
             skipped_update_version: None,
+            legacy_json_migrated: false,
         }
     }
 }
@@ -1070,6 +1080,10 @@ fn save_settings(
     settings: AppSettings,
 ) -> Result<(), String> {
     let mut next = settings;
+    // YV46: the legacy-migration flag is backend bookkeeping the UI never
+    // carries — take it from the live settings so a save can't re-arm the
+    // one-shot migration on the next launch.
+    next.legacy_json_migrated = state.settings.lock().legacy_json_migrated;
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
         "fn" => "fn".into(),
@@ -1136,16 +1150,6 @@ fn request_accessibility() -> bool {
 #[tauri::command]
 fn request_microphone() -> bool {
     mic_auth::request_microphone_access()
-}
-
-#[tauri::command]
-fn show_float_pill(app: AppHandle) -> Result<(), String> {
-    float_pill::show_float(&app)
-}
-
-#[tauri::command]
-fn hide_float_pill(app: AppHandle) {
-    float_pill::hide_float(&app);
 }
 
 #[tauri::command]
@@ -1295,13 +1299,6 @@ fn export_history(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     ));
     std::fs::write(&path, &json).map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
-}
-
-/// Force rebuild daily_stats from transcripts (source of truth).
-#[tauri::command]
-fn recompute_stats(state: State<'_, Arc<AppState>>) -> Result<Insights, String> {
-    state.db.recompute_daily_stats()?;
-    state.db.insights()
 }
 
 #[tauri::command]
@@ -1660,17 +1657,32 @@ pub fn run() {
 
     let db_path = data_dir().join("wilson_voice.db");
     let db = open_db_graceful(db_path);
-    let legacy = data_dir().join("history").join("transcripts.json");
-    match db.migrate_json_if_needed(legacy) {
-        Ok(n) if n > 0 => log::info!("migrated {n} legacy transcripts into SQLite"),
-        Err(e) => log::warn!("legacy migrate: {e}"),
-        _ => {}
-    }
-    let db = Arc::new(db);
 
     // YV41: never reset a whole config over one bad field — salvage what parses,
     // quarantine a wholly corrupt file, migrate older schemas forward.
-    let settings: AppSettings = load_settings(&data_dir().join("settings.json"));
+    let settings_path = data_dir().join("settings.json");
+    let mut settings: AppSettings = load_settings(&settings_path);
+
+    // YV46: the pre-SQLite `history/transcripts.json` import is a FIRST-RUN
+    // step, not a per-launch one. It used to stat that path on every startup
+    // for a file no install made after the SQLite switch can have; now the one
+    // attempt is recorded in settings and never repeated (the import itself
+    // also renames the file aside, so this is belt-and-braces, not the only
+    // guard). Persisting the flag is best-effort: a failed write just means the
+    // next launch re-checks a file that is no longer there.
+    if !settings.legacy_json_migrated {
+        let legacy = data_dir().join("history").join("transcripts.json");
+        match db.migrate_json_if_needed(legacy) {
+            Ok(n) if n > 0 => log::info!("migrated {n} legacy transcripts into SQLite"),
+            Err(e) => log::warn!("legacy migrate: {e}"),
+            _ => {}
+        }
+        settings.legacy_json_migrated = true;
+        if let Err(e) = write_settings_file(&settings_path, &settings) {
+            log::warn!("could not record the legacy-migration flag ({e})");
+        }
+    }
+    let db = Arc::new(db);
 
     let state = Arc::new(AppState {
         settings: PLMutex::new(settings),
@@ -1809,8 +1821,6 @@ pub fn run() {
             get_permissions,
             request_accessibility,
             request_microphone,
-            show_float_pill,
-            hide_float_pill,
             get_insights,
             daily_series,
             monthly_series,
@@ -1825,7 +1835,6 @@ pub fn run() {
             open_data_dir,
             open_logs_dir,
             export_history,
-            recompute_stats,
             open_privacy_settings,
             manual_toggle,
             show_main,
@@ -2620,6 +2629,38 @@ mod tests {
         let mut settings: AppSettings = serde_json::from_value(keeps.clone()).unwrap();
         assert!(apply_settings_migrations(&mut settings, &keeps));
         assert_eq!(settings.native_model, "handy-computer/whisper-tiny-gguf");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // YV46: the legacy JSON import is armed exactly once. A store written
+    // before the flag existed reads as "not yet migrated"; once the flag is
+    // recorded it survives every later load and save, so no launch after the
+    // first ever looks for history/transcripts.json again.
+    #[test]
+    fn legacy_json_migration_is_armed_once_then_recorded() {
+        let dir = temp_dir("legacy-migrate");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"schemaVersion": 1, "onboarded": true}"#).unwrap();
+
+        let mut settings = load_settings(&path);
+        assert!(
+            !settings.legacy_json_migrated,
+            "a store from before the flag still gets its one import attempt"
+        );
+
+        settings.legacy_json_migrated = true;
+        write_settings_file(&path, &settings).expect("record the flag");
+        assert!(
+            load_settings(&path).legacy_json_migrated,
+            "the flag is durable, so the next launch skips the import"
+        );
+
+        // A later save (which carries the flag through from the live settings)
+        // must not re-arm it.
+        let reloaded = load_settings(&path);
+        write_settings_file(&path, &reloaded).expect("ordinary save");
+        assert!(load_settings(&path).legacy_json_migrated);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
