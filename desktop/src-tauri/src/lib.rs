@@ -696,6 +696,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let state2 = state.clone();
     // Capture focused app *before* we steal focus with notifications / main window.
     let source_app = focus::frontmost_app_name();
+    // YV50 context awareness — read the text just before the caret while the
+    // user's app is still the focused one, for the same reason as `source_app`.
+    // Bounded to `focus::CONTEXT_CHAR_LIMIT` chars; `None` on AX denial or a
+    // secure field. PRIVACY: this string only ever steers the formatting
+    // decisions below — it is never logged, stored, or emitted (see the
+    // `cursor_context_is_never_logged_or_persisted` test).
+    let cursor_context = focus::text_before_cursor();
     // YV49: `Some` means this take was a command press — the selection it is
     // about to edit was read at key-down. Taken (not read) so exactly one take
     // can ever consume it.
@@ -845,10 +852,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             }
 
             // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
-            // wins, otherwise it's inferred from the focused app.
-            let dictation_mode = dictation::resolve_mode(
+            // wins, otherwise it's inferred from the focused app. YV50 adds the
+            // pre-caret context as a HINT that only fills the gap left when the
+            // app alone resolved nothing (an email greeting in a browser tab).
+            let dictation_mode = dictation::resolve_mode_with_context(
                 &settings.dictation_mode,
                 source_app.as_deref().unwrap_or_default(),
+                cursor_context.as_deref(),
             );
             // YV10 cleanup pipeline: apply_dictionary → backtrack → format_dictation →
             // local-LLM polish (guarded stub), gated by the Auto-Cleanup level. Every
@@ -863,6 +873,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
                 dictation::polish_llm,
             );
+            // YV50: join the take onto the text already at the caret — lowercase
+            // the lead word when the user is continuing a sentence, capitalise it
+            // after . ? ! / a new line / in an empty field, and add the leading
+            // space only when the character before the caret needs one. Purely
+            // additive (casing + at most one space), so "never lose text" holds.
+            let text = dictation::join_with_context(&text, cursor_context.as_deref());
             let cleanup_ms = t_cleanup.elapsed().as_millis() as i64;
             log::info!(
                 "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
@@ -2404,6 +2420,156 @@ mod tests {
     /// The defaults as they land on disk, as a mutable JSON object.
     fn default_settings_json() -> serde_json::Value {
         serde_json::to_value(AppSettings::default()).unwrap()
+    }
+
+    // --- Context awareness v1 (YV50) privacy ------------------------------
+    //
+    // The pre-caret context is the most sensitive thing Yap touches: whatever
+    // the user already typed in their editor, mail draft or chat. The product
+    // rule is that it exists ONLY inside the dictation call stack — these two
+    // tests are the enforcement, one over the shipped source, one over a real
+    // history row written through the real DB.
+
+    /// No `log::` statement anywhere in the pipeline may interpolate the
+    /// context, and the two modules that touch it must not log at all.
+    #[test]
+    fn cursor_context_is_never_logged_or_persisted() {
+        const LIB: &str = include_str!("lib.rs");
+
+        // 1. The binding exists and is only ever consumed by the two pure
+        //    formatting calls — never by a log, an event emit, or the DB write.
+        let mut uses = 0;
+        for (i, line) in LIB.lines().enumerate() {
+            if !line.contains("cursor_context") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            uses += 1;
+            for banned in [
+                "log::",
+                "println!",
+                "eprintln!",
+                ".emit(",
+                "insert_transcript",
+                "notify(",
+            ] {
+                assert!(
+                    !line.contains(banned),
+                    "line {}: pre-caret context reaches `{banned}`: {line}",
+                    i + 1
+                );
+            }
+        }
+        assert!(uses >= 3, "YV50 context binding missing from the pipeline");
+
+        // 2. Same check against whole (multi-line) log macro invocations, which
+        //    a line-by-line scan would miss.
+        for block in log_macro_blocks(LIB) {
+            assert!(
+                !block.contains("cursor_context"),
+                "pre-caret context interpolated into a log statement: {block}"
+            );
+        }
+
+        // 3. The AX reader and the pure formatter never log anything at all.
+        for (name, src) in [
+            ("focus.rs", include_str!("focus.rs")),
+            ("dictation.rs", include_str!("dictation.rs")),
+        ] {
+            assert!(
+                !src.contains("log::"),
+                "{name} must stay log-free — it handles the raw context string"
+            );
+        }
+    }
+
+    /// Every `log::` macro invocation in `src`, from `log::` to the `;` that
+    /// closes it (semicolons inside the argument list / string literals sit at
+    /// paren depth > 0 and are skipped).
+    fn log_macro_blocks(src: &str) -> Vec<&str> {
+        let mut blocks = Vec::new();
+        let bytes = src.as_bytes();
+        let mut from = 0;
+        while let Some(rel) = src[from..].find("log::") {
+            let start = from + rel;
+            // Skip mentions that are not invocations: comments and the string
+            // literals this very audit uses.
+            let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let prefix = src[line_start..start].trim_start();
+            if prefix.starts_with("//") || prefix.ends_with('"') {
+                from = start + 5;
+                continue;
+            }
+            let mut depth = 0i32;
+            let mut end = start;
+            for (i, &b) in bytes[start..].iter().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    b';' if depth <= 0 => {
+                        end = start + i;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if end > start {
+                blocks.push(&src[start..end]);
+            }
+            from = start + 5;
+        }
+        assert!(blocks.len() > 10, "log scan found nothing — audit is broken");
+        blocks
+    }
+
+    /// A dictation whose formatting was steered by the surrounding text stores
+    /// the DICTATED words only: no fragment of the context reaches the row, the
+    /// raw column, or the JSON the history UI receives.
+    #[test]
+    fn context_never_reaches_the_history_row() {
+        // What the user had already typed (would be a privacy leak if stored).
+        let context = "Dear Wilson, thanks for the invoice — the wire went out on";
+        let dictated = "Friday afternoon";
+
+        // The context steers the take: mid-sentence ⇒ joining space + lowercase.
+        let text = crate::dictation::join_with_context(dictated, Some(context));
+        assert_eq!(text, " friday afternoon");
+
+        let dir = temp_dir("yv50-context-privacy");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let entry = db
+            .insert_transcript_at(
+                text,
+                "native".into(),
+                1.0,
+                2.0,
+                100,
+                Some("Mail".into()),
+                chrono::Utc::now(),
+                Some(dictated.into()),
+            )
+            .unwrap();
+
+        // Check the returned row, the row read back out of SQLite, and the JSON
+        // shape the frontend gets — no context word may appear in any of them.
+        let listed = db.list_transcripts(10, None).unwrap();
+        assert_eq!(listed.len(), 1);
+        let surfaces = [
+            serde_json::to_string(&entry).unwrap(),
+            serde_json::to_string(&listed).unwrap(),
+        ];
+        for surface in &surfaces {
+            for word in context.split_whitespace().filter(|w| w.len() > 4) {
+                assert!(
+                    !surface.contains(word),
+                    "context word {word:?} leaked into history: {surface}"
+                );
+            }
+            // The dictated words themselves are of course still there.
+            assert!(surface.contains("friday afternoon"), "{surface}");
+        }
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // YV33: "Ready" is a claim about being able to transcribe. With no usable
