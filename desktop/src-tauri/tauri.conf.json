@@ -51,7 +51,7 @@
       "minimumSystemVersion": "12.0",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist",
-      "signingIdentity": "Apple Development: Wilson Guenther (U8BP8Z86T2)"
+      "signingIdentity": "-"
     }
   },
   "plugins": {
