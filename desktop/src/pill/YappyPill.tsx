@@ -74,6 +74,10 @@ class SOD {
   update(dt: number, x: number): number { const xd = (x - this.xp) / Math.max(dt, 1e-4); this.xp = x; const k2 = Math.max(this.k2, dt * dt / 2 + dt * this.k1 / 2, dt * this.k1); this.yv += dt * this.yd; this.yd += dt * (x + this.k3 * xd - this.yv - this.k1 * this.yd) / k2; return this.yv; }
 }
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+// YV53 — on a side dock the window is parked flush to the screen edge, so the
+// capsule is drawn this many px in from it: enough for its glow/shadow, not so
+// much that it stops reading as docked. Mirrors the .stage inset in float.css.
+const DOCK_PAD = 10;
 
 export default function YappyPill() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -272,9 +276,17 @@ export default function YappyPill() {
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       ctx.clearRect(0, 0, W, H);
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
-      const cx = W / 2, cy = H * 0.56;
       // bigger open capsule so the chick + grass read larger
       const capW = lerp(72, 236 * tierOpen, openV), capH = lerp(22, 60 * tierOpen, openV);
+      // YV53 — dock edge (read live off <html data-dock>, set by float-main): the
+      // window is parked flush to that screen edge, so the capsule hugs it instead
+      // of sitting mid-window. ONLY the anchor moves — capsule size and the camera
+      // below are untouched, so the world keeps its aspect (never letterboxed).
+      const dock = document.documentElement.dataset.dock;
+      const cx = dock === "left" ? DOCK_PAD + capW / 2
+        : dock === "right" ? W - DOCK_PAD - capW / 2
+          : W / 2;
+      const cy = H * 0.56;
       const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
@@ -293,8 +305,10 @@ export default function YappyPill() {
       ctx.restore();
       ctx.lineWidth = 1; ctx.strokeStyle = openV > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)"; rr(x0 + .5, y0 + .5, capW - 1, capH - 1, capH / 2); ctx.stroke();
 
-      // speech bubble above the capsule
-      bubble.style.left = cx + "px";
+      // speech bubble above the capsule — centred on it, but kept inside the
+      // window so a docked (edge-hugging) capsule doesn't push it off-screen.
+      const bw = bubble.classList.contains("show") ? bubble.offsetWidth : 0;
+      bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
       bubble.style.top = (y0 - 10) + "px";
     }
     // reduced-motion → paint one calm static frame and never loop; else run the rAF.

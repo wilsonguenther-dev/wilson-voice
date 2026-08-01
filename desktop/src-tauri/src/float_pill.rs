@@ -5,7 +5,7 @@
 //!   nonactivatingPanel, floating/status level, canJoinAllSpaces,
 //!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -26,6 +26,80 @@ const PILL_H: f64 = 140.0;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
+/// Current dock edge as `PillPosition::as_u8` (YV53). Read by every park, so
+/// the space-keeper and any display change pick the new edge up on their own.
+static POSITION: AtomicU8 = AtomicU8::new(0);
+
+/// Where the pill docks on screen (YV53). Wispr-style side docks in addition to
+/// the historical bottom-centre island.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillPosition {
+    /// Bottom-centre — the original Dictate island placement (default).
+    Bottom,
+    /// Flush to the LEFT screen edge, vertically centred.
+    Left,
+    /// Flush to the RIGHT screen edge, vertically centred.
+    Right,
+}
+
+impl PillPosition {
+    pub fn from_settings(s: &str) -> Self {
+        match s {
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => Self::Bottom, // default: bottom-centre
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Bottom => 0,
+            Self::Left => 1,
+            Self::Right => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Left,
+            2 => Self::Right,
+            _ => Self::Bottom,
+        }
+    }
+}
+
+/// Set the dock edge. Does NOT move the window — call [`reposition`] (or let the
+/// next show / space-keeper park) so the move happens on the main thread.
+pub fn set_position(pos: PillPosition) {
+    POSITION.store(pos.as_u8(), Ordering::SeqCst);
+    log::info!("pill position → {pos:?}");
+}
+
+/// Pure position math (YV53): the float window's top-left corner, given the
+/// monitor frame and the window size — ALL in physical px in Tauri's global
+/// coordinate space (origin at the primary monitor's top-left).
+///
+/// `Bottom` is the historical placement: horizontally centred, `margin` off the
+/// screen bottom. `Left`/`Right` dock the window FLUSH to that screen edge and
+/// centre it vertically — the visual gap on a side dock comes from the pill's
+/// CSS inset inside the (deliberately oversized, transparent) window, so the
+/// capsule still sits a hair off the edge with its ambient shadow intact.
+fn panel_origin(
+    mon_pos: (i32, i32),
+    mon_size: (i32, i32),
+    win_size: (i32, i32),
+    margin: i32,
+    pos: PillPosition,
+) -> (i32, i32) {
+    let (mon_x, mon_y) = mon_pos;
+    let (mon_w, mon_h) = mon_size;
+    let (win_w, win_h) = win_size;
+    match pos {
+        PillPosition::Bottom => (mon_x + (mon_w - win_w) / 2, mon_y + mon_h - win_h - margin),
+        PillPosition::Left => (mon_x, mon_y + (mon_h - win_h) / 2),
+        PillPosition::Right => (mon_x + mon_w - win_w, mon_y + (mon_h - win_h) / 2),
+    }
+}
 
 #[cfg(target_os = "macos")]
 tauri_panel! {
@@ -41,7 +115,7 @@ tauri_panel! {
     })
 }
 
-fn park_bottom_center(app: &AppHandle) {
+fn park_pill(app: &AppHandle) {
     let Some(w) = app.get_webview_window("float") else {
         return;
     };
@@ -65,8 +139,13 @@ fn park_bottom_center(app: &AppHandle) {
     // Window bottom sits ~14pt off the screen bottom; the pill (centered in the
     // taller window) then floats ~50pt up with shadow room below it.
     let margin = (14.0 * scale) as i32;
-    let x = pos.x + (size.width as i32 - pill_w) / 2;
-    let y = pos.y + size.height as i32 - pill_h - margin;
+    let (x, y) = panel_origin(
+        (pos.x, pos.y),
+        (size.width as i32, size.height as i32),
+        (pill_w, pill_h),
+        margin,
+        PillPosition::from_u8(POSITION.load(Ordering::SeqCst)),
+    );
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
 }
 
@@ -154,7 +233,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         log::warn!("NSPanel convert: {e} — falling back to webview flags");
     }
 
-    park_bottom_center(app);
+    park_pill(app);
 
     if let Some(w) = app.get_webview_window("float") {
         // Click-THROUGH: the pill is a HUD indicator over other apps and its window
@@ -171,7 +250,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
 
 pub fn show_float(app: &AppHandle) -> Result<(), String> {
     ensure_float(app)?;
-    park_bottom_center(app);
+    park_pill(app);
 
     #[cfg(target_os = "macos")]
     {
@@ -233,8 +312,15 @@ pub fn after_recording(app: &AppHandle, keep_visible: bool) {
     });
 }
 
+/// Re-park the pill on the configured edge (YV53) — call after
+/// [`set_position`] so the dock change lands immediately instead of on the next
+/// show or space-keeper tick. Safe from any thread.
+pub fn reposition(app: &AppHandle) {
+    dispatch_main(app, park_pill);
+}
+
 /// Keep the NSPanel on top across Space swipes. Now benign: it re-parks to a
-/// FIXED bottom-center position (no cursor read → no teleport) and only
+/// FIXED position on the configured edge (no cursor read → no teleport) and only
 /// re-asserts front (no style-mask reset → no flicker/focus theft). A future
 /// improvement is to drive this off `activeSpaceDidChange`/`didChangeScreenParams`
 /// notifications instead of a timer.
@@ -257,10 +343,102 @@ pub fn start_space_keeper(app: AppHandle) {
                 if !visible {
                     return;
                 }
-                park_bottom_center(&app_inner);
+                park_pill(&app_inner);
                 // apply_panel_hud already re-asserts front on the converted panel.
                 let _ = apply_panel_hud(&app_inner);
             });
         })
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{panel_origin, PillPosition};
+
+    // A 2x Retina 1440x900-point display at the global origin, and the float
+    // window at its physical size (PILL_W/H x 2).
+    const MON_POS: (i32, i32) = (0, 0);
+    const MON_SIZE: (i32, i32) = (2880, 1800);
+    const WIN_SIZE: (i32, i32) = (600, 280);
+    const MARGIN: i32 = 28;
+
+    #[test]
+    fn bottom_keeps_the_centred_island_placement() {
+        let (x, y) = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Bottom);
+        assert_eq!(x, (2880 - 600) / 2); // horizontally centred
+        assert_eq!(y, 1800 - 280 - MARGIN); // margin off the screen bottom
+    }
+
+    #[test]
+    fn left_docks_flush_to_the_left_edge_vertically_centred() {
+        let (x, y) = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Left);
+        assert_eq!(x, 0);
+        assert_eq!(y, (1800 - 280) / 2);
+    }
+
+    #[test]
+    fn right_docks_flush_to_the_right_edge_vertically_centred() {
+        let (x, y) = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Right);
+        assert_eq!(x, 2880 - 600);
+        assert_eq!(y, (1800 - 280) / 2);
+    }
+
+    /// A secondary display sits at a non-zero (and possibly negative) global
+    /// origin — every edge must be relative to THAT monitor's frame, never 0.
+    #[test]
+    fn origins_follow_a_monitor_that_is_not_at_the_global_origin() {
+        let mon_pos = (-1920, -300);
+        let mon_size = (1920, 1080);
+        let win = (300, 140);
+        assert_eq!(
+            panel_origin(mon_pos, mon_size, win, 14, PillPosition::Left),
+            (-1920, -300 + (1080 - 140) / 2)
+        );
+        assert_eq!(
+            panel_origin(mon_pos, mon_size, win, 14, PillPosition::Right),
+            (-1920 + 1920 - 300, -300 + (1080 - 140) / 2)
+        );
+        assert_eq!(
+            panel_origin(mon_pos, mon_size, win, 14, PillPosition::Bottom),
+            (-1920 + (1920 - 300) / 2, -300 + 1080 - 140 - 14)
+        );
+    }
+
+    /// The three docks are genuinely distinct placements — left/right differ on
+    /// x, and neither is the bottom-centre island.
+    #[test]
+    fn the_three_docks_are_distinct() {
+        let bottom = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Bottom);
+        let left = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Left);
+        let right = panel_origin(MON_POS, MON_SIZE, WIN_SIZE, MARGIN, PillPosition::Right);
+        assert!(left.0 < right.0);
+        assert_ne!(bottom, left);
+        assert_ne!(bottom, right);
+    }
+
+    #[test]
+    fn position_from_settings() {
+        assert_eq!(PillPosition::from_settings("left"), PillPosition::Left);
+        assert_eq!(PillPosition::from_settings("right"), PillPosition::Right);
+        assert_eq!(PillPosition::from_settings("bottom"), PillPosition::Bottom);
+        // Unknown / missing values fall back to the default bottom-centre dock.
+        assert_eq!(
+            PillPosition::from_settings("nonsense"),
+            PillPosition::Bottom
+        );
+    }
+
+    /// The atomic round-trip that carries the dock edge into `park_pill`.
+    #[test]
+    fn position_round_trips_through_the_atomic() {
+        for pos in [
+            PillPosition::Bottom,
+            PillPosition::Left,
+            PillPosition::Right,
+        ] {
+            assert_eq!(PillPosition::from_u8(pos.as_u8()), pos);
+        }
+        // Any unexpected byte reads as the default.
+        assert_eq!(PillPosition::from_u8(9), PillPosition::Bottom);
+    }
 }
