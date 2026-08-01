@@ -850,6 +850,29 @@ const NON_ITEM_OPENERS: &[&str] = &[
 /// league AND number two in scoring". Real items end on their own content.
 const DANGLING_CONJUNCTIONS: &[&str] = &["and", "or"];
 
+/// Nouns that ANNOUNCE an enumeration when they appear in the lead-in ("my top
+/// GOALS are one … two …", "grocery LIST one … two …"). Positive evidence that the
+/// speaker set up a list, which is what separates listing from counting.
+const LIST_ANNOUNCING_NOUNS: &[&str] = &[
+    "list", "lists", "checklist", "things", "goals", "steps", "reasons", "items", "tasks",
+    "priorities", "options", "ideas", "plan", "plans", "agenda", "questions", "topics",
+];
+
+/// Present-tense listing verbs. Directly ahead of the first cue they are the spoken
+/// form of a colon: "the plan IS one … two …", "my goals ARE one … two …". Past
+/// tense is narration ("he WAS number one in the league"), so it is not here.
+const LIST_ANNOUNCING_VERBS: &[&str] = &["is", "are", "include", "includes"];
+
+/// Words that turn a bullet noun into a shape instruction: "write it IN bullets",
+/// "USE bullet points". Without one, a bare "bullets" is a thing being talked about.
+const BULLET_INSTRUCTION_MARKERS: &[&str] =
+    &["in", "as", "use", "using", "with", "into", "make", "format", "formatted"];
+
+/// Determiners that make "bullet points" a referring noun phrase — something the
+/// speaker is talking ABOUT ("THE bullet points are one … two …"), never shape.
+const BULLET_DETERMINERS: &[&str] =
+    &["the", "these", "those", "my", "your", "our", "their", "his", "her", "its"];
+
 /// One enumeration cue found in the token stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cue {
@@ -898,10 +921,17 @@ fn detect_and_format_list(text: &str) -> Option<String> {
             return None;
         }
         // An explicit "bullet point(s)" instruction picks the marker. It is shape,
-        // not content, so it is only honored — and only consumed — in the LEAD-IN,
-        // ahead of the first cue. Item bodies stay byte-identical: a spoken
-        // "bullets" inside an item is an ordinary word and must survive.
-        let (bulleted, lead_in) = take_bullet_cue(&tokens[..chain[0].start]);
+        // not content, so it is only honored — and only consumed — as the tail of
+        // the LEAD-IN, ahead of the first cue. Everywhere else, including earlier in
+        // the lead-in, those words are ordinary content and must survive.
+        let head = &tokens[..chain[0].start];
+        let (bulleted, lead_in) = take_bullet_cue(head);
+        // A monotone chain is necessary but nowhere near sufficient: ordinary
+        // counting prose ("I ate one apple two oranges three bananas") satisfies it
+        // too. The speaker has to have marked the enumeration somehow.
+        if !has_enumeration_evidence(&tokens, &chain, head, bulleted) {
+            return None;
+        }
         return render_list(&lead_in, &items, bulleted);
     }
 
@@ -1049,35 +1079,66 @@ fn clean_item(text: &str) -> String {
     capitalize(item.trim())
 }
 
+/// Positive evidence that a resolved chain is an enumeration and not counted
+/// quantities. A bare cardinal is how an ASR renders EVERY spoken number, so a chain
+/// of them proves nothing on its own — the speaker has to have marked the list:
+/// an explicit shape instruction, a lead-in that announces one, cues sitting on
+/// clause boundaries, or a cue form that is itself an enumerator. Ordinals and
+/// dictated digit markers are that last case: nobody counts apples in "firsts".
+fn has_enumeration_evidence(
+    tokens: &[&str],
+    chain: &[Cue],
+    lead_in: &[&str],
+    bulleted: bool,
+) -> bool {
+    bulleted
+        || chain.first().is_some_and(|cue| is_enumerative_form(tokens[cue.start]))
+        || chain.iter().all(|cue| at_clause_boundary(tokens, cue.start))
+        || lead_in.iter().any(|t| LIST_ANNOUNCING_NOUNS.contains(&token_core(t).as_str()))
+        || lead_in.last().is_some_and(|t| LIST_ANNOUNCING_VERBS.contains(&token_core(t).as_str()))
+}
+
+/// True when the cue token marks an enumeration by its own form — an ordinal word
+/// ("first") or a dictated digit marker ("1.") — rather than a bare cardinal.
+fn is_enumerative_form(token: &str) -> bool {
+    digit_cue_value(token).is_some()
+        || ORDINAL_CUES.iter().any(|(cue, _)| *cue == token_core(token))
+}
+
 /// Strip an explicit "bullet point(s)" / "bullets" instruction from a LEAD-IN,
 /// reporting whether one was spoken (R10). Numbered stays the default; bullets are
-/// opt-in. Only ever called on the tokens ahead of the first resolved cue — the same
-/// words inside an item are content ("buy more bullets") and are never touched.
+/// opt-in.
+///
+/// The instruction is only recognized as the TAIL of the lead-in — directly ahead of
+/// the first cue, where "… in bullet points one X two Y" is unambiguously shape — and
+/// only in a form no speaker uses for content: "bullet point(s)" without a determiner
+/// in front of it ("THE bullet points are one …" is a noun phrase), or a bare
+/// "bullets" behind an instruction marker ("in bullets", never "buy bullets").
+/// Anything else is left alone, in the lead-in exactly as in an item body.
 fn take_bullet_cue<'a>(tokens: &[&'a str]) -> (bool, Vec<&'a str>) {
-    let mut kept: Vec<&str> = Vec::with_capacity(tokens.len());
-    let mut spoken = false;
-    let mut i = 0;
-    while i < tokens.len() {
-        let core = token_core(tokens[i]);
-        if core == "bullets" {
-            spoken = true;
-            i += 1;
-            continue;
+    let mut end = tokens.len();
+    let core = |i: usize| token_core(tokens[i]);
+    if end >= 2 && core(end - 2) == "bullet" && matches!(core(end - 1).as_str(), "point" | "points")
+    {
+        // "the/my/those bullet points" is something being referred to, not shape.
+        if end >= 3 && BULLET_DETERMINERS.contains(&core(end - 3).as_str()) {
+            return (false, tokens.to_vec());
         }
-        if core == "bullet"
-            && matches!(
-                tokens.get(i + 1).map(|t| token_core(t)).as_deref(),
-                Some("point") | Some("points")
-            )
-        {
-            spoken = true;
-            i += 2;
-            continue;
-        }
-        kept.push(tokens[i]);
-        i += 1;
+        end -= 2;
+    } else if end >= 2
+        && core(end - 1) == "bullets"
+        && BULLET_INSTRUCTION_MARKERS.contains(&core(end - 2).as_str())
+    {
+        end -= 1;
+    } else {
+        return (false, tokens.to_vec());
     }
-    (spoken, kept)
+    // The marker that introduced the instruction is shape too ("write it IN bullet
+    // points" leaves "write it", not "write it in").
+    if end > 0 && BULLET_INSTRUCTION_MARKERS.contains(&core(end - 1).as_str()) {
+        end -= 1;
+    }
+    (true, tokens[..end].to_vec())
 }
 
 /// Enumeration position of a cue word, cardinals first then ordinals.
@@ -1314,6 +1375,43 @@ mod tests {
     }
 
     #[test]
+    fn spoken_bullet_words_in_the_lead_in_are_content_not_shape() {
+        // "the bullet points" is the SUBJECT of the lead-in, not a marker request:
+        // both words survive and the list stays numbered.
+        assert_eq!(
+            format_dictation("the bullet points are one ship it two email them"),
+            "The bullet points are:\n1. Ship it\n2. Email them"
+        );
+        // "buy bullets" is a purchase. Nothing may be consumed, nothing flipped to a
+        // bullet marker — with no evidence of an enumeration this stays prose.
+        let prose = "I need to buy bullets one nine millimeter two forty five three shotgun shells";
+        assert_eq!(format_dictation(prose), prose);
+        // Shape is still honored where it IS an instruction: on the tail of the
+        // lead-in, and behind a marker for the bare "bullets" form.
+        assert_eq!(
+            format_dictation("write it in bullets one ship the build two email the client"),
+            "Write it:\n- Ship the build\n- Email the client"
+        );
+    }
+
+    #[test]
+    fn counting_prose_without_enumeration_evidence_stays_prose() {
+        // Ascending cardinals are how an ASR writes down ordinary counting, and the
+        // speaker marked no list in any of these: no shape instruction, no
+        // announcing lead-in, no clause boundaries, no enumerator cue form. Every
+        // one of them used to be rewritten (and word-scrambled) into a list.
+        for prose in [
+            "I ate one apple two oranges three bananas",
+            "chapter one was slow chapter two was better",
+            "she scored one goal in the first half two goals in the second half",
+            "I gave one dollar to my brother two days later he gave it back",
+            "on the one hand it rained on the other hand two people still showed up",
+        ] {
+            assert_eq!(format_dictation(prose), prose, "{prose:?} was mangled into a list");
+        }
+    }
+
+    #[test]
     fn quantity_prose_with_ascending_cardinals_stays_prose() {
         // Three ascending cardinals satisfy the monotone rule by accident; each of
         // these is one clause counting things, and every one of them leaves an item
@@ -1335,9 +1433,10 @@ mod tests {
         // vocabulary — a spoken "one"/"first" BECOMES the "1." marker. No length
         // filter, so dropping a one- or two-character word ("a", "at") fails too.
         //
-        // "bullet"/"point(s)" are deliberately NOT exempt: they are consumed only
-        // from the lead-in, which `list_bullets_only_on_explicit_cue` pins exactly.
-        // Anywhere else they are ordinary content.
+        // The one other exemption is the shape-instruction span, and it is read back
+        // from the implementation's OWN span for each input (see
+        // `content_token_counts`) rather than from a word list — so a bullet-word the
+        // pipeline eats anywhere it did not contract to fails the property.
         const FIXED: &[&str] = &[
             "My top goals this week are one finish the report two send the presentation",
             "My top goals this week are, one, finish the report, two, send the presentation.",
@@ -1350,6 +1449,11 @@ mod tests {
             "the plan is one order bullet points from supply two label them three ship",
             "I have one dog two cats and three birds",
             "he was number one in the league and number two in scoring",
+            "the bullet points are one ship it two email them",
+            "I need to buy bullets one nine millimeter two forty five three shotgun shells",
+            "write it in bullets one ship the build two email the client",
+            "I ate one apple two oranges three bananas",
+            "chapter one was slow chapter two was better",
         ];
         let generated = generated_list_utterances();
         for input in FIXED.iter().map(|s| (*s).to_string()).chain(generated.iter().cloned()) {
@@ -1373,18 +1477,40 @@ mod tests {
     }
 
     /// Multiset of the input tokens formatting must preserve — everything but the
-    /// enumeration cue vocabulary, at every length.
+    /// enumeration cue vocabulary (at every length) and the shape-instruction span
+    /// the detector actually recognizes in THIS input.
+    ///
+    /// That span is computed by asking the implementation, not by excluding words
+    /// from a curated list: whatever `take_bullet_cue` declines to consume stays
+    /// under the property, so widening it later re-breaks this test rather than
+    /// silently passing. (The corpus carries no fillers or self-corrections, so the
+    /// token stream `clean_backtrack` hands the detector is the input stream.)
     fn content_token_counts(text: &str) -> Vec<(String, usize)> {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
         let mut counts: Vec<(String, usize)> = Vec::new();
-        for word in text.split_whitespace().map(token_core) {
+        let mut bump = |word: String, delta: isize| {
             if word.is_empty() || is_cue_word(&word) {
-                continue;
+                return;
             }
             match counts.iter_mut().find(|(w, _)| *w == word) {
-                Some((_, n)) => *n += 1,
-                None => counts.push((word, 1)),
+                Some((_, n)) => *n = n.saturating_add_signed(delta),
+                None if delta > 0 => counts.push((word, delta as usize)),
+                None => {}
+            }
+        };
+        for token in &tokens {
+            bump(token_core(token), 1);
+        }
+        if let Some(chain) = resolve_chain(&scan_cues(&tokens)) {
+            let lead_in = &tokens[..chain[0].start];
+            let (spoken, kept) = take_bullet_cue(lead_in);
+            if spoken {
+                for token in &lead_in[kept.len()..] {
+                    bump(token_core(token), -1);
+                }
             }
         }
+        counts.retain(|(_, n)| *n > 0);
         counts
     }
 
@@ -1407,17 +1533,13 @@ mod tests {
     fn generated_list_utterances() -> Vec<String> {
         // Ordinary words only — nothing the pipeline is allowed to consume: no cue
         // words, no fillers, no self-correction markers. Short words are in on
-        // purpose: a dropped "a" or "at" has to fail the property too.
-        const LEAD_IN: &[&str] = &[
-            "a", "at", "id", "go", "my", "the", "buy", "report", "client", "docs", "call",
-        ];
-        // Item bodies additionally carry the shape-instruction words, which are
-        // content everywhere except the lead-in and must survive verbatim there.
-        // (In the lead-in they ARE the instruction by contract — the exact behavior
-        // `list_bullets_only_on_explicit_cue` pins — so they are not generated there.)
+        // purpose: a dropped "a" or "at" has to fail the property too. Lead-ins draw
+        // from this same vocabulary as item bodies — including the bullet words, so
+        // the generator can build the very lead-ins that used to lose them.
         const CONTENT: &[&str] = &[
             "a", "at", "id", "go", "my", "the", "buy", "milk", "eggs", "report", "client",
-            "docs", "gun", "bullets", "point", "points", "ship", "email", "call", "mom",
+            "docs", "gun", "bullet", "bullets", "point", "points", "ship", "email", "call",
+            "mom", "list", "goals", "things", "plan", "steps",
         ];
         const CUE_FORMS: [[&str; 4]; 3] = [
             ["one", "two", "three", "four"],
@@ -1432,7 +1554,7 @@ mod tests {
             let item_count = 2 + pick(&mut state, 3);
             let mut words: Vec<&str> = Vec::new();
             for _ in 0..pick(&mut state, 5) {
-                words.push(LEAD_IN[pick(&mut state, LEAD_IN.len())]);
+                words.push(CONTENT[pick(&mut state, CONTENT.len())]);
             }
             for form in forms.iter().take(item_count) {
                 words.push(form);
@@ -1842,3 +1964,4 @@ mod tests {
         assert_eq!(out2, "1. Buy milk\n2. Buy eggs");
     }
 }
+
