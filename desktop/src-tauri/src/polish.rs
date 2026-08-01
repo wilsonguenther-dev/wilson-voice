@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use crate::dictation::{self, DictationMode};
+use crate::dictation::{self, DictationMode, Style};
 use crate::models;
 use crate::polish_protocol::{max_out_for, parse_response_for, PolishRequest};
 
@@ -75,9 +75,6 @@ const TEMPLATE_MARKERS: &[&str] = &["<|im_start|>", "<|im_end|>", "<think>", "``
 /// Assistant openers (§2.5 V6). A typist does not announce itself; a rewrite
 /// that starts this way answered the dictation instead of retyping it.
 const ASSISTANT_PREAMBLES: &[&str] = &["sure,", "here is", "here's the", "i've ", "certainly"];
-
-/// Tone dial values (§2.4 style overlay). Anything else reads as `default`.
-const STYLES: &[&str] = &["very casual", "casual", "default", "formal"];
 
 /// Filename of the bundled sidecar. Tauri strips the target triple from
 /// `bundle.externalBin` when it stages the binary next to the app executable,
@@ -127,8 +124,9 @@ pub struct PolishConfig {
     pub model: String,
     /// Hard deadline for one pass.
     pub deadline_ms: u64,
-    /// Tone dial for the take's mode (`very casual | casual | default | formal`).
-    pub style: String,
+    /// Tone dial for the take's mode (YV62). The same value the rules stage runs
+    /// R3 with, so the model is asked for the tone the rules already applied.
+    pub style: Style,
 }
 
 impl Default for PolishConfig {
@@ -136,7 +134,7 @@ impl Default for PolishConfig {
         Self {
             model: String::new(),
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
-            style: "default".to_string(),
+            style: Style::Default,
         }
     }
 }
@@ -169,19 +167,18 @@ pub fn mode_tag(mode: DictationMode) -> &'static str {
     }
 }
 
-/// The `style_<mode>` tone dial: the value stored for this mode, or `default`
-/// when nothing is set for it (or the stored value is not a dial position).
-fn style_for_mode(settings: &crate::AppSettings, mode: DictationMode) -> String {
-    let stored = settings
-        .polish_styles
-        .get(mode_tag(mode))
-        .map(|s| s.trim().to_lowercase())
-        .unwrap_or_default();
-    if STYLES.contains(&stored.as_str()) {
-        stored
-    } else {
-        "default".to_string()
-    }
+/// The `style_<mode>` tone dial: the position stored for this mode, or
+/// [`Style::Default`] when nothing is set for it (or the stored value is not a
+/// dial position). Public since YV62 because the RULES stage needs it too — R3's
+/// trailing-period rule is dialled by the same setting as the model's overlay.
+pub fn style_for_mode(settings: &crate::AppSettings, mode: DictationMode) -> Style {
+    Style::from_setting(
+        settings
+            .polish_styles
+            .get(mode_tag(mode))
+            .map(String::as_str)
+            .unwrap_or_default(),
+    )
 }
 
 /// Shape one request, or decline the stage entirely.
@@ -204,7 +201,7 @@ pub fn build_request(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Opt
     Some(PolishRequest {
         id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         mode: mode_tag(mode).to_string(),
-        style: cfg.style.clone(),
+        style: cfg.style.tag().to_string(),
         max_out: max_out_for(text),
         deadline_ms: cfg.deadline_ms,
         text: text.to_string(),
@@ -580,12 +577,14 @@ fn sidecar_binary() -> Option<PathBuf> {
 }
 
 /// The never-lose-text gate. Every test here is selected by the spec's
-/// acceptance filters (`cargo test validate_polish_ polish_fallback_`), so one
-/// command covers the validator AND the fallback behaviour it exists for.
+/// acceptance filters (`cargo test validate_polish_ polish_fallback_ signature_`),
+/// so one command covers the validator, the fallback behaviour it exists for, and
+/// the YV62 signature stage that sits on the far side of it.
 #[cfg(test)]
 mod polish_fallback_tests {
     use super::*;
     use crate::dictation::{join_with_context, run_cleanup, CleanupLevel, LeadCase};
+    use crate::snippets::{append_signature, expand_snippets, SignatureMode, SnippetScope};
     use std::sync::atomic::AtomicUsize;
 
     /// The lead-case decision an already-written string carries — how the R5
@@ -612,14 +611,21 @@ mod polish_fallback_tests {
         PolishConfig {
             model: "qwen2.5-0.5b-instruct-q4_k_m".to_string(),
             deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
-            style: "default".to_string(),
+            style: Style::Default,
         }
     }
 
     /// The rules-stage output — what a rejected or missing rewrite must leave
     /// behind, byte for byte.
     fn rules_text(raw: &str, mode: DictationMode) -> String {
-        run_cleanup(raw, CleanupLevel::High, mode, no_dict, |_| None)
+        run_cleanup(
+            raw,
+            CleanupLevel::High,
+            mode,
+            Style::Default,
+            no_dict,
+            |_| None,
+        )
     }
 
     /// The full pipeline with `client` wired into stage 4.
@@ -629,7 +635,7 @@ mod polish_fallback_tests {
         cfg: &PolishConfig,
         client: &dyn PolishClient,
     ) -> String {
-        run_cleanup(raw, CleanupLevel::High, mode, no_dict, |t| {
+        run_cleanup(raw, CleanupLevel::High, mode, cfg.style, no_dict, |t| {
             polish_stage(t, mode, cfg, client)
         })
     }
@@ -934,7 +940,7 @@ mod polish_fallback_tests {
     #[test]
     fn polish_request_carries_the_mode_and_tone_dial() {
         let cfg = PolishConfig {
-            style: "formal".to_string(),
+            style: Style::Formal,
             ..on()
         };
         let req = build_request(RAW, DictationMode::Email, &cfg).expect("the stage is on");
@@ -956,5 +962,107 @@ mod polish_fallback_tests {
         let before = rejected_total();
         assert_eq!(validate_polish("we shipped the build today", ""), None);
         assert!(rejected_total() > before);
+    }
+
+    // --- The signature, on the far side of the model (YV62, R13) ----------
+
+    /// The configured block. Multi-line, with an address in it — a signature is
+    /// exactly the shape of thing a model is most tempted to invent.
+    const SIGNATURE: &str = "Wilson Guenther\nwilson@drivia.consulting";
+
+    /// An email take that closes on a sign-off cue, so R13's shape rule renders
+    /// the `Thanks,` line `signature_mode = auto` keys off.
+    const EMAIL_RAW: &str =
+        "hey Jordan the numbers are attached and I will send the deck tomorrow thanks";
+
+    /// The production ordering, exactly as `lib.rs` wires it: cleanup (with the
+    /// model in stage 4) → the R5 caret join → snippets → the signature LAST.
+    fn pasted(
+        raw: &str,
+        mode: DictationMode,
+        client: &dyn PolishClient,
+        signature: &str,
+        sig_mode: SignatureMode,
+    ) -> String {
+        let cfg = on();
+        let text = polished(raw, mode, &cfg, client);
+        let text = join_with_context(&text, None);
+        let text = expand_snippets(&text, &[], SnippetScope::Inline);
+        append_signature(&text, signature, sig_mode, mode)
+    }
+
+    /// Rewrites the take the way a model does — different casing, different
+    /// punctuation — and records what it was actually given.
+    struct ManglingClient {
+        seen: Mutex<String>,
+    }
+    impl ManglingClient {
+        fn new() -> Self {
+            Self {
+                seen: Mutex::new(String::new()),
+            }
+        }
+    }
+    impl PolishClient for ManglingClient {
+        fn rewrite(&self, req: &PolishRequest) -> Result<String, PolishError> {
+            *self.seen.lock() = req.text.clone();
+            Ok(req.text.to_lowercase())
+        }
+    }
+
+    #[test]
+    fn signature_auto_appends_exact_bytes_after_llm() {
+        let client = ManglingClient::new();
+        let out = pasted(
+            EMAIL_RAW,
+            DictationMode::Email,
+            &client,
+            SIGNATURE,
+            SignatureMode::Auto,
+        );
+        // The model DID rewrite the take — this is not a fallback in disguise.
+        let mangled = client.seen.lock().clone();
+        assert!(!mangled.is_empty(), "the model was never asked");
+        assert_ne!(out, rules_text(EMAIL_RAW, DictationMode::Email));
+        // The model never even saw the signature, so it had nothing to mangle.
+        assert!(!mangled.contains("Guenther") && !mangled.contains('@'));
+        // And the block that landed is the configured string, byte for byte,
+        // once, at the end — under the sign-off line R13's shape rule rendered.
+        assert!(
+            out.ends_with(&format!("\n{SIGNATURE}")),
+            "signature is not the tail of {out:?}"
+        );
+        assert_eq!(out.matches(SIGNATURE).count(), 1);
+        assert!(out.to_lowercase().contains("thanks,"));
+    }
+
+    #[test]
+    fn signature_never_invented_when_mode_off() {
+        // The model helpfully signs the mail itself — a copy of the block it was
+        // never given. That is a correctness bug, and the gate is what catches
+        // it: an address the speaker never said fails V5, so the rules text is
+        // what pastes.
+        const INVENTED: &str = concat!(
+            "Hey Jordan,\n\nThe numbers are attached and I will send the deck tomorrow.\n\n",
+            "Thanks,\nWilson Guenther\nwilson@drivia.consulting"
+        );
+        assert!(INVENTED.ends_with(SIGNATURE), "the invention is the block");
+        let client = ScriptedClient::new(INVENTED);
+        let before = rejected_total();
+        let out = pasted(
+            EMAIL_RAW,
+            DictationMode::Email,
+            &client,
+            SIGNATURE,
+            SignatureMode::Off,
+        );
+        assert_eq!(client.calls(), 1, "the model was asked exactly once");
+        assert!(rejected_total() > before, "the invented block was accepted");
+        assert_eq!(out, rules_text(EMAIL_RAW, DictationMode::Email));
+        assert!(!out.contains('@') && !out.contains("Guenther"));
+        // …and with the stage OFF the configured block is not appended either,
+        // even though this take ends on exactly the sign-off line `auto` wants.
+        assert!(crate::dictation::ends_with_signoff_line(&out));
+        assert!(!out.contains(SIGNATURE));
     }
 }

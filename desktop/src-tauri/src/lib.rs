@@ -130,6 +130,18 @@ pub struct AppSettings {
     /// change.
     #[serde(default)]
     pub polish_styles: std::collections::BTreeMap<String, String>,
+    /// YV62 (R13) — the sign-off block appended to a take, e.g.
+    /// `"Wilson — drivia.consulting"`. Empty by default. It is copied BYTE FOR
+    /// BYTE by `snippets::append_signature` AFTER the polish stage, so no model
+    /// can rewrite it and none can invent one (`polish::validate_polish` rejects
+    /// an invented signature on the V3/V5 path).
+    #[serde(default)]
+    pub signature: String,
+    /// When that block is appended: `off` (the default — never) | `cue` (only
+    /// when the take ends with "sign it") | `auto` (a cue, or any email that
+    /// closes on a sign-off line). See `snippets::SignatureMode`.
+    #[serde(default = "default_signature_mode")]
+    pub signature_mode: String,
     /// Denoise the captured clip with RNNoise before transcription (YV12).
     /// Suppresses steady background noise (fans, hum, keyboard) over the
     /// native-rate buffer before the 16 kHz downsample. Defaults on; the
@@ -218,6 +230,9 @@ fn default_snippet_scope() -> String {
 fn default_polish_deadline_ms() -> u64 {
     polish::DEFAULT_POLISH_DEADLINE_MS
 }
+fn default_signature_mode() -> String {
+    "off".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -248,6 +263,8 @@ impl Default for AppSettings {
             polish_model: String::new(),
             polish_deadline_ms: polish::DEFAULT_POLISH_DEADLINE_MS,
             polish_styles: std::collections::BTreeMap::new(),
+            signature: String::new(),
+            signature_mode: "off".into(),
             denoise: true,
             mute_while_dictating: true,
             onboarded: false,
@@ -965,6 +982,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &raw_text,
                 cleanup_level,
                 dictation_mode,
+                // YV62: the same tone dial the model's overlay gets, so R3's
+                // trailing-period rule holds with the polish stage off.
+                polish_config.style,
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
                 |t| polish::polish_llm(t, dictation_mode, &polish_config),
             );
@@ -991,6 +1011,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     text
                 }
             };
+            // YV62 signature (R13): the LAST stage, after the model and after the
+            // snippet expansion, so the configured block reaches the pasteboard
+            // byte for byte. Off by default — nothing is appended until the user
+            // configures a signature AND turns the mode on.
+            let text = snippets::append_signature(
+                &text,
+                &settings.signature,
+                snippets::SignatureMode::from_setting(&settings.signature_mode),
+                dictation_mode,
+            );
             let cleanup_ms = t_cleanup.elapsed().as_millis() as i64;
             log::info!(
                 "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
@@ -1626,6 +1656,7 @@ fn retry_failed_dictation(
         &raw_text,
         dictation::CleanupLevel::from_setting(&settings.cleanup_level),
         mode,
+        polish_config.style,
         |t| {
             state
                 .db
