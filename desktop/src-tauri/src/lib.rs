@@ -39,6 +39,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 
 /// YV41: the container-level `serde(default)` (backed by the `Default` impl
 /// below) means a field missing from settings.json falls back to its default
@@ -115,6 +116,16 @@ pub struct AppSettings {
     /// at every startup so this setting, not a stale LaunchAgent, is the truth.
     #[serde(default)]
     pub autostart: bool,
+    /// Look for a newer Yap on GitHub Releases (YV44). The check ONLY notifies:
+    /// nothing is downloaded or installed until the user clicks "Install now"
+    /// (`install_update`). Defaults on; off means Yap never contacts the
+    /// release endpoint at all.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+    /// A version the user dismissed with "Skip this version" (YV44). That exact
+    /// version is never offered again; any newer release still is.
+    #[serde(default)]
+    pub skipped_update_version: Option<String>,
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -170,6 +181,8 @@ impl Default for AppSettings {
             calibration_sample: None,
             native_model: default_native_model(),
             autostart: false,
+            check_updates: true,
+            skipped_update_version: None,
         }
     }
 }
@@ -1463,6 +1476,117 @@ async fn engine_status(
     Ok(state.transcription.status())
 }
 
+/// A newer Yap release the user has not dismissed (YV44). Returned by
+/// `check_for_update` and rendered as the "Update available" prompt; the
+/// release bytes are NOT touched until the user asks for them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+}
+
+/// Has the user pressed "Skip this version" on exactly this release (YV44)?
+/// Pure so the skip rule is testable: only that one version is suppressed, so a
+/// later release is always offered again.
+fn update_is_skipped(version: &str, skipped: Option<&str>) -> bool {
+    skipped.is_some_and(|s| s == version)
+}
+
+/// Ask the release endpoint whether a newer Yap exists — and ONLY ask (YV44).
+/// Nothing downloads, nothing installs, nothing relaunches here; the answer is
+/// handed to the UI, which prompts. Returns `None` when updates are turned off,
+/// when there is nothing newer, when the user skipped this exact version, or
+/// when no manifest is published yet (GitHub answers 404 for
+/// `releases/latest/download/latest.json` until the first release exists —
+/// that is the NORMAL state, so it is DEBUG, not the launch-time ERROR the
+/// plugin logs on its own). A genuine failure (offline, malformed manifest) is
+/// returned as an error so the manual "Check for updates" button can say so;
+/// the launch-time check ignores it.
+#[tauri::command]
+async fn check_for_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<UpdateInfo>, String> {
+    let (enabled, skipped) = {
+        let s = state.settings.lock();
+        (s.check_updates, s.skipped_update_version.clone())
+    };
+    if !enabled {
+        log::debug!("update check off (checkUpdates=false) — not contacting the endpoint");
+        return Ok(None);
+    }
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            log::debug!("updater unavailable in this build ({e})");
+            return Ok(None);
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            if update_is_skipped(&update.version, skipped.as_deref()) {
+                log::debug!(
+                    "update {} available but skipped by the user",
+                    update.version
+                );
+                return Ok(None);
+            }
+            log::info!(
+                "update available: {} (running {})",
+                update.version,
+                update.current_version
+            );
+            Ok(Some(UpdateInfo {
+                version: update.version.clone(),
+                current_version: update.current_version.clone(),
+                notes: update.body.clone(),
+            }))
+        }
+        Ok(None) => {
+            log::debug!("update check: already on the latest Yap");
+            Ok(None)
+        }
+        Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
+            log::debug!("update check: no release manifest published yet — nothing to update to");
+            Ok(None)
+        }
+        Err(e) => {
+            log::warn!("update check failed: {e}");
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Download + install a release the user just approved (YV44). This is the ONLY
+/// path in Yap that calls `download_and_install`, and the only caller is the
+/// "Install now" button in the update prompt — no launch-time install, ever.
+/// Re-checks first so the bytes installed are the release the prompt named
+/// (signature verification against `plugins.updater.pubkey` happens inside the
+/// plugin). The new bundle applies on the next launch; we do not restart the
+/// app out from under a dictation.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<String, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update available anymore — you're on the latest Yap.".to_string())?;
+    let version = update.version.clone();
+    log::info!("installing Yap {version} (user-approved)");
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| {
+            log::error!("update install failed: {e}");
+            e.to_string()
+        })?;
+    log::info!("Yap {version} installed — applies on relaunch");
+    Ok(version)
+}
+
 /// Open the transcript DB without panicking at launch. A transient failure
 /// (another instance briefly holding the lock, disk momentarily full) is retried
 /// once after a short backoff; if it still fails we degrade to an in-memory DB so
@@ -1709,7 +1833,9 @@ pub fn run() {
             download_model,
             select_model,
             delete_model,
-            engine_status
+            engine_status,
+            check_for_update,
+            install_update
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
@@ -2046,7 +2172,7 @@ pub fn run() {
 mod tests {
     use super::{
         apply_settings_migrations, load_settings, salvage_settings, status_message,
-        write_settings_file, AppSettings, CURRENT_SETTINGS_SCHEMA_VERSION,
+        update_is_skipped, write_settings_file, AppSettings, CURRENT_SETTINGS_SCHEMA_VERSION,
     };
 
     /// A fresh per-test directory (tests run in parallel — never share one).
@@ -2231,6 +2357,57 @@ mod tests {
             .unwrap()
             .insert("denoise".into(), serde_json::json!("sometimes"));
         assert!(salvage_settings(&stored).autostart);
+    }
+
+    // YV44: the update check is on by default (it only ever notifies), stays a
+    // user-owned switch, and survives a store written before the field existed.
+    #[test]
+    fn check_updates_defaults_on_and_round_trips() {
+        assert!(AppSettings::default().check_updates);
+        assert!(AppSettings::default().skipped_update_version.is_none());
+
+        let legacy = r#"{
+            "language": "en",
+            "autoPaste": true,
+            "hotkeyLabel": "fn⌃",
+            "showFloatingPill": true
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(
+            parsed.check_updates,
+            "a pre-YV44 store must still get update notifications"
+        );
+
+        let mut off = AppSettings::default();
+        off.check_updates = false;
+        let json = serde_json::to_string(&off).expect("serialize checkUpdates");
+        assert!(json.contains("\"checkUpdates\":false"));
+        let back: AppSettings = serde_json::from_str(&json).expect("checkUpdates round-trip");
+        assert!(!back.check_updates, "turning updates off must persist");
+
+        // A different field being corrupt must not silently re-enable it.
+        let mut stored = serde_json::to_value(&off).expect("update settings to value");
+        stored
+            .as_object_mut()
+            .unwrap()
+            .insert("denoise".into(), serde_json::json!("sometimes"));
+        assert!(!salvage_settings(&stored).check_updates);
+    }
+
+    // YV44: "Skip this version" suppresses exactly the version the user
+    // dismissed — the next release is still offered.
+    #[test]
+    fn skipped_version_suppresses_only_that_version() {
+        assert!(update_is_skipped("0.7.0", Some("0.7.0")));
+        assert!(!update_is_skipped("0.7.1", Some("0.7.0")));
+        assert!(!update_is_skipped("0.7.0", None));
+
+        let mut skipped = AppSettings::default();
+        skipped.skipped_update_version = Some("0.7.0".into());
+        let json = serde_json::to_string(&skipped).expect("serialize skippedUpdateVersion");
+        assert!(json.contains("\"skippedUpdateVersion\":\"0.7.0\""));
+        let back: AppSettings = serde_json::from_str(&json).expect("skip round-trip");
+        assert_eq!(back.skipped_update_version.as_deref(), Some("0.7.0"));
     }
 
     // YV41: ONE unparseable field used to throw away the entire settings.json

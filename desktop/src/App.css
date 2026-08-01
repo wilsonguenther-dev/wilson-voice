@@ -350,6 +350,35 @@ body:has(.float-pill),
   opacity: 0.85;
 }
 
+/* YV44 — an update is available. Informational + consent-based: it carries its
+   own buttons (install / later / skip), so the banner itself is not a click
+   target and never blocks what the user came to do. */
+.banner.update {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: default;
+}
+
+.banner.update strong {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.banner.update .banner-detail {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.banner.update .banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .perms .perm-list {
   list-style: none;
   margin: 12px 0 0;

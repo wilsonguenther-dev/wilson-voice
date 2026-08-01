@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Onboarding, { type Step as OnboardStep } from "./Onboarding";
 import YappyHouse from "./home/YappyHouse";
+import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import "./App.css";
 
 type Nav =
@@ -85,6 +86,19 @@ interface AppSettings {
    * applies it the moment this saves, and re-applies it on every launch.
    */
   autostart?: boolean;
+  /**
+   * Check GitHub Releases for a newer Yap (backend `check_updates`, YV44). The
+   * check only ever raises the "Update available" prompt — the download and
+   * install run on the user's click. Default on; off means Yap never contacts
+   * the release endpoint.
+   */
+  checkUpdates?: boolean;
+  /**
+   * A version dismissed with "Skip this version" (backend
+   * `skipped_update_version`, YV44). Exactly that version stops being offered;
+   * anything newer still is.
+   */
+  skippedUpdateVersion?: string | null;
 }
 
 interface AppStatus {
@@ -269,6 +283,11 @@ export default function App() {
   // keydown listener; `captureHint` shows the live result / validation message.
   const [capturing, setCapturing] = useState(false);
   const [captureHint, setCaptureHint] = useState<string | null>(null);
+  // YV44 — the pending release, if the check found one the user hasn't skipped.
+  // Non-blocking: it renders as a banner and nothing downloads until they click.
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installedVersion, setInstalledVersion] = useState<string | null>(null);
 
   // Read the live query without making `refreshAll` depend on it — otherwise the
   // mount effect that registers event listeners re-runs on every keystroke,
@@ -438,6 +457,25 @@ export default function App() {
     return () => clearTimeout(t);
   }, [query, loadHistory]);
 
+  // YV44 — one launch-time check that ONLY looks. The backend gates it on the
+  // `checkUpdates` setting and on "skip this version", returns the release
+  // without touching a byte of it, and answers null when there is nothing to
+  // offer. A failed check (offline, endpoint down) is swallowed: an update is a
+  // convenience, never something to interrupt the user with at startup.
+  useEffect(() => {
+    let dead = false;
+    checkForUpdate()
+      .then((found) => {
+        if (!dead) setUpdate(found);
+      })
+      .catch(() => {
+        /* silent by design — the manual check in Settings reports failures */
+      });
+    return () => {
+      dead = true;
+    };
+  }, []);
+
   async function toast(msg: string) {
     setFlash(msg);
     setTimeout(() => setFlash(null), 2000);
@@ -520,6 +558,61 @@ export default function App() {
       toast("Settings saved");
     } catch (e) {
       toast(String(e));
+    }
+  }
+
+  // YV44 — the ONLY path that installs an update: the user clicked "Install
+  // now" on the prompt. The new bundle applies on the next launch, so we say so
+  // instead of restarting Yap out from under a dictation.
+  async function installUpdateNow() {
+    setInstalling(true);
+    try {
+      const version = await installUpdate();
+      setUpdate(null);
+      setInstalledVersion(version);
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  // "Skip this version" — remembered in settings, so this exact release never
+  // prompts again while a newer one still will.
+  async function skipUpdateVersion() {
+    if (!update || !settings) return;
+    const version = update.version;
+    const next: AppSettings = { ...settings, skippedUpdateVersion: version };
+    setUpdate(null);
+    try {
+      await invoke("save_settings", { settings: next });
+      setSettings(next);
+      toast(`Skipping Yap ${version} — you'll hear about the next one`);
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  // Settings → Advanced "Check for updates now". Unlike the launch check this
+  // one always answers the user, including when the check itself failed.
+  async function checkForUpdateNow() {
+    try {
+      // Asking explicitly means "show me anything" — retire an earlier skip so
+      // the version they dismissed can be offered again on request.
+      if (settings?.skippedUpdateVersion) {
+        const next: AppSettings = { ...settings, skippedUpdateVersion: null };
+        await invoke("save_settings", { settings: next });
+        setSettings(next);
+      }
+      const found = await checkForUpdate();
+      setUpdate(found);
+      toast(
+        found
+          ? `Yap ${found.version} is available`
+          : "You're on the latest Yap",
+      );
+    } catch (e) {
+      toast(`Couldn't check for updates: ${e}`);
     }
   }
 
@@ -823,6 +916,45 @@ export default function App() {
           <div className="banner warn" onClick={() => setNav("permissions")}>
             Setup incomplete — open Permissions to enable Mic / Accessibility
             for Yap
+          </div>
+        )}
+
+        {/* YV44 — a newer Yap EXISTS. Nothing has been downloaded: this banner
+            is the whole notification, it never blocks the app, and the install
+            happens only if the user asks for it here. "Later" hides it until
+            the next launch; "Skip this version" retires this release for good. */}
+        {update && (
+          <div className="banner update">
+            <strong>
+              Update available — Yap {update.version} (you're on{" "}
+              {update.currentVersion}). Install now?
+            </strong>
+            {update.notes && (
+              <span className="banner-detail">{update.notes}</span>
+            )}
+            <div className="banner-actions">
+              <button
+                className="primary"
+                onClick={installUpdateNow}
+                disabled={installing}
+              >
+                {installing ? "Installing…" : "Install now"}
+              </button>
+              <button onClick={() => setUpdate(null)} disabled={installing}>
+                Later
+              </button>
+              <button onClick={skipUpdateVersion} disabled={installing}>
+                Skip this version
+              </button>
+            </div>
+          </div>
+        )}
+
+        {installedVersion && (
+          <div className="banner update">
+            <strong>
+              Yap {installedVersion} installed — quit and reopen Yap to finish.
+            </strong>
           </div>
         )}
 
@@ -1868,6 +2000,36 @@ export default function App() {
                         automatically when you sign in
                       </span>
                     </label>
+                  </div>
+                  {/* YV44 — updates are opt-out and consent-based: Yap asks
+                      before it ever downloads or installs anything. */}
+                  <div className="panel">
+                    <h3>Updates</h3>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.checkUpdates ?? true}
+                        onChange={(e) =>
+                          saveSettings({
+                            ...settings,
+                            checkUpdates: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>
+                        <strong>Check for updates</strong> — look for a newer
+                        Yap at launch and tell you about it. Nothing downloads
+                        or installs until you say so; turn this off and Yap
+                        never contacts the release page at all
+                      </span>
+                    </label>
+                    {(settings.checkUpdates ?? true) && (
+                      <div className="actions" style={{ marginTop: 10 }}>
+                        <button onClick={checkForUpdateNow}>
+                          Check for updates now
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </section>
               )}

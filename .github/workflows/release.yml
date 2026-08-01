@@ -68,11 +68,10 @@ jobs:
       # uploads them all as assets. Reads the frontend already built above via
       # beforeBuildCommand (idempotent).
       #
-      # TODO(distribution): before the first real release, generate a production
-      # updater keypair (`npm run tauri signer generate`) and set:
-      #   - repo secret TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD if any)
-      #   - the matching public key in tauri.conf.json plugins.updater.pubkey
-      #     (the value committed there today is a THROWAWAY placeholder key).
+      # TODO(distribution): before the first real release, set repo secret
+      # TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD if any) to the private half of
+      # the production updater keypair whose public key YV44 committed to
+      # tauri.conf.json plugins.updater.pubkey.
       # For signed + notarized DMGs also set APPLE_ID / APPLE_PASSWORD (an
       # app-specific password) / APPLE_TEAM_ID / APPLE_SIGNING_IDENTITY.
       - name: Build, sign, notarize + publish (tauri-action)
