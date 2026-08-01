@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import Onboarding, { type Step as OnboardStep } from "./Onboarding";
+import Onboarding from "./Onboarding";
+import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import "./App.css";
@@ -132,7 +133,8 @@ interface AppStatus {
   /**
    * YV33 — dictation can actually run: the selected embedded model is
    * downloaded. Since YV34 that is the only ASR path, so false means the app
-   * shows a "Model needed" route into the onboarding model step, never "Ready".
+   * never says "Ready"; since YV54 it also means a download is already under
+   * way, reported by the slim `ModelRibbon` rather than a demand to go pick one.
    */
   modelReady: boolean;
   /**
@@ -379,9 +381,6 @@ export default function App() {
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-  // YV33 — re-open the onboarding overlay on a specific step (the "Model
-  // needed" route). null = not showing it.
-  const [setupStep, setSetupStep] = useState<OnboardStep | null>(null);
   // YV15 — key-capture for the push-to-talk shortcut. `capturing` arms a global
   // keydown listener; `captureHint` shows the live result / validation message.
   const [capturing, setCapturing] = useState(false);
@@ -391,6 +390,15 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installedVersion, setInstalledVersion] = useState<string | null>(null);
+  // YV54 — silent model setup. The onboarding overlay owns the auto-download
+  // during first run, so this instance only takes it over once the user IS
+  // onboarded: an install that lands here with no model (fresh profile, a
+  // deleted file, an update on a machine that skipped setup) starts fetching
+  // the catalog's recommendation on its own, and says so with the same slim
+  // ribbon. It also backs the Settings → Advanced picker.
+  const modelSetup = useModelSetup({
+    autoDownload: settings?.onboarded === true,
+  });
 
   // Read the live query without making `refreshAll` depend on it — otherwise the
   // mount effect that registers event listeners re-runs on every keystroke,
@@ -584,6 +592,18 @@ export default function App() {
     }, 200);
     return () => clearTimeout(t);
   }, [query, loadHistory]);
+
+  // YV54 — a silently-downloaded model landing changes what the BACKEND reports
+  // (status `modelReady`, the Permissions ASR row), and selecting one emits
+  // `settings`, not `status`. Re-read once on the false→true edge only, so a
+  // launch that already had a model does not pay for a second boot refresh.
+  const modelIsReady = modelSetup.ready;
+  const wasModelReady = useRef<boolean | null>(null);
+  useEffect(() => {
+    const prev = wasModelReady.current;
+    wasModelReady.current = modelIsReady;
+    if (prev === false && modelIsReady) refreshAll();
+  }, [modelIsReady, refreshAll]);
 
   // YV44 — one launch-time check that ONLY looks. The backend gates it on the
   // `checkUpdates` setting and on "skip this version", returns the release
@@ -805,6 +825,14 @@ export default function App() {
       onboarded: true,
       calibrationSample: sample ?? settings.calibrationSample ?? null,
     });
+  }
+
+  // YV54 — the model picker's one home: Settings → Advanced. Every "get / manage
+  // a speech model" affordance in the app lands here now that onboarding no
+  // longer asks the question.
+  function openModelSettings() {
+    setNav("settings");
+    setSettingsTab("advanced");
   }
 
   // "Replay onboarding" — clear the gate so the flow shows again.
@@ -1097,25 +1125,6 @@ export default function App() {
     );
   }
 
-  // YV33 — the same overlay, re-opened on one step, is how an already-onboarded
-  // install fixes "Model needed" (no model on disk = nothing can transcribe).
-  if (settings && setupStep) {
-    return (
-      <Onboarding
-        initialStep={setupStep}
-        onFinish={(sample) => {
-          setSetupStep(null);
-          finishOnboarding(sample);
-          refreshAll();
-        }}
-        onSkip={() => {
-          setSetupStep(null);
-          refreshAll();
-        }}
-      />
-    );
-  }
-
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -1232,14 +1241,11 @@ export default function App() {
           </div>
         )}
 
-        {/* YV33 — no usable model means dictation cannot run at all, so this
-            outranks the permissions banner and routes straight to the download
-            step instead of leaving the user to discover it mid-take. */}
-        {!status.modelReady && (
-          <div className="banner warn" onClick={() => setSetupStep("model")}>
-            Model needed — download a speech model to start dictating
-          </div>
-        )}
+        {/* YV54 — no usable model is no longer a "Model needed" demand that
+            routes the user into a decision screen: the download is already
+            running, so this is the same slim ribbon onboarding shows, and it
+            retires itself the moment the engine is ready. */}
+        <ModelRibbon setup={modelSetup} />
 
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
@@ -1305,11 +1311,13 @@ export default function App() {
                   </button>
                   {/* YV33 — replaces "Install local ASR", the button that
                       bootstrapped the (now deleted, YV34) Python sidecar and
-                      froze the app for minutes doing it. The embedded GGUF
-                      engine needs a downloaded model instead, so this routes to
-                      the model step. */}
-                  <button onClick={() => setSetupStep("model")}>
-                    {status.modelReady ? "Manage speech model" : "Get a speech model"}
+                      froze the app for minutes doing it. YV54 moved the model
+                      picker out of onboarding, so this routes to where it now
+                      lives instead of re-opening the overlay. */}
+                  <button onClick={openModelSettings}>
+                    {modelSetup.ready
+                      ? "Manage speech model"
+                      : "Choose a speech model"}
                   </button>
                   <button
                     onClick={async () => {
@@ -1413,9 +1421,9 @@ export default function App() {
                   <div>
                     <strong>Speech model</strong>
                     <p className="muted">{perms?.asrDetail}</p>
-                    {!status.modelReady && (
-                      <button onClick={() => setSetupStep("model")}>
-                        Get a speech model
+                    {!modelSetup.ready && (
+                      <button onClick={openModelSettings}>
+                        Choose a speech model
                       </button>
                     )}
                   </div>
@@ -2708,8 +2716,9 @@ export default function App() {
                   YV34 retired the speed-profile buttons and the "Voice model
                   (advanced override)" list: both picked a repo id for the
                   deleted Python sidecar. Speed vs. accuracy is now a property
-                  of which embedded model you download, so this routes to the
-                  one place that choice lives. */}
+                  of which embedded model you download — and since YV54 stopped
+                  asking first-run users that question, this panel IS the picker
+                  for the people who want to answer it. */}
               {settingsTab === "advanced" && (
                 <section className="settings-panel">
                   <h2 className="settings-section">
@@ -2720,25 +2729,17 @@ export default function App() {
                     </span>
                   </h2>
                   <div className="panel">
-                    <h3>Speed vs. accuracy</h3>
+                    <h3>Speech model</h3>
                     <p className="muted">
                       Yap transcribes inside the app itself — no helper process,
                       nothing installed on the side, nothing off this Mac. Your
                       model is kept loaded so dictation starts the moment you
                       press your key. Smaller models are faster and lighter;
                       larger ones are more accurate on long or technical
-                      dictation.
+                      dictation. Yap picks the recommended one for you — swap it
+                      here if you'd rather choose.
                     </p>
-                    <div className="actions" style={{ marginTop: 10 }}>
-                      <button
-                        className="primary"
-                        onClick={() => setSetupStep("model")}
-                      >
-                        {status.modelReady
-                          ? "Manage speech model"
-                          : "Get a speech model"}
-                      </button>
-                    </div>
+                    <ModelPicker setup={modelSetup} />
                     <p className="muted tiny" style={{ marginTop: 8 }}>
                       {perms?.asrDetail}
                     </p>

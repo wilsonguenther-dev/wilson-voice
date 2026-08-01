@@ -1518,6 +1518,68 @@ button.star.on {
   margin-left: 6px;
 }
 
+/* YV54 · silent model setup — the ONLY thing the download shows the user. A
+   slim mono line (pixel voice, like every other machine-reported number in the
+   app), no heading, no buttons while it works, and it removes itself the moment
+   the engine is ready. Layout-neutral by design: the onboarding card and the
+   main shell each place it, so it inherits no margin of its own. */
+.model-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.onboard-card .model-ribbon {
+  margin-top: 24px;
+}
+
+.main > .model-ribbon {
+  margin: 0 24px 8px;
+}
+
+.model-ribbon-track {
+  flex: 0 0 88px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.model-ribbon-track > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+
+.model-ribbon-text {
+  flex: 1 1 auto;
+}
+
+.model-ribbon.bad {
+  border-color: rgba(244, 63, 94, 0.35);
+  color: var(--danger);
+}
+
+.model-ribbon.bad .model-ribbon-track > span {
+  background: var(--danger);
+}
+
+.model-ribbon button {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 3px 10px;
+}
+
 .onboard-phrase {
   margin: 16px 0;
   padding: 16px 18px;
