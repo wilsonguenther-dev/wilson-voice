@@ -6,6 +6,7 @@
 
 mod asr_engine;
 mod cli;
+mod command_mode;
 mod db;
 mod dictation;
 mod float_pill;
@@ -62,6 +63,11 @@ pub struct AppSettings {
     /// fn | fn_control | both — CGEvent FN PTT (not Carbon).
     #[serde(default = "default_ptt_binding")]
     pub ptt_binding: String,
+    /// YV49 command mode: which EXTRA modifier, held with `ptt_binding`, makes a
+    /// press edit the selection instead of typing. command (⌘, default) | option
+    /// (⌥) | off. Independent of `ptt_binding` so plain dictation is unaffected.
+    #[serde(default = "default_command_binding")]
+    pub command_binding: String,
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
@@ -148,6 +154,9 @@ fn default_schema_version() -> u32 {
 fn default_ptt_binding() -> String {
     "fn_control".into()
 }
+fn default_command_binding() -> String {
+    "command".into()
+}
 fn default_pill_style() -> String {
     "classic".into()
 }
@@ -179,6 +188,7 @@ impl Default for AppSettings {
             // Always-on glass island rides all Spaces
             show_floating_pill: true,
             ptt_binding: "fn_control".into(),
+            command_binding: "command".into(),
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
             companion_tone: "friendly".into(),
@@ -229,6 +239,12 @@ struct AppState {
     busy: PLMutex<bool>,
     /// Hands-free latch (double-tap fn⌃); release keys but keep recording.
     hands_free: PLMutex<bool>,
+    /// YV49 command mode: the selection captured when THIS take began, read via
+    /// AX at key-down. `Some` marks the in-flight take as a command (edit the
+    /// selection) rather than dictation (type the transcript). Consumed by
+    /// `stop_and_transcribe` and cleared by `cancel_recording`, so it can never
+    /// leak into a later, ordinary take.
+    command_selection: PLMutex<Option<String>>,
     recorder: PLMutex<Option<record::ActiveRecording>>,
     /// System-output state captured when we muted the Mac for a take (YV28).
     /// `Some` only while a recording has the output muted; restored + cleared on
@@ -515,6 +531,9 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     }
     *state.recording.lock() = false;
     *state.hands_free.lock() = false;
+    // YV49: a cancelled command press must not leave its selection armed for
+    // the next, ordinary take.
+    *state.command_selection.lock() = None;
     // YV28: un-mute the Mac the moment the take ends (cancel path).
     restore_system_output(state);
     let _ = app.emit("recording", false);
@@ -559,6 +578,15 @@ impl Drop for WorkerBusyGuard {
 /// onboarding overlay clears its "Transcribing…" state on `transcript` alone and
 /// spun forever on any ASR failure. Payload: `{ message }`.
 pub const TRANSCRIPT_ERROR_EVENT: &str = "transcript_error";
+
+/// Transient toast channel (the `.toast` flash in App.tsx). Carries the paste
+/// result line and, since YV49, the command-mode outcomes — including the
+/// "Didn't catch a command" rejection that leaves the selection untouched.
+pub const PASTE_OUTCOME_EVENT: &str = "paste_outcome";
+
+/// Soft status for a take that produced nothing to paste — a fumbled tap or a
+/// rejected hallucination loop. Normal, not an error.
+const NO_SPEECH_MESSAGE: &str = "Didn't catch any speech — hold and speak";
 
 /// The selected embedded model when it is actually downloaded, as
 /// `(catalog id, on-disk path)`. `None` means nothing has been fetched yet, so
@@ -624,6 +652,21 @@ fn transcribe_native(
     })
 }
 
+/// What a finished take produced (YV49).
+///
+/// Dictation inserts a transcript row and pastes it. A command-mode take does
+/// neither: it edits the selection in place (or is rejected), and the spoken
+/// instruction is NOT the user's text, so it never enters history. Both of the
+/// pre-YV49 "nothing to paste" exits (no speech, hallucination loop) are the
+/// same `Soft` shape, which is why the worker's `Ok(None)` became this enum.
+enum TakeOutcome {
+    /// Transcript row + paste result + release→clipboard latency.
+    Dictated(TranscriptEntry, paste::PasteOutcome, i64),
+    /// A transient toast, not an error: no speech, a rejected hallucination
+    /// loop, an applied command edit, or an unrecognised command.
+    Soft(String),
+}
+
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // Hands-free: ignore key-release; only stop on explicit tap / button
     if *state.hands_free.lock() {
@@ -653,6 +696,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let state2 = state.clone();
     // Capture focused app *before* we steal focus with notifications / main window.
     let source_app = focus::frontmost_app_name();
+    // YV49: `Some` means this take was a command press — the selection it is
+    // about to edit was read at key-down. Taken (not read) so exactly one take
+    // can ever consume it.
+    let command_selection = state.command_selection.lock().take();
     // YV39: the generation this take belongs to. Re-checked immediately before
     // the paste — a cancel during ASR bumps it and the transcript is copied
     // only, never pasted.
@@ -668,7 +715,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         };
         // `Ok(None)` = nothing to paste (no speech, or a rejected hallucination
         // loop): the caller shows a gentle soft status instead of a hard error.
-        let result = (|| -> Result<Option<(TranscriptEntry, paste::PasteOutcome, i64)>, String> {
+        let result = (|| -> Result<TakeOutcome, String> {
             // YV36 voice isolation — borrow the WARM Silero VAD built once at
             // startup (gated behind the `denoise` setting). Nothing is loaded,
             // downloaded or analysed on the hot path; `None` (model still
@@ -706,7 +753,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     rec.voiced_seconds,
                     rec.speech_present
                 );
-                return Ok(None);
+                return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
             // YV34 — the embedded GGUF engine is the ONLY transcriber: it runs
             // in-process (no interpreter, no HuggingFace download) on the
@@ -747,8 +794,56 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     "hallucination gate: rejected degenerate ASR output ({} chars)",
                     raw_text.chars().count()
                 );
-                return Ok(None);
+                return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
             }
+            // YV49 command mode — this take is an INSTRUCTION about the text the
+            // user had selected when they pressed, not text to type. It branches
+            // BEFORE the cleanup pipeline on purpose: list detection and polish
+            // are for dictated prose and would reshape the instruction itself.
+            //
+            // The hard rule: an instruction outside the deterministic command
+            // table NEVER edits the selection. We toast and leave the text
+            // exactly as it was — guessing would silently mangle text the user
+            // cannot get back.
+            if let Some(selection) = command_selection {
+                let Some(command) = command_mode::parse_command(&raw_text) else {
+                    // YV20/M2 hygiene: count only, never log the spoken text.
+                    log::info!(
+                        "command mode: unrecognised instruction ({} chars) — selection untouched",
+                        raw_text.chars().count()
+                    );
+                    return Ok(TakeOutcome::Soft(
+                        command_mode::UNKNOWN_COMMAND_MESSAGE.into(),
+                    ));
+                };
+                // Same cancellation guard as dictation (YV39): a command the user
+                // cancelled during ASR must not edit their app seconds later.
+                if state2.paste_generation.load(Ordering::SeqCst) != generation {
+                    log::warn!("stale command (cancelled during transcription) — no edit");
+                    return Ok(TakeOutcome::Soft("Command cancelled".into()));
+                }
+                // `Delete` is carried out as a real Delete keystroke rather than
+                // pasting an empty string (a no-op in several apps), which also
+                // leaves the user's clipboard alone.
+                let outcome = if command == command_mode::Command::Delete {
+                    paste::delete_selection(&app2, source_app.as_deref())
+                } else {
+                    let edited = command_mode::apply(&command, &selection);
+                    paste::copy_and_maybe_paste(&app2, &edited, true, source_app.as_deref())
+                };
+                log::info!(
+                    "command mode: {} ({} selected chars) → {}",
+                    command.label(),
+                    selection.chars().count(),
+                    outcome.message
+                );
+                return Ok(TakeOutcome::Soft(if outcome.pasted {
+                    command.label()
+                } else {
+                    format!("{} — {}", command.label(), outcome.message)
+                }));
+            }
+
             // Smart dictation (YV5): resolve the effective mode — a user-picked fixed mode
             // wins, otherwise it's inferred from the focused app.
             let dictation_mode = dictation::resolve_mode(
@@ -827,11 +922,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
-            Ok(Some((entry, outcome, pipeline_ms)))
+            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms))
         })();
 
         match result {
-            Ok(Some((entry, outcome, pipeline_ms))) => {
+            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms)) => {
                 if outcome.pasted {
                     *state2.last_error.lock() = None;
                 } else if !outcome.copied {
@@ -843,7 +938,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     *state2.last_error.lock() = None;
                 }
                 let _ = app2.emit("transcript", &entry);
-                let _ = app2.emit("paste_outcome", &outcome.message);
+                let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 let _ = app2.emit(
                     "latency",
                     serde_json::json!({
@@ -870,15 +965,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     pipeline_ms
                 );
             }
-            Ok(None) => {
-                // No speech / rejected hallucination: nothing to paste. This is a
-                // NORMAL fumbled tap, not a failure — surface a gentle soft status
-                // (transient flash toast) and do NOT set a hard last_error, do NOT
-                // insert a transcript.
+            Ok(TakeOutcome::Soft(msg)) => {
+                // Nothing was typed: a fumbled tap, a rejected hallucination
+                // loop, or a command-mode outcome. All NORMAL, not failures —
+                // surface a gentle soft status (transient flash toast) and do
+                // NOT set a hard last_error, do NOT insert a transcript.
                 *state2.last_error.lock() = None;
-                let msg = "Didn't catch any speech — hold and speak";
-                let _ = app2.emit("paste_outcome", msg);
-                log::info!("no-speech / hallucination: skipped paste, soft status shown");
+                let _ = app2.emit(PASTE_OUTCOME_EVENT, &msg);
+                log::info!("soft take outcome: {msg}");
             }
             Err(e) => {
                 log::error!("pipeline failed: {e}");
@@ -1122,6 +1216,9 @@ fn save_settings(
     #[cfg(target_os = "macos")]
     {
         ptt_macos::set_binding(ptt_macos::PttBinding::from_settings(&next.ptt_binding));
+        ptt_macos::set_command_binding(ptt_macos::CommandBinding::from_settings(
+            &next.command_binding,
+        ));
     }
     // YV42: the login item follows the toggle immediately, not on next launch.
     apply_autostart(&app, next.autostart);
@@ -1760,6 +1857,7 @@ pub fn run() {
         recording: PLMutex::new(false),
         busy: PLMutex::new(false),
         hands_free: PLMutex::new(false),
+        command_selection: PLMutex::new(None),
         recorder: PLMutex::new(None),
         saved_audio: PLMutex::new(None),
         db,
@@ -2142,16 +2240,46 @@ pub fn run() {
                 let binding = ptt_macos::PttBinding::from_settings(
                     &state.settings.lock().ptt_binding,
                 );
+                let command_binding = ptt_macos::CommandBinding::from_settings(
+                    &state.settings.lock().command_binding,
+                );
                 let st = state.clone();
                 let h = app.handle().clone();
                 ptt_macos::start(
                     binding,
+                    command_binding,
                     Arc::new(move |ev| {
                         let st = st.clone();
                         let h = h.clone();
                         if let Err(e) = h.clone().run_on_main_thread(move || match ev {
                             ptt_macos::PttEvent::Start => {
-                                start_recording(&h, &st);
+                                // YV49: a press that carried the command modifier
+                                // EDITS the current selection instead of typing.
+                                // Read the selection here, at press time — by the
+                                // time ASR returns, focus and selection may both
+                                // have moved. No selection → nothing to edit, so
+                                // the take never starts (just a toast).
+                                if ptt_macos::command_mode_active() {
+                                    match focus::selected_text() {
+                                        Some(selection) => {
+                                            *st.command_selection.lock() = Some(selection);
+                                            start_recording(&h, &st);
+                                        }
+                                        None => {
+                                            *st.command_selection.lock() = None;
+                                            log::info!(
+                                                "command mode: no selection — take not started"
+                                            );
+                                            let _ = h.emit(
+                                                PASTE_OUTCOME_EVENT,
+                                                command_mode::NO_SELECTION_MESSAGE,
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    *st.command_selection.lock() = None;
+                                    start_recording(&h, &st);
+                                }
                             }
                             ptt_macos::PttEvent::Stop => {
                                 *st.hands_free.lock() = false;
@@ -2178,7 +2306,11 @@ pub fn run() {
                     }),
                 );
                 *state.hotkey_registered.lock() = true;
-                log::info!("PTT hybrid started ({})", binding.label());
+                log::info!(
+                    "PTT hybrid started ({} · command mode {})",
+                    binding.label(),
+                    command_binding.label()
+                );
             }
 
             // YV43: watch for the one condition that kills the tap above without
