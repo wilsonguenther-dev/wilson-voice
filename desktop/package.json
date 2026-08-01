@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "sidecar": "cargo build -p yap-polish --release && mkdir -p src-tauri/binaries && cp target/release/yap-polish src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')",
+    "sidecar": "cargo build -p yap-polish --release && mkdir -p src-tauri/binaries && cp ${CARGO_TARGET_DIR:-target}/release/yap-polish src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')",
     "desktop:dev": "npm run sidecar && tauri dev",
     "desktop:build": "npm run sidecar && tauri build"
   },
