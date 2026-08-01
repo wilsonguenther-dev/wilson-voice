@@ -20,6 +20,9 @@ mod models;
 mod paste;
 mod paste_tx;
 mod permissions;
+// YV61: the validated polish stage. Public for the same reason `dictation` is —
+// the golden formatting corpus runs the real stage from an integration test.
+pub mod polish;
 // The JSONL contract with the `yap-polish` sidecar. Compiled into BOTH binaries
 // from this one file (see the module docs) so the two ends cannot drift.
 mod polish_protocol;
@@ -110,6 +113,23 @@ pub struct AppSettings {
     /// WHOLE utterance). See `snippets::SnippetScope`.
     #[serde(default = "default_snippet_scope")]
     pub snippet_scope: String,
+    /// YV61 local-LLM polish: the catalog id of the installed polish model
+    /// (`models::polish_models()`), or `""` — the default — for OFF. With no id
+    /// (or no downloaded file) `polish::polish_llm` never spawns the sidecar and
+    /// the cleanup pipeline is exactly what it is today.
+    #[serde(default)]
+    pub polish_model: String,
+    /// Hard deadline for one polish pass, in ms (spec §2.3, default 1200). Past
+    /// it the model's answer is dropped and the rules text is what pastes.
+    #[serde(default = "default_polish_deadline_ms")]
+    pub polish_deadline_ms: u64,
+    /// The `style_<mode>` tone dial (spec §2.4/R14), keyed by dictation mode
+    /// (`email`, `chat`, …) with `very casual | casual | default | formal` as
+    /// values. A mode with no entry — the default for all of them — is
+    /// `default`. A map, not one field per mode, so a new mode needs no schema
+    /// change.
+    #[serde(default)]
+    pub polish_styles: std::collections::BTreeMap<String, String>,
     /// Denoise the captured clip with RNNoise before transcription (YV12).
     /// Suppresses steady background noise (fans, hum, keyboard) over the
     /// native-rate buffer before the 16 kHz downsample. Defaults on; the
@@ -195,6 +215,9 @@ fn default_cleanup_level() -> String {
 fn default_snippet_scope() -> String {
     "inline".into()
 }
+fn default_polish_deadline_ms() -> u64 {
+    polish::DEFAULT_POLISH_DEADLINE_MS
+}
 fn default_true() -> bool {
     true
 }
@@ -222,6 +245,9 @@ impl Default for AppSettings {
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
             snippet_scope: "inline".into(),
+            polish_model: String::new(),
+            polish_deadline_ms: polish::DEFAULT_POLISH_DEADLINE_MS,
+            polish_styles: std::collections::BTreeMap::new(),
             denoise: true,
             mute_while_dictating: true,
             onboarded: false,
@@ -928,13 +954,19 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // stage is guarded so a non-empty transcript can never become empty (falls
             // back to its input on any error/empty result — "never lose text").
             let cleanup_level = dictation::CleanupLevel::from_setting(&settings.cleanup_level);
+            // YV61 stage 4: the validated polish path, bound to THIS take's mode
+            // and the tone dial for it. It fails closed — a missing model, a
+            // missed deadline, a crashed sidecar or a rewrite that fails
+            // `validate_polish` all return `None`, and `run_cleanup` keeps the
+            // rules text byte for byte.
+            let polish_config = polish::PolishConfig::from_settings(&settings, dictation_mode);
             let t_cleanup = std::time::Instant::now();
             let text = dictation::run_cleanup(
                 &raw_text,
                 cleanup_level,
                 dictation_mode,
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
-                dictation::polish_llm,
+                |t| polish::polish_llm(t, dictation_mode, &polish_config),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -1585,20 +1617,22 @@ fn retry_failed_dictation(
     }
     // Same cleanup pipeline as a live take, minus the caret context: the retry
     // happens in Yap, so there is no cursor to join onto.
+    let mode = dictation::resolve_mode(
+        &settings.dictation_mode,
+        row.source_app.as_deref().unwrap_or_default(),
+    );
+    let polish_config = polish::PolishConfig::from_settings(&settings, mode);
     let text = dictation::run_cleanup(
         &raw_text,
         dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-        dictation::resolve_mode(
-            &settings.dictation_mode,
-            row.source_app.as_deref().unwrap_or_default(),
-        ),
+        mode,
         |t| {
             state
                 .db
                 .apply_dictionary(t)
                 .unwrap_or_else(|_| t.to_string())
         },
-        dictation::polish_llm,
+        |t| polish::polish_llm(t, mode, &polish_config),
     );
     let entry = state.db.convert_failed_dictation(
         &id,

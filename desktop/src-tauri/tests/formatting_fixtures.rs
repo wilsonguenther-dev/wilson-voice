@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use wilson_voice_lib::dictation::{self, CleanupLevel, DictationMode};
+use wilson_voice_lib::polish;
 
 // ---------------------------------------------------------------------------
 // Corpus
@@ -165,10 +166,14 @@ fn rules_output(case: &Case) -> String {
     pipeline(case, |_| None)
 }
 
-/// The production pipeline, including whatever `polish_llm` does on this machine
-/// (a no-op until a polish model is installed).
+/// The production pipeline, including whatever the polish stage does on this
+/// machine: YV61 wires `polish::polish_llm` to the take's mode and the polish
+/// settings, so this is a no-op until a polish model is installed and selected
+/// (`PolishConfig::default().model == ""`).
 fn full_output(case: &Case) -> String {
-    pipeline(case, dictation::polish_llm)
+    let mode = mode_of(case);
+    let config = polish::PolishConfig::default();
+    pipeline(case, |text| polish::polish_llm(text, mode, &config))
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +671,17 @@ fn fixtures_latency_report_renders() {
     }
 }
 
+/// The polish stage as this machine would run it: the best-ranked polish model
+/// that is actually downloaded (none ⇒ the stage is off and every sample is a
+/// no-op, which is why the harness below is `#[ignore]`d).
+fn latency_config() -> polish::PolishConfig {
+    let settings = wilson_voice_lib::AppSettings {
+        polish_model: polish::installed_model_id().unwrap_or_default(),
+        ..Default::default()
+    };
+    polish::PolishConfig::from_settings(&settings, DictationMode::Notes)
+}
+
 /// Measure the real polish stage and write `docs/research/polish-latency.md`.
 ///
 /// Ignored by default because it needs a downloaded polish model: with none
@@ -682,13 +698,14 @@ fn polish_latency_p50_under_budget() {
 
     // Warm-up: model load and the static prompt's KV cache are one-time costs and
     // are explicitly OFF the dictation path in §2.3's budget.
-    let _ = dictation::polish_llm(LATENCY_INPUT);
+    let config = latency_config();
+    let _ = polish::polish_llm(LATENCY_INPUT, DictationMode::Notes, &config);
 
     let mut samples = Vec::with_capacity(POLISH_SAMPLES);
     let mut polished = 0usize;
     for _ in 0..POLISH_SAMPLES {
         let start = Instant::now();
-        let out = dictation::polish_llm(LATENCY_INPUT);
+        let out = polish::polish_llm(LATENCY_INPUT, DictationMode::Notes, &config);
         samples.push(start.elapsed());
         if out.is_some() {
             polished += 1;
