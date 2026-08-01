@@ -577,6 +577,31 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Undo AI edit (YV51) — re-paste the raw take over the polished one.
+// ---------------------------------------------------------------------------
+
+/// Pick the text for "Undo AI edit": the raw ASR transcript of a take, but ONLY
+/// when it actually differs from the polished text that was pasted.
+///
+/// Returns `None` — i.e. the action is inert and must be disabled — when:
+///   * the row stores no raw at all (legacy rows written before the column), or
+///   * the raw is blank, so re-pasting it would replace the user's text with
+///     nothing (the pipeline's "never lose text" rule applies here too), or
+///   * raw and polished match once trimmed — Auto-Cleanup was `None`, or every
+///     enabled stage was a no-op, so there is no AI edit to undo.
+///
+/// The comparison is on the TRIMMED strings on purpose: the only difference the
+/// context join (YV50) can leave on its own is a leading space, and re-pasting a
+/// whole take just to drop one space is not an "undo".
+pub fn undo_ai_edit_text<'a>(polished: &str, raw: Option<&'a str>) -> Option<&'a str> {
+    let raw = raw?;
+    if raw.trim().is_empty() || raw.trim() == polished.trim() {
+        return None;
+    }
+    Some(raw)
+}
+
+// ---------------------------------------------------------------------------
 // Backtrack v1 (YV6) — rule-based filler + self-correction cleanup (on-device).
 //
 // A conservative, PURE first pass that mirrors Wispr Flow's "Backtrack" for the
@@ -1125,6 +1150,57 @@ mod tests {
         // Medium: formatting also runs → numbered list.
         let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, polish_llm);
         assert_eq!(medium, "1. Buy milk\n2. Buy eggs");
+    }
+
+    // --- Undo AI edit (YV51) ----------------------------------------------
+
+    #[test]
+    fn undo_offers_the_raw_take_only_when_cleanup_changed_it() {
+        // Light cleanup dropped the filler → raw differs → undo is offered, and
+        // it hands back the VERBATIM raw (fillers included), not a re-clean.
+        let raw = "um the report is uh done";
+        let polished = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        assert_ne!(polished, raw);
+        assert_eq!(undo_ai_edit_text(&polished, Some(raw)), Some(raw));
+    }
+
+    #[test]
+    fn undo_is_inert_when_raw_equals_polished() {
+        // Auto-Cleanup = None is a verbatim passthrough, so there is nothing to
+        // undo — the tray item / shortcut / history button must stay disabled.
+        let raw = "the report is done";
+        let polished = run_cleanup(raw, CleanupLevel::None, DictationMode::Notes, no_dict, polish_llm);
+        assert_eq!(polished, raw);
+        assert_eq!(undo_ai_edit_text(&polished, Some(raw)), None);
+        // Same when every enabled stage was a no-op on already-clean text.
+        let clean = run_cleanup(raw, CleanupLevel::Light, DictationMode::Notes, no_dict, polish_llm);
+        assert_eq!(undo_ai_edit_text(&clean, Some(raw)), None);
+    }
+
+    #[test]
+    fn undo_is_inert_without_a_usable_raw() {
+        // Legacy rows predate the raw_text column → nothing to fall back to.
+        assert_eq!(undo_ai_edit_text("polished text", None), None);
+        // A blank raw must never be pasted over the user's text.
+        assert_eq!(undo_ai_edit_text("polished text", Some("")), None);
+        assert_eq!(undo_ai_edit_text("polished text", Some("   \n ")), None);
+    }
+
+    #[test]
+    fn undo_ignores_a_context_join_that_only_added_surrounding_space() {
+        // YV50 joins the take onto the caret text by adding a leading space.
+        // That alone is not an AI edit, so undo stays inert...
+        let raw = "buy milk";
+        let joined = join_with_context(raw, Some("I need to"));
+        assert_eq!(joined, " buy milk");
+        assert_eq!(undo_ai_edit_text(&joined, Some(raw)), None);
+        // ...but a casing change from the same join IS a real edit to undo.
+        let recased = join_with_context("Buy milk", Some("I need to"));
+        assert_eq!(recased, " buy milk");
+        assert_eq!(
+            undo_ai_edit_text(&recased, Some("Buy milk")),
+            Some("Buy milk")
+        );
     }
 
     // --- Context awareness v1 (YV50) --------------------------------------
