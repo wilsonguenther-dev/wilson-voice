@@ -34,6 +34,18 @@ body,
   user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 }
+/* YV53 — side docks. The window itself is parked flush to the screen edge, so
+ * the capsule hugs that edge instead of floating in the middle of the (much
+ * wider, transparent) window. It stays a horizontal capsule, vertically centred;
+ * the small inset keeps its ambient shadow from being clipped by the screen. */
+:root[data-dock="left"] .stage {
+  justify-content: flex-start;
+  padding-left: 10px;
+}
+:root[data-dock="right"] .stage {
+  justify-content: flex-end;
+  padding-right: 10px;
+}
 
 .pill {
   position: relative;

@@ -59,6 +59,13 @@ interface AppSettings {
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
   /**
+   * Where the pill docks on screen (backend `pill_position`, YV53): "bottom"
+   * (centred island, the default) | "left" | "right" — a Wispr-style side dock,
+   * vertically centred and flush to that screen edge. The backend moves the
+   * NSPanel; the float webview aligns the pill to the same edge live.
+   */
+  pillPosition?: string;
+  /**
    * Companion tone (YV27): friendly | rude | rose (default friendly). Drives
    * Yappy's reactive lines — the pill chatter + the house mood label. Read live
    * by YappyPill (settings event) and YappyHouse (prop). Curse filter stays on.
@@ -2119,6 +2126,39 @@ export default function App() {
                           }
                           onClick={() =>
                             saveSettings({ ...settings, pillStyle: id })
+                          }
+                        >
+                          <strong>{label}</strong>
+                          <span>{blurb}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="panel">
+                    <h3>Screen position</h3>
+                    <p>
+                      Where your companion sits. Bottom is the classic island;
+                      the side docks pin it to that edge, halfway down the
+                      screen, out of the way of what you’re typing into.
+                    </p>
+                    <div className="profile-row">
+                      {(
+                        [
+                          ["bottom", "Bottom", "Centred along the screen bottom"],
+                          ["left", "Left edge", "Docked left, halfway down"],
+                          ["right", "Right edge", "Docked right, halfway down"],
+                        ] as const
+                      ).map(([id, label, blurb]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={
+                            (settings.pillPosition ?? "bottom") === id
+                              ? "profile active"
+                              : "profile"
+                          }
+                          onClick={() =>
+                            saveSettings({ ...settings, pillPosition: id })
                           }
                         >
                           <strong>{label}</strong>

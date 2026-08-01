@@ -78,6 +78,12 @@ pub struct AppSettings {
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
+    /// Where the pill docks on screen (YV53): "bottom" (centred island, the
+    /// default) | "left" | "right" (Wispr-style side dock, vertically centred
+    /// and flush to that screen edge). Drives `float_pill::PillPosition` for the
+    /// NSPanel origin and the pill's own edge alignment in the webview.
+    #[serde(default = "default_pill_position")]
+    pub pill_position: String,
     /// Companion tone (YV27): friendly | rude | rose (default "friendly").
     /// Drives Yappy's reactive lines (pill chatter + house mood). Kept
     /// independent of `pill_style` so either companion can be warm, sassy, or
@@ -169,6 +175,9 @@ fn default_command_binding() -> String {
 fn default_pill_style() -> String {
     "classic".into()
 }
+fn default_pill_position() -> String {
+    "bottom".into()
+}
 fn default_companion_tone() -> String {
     "friendly".into()
 }
@@ -203,6 +212,7 @@ impl Default for AppSettings {
             command_binding: "command".into(),
             keep_cmd_shift_v: false,
             pill_style: "classic".into(),
+            pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
             cleanup_level: "light".into(),
@@ -1366,8 +1376,14 @@ fn save_settings(
     };
     *state.settings.lock() = next.clone();
     persist_settings(&next)?;
-    // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live).
+    // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
+    // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
+    // YV53: the dock edge moves the NSPanel itself, so it must land before the
+    // show below re-parks — and `reposition` covers the still-recording case
+    // where the pill stays up without a show call.
+    float_pill::set_position(float_pill::PillPosition::from_settings(&next.pill_position));
+    float_pill::reposition(&app);
     if next.show_floating_pill {
         float_pill::show_float(&app)?;
     } else if !*state.recording.lock() {
@@ -2615,7 +2631,12 @@ pub fn run() {
 
             emit_status(app.handle(), &state);
 
-            // Glass island: always-on + rides all Spaces (re-park loop)
+            // Glass island: always-on + rides all Spaces (re-park loop). The
+            // dock edge (YV53) is applied BEFORE the first show so the pill
+            // never appears bottom-centre and then jumps to the chosen edge.
+            float_pill::set_position(float_pill::PillPosition::from_settings(
+                &state.settings.lock().pill_position,
+            ));
             if state.settings.lock().show_floating_pill {
                 if let Err(e) = float_pill::show_float(app.handle()) {
                     log::warn!("float pill: {e}");
