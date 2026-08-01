@@ -99,6 +99,232 @@ pub fn should_format(mode: DictationMode) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Context awareness v1 (YV50) — the text ALREADY before the caret steers how the
+// dictated text is joined onto it (Wispr Flow parity).
+//
+// The pipeline reads at most `focus::CONTEXT_CHAR_LIMIT` characters before the
+// caret via Accessibility (`focus::text_before_cursor`) and hands them here as a
+// borrowed `&str`. Three decisions come out of it:
+//   1. casing  — continuing a sentence lowercases the lead word; a fresh
+//                sentence (after . ? ! / a new line) or an empty field
+//                capitalises it.
+//   2. spacing — a leading space is added only when the character before the
+//                caret needs one.
+//   3. mode    — an email surface (greeting / sign-off / header line) is a HINT
+//                for mode detection when the app alone resolved nothing.
+//
+// PRIVACY (hard rule): everything here is PURE and takes the context by
+// reference. No function stores it, returns it, or emits it — only decisions
+// derived from it leave this module. `lib.rs` never logs the binding either
+// (enforced by `cursor_context_is_never_logged_or_persisted`).
+// ---------------------------------------------------------------------------
+
+/// What to do with the first letter of the dictated text given the context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeadCase {
+    /// Start of a sentence, a new line, or an empty field.
+    Capitalize,
+    /// Continuing a sentence already in progress.
+    Lowercase,
+    /// No context signal (Accessibility denied, secure field, unknown caret) —
+    /// leave the ASR casing exactly as dictated.
+    Leave,
+}
+
+/// Sentence-final punctuation: what precedes a fresh, capitalised sentence.
+const SENTENCE_ENDERS: &[char] = &['.', '?', '!'];
+
+/// Characters that already "own" the gap after them — no space is inserted when
+/// the caret sits right behind one (openers, quotes, and joiners like `/` `@`).
+const NO_SPACE_AFTER: &[char] = &['(', '[', '{', '"', '\'', '“', '‘', '/', '@', '#', '-', '_'];
+
+/// Leading characters on the dictated side that must hug the previous word —
+/// punctuation and closers never get a space pushed in front of them.
+const NO_SPACE_BEFORE: &[char] = &[
+    ',', '.', ';', ':', '!', '?', ')', ']', '}', '"', '\'', '”', '’', '%',
+];
+
+/// Casing decision for the lead word, from the text before the caret.
+pub fn lead_case_for_context(context: Option<&str>) -> LeadCase {
+    let Some(context) = context else {
+        // No signal at all — never touch what the model produced.
+        return LeadCase::Leave;
+    };
+    if context.trim().is_empty() {
+        // Empty field (or only whitespace behind the caret) → a fresh sentence.
+        return LeadCase::Capitalize;
+    }
+    // A new line is a sentence boundary too (bullet lists, chat drafts, notes).
+    if context.ends_with('\n') || context.ends_with('\r') {
+        return LeadCase::Capitalize;
+    }
+    match context.trim_end().chars().last() {
+        Some(c) if SENTENCE_ENDERS.contains(&c) => LeadCase::Capitalize,
+        // Mid-sentence: the model always capitalises the first word of a take,
+        // which is wrong when the user is continuing a sentence they started.
+        _ => LeadCase::Lowercase,
+    }
+}
+
+/// Whether a single leading space is needed to join `text` onto the context.
+pub fn needs_leading_space(context: Option<&str>, text: &str) -> bool {
+    let Some(context) = context else {
+        return false;
+    };
+    // Empty field or the caret already sits after whitespace/a newline.
+    if context.is_empty() || context.ends_with(|c: char| c.is_whitespace()) {
+        return false;
+    }
+    if context.ends_with(|c: char| NO_SPACE_AFTER.contains(&c)) {
+        return false;
+    }
+    match text.chars().next() {
+        None => false,
+        Some(c) if c.is_whitespace() => false,
+        Some(c) if NO_SPACE_BEFORE.contains(&c) => false,
+        Some(_) => true,
+    }
+}
+
+/// Join the dictated text onto the text before the caret: apply the casing
+/// decision, then the spacing decision. Never removes characters, so the
+/// "never lose text" contract holds (`None` context ⇒ verbatim passthrough).
+pub fn join_with_context(text: &str, context: Option<&str>) -> String {
+    let cased = apply_lead_case(text, lead_case_for_context(context));
+    if needs_leading_space(context, &cased) {
+        format!(" {cased}")
+    } else {
+        cased
+    }
+}
+
+/// Apply a [`LeadCase`] to the first word of `text`.
+fn apply_lead_case(text: &str, case: LeadCase) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    match case {
+        LeadCase::Leave => text.to_string(),
+        LeadCase::Capitalize => {
+            if first.is_lowercase() {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            } else {
+                text.to_string()
+            }
+        }
+        LeadCase::Lowercase => {
+            if first.is_uppercase() && lead_word_is_safe_to_lowercase(text) {
+                first.to_lowercase().collect::<String>() + chars.as_str()
+            } else {
+                text.to_string()
+            }
+        }
+    }
+}
+
+/// Conservative guard on the mid-sentence lowercase: it must not damage words
+/// that are capitalised for a REASON. Refuses on the pronoun "I" (and "I'm",
+/// "I'll", …), on acronyms ("API"), and on internally-capitalised names
+/// ("GitHub", "McDonald") — everything else is the model's sentence-initial
+/// capital and is safe to fold back down.
+fn lead_word_is_safe_to_lowercase(text: &str) -> bool {
+    let Some(word) = text.split_whitespace().next() else {
+        return false;
+    };
+    let core: String = word
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '\'' || *c == '’')
+        .collect();
+    let letters: String = core.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.is_empty() {
+        return false;
+    }
+    if letters == "I" || core.starts_with("I'") || core.starts_with("I’") {
+        return false;
+    }
+    // Any capital past the first letter ⇒ acronym or CamelCase name.
+    !letters.chars().skip(1).any(|c| c.is_uppercase())
+}
+
+/// Line prefixes that mark an email compose surface.
+const EMAIL_GREETINGS: &[&str] = &[
+    "dear ",
+    "hi ",
+    "hello ",
+    "hey ",
+    "good morning",
+    "good afternoon",
+    "good evening",
+];
+
+/// Sign-off / header lines that mark an email compose surface.
+const EMAIL_SIGNOFFS: &[&str] = &[
+    "best,",
+    "best regards",
+    "kind regards",
+    "regards,",
+    "thanks,",
+    "thank you,",
+    "sincerely,",
+    "cheers,",
+];
+
+/// Header lines of a compose window.
+const EMAIL_HEADERS: &[&str] = &["subject:", "to:", "cc:", "bcc:"];
+
+/// Mode HINT read out of the context: an email greeting, sign-off or header line
+/// before the caret means the user is writing an email even when the app name
+/// says nothing (a browser tab, a webmail Electron shell, a generic client).
+/// `None` whenever the context shows no such signal.
+pub fn mode_hint_from_context(context: Option<&str>) -> Option<DictationMode> {
+    let context = context?;
+    for line in context.lines() {
+        let line = line.trim().to_lowercase();
+        if line.is_empty() {
+            continue;
+        }
+        if EMAIL_HEADERS.iter().any(|h| line.starts_with(h)) {
+            return Some(DictationMode::Email);
+        }
+        if EMAIL_SIGNOFFS.iter().any(|s| line.starts_with(s)) {
+            return Some(DictationMode::Email);
+        }
+        // A greeting only counts when it's punctuated like one ("Hi Sarah," /
+        // "Hey!") so ordinary prose starting with "hi" can't trip it.
+        if EMAIL_GREETINGS.iter().any(|g| line.starts_with(g))
+            && line.ends_with(|c: char| c == ',' || c == '!')
+        {
+            return Some(DictationMode::Email);
+        }
+    }
+    None
+}
+
+/// [`resolve_mode`] plus the YV50 context hint.
+///
+/// Precedence is deliberate and narrow: a user-picked fixed mode always wins,
+/// then the app match, and the context hint only fills the gap left when `auto`
+/// detection found nothing (`Plain`). Context steers; it never overrides.
+pub fn resolve_mode_with_context(
+    setting: &str,
+    app_name: &str,
+    context: Option<&str>,
+) -> DictationMode {
+    let mode = resolve_mode(setting, app_name);
+    let user_picked = matches!(
+        setting.trim().to_lowercase().as_str(),
+        "plain" | "list" | "email" | "code" | "notes"
+    );
+    if mode == DictationMode::Plain && !user_picked {
+        if let Some(hint) = mode_hint_from_context(context) {
+            return hint;
+        }
+    }
+    mode
+}
+
+// ---------------------------------------------------------------------------
 // No-speech + hallucination guards (YV16) — stop Whisper pasting phantom text.
 //
 // A near-silent / sub-second tap makes Whisper hallucinate degenerate repetitive
@@ -899,6 +1125,118 @@ mod tests {
         // Medium: formatting also runs → numbered list.
         let medium = run_cleanup(raw, CleanupLevel::Medium, DictationMode::Notes, no_dict, polish_llm);
         assert_eq!(medium, "1. Buy milk\n2. Buy eggs");
+    }
+
+    // --- Context awareness v1 (YV50) --------------------------------------
+
+    #[test]
+    fn continuing_a_sentence_lowercases_the_lead_word() {
+        // The model always capitalises the first word of a take; mid-sentence
+        // that is wrong, and the context before the caret is what proves it.
+        assert_eq!(lead_case_for_context(Some("we should ")), LeadCase::Lowercase);
+        assert_eq!(join_with_context("Ship it on Friday", Some("we should ")), "ship it on Friday");
+        assert_eq!(join_with_context("Ship it", Some("we should")), " ship it");
+
+        // A fresh sentence after . ? ! keeps (and forces) the capital.
+        for ender in ["That works.", "Does it?", "Ship it!"] {
+            assert_eq!(lead_case_for_context(Some(ender)), LeadCase::Capitalize, "{ender}");
+        }
+        assert_eq!(join_with_context("ship it", Some("That works. ")), "Ship it");
+        // An empty field is the start of a sentence too.
+        assert_eq!(join_with_context("ship it", Some("")), "Ship it");
+        // …and so is a new line.
+        assert_eq!(join_with_context("ship it", Some("Notes:\n")), "Ship it");
+
+        // No context (AX denied / secure field) → verbatim, never re-cased.
+        assert_eq!(lead_case_for_context(None), LeadCase::Leave);
+        assert_eq!(join_with_context("Ship it", None), "Ship it");
+    }
+
+    #[test]
+    fn lowercasing_never_damages_i_acronyms_or_names() {
+        // Capitalised for a reason: the pronoun, acronyms, CamelCase names.
+        for text in ["I think so", "I'll ship it", "API keys rotate", "GitHub is down"] {
+            assert_eq!(join_with_context(text, Some("she said ")), text.to_string(), "{text}");
+        }
+        // …but an ordinary word does fold down.
+        assert_eq!(join_with_context("They shipped", Some("she said ")), "they shipped");
+    }
+
+    #[test]
+    fn spacing_follows_the_character_before_the_caret() {
+        // Mid-word/after a word with no trailing space → one space is added.
+        assert!(needs_leading_space(Some("we should"), "ship it"));
+        assert_eq!(join_with_context("Ship it", Some("we should")), " ship it");
+        // The caret already sits after whitespace → no double space.
+        assert!(!needs_leading_space(Some("we should "), "ship it"));
+        assert!(!needs_leading_space(Some("Notes:\n"), "ship it"));
+        // Empty field and no context → never a stray leading space.
+        assert!(!needs_leading_space(Some(""), "ship it"));
+        assert!(!needs_leading_space(None, "ship it"));
+        // Openers and joiners own the gap after them.
+        for ctx in ["(", "\"", "wilson@", "https://"] {
+            assert!(!needs_leading_space(Some(ctx), "ship it"), "{ctx}");
+        }
+        // Punctuation on the dictated side hugs the previous word.
+        assert_eq!(join_with_context(", and then some", Some("done")), ", and then some");
+    }
+
+    #[test]
+    fn email_context_hints_the_mode_without_overriding_app_or_setting() {
+        let greeting = "Hi Sarah,\n\nthanks for sending the deck over. We are";
+        assert_eq!(mode_hint_from_context(Some(greeting)), Some(DictationMode::Email));
+        assert_eq!(
+            mode_hint_from_context(Some("Subject: Q3 pricing\n\n")),
+            Some(DictationMode::Email)
+        );
+        assert_eq!(
+            mode_hint_from_context(Some("Best regards,\nWilson")),
+            Some(DictationMode::Email)
+        );
+        // Ordinary prose (and no context at all) hints nothing.
+        assert_eq!(mode_hint_from_context(Some("hi there is a bug in the parser")), None);
+        assert_eq!(mode_hint_from_context(None), None);
+
+        // The hint only fills the gap an unrecognised app leaves.
+        assert_eq!(
+            resolve_mode_with_context("auto", "Arc", Some(greeting)),
+            DictationMode::Email
+        );
+        // A recognised app still wins over the hint…
+        assert_eq!(
+            resolve_mode_with_context("auto", "Visual Studio Code", Some(greeting)),
+            DictationMode::Code
+        );
+        // …and a user-picked mode wins over everything.
+        assert_eq!(
+            resolve_mode_with_context("plain", "Arc", Some(greeting)),
+            DictationMode::Plain
+        );
+        // No context = exactly the pre-YV50 behaviour.
+        assert_eq!(
+            resolve_mode_with_context("auto", "Arc", None),
+            resolve_mode("auto", "Arc")
+        );
+    }
+
+    #[test]
+    fn context_join_never_loses_text() {
+        for (text, ctx) in [
+            ("Ship it", Some("we should")),
+            ("ship it", Some("")),
+            ("Ship it", None),
+            ("🚀 ship", Some("go ")),
+            ("", Some("we should")),
+        ] {
+            // Only the lead capital and a joining space may ever differ —
+            // no word is added, reordered or dropped.
+            let out = join_with_context(text, ctx);
+            assert_eq!(
+                out.trim().to_lowercase(),
+                text.trim().to_lowercase(),
+                "{text:?} → {out:?}"
+            );
+        }
     }
 
     #[test]
