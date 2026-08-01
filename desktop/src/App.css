@@ -18,12 +18,26 @@
   --glass-border: rgba(255, 255, 255, 0.55);
   --border: rgba(74, 48, 20, 0.12);
   --text: #2c2216;
-  --muted: #8a7658;
+  /* YV56 — #8a7658 measured 3.85:1 on the cream, and it carries the ledes,
+     stat labels and every card-meta line at 0.66–0.9rem. One shade deeper in
+     the same warm brown puts the smallest type in the app over 4.5:1. */
+  --muted: #7a6547;
   --accent: #ef7d3c;
   --accent-soft: rgba(239, 125, 60, 0.14);
   /* Data/second voice: the pill-world sky. Orange = action, sky = information. */
   --accent-data: #4ba3d8;
   --accent-data-soft: rgba(75, 163, 216, 0.16);
+  /* YV56 · ink pair for every semantic colour. The vivid tokens above are FILL
+     colours — they sit under white/ink text on buttons, bars and the heat ramp,
+     and they have to stay the brand hue. As TEXT on the cream they were washed
+     (accent 2.42:1, accent-data 2.46:1, and worse inside their own soft chips),
+     which is exactly what small mono chips are made of. So text takes the -ink
+     token and fills keep the hue: same colour, one weight deeper. Dark mode
+     maps the ink back to the vivid token, which already reads 8–11:1 there. */
+  --accent-ink: #9c4a15;
+  --accent-data-ink: #17638d;
+  --danger-ink: #be123c;
+  --warn-ink: #9a4708;
   /* Activity heatmap ramp (YV55) — a warm amber climb out of the soil, so an
      empty day is the page itself and a loud day is the accent ember. */
   --heat-0: rgba(74, 48, 20, 0.07);
@@ -67,6 +81,15 @@
     --accent-soft: rgba(255, 154, 92, 0.16);
     --accent-data: #8fd6ff;
     --accent-data-soft: rgba(143, 214, 255, 0.14);
+    /* YV56 — dark never overrode danger/warn, so #be123c / #b45309 were being
+       drawn on #201811 at 2.78:1 and 3.48:1: the Permissions count badge, the
+       error/busy states of the ready-pill and the warning banners were all
+       barely legible after dark. The accents already read here, so the ink
+       tokens are just the vivid values; danger/warn get a lifted pair. */
+    --accent-ink: var(--accent);
+    --accent-data-ink: var(--accent-data);
+    --danger-ink: #ff8098;
+    --warn-ink: #f5b45c;
     --heat-0: rgba(255, 238, 214, 0.07);
     --heat-1: #5c3a1d;
     --heat-2: #9a5c26;
@@ -111,8 +134,10 @@ button {
   padding: 0.45rem 0.75rem;
 }
 
+/* YV56 — this hover rule was still teal (rgba(15,118,110)) from the palette
+   that predates the warm cream, so every button in the app lit up off-brand. */
 button:hover:not(:disabled) {
-  border-color: rgba(15, 118, 110, 0.35);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 button:disabled {
@@ -138,12 +163,15 @@ button.ghost {
 }
 
 button.danger {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
+/* YV56 — a key cap is the purest data label in the app, so it joins the pixel
+   voice with the counts and the status pill instead of falling back to SF Mono. */
 kbd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78em;
+  font-family: var(--mono);
+  font-size: 0.82em;
+  letter-spacing: 0.02em;
   border: 1px solid var(--border);
   border-bottom-width: 2px;
   border-radius: 6px;
@@ -237,9 +265,13 @@ body:has(.float-pill),
   display: grid;
   grid-template-columns: 220px 1fr;
   height: 100vh;
+  /* YV56 — the two wash gradients were teal + indigo, the last of the pre-warm
+     palette and the largest surface in the app: they tinted the locked cream
+     green at the top-left and violet at the top-right on every screen. Same
+     geometry, now the app's own two voices — ember and sky. */
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(45, 212, 191, 0.12), transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, rgba(99, 102, 241, 0.1), transparent 50%),
+    radial-gradient(1200px 600px at 10% -10%, var(--accent-soft), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, var(--accent-data-soft), transparent 50%),
     var(--bg);
   color: var(--text);
 }
@@ -333,17 +365,25 @@ body:has(.float-pill),
   box-shadow: var(--shadow);
 }
 
+/* YV56 — a nav count is DATA, not a label: pixel voice, tabular figures so
+   Home's 200 and Dictionary's 262 line up in the same column down the rail, and
+   the sky ink every machine-reported number in the app already speaks in.
+   Orange stays reserved for things you can act on — which is why the one badge
+   that IS a demand (Permissions) keeps the danger ink instead. */
 .count {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: 999px;
+  background: var(--accent-data-soft);
+  color: var(--accent-data-ink);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
   font-size: 0.7rem;
   padding: 0.1rem 0.4rem;
 }
 
 .count.warn {
   background: rgba(244, 63, 94, 0.15);
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .banner {
@@ -357,7 +397,7 @@ body:has(.float-pill),
 .banner.warn {
   background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.35);
-  color: var(--warn);
+  color: var(--warn-ink);
 }
 
 /* YV43 — Secure Input has the fn tap blind. Nothing in Yap can clear it (the
@@ -366,7 +406,7 @@ body:has(.float-pill),
 .banner.blocked {
   background: rgba(244, 63, 94, 0.12);
   border: 1px solid rgba(244, 63, 94, 0.35);
-  color: var(--danger);
+  color: var(--danger-ink);
   cursor: default;
 }
 
@@ -502,7 +542,7 @@ code {
 
 .record-btn.live .mic {
   background: rgba(190, 18, 60, 0.15);
-  color: var(--danger);
+  color: var(--danger-ink);
   animation: pulse 1s infinite;
 }
 
@@ -512,12 +552,28 @@ code {
 
 .dictate-side {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   background: var(--accent);
   color: white;
   border: none;
   font-weight: 650;
   padding: 0.75rem;
   border-radius: 12px;
+}
+
+/* YV56 — the shortcut half of the Dictate label, as a chip on the button's own
+   fill: pixel voice at var(--radius-sm) like every other small chip. */
+.dictate-key {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  padding: 0.08rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -560,47 +616,65 @@ code {
   font-size: 0.9rem;
 }
 
+/* YV56 — the header pill reports a machine STATUS and the key you hold to use
+   it ("Ready — hold fn⌃ · double-tap hands-free"): both are data, so the whole
+   chip speaks in the pixel voice, and it takes the same var(--radius-sm) as
+   every other small chip rather than a 999px capsule of its own. */
 .status-pill {
-  max-width: 280px;
-  font-size: 0.78rem;
+  /* Departure Mono is wider per character than SF at the same size, and the
+     ready line is 40 characters ("Ready — hold fn⌃ · double-tap hands-free"):
+     280px broke "free" onto a line of its own. */
+  max-width: 320px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
   padding: 0.45rem 0.75rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--muted);
 }
 
 .status-pill.ready {
-  color: var(--accent);
+  color: var(--accent-ink);
   background: var(--accent-soft);
   border-color: transparent;
 }
 
 .status-pill.recording {
-  color: #be123c;
+  color: var(--danger-ink);
   background: rgba(244, 63, 94, 0.1);
 }
 
 .status-pill.busy {
-  color: var(--warn);
+  color: var(--warn-ink);
   background: rgba(245, 158, 11, 0.12);
 }
 
 .status-pill.error {
-  color: var(--danger);
+  color: var(--danger-ink);
   background: rgba(244, 63, 94, 0.1);
 }
 
+/* YV56 — the toast was the last surface still speaking the pre-warm palette
+   (slate #0f172a under mint #a7f3d0 with a teal rule), so a "Settings saved"
+   landed as a foreign object on the cream. It is now the app's own ink and
+   cream with an ember rule: one overlay treatment for both schemes, because a
+   toast is a thing laid ON the page rather than part of it, and inverting it is
+   what separates it from the header in dark mode.
+   The message itself stays native SF on purpose — "Copied", "Settings saved",
+   "Recovered 84 words" is body prose the user reads as a sentence, and the
+   pixel voice is reserved for data. Only the action chip below is chrome. */
 .toast {
   position: fixed;
   top: 14px;
   right: 18px;
   z-index: 40;
-  background: #0f172a;
-  color: #a7f3d0;
-  border: 1px solid rgba(45, 212, 191, 0.35);
+  background: #2c2216;
+  color: #f8f0e0;
+  border: 1px solid rgba(239, 125, 60, 0.45);
   padding: 0.55rem 0.85rem;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
   font-size: 0.82rem;
 }
@@ -614,10 +688,10 @@ code {
 }
 
 .toast-retry {
-  background: rgba(45, 212, 191, 0.16);
-  border: 1px solid rgba(45, 212, 191, 0.45);
-  color: #a7f3d0;
-  border-radius: 8px;
+  background: rgba(255, 154, 92, 0.18);
+  border: 1px solid rgba(255, 154, 92, 0.5);
+  color: #ffb98a;
+  border-radius: var(--radius-sm);
   padding: 0.2rem 0.55rem;
   font-size: 0.78rem;
   font-weight: 600;
@@ -642,7 +716,7 @@ code {
 .failed-head h3 {
   margin: 0;
   font-size: 0.9rem;
-  color: var(--warn);
+  color: var(--warn-ink);
 }
 
 .card.failed {
@@ -651,7 +725,7 @@ code {
 }
 
 .card.failed .failed-why {
-  color: var(--warn);
+  color: var(--warn-ink);
   font-size: 0.82rem;
 }
 
@@ -697,7 +771,7 @@ code {
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   min-height: 1.2em;
-  color: var(--accent-data);
+  color: var(--accent-data-ink);
 }
 
 .stat-l {
@@ -739,10 +813,17 @@ code {
   flex: 1;
 }
 
+/* YV56 — an empty list was bare centred text floating in the content column,
+   which reads as a page that failed to load. A dashed warm frame at the card's
+   own radius makes it a placed object: the shape of the list that isn't there
+   yet, rather than an absence. */
 .empty {
   text-align: center;
-  padding: 64px 20px;
+  padding: 56px 20px;
   color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-card) 40%, transparent);
 }
 
 .empty h3 {
@@ -941,13 +1022,15 @@ code {
 }
 
 /* Every numeral in Insights speaks in the pixel voice, in the data colour —
-   the words stay native SF so the numbers are what the eye lands on. */
+   the words stay native SF so the numbers are what the eye lands on. YV56: in
+   the data INK, because at 0.72rem the vivid sky measured 2.46:1 on the cream
+   and the whole page is built out of numbers that small. */
 .insights .bar-n,
 .insights .kv strong,
 .insights .heat-summary strong {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  color: var(--accent-data);
+  color: var(--accent-data-ink);
 }
 
 .insights .bar-n {
@@ -976,11 +1059,11 @@ code {
 }
 
 .ok {
-  color: var(--accent) !important;
+  color: var(--accent-ink) !important;
 }
 
 .bad {
-  color: var(--danger) !important;
+  color: var(--danger-ink) !important;
 }
 
 .dict {
@@ -1255,7 +1338,7 @@ button.star.on {
     0 2px 8px rgba(0, 0, 0, 0.1);
 }
 .profile.active strong {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 /* unmistakable check badge on the selected option */
 .profile.active::after {
@@ -1631,7 +1714,7 @@ button.star.on {
 
 .model-ribbon.bad {
   border-color: rgba(244, 63, 94, 0.35);
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .model-ribbon.bad .model-ribbon-track > span {
