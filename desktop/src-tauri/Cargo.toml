@@ -55,8 +55,12 @@ nnnoiseless = { version = "0.5.2", default-features = false }
 # fallback rules). The model is cached under Application Support (once from
 # a direct URL, then OFFLINE — never HuggingFace); a missing/broken model falls
 # back safely to the energy-VAD path so an utterance is never lost.
-vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1", version = "2.1.0" }
+# YV45: both git deps are pinned to the EXACT rev Cargo.lock resolves, not to a
+# moving branch/default head — CI builds with plain `cargo build` (no --locked),
+# so a branch head that moved would silently enter a release build. Bumping one
+# is now a reviewable one-line rev change. (`tests/supply_chain.rs` enforces it.)
+vad-rs = { git = "https://github.com/cjpais/vad-rs", rev = "2a412ed858695b9251f3f5a1a20d95b59fa7c498", default-features = false }
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6", version = "2.1.0" }
 # Embedded ASR engine (YV30) — same crate + version Handy ships for GGUF/ggml
 # native inference. Base dep is static CPU-only (no features); the macOS target
 # table below adds the Metal backend, mirroring Handy's per-platform posture.
