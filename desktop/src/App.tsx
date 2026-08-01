@@ -1263,11 +1263,20 @@ export default function App() {
             onClick={toggleRecord}
             disabled={status.busy}
           >
-            {status.recording
-              ? "Stop listening"
-              : status.busy
-                ? "Transcribing…"
-                : "Dictate · fn⌃"}
+            {/* YV56 — "Dictate · fn⌃" was one string, so the verb and the key
+                carried identical weight. The action stays native SF; the key is
+                data and wears the pixel voice in its own chip, the same
+                treatment the nav counts and the header status pill take. */}
+            {status.recording ? (
+              "Stop listening"
+            ) : status.busy ? (
+              "Transcribing…"
+            ) : (
+              <>
+                Dictate
+                <span className="dictate-key">fn⌃</span>
+              </>
+            )}
           </button>
         </div>
       </aside>
