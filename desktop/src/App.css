@@ -533,7 +533,7 @@ code {
   display: grid;
   place-items: center;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .record-btn.live {
@@ -1121,7 +1121,7 @@ button.star {
 }
 
 button.star.on {
-  color: var(--accent);
+  color: var(--accent-ink);
   border-color: var(--accent);
   background: var(--accent-soft);
 }
