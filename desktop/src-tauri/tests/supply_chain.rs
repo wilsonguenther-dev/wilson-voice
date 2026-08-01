@@ -15,6 +15,10 @@
 
 const TAURI_CONF: &str = include_str!("../tauri.conf.json");
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
+/// The sidecar's manifest (YV60). It is a separate link unit — it vendors its
+/// own `ggml` through `llama-cpp-sys-2` — but it ships inside the same signed
+/// bundle, so its dependency pins are this app's supply chain too.
+const POLISH_CARGO_TOML: &str = include_str!("../../yap-polish/Cargo.toml");
 
 /// The CSP has to exist, and has to be the policy this app was verified
 /// against. Every allowance below is something the frontend genuinely loads
@@ -95,6 +99,58 @@ fn no_personal_signing_identity_is_committed() {
         macos["entitlements"].as_str(),
         Some("Entitlements.plist"),
         "the macOS bundle must keep its entitlements"
+    );
+}
+
+/// YV60: `llama-cpp-2` compiles and statically links its own vendored `ggml`
+/// into the sidecar. A caret range would let a `cargo update` swap that inference
+/// engine — and the ggml it links — underneath a signed, notarized bundle
+/// without a reviewable diff. It must be an EXACT `=x.y.z` pin from crates.io,
+/// never a git source.
+#[test]
+fn polish_sidecar_pins_llama_cpp_exactly() {
+    let line = POLISH_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("llama-cpp-2"))
+        .expect("yap-polish depends on llama-cpp-2");
+    assert!(
+        !line.contains("git = ") && !line.contains("path = "),
+        "llama-cpp-2 must come from crates.io: {line}"
+    );
+    let version = line
+        .split("version = \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("llama-cpp-2 has no `version = `: {line}"));
+    let exact = version
+        .strip_prefix('=')
+        .unwrap_or_else(|| panic!("llama-cpp-2 must be pinned with `=`, got `{version}`"));
+    let parts: Vec<&str> = exact.split('.').collect();
+    assert_eq!(parts.len(), 3, "expected an exact x.y.z pin, got `{exact}`");
+    assert!(
+        parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "expected an exact x.y.z pin, got `{exact}`"
+    );
+    // Metal is what keeps decode off the CPU; losing it silently triples the
+    // polish latency the deadline is written against.
+    assert!(
+        line.contains("\"metal\""),
+        "the sidecar must build with the metal backend: {line}"
+    );
+    // And the sidecar has to actually be bundled, or the app ships with a
+    // polish stage it can never spawn.
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let external: Vec<&str> = config["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin lists the sidecar")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        external.contains(&"binaries/yap-polish"),
+        "yap-polish must be bundled as a sidecar, got {external:?}"
     );
 }
 

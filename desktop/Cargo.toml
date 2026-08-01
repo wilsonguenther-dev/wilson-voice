@@ -1,0 +1,15 @@
+# Cargo workspace (YV60).
+#
+# `src-tauri` and `yap-polish` MUST stay separate link units. `transcribe-cpp-sys`
+# vendors `ggml` and links it statically into the app binary; `llama-cpp-sys-2`
+# vendors its own copy. Linking both into one binary is a duplicate-symbol
+# failure (`_ggml_backend_buft_name`, … — llama.cpp #9267/#11303/#11491,
+# whisper.cpp #1887). Two binaries in one workspace share a lockfile and a
+# target dir without ever sharing a link line.
+#
+# The Tauri app talks to `yap-polish` over newline-delimited JSON on stdio
+# (`polish_protocol.rs`); it is bundled as a Tauri sidecar via
+# `bundle.externalBin`.
+[workspace]
+resolver = "2"
+members = ["src-tauri", "yap-polish"]

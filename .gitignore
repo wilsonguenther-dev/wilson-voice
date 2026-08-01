@@ -22,8 +22,14 @@ Wilson Voice.app/
 # Tauri / frontend
 desktop/node_modules/
 desktop/dist/
+# YV60 made `desktop/` a Cargo workspace, so the shared target dir moved up out
+# of src-tauri.
+desktop/target/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+# Tauri sidecar drop point: the release job builds yap-polish and copies it here
+# under its target triple. A 4.8 MB binary is a build artifact, never a commit.
+desktop/src-tauri/binaries/
 *.dmg
 
 # autonomous build-loop logs/locks

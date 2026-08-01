@@ -1,0 +1,24 @@
+[package]
+name = "yap-polish"
+version = "0.6.0"
+description = "Yap polish sidecar — local LLM transcript rewriter over JSONL/stdio"
+authors = ["Wilson Guenther"]
+edition = "2021"
+
+# Bundled as a Tauri sidecar. `bundle.externalBin` resolves
+# `binaries/yap-polish` to `binaries/yap-polish-<target-triple>`, so the release
+# job copies this binary there under its triple before bundling.
+[[bin]]
+name = "yap-polish"
+path = "src/main.rs"
+
+[dependencies]
+# EXACT pin, no git dep: this crate statically links its own vendored ggml, and
+# a version bump changes the ggml it links. `tests/supply_chain.rs` in
+# `wilson-voice` enforces both the exactness and the absence of a git source.
+# 0.1.153 (2026-07-28) is the latest release; `metal` routes decode to the GPU
+# on Apple Silicon (the crate also enables it implicitly for macOS/aarch64, and
+# naming it here keeps the intent explicit and the pin auditable).
+llama-cpp-2 = { version = "=0.1.153", features = ["metal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

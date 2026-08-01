@@ -85,15 +85,36 @@ npm run tauri build
 workflow (which also sets `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` for
 notarization) signs with the Developer ID cert without any config change.
 
-## One app, no sidecar
+## One app, one sidecar
 
 Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window
 (Home / Insights / Dictionary / Settings) plus an always-on-top Dictate pill.
 On-device ASR runs **inside the app binary** — a native GGUF engine
 (`transcribe-cpp`, Metal) driven by `src-tauri/src/transcription.rs`. There is
-no interpreter, no virtual environment, and no helper process: audio is decoded
-in-process (no `ffmpeg` binary) and the speech model is downloaded once from the
-in-app model manager.
+no interpreter and no virtual environment: audio is decoded in-process (no
+`ffmpeg` binary) and the speech model is downloaded once from the in-app model
+manager.
+
+The one helper process is **`yap-polish`** (`desktop/yap-polish/`, YV60): the
+optional local-LLM cleanup stage, bundled as a Tauri sidecar and spoken to over
+newline-delimited JSON on stdio — no port, no listener, no network. It is a
+separate binary for a concrete reason: the app already statically links
+`transcribe-cpp`'s vendored `ggml`, and `llama-cpp-2` vendors its own, so the
+two cannot share a link line. The split also makes the polish deadline *hard* —
+a late answer is dropped and the child killed. Its model is **not** bundled;
+with none installed the sidecar is never spawned and dictation behaves exactly
+as it does without it.
+
+`desktop/` is a Cargo workspace (`src-tauri` + `yap-polish`), and
+`bundle.externalBin` makes the staged sidecar a precondition of building the
+app, so build it first:
+
+```bash
+cd ~/Desktop/wilson-voice/desktop
+npm run sidecar     # cargo build -p yap-polish --release, staged under its triple
+```
+
+`npm run desktop:dev` and `npm run desktop:build` already run it for you.
 
 > The former standalone `wilson_voice/` rumps/pynput menu-bar app was removed in
 > favour of this single Tauri app (recoverable from git history). Nothing in the

@@ -8,8 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "sidecar": "cargo build -p yap-polish --release && mkdir -p src-tauri/binaries && cp target/release/yap-polish src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')",
+    "desktop:dev": "npm run sidecar && tauri dev",
+    "desktop:build": "npm run sidecar && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
