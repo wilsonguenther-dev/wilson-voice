@@ -5,6 +5,7 @@
 //! GraphQL is overkill for a single-user desktop app; typed Tauri commands
 //! over this SQLite layer give fast retrieval without a network hop.
 
+use crate::snippets::SnippetRule;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,21 @@ pub struct FailedDictation {
 /// the app's "audio never lingers" privacy stance: recoverable for a week, gone
 /// after that whether or not the user ever retried it.
 pub const FAILED_TAKE_RETENTION_DAYS: i64 = 7;
+
+/// YV48 — a saved `trigger phrase → expansion text` rule. The matcher lives in
+/// [`crate::snippets`]; this is only its storage + UI shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub id: String,
+    /// The spoken phrase that fires the expansion.
+    pub trigger: String,
+    /// What it expands to (multi-line allowed).
+    pub expansion: String,
+    /// Disabled snippets stay in the list but never match.
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,6 +496,15 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_failed_dictations_created
               ON failed_dictations(created_at DESC);
+            -- YV48 snippets: trigger phrase → expansion text. `trigger` is a
+            -- SQL keyword, hence the column name; the struct field is `trigger`.
+            CREATE TABLE IF NOT EXISTS snippets (
+              id TEXT PRIMARY KEY,
+              trigger_phrase TEXT NOT NULL UNIQUE COLLATE NOCASE,
+              expansion TEXT NOT NULL,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS scratchpad (
               id TEXT PRIMARY KEY,
@@ -1368,6 +1393,139 @@ impl Database {
                     params![term],
                 );
             }
+        }
+        Ok(out)
+    }
+
+    // ── YV48 snippets ────────────────────────────────────────────────────────
+
+    /// Every snippet for the Settings list, enabled ones first then A→Z.
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, trigger_phrase, expansion, enabled, created_at FROM snippets
+                 ORDER BY enabled DESC, trigger_phrase COLLATE NOCASE ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Snippet {
+                    id: row.get(0)?,
+                    trigger: row.get(1)?,
+                    expansion: row.get(2)?,
+                    enabled: row.get::<_, i64>(3)? != 0,
+                    created_at: parse_dt(row.get::<_, String>(4)?),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn add_snippet(&self, trigger: String, expansion: String) -> Result<Snippet, String> {
+        let trigger = trigger.trim().to_string();
+        if trigger.is_empty() {
+            return Err("empty trigger".into());
+        }
+        if expansion.trim().is_empty() {
+            return Err("empty expansion".into());
+        }
+        let snippet = Snippet {
+            id: Uuid::new_v4().to_string(),
+            trigger,
+            expansion,
+            enabled: true,
+            created_at: Utc::now(),
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO snippets (id, trigger_phrase, expansion, enabled, created_at)
+             VALUES (?1, ?2, ?3, 1, ?4)
+             ON CONFLICT(trigger_phrase) DO UPDATE SET expansion = excluded.expansion, enabled = 1",
+            params![
+                snippet.id,
+                snippet.trigger,
+                snippet.expansion,
+                snippet.created_at.to_rfc3339()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snippet)
+    }
+
+    /// Edit a snippet in place. Renaming onto another row's trigger is rejected
+    /// by the UNIQUE index rather than silently merging the two.
+    pub fn update_snippet(
+        &self,
+        id: &str,
+        trigger: String,
+        expansion: String,
+    ) -> Result<(), String> {
+        let trigger = trigger.trim().to_string();
+        if trigger.is_empty() {
+            return Err("empty trigger".into());
+        }
+        if expansion.trim().is_empty() {
+            return Err("empty expansion".into());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE snippets SET trigger_phrase = ?2, expansion = ?3 WHERE id = ?1",
+                params![id, trigger, expansion],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("no such snippet".into());
+        }
+        Ok(())
+    }
+
+    /// Turn a snippet off without deleting it — disabled rows never match.
+    pub fn set_snippet_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE snippets SET enabled = ?2 WHERE id = ?1",
+                params![id, i64::from(enabled)],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("no such snippet".into());
+        }
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The ENABLED rules the matcher runs with (YV48). Read once per take on the
+    /// dictation path; an error here degrades to "no expansion" at the call site
+    /// so the transcript still pastes.
+    pub fn snippet_rules(&self) -> Result<Vec<SnippetRule>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT trigger_phrase, expansion FROM snippets WHERE enabled = 1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SnippetRule {
+                    trigger: row.get(0)?,
+                    expansion: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
     }
@@ -2624,6 +2782,59 @@ mod tests {
         let left = db.list_failed_dictations().unwrap();
         assert_eq!(left.len(), 1, "purge took a take inside the 7-day window");
         assert_eq!(left[0].id, recent.id);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// YV48 — snippet CRUD round-trips, and only ENABLED rows reach the matcher.
+    #[test]
+    fn snippet_crud_and_only_enabled_rules_are_served() {
+        let (db, dir) = fresh_db("snippets");
+
+        let email = db
+            .add_snippet("my email".into(), "wilson@drivia.consulting".into())
+            .unwrap();
+        let sig = db
+            .add_snippet("sign off".into(), "Thanks,\nWilson".into())
+            .unwrap();
+        assert_eq!(db.list_snippets().unwrap().len(), 2);
+        // Multi-line expansions survive the round-trip verbatim.
+        assert_eq!(
+            db.list_snippets()
+                .unwrap()
+                .iter()
+                .find(|s| s.id == sig.id)
+                .map(|s| s.expansion.clone()),
+            Some("Thanks,\nWilson".into())
+        );
+
+        // Edit in place.
+        db.update_snippet(&email.id, "my address".into(), "1 Main St".into())
+            .unwrap();
+        let rules = db.snippet_rules().unwrap();
+        assert!(rules
+            .iter()
+            .any(|r| r.trigger == "my address" && r.expansion == "1 Main St"));
+
+        // Disabled rows stay listed but are never served to the matcher.
+        db.set_snippet_enabled(&sig.id, false).unwrap();
+        assert_eq!(db.list_snippets().unwrap().len(), 2);
+        let rules = db.snippet_rules().unwrap();
+        assert_eq!(
+            rules.len(),
+            1,
+            "disabled snippet was still served: {rules:?}"
+        );
+        assert!(!rules.iter().any(|r| r.trigger == "sign off"));
+
+        // Empty trigger / expansion are rejected, delete removes the row.
+        assert!(db.add_snippet("  ".into(), "x".into()).is_err());
+        assert!(db.add_snippet("trigger".into(), "  ".into()).is_err());
+        db.delete_snippet(&email.id).unwrap();
+        assert!(
+            !db.list_snippets().unwrap().iter().any(|s| s.id == email.id),
+            "delete_snippet did not remove the snippet"
+        );
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
