@@ -36,6 +36,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "shortDescription": "Local dictation with history — Wispr Flow alternative",
     "longDescription": "Yap is a native macOS dictation app: menubar tray, floating Dictate control, global hotkeys, local MLX Whisper ASR, SQLite transcript history with FTS search, dictionary, insights, and automatic paste.",

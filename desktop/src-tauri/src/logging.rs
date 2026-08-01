@@ -30,6 +30,13 @@ pub fn init(data_dir: &Path) {
     let tee = TeeWriter::new(&dir);
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .target(env_logger::Target::Pipe(Box::new(tee)))
+        // YV44: tauri-plugin-updater logs a hard ERROR for ANY non-2xx from the
+        // release endpoint, including the 404 GitHub returns while no release
+        // has published `latest.json` — the normal state, which opened every
+        // user's log with an ERROR. Yap classifies the check itself (see
+        // `check_for_update`: "nothing to update to" at DEBUG, real failures at
+        // WARN and surfaced in the UI), so the plugin's own record is muted.
+        .filter_module("tauri_plugin_updater", log::LevelFilter::Off)
         .init();
     install_panic_hook();
     log::info!("file logging → {}", dir.join("yap.log").display());
