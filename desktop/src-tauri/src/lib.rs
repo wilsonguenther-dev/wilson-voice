@@ -25,7 +25,7 @@ mod sysaudio;
 mod transcription;
 mod vad;
 
-use db::{Database, DayCount, DictEntry, Insights, ScratchNote, TranscriptEntry};
+use db::{Database, DayCount, DictCandidate, DictEntry, Insights, ScratchNote, TranscriptEntry};
 use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
@@ -581,12 +581,21 @@ fn native_model_ready(native_model: &str) -> Option<(String, PathBuf)> {
 /// YV37: `samples` are the 16 kHz mono floats the capture path already produced
 /// in memory. The clip is no longer written, read back and re-decoded from disk
 /// before ASR sees a single sample.
+/// How many dictionary terms are considered for the decode bias (YV47). The
+/// real ceiling is the prompt's own token window — this only stops us reading
+/// the whole table on every take.
+const BIAS_TERM_LIMIT: i64 = 64;
+
+/// How many pending dictionary suggestions the UI shows at once (YV47).
+const DICT_CANDIDATE_LIMIT: i64 = 12;
+
 fn transcribe_native(
     manager: &transcription::TranscriptionManager,
     model_id: &str,
     model_path: &Path,
     samples: Vec<f32>,
     language: &str,
+    bias_prompt: Option<String>,
 ) -> Result<transcription::AsrOutput, String> {
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
@@ -601,7 +610,7 @@ fn transcribe_native(
         .filter(|l| !l.is_empty())
         .map(str::to_string);
     let decode_started = std::time::Instant::now();
-    let text = manager.transcribe(samples, language)?;
+    let text = manager.transcribe(samples, language, bias_prompt)?;
     let decode_ms = decode_started.elapsed().as_millis() as i64;
     if text.trim().is_empty() {
         return Err("Empty transcript".into());
@@ -709,12 +718,23 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     "No speech model installed — open Settings → Models and download one.".into(),
                 );
             };
+            // YV47 — bias the decoder with the auto-learning dictionary: starred
+            // terms first, then usage-ranked, capped to the prompt window. A DB
+            // hiccup here must never cost the take, so it degrades to unbiased.
+            let bias_prompt = match db.bias_terms(BIAS_TERM_LIMIT) {
+                Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                Err(e) => {
+                    log::warn!("dictionary bias unavailable ({e}) — decoding unbiased");
+                    None
+                }
+            };
             let asr = transcribe_native(
                 &state2.transcription,
                 &model_id,
                 &model_path,
                 rec.samples,
                 &settings.language,
+                bias_prompt,
             )?;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
@@ -1186,8 +1206,59 @@ fn add_dictionary_term(
 }
 
 #[tauri::command]
+fn update_dictionary_term(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    term: String,
+    preferred: Option<String>,
+) -> Result<(), String> {
+    state.db.update_dictionary_term(&id, term, preferred)
+}
+
+/// YV47 — pin a term to "always bias": it heads the ranking, survives the
+/// harvest purge, and is the last thing dropped from the decoder prompt.
+#[tauri::command]
+fn set_dictionary_starred(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    starred: bool,
+) -> Result<(), String> {
+    state.db.set_dictionary_starred(&id, starred)
+}
+
+#[tauri::command]
 fn delete_dictionary_term(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
     state.db.delete_dictionary_term(&id)
+}
+
+/// YV47 — apply a "Fix transcription" edit: rewrite the stored transcript and
+/// mine the words the user changed into dictionary candidates.
+#[tauri::command]
+fn correct_transcript(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    text: String,
+) -> Result<usize, String> {
+    state.db.record_correction(&id, &text).map(|c| c.len())
+}
+
+/// YV47 — pending "Yap noticed: …" dictionary suggestions.
+#[tauri::command]
+fn list_dict_candidates(state: State<'_, Arc<AppState>>) -> Result<Vec<DictCandidate>, String> {
+    state.db.list_dict_candidates(DICT_CANDIDATE_LIMIT)
+}
+
+#[tauri::command]
+fn promote_dict_candidate(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<DictEntry, String> {
+    state.db.promote_dict_candidate(&id)
+}
+
+#[tauri::command]
+fn dismiss_dict_candidate(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    state.db.dismiss_dict_candidate(&id)
 }
 
 #[tauri::command]
@@ -1826,7 +1897,13 @@ pub fn run() {
             monthly_series,
             list_dictionary,
             add_dictionary_term,
+            update_dictionary_term,
+            set_dictionary_starred,
             delete_dictionary_term,
+            correct_transcript,
+            list_dict_candidates,
+            promote_dict_candidate,
+            dismiss_dict_candidate,
             list_scratch,
             save_scratch,
             delete_scratch,

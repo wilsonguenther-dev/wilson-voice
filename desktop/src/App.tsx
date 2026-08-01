@@ -203,6 +203,25 @@ interface DictEntry {
   preferred?: string | null;
   hits: number;
   createdAt: string;
+  /**
+   * YV47 "always bias" — a starred term heads the ranking, survives the harvest
+   * purge, and is the last thing dropped from the decoder prompt.
+   */
+  starred?: boolean;
+}
+
+/**
+ * YV47 — a word Yap noticed you fixing, waiting to be accepted. Learned only
+ * from an explicit "Fix transcription" edit, never from guessing at the
+ * clipboard.
+ */
+interface DictCandidate {
+  id: string;
+  term: string;
+  /** What ASR produced, or null when the word was missing entirely. */
+  wrong?: string | null;
+  useCount: number;
+  createdAt: string;
 }
 
 interface ScratchNote {
@@ -266,6 +285,15 @@ export default function App() {
   const [dailySeries, setDailySeries] = useState<DayCount[]>([]);
   const [monthlySeries, setMonthlySeries] = useState<DayCount[]>([]);
   const [dictionary, setDictionary] = useState<DictEntry[]>([]);
+  // YV47 — pending "Yap noticed: …" suggestions mined from corrections, and the
+  // dictionary row currently being edited in place.
+  const [candidates, setCandidates] = useState<DictCandidate[]>([]);
+  const [editingTermId, setEditingTermId] = useState<string | null>(null);
+  const [editTerm, setEditTerm] = useState("");
+  const [editPreferred, setEditPreferred] = useState("");
+  // YV47 — the history entry open in "Fix transcription", and its draft text.
+  const [fixingId, setFixingId] = useState<string | null>(null);
+  const [fixDraft, setFixDraft] = useState("");
   const [scratch, setScratch] = useState<ScratchNote[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [query, setQuery] = useState("");
@@ -368,21 +396,25 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, daily, monthly, dict, notes] = await Promise.all([
-        invoke<AppSettings>("get_settings"),
-        invoke<AppStatus>("get_status"),
-        invoke<Insights>("get_insights"),
-        invoke<DayCount[]>("daily_series", { days: 365 }),
-        invoke<DayCount[]>("monthly_series", { months: 12 }),
-        invoke<DictEntry[]>("list_dictionary"),
-        invoke<ScratchNote[]>("list_scratch"),
-      ]);
+      const [s, st, ins, daily, monthly, dict, cands, notes] = await Promise.all(
+        [
+          invoke<AppSettings>("get_settings"),
+          invoke<AppStatus>("get_status"),
+          invoke<Insights>("get_insights"),
+          invoke<DayCount[]>("daily_series", { days: 365 }),
+          invoke<DayCount[]>("monthly_series", { months: 12 }),
+          invoke<DictEntry[]>("list_dictionary"),
+          invoke<DictCandidate[]>("list_dict_candidates"),
+          invoke<ScratchNote[]>("list_scratch"),
+        ],
+      );
       setSettings(s);
       setStatus(st);
       setInsights(ins);
       setDailySeries(daily);
       setMonthlySeries(monthly);
       setDictionary(dict);
+      setCandidates(cands);
       setScratch(notes);
       setBootError(null);
       await loadHistory(queryRef.current);
@@ -670,6 +702,98 @@ export default function App() {
     try {
       await invoke("delete_dictionary_term", { id });
       setDictionary((d) => d.filter((x) => x.id !== id));
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  // YV47 — star / unstar "always bias". Re-lists because starring changes the
+  // ranking the whole screen (and the decoder prompt) is ordered by.
+  async function toggleStar(d: DictEntry) {
+    try {
+      await invoke("set_dictionary_starred", {
+        id: d.id,
+        starred: !d.starred,
+      });
+      setDictionary(await invoke("list_dictionary"));
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  function startEditTerm(d: DictEntry) {
+    setEditingTermId(d.id);
+    setEditTerm(d.term);
+    setEditPreferred(d.preferred ?? "");
+  }
+
+  async function saveEditTerm() {
+    if (!editingTermId || !editTerm.trim()) return;
+    try {
+      await invoke("update_dictionary_term", {
+        id: editingTermId,
+        term: editTerm.trim(),
+        preferred: editPreferred.trim() || null,
+      });
+      setEditingTermId(null);
+      setDictionary(await invoke("list_dictionary"));
+      toast("Dictionary term updated");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  // YV47 — accept a mined suggestion into the dictionary, or hide it for good.
+  async function acceptCandidate(c: DictCandidate) {
+    try {
+      await invoke("promote_dict_candidate", { id: c.id });
+      const [dict, cands] = await Promise.all([
+        invoke<DictEntry[]>("list_dictionary"),
+        invoke<DictCandidate[]>("list_dict_candidates"),
+      ]);
+      setDictionary(dict);
+      setCandidates(cands);
+      toast(`Added ${c.term} to your dictionary`);
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  async function dismissCandidate(c: DictCandidate) {
+    try {
+      await invoke("dismiss_dict_candidate", { id: c.id });
+      setCandidates((cs) => cs.filter((x) => x.id !== c.id));
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  // YV47 — "Fix transcription": the honest correction path. The user edits a
+  // known transcript and Yap diffs the result, so what it learns is exactly
+  // what they changed — no clipboard sniffing, no accessibility guesswork.
+  function startFix(e: TranscriptEntry) {
+    setFixingId(e.id);
+    setFixDraft(e.text);
+  }
+
+  async function saveFix() {
+    if (!fixingId || !fixDraft.trim()) return;
+    try {
+      const learned = await invoke<number>("correct_transcript", {
+        id: fixingId,
+        text: fixDraft.trim(),
+      });
+      setFixingId(null);
+      const [cands] = await Promise.all([
+        invoke<DictCandidate[]>("list_dict_candidates"),
+        loadHistory(queryRef.current),
+      ]);
+      setCandidates(cands);
+      toast(
+        learned > 0
+          ? `Fixed — ${learned} term${learned === 1 ? "" : "s"} to review in Dictionary`
+          : "Transcript fixed",
+      );
     } catch (e) {
       toast(String(e));
     }
@@ -1198,33 +1322,69 @@ export default function App() {
                             : ""}
                         </span>
                       </div>
-                      <p>{e.text}</p>
-                      <div className="actions">
-                        <button onClick={() => copyText(e.text)}>Copy</button>
-                        <button
-                          className="primary"
-                          onClick={() => pasteText(e.text)}
-                        >
-                          Paste
-                        </button>
-                        <button
-                          className="ghost"
-                          onClick={() => {
-                            setNav("scratchpad");
-                            setNoteTitle(`From ${formatTime(e.createdAt)}`);
-                            setNoteBody(e.text);
-                            setActiveNoteId(null);
-                          }}
-                        >
-                          Scratchpad
-                        </button>
-                        <button
-                          className="ghost danger"
-                          onClick={() => removeEntry(e.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {fixingId === e.id ? (
+                        <div className="fix-edit">
+                          <textarea
+                            value={fixDraft}
+                            onChange={(ev) => setFixDraft(ev.target.value)}
+                            aria-label="Corrected transcript"
+                            autoFocus
+                          />
+                          <p className="tiny">
+                            Correct the words Yap got wrong — it learns them as
+                            dictionary suggestions.
+                          </p>
+                          <div className="actions">
+                            <button className="primary" onClick={saveFix}>
+                              Save fix
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => setFixingId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p>{e.text}</p>
+                          <div className="actions">
+                            <button onClick={() => copyText(e.text)}>
+                              Copy
+                            </button>
+                            <button
+                              className="primary"
+                              onClick={() => pasteText(e.text)}
+                            >
+                              Paste
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => startFix(e)}
+                            >
+                              Fix transcription
+                            </button>
+                            <button
+                              className="ghost"
+                              onClick={() => {
+                                setNav("scratchpad");
+                                setNoteTitle(`From ${formatTime(e.createdAt)}`);
+                                setNoteBody(e.text);
+                                setActiveNoteId(null);
+                              }}
+                            >
+                              Scratchpad
+                            </button>
+                            <button
+                              className="ghost danger"
+                              onClick={() => removeEntry(e.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -1473,7 +1633,8 @@ export default function App() {
                 <h3>Spell the way you do</h3>
                 <p>
                   After ASR, matching tokens are rewritten to your preferred
-                  form.
+                  form. Starred terms are always fed to the recognizer before it
+                  decodes, so it expects them.
                 </p>
                 <div className="dict-add">
                   <input
@@ -1493,22 +1654,125 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {candidates.length > 0 && (
+                <div className="panel dict-suggest">
+                  <h3>
+                    Yap noticed:{" "}
+                    {candidates
+                      .slice(0, 3)
+                      .map((c) => c.term)
+                      .join(", ")}
+                  </h3>
+                  <p className="tiny">
+                    Words you fixed by hand. Add them and Yap stops getting them
+                    wrong.
+                  </p>
+                  <ul className="cand-list">
+                    {candidates.map((c) => (
+                      <li key={c.id}>
+                        <div>
+                          <strong>{c.term}</strong>
+                          {c.wrong && (
+                            <span className="muted"> ← heard “{c.wrong}”</span>
+                          )}
+                          <div className="tiny">
+                            fixed {c.useCount}×
+                          </div>
+                        </div>
+                        <div className="cand-actions">
+                          <button
+                            className="primary"
+                            onClick={() => acceptCandidate(c)}
+                          >
+                            Add
+                          </button>
+                          <button
+                            className="ghost"
+                            onClick={() => dismissCandidate(c)}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <ul className="dict-list">
                 {dictionary.map((d) => (
                   <li key={d.id}>
-                    <div>
-                      <strong>{d.term}</strong>
-                      {d.preferred && (
-                        <span className="muted"> → {d.preferred}</span>
-                      )}
-                      <div className="tiny">{d.hits} hits</div>
-                    </div>
-                    <button
-                      className="ghost danger"
-                      onClick={() => removeTerm(d.id)}
-                    >
-                      Remove
-                    </button>
+                    {editingTermId === d.id ? (
+                      <div className="dict-edit">
+                        <input
+                          value={editTerm}
+                          onChange={(e) => setEditTerm(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" && saveEditTerm()
+                          }
+                          aria-label="Term"
+                          autoFocus
+                        />
+                        <input
+                          value={editPreferred}
+                          placeholder="Preferred (optional)"
+                          onChange={(e) => setEditPreferred(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" && saveEditTerm()
+                          }
+                          aria-label="Preferred form"
+                        />
+                        <button className="primary" onClick={saveEditTerm}>
+                          Save
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => setEditingTermId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <strong>{d.term}</strong>
+                          {d.preferred && (
+                            <span className="muted"> → {d.preferred}</span>
+                          )}
+                          <div className="tiny">
+                            {d.hits} hits
+                            {d.starred ? " · always biased" : ""}
+                          </div>
+                        </div>
+                        <div className="dict-actions">
+                          <button
+                            className={d.starred ? "star on" : "star"}
+                            onClick={() => toggleStar(d)}
+                            aria-pressed={!!d.starred}
+                            title={
+                              d.starred
+                                ? "Starred — always biases the recognizer"
+                                : "Star to always bias the recognizer"
+                            }
+                          >
+                            {d.starred ? "★" : "☆"}
+                          </button>
+                          <button
+                            className="ghost"
+                            onClick={() => startEditTerm(d)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="ghost danger"
+                            onClick={() => removeTerm(d.id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

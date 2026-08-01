@@ -862,6 +862,90 @@ code {
   padding: 10px 12px;
 }
 
+/* ── YV47 · Auto-learning dictionary ────────────────────────────────── */
+.dict-actions,
+.cand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+button.star {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.42rem 0.55rem;
+}
+
+button.star.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dict-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
+
+.dict-edit input {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0.55rem 0.7rem;
+  outline: none;
+}
+
+.dict-suggest {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cand-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cand-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+/* "Fix transcription" — an inline editor in place of the transcript body. */
+.fix-edit textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0.6rem 0.75rem;
+  outline: none;
+  font: inherit;
+}
+
+.fix-edit .tiny {
+  margin: 6px 0 10px;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -1099,6 +1183,7 @@ code {
   .stats-row,
   .panel-grid,
   .dict-add,
+  .dict-edit,
   .scratch {
     grid-template-columns: 1fr;
   }
