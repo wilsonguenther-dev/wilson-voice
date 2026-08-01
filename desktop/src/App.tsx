@@ -100,6 +100,15 @@ interface AppStatus {
    * shows a "Model needed" route into the onboarding model step, never "Ready".
    */
   modelReady: boolean;
+  /**
+   * YV43 — another app enabled macOS Secure Input, so the CGEvent tap behind
+   * fn / fn⌃ receives nothing and push-to-talk is dead until it is released.
+   * There is no fallback to wire (Carbon hotkeys cannot express fn), so saying
+   * so IS the fix.
+   */
+  secureInputBlocked: boolean;
+  /** Holder + workaround line for the banner; null unless blocked. */
+  secureInputDetail: string | null;
 }
 
 interface PermissionReport {
@@ -234,6 +243,8 @@ export default function App() {
     accessibility: false,
     hotkeyRegistered: false,
     modelReady: false,
+    secureInputBlocked: false,
+    secureInputDetail: null,
   });
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
@@ -783,6 +794,21 @@ export default function App() {
         </header>
 
         {flash && <div className="toast">{flash}</div>}
+
+        {/* YV43 — another app holds macOS Secure Input, so the CGEvent tap
+            behind fn / fn⌃ is blind and push-to-talk is dead RIGHT NOW. It
+            outranks every other banner because nothing below it can be reached
+            with the hotkey while this is on, and it names the holder so the
+            user knows which app to go release. */}
+        {status.secureInputBlocked && (
+          <div className="banner blocked">
+            <strong>
+              Dictation paused — another app is blocking keyboard monitoring
+              (Secure Input)
+            </strong>
+            <span className="banner-detail">{status.secureInputDetail}</span>
+          </div>
+        )}
 
         {/* YV33 — no usable model means dictation cannot run at all, so this
             outranks the permissions banner and routes straight to the download
