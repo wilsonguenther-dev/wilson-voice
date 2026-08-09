@@ -27,7 +27,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -44,6 +44,14 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// error instead of freezing dictation forever.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How often [`TranscriptionManager::drain_and_unload`] re-checks the lease.
+const DRAIN_POLL: Duration = Duration::from_millis(10);
+
+/// Asks an in-flight decode to stop (YV70). Cheap to clone and safe to hold
+/// while the engine itself is leased out to a transcription thread, which is
+/// the whole point: the exit drain has no other handle on a running decode.
+pub type CancelHandle = Arc<dyn Fn() + Send + Sync>;
+
 /// Anything that turns 16 kHz mono f32 samples into text. The real engine is
 /// [`asr_engine::AsrEngine`]; the trait exists so the lifecycle above can be
 /// tested without a multi-hundred-MB GGUF download.
@@ -54,6 +62,13 @@ pub trait Transcriber: Send + 'static {
         language: Option<&str>,
         bias_prompt: Option<&str>,
     ) -> Result<String, String>;
+
+    /// A handle that ends an in-flight [`Transcriber::transcribe`] on this
+    /// engine early (YV70). `None` for an engine with no cancel hook, in which
+    /// case the exit drain can only wait the decode out.
+    fn cancel_handle(&self) -> Option<CancelHandle> {
+        None
+    }
 }
 
 impl Transcriber for asr_engine::AsrEngine {
@@ -64,6 +79,11 @@ impl Transcriber for asr_engine::AsrEngine {
         bias_prompt: Option<&str>,
     ) -> Result<String, String> {
         asr_engine::transcribe(self, samples_16k_mono, language, bias_prompt)
+    }
+
+    fn cancel_handle(&self) -> Option<CancelHandle> {
+        let token = asr_engine::cancel_token(self);
+        Some(Arc::new(move || token.cancel()))
     }
 }
 
@@ -110,6 +130,20 @@ pub struct EngineStatus {
     pub idle_unload_seconds: u64,
 }
 
+/// What the exit drain found (YV70), so the caller can log the shutdown it
+/// actually got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainOutcome {
+    /// Nothing was in flight — the engine was freed straight from the slot.
+    Idle,
+    /// A transcription had the engine; it came back inside the budget and was
+    /// freed.
+    Drained,
+    /// The transcription never gave the engine back inside the budget. It is
+    /// still alive on the worker thread — the quit proceeds regardless.
+    TimedOut,
+}
+
 /// Shared guts. Held by an `Arc` so the idle watcher can keep a `Weak` and exit
 /// on its own once the last manager handle is dropped (no shutdown flag, and no
 /// leaked thread in tests).
@@ -119,8 +153,17 @@ struct Inner {
     /// Bumped on every load/unload. A transcription that started before a bump
     /// must not put its now-stale engine back.
     generation: AtomicU64,
-    /// Nonzero while an engine is leased out to a transcription thread.
+    /// Nonzero while an engine is leased out to a transcription thread. Dropped
+    /// back to zero only once that engine is BACK (in the slot, or dropped), so
+    /// a zero lease means nothing is holding a live Metal device (YV70).
     leases: AtomicU64,
+    /// YV70 — set once the app is on its way out. Nothing loads after this, and
+    /// a transcription that finishes now drops its engine instead of putting a
+    /// live device back into the slot the exit drain has already emptied.
+    exiting: AtomicBool,
+    /// YV70 — cancel hook of the transcription currently in flight, if that
+    /// engine has one. Kept here because the engine itself is leased out.
+    in_flight_cancel: Mutex<Option<CancelHandle>>,
     loading: AtomicBool,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
@@ -161,6 +204,8 @@ impl TranscriptionManager {
                 loader,
                 generation: AtomicU64::new(0),
                 leases: AtomicU64::new(0),
+                exiting: AtomicBool::new(false),
+                in_flight_cancel: Mutex::new(None),
                 loading: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
@@ -257,10 +302,60 @@ impl TranscriptionManager {
         }
     }
 
+    /// Exit drain (YV70): get the engine back, then free it — the ONE unload
+    /// that must not no-op.
+    ///
+    /// YV69 unloads the engine before `exit()` so ggml's static destructor has
+    /// no Metal device left to free (it aborts if it does). Plain [`unload`] is
+    /// enough only when the engine is sitting in the slot: during a take it is
+    /// LEASED OUT to the transcription thread, the slot is empty, and the
+    /// unload frees nothing — quitting mid-transcription still reached `exit()`
+    /// with a live device. So: mark the manager as exiting (a returning engine
+    /// is dropped from here on, never put back), ask the in-flight decode to
+    /// stop, and wait up to `wait` for the lease to come home before unloading.
+    ///
+    /// Bounded on purpose. A decode that ignores the cancel is rarer than the
+    /// crash this prevents, so a timed-out drain logs at WARN and lets the quit
+    /// proceed rather than hanging the user's Cmd-Q.
+    ///
+    /// [`unload`]: Self::unload
+    pub fn drain_and_unload(&self, wait: Duration) -> DrainOutcome {
+        self.inner.exiting.store(true, Ordering::Release);
+        if self.inner.leases.load(Ordering::Acquire) == 0 {
+            self.unload();
+            return DrainOutcome::Idle;
+        }
+        if let Some(cancel) = self.inner.in_flight_cancel.lock().clone() {
+            log::info!("exit: cancelling the in-flight transcription");
+            cancel();
+        }
+        let deadline = Instant::now() + wait;
+        while self.inner.leases.load(Ordering::Acquire) != 0 {
+            if Instant::now() >= deadline {
+                log::warn!(
+                    "exit: transcription still holds the ASR engine after {}ms — quitting anyway",
+                    wait.as_millis()
+                );
+                // Belt and braces: the slot should be empty (the lease is still
+                // out), but if anything IS resident it must not survive to exit.
+                self.unload();
+                return DrainOutcome::TimedOut;
+            }
+            std::thread::sleep(DRAIN_POLL);
+        }
+        self.unload();
+        DrainOutcome::Drained
+    }
+
     /// Blocking load — this is the multi-second call, so run it off the main
     /// thread (see [`load_async`](Self::load_async)). A model already loaded
     /// under the same id is kept as-is.
     pub fn load(&self, model_id: &str, model_path: &Path) -> Result<(), String> {
+        // YV70: never make a new Metal device after the exit drain has run —
+        // that would put back exactly what the drain freed.
+        if self.inner.exiting.load(Ordering::Acquire) {
+            return Err("the app is exiting".into());
+        }
         if self.loaded_model().as_deref() == Some(model_id) {
             self.touch();
             return Ok(());
@@ -322,6 +417,9 @@ impl TranscriptionManager {
             return Err("no ASR model is loaded".into());
         };
         self.inner.leases.fetch_add(1, Ordering::AcqRel);
+        // YV70: publish this run's cancel hook while it is in flight, so the
+        // exit drain can end the decode instead of only waiting on it.
+        *self.inner.in_flight_cancel.lock() = engine.engine.cancel_handle();
 
         let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<String, String>)>();
         std::thread::spawn(move || {
@@ -347,9 +445,7 @@ impl TranscriptionManager {
         });
 
         let outcome = rx.recv_timeout(self.inner.transcribe_timeout);
-        self.inner.leases.fetch_sub(1, Ordering::AcqRel);
-        self.touch();
-        match outcome {
+        let result = match outcome {
             Ok((engine, result)) => {
                 if let Some(engine) = engine {
                     self.return_engine(engine, generation);
@@ -363,12 +459,27 @@ impl TranscriptionManager {
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("transcription worker died unexpectedly".into())
             }
-        }
+        };
+        *self.inner.in_flight_cancel.lock() = None;
+        // YV70: the lease is released only AFTER the engine has been put back
+        // (or dropped). It used to drop first, so the exit drain could see a
+        // zero lease and unload while `return_engine` was still on its way to
+        // refill the slot — the live Metal device the drain exists to prevent.
+        self.inner.leases.fetch_sub(1, Ordering::AcqRel);
+        self.touch();
+        result
     }
 
-    /// Put a borrowed engine back — unless the model was unloaded or swapped
-    /// while it was out, in which case the stale engine is dropped.
+    /// Put a borrowed engine back — unless the app is exiting, or the model was
+    /// unloaded or swapped while it was out, in which case it is dropped.
     fn return_engine(&self, engine: LoadedEngine, generation: u64) {
+        if self.inner.exiting.load(Ordering::Acquire) {
+            log::info!(
+                "dropping ASR engine '{}' — the app is exiting",
+                engine.model_id
+            );
+            return;
+        }
         if self.inner.generation.load(Ordering::Acquire) != generation {
             log::debug!(
                 "dropping stale ASR engine '{}' (model changed during transcription)",
