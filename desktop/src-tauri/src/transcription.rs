@@ -164,6 +164,9 @@ struct Inner {
     /// YV70 — cancel hook of the transcription currently in flight, if that
     /// engine has one. Kept here because the engine itself is leased out.
     in_flight_cancel: Mutex<Option<CancelHandle>>,
+    /// Set while a load is building an engine — claimed and cleared around the
+    /// device's whole lifetime in `load` (it stays set until the engine is in
+    /// the slot or dropped), so the exit drain can wait on it like a lease.
     loading: AtomicBool,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
@@ -314,6 +317,12 @@ impl TranscriptionManager {
     /// is dropped from here on, never put back), ask the in-flight decode to
     /// stop, and wait up to `wait` for the lease to come home before unloading.
     ///
+    /// A LOAD in flight counts as in-flight too: the loader runs for seconds and
+    /// ends by making a fresh Metal device, so a drain that ignored it would
+    /// unload an empty slot and let that device be born into it afterwards —
+    /// the same crash, one window over. `load` refuses to store once `exiting`
+    /// is set, and this waits for it to finish refusing.
+    ///
     /// Bounded on purpose. A decode that ignores the cancel is rarer than the
     /// crash this prevents, so a timed-out drain logs at WARN and lets the quit
     /// proceed rather than hanging the user's Cmd-Q.
@@ -321,7 +330,7 @@ impl TranscriptionManager {
     /// [`unload`]: Self::unload
     pub fn drain_and_unload(&self, wait: Duration) -> DrainOutcome {
         self.inner.exiting.store(true, Ordering::Release);
-        if self.inner.leases.load(Ordering::Acquire) == 0 {
+        if !self.engine_in_flight() {
             self.unload();
             return DrainOutcome::Idle;
         }
@@ -330,10 +339,10 @@ impl TranscriptionManager {
             cancel();
         }
         let deadline = Instant::now() + wait;
-        while self.inner.leases.load(Ordering::Acquire) != 0 {
+        while self.engine_in_flight() {
             if Instant::now() >= deadline {
                 log::warn!(
-                    "exit: transcription still holds the ASR engine after {}ms — quitting anyway",
+                    "exit: an ASR engine is still in flight after {}ms — quitting anyway",
                     wait.as_millis()
                 );
                 // Belt and braces: the slot should be empty (the lease is still
@@ -345,6 +354,15 @@ impl TranscriptionManager {
         }
         self.unload();
         DrainOutcome::Drained
+    }
+
+    /// YV70: is a live device out of the slot right now — leased to a decode, or
+    /// being built by an in-flight [`load`](Self::load)? Read under the slot
+    /// lock, which is where `load` claims `loading`, so the drain cannot slip
+    /// between that claim and the flag.
+    fn engine_in_flight(&self) -> bool {
+        let _slot = self.inner.engine.lock();
+        self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
     }
 
     /// Blocking load — this is the multi-second call, so run it off the main
@@ -366,18 +384,50 @@ impl TranscriptionManager {
                 model_path.display()
             ));
         }
-        self.inner.loading.store(true, Ordering::Release);
+        // YV70: claim `loading` under the slot lock, re-checking `exiting` while
+        // holding it. The drain sets `exiting` before it reads the same state
+        // under the same lock, so exactly one of the two wins: either the drain
+        // waits this load out, or this load is refused before it starts.
+        {
+            let _slot = self.inner.engine.lock();
+            if self.inner.exiting.load(Ordering::Acquire) {
+                return Err("the app is exiting".into());
+            }
+            self.inner.loading.store(true, Ordering::Release);
+        }
         // A panicking native load must not take the app with it, and must not
         // leave a half-built engine in the slot.
         let loaded = catch_unwind(AssertUnwindSafe(|| (self.inner.loader)(model_path)))
             .unwrap_or_else(|p| Err(format!("ASR model load panicked: {}", panic_message(&p))));
+        let engine = match loaded {
+            Ok(engine) => engine,
+            Err(e) => {
+                self.inner.loading.store(false, Ordering::Release);
+                return Err(e);
+            }
+        };
+        // YV70: the loader above runs for SECONDS — the exit drain can start
+        // inside that window, and it ends by making a fresh Metal device. Check
+        // `exiting` again before storing, under the slot lock, and drop the
+        // device rather than park it in the slot the drain just emptied.
+        // `loading` stays set until it is gone, so the drain's wait covers the
+        // drop too.
+        {
+            let mut slot = self.inner.engine.lock();
+            if self.inner.exiting.load(Ordering::Acquire) {
+                drop(slot);
+                drop(engine);
+                self.inner.loading.store(false, Ordering::Release);
+                log::info!("dropping freshly loaded ASR engine '{model_id}' — the app is exiting");
+                return Err("the app is exiting".into());
+            }
+            self.inner.generation.fetch_add(1, Ordering::AcqRel);
+            *slot = Some(LoadedEngine {
+                model_id: model_id.to_string(),
+                engine,
+            });
+        }
         self.inner.loading.store(false, Ordering::Release);
-        let engine = loaded?;
-        self.inner.generation.fetch_add(1, Ordering::AcqRel);
-        *self.inner.engine.lock() = Some(LoadedEngine {
-            model_id: model_id.to_string(),
-            engine,
-        });
         self.touch();
         log::info!("ASR model '{model_id}' loaded and warm");
         Ok(())
@@ -595,6 +645,42 @@ mod tests {
         })
     }
 
+    /// A loader that takes its time, like the real multi-second GGUF load — the
+    /// seam the YV70 drain-vs-load tests need to catch a load in flight.
+    fn slow_loader(load_time: Duration) -> EngineLoader {
+        Arc::new(move |_path: &Path| {
+            std::thread::sleep(load_time);
+            Ok(Box::new(StubEngine {
+                text: "born during the drain".to_string(),
+                delay: Duration::ZERO,
+                panics: false,
+                seen_language: Arc::new(Mutex::new(None)),
+                seen_prompt: Arc::new(Mutex::new(None)),
+            }) as Box<dyn Transcriber>)
+        })
+    }
+
+    /// Starts a load off-thread and returns once it is really inside the loader.
+    fn load_in_flight(
+        m: &TranscriptionManager,
+        path: &Path,
+    ) -> std::thread::JoinHandle<Result<(), String>> {
+        let handle = {
+            let m = m.clone();
+            let path = path.to_path_buf();
+            std::thread::spawn(move || m.load("stub/model", &path))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !m.status().loading && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            m.status().loading,
+            "the load must be in flight before the drain runs"
+        );
+        handle
+    }
+
     fn manager(loader: EngineLoader, idle: Duration, transcribe: Duration) -> TranscriptionManager {
         TranscriptionManager::with_loader(loader, idle, Duration::from_millis(10), transcribe)
     }
@@ -733,6 +819,76 @@ mod tests {
             assert_eq!(m.transcribe(vec![0.4; 8], None, None).unwrap(), "warm");
         }
         assert!(m.is_loaded(), "an actively used engine must stay warm");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// YV70 (review): the `exiting` guard was a check-then-act with a
+    /// multi-second gap. `load` tested the flag on entry, spent seconds in the
+    /// loader, then stored unconditionally — so a load already in flight when
+    /// the exit drain ran put a brand-new Metal device into the slot the drain
+    /// had just emptied, and `exit()` hit the same SIGABRT YV69/YV70 exist to
+    /// close. The drain also ignored `loading` entirely and reported `Idle`.
+    #[test]
+    fn drain_waits_for_an_in_flight_load_and_leaves_nothing_resident() {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            slow_loader(Duration::from_millis(300)),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        let loading = load_in_flight(&m, &path);
+
+        let started = Instant::now();
+        let outcome = m.drain_and_unload(Duration::from_secs(3));
+        assert_eq!(
+            outcome,
+            DrainOutcome::Drained,
+            "a load in flight must be drained, not reported as Idle"
+        );
+        let err = loading.join().expect("loader thread").unwrap_err();
+        assert!(err.contains("exiting"), "unexpected error: {err}");
+
+        // The moment `exit()` would fire: nothing may hold a Metal device.
+        assert!(
+            !m.is_loaded(),
+            "a live engine is resident at exit() after the drain ran"
+        );
+        assert!(m.loaded_model().is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the drain must finish with the load, not burn its budget ({:?})",
+            started.elapsed()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The other half of the same guard: a load that outlasts the drain's budget
+    /// still finishes AFTER the quit is under way, so the store itself has to be
+    /// refused — otherwise the device it just built lands in the slot the drain
+    /// already freed and `exit()` finds it there.
+    #[test]
+    fn a_load_that_outlasts_the_drain_never_stores_its_engine() {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            slow_loader(Duration::from_millis(400)),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+        let loading = load_in_flight(&m, &path);
+
+        let outcome = m.drain_and_unload(Duration::from_millis(50));
+        assert_eq!(
+            outcome,
+            DrainOutcome::TimedOut,
+            "a load slower than the budget must time the drain out, not block the quit"
+        );
+        let err = loading.join().expect("loader thread").unwrap_err();
+        assert!(err.contains("exiting"), "unexpected error: {err}");
+        assert!(
+            !m.is_loaded(),
+            "the load stored a live engine into the slot the drain had freed"
+        );
+        assert!(m.loaded_model().is_none());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
