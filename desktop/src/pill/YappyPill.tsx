@@ -14,13 +14,16 @@ import { listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox } from "./drag";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
+import {
+  advanceLive, createLiveState, frameIntervalMs, resetLive, toChatTone,
+  type ChatTone, type LivePhase, type LiveProp,
+} from "./live";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
 interface PillSettings { companionTone?: string }
-type Phase = "idle" | "listening" | "thinking" | "done" | "sleepy";
-type ChatTone = "rude" | "friendly" | "rose";
-type Prop = "none" | "pad" | "desk";
+type Phase = LivePhase;
+type Prop = LiveProp;
 
 // ── tone-aware working chatter (final "done" line comes from reactiveLine) ──
 const WORK: Record<ChatTone, Partial<Record<Bucket, string[]>>> = {
@@ -41,33 +44,17 @@ const WORK: Record<ChatTone, Partial<Record<Bucket, string[]>>> = {
   },
 };
 // live chatter tone tracks the user's configured companion tone (rude/friendly/
-// rose, YV27); anything unknown falls back to friendly. The tone is read LIVE off
-// the settings the float already subscribes to — never a hardcoded constant.
-const toChatTone = (t?: string): ChatTone => (t === "rude" || t === "rose" ? t : "friendly");
+// rose, YV27); anything unknown falls back to friendly (`toChatTone`, live.ts).
+// The tone is read LIVE off the settings the float already subscribes to.
 const chatty = (tone: ChatTone, w: number) => { const o = WORK[tone][bucketFor(w)]; return !!(o && o.length); };
 const workLine = (tone: ChatTone, w: number, n: number) => { const o = WORK[tone][bucketFor(w)]; return o && o.length ? o[n % o.length] : ""; };
 // prop/persona keyed off the transcript word count
 const propFor = (w: number): Prop => { const b = bucketFor(w); return b === "medium" ? "pad" : (b === "long" || b === "epic") ? "desk" : "none"; };
 
-// ── LIVE escalation WHILE listening ── the real word count is unknown until the
-// transcript arrives, so estimate it from how long you've ACTUALLY been speaking:
-// only voiced audio advances the tier — sitting in silence must NOT move it along.
-type LiveTier = "quick" | "notes" | "desk" | "essay";
-const LIVE_TIERS: LiveTier[] = ["quick", "notes", "desk", "essay"];
-// live level (0..1) above this counts as speech; anything quieter is treated as silence
-const SPEAK_LEVEL = 0.08;
-// rough speaking rate → estimate words from seconds of actual voiced speech
-const WORDS_PER_SEC = 2.5;
-const wordsFromVoiced = (voicedSec: number): number => voicedSec * WORDS_PER_SEC;
-// live tier keyed off ESTIMATED words (not wall-clock elapsed): quick → notes → desk → essay
-const liveTierForWords = (estWords: number): LiveTier => estWords < 8 ? "quick" : estWords < 25 ? "notes" : estWords < 60 ? "desk" : "essay";
-const LIVE_PROP: Record<LiveTier, Prop> = { quick: "none", notes: "pad", desk: "desk", essay: "desk" };
-// tone-aware live line spoken the moment you cross into a new tier (quick has none)
-const LIVE_LINE: Partial<Record<LiveTier, Record<ChatTone, string>>> = {
-  notes: { rude: "ok, noting…", friendly: "ooh, lots to say!", rose: "tell me more 🌹" },
-  desk: { rude: "a whole rant…", friendly: "okay, big one!", rose: "i'm all ears 🌹" },
-  essay: { rude: "an ESSAY, live?!", friendly: "wow, keep going!", rose: "forever, love 🌹" },
-};
+// ── LIVE escalation WHILE listening ── lives in live.ts: a PURE state machine
+// (tier ladder + repeating chatter, speech measured against the take's own room
+// tone) so the "does Yappy still react 4 minutes in?" question is a unit test.
+// The canvas below only RENDERS what that machine decides.
 
 class SOD {
   private k1: number; private k2: number; private k3: number; private xp: number; private yv: number; private yd = 0;
@@ -184,7 +171,10 @@ export default function YappyPill() {
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, chatterN = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
-    let voicedT = 0, liveSaid = -1;   // seconds of ACTUAL speech (gated on level) + highest live tier already reacted to
+    // YV71 — the live commentary state machine (live.ts) owns the tier ladder,
+    // the speech estimate and the chatter schedule for the whole take.
+    const live = createLiveState();
+    let liveProp: Prop = "none";
     // YV27 — live companion tone, read off settings (not a hardcoded constant).
     // Seeded from get_settings + kept current via the "settings" event the float
     // already emits on save, so a tone change takes effect without a remount.
@@ -192,15 +182,23 @@ export default function YappyPill() {
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
     const ACC: Record<Phase, string> = { idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%", done: "152 69% 52%", sleepy: "230 20% 60%" };
-    // listening → prop escalates by ESTIMATED words from actual speech (live); thinking/done → keyed off the transcript word count
-    const wantPropFor = (p: Phase, w: number, estWords: number): Prop =>
-      p === "listening" ? LIVE_PROP[liveTierForWords(estWords)]
+    // listening → prop comes from the live state machine (escalates with actual
+    // speech); thinking/done → keyed off the transcript word count
+    const wantPropFor = (p: Phase, w: number): Prop =>
+      p === "listening" ? liveProp
         : (p === "thinking" || p === "done") ? propFor(w)
           : "none";
 
     function setPhase(p: Phase) {
-      phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0;
-      if (p === "listening") { moodT = 0; hop(1); say(""); voicedT = 0; liveSaid = -1; }
+      // YV71 — re-entering the phase we are ALREADY in is not a restart. Every
+      // `status` emit while recording lands here (the YV43 secure-input watchdog
+      // edge, the hands-free toggle), and each one used to rewind the live
+      // ladder to `quick` and blank the bubble mid-sentence. `done` is exempt:
+      // a fresh transcript re-fires its celebration.
+      if (p === phase && p !== "done") return;
+      phase = p; idleFor = 0; chatterN = 0; chatterTimer = 0; liveProp = "none";
+      wake();
+      if (p === "listening") { moodT = 0; hop(1); say(""); resetLive(live); }
       else if (p === "thinking") { moodT = 0; say(chatty(chatTone, words) ? workLine(chatTone, words, 0) : ""); }
       else if (p === "done") { moodT = 1; hop(1.2); burst(); say(reactiveLine(words, { tone: chatTone, curseFilter: DEFAULT_TONE.curseFilter }, words)); }
       else { moodT = 0; say(""); }
@@ -225,31 +223,36 @@ export default function YappyPill() {
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
-    let raf = 0, lastDraw = 0;
-    // While idle/sleepy (silent mic, no hops or sparkles in flight) throttle the
-    // redraw to ~18fps instead of 60 — idle breathing/drift stays perceptible but
-    // this always-on pill stops burning a full-rate rAF. Active states run full-rate.
-    const IDLE_FRAME_MS = 55;
+    let raf = 0, lastDraw = 0, parked = false;
+    // The redraw budget comes from `frameIntervalMs` (live.ts, unit-tested): ~18fps
+    // while idle/sleepy with a silent mic and nothing in flight, FULL rate the
+    // moment a take is live, and a park only under reduced motion with nothing
+    // happening — never while recording, where the mouth follows the mic and the
+    // commentary runs on a schedule that needs frames to advance.
     function loop(ts: number) {
-      if (!reduce) raf = requestAnimationFrame(loop);   // schedule next frame (never under reduced-motion)
-      const idleThrottle = (phase === "idle" || phase === "sleepy") && level < 0.02 && sparkle.length === 0 && J.phase === "ground";
-      if (idleThrottle && lastDraw && ts - lastDraw < IDLE_FRAME_MS) return;   // skip this redraw, keep the rAF alive
+      const budget = frameIntervalMs(phase, { level, busyVisuals: sparkle.length > 0 || J.phase !== "ground", reduceMotion: reduce });
+      parked = !Number.isFinite(budget);
+      raf = parked ? 0 : requestAnimationFrame(loop);   // schedule the next frame first
+      if (!parked && budget > 0 && lastDraw && ts - lastDraw < budget) return;   // skip this redraw, keep the rAF alive
       lastDraw = ts;
-      const dt = Math.min(.05, (ts - tPrev) / 1000 || 0); tPrev = ts; elapsed += dt; idleFor += dt;
+      // dt drives the animation (clamped for stability); wallDt drives the live
+      // state machine, so a throttled frame still advances the take's clock.
+      const wallDt = Math.min(.25, (ts - tPrev) / 1000 || 0);
+      const dt = Math.min(.05, wallDt); tPrev = ts; elapsed += dt; idleFor += dt;
       if (phase === "idle" && idleFor > 12) setPhase("sleepy");
       if (blinkT < 0) { nextBlink -= dt; if (nextBlink <= 0) blinkT = 0; }
       let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
       const active = phase === "listening" || phase === "thinking" || phase === "done";
       openV = R.open.update(dt, active ? 1 : 0); openV = Math.max(0, Math.min(1, openV));
-      // live escalation WHILE talking — driven by ACTUAL speech, not a wall-clock timer: only
-      // frames above the speaking threshold advance the estimate, so silence never moves it along.
+      // live escalation WHILE talking — the pure machine decides the tier, the
+      // prop and WHEN Yappy says something (it keeps reacting for the whole take,
+      // measuring speech against this take's own room tone); the canvas renders it.
       if (phase === "listening") {
-        if (level > SPEAK_LEVEL) voicedT += dt;
-        const liveTier = liveTierForWords(wordsFromVoiced(voicedT)); const idx = LIVE_TIERS.indexOf(liveTier);
-        if (idx > liveSaid) { liveSaid = idx; const line = LIVE_LINE[liveTier]; if (line) say(line[chatTone]); }
-      } else voicedT = 0;
-      const estWords = wordsFromVoiced(voicedT);
-      const wantProp = wantPropFor(phase, words, estWords);
+        const f = advanceLive(live, wallDt, level, chatTone);
+        liveProp = f.prop;
+        if (f.say) say(f.say);
+      }
+      const wantProp = wantPropFor(phase, words);
       propV = R.prop.update(dt, wantProp !== "none" ? 1 : 0); propV = Math.max(0, Math.min(1, propV));
       mood += (moodT - mood) * Math.min(1, dt * 10);
       const grav = 2600;
@@ -320,9 +323,10 @@ export default function YappyPill() {
       bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
       bubble.style.top = (y0 - 10) + "px";
     }
-    // reduced-motion → paint one calm static frame and never loop; else run the rAF.
-    if (reduce) loop(performance.now());
-    else raf = requestAnimationFrame(loop);
+    // Under reduced motion the loop paints one calm frame and parks; a phase
+    // change (a take starting) wakes it, so it is never asleep while recording.
+    function wake() { if (!parked) return; parked = false; tPrev = 0; lastDraw = 0; raf = requestAnimationFrame(loop); }
+    raf = requestAnimationFrame(loop);
     return () => { dead = true; cancelAnimationFrame(raf); ro.disconnect(); unsubs.forEach((u) => u()); };
   }, []);
 

@@ -8,6 +8,10 @@ reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
   selectable pill style. Bars driven by a `--level` CSS var each rAF frame.
 - `YappyPill.tsx` — the pixel-chick companion pill. A pull-back camera fills the
   capsule with the pixel world while dictating; longer prompts add props.
+- `live.ts` — the PURE live-commentary state machine: what Yappy reacts to WHILE
+  you talk (tier ladder, props, repeating chatter, speech measured against the
+  take's own room tone) plus the loop's frame budget. Unit-tested in
+  `live.test.ts` (`npm test`) against synthetic 10s/60s/300s takes.
 - `mouth.ts` — `MouthDriver`: turns the live mic level (`audio_level` events)
   into a smoothed 0..1 jaw-open so the companion's mouth mimics real speech.
 - `tone.ts` — pure, deterministic `reactiveLine(words, {tone, curseFilter},
