@@ -215,6 +215,40 @@ fn word_count(text: &str) -> i64 {
     text.split_whitespace().filter(|w| !w.is_empty()).count() as i64
 }
 
+/// The row a dictation becomes — pure, no DB access. Shared by the live path
+/// (`insert_transcript_at`) and the recovery path (`convert_failed_dictation`)
+/// so both obey the same raw-text rule and both can be written inside a caller
+/// owned transaction (YV68).
+#[allow(clippy::too_many_arguments)]
+fn new_transcript_entry(
+    text: String,
+    backend: String,
+    asr_seconds: f64,
+    speech_seconds: f64,
+    pipeline_ms: i64,
+    source_app: Option<String>,
+    created_at: DateTime<Utc>,
+    raw_text: Option<String>,
+) -> TranscriptEntry {
+    // Preserve the raw ASR transcript (YV10); default to the polished `text`
+    // when the caller supplies none (raw == polished, e.g. cleanup off).
+    let raw = raw_text
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| text.clone());
+    TranscriptEntry {
+        id: Uuid::new_v4().to_string(),
+        word_count: word_count(&text),
+        text,
+        backend,
+        asr_seconds,
+        speech_seconds: speech_seconds.max(0.0),
+        pipeline_ms: pipeline_ms.max(0),
+        created_at,
+        source_app,
+        raw_text: Some(raw),
+    }
+}
+
 /// Seed dictionary terms — proper nouns that deliberately WON'T auto-harvest
 /// (they're plain first-capitalized words; see is_jargon_token).
 const SEED_TERMS: &[&str] = &[
@@ -712,12 +746,18 @@ impl Database {
     /// Rebuild `daily_stats` from `transcripts`. Call after insert/delete/clear.
     ///
     /// speech_ms only sums real speech_seconds (> 0.05). Never substitutes asr_seconds.
+    ///
+    /// The wipe-and-rebuild runs in ONE transaction: a failure part-way through
+    /// must leave the previous rollup standing, never an empty `daily_stats`.
+    /// Callers now only warn on failure (see `insert_transcript_at`), so a torn
+    /// rebuild would otherwise silently show the user zero words for the day.
     pub fn recompute_daily_stats(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM daily_stats", [])
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM daily_stats", [])
             .map_err(|e| e.to_string())?;
         // Group by local calendar day derived from created_at (ISO stored as UTC).
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare(
                 "SELECT created_at, word_count, asr_seconds,
                         COALESCE(speech_seconds,0), COALESCE(pipeline_ms,0)
@@ -770,7 +810,7 @@ impl Database {
         drop(stmt);
 
         for (day, a) in map {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO daily_stats (day, words, sessions, asr_ms, speech_ms, pipeline_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(day) DO UPDATE SET
@@ -783,7 +823,7 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        tx.commit().map_err(|e| e.to_string())
     }
 
     pub fn insert_transcript(
@@ -822,57 +862,87 @@ impl Database {
         created_at: DateTime<Utc>,
         raw_text: Option<String>,
     ) -> Result<TranscriptEntry, String> {
-        // Preserve the raw ASR transcript (YV10); default to the polished `text`
-        // when the caller supplies none (raw == polished, e.g. cleanup off).
-        let raw = raw_text
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| text.clone());
-        let entry = TranscriptEntry {
-            id: Uuid::new_v4().to_string(),
-            word_count: word_count(&text),
+        let entry = new_transcript_entry(
             text,
             backend,
             asr_seconds,
-            speech_seconds: speech_seconds.max(0.0),
-            pipeline_ms: pipeline_ms.max(0),
-            created_at,
+            speech_seconds,
+            pipeline_ms,
             source_app,
-            raw_text: Some(raw),
-        };
-        let _ = self.learn_from_transcript(&entry.text);
+            created_at,
+            raw_text,
+        );
         {
-            let conn = self.conn.lock().map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO transcripts
-                 (id, text, backend, asr_seconds, speech_seconds, pipeline_ms,
-                  word_count, source_app, created_at, raw_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    entry.id,
-                    entry.text,
-                    entry.backend,
-                    entry.asr_seconds,
-                    entry.speech_seconds,
-                    entry.pipeline_ms,
-                    entry.word_count,
-                    entry.source_app,
-                    entry.created_at.to_rfc3339(),
-                    entry.raw_text,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+            // YV68 — ONE transaction per dictation: the dictionary harvest and
+            // the transcript row land together or not at all. The lock is taken
+            // once here, so everything inside must use the `_tx` helpers — a
+            // method that re-locks `self.conn` would deadlock.
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let _ = self.learn_from_transcript_tx(&tx, &entry.text);
+            self.insert_transcript_row_tx(&tx, &entry)?;
+            tx.commit().map_err(|e| e.to_string())?;
         }
-        // Source-of-truth rollup (never trust incremental counters alone)
-        self.recompute_daily_stats()?;
+        // Source-of-truth rollup (never trust incremental counters alone).
+        // YV68 — the transcript is already durable and its text is already in
+        // the user's app, so a rollup failure is a STATS problem, never a lost
+        // dictation. Propagating it here made the caller park a recovery WAV and
+        // toast "Failed" for a take that was saved — and a later Retry then
+        // wrote a SECOND row for the same utterance.
+        if let Err(e) = self.recompute_daily_stats() {
+            log::warn!("daily rollup: {e}");
+        }
         Ok(entry)
+    }
+
+    /// Write one transcript row on an ALREADY-OPEN connection/transaction. The
+    /// caller owns the lock, the transaction and the `daily_stats` rollup, so a
+    /// dictation can be committed as a single unit with whatever else it must
+    /// be atomic with (the harvest; the failed-take row it replaces).
+    fn insert_transcript_row_tx(
+        &self,
+        conn: &Connection,
+        entry: &TranscriptEntry,
+    ) -> Result<(), String> {
+        conn.execute(
+            "INSERT INTO transcripts
+             (id, text, backend, asr_seconds, speech_seconds, pipeline_ms,
+              word_count, source_app, created_at, raw_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                entry.id,
+                entry.text,
+                entry.backend,
+                entry.asr_seconds,
+                entry.speech_seconds,
+                entry.pipeline_ms,
+                entry.word_count,
+                entry.source_app,
+                entry.created_at.to_rfc3339(),
+                entry.raw_text,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Local "fine-tune" signal: learn coding jargon / proper nouns from transcripts.
     /// Stores high-value tokens in the dictionary table (hits++). Applied on next ASR polish.
+    ///
+    /// Standalone entry point: takes the lock itself. The dictation paths do NOT
+    /// call this — they harvest inside their own transaction (YV68) — so today
+    /// its only callers are the dictionary tests.
+    #[allow(dead_code)]
     pub fn learn_from_transcript(&self, text: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        self.learn_from_transcript_tx(&conn, text)
+    }
+
+    /// The harvest itself, on a connection the caller already holds. Takes no
+    /// lock, so it is safe to call inside an open transaction (YV68).
+    fn learn_from_transcript_tx(&self, conn: &Connection, text: &str) -> Result<usize, String> {
         let mut learned = 0usize;
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         for token in extract_learnable_tokens(text) {
             let n = conn
@@ -1085,11 +1155,19 @@ impl Database {
                 .collect()
         };
         let mut purged = Vec::with_capacity(stale.len());
-        for (id, wav) in stale {
-            let conn = self.conn.lock().map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
-                .map_err(|e| e.to_string())?;
-            purged.push(wav);
+        {
+            // YV68 — one transaction for the whole sweep, not one autocommit per
+            // row: the paths handed back for unlinking are exactly the rows that
+            // are really gone, so a failure part-way can't orphan a WAV whose
+            // row survived.
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for (id, wav) in stale {
+                tx.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                purged.push(wav);
+            }
+            tx.commit().map_err(|e| e.to_string())?;
         }
         Ok(purged)
     }
@@ -1175,7 +1253,7 @@ impl Database {
         let row = self
             .get_failed_dictation(id)?
             .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-        let entry = self.insert_transcript_at(
+        let entry = new_transcript_entry(
             text,
             backend,
             asr_seconds,
@@ -1184,8 +1262,24 @@ impl Database {
             row.source_app,
             row.created_at,
             raw_text,
-        )?;
-        self.delete_failed_dictation(id)?;
+        );
+        {
+            // YV68 — history gains the row in the SAME transaction the failed
+            // list loses it, so the doc comment above is now enforced rather
+            // than hoped for: two autocommits could leave the take in both
+            // lists (delete failed) or, on a rollup error, in neither.
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let _ = self.learn_from_transcript_tx(&tx, &entry.text);
+            self.insert_transcript_row_tx(&tx, &entry)?;
+            tx.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        // Only once the swap is committed is the WAV the caller's to unlink.
+        if let Err(e) = self.recompute_daily_stats() {
+            log::warn!("daily rollup: {e}");
+        }
         Ok(entry)
     }
 
@@ -2912,6 +3006,233 @@ mod tests {
         let left = db.list_failed_dictations().unwrap();
         assert_eq!(left.len(), 1, "purge took a take inside the 7-day window");
         assert_eq!(left[0].id, recent.id);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- YV68 one transaction per dictation -------------------------------
+
+    /// A broken `daily_stats` rollup is a STATS problem, never a lost dictation:
+    /// the take is already durable and its text is already in the user's app, so
+    /// the call still succeeds and nothing is parked as a failed take.
+    #[test]
+    fn rollup_failure_never_fails_the_dictation() {
+        let (db, dir) = fresh_db("yv68-rollup");
+
+        db.insert_transcript_at(
+            "first take".into(),
+            "native".into(),
+            1.0,
+            2.0,
+            100,
+            None,
+            Utc::now(),
+            None,
+        )
+        .unwrap();
+
+        // Break the rollup exactly as a real failure would: recompute_daily_stats
+        // can no longer touch its table.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("DROP TABLE daily_stats", []).unwrap();
+        }
+
+        let second = db.insert_transcript_at(
+            "second take".into(),
+            "native".into(),
+            1.0,
+            2.0,
+            100,
+            None,
+            Utc::now(),
+            None,
+        );
+        assert!(
+            second.is_ok(),
+            "a rollup failure was reported as a failed dictation: {second:?}"
+        );
+        assert_eq!(
+            db.list_transcripts(10, None).unwrap().len(),
+            2,
+            "the saved take is missing from history"
+        );
+        assert!(
+            db.list_failed_dictations().unwrap().is_empty(),
+            "a saved take must never be parked as a recoverable failure"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The harvest and the transcript row are ONE unit: if the INSERT fails, the
+    /// dictionary tokens that text would have taught roll back with it.
+    #[test]
+    fn insert_transcript_at_is_atomic() {
+        let (db, dir) = fresh_db("yv68-atomic");
+
+        // The row id is minted inside insert_transcript_at, so manufacture the
+        // same class of failure by hand: a duplicate-key conflict on the
+        // transcripts INSERT, via a unique index the second row must violate.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("CREATE UNIQUE INDEX yv68_one_row ON transcripts(backend)", [])
+                .unwrap();
+        }
+        db.insert_transcript_at(
+            "first take".into(),
+            "native".into(),
+            1.0,
+            2.0,
+            0,
+            None,
+            Utc::now(),
+            None,
+        )
+        .unwrap();
+
+        let doomed = db.insert_transcript_at(
+            "deploy the yv68RollbackToken build".into(),
+            "native".into(),
+            1.0,
+            2.0,
+            0,
+            None,
+            Utc::now(),
+            None,
+        );
+        assert!(doomed.is_err(), "the duplicate key should have failed the INSERT");
+        assert_eq!(
+            db.list_transcripts(10, None).unwrap().len(),
+            1,
+            "a failed INSERT still wrote a row"
+        );
+        assert!(
+            !db.list_dictionary()
+                .unwrap()
+                .iter()
+                .any(|d| d.term == "yv68RollbackToken"),
+            "the harvest committed even though the transcript INSERT failed"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The retry SWAP is atomic: if dropping the failed row fails, the transcript
+    /// row it would have become rolls back too — never both lists, never neither.
+    #[test]
+    fn convert_failed_dictation_never_leaves_both_rows() {
+        let (db, dir) = fresh_db("yv68-convert");
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"riff").unwrap();
+
+        let row = db
+            .record_failed_dictation(&wav, 4.0, "Empty transcript", Some("Notes".into()))
+            .unwrap();
+
+        // Break ONLY the DELETE. Dropping the table would break the lookup that
+        // runs first, which would prove nothing about the INSERT/DELETE pair.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER yv68_block_delete BEFORE DELETE ON failed_dictations
+                 BEGIN SELECT RAISE(ABORT, 'yv68 test: delete blocked'); END;",
+            )
+            .unwrap();
+        }
+
+        let before = db.list_transcripts(50, None).unwrap().len();
+        let out = db.convert_failed_dictation(
+            &row.id,
+            "ship the recovery item".into(),
+            "native".into(),
+            1.0,
+            None,
+        );
+        assert!(out.is_err(), "a failed DELETE must fail the retry");
+        assert_eq!(
+            db.list_transcripts(50, None).unwrap().len(),
+            before,
+            "the transcript INSERT did not roll back with the failed DELETE"
+        );
+        assert_eq!(
+            db.list_failed_dictations().unwrap().len(),
+            1,
+            "the take must stay recoverable when its retry did not commit"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// End to end over both APIs with the rollup broken: one utterance is one
+    /// row. The old bug turned a saved take into a "failed" one, and Retry then
+    /// wrote a second row for the same words.
+    #[test]
+    fn retry_after_rollup_failure_does_not_duplicate() {
+        let (db, dir) = fresh_db("yv68-retry-dup");
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("DROP TABLE daily_stats", []).unwrap();
+        }
+
+        // A live take still saves, so the caller never parks a recovery WAV for
+        // it — there is nothing to retry into a duplicate.
+        db.insert_transcript_at(
+            "the live take".into(),
+            "native".into(),
+            1.0,
+            2.0,
+            0,
+            Some("Notes".into()),
+            Utc::now(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.list_failed_dictations().unwrap().is_empty(),
+            "a saved take was parked for retry"
+        );
+
+        // And a genuinely failed take still converts exactly once, rollup or no.
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"riff").unwrap();
+        let row = db
+            .record_failed_dictation(&wav, 3.0, "Empty transcript", Some("Notes".into()))
+            .unwrap();
+        db.convert_failed_dictation(
+            &row.id,
+            "the recovered take".into(),
+            "native".into(),
+            1.0,
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.convert_failed_dictation(
+                &row.id,
+                "the recovered take".into(),
+                "native".into(),
+                1.0,
+                None
+            )
+            .is_err(),
+            "a second retry of the same take must not write a second row"
+        );
+
+        let history = db.list_transcripts(50, None).unwrap();
+        assert_eq!(history.len(), 2, "one utterance produced more than one row");
+        assert_eq!(
+            history
+                .iter()
+                .filter(|e| e.text == "the recovered take")
+                .count(),
+            1
+        );
+        assert_eq!(history.iter().filter(|e| e.text == "the live take").count(), 1);
+
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
