@@ -1,4 +1,12 @@
-# ASR test fixtures
+# Test fixtures
+
+## `crash/wilson-voice-crash.ips`
+
+A macOS crash report for Yap (YV64), sanitized: the incident UUID is zeroed, the
+pids are fake, and the thread/image lists are cut to two entries each. The SHAPE
+is verbatim — a one-line JSON header followed by a second JSON document — which
+is the whole point: `crash::parse_ips_header` / `parse_report` are tested
+against the real format, not against a hand-invented one.
 
 ## `quick-brown-fox-16k.wav`
 

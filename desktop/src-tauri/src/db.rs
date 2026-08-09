@@ -106,6 +106,39 @@ pub struct FailedDictation {
 /// after that whether or not the user ever retried it.
 pub const FAILED_TAKE_RETENTION_DAYS: i64 = 7;
 
+/// YV64 — one crash Yap has evidence of: a Rust panic the hook logged, a native
+/// crash macOS wrote a `.ips` report for, or a watchdog kill of a wedged
+/// process. Assembled by [`crate::crash`] from an allowlist of structured
+/// fields ONLY — no transcript text can reach a row (see that module's docs),
+/// and nothing here is ever uploaded: the rows exist so Settings → Privacy &
+/// Diagnostics can say "Yap had a problem last session" instead of the app
+/// being the last thing to know.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrashEvent {
+    pub id: String,
+    /// When the crash happened (the report's own timestamp, not the scan's).
+    pub occurred_at: DateTime<Utc>,
+    /// `panic` | `native` | `watchdog` — see the `crash::KIND_*` constants.
+    pub kind: String,
+    /// The short line the UI lists, e.g. `EXC_CRASH (SIGABRT)`.
+    pub signature: String,
+    /// The on-disk artifact the row was derived from: the `.ips` FILENAME for a
+    /// native/watchdog report, the panic site (`src/foo.rs:12:3`) for a panic.
+    /// Half of the row's identity — `(kind, source_file, occurred_at)` is
+    /// UNIQUE, so re-scanning the same evidence every launch is a no-op.
+    pub source_file: String,
+    /// Bounded summary text (allowlisted fields only).
+    pub details: String,
+    /// Cleared once the user has seen it in Diagnostics; an UNacknowledged row
+    /// at launch is what raises the one non-blocking toast.
+    pub acknowledged: bool,
+}
+
+/// YV64 — how many crash rows the Diagnostics list and the exported summary
+/// carry. Old rows past this are still in the DB; the surfaces stay readable.
+pub const CRASH_EVENT_LIMIT: usize = 50;
+
 /// YV48 — a saved `trigger phrase → expansion text` rule. The matcher lives in
 /// [`crate::snippets`]; this is only its storage + UI shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -524,6 +557,25 @@ impl Database {
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
             );
+
+            -- YV64 crash telemetry: one row per crash Yap has evidence of,
+            -- written by `crash::ingest` at startup from macOS .ips reports and
+            -- the panic hook's own log lines. LOCAL ONLY — nothing in here is
+            -- ever uploaded, and no transcript text can reach it (the row is
+            -- built from an allowlist of structured fields). The UNIQUE key is
+            -- what makes re-scanning the same evidence on every launch a no-op.
+            CREATE TABLE IF NOT EXISTS crash_events (
+              id TEXT PRIMARY KEY,
+              occurred_at TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              signature TEXT NOT NULL,
+              source_file TEXT NOT NULL,
+              details TEXT NOT NULL DEFAULT '',
+              acknowledged INTEGER NOT NULL DEFAULT 0,
+              UNIQUE (kind, source_file, occurred_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_crash_events_occurred
+              ON crash_events(occurred_at DESC);
             ",
         )
         .map_err(|e| OpenErr::classify("schema", e))?;
@@ -1040,6 +1092,71 @@ impl Database {
             purged.push(wav);
         }
         Ok(purged)
+    }
+
+    /// YV64 — remember one crash. `Ok(true)` means the row is NEW; `Ok(false)`
+    /// means this exact evidence (same kind, same artifact, same instant) is
+    /// already recorded, which is the normal answer on every launch after the
+    /// one that first read it.
+    pub fn record_crash_event(&self, event: &CrashEvent) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO crash_events
+                 (id, occurred_at, kind, signature, source_file, details, acknowledged)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    event.id,
+                    event.occurred_at.to_rfc3339(),
+                    event.kind,
+                    event.signature,
+                    event.source_file,
+                    event.details,
+                    i64::from(event.acknowledged),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(inserted > 0)
+    }
+
+    /// YV64 — recorded crashes, newest first, capped at `limit`.
+    pub fn list_crash_events(&self, limit: usize) -> Result<Vec<CrashEvent>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, occurred_at, kind, signature, source_file, details, acknowledged
+                 FROM crash_events ORDER BY occurred_at DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit as i64], map_crash_event)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// YV64 — the user has now seen the Stability list: nothing is news any
+    /// more, so no future launch raises the toast for these rows. Returns how
+    /// many rows were still unacknowledged.
+    pub fn acknowledge_crash_events(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE crash_events SET acknowledged = 1 WHERE acknowledged = 0",
+            [],
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV64 — throw the crash history away. The reports themselves are still in
+    /// `~/Library/Logs/DiagnosticReports/` (they are macOS', not ours), so a
+    /// later launch can legitimately re-read one; this clears what Yap stored.
+    pub fn clear_crash_events(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM crash_events", [])
+            .map_err(|e| e.to_string())
     }
 
     /// YV52 — a retry succeeded: write the transcript row the take should have
@@ -1898,6 +2015,19 @@ fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> 
         source_app: row.get(7)?,
         created_at: parse_dt(row.get::<_, String>(8)?),
         raw_text: row.get(9)?,
+    })
+}
+
+fn map_crash_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CrashEvent> {
+    // id, occurred_at, kind, signature, source_file, details, acknowledged
+    Ok(CrashEvent {
+        id: row.get(0)?,
+        occurred_at: parse_dt(row.get::<_, String>(1)?),
+        kind: row.get(2)?,
+        signature: row.get(3)?,
+        source_file: row.get(4)?,
+        details: row.get(5)?,
+        acknowledged: row.get::<_, i64>(6)? != 0,
     })
 }
 
