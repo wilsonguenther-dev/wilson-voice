@@ -123,6 +123,13 @@ pub struct RecordingResult {
     /// side of the pipeline — it used to be invisible, and used to include a
     /// fixed start-poll wait paid on every take.
     pub capture_start_ms: i64,
+    /// YV67 — the capture device errored DURING this take (unplugged mic, format
+    /// change). The take still comes back with every sample that made it, because
+    /// a truncated recording is the user's audio; the pipeline turns this into a
+    /// retryable failure instead of pasting a silently cut-off transcript. Until
+    /// YV67 the flag was only read on the NEXT arm, so the take it truncated
+    /// looked perfectly healthy.
+    pub device_failed: bool,
 }
 
 /// Arm a take on the persistent capture worker (YV35).
@@ -199,6 +206,9 @@ pub fn stop_recording(
     // function retires it — the early return below drops it, which cleans the
     // marker + spill exactly like the normal completion at the end does.
     let journal = captured.journal.take();
+    // YV67: the device's health at Disarm belongs to THIS take — read it off
+    // before `finalize_take` consumes the capture.
+    let device_failed = captured.device_failed;
     // Everything that CAN stream already ran on the capture frames (YV37); this
     // only finishes the take — apply the accumulated AGC gain, de-click the
     // edges, optionally denoise — and yields the 16 kHz mono buffer ASR reads.
@@ -277,6 +287,7 @@ pub fn stop_recording(
         hold_wall_seconds,
         speech_present,
         capture_start_ms: active.capture_start_ms,
+        device_failed,
     })
 }
 
@@ -346,6 +357,18 @@ impl ClipWav {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Test-only guard over a wav that is ALREADY on disk, so the recovery path
+    /// (YV52/YV67) can be driven from a unit test without a capture device. Same
+    /// drop semantics as a real clip — it unlinks unless `keep_for_recovery` ran.
+    #[cfg(test)]
+    pub fn adopt_for_test(path: PathBuf) -> Self {
+        Self {
+            path,
+            writer: None,
+            kept: false,
+        }
     }
 
     /// YV52 — preserve this take's audio for a retry instead of unlinking it.
@@ -889,6 +912,28 @@ struct CapturedAudio {
     /// YV63 crash journal, handed back with the take so `stop_recording` can
     /// retire it. `None` when journalling could not be started for this take.
     journal: Option<CaptureJournal>,
+    /// YV67 — stamped at Disarm from `LiveStream::has_failed`: did the capture
+    /// device error while this take was being held? The DSP never sets it; the
+    /// worker does, because only the worker owns the stream.
+    device_failed: bool,
+}
+
+/// Stamp a finished take with the capture device's health (YV67).
+///
+/// Split out of the `Disarm` arm so the hand-off is testable without a live cpal
+/// stream, and written as a pass-through on purpose: the samples ride out
+/// UNTOUCHED. A mic that died mid-hold still recorded everything up to the
+/// moment it died, and that partial audio is exactly what the pipeline needs to
+/// keep so the take stays retryable instead of pasting a truncated transcript.
+fn mark_device_failure(mut captured: CapturedAudio, failed: bool) -> CapturedAudio {
+    if failed {
+        log::warn!(
+            "capture device errored mid-take — keeping the {} sample(s) it did capture",
+            captured.samples.len()
+        );
+    }
+    captured.device_failed = failed;
+    captured
 }
 
 enum CaptureCmd {
@@ -1019,6 +1064,7 @@ impl LiveStream {
                 sample_rate: TARGET_RATE,
                 gain: 1.0,
                 journal: None,
+                device_failed: false,
             })
     }
 
@@ -1102,7 +1148,12 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
             Ok(CaptureCmd::Disarm { reply }) => {
                 idle_since = Instant::now();
                 let captured = match live.as_ref() {
-                    Some(stream) => Ok(stream.end()),
+                    // YV67: the device-error flag used to be read only on the
+                    // NEXT arm, so an unplugged mic produced a take that looked
+                    // healthy and pasted a silently truncated transcript. Read
+                    // it HERE, on the take it actually truncated — and still
+                    // hand back every sample that was captured.
+                    Some(stream) => Ok(mark_device_failure(stream.end(), stream.has_failed())),
                     None => Err(NO_SAMPLES_ERR.to_string()),
                 };
                 let _ = reply.send(captured);
@@ -1386,6 +1437,8 @@ impl StreamDsp {
             // Taken (not reset) so the journal rides out with its take — the
             // reset below must not retire a journal `stop_recording` still owns.
             journal: self.journal.take(),
+            // A device error is stamped by the worker at Disarm (YV67), not here.
+            device_failed: false,
         };
         self.reset();
         captured
@@ -1842,7 +1895,7 @@ fn to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
 }
 
-fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
+pub(crate) fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
     let spec = WavSpec {
         channels: 1,
         sample_rate,
@@ -2658,6 +2711,53 @@ mod tests {
         assert!(dsp.out.is_empty() && dsp.raw.is_empty());
     }
 
+    /// YV67 — the `Disarm` hand-off must report a mid-take device error WITHOUT
+    /// touching the audio. A mic that was unplugged mid-hold still captured
+    /// everything up to that moment; dropping it is what produced a silently
+    /// truncated transcript with nothing to retry.
+    #[test]
+    fn disarm_reports_device_failure_without_dropping_samples() {
+        let partial = tone_at(SR, 0.4, 220.0, 0.2);
+        let captured = mark_device_failure(
+            CapturedAudio {
+                samples: partial.clone(),
+                raw: partial.clone(),
+                sample_rate: SR,
+                gain: 1.0,
+                journal: None,
+                device_failed: false,
+            },
+            true,
+        );
+        assert!(
+            captured.device_failed,
+            "the mid-take device error must ride out with the take"
+        );
+        assert!(
+            !captured.samples.is_empty(),
+            "the partial audio must survive Disarm"
+        );
+        assert_eq!(
+            captured.samples, partial,
+            "Disarm must not touch the samples"
+        );
+        assert_eq!(captured.raw, partial, "…nor the never-lose-audio fallback");
+        // …and a healthy stream still reports a healthy take.
+        let healthy = mark_device_failure(
+            CapturedAudio {
+                samples: partial.clone(),
+                raw: Vec::new(),
+                sample_rate: SR,
+                gain: 1.0,
+                journal: None,
+                device_failed: true,
+            },
+            false,
+        );
+        assert!(!healthy.device_failed);
+        assert_eq!(healthy.samples, partial);
+    }
+
     #[test]
     fn finalize_levels_fades_and_never_loses_the_take() {
         let quiet = tone_at(SR, 0.5, 220.0, 0.02);
@@ -2668,6 +2768,7 @@ mod tests {
             sample_rate: SR,
             gain,
             journal: None,
+            device_failed: false,
         };
         let out = finalize_take(captured, false).expect("a normal take finalizes");
         assert_eq!(
@@ -2695,6 +2796,7 @@ mod tests {
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
                 journal: None,
+                device_failed: false,
             },
             false,
         )
@@ -2715,6 +2817,7 @@ mod tests {
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
                 journal: None,
+                device_failed: false,
             },
             false,
         )
@@ -2728,6 +2831,7 @@ mod tests {
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
                 journal: None,
+                device_failed: false,
             },
             false,
         )
