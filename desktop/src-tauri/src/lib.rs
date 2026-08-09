@@ -980,24 +980,46 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
-            let raw_text = asr.text;
-            // Hallucination gate (YV16): reject degenerate Whisper repetition loops
-            // ("WPM-SERV-SERV-SERV…") BEFORE they reach the clipboard/paste path.
-            // YV67: a REJECTION, not a soft nothing — the wav exists by now, and
-            // this gate is a heuristic that can be wrong (a legitimately
-            // repetitive dictation reads as a loop). Keeping the audio + a
-            // retryable row is the difference between "Yap ate my dictation" and
-            // one click of Recover.
-            if dictation::is_hallucinated_repetition(&raw_text) {
-                // YV20/M2: never write the transcript body to the log — count only.
-                log::info!(
-                    "hallucination gate: rejected degenerate ASR output ({} chars)",
-                    raw_text.chars().count()
-                );
-                return Ok(TakeOutcome::Rejected {
-                    message: NO_SPEECH_MESSAGE.into(),
-                    reason: GATE_REPETITION_REASON,
-                });
+            let mut raw_text = asr.text;
+            // Hallucination gate (YV16, made non-destructive by YV66): degenerate
+            // Whisper repetition loops ("WPM-SERV-SERV-SERV…") must not reach the
+            // clipboard/paste path — but a loop at the END of a good take is no
+            // reason to destroy the good part. `degenerate_cutoff` says WHERE the
+            // degeneration starts, so a long dictation that goes off the rails in
+            // its last stretch keeps everything in front of the rails.
+            match dictation::degenerate_cutoff(&raw_text) {
+                Some(cutoff)
+                    if raw_text[..cutoff].split_whitespace().count()
+                        >= dictation::DEGEN_MIN_KEEP_TOKENS =>
+                {
+                    // YV20/M2: never write the transcript body to the log — count only.
+                    let before = raw_text.chars().count();
+                    raw_text.truncate(cutoff);
+                    let kept = raw_text.chars().count();
+                    log::info!(
+                        "hallucination gate: truncated degenerate tail (kept {} chars, dropped {} chars)",
+                        kept,
+                        before - kept
+                    );
+                }
+                Some(_) => {
+                    // Degenerate from the first token — there is no prefix to
+                    // keep. YV67: a REJECTION, not a soft nothing — the wav
+                    // exists by now, and this gate is a heuristic that can be
+                    // wrong (a legitimately repetitive dictation reads as a
+                    // loop). Keeping the audio + a retryable row is the
+                    // difference between "Yap ate my dictation" and one click of
+                    // Recover.
+                    log::info!(
+                        "hallucination gate: rejected degenerate ASR output ({} chars)",
+                        raw_text.chars().count()
+                    );
+                    return Ok(TakeOutcome::Rejected {
+                        message: NO_SPEECH_MESSAGE.into(),
+                        reason: GATE_REPETITION_REASON,
+                    });
+                }
+                None => {}
             }
             // YV49 command mode — this take is an INSTRUCTION about the text the
             // user had selected when they pressed, not text to type. It branches
@@ -1843,14 +1865,37 @@ fn retry_failed_dictation(
         &settings.language,
         bias_prompt,
     )?;
-    let raw_text = asr.text;
-    if dictation::is_hallucinated_repetition(&raw_text) {
-        // YV20/M2: count only, never log the transcript body.
-        log::info!(
-            "retry hallucination gate: rejected degenerate output ({} chars)",
-            raw_text.chars().count()
-        );
-        return Err("Yap couldn't make sense of that clip — try dictating it again".into());
+    let mut raw_text = asr.text;
+    // The same non-destructive gate as the live path (YV66). It matters MORE
+    // here: a successful retry unlinks the recovery wav, so a degenerate tail
+    // that slips through is unrecoverable — there is no audio left to try
+    // again with — and a good prefix thrown away is gone for the same reason.
+    match dictation::degenerate_cutoff(&raw_text) {
+        Some(cutoff)
+            if raw_text[..cutoff].split_whitespace().count()
+                >= dictation::DEGEN_MIN_KEEP_TOKENS =>
+        {
+            // YV20/M2: count only, never log the transcript body.
+            let before = raw_text.chars().count();
+            raw_text.truncate(cutoff);
+            let kept = raw_text.chars().count();
+            log::info!(
+                "retry hallucination gate: truncated degenerate tail (kept {} chars, dropped {} chars)",
+                kept,
+                before - kept
+            );
+        }
+        Some(_) => {
+            // Degenerate from the first token — nothing to keep, so the row and
+            // its wav stay put for another attempt.
+            // YV20/M2: count only, never log the transcript body.
+            log::info!(
+                "retry hallucination gate: rejected degenerate output ({} chars)",
+                raw_text.chars().count()
+            );
+            return Err("Yap couldn't make sense of that clip — try dictating it again".into());
+        }
+        None => {}
     }
     // Same cleanup pipeline as a live take, minus the caret context: the retry
     // happens in Yap, so there is no cursor to join onto.
@@ -4049,5 +4094,85 @@ mod tests {
 
         drop(state);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// YV66 — the retry path runs the SAME gate as the live path. It is the one
+    /// caller that DELETES the recovery wav on success, so a degenerate tail
+    /// reaching the clipboard whole would be unrecoverable: no audio left to
+    /// retry against. A whole-take verdict is not enough here, because a take
+    /// that is clean for 300 tokens and only then sticks is not degenerate from
+    /// its first token — it must be CUT.
+    #[test]
+    fn retry_gate_truncates_degenerate_tail() {
+        const LIB: &str = include_str!("lib.rs");
+        let body = LIB
+            .split_once("fn retry_failed_dictation(")
+            .expect("the retry command must exist")
+            .1
+            .split_once("/// YV52 — throw a failed take away")
+            .expect("the retry command must end where the next command begins")
+            .0;
+        assert!(
+            body.contains("dictation::degenerate_cutoff("),
+            "the retry path must gate on the cutoff, not on a whole-take verdict"
+        );
+        assert!(
+            !body.contains("is_hallucinated_repetition"),
+            "the whole-take verdict is false for a degenerate TAIL — it would ship the loop"
+        );
+
+        // 300 tokens of dictation, then the decoder sticks on "the": the
+        // keep-branch of that gate is the one that has to fire.
+        let prose = (0..300)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("{}{}", prose, " the".repeat(200));
+        assert!(
+            !crate::dictation::is_hallucinated_repetition(&text),
+            "fixture must be one the whole-take verdict lets through"
+        );
+        let cutoff =
+            crate::dictation::degenerate_cutoff(&text).expect("the degenerate tail must be found");
+        assert!(
+            text[..cutoff].split_whitespace().count() >= crate::dictation::DEGEN_MIN_KEEP_TOKENS,
+            "the gate must truncate this take, not reject it whole"
+        );
+        assert_eq!(text[..cutoff].trim_end(), prose);
+    }
+
+    /// YV66 × YV67 — the two features meet inside ONE `match` arm, so this is
+    /// the seam where either can silently undo the other. YV66 turns the live
+    /// hallucination gate from a boolean into a cutoff; YV67 requires that the
+    /// arm which still rejects a whole take returns `TakeOutcome::Rejected`, so
+    /// `keep_failed_take` gets the wav and the user gets a Retry row. Returning
+    /// `Soft` there compiles, passes every other test, and quietly restores the
+    /// bug YV67 fixed: the audio is unlinked by `ClipWav::drop` and the take is
+    /// gone. Pin the arm itself.
+    #[test]
+    fn live_gate_whole_take_rejection_keeps_its_audio() {
+        const LIB: &str = include_str!("lib.rs");
+        let gate = LIB
+            .split_once("match dictation::degenerate_cutoff(&raw_text) {")
+            .expect("the live gate must run the cutoff")
+            .1
+            .split_once("// YV49 command mode")
+            .expect("the live gate ends where command mode begins")
+            .0;
+        assert!(
+            gate.contains("return Ok(TakeOutcome::Rejected {")
+                && gate.contains("reason: GATE_REPETITION_REASON,"),
+            "a whole-take rejection must keep the wav as a retryable row (YV67)"
+        );
+        assert!(
+            !gate.contains("TakeOutcome::Soft("),
+            "a Soft outcome discards the wav — the take would be unrecoverable"
+        );
+        // And the arm it guards is reachable: a take that is degenerate from its
+        // very first token still cuts at 0, which is what selects that arm.
+        assert_eq!(
+            crate::dictation::degenerate_cutoff(&" the".repeat(200)),
+            Some(0)
+        );
     }
 }

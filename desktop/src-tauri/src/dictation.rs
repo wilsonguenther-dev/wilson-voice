@@ -347,68 +347,225 @@ pub fn has_enough_speech(voiced_seconds: f64) -> bool {
     voiced_seconds >= MIN_SPEECH_SECONDS
 }
 
-/// Reject degenerate Whisper "hallucination loops" — the phantom repetitive
-/// tokens the model emits when handed near-silence — BEFORE they get pasted into
-/// the user's focused app. Pure and deliberately CONSERVATIVE: it must stay quiet
-/// for normal prose, a genuine numbered list, and short spoken emphatics
-/// ("no no no", "very very good").
+/// Width, in whitespace tokens, of the sliding window the degenerate-ratio test
+/// (rule 2) measures over. YV66: the ratio used to be taken over the WHOLE take,
+/// which made it length-dependent by construction — ordinary English reuses
+/// function words, so type/token ratio falls steadily with duration (measured on
+/// 469 real saved transcripts: median 0.833 under 200 tokens, 0.336 at 800–999).
+/// A stuck decoder, by contrast, collapses LOCALLY: it loops one token or one
+/// short phrase inside a tight band. Measuring per-window asks the question that
+/// actually separates the two, and stops asking "did you talk for a long time".
+const DEGEN_WINDOW: usize = 150;
+
+/// Distance between window starts. Overlapping windows so a loop that straddles
+/// a boundary is still seen whole by some window.
+const DEGEN_WINDOW_STEP: usize = 50;
+
+/// At or above this many tokens a take is "long" and rule 1 relaxes. Four
+/// identical words in a two-second burst is a stuck decoder; four in a six-minute
+/// take is a human saying "no no no no".
+const DEGEN_LONG_TAKE_TOKENS: usize = 60;
+
+/// Consecutive RAW-identical-token run that trips rule 1 on a SHORT take.
+const DEGEN_RUN_SHORT: usize = 4;
+
+/// Consecutive RAW-identical-token run that trips rule 1 on a LONG take.
+const DEGEN_RUN_LONG: usize = 8;
+
+/// Consecutive run that trips rule 1 on a SHORT take when the tokens only agree
+/// AFTER normalisation. Normalisation exists to catch a decoder drifting its
+/// capitalisation and sentence marks across a loop — but it also matches how
+/// real emphatic speech is transcribed ("No, no, no, no"), which is clean
+/// dictation the strict raw limit never touched. So normalisation alone must not
+/// widen the class: a drifted run has to be materially longer than a raw one
+/// before it counts.
+const DEGEN_RUN_SHORT_NORMALIZED: usize = 8;
+
+/// Consecutive normalised-only run that trips rule 1 on a LONG take.
+const DEGEN_RUN_LONG_NORMALIZED: usize = 12;
+
+/// Whitespace tokens a surviving prefix must hold to be worth keeping. Below it
+/// there is no salvageable dictation in front of the degeneration, so the cutoff
+/// collapses to 0 — "the whole take is garbage" — which is exactly what
+/// `is_hallucinated_repetition` reports.
+pub const DEGEN_MIN_KEEP_TOKENS: usize = 12;
+
+/// Locate where a Whisper "hallucination loop" — the phantom repetitive tokens
+/// the model emits when it gets stuck — takes over the transcript. Returns the
+/// BYTE offset at which the degenerate tail begins, or `None` when the take is
+/// clean. A cutoff of 0 means the take is degenerate from its first token and
+/// nothing is worth keeping.
 ///
-/// Fires on any of:
-///   1. ≥4 consecutive identical whitespace tokens ("the the the the …").
-///   2. unique/total whitespace-token ratio < 0.3 when total ≥ 6 — a clip that is
-///      overwhelmingly one repeated token (the 6-token floor keeps a short
-///      emphatic like "no no no" from tripping it).
+/// Pure and deliberately CONSERVATIVE: it must stay quiet for normal prose, a
+/// genuine numbered list, short spoken emphatics ("no no no", "very very good"),
+/// and — the whole point of YV66 — for LONG dictation, which is precisely what
+/// the caller can least afford to lose.
+///
+/// Fires on the first of:
+///   1. a run of consecutive identical tokens — ≥4 on a take under
+///      [`DEGEN_LONG_TAKE_TOKENS`] tokens, ≥8 at or above it. A run whose tokens
+///      only agree once normalised (lowercased, ASCII punctuation trimmed off
+///      both ends) needs ≥8 / ≥12 instead, because a stuck decoder drifts
+///      capitalisation and sentence marks across the loop ("the The, the. the")
+///      but so does ordinary emphatic speech ("No, no, no, no") — normalisation
+///      must catch the former without dragging in the latter. Cutoff = the first
+///      token OF the run, so the prose in front of it survives.
+///   2. unique/total token ratio < 0.3 inside any [`DEGEN_WINDOW`]-token window
+///      (step [`DEGEN_WINDOW_STEP`]). A take shorter than one window is measured
+///      whole, keeping the ≥6-token floor that stops "no no no" tripping it, so
+///      short-clip behaviour is unchanged. Cutoff = that window's first token.
 ///   3. a single whitespace token that, split on `-`/`_`, is a short unit repeated
-///      ≥4× ("WPM-SERV-SERV-SERV-SERV" — Whisper emits the whole loop as ONE token).
-pub fn is_hallucinated_repetition(text: &str) -> bool {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+///      ≥4× ("WPM-SERV-SERV-SERV-SERV" — Whisper emits the whole loop as ONE
+///      token). Cutoff = that token.
+pub fn degenerate_cutoff(text: &str) -> Option<usize> {
+    let tokens = tokens_with_offsets(text);
     if tokens.is_empty() {
-        return false;
+        return None;
     }
-    // Rule 1 — ≥4 identical tokens in a row.
-    if max_consecutive_identical(&tokens) >= 4 {
-        return true;
+    let index = first_degenerate_token(&tokens)?;
+    // Too little in front of the degeneration to be worth salvaging → report the
+    // whole take as garbage rather than handing the caller a two-word prefix.
+    if index < DEGEN_MIN_KEEP_TOKENS {
+        return Some(0);
     }
-    // Rule 2 — overwhelmingly one repeated token, on a long-enough clip only.
+    Some(tokens[index].0)
+}
+
+/// Index of the first token belonging to the degenerate span, by the rules
+/// documented on [`degenerate_cutoff`].
+fn first_degenerate_token(tokens: &[(usize, &str)]) -> Option<usize> {
     let total = tokens.len();
-    if total >= 6 {
-        let mut uniq: Vec<&str> = tokens.clone();
-        uniq.sort_unstable();
-        uniq.dedup();
-        if (uniq.len() as f64 / total as f64) < 0.3 {
-            return true;
+    // Rule 1 — a run of identical tokens, with a length-aware threshold and a
+    // looser one again for runs that only agree after normalisation.
+    let (raw_limit, normalized_limit) = if total < DEGEN_LONG_TAKE_TOKENS {
+        (DEGEN_RUN_SHORT, DEGEN_RUN_SHORT_NORMALIZED)
+    } else {
+        (DEGEN_RUN_LONG, DEGEN_RUN_LONG_NORMALIZED)
+    };
+    if let Some(start) = first_repeated_run(tokens, raw_limit, normalized_limit) {
+        return Some(start);
+    }
+    // Rule 2 — a window that has collapsed onto one repeated token.
+    if total < DEGEN_WINDOW {
+        // Short take: one window of the whole thing, with the original 6-token
+        // floor so a short emphatic still can't trip it.
+        if total >= 6 && unique_ratio(tokens) < 0.3 {
+            return Some(0);
+        }
+    } else {
+        let mut start = 0usize;
+        while start + DEGEN_WINDOW <= total {
+            if unique_ratio(&tokens[start..start + DEGEN_WINDOW]) < 0.3 {
+                return Some(start);
+            }
+            start += DEGEN_WINDOW_STEP;
         }
     }
     // Rule 3 — a single glued token that is a short unit repeated ≥4× on `-`/`_`.
-    for tok in &tokens {
+    for (index, (_, tok)) in tokens.iter().enumerate() {
         let parts: Vec<&str> = tok
             .split(|c| c == '-' || c == '_')
             .filter(|p| !p.is_empty())
             .collect();
         if parts.len() >= 4 && has_short_repeated_unit(&parts) {
-            return true;
+            return Some(index);
         }
     }
-    false
+    None
 }
 
-/// Longest run of identical adjacent items. Helper for the repetition guard.
-fn max_consecutive_identical<T: PartialEq>(items: &[T]) -> usize {
-    let mut best = 0usize;
-    let mut run = 0usize;
-    let mut prev: Option<&T> = None;
-    for item in items {
-        if prev == Some(item) {
-            run += 1;
-        } else {
-            run = 1;
-            prev = Some(item);
-        }
-        if run > best {
-            best = run;
+/// Reject degenerate Whisper "hallucination loops" outright — true only when the
+/// take is degenerate from its very first token, i.e. there is no clean prefix to
+/// keep. Callers that can salvage a prefix should use [`degenerate_cutoff`].
+pub fn is_hallucinated_repetition(text: &str) -> bool {
+    degenerate_cutoff(text).is_some_and(|cutoff| cutoff == 0)
+}
+
+/// `split_whitespace`, but each token carries its BYTE offset in `text` so a rule
+/// can report where to cut. Offsets come from `char_indices`, so every one of
+/// them is a valid char boundary.
+fn tokens_with_offsets(text: &str) -> Vec<(usize, &str)> {
+    let mut out: Vec<(usize, &str)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = start.take() {
+                out.push((s, &text[s..i]));
+            }
+        } else if start.is_none() {
+            start = Some(i);
         }
     }
-    best
+    if let Some(s) = start {
+        out.push((s, &text[s..]));
+    }
+    out
+}
+
+/// Lowercased, with leading/trailing ASCII punctuation trimmed — the form rule 1
+/// compares in, so a loop that drifts its punctuation is still one run.
+fn normalized_token(tok: &str) -> String {
+    tok.trim_matches(|c: char| c.is_ascii_punctuation())
+        .to_lowercase()
+}
+
+/// Index of the first token starting a run of `raw_limit` byte-identical tokens,
+/// or of `normalized_limit` tokens that agree once normalised. Both are tracked
+/// in one pass and whichever trips first wins; the normalised run starts at or
+/// before the raw one, so its (earlier) start is reported when it fires. A token
+/// that normalises to nothing (pure punctuation) breaks both runs rather than
+/// joining one, so "... ... ... ..." is not a hallucination.
+fn first_repeated_run(
+    tokens: &[(usize, &str)],
+    raw_limit: usize,
+    normalized_limit: usize,
+) -> Option<usize> {
+    let mut raw_run = 0usize;
+    let mut raw_start = 0usize;
+    let mut raw_prev: Option<&str> = None;
+    let mut norm_run = 0usize;
+    let mut norm_start = 0usize;
+    let mut norm_prev: Option<String> = None;
+    for (index, (_, tok)) in tokens.iter().enumerate() {
+        let key = normalized_token(tok);
+        if key.is_empty() {
+            raw_run = 0;
+            raw_prev = None;
+            norm_run = 0;
+            norm_prev = None;
+            continue;
+        }
+        if raw_prev == Some(*tok) {
+            raw_run += 1;
+        } else {
+            raw_run = 1;
+            raw_start = index;
+        }
+        raw_prev = Some(tok);
+        if norm_prev.as_deref() == Some(key.as_str()) {
+            norm_run += 1;
+        } else {
+            norm_run = 1;
+            norm_start = index;
+        }
+        norm_prev = Some(key);
+        if norm_run >= normalized_limit {
+            return Some(norm_start);
+        }
+        if raw_run >= raw_limit {
+            return Some(raw_start);
+        }
+    }
+    None
+}
+
+/// unique/total token ratio over a window. Raw tokens, as before — rule 2 is a
+/// bulk-collapse measure and does not need rule 1's normalisation.
+fn unique_ratio(window: &[(usize, &str)]) -> f64 {
+    let mut uniq: Vec<&str> = window.iter().map(|(_, tok)| *tok).collect();
+    uniq.sort_unstable();
+    uniq.dedup();
+    uniq.len() as f64 / window.len() as f64
 }
 
 /// True when `parts` contains a SHORT unit (≤10 chars) repeated ≥4× in a row —
@@ -1921,6 +2078,202 @@ mod tests {
         ));
         // A short spoken emphatic (<4 repeats) is legitimate speech.
         assert!(!is_hallucinated_repetition("no no no"));
+    }
+
+    // --- YV66: the gate must survive LONG dictation -----------------------
+    //
+    // Wilson lost a 7m36s take because the old whole-take unique/total ratio is
+    // length-dependent by construction. These cases pin the three properties
+    // that failure needed: a long take at low GLOBAL ratio survives, an emphatic
+    // run inside long prose survives, and a genuinely degenerate tail is CUT off
+    // a good take instead of deleting the take.
+    //
+    // `PROSE` is ~1,070 tokens of connected English written for these tests. It
+    // is shaped like the real thing on the two axes the rules measure: global
+    // type/token ratio 0.49, and no 150-token window below 0.67 — the same
+    // profile as Wilson's own long transcripts, where the local ratio stays high
+    // while the global one sags with duration.
+    const PROSE: &str = "\
+         okay so the thing I keep running into when I dictate for a long stretch is that
+         the tail of whatever I said just vanishes and I never find out why until I go
+         digging through the logs afterwards. Yesterday I held the key down for something
+         like seven and a half minutes while I walked through the entire migration plan,
+         everything from how we drain the old queue to what the rollback looks like if
+         the read path starts throwing, and when I let go the pill flashed and told me it
+         did not catch any speech. That is obviously wrong because the waveform was
+         moving the whole time and the sample count in the log was north of seven
+         million. So the audio was fine, the model transcribed it, and then something
+         downstream decided the transcription was garbage and threw it away without
+         asking me. What bothers me is not that a guard exists, guards are good, it is
+         that the guard gets hungrier the longer I talk. A short burst sails through, a
+         medium note sails through, and then somewhere past a few hundred words the same
+         sentence structure that was perfectly acceptable at ninety seconds becomes a
+         rejection at six minutes. That is backwards. Long takes are the ones I care
+         about most, they are the ones I cannot easily reproduce, and they are the ones
+         where losing the text costs me an afternoon of reconstruction. If I record a
+         quick reminder and it gets eaten, I shrug and say it again. If I narrate an
+         architecture review and it gets eaten, I have to reconstruct an argument I
+         already finished having. Think about how ordinary speech actually works. When
+         you talk for a long time you reuse function words constantly. Articles,
+         prepositions, pronouns, conjunctions, filler, all of it repeats because that is
+         how English sentences are built. The proportion of distinct words to total words
+         falls steadily as the sample grows, not because the speech is degenerate but
+         because vocabulary saturates. Any measurement that divides unique words by total
+         words across the whole recording is therefore measuring length as much as
+         quality, and once you cross some invisible line the number dips under whatever
+         threshold somebody picked and the whole thing is discarded. The threshold was
+         chosen by looking at short clips, so it encodes an assumption about length that
+         nobody wrote down. Meanwhile the actual failure it was built to catch looks
+         nothing like that. When the decoder gets stuck it emits the same token over and
+         over in a tight band, or it loops a two word phrase for a hundred repetitions,
+         and that pathology is intensely local. It shows up as a dense cluster inside a
+         small span of the output. You can find it by sliding a window across the tokens
+         and asking whether any single window has collapsed, which is a completely
+         different question from asking whether the average across ten minutes looks a
+         bit repetitive. A local measurement finds the loop and ignores the length. A
+         global measurement finds the length and mistakes it for a loop. The other half
+         of the problem is what happens after detection. Right now the answer is throw
+         everything away and show a friendly message, which is the worst possible outcome
+         because the good part and the bad part get destroyed together. If the first six
+         minutes are clean and the last thirty seconds turned into a stuck loop, deleting
+         all of it to protect me from the loop is not protection, it is data loss with a
+         polite tone. The obvious behaviour is to cut at the boundary, keep the prefix,
+         drop the tail, tell me in the log how many characters survived and how many went
+         away, and let the rest of the pipeline carry on with the good text. Truncating
+         is recoverable. Discarding is not. There is a reasonable objection here, which
+         is that a cut in the wrong place produces a sentence that stops mid thought, and
+         that could be confusing. I would rather have a paragraph that ends abruptly than
+         a blank clipboard. I can finish a sentence myself. I cannot resurrect six
+         minutes of reasoning from nothing. And in practice the cut lands where the model
+         already stopped producing meaning, so the material after it was never worth
+         keeping anyway. The consecutive repeat rule deserves the same treatment. Four
+         identical words in a row is a genuine signal in a short clip because nobody says
+         the same word four times in a two second burst by accident. But over a long
+         stretch people absolutely repeat themselves for emphasis. I say no no no when I
+         am pushing back on something, I say wait wait wait when I want to interrupt my
+         own thought, and I say absolutely absolutely absolutely when I am agreeing
+         enthusiastically. Those are real speech, they carry meaning, and they should not
+         cost me the recording. Scaling the tolerance with the size of the take handles
+         that neatly. Keep the strict threshold where it earns its keep, on tiny clips,
+         and loosen it once there is enough surrounding material to prove the take is
+         real. Comparison should also be a bit smarter than exact string equality.
+         Punctuation and capitalisation drift constantly in transcripts, so the same word
+         arrives as the, The, the, and the. depending on where the decoder thought a
+         sentence boundary was. If you compare raw strings you miss half the loops you
+         were trying to catch, which means the strict rule is simultaneously too
+         aggressive on legitimate speech and too permissive on the actual pathology.
+         Normalising before comparing fixes both directions at once. So the shape of the
+         fix is straightforward. Make the repeat rule aware of how much was said. Replace
+         the global ratio with a sliding window so the measurement stops depending on
+         duration. Return the position where things went wrong instead of a bare yes or
+         no, and use that position to cut rather than to delete. Keep the glued token
+         check exactly as it is because it already targets a specific signature and it
+         has never once misfired on ordinary writing. None of that is complicated, and
+         all of it is testable against recordings that already exist, which is the part
+         that matters. I want the evidence to come from real takes rather than from
+         examples somebody invented to make the guard look correct.";
+
+    /// The first `n` whitespace tokens of `PROSE`, space-joined.
+    fn prose_tokens(n: usize) -> String {
+        let taken: Vec<&str> = PROSE.split_whitespace().take(n).collect();
+        assert_eq!(taken.len(), n, "PROSE is too short for {n} tokens");
+        taken.join(" ")
+    }
+
+    #[test]
+    fn long_transcript_at_low_ttr_survives() {
+        // A long take doubled back on itself: ~2,100 tokens whose GLOBAL ratio is
+        // 0.25 — comfortably under the old 0.3 cliff, so the whole-take test used
+        // to eat it — while every 150-token window stays far above 0.3.
+        let long = format!("{} {}", prose_tokens(1000), prose_tokens(1000));
+        let tokens: Vec<&str> = long.split_whitespace().collect();
+        let uniq: std::collections::BTreeSet<&str> = tokens.iter().copied().collect();
+        let ratio = uniq.len() as f64 / tokens.len() as f64;
+        assert!(
+            ratio < 0.3,
+            "fixture must sit under the old whole-take cliff, got {ratio}"
+        );
+        assert_eq!(degenerate_cutoff(&long), None);
+    }
+
+    #[test]
+    fn emphatic_run_inside_long_prose_is_kept() {
+        // "yes yes yes yes" is a person agreeing, not a stuck decoder. Four in a
+        // row trips the SHORT-take run limit; inside a 1,000-token take it must
+        // not, because rule 1 scales with how much was said.
+        let text = format!(
+            "{} yes yes yes yes {}",
+            prose_tokens(800),
+            prose_tokens(200)
+        );
+        assert_eq!(degenerate_cutoff(&text), None);
+        // The same run in a SHORT take is still a hallucination.
+        assert!(is_hallucinated_repetition("yes yes yes yes"));
+    }
+
+    /// Emphatic dictation whose repeats only line up AFTER normalisation — the
+    /// punctuation and capitalisation drift ASR actually emits ("No, no, no,
+    /// no"). Rule 1's normalised comparison must not turn these into a
+    /// whole-take rejection: `Some(0)` here means the consumer stores no
+    /// transcript, keeps no recovery WAV, and tells the user "Didn't catch any
+    /// speech" — the exact loss YV66 exists to stop. Every one of these is clean
+    /// on `main`, so the normalised comparison must never be the thing that
+    /// widens the short-take class on its own.
+    const NORMALISED_DRIFT_EMPHATICS: [&str; 6] = [
+        "No, no, no, no, that is not what I meant at all.",
+        "Ha ha ha ha that was actually pretty funny to me.",
+        "Yeah, yeah, yeah, yeah I hear you loud and clear.",
+        "Okay. Okay? Okay! Okay. Let us move on to the next item.",
+        "Go, go, go, go! We are running out of time here.",
+        "I told him no, no, no, no and he did not listen at all",
+    ];
+
+    #[test]
+    fn normalised_drift_emphatics_are_not_degenerate() {
+        for take in NORMALISED_DRIFT_EMPHATICS {
+            assert_eq!(
+                degenerate_cutoff(take),
+                None,
+                "emphatic dictation must survive the gate: {take:?}"
+            );
+            assert!(!is_hallucinated_repetition(take));
+        }
+    }
+
+    #[test]
+    fn normalised_drift_emphatics_survive_inside_long_prose() {
+        // The same drift in the middle of a long take: 300 tokens of prose, the
+        // emphatic run, 300 more. Cutting here would silently drop the second
+        // half of a take the user cannot reproduce.
+        for take in NORMALISED_DRIFT_EMPHATICS {
+            let text = format!("{} {} {}", prose_tokens(300), take, prose_tokens(300));
+            assert_eq!(
+                degenerate_cutoff(&text),
+                None,
+                "emphatic dictation inside long prose must survive: {take:?}"
+            );
+        }
+        // And a longer drifted run — eight tokens that only agree once
+        // normalised — inside the same sandwich.
+        let text = format!(
+            "{} No, no, No. no, no! No, no, no {}",
+            prose_tokens(300),
+            prose_tokens(300)
+        );
+        assert_eq!(degenerate_cutoff(&text), None);
+    }
+
+    #[test]
+    fn degenerate_tail_is_truncated_not_discarded() {
+        // 300 tokens of real dictation, then the decoder sticks on "the". The
+        // gate must hand back a CUT, not a verdict on the whole take.
+        let prose = prose_tokens(300);
+        let text = format!("{}{}", prose, " the".repeat(200));
+        let cutoff = degenerate_cutoff(&text).expect("degenerate tail must be found");
+        assert!(cutoff > 0, "the good prefix must survive, got cutoff 0");
+        assert_eq!(text[..cutoff].trim_end(), prose);
+        // And because a prefix survives, this is NOT a whole-take rejection.
+        assert!(!is_hallucinated_repetition(&text));
     }
 
     #[test]
