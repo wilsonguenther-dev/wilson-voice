@@ -5,7 +5,7 @@
 //!   nonactivatingPanel, floating/status level, canJoinAllSpaces,
 //!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -24,11 +24,44 @@ use tauri_nspanel::{
 const PILL_W: f64 = 300.0;
 const PILL_H: f64 = 140.0;
 
+/// YV65 — a drag that releases within this many POINTS of a screen's left or
+/// right edge docks to that edge; anything further in lands on the bottom
+/// island. ~120pt is a comfortable throw target without turning the whole lower
+/// third of the screen into a side dock.
+const EDGE_SNAP_PT: f64 = 120.0;
+/// How often the hover watch re-tests whether the cursor is over the capsule
+/// (YV65). Fast enough that the pill is already grabbable by the time a hand
+/// arrives on it, slow enough to stay off the main thread's back.
+const HOVER_TICK_MS: u64 = 75;
+
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
 /// Current dock edge as `PillPosition::as_u8` (YV53). Read by every park, so
 /// the space-keeper and any display change pick the new edge up on their own.
 static POSITION: AtomicU8 = AtomicU8::new(0);
+static HOVER_ON: AtomicBool = AtomicBool::new(false);
+/// True from pointer-down on the capsule to pointer-up (YV65). Parks are
+/// suspended while it is set so the space-keeper cannot yank the panel back to
+/// its old dock in the middle of the gesture.
+static DRAGGING: AtomicBool = AtomicBool::new(false);
+/// Panel origin (physical px) captured at drag start. Every move is an offset
+/// from THIS, not from the last position, so a dropped move event can never
+/// accumulate drift.
+static DRAG_ORIGIN_X: AtomicI32 = AtomicI32::new(0);
+static DRAG_ORIGIN_Y: AtomicI32 = AtomicI32::new(0);
+/// Monitor scale factor at drag start, ×1000 — the webview reports its deltas
+/// in logical points and the panel is positioned in physical px.
+static DRAG_SCALE_M: AtomicI32 = AtomicI32::new(1000);
+/// The VISIBLE capsule's rect inside the float window, in logical points,
+/// reported by the pill webview (`pill_set_hitbox`). Width 0 → nothing is
+/// grabbable yet, so the panel stays fully click-through.
+static HIT_X: AtomicI32 = AtomicI32::new(0);
+static HIT_Y: AtomicI32 = AtomicI32::new(0);
+static HIT_W: AtomicI32 = AtomicI32::new(0);
+static HIT_H: AtomicI32 = AtomicI32::new(0);
+/// Mirrors the last `set_ignore_cursor_events` call so AppKit is only touched
+/// on a transition, not 13 times a second.
+static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Where the pill docks on screen (YV53). Wispr-style side docks in addition to
 /// the historical bottom-centre island.
@@ -48,6 +81,17 @@ impl PillPosition {
             "left" => Self::Left,
             "right" => Self::Right,
             _ => Self::Bottom, // default: bottom-centre
+        }
+    }
+
+    /// The value this dock writes into `AppSettings::pill_position` (YV65) —
+    /// the exact strings [`PillPosition::from_settings`] parses, so a snap and
+    /// the Settings picker persist the same thing.
+    pub fn as_settings(self) -> &'static str {
+        match self {
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
         }
     }
 
@@ -101,6 +145,43 @@ fn panel_origin(
     }
 }
 
+/// Pure snap math (YV65): which dock a drag release belongs to.
+///
+/// `release` is the cursor point at mouse-up and `screen_frame` is the
+/// (x, y, width, height) of the monitor the pill lives on — BOTH in logical
+/// points in the same (desktop-global) coordinate space the webview reports
+/// `screenX`/`screenY` in. Only the horizontal throw matters: the side docks are
+/// the two edges, and the bottom island is the neutral place everything else
+/// falls back to — the same three placements [`panel_origin`] already lays out.
+pub fn snap_position(release: (f64, f64), screen_frame: (f64, f64, f64, f64)) -> PillPosition {
+    let (x, _) = release;
+    let (frame_x, _, frame_w, _) = screen_frame;
+    if x - frame_x <= EDGE_SNAP_PT {
+        PillPosition::Left
+    } else if (frame_x + frame_w) - x <= EDGE_SNAP_PT {
+        PillPosition::Right
+    } else {
+        PillPosition::Bottom
+    }
+}
+
+/// The pill webview reports the capsule's rect inside the float window, in
+/// logical points (YV65). See [`start_hover_watch`] for why this exists.
+pub fn set_hitbox(x: f64, y: f64, w: f64, h: f64) {
+    HIT_X.store(x.round() as i32, Ordering::SeqCst);
+    HIT_Y.store(y.round() as i32, Ordering::SeqCst);
+    HIT_W.store(w.round() as i32, Ordering::SeqCst);
+    HIT_H.store(h.round() as i32, Ordering::SeqCst);
+}
+
+/// Pure hit test for the reported capsule rect. `point` is window-relative in
+/// logical points; a zero-width rect (nothing reported yet) is never a hit.
+fn point_in_hitbox(point: (f64, f64), hit: (i32, i32, i32, i32)) -> bool {
+    let (px, py) = point;
+    let (hx, hy, hw, hh) = (hit.0 as f64, hit.1 as f64, hit.2 as f64, hit.3 as f64);
+    hw > 0.0 && hh > 0.0 && px >= hx && px <= hx + hw && py >= hy && py <= hy + hh
+}
+
 #[cfg(target_os = "macos")]
 tauri_panel! {
     panel!(DictatePill {
@@ -116,6 +197,12 @@ tauri_panel! {
 }
 
 fn park_pill(app: &AppHandle) {
+    // A drag owns the panel origin until the user lets go (YV65) — otherwise the
+    // 1.5 s space-keeper re-park snatches the pill back to its old dock in the
+    // middle of the gesture.
+    if DRAGGING.load(Ordering::SeqCst) {
+        return;
+    }
     let Some(w) = app.get_webview_window("float") else {
         return;
     };
@@ -239,7 +326,11 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
         // Click-THROUGH: the pill is a HUD indicator over other apps and its window
         // is much larger than the visible pill (shadow room), so it must never
         // intercept clicks in the transparent margin. Control is via fn / tray.
-        let _ = w.set_ignore_cursor_events(true);
+        // YV65 carved the ONE exception: while the cursor is over the capsule
+        // itself the hover watch turns events back on so the pill can be dragged.
+        // Re-assert from that live state, never a blind `true`, or a show landing
+        // mid-hover would take the grab away until the pointer left and returned.
+        let _ = w.set_ignore_cursor_events(!INTERACTIVE.load(Ordering::SeqCst));
         let _ = w.set_always_on_top(true);
         // Transparent content so only CSS pill paints
         let _ = w.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
@@ -319,6 +410,143 @@ pub fn reposition(app: &AppHandle) {
     dispatch_main(app, park_pill);
 }
 
+/// The monitor the pill parks on, as a LOGICAL-point frame (x, y, w, h) — the
+/// same space the webview reports cursor coordinates in. Mirrors `park_pill`'s
+/// primary-monitor pin so a snap can never resolve against a different screen
+/// than the one the pill will be parked on.
+fn monitor_frame(w: &tauri::WebviewWindow) -> Option<(f64, f64, f64, f64)> {
+    let mon = w
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.current_monitor().ok().flatten())?;
+    let scale = mon.scale_factor();
+    let pos = mon.position();
+    let size = mon.size();
+    Some((
+        pos.x as f64 / scale,
+        pos.y as f64 / scale,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    ))
+}
+
+/// YV65 — the user pressed the capsule. Latch the panel's current origin so
+/// every subsequent move is an absolute offset from it, and suspend parking.
+pub fn drag_start(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("float") else {
+        return;
+    };
+    let Ok(origin) = w.outer_position() else {
+        return;
+    };
+    DRAG_ORIGIN_X.store(origin.x, Ordering::SeqCst);
+    DRAG_ORIGIN_Y.store(origin.y, Ordering::SeqCst);
+    DRAG_SCALE_M.store(
+        (w.scale_factor().unwrap_or(1.0) * 1000.0).round() as i32,
+        Ordering::SeqCst,
+    );
+    DRAGGING.store(true, Ordering::SeqCst);
+}
+
+/// Move the panel live. `dx`/`dy` are the cursor's total travel since
+/// `drag_start`, in logical points (what the webview measures).
+pub fn drag_move(app: &AppHandle, dx: f64, dy: f64) {
+    if !DRAGGING.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(w) = app.get_webview_window("float") else {
+        return;
+    };
+    let scale = DRAG_SCALE_M.load(Ordering::SeqCst) as f64 / 1000.0;
+    let x = DRAG_ORIGIN_X.load(Ordering::SeqCst) + (dx * scale).round() as i32;
+    let y = DRAG_ORIGIN_Y.load(Ordering::SeqCst) + (dy * scale).round() as i32;
+    let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+}
+
+/// End a drag and dock. `release` is the cursor point at mouse-up in logical
+/// points; `snap` is false for a press that never passed the drag slop (a plain
+/// click), which just re-parks the pill where it already lived.
+///
+/// Returns the resulting dock so the caller can persist it — the SETTING is the
+/// source of truth (see `pill_drag_end` in lib.rs), exactly as it is for the
+/// Settings picker.
+pub fn drag_end(app: &AppHandle, release: (f64, f64), snap: bool) -> Option<PillPosition> {
+    if !DRAGGING.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    let pos = snap
+        .then(|| {
+            app.get_webview_window("float")
+                .and_then(|w| monitor_frame(&w))
+                .map(|frame| snap_position(release, frame))
+        })
+        .flatten()
+        .unwrap_or_else(|| PillPosition::from_u8(POSITION.load(Ordering::SeqCst)));
+    set_position(pos);
+    reposition(app);
+    Some(pos)
+}
+
+/// YV65 — make the panel cursor-interactive ONLY while the pointer is over the
+/// visible capsule.
+///
+/// The float window is deliberately much larger than the pill (shadow room) and
+/// has been click-through since it shipped, so it never swallows a click in its
+/// transparent margin. Dropping that wholesale to get drag events would eat
+/// clicks in an area that looks empty. Instead the pill webview reports the
+/// capsule rect and this watch flips `ignore_cursor_events` on the way in and
+/// out of it — which is what makes press-and-drag (and the pill's own click)
+/// reachable without costing the margin its click-through.
+pub fn start_hover_watch(app: AppHandle) {
+    if HOVER_ON.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::Builder::new()
+        .name("wv-float-hover".into())
+        .spawn(move || loop {
+            thread::sleep(Duration::from_millis(HOVER_TICK_MS));
+            let app_main = app.clone();
+            let app_inner = app.clone();
+            let _ = app_main.run_on_main_thread(move || update_interactive(&app_inner));
+        })
+        .ok();
+}
+
+fn update_interactive(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("float") else {
+        return;
+    };
+    // Never hand the panel back to click-through mid-gesture: a fast drag
+    // outruns the cursor test and the mouse-up would land on the floor.
+    let want = DRAGGING.load(Ordering::SeqCst)
+        || (w.is_visible().unwrap_or(false) && cursor_over_capsule(app, &w));
+    if INTERACTIVE.swap(want, Ordering::SeqCst) != want {
+        let _ = w.set_ignore_cursor_events(!want);
+    }
+}
+
+fn cursor_over_capsule(app: &AppHandle, w: &tauri::WebviewWindow) -> bool {
+    let (Ok(cursor), Ok(origin), Ok(scale)) =
+        (app.cursor_position(), w.outer_position(), w.scale_factor())
+    else {
+        return false;
+    };
+    let point = (
+        (cursor.x - origin.x as f64) / scale,
+        (cursor.y - origin.y as f64) / scale,
+    );
+    point_in_hitbox(
+        point,
+        (
+            HIT_X.load(Ordering::SeqCst),
+            HIT_Y.load(Ordering::SeqCst),
+            HIT_W.load(Ordering::SeqCst),
+            HIT_H.load(Ordering::SeqCst),
+        ),
+    )
+}
+
 /// Keep the NSPanel on top across Space swipes. Now benign: it re-parks to a
 /// FIXED position on the configured edge (no cursor read → no teleport) and only
 /// re-asserts front (no style-mask reset → no flicker/focus theft). A future
@@ -353,7 +581,7 @@ pub fn start_space_keeper(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{panel_origin, PillPosition};
+    use super::{panel_origin, point_in_hitbox, snap_position, PillPosition, EDGE_SNAP_PT};
 
     // A 2x Retina 1440x900-point display at the global origin, and the float
     // window at its physical size (PILL_W/H x 2).
@@ -426,6 +654,87 @@ mod tests {
             PillPosition::from_settings("nonsense"),
             PillPosition::Bottom
         );
+    }
+
+    // ── YV65: drag-release snapping ──
+    // A 1440x900-point screen at the desktop origin, in the LOGICAL points the
+    // webview reports a release point in.
+    const FRAME: (f64, f64, f64, f64) = (0.0, 0.0, 1440.0, 900.0);
+
+    #[test]
+    fn snap_left_edge_release_docks_left() {
+        assert_eq!(snap_position((0.0, 450.0), FRAME), PillPosition::Left);
+        assert_eq!(snap_position((37.0, 880.0), FRAME), PillPosition::Left);
+    }
+
+    #[test]
+    fn snap_right_edge_release_docks_right() {
+        assert_eq!(snap_position((1440.0, 450.0), FRAME), PillPosition::Right);
+        assert_eq!(snap_position((1402.0, 20.0), FRAME), PillPosition::Right);
+    }
+
+    #[test]
+    fn snap_middle_release_falls_back_to_the_bottom_island() {
+        assert_eq!(snap_position((720.0, 450.0), FRAME), PillPosition::Bottom);
+        // Anywhere in the middle band, at any height — the throw is horizontal.
+        assert_eq!(snap_position((300.0, 12.0), FRAME), PillPosition::Bottom);
+        assert_eq!(snap_position((1100.0, 890.0), FRAME), PillPosition::Bottom);
+    }
+
+    /// The threshold is INCLUSIVE on both edges, and one point past it is
+    /// already the bottom island — no dead zone, no overlap.
+    #[test]
+    fn snap_threshold_boundary_is_inclusive_on_both_edges() {
+        assert_eq!(
+            snap_position((EDGE_SNAP_PT, 450.0), FRAME),
+            PillPosition::Left
+        );
+        assert_eq!(
+            snap_position((EDGE_SNAP_PT + 1.0, 450.0), FRAME),
+            PillPosition::Bottom
+        );
+        assert_eq!(
+            snap_position((1440.0 - EDGE_SNAP_PT, 450.0), FRAME),
+            PillPosition::Right
+        );
+        assert_eq!(
+            snap_position((1440.0 - EDGE_SNAP_PT - 1.0, 450.0), FRAME),
+            PillPosition::Bottom
+        );
+    }
+
+    /// A release on a secondary display snaps against THAT screen's frame — a
+    /// monitor to the left of the primary has negative x, and a point sitting at
+    /// x = 0 there is its RIGHT edge, not its left one.
+    #[test]
+    fn snap_follows_a_monitor_that_is_not_at_the_desktop_origin() {
+        let frame = (-1920.0, -300.0, 1920.0, 1080.0);
+        assert_eq!(snap_position((-1920.0, 0.0), frame), PillPosition::Left);
+        assert_eq!(snap_position((0.0, 0.0), frame), PillPosition::Right);
+        assert_eq!(snap_position((-960.0, 0.0), frame), PillPosition::Bottom);
+    }
+
+    /// Every snap result is a dock the existing YV53 position math can lay out,
+    /// so a drag can only ever land the pill where the picker could put it.
+    #[test]
+    fn snap_results_round_trip_through_the_settings_string() {
+        for x in [0.0, 60.0, 720.0, 1380.0, 1440.0] {
+            let pos = snap_position((x, 450.0), FRAME);
+            assert_eq!(PillPosition::from_settings(pos.as_settings()), pos);
+        }
+    }
+
+    /// The capsule hit-box gates whether the panel takes the cursor at all: an
+    /// unreported (zero) box must stay fully click-through.
+    #[test]
+    fn hitbox_only_captures_the_reported_capsule() {
+        let hit = (120, 62, 60, 16);
+        assert!(point_in_hitbox((150.0, 70.0), hit));
+        assert!(point_in_hitbox((120.0, 62.0), hit)); // top-left corner is a hit
+        assert!(point_in_hitbox((180.0, 78.0), hit)); // bottom-right corner too
+        assert!(!point_in_hitbox((119.0, 70.0), hit));
+        assert!(!point_in_hitbox((150.0, 40.0), hit));
+        assert!(!point_in_hitbox((150.0, 70.0), (0, 0, 0, 0)));
     }
 
     /// The atomic round-trip that carries the dock edge into `park_pill`.

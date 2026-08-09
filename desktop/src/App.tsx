@@ -673,6 +673,15 @@ export default function App() {
     listen<string>("settings-tab", (e) => {
       setSettingsTab(e.payload as SettingsTab);
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV65 — dragging the pill to a screen edge persists the new dock itself, so
+    // the Screen position picker has to follow the pill rather than the other way
+    // round. Mirror ONLY that field: the rest of this screen is edited live and
+    // must never be overwritten by a broadcast landing mid-edit.
+    listen<AppSettings>("settings", (e) => {
+      const dock = e.payload?.pillPosition;
+      if (!dock) return;
+      setSettings((s) => (s && s.pillPosition !== dock ? { ...s, pillPosition: dock } : s));
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
