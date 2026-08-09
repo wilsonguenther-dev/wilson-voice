@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Once;
 
 use transcribe_cpp::{
-    Backend, Model, ModelOptions, RunExtension, RunOptions, Session, WhisperRunOptions,
+    Backend, CancelToken, Model, ModelOptions, RunExtension, RunOptions, Session, WhisperRunOptions,
 };
 
 static BACKEND_INIT: Once = Once::new();
@@ -98,6 +98,13 @@ pub struct AsrEngine {
     /// gates on the arch string for the same reason — a non-whisper arch can
     /// advertise `Feature::InitialPrompt` yet still refuse the extension.
     arch: String,
+    /// YV70 — the cooperative cancel token installed on the session at load.
+    /// transcribe-cpp polls it between decode steps, so calling
+    /// [`cancel`] from another thread ends an in-flight [`transcribe`] with
+    /// `Error::Aborted` instead of leaving the caller to wait it out. Used by
+    /// the exit drain, which has to get the engine (and its Metal device) back
+    /// before the process reaches `exit()`.
+    cancel: CancelToken,
 }
 
 impl AsrEngine {
@@ -105,6 +112,12 @@ impl AsrEngine {
     fn accepts_initial_prompt(&self) -> bool {
         self.arch == "whisper"
     }
+}
+
+/// A clone of this engine's cancel token (YV70) — cheap, shares one flag, and
+/// can be held while the engine itself is leased out to a transcription thread.
+pub fn cancel_token(engine: &AsrEngine) -> CancelToken {
+    engine.cancel.clone()
 }
 
 /// Load a GGUF model from disk into a ready-to-run engine.
@@ -125,16 +138,25 @@ pub fn load(model_path: &Path) -> Result<AsrEngine, String> {
     // Auto); log what actually loaded.
     let bound_backend = model.backend();
     let arch = model.arch();
-    let session = model
+    let mut session = model
         .session()
         .map_err(|e| format!("failed to create session: {e}"))?;
+    // YV70: install the cancel hook up front — a token can only be set on an
+    // idle session, so it has to be here rather than at the moment we want to
+    // stop a run. Nothing ever cancels except the exit drain.
+    let cancel = CancelToken::new();
+    session.set_cancel_token(&cancel);
     log::info!(
         "loaded ASR model {} (arch '{}', bound backend '{}')",
         model_path.display(),
         arch,
         bound_backend
     );
-    Ok(AsrEngine { session, arch })
+    Ok(AsrEngine {
+        session,
+        arch,
+        cancel,
+    })
 }
 
 /// Batch-transcribe 16 kHz mono f32 samples into text.

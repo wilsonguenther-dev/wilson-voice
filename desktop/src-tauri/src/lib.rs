@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{TrayIcon, TrayIconBuilder},
@@ -565,6 +566,15 @@ fn restore_system_output(state: &AppState) {
     }
 }
 
+/// How long the exit teardown waits for an in-flight transcription to hand the
+/// ASR engine back (YV70) before quitting with it still live.
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the exit teardown then waits for that take's worker to land its
+/// result — the transcript row, or the recoverable failed-dictation row (YV70).
+const EXIT_TAKE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Poll interval for both waits above.
+const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
+
 /// Everything the app must do on its way out, in the ONE order that is safe.
 /// Returns the steps it ran, newest last, so the caller can log the shutdown
 /// it actually got (and so a test can assert the order).
@@ -577,20 +587,77 @@ fn restore_system_output(state: &AppState) {
 /// engine FIRST frees that device while the Tauri/ObjC runtime is still alive,
 /// so the static destructor has nothing left to tear down. The two pre-existing
 /// steps keep their relative order behind it.
+///
+/// YV70 — that unload frees only what is IN the slot, so it did nothing during
+/// a take (the engine is leased out) and the crash survived for exactly that
+/// case. The first step now DRAINS the lease, and a second step waits for the
+/// drained take to land, both bounded — see `teardown_for_exit_with`.
 fn teardown_for_exit(state: &Arc<AppState>) -> Vec<&'static str> {
+    teardown_for_exit_with(state, EXIT_DRAIN_TIMEOUT, EXIT_TAKE_TIMEOUT)
+}
+
+/// The teardown with its two waits as parameters — the seam the YV70 tests use
+/// so a stuck-lease case is exercised in milliseconds instead of seconds.
+fn teardown_for_exit_with(
+    state: &Arc<AppState>,
+    drain: Duration,
+    take: Duration,
+) -> Vec<&'static str> {
     let mut steps = Vec::new();
     // 1. Release the ASR Metal device while ObjC is still standing.
-    state.transcription.unload();
+    //
+    //    YV70: `unload()` alone frees NOTHING during a take — the engine is
+    //    leased out to the transcription thread and the slot is empty, so the
+    //    device survived into `exit()` and ggml's static destructor aborted on
+    //    it exactly as before YV69. The drain cancels the in-flight decode and
+    //    waits (bounded) for the lease to come home first.
+    match state.transcription.drain_and_unload(drain) {
+        transcription::DrainOutcome::Idle => {}
+        transcription::DrainOutcome::Drained => steps.push("asr_drain"),
+        transcription::DrainOutcome::TimedOut => steps.push("asr_drain_timeout"),
+    }
     steps.push("asr_unload");
-    // 2. YV28 safety net: never leave the Mac muted if we exit mid-take.
+    // 2. YV70: the drained take is still mid-flight in its worker thread —
+    //    between the decode and the row it writes. Give it a bounded moment to
+    //    land, so quitting can't make a take the user already spoke vanish: the
+    //    worker either inserts the transcript or keeps the wav as a recoverable
+    //    failed dictation, and both are done before `busy` clears.
+    if *state.busy.lock() {
+        if await_in_flight_take(state, take) {
+            steps.push("await_take");
+        } else {
+            log::warn!(
+                "exit: dictation still in flight after {}ms — quitting anyway",
+                take.as_millis()
+            );
+            steps.push("await_take_timeout");
+        }
+    }
+    // 3. YV28 safety net: never leave the Mac muted if we exit mid-take.
     //    Restores the saved output state (no-op otherwise).
     restore_system_output(state);
     steps.push("restore_output");
-    // 3. Checkpoint the WAL so it never grows unbounded and the .db isn't left
-    //    a deceptive 4 KB stub.
+    // 4. Checkpoint the WAL so it never grows unbounded and the .db isn't left
+    //    a deceptive 4 KB stub. Runs last, so the row step 2 waited for is in
+    //    the checkpoint too.
     state.db.checkpoint();
     steps.push("db_checkpoint");
     steps
+}
+
+/// Wait (bounded) for the dictation worker to finish the take it is on. `busy`
+/// is cleared at the very end of that thread — after the transcript insert, or
+/// after `keep_failed_take` has written the recoverable row — so this returning
+/// `true` means the take is durable. `false` = the budget ran out.
+fn await_in_flight_take(state: &AppState, wait: Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    while *state.busy.lock() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(EXIT_WAIT_POLL);
+    }
+    true
 }
 
 /// Mic-level HUD cadence: the float pill's waveform redraws at 20 frames per
@@ -4020,6 +4087,10 @@ mod tests {
     // already started unwinding. The fix is purely an ordering one, so the
     // test IS the order.
 
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
     /// Stand-in for a loaded GGUF session — never actually run here; it only
     /// has to occupy the manager's engine slot so `is_loaded()` is true.
     struct ExitStubEngine;
@@ -4035,30 +4106,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn teardown_for_exit_unloads_asr_first() {
-        use std::sync::Arc;
-        use std::time::Duration;
+    /// YV70 — a decode that takes REAL time, so a take can be caught IN FLIGHT
+    /// (engine leased out, slot empty) the way a Cmd-Q mid-transcription finds
+    /// it. `cancellable` mirrors transcribe-cpp's cooperative cancel: the run
+    /// polls the flag between slices and returns `Aborted` once it is set. With
+    /// it off nothing can stop the decode — the stuck-lease case.
+    struct SlowStubEngine {
+        decode: Duration,
+        cancel: Arc<AtomicBool>,
+        cancellable: bool,
+    }
 
-        let dir = temp_dir("yv69-teardown");
-        // A real (empty) file so the manager's "is it downloaded?" gate passes.
-        let model = dir.join("stub.gguf");
-        std::fs::write(&model, b"stub gguf").unwrap();
+    impl crate::transcription::Transcriber for SlowStubEngine {
+        fn transcribe(
+            &mut self,
+            _samples_16k_mono: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            let deadline = Instant::now() + self.decode;
+            while Instant::now() < deadline {
+                if self.cancel.load(Ordering::SeqCst) {
+                    return Err("operation aborted".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("in-flight take".into())
+        }
 
-        // Long idle timeout: the idle watcher must NOT be the thing that
-        // unloads here — the teardown has to do it.
-        let manager = crate::transcription::TranscriptionManager::with_loader(
-            Arc::new(|_p: &std::path::Path| {
-                Ok(Box::new(ExitStubEngine) as Box<dyn crate::transcription::Transcriber>)
-            }),
+        fn cancel_handle(&self) -> Option<crate::transcription::CancelHandle> {
+            if !self.cancellable {
+                return None;
+            }
+            let flag = self.cancel.clone();
+            Some(Arc::new(move || flag.store(true, Ordering::SeqCst)))
+        }
+    }
+
+    /// A manager over one stub engine. Long idle timeout on purpose: the idle
+    /// watcher must NOT be the thing that unloads in these tests — the teardown
+    /// has to do it.
+    fn exit_manager(
+        make: impl Fn() -> Box<dyn crate::transcription::Transcriber> + Send + Sync + 'static,
+    ) -> crate::transcription::TranscriptionManager {
+        crate::transcription::TranscriptionManager::with_loader(
+            Arc::new(move |_p: &std::path::Path| Ok(make())),
             Duration::from_secs(15 * 60),
             Duration::from_secs(60),
             Duration::from_secs(120),
-        );
-        manager.load("stub", &model).expect("stub model loads");
-        assert!(manager.is_loaded(), "the take left a model resident");
+        )
+    }
 
-        let state = Arc::new(super::AppState {
+    /// The app state the teardown runs against, with a real DB in `dir`.
+    fn exit_state(
+        dir: &std::path::Path,
+        transcription: crate::transcription::TranscriptionManager,
+    ) -> Arc<super::AppState> {
+        Arc::new(super::AppState {
             settings: super::PLMutex::new(AppSettings::default()),
             recording: super::PLMutex::new(false),
             busy: super::PLMutex::new(false),
@@ -4077,8 +4181,36 @@ mod tests {
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
             vad: super::PLMutex::new(None),
             paste_generation: std::sync::atomic::AtomicU64::new(0),
-            transcription: manager.clone(),
-        });
+            transcription,
+        })
+    }
+
+    /// A real (empty) model file so the manager's "is it downloaded?" gate passes.
+    fn stub_model_in(dir: &std::path::Path) -> std::path::PathBuf {
+        let model = dir.join("stub.gguf");
+        std::fs::write(&model, b"stub gguf").unwrap();
+        model
+    }
+
+    /// Spin (bounded) until `cond` holds. Panics rather than hanging the suite.
+    fn wait_until(what: &str, cond: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn teardown_for_exit_unloads_asr_first() {
+        let dir = temp_dir("yv69-teardown");
+        let model = stub_model_in(&dir);
+
+        let manager = exit_manager(|| Box::new(ExitStubEngine));
+        manager.load("stub", &model).expect("stub model loads");
+        assert!(manager.is_loaded(), "the take left a model resident");
+
+        let state = exit_state(&dir, manager.clone());
 
         let steps = super::teardown_for_exit(&state);
 
@@ -4094,6 +4226,230 @@ mod tests {
 
         drop(state);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- YV70: quitting DURING a transcription ----------------------------
+    //
+    // YV69's unload only frees what is in the slot. During a take the engine is
+    // leased OUT to the transcription thread, so the slot is empty, the unload
+    // freed nothing, and the Metal device rode into `exit()` — the same SIGABRT
+    // YV69 was supposed to end. The teardown now drains the lease first.
+
+    /// The common path: an in-flight decode is cancelled, hands the engine back,
+    /// and only THEN is the engine freed. Nothing is resident when this returns.
+    #[test]
+    fn teardown_waits_for_inflight_lease_then_unloads() {
+        let dir = temp_dir("yv70-drain");
+        let model = stub_model_in(&dir);
+
+        // A 30 s decode: if the drain did not cancel + wait, this test would
+        // either sail past a still-leased engine or block for half a minute.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let manager = exit_manager(move || {
+            Box::new(SlowStubEngine {
+                decode: Duration::from_secs(30),
+                cancel: flag.clone(),
+                cancellable: true,
+            })
+        });
+        manager.load("stub", &model).expect("stub model loads");
+        let state = exit_state(&dir, manager.clone());
+
+        let worker = {
+            let m = manager.clone();
+            std::thread::spawn(move || m.transcribe(vec![0.1; 16], None, None))
+        };
+        wait_until("the take to be in flight", || manager.status().transcribing);
+        // This is the YV69 blind spot: resident, but NOT in the slot.
+        assert!(manager.is_loaded(), "the engine is resident during a take");
+        assert!(
+            manager.loaded_model().is_none(),
+            "the engine is leased out — an unload here frees nothing"
+        );
+
+        let started = Instant::now();
+        let steps =
+            super::teardown_for_exit_with(&state, Duration::from_secs(5), Duration::from_secs(1));
+
+        assert_eq!(
+            steps,
+            vec!["asr_drain", "asr_unload", "restore_output", "db_checkpoint"],
+            "the lease must be drained BEFORE the unload"
+        );
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "the in-flight decode must be told to stop, not just waited on"
+        );
+        assert!(
+            !manager.is_loaded(),
+            "the returned engine must be unloaded, not put back for exit() to free"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the drain must end with the lease, not with the 30 s decode: {:?}",
+            started.elapsed()
+        );
+        // The lease really did come home: the aborted decode is what ended it.
+        assert!(worker.join().unwrap().is_err(), "the decode was aborted");
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rare path: a decode that ignores cancellation. The quit must not
+    /// hang on it — the wait is bounded, it is logged, and exit proceeds.
+    #[test]
+    fn teardown_times_out_on_stuck_lease_without_hanging() {
+        let dir = temp_dir("yv70-stuck");
+        let model = stub_model_in(&dir);
+
+        let manager = exit_manager(|| {
+            Box::new(SlowStubEngine {
+                decode: Duration::from_secs(3),
+                cancel: Arc::new(AtomicBool::new(false)),
+                // No cancel hook: nothing can end this decode early.
+                cancellable: false,
+            })
+        });
+        manager.load("stub", &model).expect("stub model loads");
+        let state = exit_state(&dir, manager.clone());
+
+        let m = manager.clone();
+        std::thread::spawn(move || {
+            let _ = m.transcribe(vec![0.1; 16], None, None);
+        });
+        wait_until("the take to be in flight", || manager.status().transcribing);
+
+        let started = Instant::now();
+        let steps = super::teardown_for_exit_with(
+            &state,
+            Duration::from_millis(150),
+            Duration::from_millis(50),
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            steps,
+            vec![
+                "asr_drain_timeout",
+                "asr_unload",
+                "restore_output",
+                "db_checkpoint"
+            ],
+            "a stuck lease is reported, not hidden"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Cmd-Q must not wait out a wedged decode, took {elapsed:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "…but it must actually have given the lease its budget, took {elapsed:?}"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The take the user already spoke must survive the quit: it either lands as
+    /// a transcript, or it becomes the recoverable failed-dictation row History
+    /// offers Retry on. What it may never do is silently vanish.
+    ///
+    /// The worker here mirrors the shape of the real one in `stop_and_transcribe`
+    /// — `busy` true, transcribe, then EITHER `insert_transcript` OR the
+    /// `record_failed_dictation` write `keep_failed_take` performs, and only
+    /// then `busy` false — over the real database.
+    #[test]
+    fn quit_during_transcription_take_is_not_lost() {
+        fn quit_mid_take(tag: &str, cancellable: bool) -> (usize, usize) {
+            let dir = temp_dir(tag);
+            let model = stub_model_in(&dir);
+            let wav = dir.join("take.wav");
+            std::fs::write(&wav, b"RIFF....WAVE").unwrap();
+
+            let manager = exit_manager(move || {
+                Box::new(SlowStubEngine {
+                    decode: Duration::from_millis(400),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    cancellable,
+                })
+            });
+            manager.load("stub", &model).expect("stub model loads");
+            let state = exit_state(&dir, manager.clone());
+            *state.busy.lock() = true;
+
+            let worker = {
+                let state = state.clone();
+                let wav = wav.clone();
+                std::thread::spawn(move || {
+                    let result = state.transcription.transcribe(vec![0.1; 16], None, None);
+                    // The real worker still has the gates, polish and the paste
+                    // ahead of it here — the window this test is about.
+                    std::thread::sleep(Duration::from_millis(100));
+                    match result {
+                        Ok(text) => {
+                            state
+                                .db
+                                .insert_transcript(text, "stub".into(), 0.4, 1.0, 500, None)
+                                .expect("the take lands in history");
+                        }
+                        Err(e) => {
+                            state
+                                .db
+                                .record_failed_dictation(&wav, 1.0, &e, None)
+                                .expect("the take stays recoverable");
+                        }
+                    }
+                    *state.busy.lock() = false;
+                })
+            };
+            wait_until("the take to be in flight", || manager.status().transcribing);
+
+            // Cmd-Q, mid-transcription.
+            let steps = super::teardown_for_exit_with(
+                &state,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            );
+            assert!(
+                steps.contains(&"await_take"),
+                "the teardown must wait for the in-flight take to land: {steps:?}"
+            );
+            assert!(
+                !manager.is_loaded(),
+                "and it must still leave no Metal device behind"
+            );
+
+            // Everything below is asserted at the moment the process would call
+            // exit() — the worker gets nothing more after this point.
+            let counts = (
+                state.db.list_transcripts(10, None).unwrap().len(),
+                state.db.list_failed_dictations().unwrap().len(),
+            );
+            worker.join().unwrap();
+            drop(state);
+            let _ = std::fs::remove_dir_all(&dir);
+            counts
+        }
+
+        // Cancelled by the drain: the decode ends early, so the take cannot land
+        // as text — it must survive as a retryable row instead.
+        let (transcripts, failed) = quit_mid_take("yv70-lost-cancelled", true);
+        assert_eq!(
+            (transcripts, failed),
+            (0, 1),
+            "a cancelled take must become a recoverable failed dictation"
+        );
+
+        // Not cancellable: the decode finishes on its own inside the budget, so
+        // the take lands as a real transcript.
+        let (transcripts, failed) = quit_mid_take("yv70-lost-landed", false);
+        assert_eq!(
+            (transcripts, failed),
+            (1, 0),
+            "a take that finished must land in history, not be thrown away"
+        );
     }
 
     /// YV66 — the retry path runs the SAME gate as the live path. It is the one
