@@ -566,6 +566,15 @@ fn restore_system_output(state: &AppState) {
     }
 }
 
+/// How long the exit teardown waits for an in-flight transcription to hand the
+/// ASR engine back (YV70) before quitting with it still live.
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the exit teardown then waits for that take's worker to land its
+/// result — the transcript row, or the recoverable failed-dictation row (YV70).
+const EXIT_TAKE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Poll interval for both waits above.
+const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
+
 /// Everything the app must do on its way out, in the ONE order that is safe.
 /// Returns the steps it ran, newest last, so the caller can log the shutdown
 /// it actually got (and so a test can assert the order).
@@ -578,15 +587,11 @@ fn restore_system_output(state: &AppState) {
 /// engine FIRST frees that device while the Tauri/ObjC runtime is still alive,
 /// so the static destructor has nothing left to tear down. The two pre-existing
 /// steps keep their relative order behind it.
-/// How long the exit teardown waits for an in-flight transcription to hand the
-/// ASR engine back (YV70) before quitting with it still live.
-const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the exit teardown then waits for that take's worker to land its
-/// result — the transcript row, or the recoverable failed-dictation row (YV70).
-const EXIT_TAKE_TIMEOUT: Duration = Duration::from_secs(3);
-/// Poll interval for both waits above.
-const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
-
+///
+/// YV70 — that unload frees only what is IN the slot, so it did nothing during
+/// a take (the engine is leased out) and the crash survived for exactly that
+/// case. The first step now DRAINS the lease, and a second step waits for the
+/// drained take to land, both bounded — see `teardown_for_exit_with`.
 fn teardown_for_exit(state: &Arc<AppState>) -> Vec<&'static str> {
     teardown_for_exit_with(state, EXIT_DRAIN_TIMEOUT, EXIT_TAKE_TIMEOUT)
 }
