@@ -701,6 +701,16 @@ pub const PASTE_OUTCOME_EVENT: &str = "paste_outcome";
 /// rejected hallucination loop. Normal, not an error.
 const NO_SPEECH_MESSAGE: &str = "Didn't catch any speech — hold and speak";
 
+/// YV67 — what a hallucination-gate rejection writes on its recovery row, so
+/// History says WHY the take is there and Retry re-runs ASR on the same audio.
+const GATE_REPETITION_REASON: &str = "gate: possible repetition loop";
+
+/// YV67 — a take the microphone died in the middle of. Errors the take (so the
+/// `Err` arm preserves the partial wav) rather than pasting a transcript that is
+/// silently cut off wherever the device dropped out.
+const DEVICE_FAILED_MESSAGE: &str =
+    "Microphone disconnected mid-take — the partial audio was saved, press Retry.";
+
 /// The selected embedded model when it is actually downloaded, as
 /// `(catalog id, on-disk path)`. `None` means nothing has been fetched yet, so
 /// no take can be transcribed at all (YV34 — there is no sidecar to fall back
@@ -775,9 +785,21 @@ fn transcribe_native(
 enum TakeOutcome {
     /// Transcript row + paste result + release→clipboard latency.
     Dictated(TranscriptEntry, paste::PasteOutcome, i64),
-    /// A transient toast, not an error: no speech, a rejected hallucination
-    /// loop, an applied command edit, or an unrecognised command.
+    /// A transient toast, not an error: no speech, an applied command edit, or
+    /// an unrecognised command. Nothing was captured worth keeping.
     Soft(String),
+    /// YV67 — a gate threw the take away AFTER the wav was written. Still not a
+    /// crash (no hard `last_error`), but the audio is real and the verdict can
+    /// be wrong: a false positive here used to destroy a genuine dictation with
+    /// no transcript row, no recovery row and no wav. This arm keeps the audio
+    /// and writes the retryable row, so History offers Recover.
+    ///
+    /// `reason` is the short, non-transcript string stored on the recovery row —
+    /// `'static` on purpose so a gate can never smuggle the spoken text into it.
+    Rejected {
+        message: String,
+        reason: &'static str,
+    },
 }
 
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
@@ -870,6 +892,21 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // wav still exists only for the life of this take on every path that
             // is not an outright failure.
             pending = Some((rec.clip, rec.speech_seconds, source_app.clone()));
+            // YV67 — the mic died mid-hold (unplugged, format change). Whatever
+            // it captured before that is real audio and is already on disk, but
+            // the take is TRUNCATED at an arbitrary word, so transcribing and
+            // pasting it would type a half sentence the user cannot get back.
+            // Fail it instead: the `Err` arm below preserves the wav and writes
+            // the Retry row.
+            //
+            // The ORDER here is load-bearing. Raising this inside
+            // `record::stop_recording` (or anywhere above the line before this
+            // one) would run BEFORE the clip guard is handed to `pending`, so
+            // `ClipWav::drop` would unlink the very audio we are trying to save —
+            // which is the bug, not the fix.
+            if rec.device_failed {
+                return Err(DEVICE_FAILED_MESSAGE.into());
+            }
             // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
             // voiced time. Skip ASR entirely so Whisper never hallucinates
             // repetitive garbage ("WPM-SERV-SERV…") on silence. YV29 STRENGTHENS
@@ -918,13 +955,21 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             let raw_text = asr.text;
             // Hallucination gate (YV16): reject degenerate Whisper repetition loops
             // ("WPM-SERV-SERV-SERV…") BEFORE they reach the clipboard/paste path.
+            // YV67: a REJECTION, not a soft nothing — the wav exists by now, and
+            // this gate is a heuristic that can be wrong (a legitimately
+            // repetitive dictation reads as a loop). Keeping the audio + a
+            // retryable row is the difference between "Yap ate my dictation" and
+            // one click of Recover.
             if dictation::is_hallucinated_repetition(&raw_text) {
                 // YV20/M2: never write the transcript body to the log — count only.
                 log::info!(
                     "hallucination gate: rejected degenerate ASR output ({} chars)",
                     raw_text.chars().count()
                 );
-                return Ok(TakeOutcome::Soft(NO_SPEECH_MESSAGE.into()));
+                return Ok(TakeOutcome::Rejected {
+                    message: NO_SPEECH_MESSAGE.into(),
+                    reason: GATE_REPETITION_REASON,
+                });
             }
             // YV49 command mode — this take is an INSTRUCTION about the text the
             // user had selected when they pressed, not text to type. It branches
@@ -1146,13 +1191,36 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 );
             }
             Ok(TakeOutcome::Soft(msg)) => {
-                // Nothing was typed: a fumbled tap, a rejected hallucination
-                // loop, or a command-mode outcome. All NORMAL, not failures —
-                // surface a gentle soft status (transient flash toast) and do
-                // NOT set a hard last_error, do NOT insert a transcript.
+                // Nothing was typed: a fumbled tap or a command-mode outcome.
+                // All NORMAL, not failures — surface a gentle soft status
+                // (transient flash toast) and do NOT set a hard last_error, do
+                // NOT insert a transcript.
                 *state2.last_error.lock() = None;
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &msg);
                 log::info!("soft take outcome: {msg}");
+            }
+            Ok(TakeOutcome::Rejected { message, reason }) => {
+                // YV67 — a gate threw away a take that HAD audio. Still not a
+                // crash, so no hard `last_error`; but the wav is real and the
+                // gate can be wrong, so it gets the same YV52 treatment a failed
+                // take gets: keep the audio, write the retryable row. Before
+                // this, `pending` was simply dropped here and `ClipWav::drop`
+                // unlinked the only copy — a gate false positive was permanent
+                // loss, with nothing in `failed_dictations` to show for it.
+                *state2.last_error.lock() = None;
+                let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
+                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, reason)
+                });
+                log::info!(
+                    "rejected take: {reason} (recoverable={})",
+                    recoverable.is_some()
+                );
+                // Same payload shape as the `Err` arm, so History and the toast
+                // offer Recover on exactly this take.
+                let _ = app2.emit(
+                    TRANSCRIPT_ERROR_EVENT,
+                    serde_json::json!({ "message": message, "failed": recoverable }),
+                );
             }
             Err(e) => {
                 log::error!("pipeline failed: {e}");
@@ -1164,7 +1232,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // re-speaking it. `None` = the clip could not be preserved, and
                 // the toast/History simply have nothing to retry.
                 let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
-                    keep_failed_take(&db, clip, speech_seconds, src, &e)
+                    keep_failed_take(&db, &recovery_dir(), clip, speech_seconds, src, &e)
                 });
                 // YV32: tell the UI, not just the log. Any view waiting on a
                 // transcript (onboarding calibration, the pill) can now clear its
@@ -1193,14 +1261,19 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
 /// be preserved (write failed, disk full, DB error) leaves the user exactly
 /// where they were before this feature existed, never worse, and never with a
 /// row pointing at audio that is not there.
+///
+/// YV67 also routes GATE REJECTIONS through here — `dir` is a parameter (always
+/// `recovery_dir()` in the app) so the whole keep-the-audio path is drivable
+/// against a temp dir in a test instead of the user's real recovery folder.
 fn keep_failed_take(
     db: &Database,
+    dir: &Path,
     mut clip: record::ClipWav,
     speech_seconds: f64,
     source_app: Option<String>,
     error: &str,
 ) -> Option<FailedDictation> {
-    let path = match clip.keep_for_recovery(&recovery_dir()) {
+    let path = match clip.keep_for_recovery(dir) {
         Ok(path) => path,
         Err(e) => {
             log::warn!("failed take not recoverable (clip could not be kept): {e}");
@@ -3734,6 +3807,136 @@ mod tests {
         // Idempotent: the next launch must not re-recover the same take.
         assert_eq!(super::recover_crashed_takes(&db, &recovery), 0);
         assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- YV67: no take that already wrote a WAV may vanish -----------------
+    //
+    // `failed_dictations` sat at 0 rows against 469 transcripts because YV52
+    // recovery was wired ONLY to the `Err` arm. A gate rejection took the
+    // `Ok(Soft)` arm, never took `pending`, and `ClipWav::drop` unlinked the
+    // only copy of the audio — no transcript, no recovery row, nothing.
+
+    /// What a finished take owes the audio it already wrote to disk.
+    #[derive(Debug, PartialEq)]
+    enum AudioDuty {
+        /// It became a transcript row; the history wav is disposable.
+        Transcribed,
+        /// Nothing worth keeping was captured (fumbled tap, command edit).
+        Discardable,
+        /// A real wav exists and produced NO transcript — it must survive as a
+        /// retryable row, or the user's words are gone for good.
+        MustPersist,
+    }
+
+    /// Exhaustive on purpose (no `_` arm): a new `TakeOutcome` variant fails to
+    /// COMPILE here until someone decides what happens to the wav it may have
+    /// written. That compile error is the whole point of this helper.
+    fn audio_duty(outcome: &super::TakeOutcome) -> AudioDuty {
+        match outcome {
+            super::TakeOutcome::Dictated(..) => AudioDuty::Transcribed,
+            super::TakeOutcome::Soft(_) => AudioDuty::Discardable,
+            super::TakeOutcome::Rejected { .. } => AudioDuty::MustPersist,
+        }
+    }
+
+    /// A real 16 kHz WAV on disk plus the guard that owns it — the same shape
+    /// the pipeline hands to `keep_failed_take`.
+    fn take_wav(dir: &std::path::Path, name: &str) -> (std::path::PathBuf, crate::record::ClipWav) {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{name}.wav"));
+        let spoken: Vec<f32> = (0..16_000)
+            .map(|i| 0.4 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
+            .collect();
+        crate::record::write_wav_i16(&path, 16_000, &spoken).unwrap();
+        (path.clone(), crate::record::ClipWav::adopt_for_test(path))
+    }
+
+    #[test]
+    fn every_take_outcome_that_wrote_a_wav_persists_something() {
+        assert_eq!(
+            audio_duty(&super::TakeOutcome::Soft(super::NO_SPEECH_MESSAGE.into())),
+            AudioDuty::Discardable
+        );
+        let rejected = super::TakeOutcome::Rejected {
+            message: super::NO_SPEECH_MESSAGE.into(),
+            reason: super::GATE_REPETITION_REASON,
+        };
+        assert_eq!(audio_duty(&rejected), AudioDuty::MustPersist);
+
+        // Drive the duty the gate arm now honours, against a real DB + wav.
+        let super::TakeOutcome::Rejected { reason, .. } = rejected else {
+            unreachable!("constructed as Rejected")
+        };
+        let dir = temp_dir("yv67-rejected-persists");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        let (_original, clip) = take_wav(&dir.join("recordings"), "rejected");
+
+        let row = super::keep_failed_take(&db, &recovery, clip, 1.0, Some("Notes".into()), reason)
+            .expect("a rejected take must be recoverable");
+        assert_eq!(row.error, super::GATE_REPETITION_REASON);
+
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the rejected take gets exactly one retry row"
+        );
+        let wav = std::path::PathBuf::from(&rows[0].wav_path);
+        assert!(
+            wav.starts_with(&recovery),
+            "kept audio lives in {recovery:?}"
+        );
+        assert!(
+            wav.exists(),
+            "the retry row must point at audio that is there"
+        );
+        // …and it is NOT history: a gate rejection never becomes a transcript.
+        assert!(
+            db.list_transcripts(10, None).unwrap().is_empty(),
+            "a rejected take must not enter history"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejected_take_keeps_wav_and_row() {
+        let dir = temp_dir("yv67-keeps-wav");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+        let recordings = dir.join("recordings");
+        let (original, clip) = take_wav(&recordings, "kept");
+
+        // `keep_failed_take` takes the guard BY VALUE, so the `ClipWav` is
+        // dropped inside this call. Everything asserted below is therefore
+        // asserted AFTER the drop that used to delete the take.
+        let row = super::keep_failed_take(
+            &db,
+            &recovery,
+            clip,
+            2.5,
+            None,
+            super::GATE_REPETITION_REASON,
+        )
+        .expect("the clip is preserved");
+
+        let kept = std::path::PathBuf::from(&row.wav_path);
+        assert!(
+            kept.exists(),
+            "dropping the guard must NOT unlink a kept recovery wav"
+        );
+        assert!(!original.exists(), "the clip was moved, not copied");
+        assert_eq!(
+            crate::record::read_wav_16k_mono(&kept).unwrap().len(),
+            16_000,
+            "the preserved audio is the whole take, and Retry can decode it"
+        );
+        assert_eq!(db.list_failed_dictations().unwrap()[0].id, row.id);
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
