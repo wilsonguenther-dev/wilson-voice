@@ -8,8 +8,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
 use parking_lot::{Condvar, Mutex as PLMutex};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -137,8 +138,14 @@ pub struct RecordingResult {
 /// `pressed_at` is the instant the PTT combo went down when the caller knows it
 /// — the anchor for the press→capture_start span. `None` (tray/button starts)
 /// measures from this call instead.
+///
+/// `journal_dir` is `data_dir()/recovery/` — the take's crash journal (YV63) is
+/// opened there before the stream is armed, so the frames start spilling to disk
+/// with the first callback. A journal that cannot be opened is simply `None`:
+/// nothing about capture depends on it.
 pub fn start_recording(
     dir: PathBuf,
+    journal_dir: &Path,
     denoise: bool,
     pressed_at: Option<Instant>,
 ) -> Result<ActiveRecording, String> {
@@ -147,9 +154,13 @@ pub fn start_recording(
     // The hold clock starts at the request, NOT after the handshake, so
     // `hold_wall_seconds` reports the real press→release wall time.
     let started = Instant::now();
+    let journal = CaptureJournal::start(journal_dir);
 
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    dispatch(CaptureCmd::Arm { reply: reply_tx })?;
+    dispatch(CaptureCmd::Arm {
+        journal,
+        reply: reply_tx,
+    })?;
     await_reply(&reply_rx, ARM_TIMEOUT, "arm")?;
 
     let capture_start_ms = pressed_at.unwrap_or(started).elapsed().as_millis() as i64;
@@ -182,7 +193,12 @@ pub fn stop_recording(
     // stream itself stays open for the next take (see `capture_worker_loop`).
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Disarm { reply: reply_tx })?;
-    let captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
+    let mut captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
+    // YV63: the take is off the capture worker, so its crash journal comes back
+    // with it. Held here (not passed on to the DSP) so EVERY exit from this
+    // function retires it — the early return below drops it, which cleans the
+    // marker + spill exactly like the normal completion at the end does.
+    let journal = captured.journal.take();
     // Everything that CAN stream already ran on the capture frames (YV37); this
     // only finishes the take — apply the accumulated AGC gain, de-click the
     // edges, optionally denoise — and yields the 16 kHz mono buffer ASR reads.
@@ -244,6 +260,12 @@ pub fn stop_recording(
     // runs alongside transcription + paste instead of sitting between key-release
     // and ASR (YV37). The guard unlinks it when the take is done.
     let clip = ClipWav::spawn(active.wav_path, samples.clone());
+    // YV63 normal completion: the take survived capture and its wav is being
+    // written, so the spill is no longer the only copy of these words — the
+    // in-progress marker goes with it, and startup finds no orphan to recover.
+    if let Some(journal) = journal {
+        journal.finish();
+    }
 
     Ok(RecordingResult {
         samples,
@@ -359,6 +381,329 @@ impl Drop for ClipWav {
         }
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+// ── Crash-safe capture journal (YV63) ───────────────────────────────────────
+// Everything above only writes a wav AFTER the take ends, so a take the app dies
+// in the middle of used to leave NOTHING behind — a long dictation lost to one
+// glitch, with no way to get the words back. The journal fixes that class: the
+// 16 kHz frames are spilled to `data_dir()/recovery/` as they arrive, next to an
+// in-progress marker naming the spill and the moment capture started. A normal
+// stop removes both (see `stop_recording`); anything left at startup means the
+// app died mid-take, and `recover_orphaned_journals` finalizes it into a real
+// wav that gets the YV52 failed-dictation treatment — a Retry row in History.
+//
+// The one hard rule: the journal is ADDITIVE. It runs on its own writer thread
+// behind a bounded queue, so a slow disk can never stall the audio callback, and
+// every failure — open, marker write, spawn, queue full, write error — degrades
+// to exactly the behaviour that existed before it. Frames are never dropped for
+// it; journal writes are.
+
+/// Marker file suffix: `<id>.in_progress.json`, written at capture start and
+/// removed on normal completion. Its presence at startup IS the crash signal.
+const JOURNAL_MARKER_EXT: &str = "in_progress.json";
+/// Spill file suffix: `<id>.spill.pcm` — raw little-endian i16 mono at
+/// `TARGET_RATE`, appended frame by frame (no container, so a truncated file is
+/// still a valid prefix of the take).
+const JOURNAL_SPILL_EXT: &str = "spill.pcm";
+/// How many capture frames may be in flight to the journal writer. Deep enough
+/// to ride out a disk hiccup of tens of callbacks, bounded so a wedged disk can
+/// never grow memory without limit — past it, journal writes are dropped.
+const JOURNAL_QUEUE_DEPTH: usize = 64;
+
+/// One take's spill queue: the bounded hand-off from the capture path to the
+/// journal writer. Split out from `CaptureJournal` so the never-block rule is
+/// unit-testable without a writer thread or a disk.
+struct JournalQueue {
+    tx: mpsc::SyncSender<Vec<i16>>,
+    dropped: AtomicU64,
+}
+
+impl JournalQueue {
+    fn new(tx: mpsc::SyncSender<Vec<i16>>) -> Self {
+        Self {
+            tx,
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// Hand a chunk to the writer if it has room. NEVER blocks and never errors:
+    /// a full queue (writer behind) or a dead writer counts the chunk as dropped
+    /// and returns immediately — the audio callback pays one `try_send`.
+    fn offer(&self, chunk: Vec<i16>) {
+        if self.tx.try_send(chunk).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// The in-progress journal for ONE take. Created at capture start, owned by the
+/// capture DSP while the user speaks, handed back with the take and retired by
+/// `stop_recording`. Dropping it retires it too, so no exit path can leak a
+/// marker that would make the next startup "recover" a take that never crashed.
+pub struct CaptureJournal {
+    marker: PathBuf,
+    spill: PathBuf,
+    /// `None` once retired — dropping the sender is what tells the writer to
+    /// flush and exit.
+    queue: Option<JournalQueue>,
+    writer: Option<thread::JoinHandle<()>>,
+    /// Set by `abandon` (tests): leave the marker + spill on disk exactly as a
+    /// crash mid-take leaves them.
+    keep: bool,
+}
+
+impl CaptureJournal {
+    /// Open a journal for a take in `dir` (`data_dir()/recovery/`). `None` only
+    /// if the writer thread cannot be spawned — a take is never blocked, delayed
+    /// or failed by journalling.
+    ///
+    /// The take's paths are decided here, but creating the files (and writing
+    /// the marker) is the WRITER's first job, not this caller's: `start` sits on
+    /// the press→capture_start path that YV35 exists to keep short, so it must
+    /// not pay for a `create` + a `write` on a cold disk.
+    pub fn start(dir: &Path) -> Option<Self> {
+        Self::start_with_depth(dir, JOURNAL_QUEUE_DEPTH)
+    }
+
+    fn start_with_depth(dir: &Path, depth: usize) -> Option<Self> {
+        let id = Uuid::new_v4().to_string();
+        let spill = dir.join(format!("{id}.{JOURNAL_SPILL_EXT}"));
+        let marker = dir.join(format!("{id}.{JOURNAL_MARKER_EXT}"));
+        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(depth.max(1));
+        let (dir, open_spill, open_marker) = (dir.to_path_buf(), spill.clone(), marker.clone());
+        let Ok(writer) = thread::Builder::new()
+            .name("wv-capture-journal".into())
+            .spawn(move || journal_writer_loop(&dir, &open_spill, &open_marker, rx))
+        else {
+            log::warn!("YV63 journal off for this take (writer thread)");
+            return None;
+        };
+        Some(Self {
+            marker,
+            spill,
+            queue: Some(JournalQueue::new(tx)),
+            writer: Some(writer),
+            keep: false,
+        })
+    }
+
+    /// Spill one capture frame (16 kHz mono floats). Called from the capture
+    /// path — allocation + one `try_send`, no lock, no disk, no blocking.
+    pub fn append(&self, frames: &[f32]) {
+        if frames.is_empty() {
+            return;
+        }
+        if let Some(queue) = self.queue.as_ref() {
+            queue.offer(frames.iter().map(|&s| to_i16(s)).collect());
+        }
+    }
+
+    /// Normal completion — the take made it out of capture, so the journal has
+    /// done its job. Joins the writer and removes the marker + spill.
+    fn finish(self) {
+        // The work is in `Drop`, so every path (including an early error return
+        // in `stop_recording`) retires the journal the same way.
+    }
+
+    /// Test-only: simulate the app dying mid-take. Flushes what the writer
+    /// already has and leaves the marker + spill on disk for the startup scan.
+    #[cfg(test)]
+    pub fn abandon(mut self) {
+        self.keep = true;
+        self.retire();
+    }
+
+    #[cfg(test)]
+    fn marker_path(&self) -> &Path {
+        &self.marker
+    }
+
+    #[cfg(test)]
+    fn spill_path(&self) -> &Path {
+        &self.spill
+    }
+
+    #[cfg(test)]
+    fn dropped_writes(&self) -> u64 {
+        self.queue.as_ref().map(JournalQueue::dropped).unwrap_or(0)
+    }
+
+    /// Hang up on the writer, wait for it to flush, then clear the on-disk state
+    /// unless this journal was deliberately abandoned. Idempotent.
+    fn retire(&mut self) {
+        let dropped = self.queue.as_ref().map(JournalQueue::dropped).unwrap_or(0);
+        drop(self.queue.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        if dropped > 0 {
+            log::warn!("YV63 journal fell behind: {dropped} spill write(s) dropped (audio intact)");
+        }
+        if self.keep {
+            return;
+        }
+        let _ = std::fs::remove_file(&self.marker);
+        let _ = std::fs::remove_file(&self.spill);
+    }
+}
+
+impl Drop for CaptureJournal {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
+/// The journal writer thread. It opens the take's spill and writes the
+/// in-progress marker FIRST — that pair is what a later startup reads as "the
+/// app died mid-take" — then appends every chunk the capture path offers and
+/// flushes it, so the bytes are on DISK before the crash rather than in our
+/// buffer. Any error ends the journal for this take (the audio itself is
+/// unaffected — the capture path never learns about it, its offers simply
+/// become dropped writes).
+fn journal_writer_loop(dir: &Path, spill: &Path, marker: &Path, rx: mpsc::Receiver<Vec<i16>>) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        log::warn!("YV63 journal off for this take (recovery dir): {e}");
+        return;
+    }
+    let file = match std::fs::File::create(spill) {
+        Ok(file) => file,
+        Err(e) => {
+            log::warn!("YV63 journal off for this take (spill): {e}");
+            return;
+        }
+    };
+    // The marker is what a later startup reads: when the take began and where
+    // its audio went. Written after the spill exists so a marker can never point
+    // at a file that was never created.
+    let meta = serde_json::json!({
+        "version": 1,
+        "started_at": chrono::Utc::now().to_rfc3339(),
+        "spill": spill.to_string_lossy(),
+        "sample_rate": TARGET_RATE,
+    });
+    if let Err(e) = std::fs::write(marker, meta.to_string()) {
+        log::warn!("YV63 journal off for this take (marker): {e}");
+        let _ = std::fs::remove_file(spill);
+        return;
+    }
+
+    let mut out = std::io::BufWriter::new(file);
+    let mut bytes = 0usize;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Ok(chunk) = rx.recv() {
+        buf.clear();
+        buf.reserve(chunk.len() * 2);
+        for sample in chunk {
+            buf.extend_from_slice(&sample.to_le_bytes());
+        }
+        if let Err(e) = out.write_all(&buf).and_then(|()| out.flush()) {
+            log::warn!("YV63 journal write stopped after {bytes} bytes: {e}");
+            return;
+        }
+        bytes += buf.len();
+    }
+    let _ = out.flush();
+}
+
+/// One take rebuilt from an orphaned journal (YV63).
+pub struct RecoveredTake {
+    /// The finalized wav, written next to the spill it came from — i.e. already
+    /// inside the recovery dir the YV52 retry path and its 7-day purge use.
+    pub wav_path: PathBuf,
+    /// Length of the recovered audio, for the failed-dictation row.
+    pub seconds: f64,
+}
+
+/// Pure predicate (mirrors `is_stale_wav`): does this dir entry name an
+/// in-progress capture marker? Kept pure so the scan rule is unit-testable.
+fn is_journal_marker(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(JOURNAL_MARKER_EXT) && lower.len() > JOURNAL_MARKER_EXT.len() + 1
+}
+
+/// Startup scan of `data_dir()/recovery/`: finalize every ORPHANED journal into
+/// a playable wav. An orphan is a marker whose take never completed — the app
+/// died mid-take — because a normal stop removes its own marker.
+///
+/// Returns one entry per take whose audio survived; a marker with no usable
+/// audio (a stray tap, a zero-length spill) is simply cleaned up. Never fails:
+/// anything unreadable is logged and left alone for the next launch to retry.
+pub fn recover_orphaned_journals(dir: &Path) -> Vec<RecoveredTake> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut recovered = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        if !is_journal_marker(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let marker = entry.path();
+        match finalize_orphaned_journal(&marker) {
+            Ok(Some(take)) => recovered.push(take),
+            Ok(None) => {}
+            Err(e) => log::warn!(
+                "YV63 orphaned take {} not recovered ({e}) — left for the next launch",
+                marker.display()
+            ),
+        }
+    }
+    recovered
+}
+
+/// Turn ONE orphaned marker into a wav. `Ok(None)` means the marker was retired
+/// with nothing worth recovering; `Err` leaves the marker in place so a
+/// transient failure (full disk) does not throw the audio away.
+fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, String> {
+    let raw = std::fs::read_to_string(marker).map_err(|e| e.to_string())?;
+    let meta: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let spill = meta
+        .get("spill")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .ok_or_else(|| "marker has no spill path".to_string())?;
+    let sample_rate = meta
+        .get("sample_rate")
+        .and_then(|v| v.as_u64())
+        .filter(|r| *r > 0)
+        .unwrap_or(TARGET_RATE as u64) as u32;
+
+    let bytes = std::fs::read(&spill).unwrap_or_default();
+    let samples: Vec<f32> = bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
+        .collect();
+    // Same floor the live path uses: below it the "take" was a stray tap, and a
+    // Retry row for it would be noise in History.
+    if samples.len() < MIN_CLIP_SAMPLES {
+        let _ = std::fs::remove_file(&spill);
+        let _ = std::fs::remove_file(marker);
+        return Ok(None);
+    }
+
+    // `<id>.in_progress.json` → `<id>.wav`, i.e. the recovered clip lands right
+    // where a kept failed take does (same dir, same retry + purge lifecycle).
+    let name = marker.file_name().unwrap_or_default().to_string_lossy();
+    let id = name
+        .strip_suffix(&format!(".{JOURNAL_MARKER_EXT}"))
+        .unwrap_or(&name);
+    let wav_path = marker.with_file_name(format!("{id}.wav"));
+    if let Err(e) = write_wav_i16(&wav_path, sample_rate, &samples) {
+        // Never leave a half-written wav behind; the marker stays so the next
+        // launch tries again rather than losing the utterance.
+        let _ = std::fs::remove_file(&wav_path);
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&spill);
+    let _ = std::fs::remove_file(marker);
+    Ok(Some(RecoveredTake {
+        wav_path,
+        seconds: samples.len() as f64 / sample_rate as f64,
+    }))
 }
 
 /// Read a WAV off disk as the 16 kHz mono `[-1, 1]` f32 buffer the embedded ASR
@@ -541,11 +886,16 @@ struct CapturedAudio {
     /// Soft-AGC gain accumulated over the take, applied at finalize. `1.0` means
     /// "leave the level alone" (silence / degenerate input).
     gain: f32,
+    /// YV63 crash journal, handed back with the take so `stop_recording` can
+    /// retire it. `None` when journalling could not be started for this take.
+    journal: Option<CaptureJournal>,
 }
 
 enum CaptureCmd {
-    /// Begin buffering into the persistent stream (opening it if needed).
+    /// Begin buffering into the persistent stream (opening it if needed), with
+    /// this take's crash journal (YV63) for the capture path to spill into.
     Arm {
+        journal: Option<CaptureJournal>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     /// Stop buffering and hand back the take. The stream STAYS open.
@@ -643,10 +993,13 @@ struct LiveStream {
 
 impl LiveStream {
     /// Begin a take: drop anything the callback saw while idle (and every bit of
-    /// the previous take's DSP state), zero the meter, then open the gate.
-    fn begin(&self) {
+    /// the previous take's DSP state), arm this take's crash journal, zero the
+    /// meter, then open the gate. The journal is installed AFTER the reset — the
+    /// reset is what retires a previous take's journal.
+    fn begin(&self, journal: Option<CaptureJournal>) {
         if let Ok(mut dsp) = self.dsp.lock() {
             dsp.reset();
+            dsp.journal = journal;
         }
         capture_level().store(0, Ordering::Relaxed);
         self.capturing.store(true, Ordering::SeqCst);
@@ -665,6 +1018,7 @@ impl LiveStream {
                 raw: Vec::new(),
                 sample_rate: TARGET_RATE,
                 gain: 1.0,
+                journal: None,
             })
     }
 
@@ -720,7 +1074,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
 
     loop {
         match rx.recv_timeout(IDLE_TICK) {
-            Ok(CaptureCmd::Arm { reply }) => {
+            Ok(CaptureCmd::Arm { journal, reply }) => {
                 // A stream whose device errored (unplugged, format changed) is
                 // useless — drop it and re-query the hardware from scratch.
                 if live.as_ref().is_some_and(LiveStream::has_failed) {
@@ -741,7 +1095,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
-                    stream.begin();
+                    stream.begin(journal);
                     let _ = reply.send(Ok(()));
                 }
             }
@@ -929,6 +1283,10 @@ struct StreamDsp {
     raw: Vec<f32>,
     /// Reused downmix scratch so a callback allocates nothing steady-state.
     mono: Vec<f32>,
+    /// YV63 crash journal for the take in flight, installed by `LiveStream::begin`
+    /// and handed back by `take`. `None` between takes (and whenever journalling
+    /// could not be started), which turns every spill below into a no-op.
+    journal: Option<CaptureJournal>,
 }
 
 impl StreamDsp {
@@ -945,6 +1303,7 @@ impl StreamDsp {
             out: Vec::new(),
             raw: Vec::new(),
             mono: Vec::new(),
+            journal: None,
         }
     }
 
@@ -995,7 +1354,15 @@ impl StreamDsp {
         }
         // …and straight down to 16 kHz, frame by frame: the ASR buffer is
         // essentially ready the moment the key comes up.
+        let before = self.out.len();
         self.resampler.push(&self.mono, &mut self.out);
+        // YV63: the same frames go to the crash journal on their way past, so a
+        // take the app dies in the middle of is already on disk. Bounded
+        // hand-off — if the writer falls behind the SPILL is dropped, never the
+        // frame, and the callback never waits on the disk.
+        if let Some(journal) = self.journal.as_ref() {
+            journal.append(&self.out[before..]);
+        }
     }
 
     /// Close the take: flush the resampler's tail and hand the buffers over.
@@ -1016,6 +1383,9 @@ impl StreamDsp {
             raw: std::mem::take(&mut self.raw),
             sample_rate: self.sample_rate,
             gain,
+            // Taken (not reset) so the journal rides out with its take — the
+            // reset below must not retire a journal `stop_recording` still owns.
+            journal: self.journal.take(),
         };
         self.reset();
         captured
@@ -1033,6 +1403,7 @@ fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, Str
         raw,
         sample_rate,
         gain,
+        ..
     } = captured;
     if samples.is_empty() && raw.is_empty() {
         return Err(NO_AUDIO_ERR.into());
@@ -1464,6 +1835,13 @@ fn denoise_rnnoise(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     restored
 }
 
+/// The one float→PCM conversion in the app: hard-limited, then scaled. Shared by
+/// the wav writer and the YV63 journal so a recovered spill and a normal clip
+/// hold bit-identical samples.
+fn to_i16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+}
+
 fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), String> {
     let spec = WavSpec {
         channels: 1,
@@ -1473,9 +1851,7 @@ fn write_wav_i16(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), S
     };
     let mut writer = WavWriter::create(path, spec).map_err(|e| e.to_string())?;
     for &s in samples {
-        let clipped = s.clamp(-1.0, 1.0);
-        let i = (clipped * i16::MAX as f32) as i16;
-        writer.write_sample(i).map_err(|e| e.to_string())?;
+        writer.write_sample(to_i16(s)).map_err(|e| e.to_string())?;
     }
     writer.finalize().map_err(|e| e.to_string())?;
     Ok(())
@@ -1669,6 +2045,191 @@ mod tests {
         // Missing dir is a safe no-op.
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(sweep_stale_wavs(&dir), 0);
+    }
+
+    // ── Crash-safe capture journal (YV63) ───────────────────────────────────
+    // The promise is "a dictation is never lost, even if Yap dies mid-take", so
+    // the tests check the three things that promise rests on: the audio is on
+    // DISK while the user is still speaking, the spill can never slow capture
+    // down, and a take that ends normally leaves nothing behind to recover.
+
+    fn journal_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("yv63-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Wait (bounded) for the background writer to have `min_bytes` on disk.
+    /// The writer is asynchronous BY DESIGN — that is the whole point — so the
+    /// test observes the file, it does not reach into the writer.
+    fn wait_for_spill(path: &Path, min_bytes: u64) -> u64 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if len >= min_bytes || Instant::now() >= deadline {
+                return len;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Wait (bounded) for a path the writer thread creates.
+    fn wait_for_file(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        path.exists()
+    }
+
+    fn read_spill(path: &Path) -> Vec<i16> {
+        std::fs::read(path)
+            .unwrap()
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    }
+
+    #[test]
+    fn journal_appends_frames_incrementally() {
+        let dir = journal_dir("append");
+        let journal = CaptureJournal::start(&dir).expect("journal opens");
+        assert!(
+            wait_for_file(journal.marker_path()),
+            "the in-progress marker must exist from capture START, not from the end"
+        );
+
+        // Frame one — as it would arrive from the capture worker, mid-hold.
+        let first = tone(0.2, 220.0, 0.4);
+        journal.append(&first);
+        let on_disk = wait_for_spill(journal.spill_path(), (first.len() * 2) as u64);
+        assert_eq!(
+            on_disk,
+            (first.len() * 2) as u64,
+            "frames must be readable mid-stream — a crash now must still find audio"
+        );
+        assert_eq!(
+            read_spill(journal.spill_path()),
+            first.iter().map(|&s| to_i16(s)).collect::<Vec<_>>(),
+            "the spilled samples are the captured ones, not a re-encoding"
+        );
+
+        // …and the file GROWS with the take instead of being rewritten at the end.
+        let second = tone(0.1, 330.0, 0.3);
+        journal.append(&second);
+        let grown = wait_for_spill(
+            journal.spill_path(),
+            ((first.len() + second.len()) * 2) as u64,
+        );
+        assert_eq!(
+            grown,
+            ((first.len() + second.len()) * 2) as u64,
+            "later frames append to the same spill"
+        );
+        assert_eq!(journal.dropped_writes(), 0, "an idle disk drops nothing");
+
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_writer_never_blocks_capture() {
+        // A wedged/slow writer is simulated by a receiver that never receives:
+        // the queue fills after two chunks and every further offer must return
+        // immediately, counted as a dropped JOURNAL write — never a dropped
+        // frame, never an error the capture path has to handle.
+        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(2);
+        let queue = JournalQueue::new(tx);
+        let started = Instant::now();
+        for i in 0..6i16 {
+            queue.offer(vec![i; 4]);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "offering into a full journal queue must not park the capture path"
+        );
+        assert_eq!(
+            queue.dropped(),
+            4,
+            "the four chunks past the bound are dropped, not queued or awaited"
+        );
+        // What did fit is intact and in order — the overflow corrupts nothing.
+        assert_eq!(rx.recv().unwrap(), vec![0i16; 4]);
+        assert_eq!(rx.recv().unwrap(), vec![1i16; 4]);
+
+        // A writer that died outright is the same story: a dropped write.
+        drop(rx);
+        queue.offer(vec![9i16; 4]);
+        assert_eq!(queue.dropped(), 5);
+    }
+
+    #[test]
+    fn normal_completion_removes_marker() {
+        let dir = journal_dir("complete");
+        let journal = CaptureJournal::start(&dir).expect("journal opens");
+        let marker = journal.marker_path().to_path_buf();
+        let spill = journal.spill_path().to_path_buf();
+        journal.append(&tone(0.2, 220.0, 0.4));
+        wait_for_spill(&spill, 2);
+        assert!(marker.exists() && spill.exists());
+
+        journal.finish();
+
+        assert!(
+            !marker.exists(),
+            "a take that ended normally must leave no in-progress marker"
+        );
+        assert!(!spill.exists(), "…and no spilled audio either");
+        assert!(
+            recover_orphaned_journals(&dir).is_empty(),
+            "startup must find nothing to recover after a normal take"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphaned_spill_finalizes_into_a_playable_wav() {
+        let dir = journal_dir("orphan");
+        let journal = CaptureJournal::start(&dir).expect("journal opens");
+        let marker = journal.marker_path().to_path_buf();
+        let spoken = tone(0.5, 220.0, 0.4);
+        journal.append(&spoken);
+        wait_for_spill(journal.spill_path(), (spoken.len() * 2) as u64);
+        // The app dies here: marker + spill survive, nothing retires them.
+        journal.abandon();
+        assert!(marker.exists());
+
+        let recovered = recover_orphaned_journals(&dir);
+        assert_eq!(recovered.len(), 1, "the orphaned take must be recovered");
+        assert!((recovered[0].seconds - 0.5).abs() < 0.01);
+        let samples = read_wav_16k_mono(&recovered[0].wav_path).expect("recovered wav parses");
+        assert_eq!(samples.len(), spoken.len());
+        assert!(!marker.exists(), "a recovered marker is retired");
+        // Idempotent: a second startup has nothing left to do.
+        assert!(recover_orphaned_journals(&dir).is_empty());
+
+        // A sub-30 ms spill was a stray tap — retired, never surfaced as a take.
+        let stray = CaptureJournal::start(&dir).expect("journal opens");
+        let stray_marker = stray.marker_path().to_path_buf();
+        stray.append(&tone(0.01, 220.0, 0.4));
+        stray.abandon();
+        assert!(recover_orphaned_journals(&dir).is_empty());
+        assert!(!stray_marker.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_marker_predicate_matches_only_markers() {
+        assert!(is_journal_marker("8b1f.in_progress.json"));
+        assert!(is_journal_marker("8B1F.IN_PROGRESS.JSON"));
+        // The spill, a recovered clip and a kept failed take all live in the same
+        // dir — none of them is a marker.
+        assert!(!is_journal_marker("8b1f.spill.pcm"));
+        assert!(!is_journal_marker("8b1f.wav"));
+        assert!(!is_journal_marker("in_progress.json"));
+        assert!(!is_journal_marker(""));
     }
 
     /// The committed E2E fixture (`--transcribe-file` gate): a `say`-generated
@@ -2106,6 +2667,7 @@ mod tests {
             raw: Vec::new(),
             sample_rate: SR,
             gain,
+            journal: None,
         };
         let out = finalize_take(captured, false).expect("a normal take finalizes");
         assert_eq!(
@@ -2132,6 +2694,7 @@ mod tests {
                 raw: raw.clone(),
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
+                journal: None,
             },
             false,
         )
@@ -2151,6 +2714,7 @@ mod tests {
                 raw,
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
+                journal: None,
             },
             false,
         )
@@ -2163,6 +2727,7 @@ mod tests {
                 raw: Vec::new(),
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
+                journal: None,
             },
             false,
         )
