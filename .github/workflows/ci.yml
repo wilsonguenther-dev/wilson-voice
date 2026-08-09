@@ -31,6 +31,11 @@ jobs:
         run: npm ci
       - name: Build frontend (tsc + vite)
         run: npm run build
+      # YV71: the pill's live-commentary state machine (desktop/src/pill/live.ts)
+      # is pure and unit-tested — a behavioural regression there shipped once
+      # because a type check was the only frontend gate.
+      - name: Frontend tests (vitest)
+        run: npm test
 
       - uses: dtolnay/rust-toolchain@stable
         with:
