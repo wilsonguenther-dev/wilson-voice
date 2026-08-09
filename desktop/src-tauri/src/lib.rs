@@ -573,7 +573,15 @@ fn start_recording(app: &AppHandle, state: &AppState) {
     // YV35: anchor the press→capture_start span on the physical key-down when
     // this take came from the PTT hold (None for tray/button/hands-free starts).
     let pressed_at = ptt_macos::press_started_at();
-    match record::start_recording(data_dir().join("recordings"), denoise, pressed_at) {
+    // YV63: the take's crash journal spills into the SAME recovery dir a failed
+    // take is parked in, so a recovered clip lands inside the retry + 7-day
+    // purge lifecycle that already exists.
+    match record::start_recording(
+        data_dir().join("recordings"),
+        &recovery_dir(),
+        denoise,
+        pressed_at,
+    ) {
         Ok(active) => {
             let level = active.level.clone();
             let stop = active.stop_signal();
@@ -1206,6 +1214,43 @@ fn keep_failed_take(
             None
         }
     }
+}
+
+/// The error a crash-recovered take (YV63) carries in History — the user sees
+/// why the row is there, and Retry runs ASR over the audio that survived.
+const CRASH_RECOVERY_ERROR: &str = "recovered after crash";
+
+/// YV63 — a dictation the app died in the MIDDLE of. Nothing used to survive
+/// that: the wav is only written after a take ends, so a glitch mid-hold took
+/// the words with it. The capture journal spills the frames to
+/// `data_dir()/recovery/` as they arrive and leaves an in-progress marker behind
+/// if the take never completes; this is the other half — at startup, every
+/// orphaned marker is finalized into a real wav and given the SAME
+/// failed-dictation row a failed transcription gets (YV52), so it shows up in
+/// History with Retry instead of being gone.
+///
+/// Best-effort throughout, exactly like `keep_failed_take`: a take that cannot
+/// be turned into a row has its wav removed rather than left as audio nothing
+/// can reach. Returns how many takes were recovered.
+fn recover_crashed_takes(db: &Database, dir: &Path) -> usize {
+    let mut recovered = 0;
+    for take in record::recover_orphaned_journals(dir) {
+        match db.record_failed_dictation(&take.wav_path, take.seconds, CRASH_RECOVERY_ERROR, None) {
+            Ok(row) => {
+                recovered += 1;
+                log::info!(
+                    "YV63 crash recovery: take {} ({:.2}s) rebuilt from its capture journal",
+                    row.id,
+                    take.seconds
+                );
+            }
+            Err(e) => {
+                log::warn!("YV63 crash recovery: row not written ({e}) — removing rebuilt clip");
+                let _ = std::fs::remove_file(&take.wav_path);
+            }
+        }
+    }
+    recovered
 }
 
 /// YV52 — expired recoverable takes are dropped with their audio. Called at
@@ -2285,6 +2330,14 @@ pub fn run() {
     // same "audio never lingers" rule as the sweep above, just with the window a
     // retry needs. Runs after the DB is open and before anything can list them.
     purge_expired_failed_takes(&db);
+    // YV63: anything the previous run was still capturing when it died is on
+    // disk as a spill + an in-progress marker. Rebuild those takes into rows the
+    // user can retry — after the purge, so a freshly recovered take always gets
+    // its own full retention window.
+    let rebuilt = recover_crashed_takes(&db, &recovery_dir());
+    if rebuilt > 0 {
+        log::info!("startup: recovered {rebuilt} dictation(s) the app died in the middle of");
+    }
 
     let db = Arc::new(db);
 
@@ -3521,6 +3574,53 @@ mod tests {
         write_settings_file(&path, &reloaded).expect("ordinary save");
         assert!(load_settings(&path).legacy_json_migrated);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// YV63 — the crash half of the promise. A take the app died in the middle
+    /// of leaves an in-progress marker and its spilled audio in the recovery
+    /// dir; the startup scan must turn that into a real WAV and the SAME
+    /// failed-dictation row (YV52) a failed transcription gets, so the words are
+    /// one Retry away instead of gone.
+    #[test]
+    fn orphaned_marker_becomes_failed_dictation_row_on_startup() {
+        let dir = temp_dir("yv63-crash-recovery");
+        let db = crate::db::Database::open(dir.join("wilson_voice.db")).unwrap();
+        let recovery = dir.join("recovery");
+
+        // A take in flight: half a second already spilled, then the app dies.
+        let journal = crate::record::CaptureJournal::start(&recovery).expect("journal opens");
+        let spoken: Vec<f32> = (0..8_000)
+            .map(|i| 0.4 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
+            .collect();
+        journal.append(&spoken);
+        journal.abandon();
+
+        assert_eq!(
+            super::recover_crashed_takes(&db, &recovery),
+            1,
+            "the orphaned take must be recovered at startup"
+        );
+
+        let rows = db.list_failed_dictations().unwrap();
+        assert_eq!(rows.len(), 1, "the recovered take gets a retryable row");
+        assert_eq!(rows[0].error, super::CRASH_RECOVERY_ERROR);
+        assert!((rows[0].speech_seconds - 0.5).abs() < 0.01);
+        // The row points at a real, parseable WAV inside the recovery dir — the
+        // same lifecycle (Retry, discard, 7-day purge) the YV52 clips live in.
+        let wav = std::path::PathBuf::from(&rows[0].wav_path);
+        assert!(
+            wav.starts_with(&recovery),
+            "recovered audio stays in {recovery:?}"
+        );
+        let samples = crate::record::read_wav_16k_mono(&wav).expect("recovered wav parses");
+        assert_eq!(samples.len(), spoken.len());
+
+        // Idempotent: the next launch must not re-recover the same take.
+        assert_eq!(super::recover_crashed_takes(&db, &recovery), 0);
+        assert_eq!(db.list_failed_dictations().unwrap().len(), 1);
+
+        drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
