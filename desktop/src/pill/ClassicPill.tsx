@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Mic, Square } from "lucide-react";
+import { usePillDrag, watchPillHitbox } from "./drag";
 
 interface AppStatus {
   recording: boolean;
@@ -27,6 +28,15 @@ export default function ClassicPill() {
   // Set by the rAF effect; called by the audio_level listener to re-arm the
   // smoothing loop after it parks itself at rest (audit [0]).
   const wakeRef = useRef<() => void>(() => {});
+  // YV65 — press-and-drag the capsule to re-dock the pill.
+  const drag = usePillDrag();
+
+  // YV65 — publish the capsule's rect so the panel only takes the cursor over
+  // the pill itself; the transparent shadow margin stays click-through.
+  useEffect(() => {
+    const el = pillRef.current;
+    return el ? watchPillHitbox(el) : undefined;
+  }, []);
 
   useEffect(() => {
     // prefers-reduced-motion: paint one calm static frame (level 0, waveform at
@@ -105,8 +115,10 @@ export default function ClassicPill() {
   const cls = live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
   const onToggle = useCallback(() => {
     if (busy) return;
+    // YV65 — the click that closes a drag must never start/stop dictation.
+    if (drag.dragged()) return;
     invoke("manual_toggle").catch(() => {});
-  }, [busy]);
+  }, [busy, drag]);
 
   return (
     <div className="stage">
@@ -116,6 +128,7 @@ export default function ClassicPill() {
         role="button"
         tabIndex={0}
         aria-label={live ? "Stop dictation" : busy ? "Transcribing" : "Start dictation"}
+        {...drag.handlers}
         onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }

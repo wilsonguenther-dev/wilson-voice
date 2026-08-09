@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
+import { usePillDrag, reportPillHitbox } from "./drag";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
@@ -82,6 +83,10 @@ const DOCK_PAD = 10;
 export default function YappyPill() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
+  // CANVAS-drawn (the element itself fills the whole transparent window), so its
+  // hit-box is published from the draw loop below, not from a DOM rect.
+  const drag = usePillDrag();
 
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
@@ -288,6 +293,10 @@ export default function YappyPill() {
           : W / 2;
       const cy = H * 0.56;
       const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
+      // YV65 — the capsule IS the grab handle: publish exactly where it was just
+      // drawn (canvas coords are logical points here — the DPR lives in the
+      // context transform) so the panel only takes the cursor over the pill.
+      reportPillHitbox(x0, y0, capW, capH);
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
       // SKY-BLUE capsule fill (not obsidian)
@@ -320,7 +329,7 @@ export default function YappyPill() {
   return (
     <div className="kami-stage">
       <div ref={bubbleRef} className="kami-bubble"></div>
-      <canvas ref={canvasRef} className="kami-canvas" aria-hidden />
+      <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
     </div>
   );
 }

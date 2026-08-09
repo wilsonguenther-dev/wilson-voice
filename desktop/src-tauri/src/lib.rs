@@ -1522,6 +1522,58 @@ fn save_settings(
     Ok(())
 }
 
+/// YV65 — the pill webview reports the VISIBLE capsule's rect (window-logical
+/// points). The float window is much larger than the capsule and stays
+/// click-through; only this rect turns the cursor on, so the pill is grabbable
+/// without the transparent margin swallowing anything.
+#[tauri::command]
+fn pill_set_hitbox(x: f64, y: f64, w: f64, h: f64) {
+    float_pill::set_hitbox(x, y, w, h);
+}
+
+/// YV65 — pointer-down on the capsule: latch the panel origin and suspend the
+/// re-park loop for the duration of the gesture.
+#[tauri::command]
+fn pill_drag_start(app: AppHandle) {
+    float_pill::drag_start(&app);
+}
+
+/// YV65 — live move. `dx`/`dy` are the cursor's total travel since
+/// `pill_drag_start`, in logical points.
+#[tauri::command]
+fn pill_drag_move(app: AppHandle, dx: f64, dy: f64) {
+    float_pill::drag_move(&app, dx, dy);
+}
+
+/// YV65 — pointer-up: snap to the nearest dock and PERSIST it, so a drag is the
+/// same durable change the Settings picker makes (same store, same "settings"
+/// event, so the picker and the pill both follow). `snap` is false for a press
+/// that never became a drag — the pill just re-parks where it was.
+#[tauri::command]
+fn pill_drag_end(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    x: f64,
+    y: f64,
+    snap: bool,
+) -> Result<(), String> {
+    let Some(pos) = float_pill::drag_end(&app, (x, y), snap) else {
+        return Ok(());
+    };
+    let next = {
+        let mut settings = state.settings.lock();
+        if settings.pill_position == pos.as_settings() {
+            return Ok(()); // dropped back on the dock it already had
+        }
+        settings.pill_position = pos.as_settings().to_string();
+        settings.clone()
+    };
+    persist_settings(&next)?;
+    let _ = app.emit("settings", &next);
+    log::info!("pill dragged → {} dock", next.pill_position);
+    Ok(())
+}
+
 #[tauri::command]
 fn get_history(
     state: State<'_, Arc<AppState>>,
@@ -2537,6 +2589,10 @@ pub fn run() {
             user_display_name,
             get_settings,
             save_settings,
+            pill_set_hitbox,
+            pill_drag_start,
+            pill_drag_move,
+            pill_drag_end,
             get_history,
             clear_history,
             delete_entry,
@@ -2822,6 +2878,11 @@ pub fn run() {
             } else {
                 float_pill::hide_float(app.handle());
             }
+            // YV65 drag-to-dock: the capsule is only cursor-interactive while
+            // the pointer is on it. Started unconditionally — the pill still
+            // appears for a dictation when the always-on setting is off, and the
+            // watch is inert while the panel is hidden.
+            float_pill::start_hover_watch(app.handle().clone());
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
