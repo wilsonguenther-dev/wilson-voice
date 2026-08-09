@@ -565,6 +565,34 @@ fn restore_system_output(state: &AppState) {
     }
 }
 
+/// Everything the app must do on its way out, in the ONE order that is safe.
+/// Returns the steps it ran, newest last, so the caller can log the shutdown
+/// it actually got (and so a test can assert the order).
+///
+/// YV69 — the order IS the fix. Yap SIGABRTed on a normal Cmd-Q whenever a
+/// model was still resident: `-[NSApplication terminate:]` → `exit()` →
+/// `__cxa_finalize_ranges` ran ggml's C++ STATIC destructor, which tried to
+/// free the Metal device (`ggml_metal_rsets_free`) after the ObjC/Metal
+/// environment had already begun unwinding, and ggml_abort()ed. Unloading the
+/// engine FIRST frees that device while the Tauri/ObjC runtime is still alive,
+/// so the static destructor has nothing left to tear down. The two pre-existing
+/// steps keep their relative order behind it.
+fn teardown_for_exit(state: &Arc<AppState>) -> Vec<&'static str> {
+    let mut steps = Vec::new();
+    // 1. Release the ASR Metal device while ObjC is still standing.
+    state.transcription.unload();
+    steps.push("asr_unload");
+    // 2. YV28 safety net: never leave the Mac muted if we exit mid-take.
+    //    Restores the saved output state (no-op otherwise).
+    restore_system_output(state);
+    steps.push("restore_output");
+    // 3. Checkpoint the WAL so it never grows unbounded and the .db isn't left
+    //    a deceptive 4 KB stub.
+    state.db.checkpoint();
+    steps.push("db_checkpoint");
+    steps
+}
+
 /// Mic-level HUD cadence: the float pill's waveform redraws at 20 frames per
 /// second, so the level thread emits one `audio_level` per frame. This is a
 /// render rate, not a wait on anything — the take's end arrives as a signal
@@ -3113,15 +3141,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Wilson Voice")
         .run(|app_handle, event| {
-            // Checkpoint the WAL on exit so it never grows unbounded and the .db
-            // isn't left a deceptive 4 KB stub. Covers Cmd-Q / window-driven exit;
-            // the tray Quit item also checkpoints before app.exit(0).
+            // The ordered shutdown (YV69) — ASR engine first, then the audio
+            // restore, then the WAL checkpoint. Covers Cmd-Q / window-driven
+            // exit; the tray Quit item also checkpoints before app.exit(0).
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
-                    // YV28 safety net: never leave the Mac muted if we exit
-                    // mid-take. Restores the saved output state (no-op otherwise).
-                    restore_system_output(&state);
-                    state.db.checkpoint();
+                    let steps = teardown_for_exit(&state);
+                    log::info!("exit teardown: {}", steps.join(" → "));
                 }
             }
         });
@@ -3939,6 +3965,89 @@ mod tests {
         assert_eq!(db.list_failed_dictations().unwrap()[0].id, row.id);
 
         drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- YV69: the exit teardown order ------------------------------------
+    //
+    // Quitting with a model resident used to SIGABRT: ggml's C++ static
+    // destructor freed the Metal device from inside `exit()`, after ObjC had
+    // already started unwinding. The fix is purely an ordering one, so the
+    // test IS the order.
+
+    /// Stand-in for a loaded GGUF session — never actually run here; it only
+    /// has to occupy the manager's engine slot so `is_loaded()` is true.
+    struct ExitStubEngine;
+
+    impl crate::transcription::Transcriber for ExitStubEngine {
+        fn transcribe(
+            &mut self,
+            _samples_16k_mono: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn teardown_for_exit_unloads_asr_first() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = temp_dir("yv69-teardown");
+        // A real (empty) file so the manager's "is it downloaded?" gate passes.
+        let model = dir.join("stub.gguf");
+        std::fs::write(&model, b"stub gguf").unwrap();
+
+        // Long idle timeout: the idle watcher must NOT be the thing that
+        // unloads here — the teardown has to do it.
+        let manager = crate::transcription::TranscriptionManager::with_loader(
+            Arc::new(|_p: &std::path::Path| {
+                Ok(Box::new(ExitStubEngine) as Box<dyn crate::transcription::Transcriber>)
+            }),
+            Duration::from_secs(15 * 60),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        );
+        manager.load("stub", &model).expect("stub model loads");
+        assert!(manager.is_loaded(), "the take left a model resident");
+
+        let state = Arc::new(super::AppState {
+            settings: super::PLMutex::new(AppSettings::default()),
+            recording: super::PLMutex::new(false),
+            busy: super::PLMutex::new(false),
+            hands_free: super::PLMutex::new(false),
+            command_selection: super::PLMutex::new(None),
+            recorder: super::PLMutex::new(None),
+            saved_audio: super::PLMutex::new(None),
+            db: Arc::new(crate::db::Database::open(dir.join("wilson_voice.db")).unwrap()),
+            last_error: super::PLMutex::new(None),
+            hotkey_registered: super::PLMutex::new(false),
+            tray: super::PLMutex::new(None),
+            tray_dictation: super::PLMutex::new(None),
+            tray_hands_free: super::PLMutex::new(None),
+            tray_paste_raw: super::PLMutex::new(None),
+            undo_available: super::PLMutex::new(false),
+            secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
+            vad: super::PLMutex::new(None),
+            paste_generation: std::sync::atomic::AtomicU64::new(0),
+            transcription: manager.clone(),
+        });
+
+        let steps = super::teardown_for_exit(&state);
+
+        assert_eq!(
+            steps,
+            vec!["asr_unload", "restore_output", "db_checkpoint"],
+            "the Metal device must be released BEFORE the process reaches exit()"
+        );
+        assert!(
+            !manager.is_loaded(),
+            "quitting must leave no ggml Metal device for the static destructor"
+        );
+
+        drop(state);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
