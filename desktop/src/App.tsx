@@ -211,6 +211,23 @@ interface FailedDictation {
 }
 
 /**
+ * YV64 — one crash Yap has evidence of, read at startup from macOS' own `.ips`
+ * reports and from the panic hook's log lines (backend `db::CrashEvent`).
+ * Local-only by construction: the row carries structured crash facts, never
+ * transcript text, and nothing about it is ever uploaded.
+ */
+interface CrashEvent {
+  id: string;
+  occurredAt: string;
+  /** panic | native | watchdog */
+  kind: string;
+  signature: string;
+  sourceFile: string;
+  details: string;
+  acknowledged: boolean;
+}
+
+/**
  * YV51 — the raw take to re-paste for "Undo AI edit", or null when there is no
  * AI edit to undo (no stored raw, a blank raw, or a raw that matches what was
  * pasted). Mirrors `dictation::undo_ai_edit_text` in the Rust pipeline — same
@@ -406,6 +423,10 @@ export default function App() {
   const [failed, setFailed] = useState<FailedDictation[]>([]);
   const [retryId, setRetryId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
+  // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
+  // launch toast below (once per launch, never a modal).
+  const [crashes, setCrashes] = useState<CrashEvent[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dailySeries, setDailySeries] = useState<DayCount[]>([]);
   const [monthlySeries, setMonthlySeries] = useState<DayCount[]>([]);
@@ -545,8 +566,19 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [s, st, ins, daily, monthly, dict, cands, snips, notes, fails] =
-        await Promise.all([
+      const [
+        s,
+        st,
+        ins,
+        daily,
+        monthly,
+        dict,
+        cands,
+        snips,
+        notes,
+        fails,
+        crashRows,
+      ] = await Promise.all([
           invoke<AppSettings>("get_settings"),
           invoke<AppStatus>("get_status"),
           invoke<Insights>("get_insights"),
@@ -557,6 +589,7 @@ export default function App() {
           invoke<Snippet[]>("list_snippets"),
           invoke<ScratchNote[]>("list_scratch"),
           invoke<FailedDictation[]>("list_failed_dictations"),
+          invoke<CrashEvent[]>("list_crash_events"),
         ]);
       setSettings(s);
       setStatus(st);
@@ -568,6 +601,7 @@ export default function App() {
       setSnippets(snips);
       setScratch(notes);
       setFailed(fails);
+      setCrashes(crashRows);
       setBootError(null);
       await loadHistory(queryRef.current);
       await refreshPerms();
@@ -663,6 +697,22 @@ export default function App() {
     wasModelReady.current = modelIsReady;
     if (prev === false && modelIsReady) refreshAll();
   }, [modelIsReady, refreshAll]);
+
+  // YV64 — if the backend read a crash off disk that the user has not seen yet,
+  // say so ONCE, quietly. A crash that already happened is not worth a modal or
+  // a second interruption, so this is the same flash strip every other
+  // background message uses, guarded by a ref so a later refresh (a model
+  // landing, a reconnect) cannot repeat it within the same launch.
+  const crashToastShown = useRef(false);
+  useEffect(() => {
+    if (crashToastShown.current) return;
+    if (!crashes.some((c) => !c.acknowledged)) return;
+    crashToastShown.current = true;
+    setFlash("Yap had a problem last session — see Diagnostics");
+    // Same fire-and-forget shape as the other background flashes: no cleanup,
+    // so a later `crashes` update cannot cancel the clear and strand the strip.
+    setTimeout(() => setFlash(null), 6000);
+  }, [crashes]);
 
   // YV44 — one launch-time check that ONLY looks. The backend gates it on the
   // `checkUpdates` setting and on "skip this version", returns the release
@@ -3099,7 +3149,9 @@ export default function App() {
                       onClick={async () => {
                         try {
                           await invoke("open_logs_dir");
-                          toast("Opened logs folder for diagnostics");
+                          // YV64: the export now writes crash-summary.txt into
+                          // that folder alongside yap.log.
+                          toast("Opened logs folder — crash summary included");
                         } catch (e) {
                           toast(String(e));
                         }
@@ -3112,6 +3164,79 @@ export default function App() {
                     </button>
                     <button onClick={replayOnboarding}>Replay onboarding</button>
                   </div>
+
+                  {/* ── YV64 Stability — the crashes Yap read back off disk ──
+                      macOS writes a .ips report when a process dies, and the
+                      panic hook writes a line to yap.log; both are read at
+                      startup so the app is no longer the last to know. Nothing
+                      here is uploaded and no dictated text is in a row — the
+                      details are the crash's structured facts only. */}
+                  <h2 className="settings-section">
+                    Stability
+                    <span className="sub">
+                      Crashes Yap noticed, read from this Mac&rsquo;s own crash
+                      reports. Stored locally, never uploaded, and they never
+                      contain anything you dictated.
+                    </span>
+                  </h2>
+                  {crashes.length === 0 ? (
+                    <p className="tiny">
+                      No crashes recorded. Yap has not died on this Mac since it
+                      started keeping track.
+                    </p>
+                  ) : (
+                    <>
+                      <ul className="crash-list">
+                        {crashes.map((c) => (
+                          <li
+                            key={c.id}
+                            className={c.acknowledged ? "crash" : "crash new"}
+                          >
+                            <div className="crash-meta">
+                              <span>{formatTime(c.occurredAt)}</span>
+                              <span className="crash-kind">{c.kind}</span>
+                            </div>
+                            <p className="crash-signature">{c.signature}</p>
+                            <p className="tiny">{c.sourceFile}</p>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="actions wrap">
+                        <button
+                          disabled={crashes.every((c) => c.acknowledged)}
+                          onClick={async () => {
+                            try {
+                              await invoke("acknowledge_crash_events");
+                              setCrashes(
+                                await invoke<CrashEvent[]>("list_crash_events"),
+                              );
+                              toast("Marked as seen");
+                            } catch (e) {
+                              toast(String(e));
+                            }
+                          }}
+                        >
+                          Mark as seen
+                        </button>
+                        <button
+                          className="ghost danger"
+                          onClick={async () => {
+                            try {
+                              await invoke("clear_crash_events");
+                              setCrashes(
+                                await invoke<CrashEvent[]>("list_crash_events"),
+                              );
+                              toast("Crash history cleared");
+                            } catch (e) {
+                              toast(String(e));
+                            }
+                          }}
+                        >
+                          Clear crash history
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </section>
               )}
             </div>

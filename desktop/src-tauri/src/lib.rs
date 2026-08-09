@@ -7,6 +7,9 @@
 mod asr_engine;
 mod cli;
 mod command_mode;
+// YV64: reads macOS' own crash reports + the panic hook's log lines back into
+// `crash_events`. Local only — see the module docs for the privacy rules.
+mod crash;
 mod db;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
@@ -36,8 +39,8 @@ mod transcription;
 mod vad;
 
 use db::{
-    Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights, ScratchNote, Snippet,
-    TranscriptEntry,
+    CrashEvent, Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights,
+    ScratchNote, Snippet, TranscriptEntry,
 };
 use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
@@ -367,6 +370,12 @@ fn data_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&p);
     let _ = std::fs::create_dir_all(p.join("recordings"));
     p
+}
+
+/// The user's home, where macOS keeps its crash reports (YV64). Falls back to
+/// `.` for the same reason `data_dir` does — a missing home must not panic.
+fn home_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Where a failed take's WAV is parked so it can be retried (YV52).
@@ -1924,13 +1933,47 @@ fn open_data_dir() -> Result<(), String> {
 
 /// Export diagnostics (YV7): reveal the rotating logs folder (`data_dir/logs/`)
 /// so users can attach yap.log to a support/bug report. Reuses the open pattern.
+///
+/// YV64: the export now also drops `crash-summary.txt` next to the logs, so a
+/// report carries WHAT crashed rather than only the log tail. Writing it is
+/// best-effort — a failed write still opens the folder, which is the action the
+/// user asked for. It is written to the local logs folder and nowhere else.
 #[tauri::command]
-fn open_logs_dir() -> Result<(), String> {
+fn open_logs_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let dir = logging::logs_dir(&data_dir());
+    match state.db.list_crash_events(db::CRASH_EVENT_LIMIT) {
+        Ok(events) => {
+            let summary = crash::summary_text(&events);
+            if let Err(e) = std::fs::write(dir.join("crash-summary.txt"), summary) {
+                log::warn!("crash summary not written: {e}");
+            }
+        }
+        Err(e) => log::warn!("crash summary skipped: {e}"),
+    }
     std::process::Command::new("open")
-        .arg(logging::logs_dir(&data_dir()))
+        .arg(dir)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// YV64 — the recorded crashes, newest first, for Settings → Privacy &
+/// Diagnostics → Stability.
+#[tauri::command]
+fn list_crash_events(state: State<'_, Arc<AppState>>) -> Result<Vec<CrashEvent>, String> {
+    state.db.list_crash_events(db::CRASH_EVENT_LIMIT)
+}
+
+/// YV64 — the user has seen the list; stop treating those crashes as news.
+#[tauri::command]
+fn acknowledge_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    state.db.acknowledge_crash_events()
+}
+
+/// YV64 — drop Yap's stored crash history.
+#[tauri::command]
+fn clear_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    state.db.clear_crash_events()
 }
 
 /// Export transcript history to Application Support for backup / future LoRA corpus.
@@ -2338,6 +2381,14 @@ pub fn run() {
     if rebuilt > 0 {
         log::info!("startup: recovered {rebuilt} dictation(s) the app died in the middle of");
     }
+    // YV64: the app has been crashing on real machines without ever knowing it.
+    // Read macOS' own reports for our processes, plus the panic hook's own log
+    // lines, into `crash_events` — the UI raises ONE toast if any of them is
+    // news. Local only: nothing here is ever uploaded (see `crash`'s docs).
+    let fresh_crashes = crash::ingest(&db, &home_dir(), &logging::logs_dir(&data_dir()));
+    if fresh_crashes > 0 {
+        log::warn!("startup: {fresh_crashes} crash(es) from previous session(s) recorded");
+    }
 
     let db = Arc::new(db);
 
@@ -2520,6 +2571,9 @@ pub fn run() {
             paste_entry,
             open_data_dir,
             open_logs_dir,
+            list_crash_events,
+            acknowledge_crash_events,
+            clear_crash_events,
             export_history,
             open_privacy_settings,
             manual_toggle,

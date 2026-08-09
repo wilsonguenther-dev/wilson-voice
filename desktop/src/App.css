@@ -729,6 +729,53 @@ code {
   font-size: 0.82rem;
 }
 
+/* YV64 — the Stability list in Settings → Privacy & Diagnostics. Same card
+   material as the rest of the app; an UNacknowledged crash carries the warn
+   edge the failed-take card uses, because it is the one row that is news. */
+.crash-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crash-list .crash {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 10px 12px;
+}
+
+.crash-list .crash.new {
+  border-color: color-mix(in srgb, var(--warn) 42%, transparent);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-card));
+}
+
+.crash-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.crash-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.crash-signature {
+  margin: 4px 0 2px;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  word-break: break-word;
+}
+
 .content {
   flex: 1;
   overflow: auto;
