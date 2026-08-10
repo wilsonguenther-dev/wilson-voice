@@ -795,6 +795,13 @@ pub const TRANSCRIPT_ERROR_EVENT: &str = "transcript_error";
 /// "Didn't catch a command" rejection that leaves the selection untouched.
 pub const PASTE_OUTCOME_EVENT: &str = "paste_outcome";
 
+/// YV74 — an auto-paste take that produced NO read receipt, so the transcript
+/// never reached the target app. Payload: the transcript row's id, which the
+/// toast turns into a "Copy again" action (the transcript may not be on the
+/// clipboard any more if the user copied something themselves while we waited).
+/// Emitted only alongside a `paste_outcome` that already says what went wrong.
+pub const PASTE_FAILED_EVENT: &str = "paste_failed";
+
 /// Soft status for a take that produced nothing to paste — a fumbled tap or a
 /// rejected hallucination loop. Normal, not an error.
 const NO_SPEECH_MESSAGE: &str = "Didn't catch any speech — hold and speak";
@@ -881,8 +888,11 @@ fn transcribe_native(
 /// pre-YV49 "nothing to paste" exits (no speech, hallucination loop) are the
 /// same `Soft` shape, which is why the worker's `Ok(None)` became this enum.
 enum TakeOutcome {
-    /// Transcript row + paste result + release→clipboard latency.
-    Dictated(TranscriptEntry, paste::PasteOutcome, i64),
+    /// Transcript row + paste result + release→clipboard latency + whether a
+    /// ⌘V was actually attempted (YV74: only an *attempted* paste that never
+    /// produced a read receipt raises the "Copy again" toast action — a
+    /// deliberate copy-only take already left the text on the clipboard).
+    Dictated(TranscriptEntry, paste::PasteOutcome, i64, bool),
     /// A transient toast, not an error: no speech, an applied command edit, or
     /// an unrecognised command. Nothing was captured worth keeping.
     Soft(String),
@@ -1217,13 +1227,18 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // clipboard-only if the user switched apps during the ASR delay.
             // YV39 cancellation guard: a stale take (cancelled while this one
             // was transcribing) is copied but NEVER pasted.
-            let stale = state2.paste_generation.load(Ordering::SeqCst) != generation;
-            if stale {
+            let current_generation = state2.paste_generation.load(Ordering::SeqCst);
+            if current_generation != generation {
                 log::warn!(
                     "stale dictation (cancelled during transcription) — copy only, no paste"
                 );
             }
-            let want_paste = settings.auto_paste && !stale && focus::should_auto_paste();
+            let want_paste = paste::should_paste(
+                settings.auto_paste,
+                generation,
+                current_generation,
+                focus::should_auto_paste(),
+            );
             let t_paste = std::time::Instant::now();
             let outcome =
                 paste::copy_and_maybe_paste(&app2, &text, want_paste, source_app.as_deref());
@@ -1267,11 +1282,16 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             )?;
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
-            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms))
+            Ok(TakeOutcome::Dictated(
+                entry,
+                outcome,
+                pipeline_ms,
+                want_paste,
+            ))
         })();
 
         match result {
-            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms)) => {
+            Ok(TakeOutcome::Dictated(entry, outcome, pipeline_ms, attempted_paste)) => {
                 if outcome.pasted {
                     *state2.last_error.lock() = None;
                 } else if !outcome.copied {
@@ -1289,6 +1309,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     dictation::undo_ai_edit_text(&entry.text, entry.raw_text.as_deref()).is_some();
                 let _ = app2.emit("transcript", &entry);
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
+                // YV74 — we tried to paste and got no receipt. Say so with an
+                // action instead of a dead sentence: the toast offers "Copy
+                // again" for this row, so the text is one click away even when
+                // the clipboard has moved on.
+                if attempted_paste && !outcome.pasted {
+                    let _ = app2.emit(PASTE_FAILED_EVENT, &entry.id);
+                }
                 let _ = app2.emit(
                     "latency",
                     serde_json::json!({

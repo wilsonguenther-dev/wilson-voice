@@ -32,11 +32,23 @@
 //! specifics are: no auto-submit, text-only restore, and the no-receipt
 //! outcome keeps the transcript instead of restoring.
 
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// How long after the *last* observed read the transcript stays on the
 /// clipboard before we restore. Covers apps that read several times per paste.
 const QUIET_PERIOD: Duration = Duration::from_millis(200);
+
+/// YV74 — how long the caller waits for the target app to actually READ the
+/// pasteboard before the paste is reported as a failure. The restore waiter
+/// above is allowed a much longer leash (`RESTORE_TIMEOUT`) because holding the
+/// clipboard costs the user nothing; the *claim* that the text landed cannot
+/// wait that long, because the history row and the toast are written from it.
+pub const RECEIPT_WINDOW: Duration = Duration::from_millis(1500);
+
+/// How often [`PasteHandle::await_receipt`] re-checks the transaction.
+const RECEIPT_POLL: Duration = Duration::from_millis(10);
 
 /// Upper bound on how long the transcript may occupy the clipboard before we
 /// settle regardless of receipts. Long enough that a realistically loaded
@@ -144,15 +156,100 @@ pub fn evaluate(state: &TxState, now: Instant) -> WaitDecision {
     WaitDecision::KeepWaiting
 }
 
+/// YV74 — why a transaction produced no read receipt inside the window.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NoReceipt {
+    /// Cause, logged at ERROR and surfaced in the toast.
+    pub reason: String,
+    /// Someone else took the pasteboard while we waited (the user copied
+    /// something of their own). Their copy wins — the caller must NOT put the
+    /// transcript back over it, exactly as `settle` refuses to restore.
+    pub clipboard_taken: bool,
+}
+
+/// YV74 — a live paste transaction the caller can wait on.
+///
+/// The receipt machinery already existed (YV39) but only the background
+/// restore waiter ever looked at it: `publish_and_paste` returned `Ok` the
+/// instant the ⌘V chord was *posted*, so the caller recorded "Pasted into
+/// frontmost app" before anything had read the pasteboard — and the production
+/// log proved it, with successes recorded for pastes that never landed. This
+/// handle hands the same receipt to the caller so the claim can be earned.
+pub struct PasteHandle {
+    state: Arc<Mutex<TxState>>,
+}
+
+impl PasteHandle {
+    pub fn new(state: Arc<Mutex<TxState>>) -> Self {
+        Self { state }
+    }
+
+    /// Block until a post-⌘V read receipt is observed, or `window` elapses.
+    ///
+    /// `Ok(elapsed)` is the ONLY evidence that the transcript reached the
+    /// target app. Polling (rather than a condvar) keeps the AppKit side free
+    /// of Rust synchronization it would have to signal from
+    /// `provideDataForType:` on the main run loop.
+    pub fn await_receipt(&self, window: Duration) -> Result<Duration, NoReceipt> {
+        let started = Instant::now();
+        loop {
+            match self.state.lock() {
+                Ok(st) => {
+                    if st.any_receipt_after_injection() {
+                        return Ok(started.elapsed());
+                    }
+                    if st.ownership_lost {
+                        return Err(NoReceipt {
+                            reason: "the clipboard changed before the paste was read".into(),
+                            clipboard_taken: true,
+                        });
+                    }
+                }
+                Err(_) => {
+                    return Err(NoReceipt {
+                        reason: "paste transaction state was poisoned".into(),
+                        clipboard_taken: false,
+                    })
+                }
+            }
+            if started.elapsed() >= window {
+                return Err(NoReceipt {
+                    reason: format!(
+                        "no app read the clipboard within {}ms of ⌘V",
+                        window.as_millis()
+                    ),
+                    clipboard_taken: false,
+                });
+            }
+            thread::sleep(RECEIPT_POLL);
+        }
+    }
+}
+
+/// Test-only transaction stub. A real receipt arrives from an AppKit callback
+/// on a live pasteboard, which `cargo test` has no way to drive, so the honesty
+/// rule in `paste` is exercised against a hand-built transaction: `receipted`
+/// is a target that read the promise after ⌘V, otherwise the chord landed
+/// nowhere.
+#[cfg(test)]
+pub fn stub_handle(receipted: bool) -> PasteHandle {
+    let mut state = TxState::new();
+    state.injected_at = Some(Instant::now());
+    if receipted {
+        state.record_receipt(Instant::now());
+    }
+    PasteHandle::new(Arc::new(Mutex::new(state)))
+}
+
 /// Publish the transcript as a lazy pasteboard promise, inject ⌘V, and hand the
 /// guarded restore to a background waiter. Returns once the chord has been
-/// posted — the receipt handshake and restore complete asynchronously, so this
-/// adds nothing to the release→paste latency.
+/// posted, with a [`PasteHandle`] the caller waits on for the read receipt —
+/// the restore itself still completes asynchronously.
 ///
-/// `Err` means the transcript was NOT pasted; the caller re-copies it as plain
-/// text and reports the failure.
+/// `Err` means the chord never went out, so the transcript was NOT pasted; the
+/// caller re-copies it as plain text and reports the failure.
 #[cfg(target_os = "macos")]
-pub fn publish_and_paste(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
+pub fn publish_and_paste(app: &tauri::AppHandle, text: &str) -> Result<PasteHandle, String> {
     use std::sync::mpsc;
 
     // Publishing and the chord both belong on the main thread: AppKit services
@@ -166,12 +263,14 @@ pub fn publish_and_paste(app: &tauri::AppHandle, text: &str) -> Result<(), Strin
     })
     .map_err(|e| format!("schedule main-thread paste: {e}"))?;
 
-    rx.recv_timeout(Duration::from_secs(3))
-        .map_err(|_| "paste timed out waiting for main thread".to_string())?
+    let state = rx
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "paste timed out waiting for main thread".to_string())??;
+    Ok(PasteHandle::new(state))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn publish_and_paste(_app: &tauri::AppHandle, _text: &str) -> Result<(), String> {
+pub fn publish_and_paste(_app: &tauri::AppHandle, _text: &str) -> Result<PasteHandle, String> {
     Err("paste only implemented on macOS".into())
 }
 
@@ -379,8 +478,10 @@ mod mac {
         });
     }
 
-    /// Main-thread half: publish the promise, post ⌘V, arm the waiter.
-    pub fn publish_and_chord(app: &AppHandle, text: String) -> Result<(), String> {
+    /// Main-thread half: publish the promise, post ⌘V, arm the waiter. The
+    /// transaction state travels back to the caller (YV74) so it can wait for
+    /// the read receipt before claiming the paste landed.
+    pub fn publish_and_chord(app: &AppHandle, text: String) -> Result<Arc<Mutex<TxState>>, String> {
         flush_pending(app);
 
         let saved_text = app.clipboard().read_text().ok().filter(|t| !t.is_empty());
@@ -420,7 +521,7 @@ mod mac {
         }
 
         let pending = Arc::new(Mutex::new(Pending {
-            state,
+            state: state.clone(),
             saved_text,
             change_count,
             provider: Some(provider),
@@ -432,7 +533,7 @@ mod mac {
         }
         spawn_waiter(pending, app.clone());
 
-        chord
+        chord.map(|()| state)
     }
 }
 

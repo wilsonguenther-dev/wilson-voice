@@ -687,7 +687,10 @@ code {
   gap: 10px;
 }
 
-.toast-retry {
+/* YV74 — "Copy again" wears the same chip as Retry: both are the one action a
+   failure toast offers, and a second treatment would read as a second rank. */
+.toast-retry,
+.toast-copy-again {
   background: rgba(255, 154, 92, 0.18);
   border: 1px solid rgba(255, 154, 92, 0.5);
   color: #ffb98a;

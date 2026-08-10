@@ -435,6 +435,12 @@ export default function App() {
   const [failed, setFailed] = useState<FailedDictation[]>([]);
   const [retryId, setRetryId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // YV74 — the transcript of a take whose auto-paste produced no read receipt.
+  // The backend only claims "Pasted" when the target app demonstrably read the
+  // clipboard; when it didn't, the toast carries a "Copy again" action for this
+  // row, because the transcript may no longer be on the clipboard (the user can
+  // copy something themselves while we wait, and their copy is left alone).
+  const [copyAgainId, setCopyAgainId] = useState<string | null>(null);
   // YV64 — crashes Yap read back off disk at startup. Shown in Settings →
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
   // launch toast below (once per launch, never a modal).
@@ -662,7 +668,17 @@ export default function App() {
     }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<string>("paste_outcome", (e) => {
       setFlash(e.payload);
+      setCopyAgainId(null);
       setTimeout(() => setFlash(null), 2800);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV74 — the ⌘V went out but nothing read the clipboard, so the transcript
+    // never reached the app the user was typing into. It arrives right after
+    // the `paste_outcome` line that explains why, and turns that toast into an
+    // action: one click puts the text back on the clipboard.
+    listen<string>("paste_failed", (e) => {
+      const id = e.payload;
+      setCopyAgainId(id);
+      setTimeout(() => setCopyAgainId((c) => (c === id ? null : c)), 2800);
     }).then((u) => (dead ? u() : unsubs.push(u)));
     // YV33 — a failed take must be visible IN the app, not only as a macOS
     // notification the user may have muted (or never sees while Yap is focused).
@@ -1424,6 +1440,22 @@ export default function App() {
                 onClick={() => retryFailed(retryId)}
               >
                 {retrying === retryId ? "Retrying…" : "Retry"}
+              </button>
+            )}
+            {/* YV74 — the paste was not confirmed by a read receipt, so the
+                text may not have landed anywhere. Put it back on the clipboard
+                on demand rather than making the user hunt through History. */}
+            {copyAgainId && (
+              <button
+                className="toast-copy-again"
+                onClick={() => {
+                  const row = history.find((h) => h.id === copyAgainId);
+                  if (row) copyText(row.text);
+                  else toast("That transcript is in History");
+                  setCopyAgainId(null);
+                }}
+              >
+                Copy again
               </button>
             )}
           </div>
