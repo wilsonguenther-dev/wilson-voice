@@ -361,7 +361,6 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
 pub fn show_float(app: &AppHandle) -> Result<(), String> {
     ensure_float(app)?;
     park_pill(app);
-    set_shown(app, true);
 
     #[cfg(target_os = "macos")]
     {
@@ -369,6 +368,10 @@ pub fn show_float(app: &AppHandle) -> Result<(), String> {
             let _ = apply_panel_hud(app);
             panel.show();
             panel.order_front_regardless();
+            // AFTER the panel is actually up (YV81): the webview treats this
+            // event as "you are on screen now", and a pill that heard it while
+            // still ordered out would have nothing to wake for.
+            set_shown(app, true);
             return Ok(());
         }
     }
@@ -376,6 +379,7 @@ pub fn show_float(app: &AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("float") {
         let _ = w.show();
     }
+    set_shown(app, true);
     Ok(())
 }
 
