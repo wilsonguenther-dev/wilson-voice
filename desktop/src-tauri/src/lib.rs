@@ -16,6 +16,9 @@ mod db;
 pub mod dictation;
 mod float_pill;
 mod focus;
+// YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
+// "what may I delete" is testable without a filesystem — see the module docs.
+mod hygiene;
 mod latency;
 mod logging;
 mod mic_auth;
@@ -1246,6 +1249,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 }
                 .summary_line()
             );
+            // YV73: the memory/disk counterpart of the line above, one sample per
+            // take, so a session's logs show growth take by take. Detached — the
+            // take is pasted by now, but reading RSS forks `ps` and this thread
+            // still has a transcript row to write.
+            hygiene::log_snapshot_async(data_dir());
             // Store BOTH the polished text and the raw ASR transcript (YV10).
             let entry = db.insert_transcript_at(
                 text,
@@ -1475,6 +1483,36 @@ fn purge_expired_failed_takes(db: &Database) -> usize {
             log::warn!("failed-take purge skipped: {e}");
             0
         }
+    }
+}
+
+/// YV73 — one pass of the disk sweep, from the hygiene thread.
+///
+/// The YV52 retention purge runs FIRST, so the row list this reads afterwards
+/// is already free of expired takes and the sweep only ever sees true orphans.
+/// A row list that cannot be read yields `None`, which makes `hygiene::sweep`
+/// skip the recovery directory entirely rather than delete audio it cannot
+/// prove is unreachable.
+fn run_disk_sweep(db: &Database) {
+    purge_expired_failed_takes(db);
+    let keep = match db.list_failed_dictations() {
+        Ok(rows) => Some(rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>()),
+        Err(e) => {
+            log::warn!("hygiene: recovery sweep skipped, row list unreadable ({e})");
+            None
+        }
+    };
+    let outcome = hygiene::sweep(&data_dir(), keep.as_deref(), std::time::SystemTime::now());
+    if outcome.removed() > 0 {
+        log::info!(
+            "YV73 hygiene: removed {} file(s) ({:.1} MB) — downloads={} recovery={} temp={} logs={}",
+            outcome.removed(),
+            outcome.bytes as f64 / (1024.0 * 1024.0),
+            outcome.downloads,
+            outcome.recovery,
+            outcome.temp,
+            outcome.logs
+        );
     }
 }
 
@@ -2678,6 +2716,33 @@ pub fn run() {
         paste_generation: AtomicU64::new(0),
         transcription: transcription::TranscriptionManager::new(),
     });
+
+    // YV73: memory + disk hygiene, entirely off the dictation path — its own
+    // thread, nothing shared with capture, and the first sweep deliberately
+    // delayed past the startup I/O burst (stale-wav sweep, retention purge,
+    // crash ingest, ASR preload). It then ticks the memory telemetry line every
+    // ten minutes and re-sweeps the disk once a day, for as long as the app
+    // runs. Everything it touches is a file WE wrote in our own data dir.
+    {
+        let db = state.db.clone();
+        std::thread::Builder::new()
+            .name("wv-hygiene".into())
+            .spawn(move || {
+                std::thread::sleep(hygiene::STARTUP_SWEEP_DELAY);
+                run_disk_sweep(&db);
+                let mut since_sweep = Duration::ZERO;
+                loop {
+                    log::info!("{}", hygiene::collect(&data_dir()).summary_line());
+                    std::thread::sleep(hygiene::TELEMETRY_INTERVAL);
+                    since_sweep += hygiene::TELEMETRY_INTERVAL;
+                    if since_sweep >= hygiene::SWEEP_INTERVAL {
+                        since_sweep = Duration::ZERO;
+                        run_disk_sweep(&db);
+                    }
+                }
+            })
+            .ok();
+    }
 
     // YV36: fetch the Silero v4 VAD model ONCE in the background (never
     // HuggingFace — a direct URL, sha256-checked, cached under Application

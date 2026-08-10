@@ -107,6 +107,13 @@ export default function ClassicPill() {
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
+      // YV73 — the "done" flash timer is armed from inside the status listener,
+      // so it has to be disarmed with it: a pending timeout would otherwise
+      // outlive the unmount and setState into a dead component.
+      if (doneTimer.current) {
+        clearTimeout(doneTimer.current);
+        doneTimer.current = null;
+      }
     };
   }, []);
 

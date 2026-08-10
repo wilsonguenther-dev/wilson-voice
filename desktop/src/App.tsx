@@ -37,6 +37,18 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "privacy", label: "Privacy" },
 ];
 
+/**
+ * YV73 — how many rows the History view holds in memory.
+ *
+ * The initial load has always asked the backend for this many, but the live
+ * `transcript` / `transcript_error` listeners PREPENDED to the array and
+ * nothing ever trimmed it, so a long dictating session grew the app's largest
+ * retained object (every row carries both the polished text and `rawText`)
+ * one take at a time, past the window that is actually rendered. Anything the
+ * cap drops is still on disk and comes back with the next `loadHistory`.
+ */
+const HISTORY_LIMIT = 200;
+
 interface AppSettings {
   /**
    * Settings-schema marker (backend `schema_version`, YV41). The UI never sets
@@ -544,7 +556,7 @@ export default function App() {
   const loadHistory = useCallback(async (q?: string) => {
     const h = await invoke<TranscriptEntry[]>("get_history", {
       query: q || null,
-      limit: 200,
+      limit: HISTORY_LIMIT,
     });
     setHistory(h);
   }, []);
@@ -635,7 +647,12 @@ export default function App() {
       })),
     ).then((u) => (dead ? u() : unsubs.push(u)));
     listen<TranscriptEntry>("transcript", async (e) => {
-      setHistory((h) => [e.payload, ...h.filter((x) => x.id !== e.payload.id)]);
+      setHistory((h) =>
+        [e.payload, ...h.filter((x) => x.id !== e.payload.id)].slice(
+          0,
+          HISTORY_LIMIT,
+        ),
+      );
       try {
         setInsights(await invoke("get_insights"));
         setDictionary(await invoke("list_dictionary"));
@@ -817,7 +834,9 @@ export default function App() {
       });
       setFailed((f) => f.filter((x) => x.id !== id));
       setRetryId((cur) => (cur === id ? null : cur));
-      setHistory((h) => [entry, ...h.filter((x) => x.id !== entry.id)]);
+      setHistory((h) =>
+        [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
+      );
       toast(`Recovered ${entry.wordCount} words — copied to clipboard`);
       await refreshInsights();
     } catch (e) {
