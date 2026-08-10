@@ -24,6 +24,69 @@ pub struct PasteOutcome {
     pub message: String,
 }
 
+/// YV74 — what a paste attempt is ALLOWED to claim.
+///
+/// The audit found "Pasted into frontmost app" written the moment the ⌘V chord
+/// was posted, with the production log showing the same success recorded for
+/// pastes that demonstrably never landed. The receipt (YV39) existed but only
+/// the background clipboard-restore looked at it. This enum is the single place
+/// the claim is decided, and `pasted: true` is produced by exactly one arm of
+/// [`outcome_for_verdict`] — the one holding a receipt.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PasteVerdict {
+    /// A consumer read the pasteboard promise AFTER ⌘V, within the window.
+    Pasted { after_ms: u128 },
+    /// No receipt: the chord never went out, nothing read it in time, or the
+    /// user took the clipboard back mid-flight.
+    NotPasted { reason: String },
+}
+
+/// Where the transcript ended up once the verdict was known.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Recopy {
+    /// It is on the clipboard — either the publish that fed ⌘V, or the plain
+    /// text we put back after a failed paste. A manual ⌘V works.
+    Kept,
+    /// Deliberately not put back: the user copied something of their own while
+    /// we waited, and their copy wins (the same rule `paste_tx::settle`
+    /// follows). The toast's "Copy again" is how they get the transcript back.
+    UserCopyWins,
+    /// The clipboard write itself failed.
+    Failed(String),
+}
+
+/// Turn an observed verdict into the outcome that gets recorded (history row,
+/// latency line, toast). `pasted: true` lives on the receipt arm and nowhere
+/// else — that is the whole point of YV74.
+pub(crate) fn outcome_for_verdict(verdict: &PasteVerdict, recopy: Recopy) -> PasteOutcome {
+    match verdict {
+        PasteVerdict::Pasted { .. } => PasteOutcome {
+            copied: true,
+            pasted: true,
+            message: "Pasted into frontmost app".into(),
+        },
+        PasteVerdict::NotPasted { reason } => match recopy {
+            // Never lose text: the transcript is on the clipboard, so a manual
+            // ⌘V still works and the toast says so.
+            Recopy::Kept => PasteOutcome {
+                copied: true,
+                pasted: false,
+                message: format!("Paste didn't land ({reason}) — text is on your clipboard"),
+            },
+            Recopy::UserCopyWins => PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: format!("Paste didn't land ({reason}) — your own copy was left alone"),
+            },
+            Recopy::Failed(e) => PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: format!("Paste didn't land ({reason}) and the clipboard failed: {e}"),
+            },
+        },
+    }
+}
+
 /// YV21 (audit M1): decide whether it is safe to synthesize ⌘V.
 ///
 /// The transcript is auto-pasted 1–3s after key-release, inside the ASR thread.
@@ -42,6 +105,22 @@ pub fn is_same_paste_target(source_app: Option<&str>, current_app: Option<&str>)
         }
         _ => false,
     }
+}
+
+/// YV39/YV74 — may this take synthesize ⌘V at all?
+///
+/// A take whose paste generation moved on was cancelled (or interrupted) while
+/// it was still transcribing: the user has since told Yap to stop, so its text
+/// is copied and NEVER pasted, whatever auto-paste says. It lives here next to
+/// the honesty rule because "we must not paste" and "we must not claim we
+/// pasted" are the two halves of the same guarantee.
+pub fn should_paste(
+    auto_paste: bool,
+    take_generation: u64,
+    current_generation: u64,
+    focus_ok: bool,
+) -> bool {
+    auto_paste && take_generation == current_generation && focus_ok
 }
 
 /// Clipboard-only outcome: write the transcript as plain text and say why we
@@ -71,6 +150,15 @@ fn copy_only(app: &AppHandle, text: &str, message: &str) -> PasteOutcome {
 /// could restore before a busy target ever read it. On paste failure the
 /// transcript is left on the clipboard so they can ⌘V manually, and the reason
 /// is logged at ERROR (the audit found a `pasted=false` with no diagnostic).
+///
+/// YV74: that receipt now also gates what we CLAIM. Until this item, success
+/// was recorded as soon as the chord was posted — the caller never looked at
+/// the receipt, so a paste that landed nowhere still wrote "Pasted into
+/// frontmost app" into the history row, the toast and the latency line. We now
+/// block for up to `paste_tx::RECEIPT_WINDOW` (1.5s) waiting for a real
+/// post-⌘V read; only then is `pasted: true` produced. Without one the reason
+/// is logged at ERROR and the transcript goes back on the clipboard as plain
+/// text so nothing is ever lost.
 ///
 /// `source_app` is the frontmost app captured at dictation time (record start).
 /// When it is `Some`, the wrong-target guard (YV21) is enforced: we sample the
@@ -110,12 +198,8 @@ pub fn copy_and_maybe_paste(
     // prior clipboard is snapshotted inside, on the main thread, right after
     // any still-open transaction is settled — so it is the user's clipboard,
     // never a previous transcript promise.
-    match paste_tx::publish_and_paste(app, text) {
-        Ok(()) => PasteOutcome {
-            copied: true,
-            pasted: true,
-            message: "Pasted into frontmost app".into(),
-        },
+    let handle = match paste_tx::publish_and_paste(app, text) {
+        Ok(handle) => handle,
         Err(e) => {
             // The audit (yap-logs finding 3) found a pasted=false transcript
             // whose cause was unrecoverable from the log: the paste path only
@@ -125,7 +209,50 @@ pub fn copy_and_maybe_paste(
                 crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into())
             );
             // Leave the transcript on the clipboard so ⌘V still works by hand.
-            copy_only(app, text, &format!("Copied, but paste failed ({e})."))
+            return copy_only(app, text, &format!("Copied, but paste failed ({e})."));
+        }
+    };
+
+    // YV74 — the honest bit. Nothing below may report success without this.
+    match handle.await_receipt(paste_tx::RECEIPT_WINDOW) {
+        Ok(after) => {
+            log::info!(
+                "paste confirmed: clipboard read {}ms after ⌘V",
+                after.as_millis()
+            );
+            outcome_for_verdict(
+                &PasteVerdict::Pasted {
+                    after_ms: after.as_millis(),
+                },
+                Recopy::Kept,
+            )
+        }
+        Err(no_receipt) => {
+            log::error!(
+                "paste not confirmed: {} (frontmost={}, window={}ms)",
+                no_receipt.reason,
+                crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into()),
+                paste_tx::RECEIPT_WINDOW.as_millis()
+            );
+            // Never lose text. The promise on the pasteboard dies with the
+            // transaction, so put the transcript back as plain text — unless
+            // the user copied something themselves while we waited, in which
+            // case their clipboard wins and the toast's "Copy again" is how
+            // they take the transcript back.
+            let recopy = if no_receipt.clipboard_taken {
+                Recopy::UserCopyWins
+            } else {
+                match copy_text(app, text) {
+                    Ok(()) => Recopy::Kept,
+                    Err(e) => Recopy::Failed(e),
+                }
+            };
+            outcome_for_verdict(
+                &PasteVerdict::NotPasted {
+                    reason: no_receipt.reason,
+                },
+                recopy,
+            )
         }
     }
 }
@@ -317,7 +444,98 @@ pub(crate) mod cg {
 
 #[cfg(test)]
 mod tests {
-    use super::is_same_paste_target;
+    use std::time::Duration;
+
+    use super::{is_same_paste_target, outcome_for_verdict, should_paste, PasteVerdict, Recopy};
+    use crate::paste_tx;
+
+    /// YV74 — the claim is earned, not assumed. A transaction that HAS a
+    /// post-⌘V read receipt is the only input that produces `pasted: true`;
+    /// the identical call on a transaction without one does not.
+    #[test]
+    fn paste_success_only_after_receipt() {
+        let receipted = paste_tx::stub_handle(true)
+            .await_receipt(Duration::from_millis(200))
+            .expect("a stubbed post-injection receipt is observable");
+        let ok = outcome_for_verdict(
+            &PasteVerdict::Pasted {
+                after_ms: receipted.as_millis(),
+            },
+            Recopy::Kept,
+        );
+        assert!(ok.pasted, "a receipt is what makes the paste claim true");
+        assert!(ok.copied);
+        assert_eq!(ok.message, "Pasted into frontmost app");
+
+        // Same code path, no receipt → the success message is unreachable.
+        let silent = paste_tx::stub_handle(false).await_receipt(Duration::from_millis(20));
+        let reason = silent.expect_err("no receipt was recorded").reason;
+        let bad = outcome_for_verdict(&PasteVerdict::NotPasted { reason }, Recopy::Kept);
+        assert!(!bad.pasted, "no receipt must never be reported as a paste");
+        assert_ne!(bad.message, "Pasted into frontmost app");
+    }
+
+    /// The production log the audit read showed paste failures recorded as
+    /// successes with no diagnostic. A silent transaction must record
+    /// `pasted: false`, name the reason, and keep the transcript reachable.
+    #[test]
+    fn paste_no_receipt_records_false_and_keeps_clipboard() {
+        let window = Duration::from_millis(30);
+        let failure = paste_tx::stub_handle(false)
+            .await_receipt(window)
+            .expect_err("nothing read the promise");
+        assert!(
+            failure.reason.contains("no app read the clipboard"),
+            "the reason has to survive into the log/toast: {}",
+            failure.reason
+        );
+        assert!(
+            !failure.clipboard_taken,
+            "a plain timeout leaves us owning the pasteboard, so the transcript goes back on it"
+        );
+
+        let outcome = outcome_for_verdict(
+            &PasteVerdict::NotPasted {
+                reason: failure.reason.clone(),
+            },
+            Recopy::Kept,
+        );
+        assert!(!outcome.pasted);
+        assert!(outcome.copied, "never lose text: the transcript is kept");
+        assert!(outcome.message.contains("on your clipboard"));
+        assert!(outcome.message.contains(&failure.reason));
+
+        // The one case where the transcript is NOT put back is the user copying
+        // something of their own — their clipboard wins, and "Copy again" in the
+        // toast is how they take the transcript back.
+        let user_copied = outcome_for_verdict(
+            &PasteVerdict::NotPasted {
+                reason: "the clipboard changed before the paste was read".into(),
+            },
+            Recopy::UserCopyWins,
+        );
+        assert!(!user_copied.pasted);
+        assert!(!user_copied.copied);
+    }
+
+    /// A take cancelled while it was still transcribing is copy-only: the ⌘V is
+    /// never synthesized, so no receipt can exist and no success is claimable.
+    #[test]
+    fn stale_generation_never_pastes() {
+        assert!(should_paste(true, 7, 7, true), "the live take pastes");
+        assert!(
+            !should_paste(true, 7, 8, true),
+            "the user cancelled during transcription — copy only"
+        );
+        assert!(
+            !should_paste(false, 7, 7, true),
+            "auto-paste off is copy-only"
+        );
+        assert!(
+            !should_paste(true, 7, 7, false),
+            "no text target focused — copy only"
+        );
+    }
 
     #[test]
     fn same_paste_target_decision() {
