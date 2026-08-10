@@ -8,8 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  advanceLive, createLiveState, frameIntervalMs, liveTierForWords, resetLive,
-  speechThreshold, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
+  advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords, resetLive,
+  speechThreshold, AMBIENT_FRAME_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
   type ChatTone, type LiveFrame, type LivePhase,
 } from "./live";
 
@@ -221,5 +221,51 @@ describe("frame policy", () => {
   it("parks only under reduced motion with nothing live", () => {
     expect(frameIntervalMs("idle", { ...quiet, reduceMotion: true })).toBe(Infinity);
     expect(frameIntervalMs("listening", { ...quiet, reduceMotion: true })).toBeLessThan(Infinity);
+  });
+});
+
+/**
+ * YV81 — the energy half of the same policy. A pill that is on screen all day
+ * must not hold a 60Hz rAF open for a chick that is standing still.
+ */
+describe("frame policy — parking (YV81)", () => {
+  const quiet = { level: 0, busyVisuals: false, reduceMotion: false };
+
+  it("pill_parks_when_idle_and_settled", () => {
+    // Idle + settled: the rAF is parked and only the 10fps ambient tick is left.
+    const plan = framePlan("idle", { ...quiet, settled: true });
+    expect(plan.mode).toBe("ambient");
+    expect(plan.intervalMs).toBe(AMBIENT_FRAME_MS);
+    expect(plan.intervalMs).toBeGreaterThanOrEqual(100);      // ≤ 10fps, never 60
+    expect(frameIntervalMs("idle", { ...quiet, settled: true })).toBe(Infinity);
+    // Sleepy is idle's deeper cousin and parks the same way.
+    expect(framePlan("sleepy", { ...quiet, settled: true }).mode).toBe("ambient");
+
+    // Hidden (panel ordered out / page occluded): nothing is scheduled at all.
+    expect(framePlan("idle", { ...quiet, settled: true, hidden: true }).mode).toBe("parked");
+    expect(framePlan("idle", { ...quiet, hidden: true }).mode).toBe("parked");
+
+    // RECORDING NEVER PARKS — not settled, not hidden, not under reduced
+    // motion. The mouth follows the mic and the commentary is on a schedule.
+    for (const phase of ["listening", "thinking", "done"] as LivePhase[]) {
+      for (const settled of [false, true]) {
+        for (const hidden of [false, true]) {
+          for (const reduceMotion of [false, true]) {
+            const live = framePlan(phase, { ...quiet, settled, hidden, reduceMotion });
+            expect(live.mode).toBe("raf");
+            expect(Number.isFinite(live.intervalMs)).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps animating while the idle scene is still settling", () => {
+    // The capsule is still shutting / a sparkle is still in flight: frames
+    // keep coming, so nothing freezes mid-transition.
+    expect(framePlan("idle", { ...quiet, settled: false }).mode).toBe("raf");
+    expect(framePlan("idle", quiet).intervalMs).toBe(IDLE_FRAME_MS);
+    expect(framePlan("idle", { ...quiet, settled: true, busyVisuals: true }).mode).toBe("raf");
+    expect(framePlan("idle", { ...quiet, settled: true, level: 0.4 }).mode).toBe("raf");
   });
 });

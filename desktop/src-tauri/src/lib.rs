@@ -2965,6 +2965,13 @@ pub fn run() {
                 let mut since_sweep = Duration::ZERO;
                 loop {
                     log::info!("{}", hygiene::collect(&data_dir()).summary_line());
+                    // YV81: the standby line — how many recurring polls are
+                    // ticking, whether the pill is animating, and whether a
+                    // polish process is still resident — plus the idle unload
+                    // of that process. Both ride THIS tick rather than a timer
+                    // of their own, which is the point of an energy pass.
+                    polish::sweep_idle_sidecar();
+                    log::info!("{}", hygiene::collect_energy().summary_line());
                     std::thread::sleep(hygiene::TELEMETRY_INTERVAL);
                     since_sweep += hygiene::TELEMETRY_INTERVAL;
                     if since_sweep >= hygiene::SWEEP_INTERVAL {

@@ -337,6 +337,50 @@ pub fn collect(data_dir: &Path) -> MemoryReport {
     }
 }
 
+// ── Energy telemetry (YV81) ─────────────────────────────────────────────────
+
+/// What Yap is BURNING while nobody is dictating, in the same stable key=value
+/// shape as [`MemoryReport`]. An always-on app's real cost is its standby cost,
+/// and standby cost is made of exactly three things: threads that wake on a
+/// timer, an animation loop that never parks, and a model process nobody is
+/// using. This line is how a regression in any of them shows up in a log
+/// instead of in a battery estimate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EnergyReport {
+    /// Recurring polls actually ticking right now — this thread, the
+    /// Secure Input watchdog, and the pill's two watches while it is on screen.
+    /// Every one of them is documented at its interval constant.
+    pub polls: usize,
+    /// Is the always-on pill visible? The gate on its animation loop: hidden,
+    /// the canvas parks and the two pill watches stop doing main-thread work.
+    pub pill_shown: bool,
+    /// The polish sidecar: `unloaded` (no process), `starting`, `ready`,
+    /// `failed`. A `ready` on every sample of a session with one dictation in
+    /// it means the YV81 idle unload stopped working.
+    pub polish_sidecar: &'static str,
+}
+
+impl EnergyReport {
+    /// The single machine-parsable INFO line. `energy` stays the first token so
+    /// it greps the way `memory` and `latency` do.
+    pub fn summary_line(&self) -> String {
+        format!(
+            "energy polls={} pill_shown={} polish_sidecar={}",
+            self.polls, self.pill_shown, self.polish_sidecar
+        )
+    }
+}
+
+/// Sample the energy report off the live app state.
+pub fn collect_energy() -> EnergyReport {
+    EnergyReport {
+        // This hygiene thread is itself one of them (TELEMETRY_INTERVAL).
+        polls: 1 + crate::secure_input::active_polls() + crate::float_pill::active_polls(),
+        pill_shown: crate::float_pill::is_shown(),
+        polish_sidecar: crate::polish::sidecar_status().state.tag(),
+    }
+}
+
 /// Emit one telemetry line from a detached thread.
 ///
 /// Used by the dictation path: the take is already pasted by then, but reading
@@ -499,6 +543,45 @@ mod tests {
             keys,
             vec!["rss_mb", "db_size_mb", "logs_mb", "recovery_files"]
         );
+    }
+
+    /// YV81: the standby line parses like every other telemetry line, and its
+    /// keys never move — a regression is spotted by grepping a session's log,
+    /// which only works if the shape is fixed.
+    #[test]
+    fn energy_summary_line_is_stable_key_value() {
+        let report = EnergyReport {
+            polls: 3,
+            pill_shown: true,
+            polish_sidecar: "ready",
+        };
+        assert_eq!(
+            report.summary_line(),
+            "energy polls=3 pill_shown=true polish_sidecar=ready"
+        );
+        // The quiet steady state an idle Yap should settle into: the hygiene
+        // tick alone, no pill on screen, no model process resident.
+        assert_eq!(
+            EnergyReport {
+                polls: 1,
+                pill_shown: false,
+                polish_sidecar: "unloaded",
+            }
+            .summary_line(),
+            "energy polls=1 pill_shown=false polish_sidecar=unloaded"
+        );
+
+        let line = report.summary_line();
+        let mut tokens = line.split(' ');
+        assert_eq!(tokens.next(), Some("energy"));
+        let keys: Vec<&str> = tokens
+            .map(|kv| {
+                kv.split_once('=')
+                    .unwrap_or_else(|| panic!("token is not key=value: {kv}"))
+                    .0
+            })
+            .collect();
+        assert_eq!(keys, vec!["polls", "pill_shown", "polish_sidecar"]);
     }
 
     /// End-to-end against a real temp dir: the sweep removes exactly what the

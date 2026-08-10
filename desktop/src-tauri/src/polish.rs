@@ -104,6 +104,17 @@ const SIDECAR_BIN: &str = "yap-polish";
 /// saying so beats sitting in `starting` forever.
 const SIDECAR_READY_BUDGET: Duration = Duration::from_secs(10);
 
+/// YV81 — how long a warm sidecar may sit UNUSED before it is terminated.
+///
+/// The child is a resident llama.cpp process holding its whole GGUF (491 MB or
+/// 1.12 GB, plus its Metal buffers) for the rest of the session, and a machine
+/// left with Yap open all day pays that for takes that already happened. Ten
+/// minutes is past any plausible pause inside one writing session, so the cost
+/// of being wrong is one model load on the next take — the same load the first
+/// take of the session pays, and never on the dictation path (YV75: a loading
+/// child makes the take rules-only, it does not block it).
+const SIDECAR_IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
+
 /// Respawns allowed per app session after the child dies (YV75). One: a single
 /// death is usually transient (a paged-out model, a process killed under memory
 /// pressure), a second is the model or the machine, and an unbounded respawn
@@ -520,6 +531,18 @@ pub struct SidecarStatus {
     pub reason: Option<&'static str>,
 }
 
+impl SidecarState {
+    /// A stable one-word tag for the energy telemetry line (YV81). Never text.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "unloaded",
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 impl SidecarStatus {
     const fn new(state: SidecarState, reason: Option<&'static str>) -> Self {
         Self { state, reason }
@@ -529,6 +552,18 @@ impl SidecarStatus {
 /// The polish sidecar's state for `engine_status` / Diagnostics (YV75).
 pub fn sidecar_status() -> SidecarStatus {
     pool().status()
+}
+
+/// YV81 — unload a warm sidecar that nobody has used for
+/// [`SIDECAR_IDLE_UNLOAD`], returning whether a child was actually killed.
+///
+/// Called from the hygiene thread's existing ten-minute tick (`lib.rs`), so the
+/// policy costs no timer of its own — which does mean a child outlives its last
+/// use by 10–20 minutes rather than exactly 10. The next take spawns a fresh
+/// one through the ordinary YV75 path: the slot is empty and the state is
+/// `NotInstalled`, which is the same shape as "never spawned this session".
+pub fn sweep_idle_sidecar() -> bool {
+    pool().sweep_idle()
 }
 
 /// How the sidecar answered the handshake, as the reader thread saw it.
@@ -590,6 +625,9 @@ fn staged_command(model: &Path) -> Result<Command, PolishError> {
 ///   stage is `failed(ready_timeout)`.
 /// * **one restart per session.** A child that dies is respawned once; the
 ///   second death is `failed(died)` and no further process is launched.
+/// * **it does not idle forever (YV81).** A child nobody has used for
+///   [`SIDECAR_IDLE_UNLOAD`] is terminated by [`SidecarPool::sweep_idle`]; the
+///   next take respawns it through the path above, unchanged.
 struct SidecarPool {
     slot: Mutex<Option<Sidecar>>,
     /// The model the child in (or last in) the slot was launched for. Kept
@@ -601,10 +639,38 @@ struct SidecarPool {
     restarts: AtomicU64,
     launch: Launcher,
     ready_budget: Duration,
+    /// When the warm child was last asked for anything (YV81). Stamped on every
+    /// `rewrite`, which is the only way in.
+    last_used: Mutex<Instant>,
+    /// How long unused before [`sweep_idle`](Self::sweep_idle) kills the child.
+    idle_unload: Duration,
+    /// The clock the idle window is measured on — injected so
+    /// `polish_sidecar_unloads_after_idle` can jump ten minutes instead of
+    /// sleeping through them.
+    now: Clock,
 }
+
+/// The pool's clock. `Instant::now` in production; a test hands it a base
+/// instant plus an offset it controls.
+type Clock = Box<dyn Fn() -> Instant + Send + Sync>;
 
 impl SidecarPool {
     fn new(launch: Launcher, ready_budget: Duration) -> Self {
+        Self::with_clock(
+            launch,
+            ready_budget,
+            SIDECAR_IDLE_UNLOAD,
+            Box::new(Instant::now),
+        )
+    }
+
+    fn with_clock(
+        launch: Launcher,
+        ready_budget: Duration,
+        idle_unload: Duration,
+        now: Clock,
+    ) -> Self {
+        let started = now();
         Self {
             slot: Mutex::new(None),
             launched: Mutex::new(None),
@@ -612,7 +678,36 @@ impl SidecarPool {
             restarts: AtomicU64::new(0),
             launch,
             ready_budget,
+            last_used: Mutex::new(started),
+            idle_unload,
+            now,
         }
+    }
+
+    /// Terminate a warm child that has gone [`idle_unload`](Self#structfield.idle_unload)
+    /// without a take. `true` when a process was actually killed.
+    ///
+    /// Deliberately NOT a failure: the state goes back to `NotInstalled` (the
+    /// same state as "nothing spawned yet"), the restart budget is untouched,
+    /// and the next take walks the ordinary spawn path.
+    fn sweep_idle(&self) -> bool {
+        let mut held = self.slot.lock();
+        if held.is_none() {
+            return false;
+        }
+        let idle = (self.now)().saturating_duration_since(*self.last_used.lock());
+        if idle < self.idle_unload {
+            return false;
+        }
+        if let Some(child) = held.take() {
+            child.kill();
+        }
+        self.set(SidecarState::NotInstalled, None);
+        log::info!(
+            "polish sidecar unloaded after {}s unused — it reloads on the next take",
+            idle.as_secs()
+        );
+        true
     }
 
     fn status(&self) -> SidecarStatus {
@@ -645,6 +740,10 @@ impl SidecarPool {
     /// here means the same thing to the caller: keep the rules text.
     fn rewrite(&self, model: &Path, req: &PolishRequest) -> Result<String, PolishError> {
         let mut held = self.slot.lock();
+        // YV81 — the take that keeps the child warm. Stamped before any of the
+        // work below so a request that fails still counts as use: an idle
+        // unload is for a sidecar nobody is dictating at, not for a bad take.
+        *self.last_used.lock() = (self.now)();
         // A model change (Settings) invalidates the warm child — and it is a
         // deliberate act, not a failure, so the restart budget AND any sticky
         // failure start over. Keyed on the pool's own record rather than the
@@ -1434,6 +1533,61 @@ mod polish_fallback_tests {
         if let Some(child) = leftover {
             child.kill();
         }
+    }
+
+    /// YV81 — a warm sidecar is a resident process holding a GGUF; unused, it is
+    /// pure standby drain. The window is driven by an INJECTED clock, so this
+    /// test jumps ten minutes instead of sleeping through them.
+    #[test]
+    fn polish_sidecar_unloads_after_idle() {
+        let base = Instant::now();
+        let offset = Arc::new(AtomicU64::new(0));
+        let hand = Arc::clone(&offset);
+        let idle_unload = Duration::from_secs(10 * 60);
+        let pool = SidecarPool::with_clock(
+            stub(READY_STUB),
+            Duration::from_secs(10),
+            idle_unload,
+            Box::new(move || base + Duration::from_secs(hand.load(Ordering::Relaxed))),
+        );
+        let model = stub_model();
+        // A real take, answered by a warm child.
+        let answer = poll_until(|| pool.rewrite(&model, &stub_request()).ok());
+        assert_eq!(
+            answer.as_deref(),
+            Some("We shipped the build and emailed the client.")
+        );
+        assert!(pool.slot.lock().is_some(), "the child is warm");
+
+        // A minute later it is still warm: the pause between two takes in one
+        // writing session must never cost a model reload.
+        offset.store(60, Ordering::Relaxed);
+        assert!(!pool.sweep_idle());
+        assert!(pool.slot.lock().is_some());
+        assert_eq!(pool.status(), SidecarStatus::new(SidecarState::Ready, None));
+
+        // Ten minutes unused — the process goes, and the RAM with it.
+        offset.store(10 * 60, Ordering::Relaxed);
+        assert!(pool.sweep_idle(), "an idle sidecar is terminated");
+        assert!(pool.slot.lock().is_none(), "no child is left resident");
+        // NOT a failure: `NotInstalled` is the state a fresh session starts in.
+        assert_eq!(
+            pool.status(),
+            SidecarStatus::new(SidecarState::NotInstalled, None)
+        );
+        // Sweeping again is a no-op — nothing to kill, nothing to log.
+        assert!(!pool.sweep_idle());
+
+        // And the next take brings it back through the ORDINARY YV75 spawn +
+        // handshake path (this is the "verify, do not duplicate" half): the
+        // unload spent none of the restart budget.
+        let again = poll_until(|| pool.rewrite(&model, &stub_request()).ok());
+        assert_eq!(
+            again.as_deref(),
+            Some("We shipped the build and emailed the client.")
+        );
+        assert_eq!(pool.status(), SidecarStatus::new(SidecarState::Ready, None));
+        pool.slot.lock().take().expect("a warm child").kill();
     }
 
     // --- The signature, on the far side of the model (YV62, R13) ----------
