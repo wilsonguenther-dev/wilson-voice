@@ -21,6 +21,12 @@
 //! `--transcribe-file` CLI; YV34 deleted the Python sidecar, so this is now the
 //! ONLY transcriber in the app. A few lifecycle helpers are still driven by the
 //! model-management commands alone.
+//!
+//! YV80 made the FIRST load lazy (nothing is resident until a take arms it), so
+//! two callers now race for that one load — the take's arm and the transcribe
+//! that follows it. [`load`](TranscriptionManager::load) serialises them behind
+//! `load_gate`, so the second caller waits for the first instead of building a
+//! second copy of the same model.
 #![allow(dead_code)]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -96,7 +102,10 @@ pub struct AsrOutput {
     pub backend: String,
     pub seconds: f64,
     /// YV40 latency span: model load into the warm engine, in ms — `0` whenever
-    /// the model was already resident (the warm path).
+    /// the model was already resident (the warm path). Since YV80 made the load
+    /// lazy this is where the one-time first-take penalty shows up: what the
+    /// take actually WAITED for, i.e. whatever was left of the load the arm
+    /// started when the user released their key.
     pub load_ms: i64,
     /// YV40 latency span: the decode itself, in ms (excludes the load above).
     pub decode_ms: i64,
@@ -169,6 +178,13 @@ struct Inner {
     /// YV70 — cancel hook of the transcription currently in flight, if that
     /// engine has one. Kept here because the engine itself is leased out.
     in_flight_cancel: Mutex<Option<CancelHandle>>,
+    /// YV80 — ONE load at a time. The first take now arms the engine at press
+    /// time and the transcribe that follows calls `load` again; the slot is
+    /// still empty while the first load runs, so without this the second caller
+    /// would start a SECOND multi-hundred-MB load of the same model. Held across
+    /// the whole load on purpose: the second caller waits for the first, then
+    /// finds the engine resident and returns.
+    load_gate: Mutex<()>,
     /// Set while a load is building an engine — claimed and cleared around the
     /// device's whole lifetime in `load` (it stays set until the engine is in
     /// the slot or dropped), so the exit drain can wait on it like a lease.
@@ -214,6 +230,7 @@ impl TranscriptionManager {
                 leases: AtomicU64::new(0),
                 exiting: AtomicBool::new(false),
                 in_flight_cancel: Mutex::new(None),
+                load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
@@ -371,9 +388,20 @@ impl TranscriptionManager {
         self.inner.leases.load(Ordering::Acquire) != 0 || self.inner.loading.load(Ordering::Acquire)
     }
 
+    /// True while a load is building an engine right now. Read straight off the
+    /// atomic (no slot lock), because YV80 asks it on every status emit so the
+    /// UI can say "Preparing your speech engine…" instead of nothing.
+    pub fn is_loading(&self) -> bool {
+        self.inner.loading.load(Ordering::Acquire)
+    }
+
     /// Blocking load — this is the multi-second call, so run it off the main
     /// thread (see [`load_async`](Self::load_async)). A model already loaded
     /// under the same id is kept as-is.
+    ///
+    /// Idempotent AND coalesced (YV80): concurrent calls for the same model
+    /// produce exactly ONE load — the losers block on `load_gate` and return
+    /// once the winner's engine is in the slot.
     pub fn load(&self, model_id: &str, model_path: &Path) -> Result<(), String> {
         // YV70: never make a new Metal device after the exit drain has run —
         // that would put back exactly what the drain freed.
@@ -389,6 +417,15 @@ impl TranscriptionManager {
                 "model '{model_id}' is not downloaded ({} missing)",
                 model_path.display()
             ));
+        }
+        // YV80: from here on exactly one thread is loading. Everything above is
+        // a cheap read, so the warm path never touches this gate.
+        let _gate = self.inner.load_gate.lock();
+        // Whoever held the gate before us may have loaded the very model we
+        // came for — the arm-then-transcribe pair of a first dictation.
+        if self.loaded_model().as_deref() == Some(model_id) {
+            self.touch();
+            return Ok(());
         }
         // YV70: claim `loading` under the slot lock, re-checking `exiting` while
         // holding it. The drain sets `exiting` before it reads the same state
@@ -651,6 +688,22 @@ mod tests {
         })
     }
 
+    /// A stub loader that counts how many times it actually built an engine —
+    /// the only way to see YV80's "load once, then stay warm" from outside.
+    fn counting_loader(loads: Arc<AtomicU64>, load_time: Duration) -> EngineLoader {
+        Arc::new(move |_path: &Path| {
+            std::thread::sleep(load_time);
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(StubEngine {
+                text: "lazy".to_string(),
+                delay: Duration::ZERO,
+                panics: false,
+                seen_language: Arc::new(Mutex::new(None)),
+                seen_prompt: Arc::new(Mutex::new(None)),
+            }) as Box<dyn Transcriber>)
+        })
+    }
+
     /// A loader that takes its time, like the real multi-second GGUF load — the
     /// seam the YV70 drain-vs-load tests need to catch a load in flight.
     fn slow_loader(load_time: Duration) -> EngineLoader {
@@ -895,6 +948,71 @@ mod tests {
             "the load stored a live engine into the slot the drain had freed"
         );
         assert!(m.loaded_model().is_none());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// YV80: with the startup preload gone, the FIRST take is what brings the
+    /// engine up — and only the first. Two sequential takes, each doing exactly
+    /// what `transcribe_native` does (idempotent `load`, then `transcribe`),
+    /// must cost ONE load and leave the engine warm in between.
+    #[test]
+    fn first_transcribe_triggers_load_once() {
+        let path = stub_model_file("stub.gguf");
+        let loads = Arc::new(AtomicU64::new(0));
+        let m = manager(
+            counting_loader(loads.clone(), Duration::ZERO),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+
+        // Lazy: nothing is resident until a take asks for it.
+        assert!(!m.is_loaded());
+        assert_eq!(loads.load(Ordering::SeqCst), 0, "nothing may load up front");
+
+        for take in 1..=2 {
+            m.load("stub/model", &path).expect("load");
+            assert_eq!(m.transcribe(vec![0.1; 16], None, None).unwrap(), "lazy");
+            assert!(m.is_loaded(), "take {take} must leave the engine warm");
+        }
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "the second take must reuse the warm engine, not reload it"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// YV80: the arm-time load and the transcribe-time load of the SAME first
+    /// take overlap by construction (the arm runs while the user is still
+    /// talking). Both call `load`; only one engine may be built, or a lazy Yap
+    /// would briefly hold two copies of the model — worse than the eager path
+    /// it replaced.
+    #[test]
+    fn a_concurrent_arm_and_take_load_build_one_engine() {
+        let path = stub_model_file("stub.gguf");
+        let loads = Arc::new(AtomicU64::new(0));
+        let m = manager(
+            counting_loader(loads.clone(), Duration::from_millis(150)),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+
+        let arm = {
+            let m = m.clone();
+            let path = path.clone();
+            std::thread::spawn(move || m.load("stub/model", &path))
+        };
+        // Let the arm get inside the loader, then do what the take does.
+        std::thread::sleep(Duration::from_millis(20));
+        m.load("stub/model", &path).expect("take load");
+        arm.join().expect("arm thread").expect("arm load");
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "the take's load must wait for the arm's, not start a second one"
+        );
+        assert_eq!(m.transcribe(vec![0.1; 16], None, None).unwrap(), "lazy");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
