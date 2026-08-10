@@ -240,6 +240,49 @@ interface CrashEvent {
 }
 
 /**
+ * YV75 — the `yap-polish` sidecar's lifecycle, as the backend reports it
+ * (`polish::SidecarStatus`). High cleanup runs a SECOND process, and until it
+ * has finished loading its model a take is rules-only — this is what lets
+ * Diagnostics say so instead of the stage looking like it silently did nothing.
+ */
+interface SidecarStatus {
+  state: "not-installed" | "starting" | "ready" | "failed";
+  /** Short tag on a failure (`spawn_failed`, `ready_timeout`, `died`, …). */
+  reason: string | null;
+}
+
+/** Warm-engine snapshot (backend `transcription::EngineStatus`). */
+interface EngineStatus {
+  loaded: boolean;
+  loading: boolean;
+  transcribing: boolean;
+  modelId: string | null;
+  idleSeconds: number;
+  idleUnloadSeconds: number;
+  polishSidecar: SidecarStatus;
+}
+
+/**
+ * The sidecar state in the user's words. The reason tag is a short machine
+ * string (never anything dictated), shown only on a failure so support can read
+ * it back off a screenshot.
+ */
+function polishSidecarLabel(s: SidecarStatus | undefined): string {
+  switch (s?.state) {
+    case "ready":
+      return "Ready — High cleanup is rewriting your takes.";
+    case "starting":
+      return "Starting — loading its model. Takes stay rules-only until it is ready.";
+    case "failed":
+      return `Stopped (${s.reason ?? "unknown"}) — takes stay rules-only for the rest of this session.`;
+    case "not-installed":
+      return "Not running — High cleanup is using the rules stage only.";
+    default:
+      return "Checking…";
+  }
+}
+
+/**
  * YV51 — the raw take to re-paste for "Undo AI edit", or null when there is no
  * AI edit to undo (no stored raw, a blank raw, or a raw that matches what was
  * pasted). Mirrors `dictation::undo_ai_edit_text` in the Rust pipeline — same
@@ -445,6 +488,9 @@ export default function App() {
   // Privacy & Diagnostics → Stability; an UNacknowledged one raises the single
   // launch toast below (once per launch, never a modal).
   const [crashes, setCrashes] = useState<CrashEvent[]>([]);
+  // YV75 — the engine snapshot behind Privacy & Diagnostics, read when that tab
+  // is opened (no timer: the answer is only interesting while it is on screen).
+  const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dailySeries, setDailySeries] = useState<DayCount[]>([]);
   const [monthlySeries, setMonthlySeries] = useState<DayCount[]>([]);
@@ -632,6 +678,20 @@ export default function App() {
       }));
     }
   }, [loadHistory, refreshPerms]);
+
+  // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
+  // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is
+  // usually warm by now, so the answer is read at the moment it is asked for.
+  useEffect(() => {
+    if (nav !== "settings" || settingsTab !== "privacy") return;
+    let dead = false;
+    invoke<EngineStatus>("engine_status")
+      .then((e) => !dead && setEngine(e))
+      .catch(() => !dead && setEngine(null));
+    return () => {
+      dead = true;
+    };
+  }, [nav, settingsTab]);
 
   useEffect(() => {
     refreshAll();
@@ -3224,6 +3284,23 @@ export default function App() {
                     </button>
                     <button onClick={replayOnboarding}>Replay onboarding</button>
                   </div>
+
+                  {/* ── YV75 Engine — what is actually running right now ──
+                      High cleanup hands the take to a second process
+                      (`yap-polish`), and that process needs seconds to load
+                      its model. Until it says it is ready Yap keeps the
+                      rules-formatted text instead of waiting on it, so without
+                      this line a cold or crashed sidecar looks exactly like a
+                      polish stage that quietly did nothing. */}
+                  <h2 className="settings-section">
+                    Engine
+                    <span className="sub">
+                      The models running on this Mac. Nothing here leaves it.
+                    </span>
+                  </h2>
+                  <p className="tiny">
+                    AI polish sidecar: {polishSidecarLabel(engine?.polishSidecar)}
+                  </p>
 
                   {/* ── YV64 Stability — the crashes Yap read back off disk ──
                       macOS writes a .ips report when a process dies, and the

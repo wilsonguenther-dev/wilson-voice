@@ -22,6 +22,15 @@
 //! deadline, one that panics, one that returns garbage, and assert the pipeline
 //! output is byte-identical to the rules output in every case.
 //!
+//! YV75 added the second seam, one layer down: [`SidecarPool`] owns the warm
+//! child, the readiness handshake and the restart budget, and takes its
+//! `Command` from a launcher — so the tests drive the real state machine
+//! against a stub PROCESS, with no model on disk. The handshake is the fix for
+//! a stage that could never start: the sidecar's readiness line used to go to a
+//! stderr the parent nulled, so a cold child (seconds of GGUF page-in) was
+//! indistinguishable from a wedged one and every take inside that window burned
+//! its whole deadline waiting for an answer that could not come.
+//!
 //! R5 (lead casing from the caret context) is NOT re-applied here on purpose:
 //! `lib.rs` runs `dictation::join_with_context` AFTER `run_cleanup`, so the
 //! context's casing decision lands after the model and the model cannot override
@@ -33,15 +42,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use serde::Serialize;
 
 use crate::dictation::{self, DictationMode, Style};
 use crate::models;
-use crate::polish_protocol::{max_out_for, parse_response_for, PolishRequest};
+use crate::polish_protocol::{max_out_for, parse_ready, parse_response_for, PolishRequest};
 
 /// Hard deadline for one polish pass (§2.3). Past it the answer is dropped and
 /// the rules text is what gets pasted.
@@ -81,6 +92,28 @@ const ASSISTANT_PREAMBLES: &[&str] = &["sure,", "here is", "here's the", "i've "
 /// and a workspace `cargo build` puts it in the same directory in dev.
 const SIDECAR_BIN: &str = "yap-polish";
 
+/// How long a freshly spawned sidecar may take to announce readiness (YV75)
+/// before it is declared failed.
+///
+/// This is a CEILING ON LATENESS, not a wait anybody pays: no dictation ever
+/// blocks on it (see [`SidecarPool::rewrite`]). The number is derived rather
+/// than guessed — the catalog's two polish GGUFs are 1.12 GB (1.5B) and 491 MB
+/// (0.5B), and a cold start pays a full page-in of that file plus the Metal
+/// upload before it can answer anything. 10s covers the large model on a cold
+/// page cache with headroom; past it the child is not loading, it is stuck, and
+/// saying so beats sitting in `starting` forever.
+const SIDECAR_READY_BUDGET: Duration = Duration::from_secs(10);
+
+/// Respawns allowed per app session after the child dies (YV75). One: a single
+/// death is usually transient (a paged-out model, a process killed under memory
+/// pressure), a second is the model or the machine, and an unbounded respawn
+/// would pay a process launch on every dictation forever.
+const MAX_SIDECAR_RESTARTS: u64 = 1;
+
+/// Cap on one logged stderr line from the child. Its stderr is diagnostics, not
+/// text — but a runaway child must not be able to flood the rotating log.
+const STDERR_LOG_CHARS: usize = 300;
+
 /// Rejected rewrites since launch — `polish_rejected_total` (§2.5). A COUNT, and
 /// the reason tag on the log line; neither string is ever logged.
 static POLISH_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -89,9 +122,13 @@ static POLISH_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// the parent already gave up on and is discarded (`parse_response_for`).
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-/// The warm sidecar, held for the app's lifetime and re-spawned after any
-/// failure. `None` until the first request with a model installed.
-static SIDECAR: Mutex<Option<Sidecar>> = Mutex::new(None);
+/// The warm sidecar and its lifecycle, held for the app's lifetime. Built on
+/// first use so the production launcher can be swapped for a stub process in
+/// the tests (see [`SidecarPool`]).
+fn pool() -> &'static SidecarPool {
+    static POOL: OnceLock<SidecarPool> = OnceLock::new();
+    POOL.get_or_init(|| SidecarPool::new(Box::new(staged_command), SIDECAR_READY_BUDGET))
+}
 
 /// Why a rewrite did not arrive. Every variant means the same thing to the
 /// caller — keep the rules text — but they are distinguished so the reason tag
@@ -455,30 +492,212 @@ pub fn installed_model_id() -> Option<String> {
         .map(|m| m.id.clone())
 }
 
-/// The real client: the bundled `yap-polish` process, spawned on first use and
-/// held warm (§2.3 — the model load is off the dictation path). Any failure
-/// kills the child; the next take spawns a fresh one.
-pub struct SidecarClient {
-    model: PathBuf,
+/// The sidecar's lifecycle, as Diagnostics reports it (YV75).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SidecarState {
+    /// No sidecar process is running: the stage is off, no polish model is
+    /// installed, the binary was never staged next to the app, or the child was
+    /// killed and the next take will spawn a fresh one.
+    NotInstalled,
+    /// Spawned, model still loading — inside the readiness budget. Takes in
+    /// this window are rules-only.
+    Starting,
+    /// The readiness line arrived with the model resident; requests are served.
+    Ready,
+    /// Given up on for this app session, with a reason.
+    Failed,
 }
 
-impl SidecarClient {
-    pub fn new(model: PathBuf) -> Self {
-        Self { model }
+/// The sidecar state plus why, for `engine_status` (YV75).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarStatus {
+    pub state: SidecarState,
+    /// A short tag — `no_binary`, `spawn_failed`, `ready_timeout`,
+    /// `not_loaded`, `died`. NEVER text: nothing dictated can reach the UI or
+    /// the log through this field.
+    pub reason: Option<&'static str>,
+}
+
+impl SidecarStatus {
+    const fn new(state: SidecarState, reason: Option<&'static str>) -> Self {
+        Self { state, reason }
     }
 }
 
-impl PolishClient for SidecarClient {
-    fn rewrite(&self, req: &PolishRequest) -> Result<String, PolishError> {
-        let mut held = SIDECAR.lock();
-        // A model change (Settings) invalidates the warm child.
-        if held.as_ref().is_some_and(|s| s.model != self.model) {
-            held.take().expect("checked as_ref above").kill();
+/// The polish sidecar's state for `engine_status` / Diagnostics (YV75).
+pub fn sidecar_status() -> SidecarStatus {
+    pool().status()
+}
+
+/// How the sidecar answered the handshake, as the reader thread saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    /// No readiness line yet — still loading, or wedged.
+    Cold,
+    /// Ready, with the model resident.
+    Ready,
+    /// Up, but explicitly WITHOUT a model. That is a failure, not readiness:
+    /// this child can never rewrite anything.
+    NoModel,
+}
+
+impl Readiness {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Ready,
+            2 => Self::NoModel,
+            _ => Self::Cold,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Cold => 0,
+            Self::Ready => 1,
+            Self::NoModel => 2,
+        }
+    }
+}
+
+/// How a sidecar process is started. Production builds the staged binary's
+/// command; the tests build a stub process, so the whole state machine —
+/// handshake, no-op while cold, one restart then failed — is exercised with
+/// zero model bytes on disk.
+type Launcher = Box<dyn Fn(&Path) -> Result<Command, PolishError> + Send + Sync>;
+
+/// The production launcher: the staged `yap-polish` next to the app executable.
+fn staged_command(model: &Path) -> Result<Command, PolishError> {
+    let mut command = Command::new(sidecar_binary().ok_or(PolishError::Unavailable)?);
+    command.arg("--model").arg(model);
+    Ok(command)
+}
+
+/// The warm sidecar slot and the policy around it (YV75).
+///
+/// The policy is the whole point of this type, and all of it is fail-open
+/// toward the rules text:
+///
+/// * **the handshake is never waited on from the dictation path.** A child that
+///   has not announced readiness makes THIS take a no-op — the rules-formatted
+///   text passes straight through — and the take costs a channel-free bool read
+///   rather than a deadline. Before YV75 the readiness line went to a stderr the
+///   parent nulled, so a cold sidecar was indistinguishable from a wedged one
+///   and every take inside the load window burned its deadline for nothing.
+/// * **the budget bounds lateness, not the take.** Past
+///   [`SIDECAR_READY_BUDGET`] from spawn, a still-silent child is killed and the
+///   stage is `failed(ready_timeout)`.
+/// * **one restart per session.** A child that dies is respawned once; the
+///   second death is `failed(died)` and no further process is launched.
+struct SidecarPool {
+    slot: Mutex<Option<Sidecar>>,
+    /// The model the child in (or last in) the slot was launched for. Kept
+    /// after that child is gone, so a deliberate model change can clear a
+    /// sticky failure the OLD model earned.
+    launched: Mutex<Option<PathBuf>>,
+    status: Mutex<SidecarStatus>,
+    /// Respawns spent this session — bounded by [`MAX_SIDECAR_RESTARTS`].
+    restarts: AtomicU64,
+    launch: Launcher,
+    ready_budget: Duration,
+}
+
+impl SidecarPool {
+    fn new(launch: Launcher, ready_budget: Duration) -> Self {
+        Self {
+            slot: Mutex::new(None),
+            launched: Mutex::new(None),
+            status: Mutex::new(SidecarStatus::new(SidecarState::NotInstalled, None)),
+            restarts: AtomicU64::new(0),
+            launch,
+            ready_budget,
+        }
+    }
+
+    fn status(&self) -> SidecarStatus {
+        *self.status.lock()
+    }
+
+    fn set(&self, state: SidecarState, reason: Option<&'static str>) {
+        *self.status.lock() = SidecarStatus::new(state, reason);
+    }
+
+    /// Give up on the sidecar for the rest of this app session.
+    fn fail(&self, reason: &'static str) {
+        log::warn!("polish sidecar failed: {reason}");
+        self.set(SidecarState::Failed, Some(reason));
+    }
+
+    /// The child is gone. One respawn is allowed per session; past that the
+    /// stage is failed with a reason instead of relaunching a process that
+    /// keeps dying.
+    fn died(&self) {
+        if self.restarts.fetch_add(1, Ordering::Relaxed) >= MAX_SIDECAR_RESTARTS {
+            self.fail("died");
+        } else {
+            log::warn!("polish sidecar died — one restart left this session");
+            self.set(SidecarState::NotInstalled, None);
+        }
+    }
+
+    /// One rewrite against the warm child, spawning it if needed. Every `Err`
+    /// here means the same thing to the caller: keep the rules text.
+    fn rewrite(&self, model: &Path, req: &PolishRequest) -> Result<String, PolishError> {
+        let mut held = self.slot.lock();
+        // A model change (Settings) invalidates the warm child — and it is a
+        // deliberate act, not a failure, so the restart budget AND any sticky
+        // failure start over. Keyed on the pool's own record rather than the
+        // slot, so picking a new model also revives a stage that gave up on the
+        // old one.
+        if self.launched.lock().as_deref() != Some(model) {
+            if let Some(stale) = held.take() {
+                stale.kill();
+            }
+            *self.launched.lock() = Some(model.to_path_buf());
+            self.restarts.store(0, Ordering::Relaxed);
+            self.set(SidecarState::NotInstalled, None);
         }
         if held.is_none() {
-            *held = Some(Sidecar::spawn(&self.model)?);
+            // Failure is sticky: past the restart budget we stop paying a
+            // process launch per dictation and stay honestly failed.
+            if self.status().state == SidecarState::Failed {
+                return Err(PolishError::Unavailable);
+            }
+            match Sidecar::spawn(self.launch.as_ref(), model) {
+                Ok(fresh) => {
+                    log::info!("polish sidecar starting");
+                    self.set(SidecarState::Starting, None);
+                    *held = Some(fresh);
+                }
+                Err(e) => {
+                    self.fail("spawn_failed");
+                    return Err(e);
+                }
+            }
         }
         let sidecar = held.as_mut().expect("spawned above");
+        match sidecar.readiness() {
+            Readiness::Ready => self.set(SidecarState::Ready, None),
+            Readiness::NoModel => {
+                held.take().expect("borrowed above").kill();
+                self.fail("not_loaded");
+                return Err(PolishError::Unavailable);
+            }
+            // THE no-op that replaces the livelock: no wait, no deadline, no
+            // lost text — the rules output is what pastes for this take.
+            Readiness::Cold => {
+                let overdue = sidecar.started.elapsed() > self.ready_budget;
+                if overdue {
+                    held.take().expect("borrowed above").kill();
+                    self.fail("ready_timeout");
+                } else {
+                    log::info!("polish skipped: sidecar is still loading its model");
+                    self.set(SidecarState::Starting, None);
+                }
+                return Err(PolishError::Unavailable);
+            }
+        }
         match sidecar.exchange(req) {
             Ok(text) => Ok(text),
             Err(e) => {
@@ -488,52 +707,136 @@ impl PolishClient for SidecarClient {
                 if let Some(dead) = held.take() {
                     dead.kill();
                 }
+                // Only a child that is GONE counts against the restart budget —
+                // a late or refused answer is the protocol working as designed.
+                if e == PolishError::Unavailable {
+                    self.died();
+                } else {
+                    self.set(SidecarState::NotInstalled, None);
+                }
                 Err(e)
             }
         }
     }
 }
 
-/// One warm sidecar process plus the reader thread that turns its stdout into
-/// lines the parent can wait on with a timeout.
-struct Sidecar {
+/// The real client: the bundled `yap-polish` process, spawned on first use and
+/// held warm (§2.3 — the model load is off the dictation path). Any failure
+/// kills the child; the next take spawns a fresh one, subject to the pool's
+/// restart budget.
+pub struct SidecarClient<'a> {
     model: PathBuf,
+    pool: &'a SidecarPool,
+}
+
+impl SidecarClient<'static> {
+    pub fn new(model: PathBuf) -> Self {
+        Self {
+            model,
+            pool: pool(),
+        }
+    }
+}
+
+impl<'a> SidecarClient<'a> {
+    /// A client over a caller-owned pool — how the tests drive the real state
+    /// machine against a stub process instead of the app-wide sidecar.
+    #[cfg(test)]
+    fn over(pool: &'a SidecarPool, model: PathBuf) -> Self {
+        Self { model, pool }
+    }
+}
+
+impl PolishClient for SidecarClient<'_> {
+    fn rewrite(&self, req: &PolishRequest) -> Result<String, PolishError> {
+        self.pool.rewrite(&self.model, req)
+    }
+}
+
+/// One warm sidecar process plus the reader threads that turn its stdout into
+/// lines the parent can wait on with a timeout, and its stderr into log records.
+struct Sidecar {
     child: Child,
     stdin: ChildStdin,
     lines: Receiver<String>,
+    /// The handshake, as the stdout reader saw it (YV75).
+    ready: Arc<AtomicU8>,
+    /// When this process was launched — the clock the readiness budget runs on.
+    started: Instant,
 }
 
 impl Sidecar {
-    fn spawn(model: &Path) -> Result<Self, PolishError> {
-        let binary = sidecar_binary().ok_or(PolishError::Unavailable)?;
-        let mut child = Command::new(binary)
-            .arg("--model")
-            .arg(model)
+    fn spawn(
+        launch: &(dyn Fn(&Path) -> Result<Command, PolishError> + Send + Sync),
+        model: &Path,
+    ) -> Result<Self, PolishError> {
+        let mut child = launch(model)?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // The child's diagnostics are its own; stdout is the protocol.
-            .stderr(Stdio::null())
+            // YV75: this stream used to be discarded outright, which is also
+            // where the child's readiness line went before the handshake moved
+            // onto stdout. Piped and drained below — and it MUST be drained: a
+            // stderr nobody reads eventually fills its pipe and blocks the
+            // child mid-write.
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| PolishError::Unavailable)?;
         let stdin = child.stdin.take().ok_or(PolishError::Unavailable)?;
         let stdout = child.stdout.take().ok_or(PolishError::Unavailable)?;
+        let stderr = child.stderr.take().ok_or(PolishError::Unavailable)?;
         let (tx, lines) = mpsc::channel();
+        let ready = Arc::new(AtomicU8::new(Readiness::Cold.as_u8()));
+        let handshake = Arc::clone(&ready);
         // Reading a pipe cannot be given a timeout, so the read lives in a
         // thread and the parent waits on the channel instead. The thread ends
         // when the child's stdout closes.
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                // The handshake rides the SAME stream as the responses — that
+                // is what makes it a protocol message rather than a log line.
+                if let Some(hello) = parse_ready(&line) {
+                    log::info!(
+                        "polish sidecar ready: version={} model_loaded={}",
+                        hello.version,
+                        hello.model_loaded
+                    );
+                    let state = if hello.model_loaded {
+                        Readiness::Ready
+                    } else {
+                        Readiness::NoModel
+                    };
+                    handshake.store(state.as_u8(), Ordering::Release);
+                    continue;
+                }
                 if tx.send(line).is_err() {
                     break;
                 }
             }
         });
+        // The child's diagnostics, into our rotating log at DEBUG. They are
+        // diagnostics only — the sidecar never writes dictated text to stderr —
+        // and each line is capped so a runaway child cannot flood the log.
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                log::debug!(
+                    "yap-polish: {}",
+                    line.chars().take(STDERR_LOG_CHARS).collect::<String>()
+                );
+            }
+        });
         Ok(Self {
-            model: model.to_path_buf(),
             child,
             stdin,
             lines,
+            ready,
+            started: Instant::now(),
         })
+    }
+
+    /// The handshake so far. A plain atomic read: the dictation path asks this
+    /// question on every take and must never block on the answer.
+    fn readiness(&self) -> Readiness {
+        Readiness::from_u8(self.ready.load(Ordering::Acquire))
     }
 
     /// One request, one answer, inside `deadline_ms`.
@@ -962,6 +1265,175 @@ mod polish_fallback_tests {
         let before = rejected_total();
         assert_eq!(validate_polish("we shipped the build today", ""), None);
         assert!(rejected_total() > before);
+    }
+
+    // --- The readiness handshake (YV75) -----------------------------------
+
+    /// A stub sidecar: `/bin/sh` running `script`. The pool cannot tell it from
+    /// the real binary — it only ever sees a `Command`, a stdin and a stdout —
+    /// so the handshake, the cold no-op and the restart budget are all proven
+    /// with no GGUF, no llama.cpp and no staged binary.
+    fn stub(script: &'static str) -> Launcher {
+        Box::new(move |_model: &Path| {
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(script);
+            Ok(command)
+        })
+    }
+
+    /// The same, counting launches — how "one restart, then failed" is proven.
+    fn counted_stub(script: &'static str, launches: Arc<AtomicUsize>) -> Launcher {
+        Box::new(move |_model: &Path| {
+            launches.fetch_add(1, Ordering::Relaxed);
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(script);
+            Ok(command)
+        })
+    }
+
+    /// Announces readiness, then answers every request as id 7.
+    const READY_STUB: &str = concat!(
+        r#"printf '{"type":"ready","version":"stub","model_loaded":true}\n'"#,
+        "\n",
+        "while read -r line; do\n",
+        r#"  printf '{"id":7,"ok":true,"text":"We shipped the build and emailed the client."}\n'"#,
+        "\ndone\n"
+    );
+
+    /// Never announces anything and never exits — a model still loading.
+    const COLD_STUB: &str = "sleep 5\n";
+
+    /// Announces readiness and immediately dies, so the request that follows
+    /// finds a process that is gone.
+    const DYING_STUB: &str = r#"printf '{"type":"ready","version":"stub","model_loaded":true}\n'"#;
+
+    /// A path that does not exist: the stubs ignore `--model`, and a real file
+    /// would only prove the test is reading from disk when it must not.
+    fn stub_model() -> PathBuf {
+        PathBuf::from("/nonexistent/polish-model.gguf")
+    }
+
+    /// The request the stubs answer, with the id they hard-code.
+    fn stub_request() -> PolishRequest {
+        PolishRequest {
+            id: 7,
+            mode: "notes".to_string(),
+            style: "default".to_string(),
+            max_out: max_out_for(RAW),
+            deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
+            text: RAW.to_string(),
+            topic: None,
+        }
+    }
+
+    /// Poll `f` until it answers, then give up. A test waits for a handshake
+    /// that crosses a process boundary; it must never HANG waiting for one.
+    fn poll_until<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(answered) = f() {
+                return Some(answered);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[test]
+    fn polish_ready_handshake_roundtrip() {
+        let pool = SidecarPool::new(stub(READY_STUB), Duration::from_secs(10));
+        let model = stub_model();
+        // Nothing asked for yet, so nothing is running.
+        assert_eq!(
+            pool.status(),
+            SidecarStatus::new(SidecarState::NotInstalled, None)
+        );
+        // The first take spawns the child, finds it cold, and SAYS so rather
+        // than waiting on a pipe that cannot answer yet.
+        assert_eq!(
+            pool.rewrite(&model, &stub_request()),
+            Err(PolishError::Unavailable)
+        );
+        assert_eq!(
+            pool.status(),
+            SidecarStatus::new(SidecarState::Starting, None)
+        );
+        // Then the readiness line lands on stdout — the same stream the
+        // responses ride — and requests are served.
+        let answer = poll_until(|| pool.rewrite(&model, &stub_request()).ok());
+        assert_eq!(
+            answer.as_deref(),
+            Some("We shipped the build and emailed the client.")
+        );
+        assert_eq!(pool.status(), SidecarStatus::new(SidecarState::Ready, None));
+        pool.slot.lock().take().expect("a warm child").kill();
+    }
+
+    #[test]
+    fn polish_not_ready_passes_rules_text_through_immediately() {
+        let pool = SidecarPool::new(stub(COLD_STUB), Duration::from_secs(10));
+        let client = SidecarClient::over(&pool, stub_model());
+        let started = Instant::now();
+        let out = polished(RAW, DictationMode::Notes, &on(), &client);
+        let took = started.elapsed();
+        // Byte for byte the rules output: a loading model never blocks a take
+        // and never loses one.
+        assert_eq!(out, rules_text(RAW, DictationMode::Notes));
+        // And nothing was waited out — not the readiness budget, not even the
+        // per-take deadline. This is the assertion the livelock would fail.
+        assert!(
+            took < Duration::from_millis(500),
+            "a cold sidecar cost the take {took:?}"
+        );
+        assert_eq!(
+            pool.status(),
+            SidecarStatus::new(SidecarState::Starting, None)
+        );
+        pool.slot.lock().take().expect("a spawned child").kill();
+    }
+
+    #[test]
+    fn polish_dead_sidecar_restarts_once_then_fails_closed() {
+        let launches = Arc::new(AtomicUsize::new(0));
+        let pool = SidecarPool::new(
+            counted_stub(DYING_STUB, Arc::clone(&launches)),
+            Duration::from_secs(10),
+        );
+        let model = stub_model();
+        // Take after take against a child that dies on arrival. Bounded, so a
+        // pool that never gave up would fail this test rather than hang it.
+        let failed = poll_until(|| {
+            let _ = pool.rewrite(&model, &stub_request());
+            let status = pool.status();
+            (status.state == SidecarState::Failed).then_some(status)
+        });
+        assert_eq!(
+            failed,
+            Some(SidecarStatus::new(SidecarState::Failed, Some("died")))
+        );
+        assert_eq!(
+            launches.load(Ordering::Relaxed),
+            2,
+            "one spawn plus exactly one restart, per app session"
+        );
+        // Sticky: a later take neither launches a third process nor blocks…
+        let started = Instant::now();
+        assert_eq!(
+            pool.rewrite(&model, &stub_request()),
+            Err(PolishError::Unavailable)
+        );
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(launches.load(Ordering::Relaxed), 2);
+        // …and Diagnostics is told why, not just that.
+        assert_eq!(pool.status().reason, Some("died"));
+        // Picking a different model in Settings is not the failure the budget
+        // counted, so it starts the stage over instead of staying dead.
+        let _ = pool.rewrite(Path::new("/nonexistent/other-model.gguf"), &stub_request());
+        assert_eq!(launches.load(Ordering::Relaxed), 3);
+        let leftover = pool.slot.lock().take();
+        if let Some(child) = leftover {
+            child.kill();
+        }
     }
 
     // --- The signature, on the far side of the model (YV62, R13) ----------

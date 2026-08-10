@@ -13,6 +13,8 @@
 //! surface (the "no outbound connections" posture stays green).
 //!
 //! ```jsonc
+//! // ← stdout, once, as soon as the model is resident (YV75)
+//! {"type":"ready","version":"0.6.0","model_loaded":true}
 //! // → stdin
 //! {"id":7,"mode":"email","style":"default","max_out":96,"deadline_ms":1200,
 //!  "text":"hey jordan quick update…","topic":null}
@@ -53,6 +55,52 @@ pub struct PolishRequest {
     /// decisions in-process and is not sent anywhere, not even locally.
     #[serde(default)]
     pub topic: Option<String>,
+}
+
+/// The `type` value of the readiness line. The only message on this wire that
+/// is not keyed by a request id, which is exactly how the two are told apart.
+pub const READY_KIND: &str = "ready";
+
+/// The sidecar's readiness announcement (YV75), written to stdout ONCE, after
+/// the model is resident and before any request is served.
+///
+/// Loading a GGUF is seconds of work, and until it finishes the child cannot
+/// answer anything: without this line the parent had no way to know a spawned
+/// sidecar was still cold, so every take inside the load window burned its
+/// whole deadline waiting for a process that could not reply. The parent reads
+/// this off the SAME stdout stream as the responses — a diagnostic on stderr
+/// could never serve as a handshake, because stderr is a log, not the protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolishReady {
+    /// Always [`READY_KIND`]. Present so a readiness line and a response line
+    /// can never deserialize as each other.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The sidecar binary's version — a stale binary next to a new app is a
+    /// real failure mode once the bundle ships an updater.
+    pub version: String,
+    /// Whether the model is actually resident. `false` means the process is up
+    /// but cannot rewrite anything, which is a failure, not readiness.
+    pub model_loaded: bool,
+}
+
+impl PolishReady {
+    pub fn new(version: &str, model_loaded: bool) -> Self {
+        Self {
+            kind: READY_KIND.to_string(),
+            version: version.to_string(),
+            model_loaded,
+        }
+    }
+}
+
+/// Parse one stdout line as the readiness announcement, or `None` if it is
+/// anything else (a response, a stray log line, half a line from a child that
+/// died). Never confuses the two directions: a `PolishResponse` has no `type`
+/// field and this has no `id`, so each fails to deserialize as the other.
+pub fn parse_ready(line: &str) -> Option<PolishReady> {
+    let parsed: PolishReady = serde_json::from_str(line.trim()).ok()?;
+    (parsed.kind == READY_KIND).then_some(parsed)
 }
 
 /// One response line. `ok` discriminates: `true` carries `text`, `false`
@@ -195,6 +243,30 @@ mod tests {
         assert_eq!(
             parse_response_for(r#"{"id":7,"ok":false,"err":"deadline"}"#, 7)
                 .and_then(PolishResponse::into_text),
+            None
+        );
+    }
+
+    #[test]
+    fn polish_protocol_ready_line_is_distinct_from_a_response() {
+        let ready = PolishReady::new("0.6.0", true);
+        let line = serde_json::to_string(&ready).expect("ready serializes");
+        assert_eq!(
+            line,
+            r#"{"type":"ready","version":"0.6.0","model_loaded":true}"#
+        );
+        assert_eq!(parse_ready(&line), Some(ready));
+        // The two directions never parse as each other, which is what lets one
+        // reader thread carry both on the same stdout.
+        let response = r#"{"id":7,"ok":true,"text":"hi","out_tokens":1,"ms":9}"#;
+        assert_eq!(parse_ready(response), None);
+        assert_eq!(parse_response_for(&line, 7), None);
+        // A stray log line, a half-written line, and a foreign `type` are not
+        // readiness either.
+        assert_eq!(parse_ready("loading model…"), None);
+        assert_eq!(parse_ready(r#"{"type":"ready""#), None);
+        assert_eq!(
+            parse_ready(r#"{"type":"bye","version":"0.6.0","model_loaded":true}"#),
             None
         );
     }

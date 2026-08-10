@@ -19,6 +19,11 @@
 //! yap-polish --model <path/to/qwen2.5-1.5b-instruct-q4_k_m.gguf> [--ctx 4096] [--threads N]
 //! ```
 //!
+//! The FIRST line on stdout is the readiness announcement
+//! (`{"type":"ready","version":…,"model_loaded":true}`, YV75), written once the
+//! model is resident. Until it lands the parent treats this process as cold and
+//! skips the polish stage rather than waiting on it.
+//!
 //! The model is loaded once and held warm for the process lifetime. The static
 //! system+mode prompt is decoded once and its KV is reused: each request keeps
 //! the longest common token prefix already resident in the cache and decodes
@@ -46,7 +51,7 @@ use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
-use polish_protocol::{max_out_for, PolishRequest, PolishResponse};
+use polish_protocol::{max_out_for, PolishReady, PolishRequest, PolishResponse};
 
 /// Static base prompt — byte-identical for every request so its KV survives
 /// across dictations (spec §2.4).
@@ -206,6 +211,16 @@ fn run(args: &Args) -> Result<(), String> {
         .chat_template(None)
         .map_err(|e| format!("chat template: {e}"))?;
 
+    // YV75 — the handshake. The parent cannot tell "still loading the GGUF"
+    // from "wedged" by watching a silent pipe, so readiness is an explicit
+    // message on the PROTOCOL stream. The stderr line below stays (the parent
+    // now pipes it into its own rotating log at DEBUG) but it is a diagnostic,
+    // never the handshake: a log line must not be load-bearing.
+    let ready = PolishReady::new(env!("CARGO_PKG_VERSION"), true);
+    let line = serde_json::to_string(&ready).map_err(|e| format!("encode ready: {e}"))?;
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "{line}").map_err(|e| format!("stdout: {e}"))?;
+    stdout.flush().map_err(|e| format!("stdout flush: {e}"))?;
     eprintln!(
         "yap-polish ready: {} (n_ctx={n_ctx})",
         args.model.display()
