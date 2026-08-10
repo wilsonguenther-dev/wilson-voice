@@ -32,6 +32,55 @@ The printed text must contain the phrase words (e.g. `quick`, `fox`). The first
 run downloads the catalog's smallest model (Whisper Tiny, ~46 MB, sha256
 verified) into Application Support; later runs are offline.
 
+## `gate/*.jsonl` — the public-safe hallucination-gate corpus (YV76)
+
+The committed corpus for `dictation::degenerate_cutoff` is SYNTHETIC, and that is
+a permanent decision, not a placeholder: the raw dictation corpus below stays out
+of this public repo for good (YV76). Nothing under `gate/` is anybody's speech —
+every case is generated or hand-written from mundane invented sentences, and
+`gate_corpus_holds_no_private_dictation` enforces it in CI (ASCII only, no `@`,
+no links, no digit runs, and no non-`.jsonl` file may appear in the directory at
+all, so a raw dump cannot be dropped in beside the cases).
+
+Two files, 53 cases, four failure classes with the expected outcome on each:
+
+| class | expected | what it reproduces |
+|-------|----------|--------------------|
+| `real_speech` | `keep` | long unpunctuated run-on cadence — the YV66 false positive (`global_ttr_below_cliff` marks the takes whose WHOLE-take ratio is under the old 0.3 cliff) |
+| `legit_repetition` | `keep` | "very very long", emphatics, a quoted chorus — repetition a person actually produces |
+| `degenerate` | `reject` | stuck-decoder output: identical-token runs, looped phrases, the glued `SERV-SERV-SERV` token |
+| `mixed` | `truncate` | a degenerate tail after real speech — the prefix must survive |
+
+`generated-classes.jsonl` is written by the generator in `tests/gate_corpus.rs`
+(`generated_cases`), so the corpus can be regrown and diffed:
+
+```sh
+cd desktop/src-tauri
+cargo test gate_corpus_regenerate_generated_fixture -- --ignored   # rewrite
+cargo test gate_corpus_                                            # check
+```
+
+`handwritten-innocuous.jsonl` holds the shapes a generator makes stilted. The
+suite asserts PROPERTIES, not per-case goldens: no real-speech case is ever
+discarded (`gate_corpus_never_discards_real_speech_class`), and every degenerate
+case is truncated or rejected with its audio kept
+(`gate_corpus_degenerate_class_truncated_or_rejected_with_audio`, which also pins
+the live gate's whole-take arm to `TakeOutcome::Rejected` — YV67's "a rejection
+keeps the wav and becomes a Retry row").
+
+The complementary check is local-only and is the one below: the synthetic corpus
+proves the behaviour on every class, and only the real transcripts prove the gate
+does not misfire on how one particular person talks. After exporting the corpus
+with the command in the next section, run
+
+```sh
+YAP_PRIVATE_CORPUS=/tmp/transcripts_corpus.txt \
+  cargo test gate_corpus_private_corpus -- --ignored --nocapture
+```
+
+which prints one line per firing take — line number, token count, cutoff,
+verdict — and never a word of the transcript itself.
+
 ## `transcripts_corpus.txt` — deliberately NOT committed
 
 YV66 was specified with a real-corpus regression fixture here: one raw transcript
@@ -72,4 +121,6 @@ of YV66 it fires on exactly four:
 The other 352 transcripts are untouched, including the 933-token take whose
 whole-take type/token ratio (0.3022) cleared the old cliff by 0.002. Any
 committed replacement for this fixture must be synthesised or consented to
-explicitly — do not dump the transcripts table into this repo.
+explicitly — do not dump the transcripts table into this repo. YV76 settled that
+question: the synthetic `gate/` corpus above is the committed one, permanently,
+and this export stays a local check.
