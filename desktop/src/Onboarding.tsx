@@ -40,13 +40,15 @@ const CALIBRATION_PHRASE =
 const STEP_ORDER: Step[] = ["welcome", "permissions", "calibration", "done"];
 
 /**
- * Hard ceiling on one calibration take (transcribe + paste is ~1 s on Metal, and
- * the backend's own transcribe timeout is 120 s for a wedged native call). Before
- * this, `busy` was cleared ONLY by the success event: any failure the UI never
- * heard about — a killed worker, a lost event, a backend that died mid-take —
- * left "Transcribing…" spinning forever. Busy must always be self-clearing.
+ * Last-resort ceiling on one calibration take. YV79 made every terminal take
+ * outcome announce itself (`take_done`), so this no longer covers any outcome
+ * the backend can name — those now clear `busy` in about a second, with their
+ * reason. What is left is a take that never reports at all: a killed worker, a
+ * lost event, a backend that died mid-take. 90 s of that was indistinguishable
+ * from a hang; 30 s still leaves generous room above a real take (transcribe +
+ * paste is ~1 s on Metal) while the user finds out while they still care.
  */
-const CALIBRATION_WATCHDOG_MS = 90_000;
+const CALIBRATION_WATCHDOG_MS = 30_000;
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
@@ -123,22 +125,35 @@ export default function Onboarding({
       setBusy(false);
       setCalibError(e.payload?.message || "Transcription failed.");
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV79 — the terminal marker for a take, whatever its outcome. The three
+    // listeners above still miss the SOFT ones, and the first-run user with no
+    // mic permission / the wrong input device hits the loudest of them: the
+    // no-speech gate, which only ever spoke on the toast channel behind this
+    // overlay. Busy now clears for EVERY take, with the backend's own reason.
+    listen<{ ok: boolean; message: string | null }>("take_done", (e) => {
+      setBusy(false);
+      if (!e.payload?.ok) {
+        setCalibError(
+          e.payload?.message || "That take produced nothing. Retry.",
+        );
+      }
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
     };
   }, []);
 
-  // Watchdog: busy is never clearable by success alone. If neither `transcript`
-  // nor `transcript_error` lands within the ceiling, clear it into a visible,
-  // retryable error rather than leaving the user staring at "Transcribing…".
+  // Watchdog: busy is never clearable by success alone. Since YV79 every take
+  // that ENDS says so on `take_done`, so reaching this means the take never
+  // reported — a cause the app cannot name, hence the generic line. Guessing at
+  // one (it used to blame the speech model) sent users off fixing the wrong
+  // thing on takes that had failed for another reason entirely.
   useEffect(() => {
     if (!busy) return;
     const t = setTimeout(() => {
       setBusy(false);
-      setCalibError(
-        "Transcription timed out — the speech model may still be loading. Retry.",
-      );
+      setCalibError("Yap didn't hear back from the recorder. Retry.");
     }, CALIBRATION_WATCHDOG_MS);
     return () => clearTimeout(t);
   }, [busy]);
