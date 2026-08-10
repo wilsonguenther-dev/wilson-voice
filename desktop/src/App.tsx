@@ -534,6 +534,10 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installedVersion, setInstalledVersion] = useState<string | null>(null);
+  // YV78 — clearing history now scrubs the file (FTS rebuild + VACUUM), which
+  // on a large history is not instant. The button stays disabled until the
+  // command resolves so nothing reports success while bytes are still on disk.
+  const [clearing, setClearing] = useState(false);
   // YV54 — silent model setup. The onboarding overlay owns the auto-download
   // during first run, so this instance only takes it over once the user IS
   // onboarded: an install that lands here with no model (fresh profile, a
@@ -935,14 +939,21 @@ export default function App() {
     }
   }
 
+  // YV78 — this really does destroy the words (secure_delete + FTS rebuild +
+  // VACUUM), so it can take a moment on a big history. Hold the button until
+  // the command resolves rather than clearing the list optimistically.
   async function clearAll() {
+    if (clearing) return;
     if (!confirm("Clear all transcript history from SQLite?")) return;
+    setClearing(true);
     try {
       await invoke("clear_history");
       setHistory([]);
     } catch (e) {
       toast(String(e));
       return;
+    } finally {
+      setClearing(false);
     }
     await refreshInsights();
   }
@@ -1765,8 +1776,8 @@ export default function App() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
-                <button className="ghost" onClick={clearAll}>
-                  Clear
+                <button className="ghost" onClick={clearAll} disabled={clearing}>
+                  {clearing ? "Clearing…" : "Clear"}
                 </button>
               </div>
 

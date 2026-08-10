@@ -485,6 +485,12 @@ impl Database {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
+            -- YV78 privacy: SQLite's default is 0, so a DELETE only unlinks the
+            -- row and leaves its bytes legible in the freed page — which the
+            -- exit wal_checkpoint(TRUNCATE) then folds into the main .db. ON
+            -- zeroes deleted content as it is freed, for EVERY delete path
+            -- (single transcript, clear-all, purge).
+            PRAGMA secure_delete = ON;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
             PRAGMA wal_autocheckpoint = 400;
@@ -1038,13 +1044,65 @@ impl Database {
         self.recompute_daily_stats()
     }
 
+    /// YV78 — "Clear all transcript history" must DESTROY the words, not just
+    /// unlink the rows.
+    ///
+    /// Everything on disk that physically holds transcript text, verified
+    /// against the schema above:
+    ///   * `transcripts` — `text` and `raw_text`.
+    ///   * `transcripts_fts` — external-content FTS5 over `transcripts`; its
+    ///     shadow tables hold the tokens themselves.
+    ///   * `dictionary` — the harvest (`learn_from_transcript_tx`) copies rare
+    ///     tokens VERBATIM out of dictations. Only rows that are still purely
+    ///     machine-written are dropped: `source = 'harvest' AND preferred IS
+    ///     NULL AND starred = 0`, the same "never user-touched" predicate the
+    ///     junk-purge in `open_inner` uses. Seed, manual, corrected and starred
+    ///     terms are the user's own vocabulary and survive.
+    ///   * `daily_stats` — counts only, but it IS the history rollup, so it
+    ///     goes with the rows it was computed from.
+    ///
+    /// Deliberately NOT touched: `failed_dictations` (YV52) stores a WAV path
+    /// and the engine's error string, never transcript text, and its clips are
+    /// the user's only copy of a take that was never transcribed;
+    /// `dict_candidates`, `snippets` and `scratchpad` are text the user typed,
+    /// with their own delete paths; `crash_events` is built from an allowlist
+    /// of structured fields.
+    ///
+    /// The DELETEs run in ONE transaction so "erase everything" is
+    /// all-or-nothing. Then, after the commit and still under the lock:
+    ///   1. rebuild the FTS index from the (now empty) content table,
+    ///   2. fold the WAL into the main DB and truncate it, so the pre-clear
+    ///      frames stop being readable,
+    ///   3. VACUUM — rewrites the file without its free pages. This is what
+    ///      scrubs residue left by copies installed BEFORE `secure_delete`
+    ///      existed. VACUUM cannot run inside a transaction, hence the order.
+    ///   4. checkpoint again — VACUUM's clean image lands in the WAL, so
+    ///      without this the stale pages survive in the .db until app exit.
     pub fn clear_transcripts(&self) -> Result<(), String> {
         {
-            let conn = self.conn.lock().map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM transcripts", [])
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM transcripts", [])
                 .map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM daily_stats", [])
+            tx.execute(
+                "DELETE FROM dictionary
+                 WHERE source = 'harvest' AND preferred IS NULL AND starred = 0",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM daily_stats", [])
                 .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+
+            conn.execute_batch(
+                "
+                INSERT INTO transcripts_fts(transcripts_fts) VALUES('rebuild');
+                PRAGMA wal_checkpoint(TRUNCATE);
+                VACUUM;
+                PRAGMA wal_checkpoint(TRUNCATE);
+                ",
+            )
+            .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -2979,6 +3037,77 @@ mod tests {
         }
 
         drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Non-overlapping byte occurrences of `needle` in the file at `path`.
+    /// A missing file counts 0 — SQLite removes the -wal / -shm on a clean
+    /// close, and a file that is gone obviously leaks nothing.
+    fn sentinel_hits(path: &std::path::Path, needle: &str) -> usize {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        let needle = needle.as_bytes();
+        if needle.is_empty() || bytes.len() < needle.len() {
+            return 0;
+        }
+        let (mut hits, mut i) = (0usize, 0usize);
+        while i + needle.len() <= bytes.len() {
+            if &bytes[i..i + needle.len()] == needle {
+                hits += 1;
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        hits
+    }
+
+    /// YV78 — "Clear all transcript history" must leave NOTHING readable on
+    /// disk, not merely nothing queryable. Measured on 6aec852 (pre-fix), this
+    /// exact test found 197 of the 200 sentinels still byte-readable in
+    /// wilson_voice.db after clear + the app-exit wal_checkpoint(TRUNCATE).
+    #[test]
+    fn clear_history_leaves_no_plaintext_on_disk() {
+        const SENTINEL: &str = "MYSOCIALSECURITYIS-078051120-PLAINTEXTSENTINEL";
+        let (db, dir) = fresh_db("yv78-scrub");
+        let path = dir.join("wilson_voice.db");
+
+        for i in 0..200 {
+            db.insert_transcript(
+                format!("take {i} my number is {SENTINEL} thanks"),
+                "native".into(),
+                1.0,
+                2.0,
+                10,
+                Some("Test".into()),
+            )
+            .unwrap();
+        }
+
+        // Guard: the words really did reach the disk. Without this the test
+        // would still pass against a DB that never persisted anything.
+        db.checkpoint();
+        assert!(
+            sentinel_hits(&path, SENTINEL) > 0,
+            "sentinel never reached the .db — this test would prove nothing"
+        );
+
+        db.clear_transcripts().unwrap();
+        // The app-exit path (lib.rs) — pre-fix this is what folded the residue
+        // out of the WAL and INTO the main .db.
+        db.checkpoint();
+        drop(db);
+
+        let mut total = 0usize;
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.clone().into_os_string();
+            p.push(suffix);
+            total += sentinel_hits(std::path::Path::new(&p), SENTINEL);
+        }
+        assert_eq!(
+            total, 0,
+            "transcript text is still byte-readable on disk after clear_transcripts"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
