@@ -1,6 +1,6 @@
 [package]
 name = "yap-polish"
-version = "0.6.0"
+version = "0.7.0"
 description = "Yap polish sidecar — local LLM transcript rewriter over JSONL/stdio"
 authors = ["Wilson Guenther"]
 edition = "2021"

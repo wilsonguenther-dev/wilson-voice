@@ -3411,7 +3411,7 @@ pub fn run() {
                 });
             }
 
-            log::info!("Yap v0.6.0 — NSPanel Dictate island (tauri-nspanel)");
+            log::info!("Yap v0.7.0 — NSPanel Dictate island (tauri-nspanel)");
             Ok(())
         })
         .build(tauri::generate_context!())
