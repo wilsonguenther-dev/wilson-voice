@@ -135,6 +135,14 @@ interface AppSettings {
   /** Calibration phrase captured during onboarding, kept for later personalization. */
   calibrationSample?: string | null;
   /**
+   * Load the speech model at launch instead of on your first dictation
+   * (backend `preload_model`, YV80). Default OFF: an idle Yap holds ~930 MB
+   * less, and the first take of a session loads the engine while you are
+   * already talking. On, Yap goes back to YV38's behaviour — the model is
+   * resident from launch, so even the first take starts instantly.
+   */
+  preloadModel?: boolean;
+  /**
    * Launch Yap at login (backend `autostart`, YV42). Installs a macOS
    * LaunchAgent through tauri-plugin-autostart. Default off — the backend
    * applies it the moment this saves, and re-applies it on every launch.
@@ -178,6 +186,12 @@ interface AppStatus {
   secureInputBlocked: boolean;
   /** Holder + workaround line for the banner; null unless blocked. */
   secureInputDetail: string | null;
+  /**
+   * YV80 — the speech engine is loading right now. With the lazy default that
+   * happens on the first take of a session, so `message` reads "Preparing your
+   * speech engine…" rather than claiming a decode that has not started.
+   */
+  engineLoading?: boolean;
 }
 
 interface PermissionReport {
@@ -3178,16 +3192,40 @@ export default function App() {
                     <p className="muted">
                       Yap transcribes inside the app itself — no helper process,
                       nothing installed on the side, nothing off this Mac. Your
-                      model is kept loaded so dictation starts the moment you
-                      press your key. Smaller models are faster and lighter;
-                      larger ones are more accurate on long or technical
-                      dictation. Yap picks the recommended one for you — swap it
-                      here if you'd rather choose.
+                      model loads on your first dictation and stays warm after
+                      that, so an idle Yap costs almost nothing. Smaller models
+                      are faster and lighter; larger ones are more accurate on
+                      long or technical dictation. Yap picks the recommended one
+                      for you — swap it here if you'd rather choose.
                     </p>
                     <ModelPicker setup={modelSetup} />
                     <p className="muted tiny" style={{ marginTop: 8 }}>
                       {perms?.asrDetail}
                     </p>
+                    {/* YV80 — Model & Speed: the memory-vs-first-take trade,
+                        made explicit. Off by default; an idle Yap holds ~930 MB
+                        less and the first take loads the engine while you talk. */}
+                    <label className="toggle" style={{ marginTop: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.preloadModel ?? false}
+                        onChange={(e) =>
+                          saveSettings({
+                            ...settings,
+                            preloadModel: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>
+                        <strong>Keep the model loaded from launch</strong> —
+                        Yap normally loads your speech model on your first
+                        dictation, which keeps about 900 MB free while you are
+                        not dictating and costs a few seconds on that first
+                        take. Turn this on to load it at launch instead: every
+                        take starts instantly, and Yap holds the memory the
+                        whole time it is running
+                      </span>
+                    </label>
                   </div>
                   {/* YV42 — launch at login. Off by default; nothing installs a
                       login item behind your back. */}

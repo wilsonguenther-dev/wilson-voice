@@ -175,6 +175,13 @@ pub struct AppSettings {
     /// dictation path runs on; there is no other ASR selector.
     #[serde(default = "default_native_model")]
     pub native_model: String,
+    /// YV80 — load the ASR model at LAUNCH instead of on the first dictation.
+    /// Defaults false: Yap idles without ~930 MB of GGUF resident, and the
+    /// first take arms the engine while the user is already talking (see
+    /// `arm_asr_engine`). True restores YV38's eager path for power users who
+    /// would rather spend the memory all day than the one-time first-take wait.
+    #[serde(default)]
+    pub preload_model: bool,
     /// Launch Yap at login (YV42), applied through tauri-plugin-autostart's
     /// macOS LaunchAgent. Defaults OFF — nothing installs a login item behind
     /// the user's back; the toggle is applied immediately on save and re-applied
@@ -277,6 +284,7 @@ impl Default for AppSettings {
             onboarded: false,
             calibration_sample: None,
             native_model: default_native_model(),
+            preload_model: false,
             autostart: false,
             check_updates: true,
             skipped_update_version: None,
@@ -309,6 +317,13 @@ pub struct AppStatus {
     /// The holder + workaround line for the banner. `None` when not blocked.
     #[serde(default)]
     pub secure_input_detail: Option<String>,
+    /// YV80 — the ASR engine is being loaded right now. Since the load is lazy
+    /// by default this is true for the first take of a session, between the
+    /// user releasing their key and the decode starting, and the UI SAYS so
+    /// (see [`ENGINE_PREPARING_MESSAGE`]) rather than showing a "transcribing"
+    /// state for a model that is still coming off disk.
+    #[serde(default)]
+    pub engine_loading: bool,
 }
 
 struct AppState {
@@ -399,6 +414,12 @@ fn model_ready(state: &AppState) -> bool {
     native_model_ready(&native).is_some()
 }
 
+/// YV80 — what a take says while the engine is still being loaded. Word for
+/// word the line `ModelSetup`'s ribbon already shows during setup, because it
+/// is the same fact ("your speech engine isn't ready yet, hold on") and the
+/// user should not have to learn a second phrase for it.
+pub const ENGINE_PREPARING_MESSAGE: &str = "Preparing your speech engine…";
+
 /// The status-line policy, pure so the "Ready" honesty rule is testable without
 /// an AppState. `model_ready` false outranks everything except live
 /// recording/transcribing/errors: a fresh install with no model must say so.
@@ -411,6 +432,7 @@ fn status_message(
     recording: bool,
     hands_free: bool,
     busy: bool,
+    engine_loading: bool,
     last_error: Option<&str>,
     model_ready: bool,
     accessibility: bool,
@@ -421,6 +443,11 @@ fn status_message(
         format!("Hands-free… tap {ptt} to stop")
     } else if recording {
         format!("Recording… release {ptt} or click Stop")
+    } else if busy && engine_loading {
+        // YV80: the first take of a session waits on the model coming off disk
+        // before a single sample is decoded. Saying "Transcribing" there would
+        // be a lie about which multi-second thing is happening.
+        ENGINE_PREPARING_MESSAGE.into()
     } else if busy {
         "Transcribing with local Whisper…".into()
     } else if let Some(err) = last_error {
@@ -446,10 +473,12 @@ fn build_status(state: &AppState) -> AppStatus {
     let ptt = state.settings.lock().hotkey_label.clone();
     let ready = model_ready(state);
     let secure = state.secure_input.lock().clone();
+    let engine_loading = state.transcription.is_loading();
     let message = status_message(
         recording,
         hands_free,
         busy,
+        engine_loading,
         last_error.as_deref(),
         ready,
         accessibility,
@@ -467,6 +496,7 @@ fn build_status(state: &AppState) -> AppStatus {
         model_ready: ready,
         secure_input_blocked: secure.blocked,
         secure_input_detail: secure.blocked.then(|| secure.detail()),
+        engine_loading,
     }
 }
 
@@ -670,7 +700,97 @@ fn await_in_flight_take(state: &AppState, wait: Duration) -> bool {
 const HUD_FPS: u64 = 20;
 const HUD_FRAME: std::time::Duration = std::time::Duration::from_millis(1_000 / HUD_FPS);
 
-fn start_recording(app: &AppHandle, state: &AppState) {
+/// YV80 — what LAUNCH does with the ASR engine, in one testable place.
+///
+/// YV38 loaded the GGUF at startup so the user's first take wouldn't pay for
+/// it. That bought a few seconds once and cost ~930 MB of resident memory for
+/// the whole session (the `memory rss_mb=` line measured 929 MB on an idle Yap
+/// that had never dictated) — a bad trade for a menu-bar app that spends most
+/// of its life waiting for a key. The default is now lazy: launch loads
+/// NOTHING, and the first take's arm brings the engine up while the user is
+/// already talking (`arm_asr_engine`). `preload_model` restores the eager path
+/// for anyone who would rather hold the memory than wait once.
+///
+/// The Silero VAD above is deliberately NOT part of this: it is a few MB, it
+/// runs before ASR on every take, and loading it late would cost latency on the
+/// hot path for no memory worth having.
+///
+/// Returns whether a load was attempted, so a caller (and the tests) can see
+/// which path launch took.
+fn preload_engine_at_startup(
+    manager: &transcription::TranscriptionManager,
+    preload_model: bool,
+    model: Option<(String, PathBuf)>,
+) -> bool {
+    if !preload_model {
+        log::info!("startup: ASR engine load deferred to the first dictation (YV80 lazy default)");
+        return false;
+    }
+    let Some((model_id, model_path)) = model else {
+        log::info!("startup: no downloaded ASR model — engine preload skipped");
+        return false;
+    };
+    match manager.load(&model_id, &model_path) {
+        Ok(()) => {
+            log::info!("startup: ASR engine preloaded ({model_id})");
+            true
+        }
+        Err(e) => {
+            log::warn!("startup: ASR engine preload failed ({e}) — the take path retries");
+            false
+        }
+    }
+}
+
+/// YV80 — bring the ASR engine up for the take that is starting, if nothing is
+/// resident yet.
+///
+/// This is where the model load lives now that launch no longer pays for it
+/// (see `preload_engine_at_startup`). It is deliberately the ARM and not the
+/// transcribe: the load then overlaps the seconds the user spends talking, so
+/// on a normal take the engine is warm by the time there is anything to decode
+/// and the one-time cost is mostly hidden.
+///
+/// Three things it must never do, all of them satisfied by handing the work to
+/// the blocking pool AFTER capture is already running:
+/// * delay or interrupt capture — the recorder (and its YV63 crash journal) is
+///   live before this is called, so audio is being written while the model
+///   loads, and every never-lose-audio guarantee is untouched;
+/// * block the caller — this returns immediately, the load is `spawn_blocking`
+///   exactly like YV38's startup preload was;
+/// * duplicate work — `TranscriptionManager::load` is idempotent AND coalesced
+///   (YV80), so the transcribe that follows waits for this load rather than
+///   starting a second one, and a warm take costs two cheap reads.
+///
+/// A failure is only logged: `transcribe_native` calls `load` again and its
+/// error is the one the user sees, on the path that already knows how to
+/// report one.
+fn arm_asr_engine(app: &AppHandle, state: &Arc<AppState>) {
+    if state.transcription.is_loaded() || state.transcription.is_loading() {
+        return; // warm (or already coming up) — nothing to do
+    }
+    let native = state.settings.lock().native_model.clone();
+    let Some((model_id, model_path)) = native_model_ready(&native) else {
+        return; // no model downloaded — the take path raises that, not this
+    };
+    let app = app.clone();
+    let state = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let outcome = state.transcription.load(&model_id, &model_path);
+        let load_ms = started.elapsed().as_millis();
+        match outcome {
+            Ok(()) => log::info!("take arm: ASR engine ready ({model_id}) in {load_ms}ms"),
+            Err(e) => log::warn!("take arm: ASR engine load failed ({e}) — the take path retries"),
+        }
+        // A take that outlasted the load is sitting on "Preparing your speech
+        // engine…" (`build_status` reads the loading flag live) — this is the
+        // emit that moves it on to the decode.
+        emit_status(&app, &state);
+    });
+}
+
+fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     if *state.recording.lock() || *state.busy.lock() {
         return;
     }
@@ -699,6 +819,9 @@ fn start_recording(app: &AppHandle, state: &AppState) {
             // they talk. Restored the instant recording stops (see below).
             mute_system_output(state);
             log::info!("recording started");
+            // YV80: capture is LIVE at this line, so the (lazy) model load below
+            // runs alongside the user's speech and can never cost a sample.
+            arm_asr_engine(app, state);
             let _ = app.emit("recording", true);
             emit_status(app, state);
             // Wispr-style: glass island appears for the hold
@@ -870,6 +993,10 @@ fn transcribe_native(
     // YV40: load and decode are timed apart — the load is 0 on the warm path and
     // seconds on a cold one, so folding them together (as `asr_model` used to)
     // made the decode span unreadable on exactly the take that is slowest.
+    // YV80: on the first take of a session this is the lazy load's bill, minus
+    // whatever of it `arm_asr_engine` already paid off while the user was still
+    // talking — so `asr_load_ms` in the latency line IS the penalty the user
+    // felt, and it is 0 again on every take after it.
     let load_ms = started.elapsed().as_millis() as i64;
     // The "Language I speak" setting used to reach Whisper as the sidecar's
     // `--language`; it now rides the engine's own language hint (YV34) so the
@@ -2827,6 +2954,12 @@ pub fn run() {
         std::thread::Builder::new()
             .name("wv-hygiene".into())
             .spawn(move || {
+                // YV80: the FIRST memory sample is taken right away rather than
+                // after the sweep delay, because it is the baseline the lazy
+                // load is measured against — this line and the one the first
+                // dictation emits (`hygiene::log_snapshot_async`) bracket the
+                // model, so the rss_mb delta between them IS the engine.
+                log::info!("{}", hygiene::collect(&data_dir()).summary_line());
                 std::thread::sleep(hygiene::STARTUP_SWEEP_DELAY);
                 run_disk_sweep(&db);
                 let mut since_sweep = Duration::ZERO;
@@ -2866,27 +2999,19 @@ pub fn run() {
         });
     }
 
-    // YV38: warm the ASR engine at launch instead of making the user's FIRST
-    // take pay the multi-second model load. No delay in front of it — the load
-    // is blocking, so it goes straight onto the blocking pool (never the main
-    // thread), and it is a no-op when no model has been downloaded yet. The load
-    // is already panic-contained + idempotent inside the manager (and the idle
-    // watcher unloads it again after 15 minutes of no dictation), so the only
-    // thing this changes is WHO pays for the cold load.
+    // YV80: what launch does with the ASR engine is now a setting, and its
+    // default is LAZY (see `preload_engine_at_startup`). Still on the blocking
+    // pool rather than the main thread, because the eager path it can take is
+    // the same multi-second blocking load YV38 introduced.
     {
         let state = state.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let native = state.settings.lock().native_model.clone();
-            let Some((model_id, model_path)) = native_model_ready(&native) else {
-                log::info!("startup: no downloaded ASR model — engine preload skipped");
-                return;
-            };
-            match state.transcription.load(&model_id, &model_path) {
-                Ok(()) => log::info!("startup: ASR engine preloaded ({model_id})"),
-                Err(e) => {
-                    log::warn!("startup: ASR engine preload failed ({e}) — the take path retries")
-                }
-            }
+            let settings = state.settings.lock().clone();
+            preload_engine_at_startup(
+                &state.transcription,
+                settings.preload_model,
+                native_model_ready(&settings.native_model),
+            );
         });
     }
 
@@ -3432,8 +3557,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_settings_migrations, load_settings, salvage_settings, status_message,
-        update_is_skipped, write_settings_file, AppSettings, CURRENT_SETTINGS_SCHEMA_VERSION,
+        apply_settings_migrations, load_settings, preload_engine_at_startup, salvage_settings,
+        status_message, update_is_skipped, write_settings_file, AppSettings,
+        CURRENT_SETTINGS_SCHEMA_VERSION, ENGINE_PREPARING_MESSAGE,
     };
 
     /// A fresh per-test directory (tests run in parallel — never share one).
@@ -3605,32 +3731,42 @@ mod tests {
     // Mac, where that path was the non-functional Command Line Tools shim.
     #[test]
     fn status_says_model_needed_until_a_model_is_ready() {
-        let no_model = status_message(false, false, false, None, false, true, false, "fn⌃");
+        let no_model = status_message(false, false, false, false, None, false, true, false, "fn⌃");
         assert!(no_model.contains("Model needed"), "{no_model}");
         assert!(!no_model.contains("Ready"), "{no_model}");
 
-        let ready = status_message(false, false, false, None, true, true, false, "fn⌃");
+        let ready = status_message(false, false, false, false, None, true, true, false, "fn⌃");
         assert!(ready.starts_with("Ready — hold fn⌃"), "{ready}");
 
         // Accessibility is a paste-only concern: still Ready, with a nudge.
-        let no_ax = status_message(false, false, false, None, true, false, false, "fn⌃");
+        let no_ax = status_message(false, false, false, false, None, true, false, false, "fn⌃");
         assert!(no_ax.starts_with("Ready —"), "{no_ax}");
         assert!(no_ax.contains("Accessibility"), "{no_ax}");
 
         // Live states and hard errors still outrank the model gate.
         assert!(
-            status_message(true, false, false, None, false, true, false, "fn⌃")
+            status_message(true, false, false, false, None, false, true, false, "fn⌃")
                 .contains("Recording")
         );
         assert!(
-            status_message(true, true, false, None, false, true, false, "fn⌃")
+            status_message(true, true, false, false, None, false, true, false, "fn⌃")
                 .contains("Hands-free")
         );
         assert!(
-            status_message(false, false, true, None, false, true, false, "fn⌃")
+            status_message(false, false, true, false, None, false, true, false, "fn⌃")
                 .contains("Transcribing")
         );
-        let err = status_message(false, false, false, Some("boom"), true, true, false, "fn⌃");
+        let err = status_message(
+            false,
+            false,
+            false,
+            false,
+            Some("boom"),
+            true,
+            true,
+            false,
+            "fn⌃",
+        );
         assert_eq!(err, "Error: boom");
     }
 
@@ -3638,30 +3774,158 @@ mod tests {
     // idle line must never keep advertising the key — it must name the cause.
     #[test]
     fn status_reports_secure_input_instead_of_advertising_the_dead_hotkey() {
-        let blocked = status_message(false, false, false, None, true, true, true, "fn⌃");
+        let blocked = status_message(false, false, false, false, None, true, true, true, "fn⌃");
         assert_eq!(blocked, crate::secure_input::BLOCKED_MESSAGE);
         assert!(!blocked.contains("Ready"), "{blocked}");
 
         // It also outranks the model gate — pointing a user at a download does
         // not fix a keyboard they cannot reach the app with.
-        let blocked_no_model = status_message(false, false, false, None, false, true, true, "fn⌃");
+        let blocked_no_model =
+            status_message(false, false, false, false, None, false, true, true, "fn⌃");
         assert_eq!(blocked_no_model, crate::secure_input::BLOCKED_MESSAGE);
 
         // But a live take and a real error still win: those describe what just
         // happened, not an instruction the user cannot follow.
         assert!(
-            status_message(true, false, false, None, true, true, true, "fn⌃").contains("Recording")
+            status_message(true, false, false, false, None, true, true, true, "fn⌃")
+                .contains("Recording")
         );
         assert_eq!(
-            status_message(false, false, false, Some("boom"), true, true, true, "fn⌃"),
+            status_message(
+                false,
+                false,
+                false,
+                false,
+                Some("boom"),
+                true,
+                true,
+                true,
+                "fn⌃"
+            ),
             "Error: boom"
         );
 
         // Cleared → straight back to the normal Ready line.
         assert!(
-            status_message(false, false, false, None, true, true, false, "fn⌃")
+            status_message(false, false, false, false, None, true, true, false, "fn⌃")
                 .starts_with("Ready — hold fn⌃")
         );
+    }
+
+    // --- YV80 lazy ASR load ------------------------------------------------
+
+    /// Stands in for a loaded GGUF session — the startup decision is about
+    /// WHETHER an engine is built, never about what it decodes.
+    struct StubEngine;
+    impl crate::transcription::Transcriber for StubEngine {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            Ok("stub".into())
+        }
+    }
+
+    /// A manager whose loader counts the engines it builds, plus a real (empty)
+    /// model file on disk so the manager's "is it downloaded?" gate passes —
+    /// the whole launch path exercised without a 700 MB GGUF anywhere near it.
+    fn stub_manager(
+        tag: &str,
+        loads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> (
+        crate::transcription::TranscriptionManager,
+        (String, std::path::PathBuf),
+    ) {
+        let dir = temp_dir(tag);
+        let path = dir.join("stub.gguf");
+        std::fs::write(&path, b"stub gguf").unwrap();
+        let manager = crate::transcription::TranscriptionManager::with_loader(
+            std::sync::Arc::new(move |_p: &std::path::Path| {
+                loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Box::new(StubEngine) as Box<dyn crate::transcription::Transcriber>)
+            }),
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(5),
+        );
+        (manager, ("stub/model".to_string(), path))
+    }
+
+    /// YV80: Yap used to load the GGUF at launch and sit on ~930 MB of resident
+    /// memory it might never use. The default is now lazy — launch must leave
+    /// the manager UNLOADED, and must not have called the loader at all.
+    #[test]
+    fn engine_not_loaded_at_startup_by_default() {
+        // The setting that decides it, at its shipped default.
+        assert!(
+            !AppSettings::default().preload_model,
+            "the lazy path is the default; preload is opt-in"
+        );
+
+        let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (manager, model) = stub_manager("yv80-lazy", loads.clone());
+        let attempted =
+            preload_engine_at_startup(&manager, AppSettings::default().preload_model, Some(model));
+
+        assert!(
+            !attempted,
+            "launch must not attempt a load on the lazy path"
+        );
+        assert!(!manager.is_loaded(), "nothing may be resident after launch");
+        assert!(!manager.is_loading());
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the loader must never run at startup by default"
+        );
+    }
+
+    /// The escape hatch: `preload_model` puts YV38's eager launch back, model
+    /// resident before anyone presses a key.
+    #[test]
+    fn preload_setting_restores_eager_path() {
+        let loads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (manager, model) = stub_manager("yv80-eager", loads.clone());
+        let settings = AppSettings {
+            preload_model: true,
+            ..AppSettings::default()
+        };
+
+        let attempted =
+            preload_engine_at_startup(&manager, settings.preload_model, Some(model.clone()));
+
+        assert!(attempted, "the eager path must attempt the load");
+        assert!(manager.is_loaded(), "the engine must be resident at launch");
+        assert_eq!(manager.loaded_model().as_deref(), Some(model.0.as_str()));
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // And the setting round-trips through the store like any other.
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["preloadModel"], serde_json::json!(true));
+        // Settings written before the field existed read as the lazy default
+        // rather than failing the load.
+        let legacy: AppSettings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert!(!legacy.preload_model);
+    }
+
+    /// YV80: the first take waits on the model, and the status line has to SAY
+    /// which multi-second thing is happening — "Transcribing" while nothing has
+    /// been decoded yet is the dead air this replaces.
+    #[test]
+    fn busy_says_preparing_while_the_engine_is_still_loading() {
+        let loading = status_message(false, false, true, true, None, true, true, false, "fn⌃");
+        assert_eq!(loading, ENGINE_PREPARING_MESSAGE);
+
+        // Once it is resident the same busy take reads as a decode again.
+        let decoding = status_message(false, false, true, false, None, true, true, false, "fn⌃");
+        assert!(decoding.contains("Transcribing"), "{decoding}");
+
+        // A load that overlaps the hold is invisible: the user is talking, and
+        // the recording line is still the true one.
+        let recording = status_message(true, false, false, true, None, true, true, false, "fn⌃");
+        assert!(recording.contains("Recording"), "{recording}");
     }
 
     // YV9: onboarding gate must default to false so a fresh install shows the

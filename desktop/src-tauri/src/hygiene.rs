@@ -47,8 +47,9 @@ pub const TELEMETRY_INTERVAL: Duration = Duration::from_secs(10 * 60);
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long after launch the FIRST sweep runs. Startup already pays for the
-/// stale-wav sweep, the retention purge, crash ingest and the ASR preload;
-/// this waits until that burst is over so the two never contend for the disk.
+/// stale-wav sweep, the retention purge, crash ingest and — when the YV80
+/// `preload_model` setting is on — the ASR load; this waits until that burst is
+/// over so the two never contend for the disk.
 pub const STARTUP_SWEEP_DELAY: Duration = Duration::from_secs(30);
 
 /// One file the sweep is allowed to consider. Split from the filesystem so the
