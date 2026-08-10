@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yap — dictation that never leaves your Mac</title>
-<meta name="description" content="Yap is a free, on-device dictation app for macOS. Hold a key, talk, and it types — using a local Whisper model. Your voice and words never leave your machine.">
-<meta name="theme-color" content="#f3ead6" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#17110a" media="(prefers-color-scheme: dark)">
-<meta property="og:title" content="Yap — dictation that never leaves your Mac">
-<meta property="og:description" content="Free, on-device dictation for macOS. Hold a key, talk, it types. Nothing leaves your Mac.">
+<title>Yap — hold a key, talk, it's typed</title>
+<meta name="description" content="Yap is a free, on-device dictation app for macOS. Hold a key, speak, and the text lands at your cursor — transcribed by a Whisper model running on your own Mac. It works on a plane.">
+<meta name="theme-color" content="#f8f0e0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#201811" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Yap — hold a key, talk, it's typed">
+<meta property="og:description" content="Free, on-device dictation for macOS. Nothing you say ever leaves your Mac. It works on a plane.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23bfe6ff'/%3E%3Ccircle cx='16' cy='17' r='9' fill='%23ffcf3f'/%3E%3Cpath d='M15 6l1 4 1-4z' fill='%23ef9a1e'/%3E%3Ccircle cx='19' cy='15' r='1.4' fill='%23241c13'/%3E%3Cpath d='M24 16l4 1.5-4 1.5z' fill='%23ef7d3c'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect width='16' height='16' fill='%234ba3d8'/%3E%3Crect x='7' y='1' width='2' height='2' fill='%23efa72c'/%3E%3Crect x='6' y='3' width='4' height='1' fill='%23ffcf3f'/%3E%3Crect x='5' y='4' width='6' height='1' fill='%23ffcf3f'/%3E%3Crect x='4' y='5' width='8' height='4' fill='%23ffcf3f'/%3E%3Crect x='5' y='9' width='6' height='1' fill='%23ffcf3f'/%3E%3Crect x='6' y='10' width='4' height='1' fill='%23ffcf3f'/%3E%3Crect x='6' y='6' width='1' height='2' fill='%232b2118'/%3E%3Crect x='9' y='6' width='1' height='2' fill='%232b2118'/%3E%3Crect x='7' y='8' width='2' height='1' fill='%23ff7a3c'/%3E%3Crect x='5' y='11' width='2' height='1' fill='%23ff7a3c'/%3E%3Crect x='9' y='11' width='2' height='1' fill='%23ff7a3c'/%3E%3C/svg%3E">
+<link rel="preload" href="DepartureMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,13 +19,27 @@
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="/">
-      <span class="mark"><svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="17" r="9" fill="#ffcf3f"/><path d="M15 6l1 4 1-4z" fill="#ef9a1e"/><circle cx="19" cy="15" r="1.6" fill="#241c13"/><path d="M24 16l4 1.5-4 1.5z" fill="#ef7d3c"/></svg></span>
-      <span>Yap<span class="tag">on-device dictation</span></span>
+      <svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true" focusable="false">
+        <rect x="7" y="1" width="2" height="2" fill="#efa72c"/>
+        <rect x="6" y="3" width="4" height="1" fill="#ffcf3f"/>
+        <rect x="5" y="4" width="6" height="1" fill="#ffcf3f"/>
+        <rect x="4" y="5" width="8" height="4" fill="#ffcf3f"/>
+        <rect x="5" y="9" width="6" height="1" fill="#ffcf3f"/>
+        <rect x="6" y="10" width="4" height="1" fill="#ffcf3f"/>
+        <rect x="3" y="6" width="1" height="3" fill="#efa72c"/>
+        <rect x="12" y="6" width="1" height="3" fill="#efa72c"/>
+        <rect x="6" y="6" width="1" height="2" fill="#2b2118"/>
+        <rect x="9" y="6" width="1" height="2" fill="#2b2118"/>
+        <rect x="7" y="8" width="2" height="1" fill="#ff7a3c"/>
+        <rect x="5" y="11" width="2" height="1" fill="#ff7a3c"/>
+        <rect x="9" y="11" width="2" height="1" fill="#ff7a3c"/>
+      </svg>
+      <span>Yap</span><span class="ver">v0.7.0</span>
     </a>
-    <nav class="nav-links">
+    <nav class="nav-links" aria-label="Main">
       <a href="#how" class="hide-sm">How it works</a>
+      <a href="#features" class="hide-sm">Features</a>
       <a href="#privacy" class="hide-sm">Privacy</a>
-      <a href="#social" class="hide-sm">What's next</a>
       <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>Download</a>
     </nav>
   </div>
@@ -35,253 +50,758 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">Free · macOS · open source</span>
-        <h1>Talk. It types.<br>Nothing leaves<br>your Mac.</h1>
-        <p class="lede">Hold a key, speak, and Yap drops the text right where your cursor is — transcribed by a Whisper model running <b>entirely on your machine</b>.</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
-            Download for Mac <small>· v0.7.0 · .dmg</small>
-          </a>
-          <a class="btn btn-ghost" href="#how">See how it works</a>
-        </div>
-        <div class="req"><span>⌘</span><b>Apple Silicon</b> · macOS 13+ · notarized &amp; signed</div>
-        <div class="badge-row">
-          <span class="badge"><span class="dot"></span>No account</span>
-          <span class="badge"><span class="dot"></span>No cloud</span>
-          <span class="badge"><span class="dot"></span>No telemetry</span>
-          <span class="badge"><span class="dot"></span>Works offline</span>
-        </div>
+      <span class="eyebrow">Free &middot; macOS 13+ &middot; Apple Silicon</span>
+      <h1>Hold a key.<br>Talk.<br>It&rsquo;s typed.</h1>
+      <p class="lede">Yap drops clean text at your cursor in any app on your Mac — transcribed by a Whisper model that runs on the machine in front of you, and nowhere else.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
+          Download for Mac <small>.dmg &middot; 22 MB</small>
+        </a>
+        <a class="btn btn-ghost" href="#how">How it works</a>
       </div>
-      <div class="scene">
-        <div class="cottage"><canvas id="yappy" width="880" height="880" aria-label="Yappy, a pixel chick, sitting in a cozy lamp-lit room"></canvas></div>
-        <div class="float-pill"><span class="wv"><i></i><i></i><i></i><i></i><i></i></span> Listening…</div>
+      <ul class="meta">
+        <li>Signed &amp; notarized by Apple</li>
+        <li>0 bytes sent</li>
+      </ul>
       </div>
+      <dl class="spec">
+        <div><dt>Engine</dt><dd>Whisper, GGUF + Metal</dd></div>
+        <div><dt>Runs on</dt><dd>Your Mac, on its own GPU</dd></div>
+        <div><dt>Network</dt><dd>Model download, update check</dd></div>
+        <div><dt>Account</dt><dd>None</dd></div>
+        <div><dt>Telemetry</dt><dd>None</dd></div>
+        <div><dt>Requires</dt><dd>macOS 13+, Apple Silicon</dd></div>
+        <div><dt>Licence</dt><dd>Apache-2.0</dd></div>
+      </dl>
     </div>
   </section>
+
+  <!-- THE DIORAMA — Yappy's house, the same scene that ships inside the app -->
+  <figure class="diorama">
+    <div class="dio-frame">
+      <canvas id="stage" role="img"
+        aria-label="A pixel-art cutaway of Yappy's cottage: a nest, a typewriter desk, a bookshelf, a door and two windows showing the sky. Yappy, a yellow chick, moves through daily routines."></canvas>
+    </div>
+    <figcaption class="wrap">
+      <p class="ticker">
+        <span class="live" aria-hidden="true"></span>
+        <span>Yappy is <b id="tickAct">at home</b></span>
+        <span class="sep" aria-hidden="true">|</span>
+        <span>Sky <b id="tickSky">day</b></span>
+        <span class="sep" aria-hidden="true">|</span>
+        <span>0 bytes sent</span>
+      </p>
+    </figcaption>
+  </figure>
 
   <!-- HOW IT WORKS -->
-  <section id="how">
+  <section class="section" id="how">
     <div class="wrap">
       <div class="section-head">
-        <span class="eyebrow">Three steps, no setup</span>
-        <h2>Dictate anywhere you can type.</h2>
-        <p>Yap lives in your menu bar and floats a tiny pill while you talk. It works in your editor, your terminal, Slack, the browser — anywhere with a text field.</p>
+        <span class="eyebrow">Three moves</span>
+        <h2>Dictate anywhere you can type</h2>
+        <p>Yap sits in the menu bar and floats a small pill while you talk. Editor, terminal, browser, chat — if there is a text field, Yap can fill it.</p>
       </div>
       <div class="steps">
-        <div class="step reveal">
-          <div class="n">01</div>
-          <h3>Hold to talk</h3>
-          <p>Press and hold <span class="kbd">fn</span>. A pill appears and the waveform starts moving. Let go when you're done — or flip on hands-free.</p>
+        <div class="step">
+          <span class="cue">Hold</span>
+          <h3>Press and hold <span class="kbd">fn</span></h3>
+          <p>The pill appears at the edge of the screen and starts listening, and Yap mutes the rest of your Mac so nothing plays over you. Prefer hands-free? Tap once to start, tap again to stop.</p>
         </div>
-        <div class="step reveal">
-          <div class="n">02</div>
-          <h3>It transcribes on-device</h3>
-          <p>A local Whisper model turns your speech into clean text in a few hundred milliseconds. The audio is processed in memory and deleted right after.</p>
+        <div class="step">
+          <span class="cue">Talk</span>
+          <h3>Speak like a person</h3>
+          <p>Your audio runs through noise suppression and voice isolation into a Whisper model on your Mac's own GPU. There is no upload step, because there is nothing to upload to.</p>
         </div>
-        <div class="step reveal">
-          <div class="n">03</div>
-          <h3>Text lands at your cursor</h3>
-          <p>Yap copies the result and pastes it into whatever you were typing in. Re-paste the last take anytime with <span class="kbd">⌃⌘V</span>.</p>
+        <div class="step">
+          <span class="cue">Release</span>
+          <h3>The text lands at your cursor</h3>
+          <p>Punctuation, lists and &ldquo;wait, no&rdquo; self-corrections are handled on the way out, and Yap pastes only into the app you dictated into. Not what you meant? Undo the edit and paste the raw take.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- FEATURES -->
-  <section style="padding-top:0">
-    <div class="wrap">
-      <div class="features">
-        <div class="feat reveal"><div class="ic">🔒</div><h3>On-device Whisper</h3><p>Apple-MLX Whisper runs locally. After a one-time model download, transcription is fully offline.</p></div>
-        <div class="feat reveal"><div class="ic">🪶</div><h3>Floating pill</h3><p>A calm, always-there island shows you it's listening — with a live waveform that rests when you do.</p></div>
-        <div class="feat reveal"><div class="ic">🧹</div><h3>Smart cleanup</h3><p>Fillers and false starts get tidied automatically, so "um, so like—" becomes the sentence you meant.</p></div>
-        <div class="feat reveal"><div class="ic">🙌</div><h3>Hands-free mode</h3><p>Tap once to start, tap to stop. Great for long-form thinking out loud without holding a key.</p></div>
-        <div class="feat reveal"><div class="ic">📇</div><h3>Your dictionary</h3><p>Teach Yap the names, jargon, and spellings you use — so it stops guessing and starts knowing.</p></div>
-        <div class="feat reveal"><div class="ic">📜</div><h3>Local history</h3><p>Every transcript is searchable and stored only on your Mac. Delete one, clear all, export never.</p></div>
-      </div>
-    </div>
-  </section>
+  <hr class="dither">
 
-  <!-- PRIVACY -->
-  <section id="privacy">
-    <div class="wrap">
-      <div class="privacy reveal">
-        <span class="eyebrow">The whole point</span>
-        <p class="lead" style="margin-top:14px">Your voice and your words <span class="hl">never leave your device</span> — because there's nowhere for them to go.</p>
-        <div class="facts">
-          <div class="fact"><span class="chk">✓</span><div><b>No account, ever</b><span>No sign-in, no email, no profile. You open the app and dictate.</span></div></div>
-          <div class="fact"><span class="chk">✓</span><div><b>No servers receive your data</b><span>We don't have an endpoint that could collect your speech or text. There's nothing to leak.</span></div></div>
-          <div class="fact"><span class="chk">✓</span><div><b>Audio is deleted immediately</b><span>The temporary recording is erased the moment transcription finishes — even if it fails.</span></div></div>
-          <div class="fact"><span class="chk">✓</span><div><b>You hold the keys</b><span>Transcripts live in a local database in your Library. Keep FileVault on and they're encrypted at rest.</span></div></div>
-        </div>
-        <p class="net"><b>The only network Yap ever touches:</b> a one-time model download on first run, and an update check. That's the complete list — no analytics, no telemetry, no crash reports. <a href="privacy.html">Read the full privacy policy →</a></p>
-      </div>
-    </div>
-  </section>
-
-  <!-- SOCIAL FUTURE -->
-  <section id="social">
+  <!-- FEATURES — everything here ships in v0.7.0 -->
+  <section class="section" id="features">
     <div class="wrap">
       <div class="section-head">
-        <span class="soon">◍ On the roadmap</span>
-        <h2 style="margin-top:16px">A little bird that grows with you.</h2>
-        <p>Yappy is the first of a set of collectible pixel creatures. Soon, Yap becomes a quiet, private feed where developers share <em>what they yapped about</em> — a daily note, a favorite quote, a streak — on your terms, never the raw transcript.</p>
+        <span class="eyebrow">Shipping in v0.7.0</span>
+        <h2>What you actually get</h2>
+        <p>No waitlist, no &ldquo;coming soon&rdquo; tier. Every line below is in the build on this page.</p>
       </div>
-      <div class="creatures reveal">
-        <div class="crt"><span class="av" style="background:var(--chick)">🐥</span><small>Yappy</small></div>
-        <div class="crt"><span class="av" style="background:var(--koala)">🐨</span><small>Koala</small></div>
-        <div class="crt"><span class="av" style="background:var(--roo)">🦘</span><small>Kangaroo</small></div>
-        <div class="crt"><span class="av" style="background:var(--sala)">🦎</span><small>Salamander</small></div>
-        <div class="crt"><span class="av" style="background:var(--bug)">🐞</span><small>Ladybug</small></div>
-      </div>
-      <div class="social-grid">
-        <div>
-          <div class="facts" style="grid-template-columns:1fr">
-            <div class="fact"><span class="chk">◍</span><div><b>Private by default</b><span>A four-level share ladder — Private, Topic, Quote, Full — so you choose exactly what a post reveals.</span></div></div>
-            <div class="fact"><span class="chk">◍</span><div><b>Summaries, not transcripts</b><span>On-device summaries mean the feed shows the gist you approve, never the words you spoke.</span></div></div>
-            <div class="fact"><span class="chk">◍</span><div><b>Creatures react to your day</b><span>Your pixel pet levels up, shows a streak, and reacts to how much you shipped.</span></div></div>
-          </div>
-          <p style="color:var(--muted);font-size:.9rem;margin-top:20px;font-family:var(--mono)">Preview below — the feed is a concept, not shipped. The single-user app above is real and ready today.</p>
+      <div class="features">
+        <div class="feat">
+          <span class="tag">Reliability</span>
+          <h3>Never lose a dictation</h3>
+          <p>A crash-safe journal records each take as it happens, and every take is saved in one transaction. If Yap dies mid-sentence the words are still there when it comes back, and a failed take can be retried from the toast or from History.</p>
         </div>
-        <div class="feedcard reveal" aria-hidden="true">
-          <div class="yap you">
-            <div class="h"><span class="av" style="background:var(--chick)">🐥</span><div><div class="nm">You <span class="c">· Yappy</span></div></div><span class="when">just now</span></div>
-            <p><span class="say">Yappy says</span> you shipped a notarized build and rethemed the whole app — the cozy version finally matches the chick.</p>
-          </div>
-          <div class="yap">
-            <div class="h"><span class="av" style="background:var(--koala)">🐨</span><div><div class="nm">Mira <span class="c">· Koala</span></div></div><span class="when">2h</span></div>
-            <p><span class="say">Koala mumbles that</span> Mira tuned three queries quietly killing prod.</p>
-          </div>
-          <div class="yap">
-            <div class="h"><span class="av" style="background:var(--sala)">🦎</span><div><div class="nm">Sol <span class="c">· Salamander</span></div></div><span class="when">4h</span></div>
-            <p><span class="say">Salamander hisses that</span> Sol rewrote the render pipeline. It was on fire. Now it's just warm.</p>
-          </div>
+        <div class="feat">
+          <span class="tag">Companion</span>
+          <h3>Yappy watches you work</h3>
+          <p>The floating pill is a live scene, not a spinner. Yappy reacts to what you are actually saying and escalates from a notepad to a whole desk as the take gets longer. Drag the pill to dock it at any screen edge.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">Editing</span>
+          <h3>Command mode</h3>
+          <p>Select some text and say the edit out loud. The commands are deterministic and local — no round trip, no model guessing at what you meant by &ldquo;make that a list&rdquo;.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">Shortcuts</span>
+          <h3>Snippets</h3>
+          <p>Speak a trigger phrase and get the saved text: an address, boilerplate, the command you can never remember. Stored on your Mac, expanded on your Mac.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">Accuracy</span>
+          <h3>It learns your words</h3>
+          <p>Correct a transcript once and the dictionary keeps the correction. Starred terms bias the recognizer directly, so names, jargon and spellings stop coming back wrong.</p>
+        </div>
+        <div class="feat">
+          <span class="tag">Local only</span>
+          <h3>Native engine, no sidecar</h3>
+          <p>Transcription runs on an embedded GGUF/Metal Whisper engine built into the app. No Python to install, no API key, no account. After the one-time model download, Yap works with the Wi-Fi off.</p>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- PRIVACY MANIFESTO -->
+  <section class="section manifesto" id="privacy">
+    <div class="wrap">
+      <span class="eyebrow data">The whole point</span>
+      <h2>It works on a plane</h2>
+      <p class="lead">That is the shortest proof we have. Switch off the Wi-Fi at 35,000 feet and Yap keeps transcribing, because there is no server at the other end of it. Not a fast one, not a private one — not one at all.</p>
+      <div class="facts">
+        <div class="fact">
+          <b>No account</b>
+          <span>No sign-in, no email, no profile. Open the app and start talking.</span>
+        </div>
+        <div class="fact">
+          <b>Nothing is uploaded</b>
+          <span>Yap has no endpoint that receives your speech, your text, your screen or your context. There is nothing to leak, and nothing to hand over.</span>
+        </div>
+        <div class="fact">
+          <b>Context stays in the call stack</b>
+          <span>Yap reads the text just before your cursor so it can match the formatting you were already using. That context is used inside the function that asked for it and is never stored or sent.</span>
+        </div>
+        <div class="fact">
+          <b>No telemetry</b>
+          <span>No analytics and no crash reports to us. When Yap crashes it writes a report to a local file you can read, export, or delete.</span>
+        </div>
+        <div class="fact">
+          <b>You hold the transcripts</b>
+          <span>History lives in a database inside your own Library. Export every transcript at once, or clear them for good with a secure delete that overwrites the rows, rebuilds the search index and vacuums the file.</span>
+        </div>
+        <div class="fact">
+          <b>Open to read</b>
+          <span>Yap is Apache-2.0 and the source is public, so none of the above has to be taken on trust.</span>
+        </div>
+      </div>
+      <p class="net"><b>The complete list of network calls Yap makes:</b> a one-time model download on first run, and an update check you can switch off in Settings. That is the whole list. <a href="privacy.html">Read the privacy policy &rarr;</a></p>
     </div>
   </section>
 
   <!-- DOWNLOAD -->
-  <section class="download">
+  <section class="section download">
     <div class="wrap">
-      <div class="band reveal">
-        <span class="eyebrow">Ready when you are</span>
-        <h2 style="margin-top:12px">Get Yap for Mac.</h2>
-        <p>Free and open source. Download the signed, notarized app and start dictating in under a minute.</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
-            Download Yap <small>· v0.7.0 · Apple Silicon</small>
-          </a>
-          <a class="btn btn-ghost" href="https://github.com/wilsonguenther-dev/wilson-voice">View on GitHub</a>
-        </div>
-        <div class="req">Requires macOS 13 Ventura or later on Apple Silicon. Notarized by Apple.</div>
-        <div class="opensource">Apache-2.0 licensed · builds locally · your data stays yours</div>
+      <span class="eyebrow">Ready when you are</span>
+      <h2>Get Yap</h2>
+      <p>Free and open source, signed and notarized by Apple. About a minute from download to your first dictation.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
+          Download Yap <small>v0.7.0 &middot; Apple Silicon</small>
+        </a>
       </div>
+      <ul class="meta">
+        <li>macOS 13 Ventura or later</li>
+        <li>Apple Silicon</li>
+        <li>22 MB</li>
+      </ul>
     </div>
   </section>
 </main>
 
 <footer class="foot">
   <div class="wrap">
-    <a class="brand" href="/"><span class="mark"><svg width="24" height="24" viewBox="0 0 32 32"><circle cx="16" cy="17" r="9" fill="#ffcf3f"/><path d="M15 6l1 4 1-4z" fill="#ef9a1e"/><circle cx="19" cy="15" r="1.6" fill="#241c13"/><path d="M24 16l4 1.5-4 1.5z" fill="#ef7d3c"/></svg></span><span>Yap</span></a>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true" focusable="false">
+        <rect x="7" y="1" width="2" height="2" fill="#efa72c"/>
+        <rect x="6" y="3" width="4" height="1" fill="#ffcf3f"/>
+        <rect x="5" y="4" width="6" height="1" fill="#ffcf3f"/>
+        <rect x="4" y="5" width="8" height="4" fill="#ffcf3f"/>
+        <rect x="5" y="9" width="6" height="1" fill="#ffcf3f"/>
+        <rect x="6" y="10" width="4" height="1" fill="#ffcf3f"/>
+        <rect x="6" y="6" width="1" height="2" fill="#2b2118"/>
+        <rect x="9" y="6" width="1" height="2" fill="#2b2118"/>
+        <rect x="7" y="8" width="2" height="1" fill="#ff7a3c"/>
+        <rect x="5" y="11" width="2" height="1" fill="#ff7a3c"/>
+        <rect x="9" y="11" width="2" height="1" fill="#ff7a3c"/>
+      </svg>
+      <span>Yap</span>
+    </a>
     <div class="links">
       <a href="privacy.html">Privacy</a>
       <a href="terms.html">Terms</a>
-      <a href="https://github.com/wilsonguenther-dev/wilson-voice">GitHub</a>
-      <a href="https://github.com/wilsonguenther-dev/wilson-voice/issues/new">Feedback</a>
       <a href="#" id="theme-toggle" role="button">Theme</a>
     </div>
-    <div class="cr">Built by Wilson Guenther · © 2026</div>
+    <div class="cr">Built by Wilson Guenther &middot; 2026</div>
   </div>
 </footer>
 
 <script>
-// Cozy pixel-ish scene: Yappy the chick in a lamp-lit room, drawn crisp at DPR.
-(function(){
-  var c=document.getElementById('yappy'); if(!c) return;
-  var ctx=c.getContext('2d'); var S=880; // logical grid we draw against
-  var dark=matchMedia('(prefers-color-scheme: dark)').matches
-        || document.documentElement.getAttribute('data-theme')==='dark';
-  function P(x,y,w,h,col){ctx.fillStyle=col;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
-  function draw(){
-    dark=document.documentElement.getAttribute('data-theme')==='dark'
-      || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
-    ctx.clearRect(0,0,S,S);
-    var wall = dark? '#2a2013':'#fdf3dd', wall2 = dark?'#221a0f':'#f7ead0';
-    var floor= dark? '#3a2c19':'#d9b483', floor2= dark?'#32261571':'#c99f6e';
-    // wall + floor
-    var g=ctx.createLinearGradient(0,0,0,S*0.66); g.addColorStop(0,wall);g.addColorStop(1,wall2);
-    ctx.fillStyle=g; ctx.fillRect(0,0,S,S*0.66);
-    P(0,S*0.66,S,S*0.34,floor);
-    for(var i=1;i<7;i++) P(0,S*0.66+i*46,S,3,floor2);
-    // warm light beam from the window
-    ctx.save();ctx.globalAlpha=dark?0.16:0.28;ctx.fillStyle='#ffd98a';
-    ctx.beginPath();ctx.moveTo(150,150);ctx.lineTo(430,150);ctx.lineTo(640,S*0.72);ctx.lineTo(250,S*0.72);ctx.closePath();ctx.fill();ctx.restore();
-    // window
-    P(150,120,260,240,dark?'#7c5a34':'#b98a52'); // frame
-    var sky=ctx.createLinearGradient(0,140,0,340); sky.addColorStop(0,'#bfe6ff');sky.addColorStop(1,'#e9f6ff');
-    ctx.fillStyle=sky;ctx.fillRect(168,138,224,204);
-    // sun + cloud
-    P(320,168,44,44,'#fff2ad'); ctx.fillStyle='#fff2ad';ctx.beginPath();ctx.arc(342,190,26,0,7);ctx.fill();
-    P(196,250,70,18,'#ffffff'); P(214,236,50,18,'#ffffff');
-    // muntins
-    P(276,138,8,204,dark?'#7c5a34':'#b98a52'); P(168,232,224,8,dark?'#7c5a34':'#b98a52');
-    // little shelf w/ plant on the right
-    P(560,300,150,10,dark?'#7c5a34':'#b98a52');
-    P(600,250,12,50,'#8a5a3c'); ctx.fillStyle=dark?'#4f7d52':'#67a86b';ctx.beginPath();ctx.arc(606,244,30,0,7);ctx.fill();
-    P(596,300,32,0,'#000');
-    // rug
-    ctx.fillStyle=dark?'#5a3b22':'#efc9a3';ctx.beginPath();ctx.ellipse(455,700,210,54,0,0,7);ctx.fill();
-    ctx.fillStyle=dark?'#6b4527':'#e6b98a';ctx.beginPath();ctx.ellipse(455,700,150,36,0,0,7);ctx.fill();
-    // ---- Yappy the chick ----
-    var cx=455, cy=560, r=118;
-    // shadow
-    ctx.fillStyle='rgba(80,50,20,'+(dark?0.35:0.16)+')';ctx.beginPath();ctx.ellipse(cx,cy+r-6,r*0.86,26,0,0,7);ctx.fill();
-    // feet
-    P(cx-42,cy+r-30,26,34,'#ef7d3c'); P(cx+16,cy+r-30,26,34,'#ef7d3c');
-    // body
-    ctx.fillStyle='#ffcf3f';ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.fill();
-    // belly highlight
-    ctx.fillStyle='#ffe08a';ctx.beginPath();ctx.arc(cx-8,cy+18,r*0.7,0,7);ctx.fill();
-    // wing
-    ctx.fillStyle='#f2b705';ctx.beginPath();ctx.ellipse(cx-r*0.62,cy+8,34,54,-0.3,0,7);ctx.fill();
-    // tuft (two spikes)
-    ctx.fillStyle='#f2b705';
-    ctx.beginPath();ctx.moveTo(cx-30,cy-r+18);ctx.lineTo(cx-20,cy-r-32);ctx.lineTo(cx-6,cy-r+14);ctx.closePath();ctx.fill();
-    ctx.beginPath();ctx.moveTo(cx+2,cy-r+16);ctx.lineTo(cx+16,cy-r-28);ctx.lineTo(cx+30,cy-r+18);ctx.closePath();ctx.fill();
-    // cheeks
-    ctx.fillStyle='rgba(239,125,60,0.28)';ctx.beginPath();ctx.arc(cx+52,cy+10,20,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-56,cy+10,18,0,7);ctx.fill();
-    // eyes
-    ctx.fillStyle='#241c13';ctx.beginPath();ctx.arc(cx+28,cy-24,13,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-20,cy-24,13,0,7);ctx.fill();
-    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(cx+32,cy-28,4,0,7);ctx.fill();ctx.beginPath();ctx.arc(cx-16,cy-28,4,0,7);ctx.fill();
-    // beak
-    ctx.fillStyle='#ef7d3c';ctx.beginPath();ctx.moveTo(cx+2,cy+4);ctx.lineTo(cx+34,cy+16);ctx.lineTo(cx+2,cy+30);ctx.closePath();ctx.fill();
-    ctx.fillStyle='#c85a1e';ctx.beginPath();ctx.moveTo(cx+2,cy+18);ctx.lineTo(cx+20,cy+22);ctx.lineTo(cx+2,cy+30);ctx.closePath();ctx.fill();
+/* ---------------------------------------------------------------------------
+   Yappy's house — the drawing code from docs/prototypes/yappy-house.html (the
+   SSOT the app itself ports from), widened from a 192x128 room to a 320x128
+   cottage so it can run as a full-width band, and fitted with the app's own
+   source-rect camera so a narrow viewport crops and follows Yappy instead of
+   shrinking the whole room to nothing.
+--------------------------------------------------------------------------- */
+(() => {
+  "use strict";
+  const stage = document.getElementById("stage");
+  if (!stage) return;
+  const dctx = stage.getContext("2d");
+  dctx.imageSmoothingEnabled = false;
+
+  // Low-res world; upscaled with nearest-neighbour for crisp pixels.
+  const W = 320, H = 128;
+  const os = document.createElement("canvas");
+  os.width = W; os.height = H;
+  const g = os.getContext("2d");
+  g.imageSmoothingEnabled = false;
+
+  const reduceQ = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const darkQ = window.matchMedia("(prefers-color-scheme: dark)");
+  const reduce = reduceQ.matches;
+
+  // ---- pixel palette -------------------------------------------------------
+  const C = {
+    wallHi:"#f7e4ac", wall:"#eccf92", wallSh:"#d8b476", wallDk:"#c39a5f",
+    floorHi:"#bd8151", floor:"#a5673f", floorSh:"#8a5334", floorDk:"#6f3f27",
+    yolkHi:"#ffe483", yolk:"#ffcf3f", yolkSh:"#efa72c", yolkDk:"#d3871d",
+    carrot:"#ff7a3c", carrotDk:"#e85f24", cheek:"#ff9d6a",
+    eye:"#2b2118", eyeHi:"#fff6e6",
+    wood:"#8a5a36", woodHi:"#a5704a", woodDk:"#5f3c22",
+    leaf:"#5fb35a", leafHi:"#7fd06f", leafDk:"#3f8f45", pot:"#c96f43", potHi:"#e08a5c",
+    metal:"#7d8c96", metalHi:"#9fb0ba", metalDk:"#586771",
+    paper:"#fff6e6", paperSh:"#e7d9be",
+    rug:"#4c9aa6", rugHi:"#69b6c1", rugDk:"#37727c",
+    lampPole:"#6b5238", shade:"#ffcf6b", shadeHi:"#ffe6a6",
+    coffee:"#6b4326", cup:"#f1eabe",
+    beakHi:"#ffb06a", eyeShine:"#ffffff",
+    bedFrame:"#7a4b2e", bedFrameHi:"#9a6540", bedFrameDk:"#553019",
+    quilt:"#e0857a", quiltHi:"#f2a89b", quiltDk:"#b8615a", pillow:"#fbf3e2", pillowSh:"#e4d6bb",
+    chair:"#7a4b2e", chairHi:"#9a6540", chairDk:"#553019",
+    floorGrain:"#96592f",
+    rose:"#ff6b8a",
+  };
+
+  // ---- helpers -------------------------------------------------------------
+  const px = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(x|0, y|0, w|0, h|0); };
+  const dot = (x, y, col) => { g.fillStyle = col; g.fillRect(x|0, y|0, 1, 1); };
+  const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+  const lerp = (a,b,t) => a + (b-a)*t;
+  function hex(h){ h=h.replace("#",""); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+  function mix(h1,h2,t){ const a=hex(h1),b=hex(h2); return `rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`; }
+  // 2x2 ordered dither between two colours by threshold t (0..1)
+  const BAYER = [[0,2],[3,1]];
+  function ditherBand(x, y, w, h, cA, cB, t){
+    for (let j=0;j<h;j++) for (let i=0;i<w;i++){
+      const th = (BAYER[j&1][i&1]+0.5)/4;
+      dot(x+i, y+j, t > th ? cB : cA);
+    }
   }
-  // crisp for DPR
-  var dpr=Math.min(devicePixelRatio||1,2);
-  c.width=S*dpr;c.height=S*dpr;c.style.width='100%';c.style.height='100%';
-  ctx.scale(dpr,dpr);
-  draw();
-  new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
+
+  // ---- day/night keyframes -------------------------------------------------
+  // phase: 0 dawn · .25 day · .5 dusk · .75 night (wraps)
+  const SKY = [
+    { at:0.00, top:"#f6a6a0", bot:"#ffd9a0", amb:"#ffb28a", ambA:0.16, lamp:0.15, stars:0 }, // dawn
+    { at:0.25, top:"#7ec8ff", bot:"#cdeeff", amb:"#fff2d8", ambA:0.00, lamp:0.00, stars:0 }, // day
+    { at:0.50, top:"#ff9d6b", bot:"#ffd27a", amb:"#ff8a4a", ambA:0.22, lamp:0.45, stars:0 }, // dusk
+    { at:0.75, top:"#171a3d", bot:"#2c3060", amb:"#1a2050", ambA:0.42, lamp:0.85, stars:1 }, // night
+  ];
+  function skyAt(p){
+    p = ((p % 1) + 1) % 1;
+    const seg = p*4, i = Math.floor(seg) % 4, f = seg - Math.floor(seg);
+    const a = SKY[i], b = SKY[(i+1)%4];
+    return {
+      top: mix(a.top, b.top, f), bot: mix(a.bot, b.bot, f),
+      amb: mix(a.amb, b.amb, f), ambA: lerp(a.ambA, b.ambA, f),
+      lamp: lerp(a.lamp, b.lamp, f), stars: lerp(a.stars, b.stars, f),
+    };
+  }
+  function skyName(p){
+    p = ((p % 1) + 1) % 1;
+    if (p < 0.14 || p > 0.92) return "dawn";
+    if (p < 0.4) return "day";
+    if (p < 0.64) return "dusk";
+    return "night";
+  }
+  // The page's colour scheme picks which half of the day the room lives in —
+  // light runs dawn→day, dark runs dusk→night — and the real local clock walks
+  // it across that half, exactly like the app walks it across a whole day.
+  function isDark(){
+    const t = document.documentElement.getAttribute("data-theme");
+    return t ? t === "dark" : darkQ.matches;
+  }
+  function clockPhase(){
+    const now = new Date();
+    const frac = (now.getHours()*60 + now.getMinutes()) / 1440;
+    return (isDark() ? 0.5 : 0.0) + frac * 0.42 + 0.02;
+  }
+
+  // ---- static scene geometry ----------------------------------------------
+  const FLOOR_Y = 100;                     // top of the floor
+  const FEET_Y = 99;                       // where Yappy's feet rest
+  const WIN  = { x:26,  y:42, w:46, h:34 }; // window over the nest
+  const WIN2 = { x:272, y:44, w:38, h:30 }; // window over the reading corner
+  const starsFor = (win, seed) => Array.from({length:22}, (_,i)=>({
+    x: win.x+2 + ((i*37+seed)%(win.w-4)),
+    y: win.y+2 + ((i*53+seed)%(win.h-14)),
+    tw: (i*0.7)%1,
+  }));
+  const STARS = new Map([[WIN, starsFor(WIN,0)], [WIN2, starsFor(WIN2,11)]]);
+  const DUST = Array.from({length:14}, (_,i)=>({ o:(i*0.61)%1, s:0.3+(i%3)*0.12 }));
+
+  // ---- scene drawing -------------------------------------------------------
+  function drawWindow(win, sky, t){
+    const x=win.x, y=win.y, w=win.w, h=win.h;
+    // sky gradient via 3 dithered bands
+    px(x, y, w, h, sky.top);
+    ditherBand(x, y+Math.floor(h*0.33), w, Math.ceil(h*0.34), sky.top, sky.bot, 0.5);
+    px(x, y+Math.floor(h*0.66), w, h-Math.floor(h*0.66), sky.bot);
+    if (sky.stars > 0.05){
+      for (const s of STARS.get(win)){
+        const tw = 0.5 + 0.5*Math.sin(t*2 + s.tw*6.28);
+        if (tw*sky.stars > 0.35) dot(s.x, s.y, "#fff7e0");
+      }
+      px(x+w-14, y+6, 7, 7, "#f6f0cf"); px(x+w-13, y+7, 5, 5, "#fffbe6");
+      px(x+w-9, y+6, 3, 4, sky.top);                        // crescent bite
+    } else if (sky.lamp < 0.2){
+      const cx = x + 6 + ((t*3) % (w+14)) - 7;
+      px(cx, y+8, 9, 3, "#ffffff"); px(cx+3, y+6, 7, 3, "#ffffff");
+      const bx = x + ((t*9) % (w+20)) - 10, by = y + 14 + Math.sin(t*2)*2;
+      if (bx > x+2 && bx < x+w-4){ dot(bx, by|0, "#3a3a44"); dot(bx+1, (by|0)-1, "#3a3a44"); dot(bx+2, by|0, "#3a3a44"); }
+    }
+    if (sky.stars < 0.4 && sky.lamp < 0.6){
+      px(x+8, y+7, 6, 6, "#fff2b0"); px(x+9, y+8, 4, 4, "#ffe27a");
+    }
+    // frame + mullions + sill
+    const fr = C.wood;
+    for (let i=-1;i<=w;i++){ dot(x+i, y-1, C.woodDk); dot(x+i, y+h, C.woodDk); }
+    px(x-2, y-2, w+4, 2, fr); px(x-2, y+h, w+4, 2, fr);
+    px(x-2, y-2, 2, h+4, fr); px(x+w, y-2, 2, h+4, fr);
+    px(x + (w>>1) -1, y, 2, h, fr);
+    px(x, y + (h>>1) -1, w, 2, fr);
+    px(x-4, y+h+1, w+8, 3, C.woodHi); px(x-4, y+h+4, w+8, 1, C.woodDk);
+  }
+
+  function drawRoom(sky, t){
+    // wall
+    px(0,0,W,FLOOR_Y, C.wall);
+    for (let i=0;i<26;i++){ const a=1-i/26; g.globalAlpha=0.5*a; px(0,0,W,1+i%2, C.wallDk); }
+    g.globalAlpha=1;
+    px(0,0,4,FLOOR_Y, C.wallDk); px(W-4,0,4,FLOOR_Y, C.wallSh);
+    px(0, FLOOR_Y-3, W, 3, C.wallSh);                        // baseboard
+    // floor — wide planks with seams + wood grain
+    px(0, FLOOR_Y, W, H-FLOOR_Y, C.floor);
+    px(0, FLOOR_Y, W, 1, C.floorHi);
+    px(0, FLOOR_Y+1, W, 1, C.floorSh);
+    for (let sx=0; sx<W; sx+=18) px(sx, FLOOR_Y+2, 1, H-FLOOR_Y-2, C.floorDk);
+    for (let gy=FLOOR_Y+5; gy<H-2; gy+=5) for (let gx=(gy*5)%13; gx<W; gx+=23) px(gx, gy, 9, 1, C.floorGrain);
+    // rug — bordered with a diamond weave
+    const rx=50, rw=92, ry=H-15;
+    px(rx, ry, rw, 14, C.rugDk); px(rx+1, ry+1, rw-2, 12, C.rug);
+    px(rx+1, ry+1, rw-2, 1, C.rugHi); px(rx+2, ry+2, rw-4, 1, C.rug);
+    for (let dp=rx+8; dp<rx+rw-6; dp+=13){ dot(dp+1,ry+5,C.rugHi); px(dp,ry+6,3,3,C.rugHi); dot(dp+1,ry+9,C.rugHi); }
+    // doormat by the front door
+    px(230, H-8, 26, 7, C.rugDk); px(231, H-7, 24, 5, "#3f8791");
+    for (let m=233; m<254; m+=4) px(m, H-6, 1, 3, C.rugHi);
+
+    drawWindow(WIN, sky, t);
+    drawWindow(WIN2, sky, t);
+
+    // framed picture on the wall (a tiny landscape)
+    px(96, 46, 20, 14, C.wood); px(98, 48, 16, 10, "#bfe0d0");
+    px(98, 54, 16, 4, C.leafDk); px(102, 50, 4, 4, "#ffe27a");
+
+    // wall shelf with three books
+    px(120, 62, 22, 2, C.wood);
+    px(123, 56, 3, 6, "#c65b6b"); px(127, 57, 3, 5, "#4c9aa6"); px(131, 56, 3, 6, "#e0a24a");
+
+    // --- plant (station: water) ---
+    px(80, 88, 10, 12, C.pot); px(80, 88, 10, 2, C.potHi); px(80, 98, 10, 2, C.floorDk);
+    const sway = Math.sin(t*1.3)*1;
+    px(84, 78, 2, 12, C.leafDk);
+    px(80+sway, 74, 6, 6, C.leaf); px(80+sway,74,3,3,C.leafHi);
+    px(86+sway, 78, 6, 5, C.leaf); px(86+sway,78,3,2,C.leafHi);
+    px(82-sway, 80, 5, 5, C.leaf);
+
+    // --- bed (station: sleep), bottom-left ---
+    const bx=8, bby=85;
+    px(bx-2, bby+1, 4, 15, C.bedFrame); px(bx-2,bby+1,4,1,C.bedFrameHi);
+    px(bx+32, bby+6, 4, 10, C.bedFrame); px(bx+32,bby+6,4,1,C.bedFrameHi);
+    px(bx, bby+13, 34, 3, C.bedFrameDk);
+    px(bx+1, bby+6, 32, 7, C.quilt); px(bx+1,bby+6,32,1,C.quiltHi); px(bx+1,bby+12,32,1,C.quiltDk);
+    for (let q=bx+4;q<bx+32;q+=6){ dot(q,bby+8,C.quiltHi); dot(q+2,bby+10,C.quiltDk); }
+    px(bx+2, bby+2, 12, 5, C.pillow); px(bx+2,bby+2,12,1,"#fff"); px(bx+2,bby+6,12,1,C.pillowSh);
+
+    // --- desk + typewriter (station: work) ---
+    const dx=126, dy=76;
+    px(dx, dy+14, 4, 10, C.woodDk); px(dx+40, dy+14, 4, 10, C.woodDk);
+    px(dx-2, dy+8, 48, 6, C.wood); px(dx-2, dy+8, 48, 2, C.woodHi);
+    px(dx+30, dy+2, 12, 6, C.paper); px(dx+30, dy+2, 12, 1, "#fff"); px(dx+30, dy+7, 12, 1, C.paperSh);
+    const tw = dx+4;
+    px(tw, dy-2, 20, 10, C.metal); px(tw, dy-2, 20, 2, C.metalHi); px(tw, dy+8, 20, 2, C.metalDk);
+    px(tw+3, dy+3, 14, 3, C.metalDk);
+    for (let k=0;k<6;k++) dot(tw+4+k*2, dy+4, C.metalHi);
+    px(tw+5, dy-6, 10, 5, C.paper); px(tw+5, dy-6, 10, 1, "#fff");
+    px(dx+34, dy+3, 5, 5, C.cup); px(dx+34, dy+3, 5, 1, "#fff"); px(dx+39, dy+4, 2, 2, C.cup);
+    const chx=dx-6;
+    px(chx-2, dy+2, 3, 13, C.chair); px(chx-2,dy+2,3,1,C.chairHi);
+    px(chx-4, dy+12, 11, 3, C.chair); px(chx-4,dy+12,11,1,C.chairHi);
+    px(chx-3, dy+15, 2, 8, C.chairDk); px(chx+4, dy+15, 2, 8, C.chairDk);
+
+    // --- filing cabinet ---
+    px(168, 70, 20, 30, C.metal); px(168,70,20,2,C.metalHi); px(168,98,20,2,C.metalDk);
+    px(170, 74, 16, 7, C.metalDk); px(176, 77, 4, 2, C.metalHi);
+    px(170, 84, 16, 7, C.metalDk); px(176, 87, 4, 2, C.metalHi);
+
+    // --- floor lamp (shade drawn later so its glow reads) ---
+    px(160, 60, 2, 40, C.lampPole);
+
+    // ===== the wing this page added, so the room can run full width =====
+
+    // --- bookshelf (station: books) ---
+    const sx0=196, sy0=48, sw=26, sh=52;
+    px(sx0, sy0, sw, sh, C.wood);
+    px(sx0, sy0, sw, 2, C.woodHi); px(sx0, sy0+sh-2, sw, 2, C.woodDk);
+    px(sx0, sy0, 2, sh, C.woodHi); px(sx0+sw-2, sy0, 2, sh, C.woodDk);
+    const SPINES = ["#c65b6b","#4c9aa6","#e0a24a","#5fb35a","#a06fb8","#d97f38","#7d8c96","#e0857a"];
+    for (let row=0; row<3; row++){
+      const by2 = sy0 + 4 + row*17;
+      px(sx0+2, by2+13, sw-4, 2, C.woodDk);                  // shelf board
+      let bxx = sx0 + 3;
+      let k = row*3;
+      while (bxx < sx0+sw-5){
+        const bw = 2 + ((k*7)%3), bh = 9 + ((k*5)%4);
+        px(bxx, by2+13-bh, bw, bh, SPINES[(k+row)%SPINES.length]);
+        dot(bxx, by2+13-bh, "#fff6e6");
+        bxx += bw + 1; k++;
+      }
+    }
+
+    // --- wall clock, ticking on the real minute ---
+    const ck=224, cky=44;
+    px(ck, cky, 14, 14, C.woodDk); px(ck+1, cky+1, 12, 12, "#fff6e6");
+    dot(ck+7, cky+2, C.woodDk); dot(ck+7, cky+11, C.woodDk);
+    dot(ck+2, cky+7, C.woodDk); dot(ck+12, cky+7, C.woodDk);
+    const now = new Date();
+    const ha = ((now.getHours()%12)/12 + now.getMinutes()/720) * 6.2832 - 1.5708;
+    const ma = (now.getMinutes()/60) * 6.2832 - 1.5708;
+    for (let i=1;i<=3;i++) dot(ck+7 + Math.cos(ha)*i, cky+7 + Math.sin(ha)*i, "#2b2118");
+    for (let i=1;i<=5;i++) dot(ck+7 + Math.cos(ma)*i, cky+7 + Math.sin(ma)*i, "#2b2118");
+
+    // --- front door (station: door) ---
+    const dxx=230, dyy=46;
+    px(dxx-2, dyy-2, 30, 56, C.woodDk);
+    px(dxx, dyy, 26, 54, C.wood); px(dxx, dyy, 26, 2, C.woodHi);
+    px(dxx+3, dyy+4, 8, 20, C.woodDk); px(dxx+15, dyy+4, 8, 20, C.woodDk);
+    px(dxx+3, dyy+28, 8, 18, C.woodDk); px(dxx+15, dyy+28, 8, 18, C.woodDk);
+    px(dxx+21, dyy+26, 3, 3, "#e0a24a");                     // knob
+    // coat hooks beside the door
+    px(dxx+32, dyy+2, 12, 2, C.woodDk);
+    px(dxx+34, dyy+4, 1, 3, C.woodDk); px(dxx+41, dyy+4, 1, 3, C.woodDk);
+    px(dxx+32, dyy+6, 5, 9, "#c65b6b"); px(dxx+32, dyy+6, 5, 1, "#e0857a");
+
+    // --- reading corner under the second window ---
+    px(274, 88, 22, 3, C.wood); px(274, 91, 3, 9, C.woodDk); px(293, 91, 3, 9, C.woodDk);
+    px(278, 82, 12, 6, C.paper); px(278, 82, 12, 1, "#fff"); px(278, 87, 12, 1, C.paperSh);
+    px(292, 84, 5, 4, C.cup); px(292, 84, 5, 1, "#fff");
+    // stack of archive boxes
+    px(302, 84, 14, 16, "#c9a45c"); px(302, 84, 14, 2, "#e2c48a");
+    px(302, 92, 14, 1, "#a17c3c"); px(306, 88, 6, 2, C.paperSh);
+
+    return { lampX:161, lampY:58 };
+  }
+
+  function drawLampShade(sky){
+    const base = sky.lamp>0.3 ? C.shadeHi : C.shade;
+    px(156, 52, 12, 8, base); px(156,52,12,2,"#fff2c8"); px(157,60,10,1,"#caa04a");
+  }
+
+  // ---- Yappy ---------------------------------------------------------------
+  // pose: sleep|idle|walk|work|water|look|sip|happy ; face: -1 left / 1 right
+  function drawYappy(x, feetY, pose, t, face){
+    x = Math.round(x); const y = Math.round(feetY);
+    const breathe = Math.sin(t*2.2)*0.6;
+    const blink = (Math.sin(t*0.7)*0.5+0.5) > 0.93;
+
+    // ===== SLEEP: curled on the bed, head tucked =====
+    if (pose === "sleep"){
+      const cx = x, cy = y - 9;
+      const rows=[4,7,9,9,8,6];
+      for(let r=0;r<rows.length;r++){const hw=rows[r]; px(cx-hw, cy-5+r, hw*2, 1, C.yolk); dot(cx-hw,cy-5+r,C.yolkDk); dot(cx+hw-1,cy-5+r,C.yolkDk);}
+      px(cx-7, cy-5, 15, 1, C.yolkHi);
+      px(cx-5, cy, 11, 1, C.yolkSh);
+      px(cx-5, cy-4, 6, 3, C.yolkSh);
+      px(cx+3, cy-3, 5, 4, C.yolk); px(cx+3,cy-3,5,1,C.yolkHi);
+      px(cx+4, cy-1, 3, 1, C.eye);
+      px(cx+7, cy-1, 2, 2, C.carrot);
+      const zt=(t*0.7)%3;
+      if(zt>0.3) dot(cx+9, cy-6, "#cfe0f7");
+      if(zt>1.1) px(cx+11, cy-9, 2,1, "#bcd4f2");
+      if(zt>1.9) px(cx+13, cy-12, 2,1, "#a9c6ee");
+      return;
+    }
+
+    // ===== WORK: side profile on the chair, beak + wings at the keys =====
+    if (pose === "work"){
+      const bob = Math.abs(Math.sin(t*7))*1;
+      const by = Math.round(y - 15 - bob);
+      const rows=[3,5,6,7,7,7,7,6,6,5,4];
+      for(let r=0;r<rows.length;r++){const hw=rows[r]; px(x-hw+1, by+r, hw*2, 1, C.yolk); dot(x-hw+1,by+r,C.yolkDk); dot(x+hw,by+r,C.yolkDk);}
+      px(x-5, by, 12, 1, C.yolkHi); px(x-4, by+9, 10, 1, C.yolkSh);
+      px(x-8, by+3, 3, 4, C.yolkSh); px(x-9, by+4, 2, 2, C.yolkDk);
+      px(x+3, by-2, 5, 5, C.yolk); px(x+3, by-2, 5, 1, C.yolkHi);
+      px(x, by-4, 2, 3, C.yolkHi);
+      if(blink) px(x+5, by, 2, 1, C.eye); else { px(x+5, by-1, 2, 2, C.eye); dot(x+6, by-1, C.eyeShine); }
+      px(x+7, by, 3, 2, C.carrot); px(x+7, by+1, 3, 1, C.carrotDk);
+      const tap = Math.sin(t*16)>0 ? 0 : 1;
+      px(x+3, by+6+tap, 4, 2, C.yolkSh); dot(x+3, by+6+tap, C.yolkDk);
+      if((t*3|0)%2===0) px(x+9, by-5, 3, 3, C.paper);
+      return;
+    }
+
+    // ===== FRONT-FACING chick: idle / look / walk / water / sip / happy =====
+    const hop = pose==="walk" ? Math.abs(Math.sin(t*9))*2 : 0;
+    const by = Math.round(y - 18 - breathe - hop);
+    const step = pose==="walk" ? Math.sin(t*9) : 0;
+    px(x-4, y-2+(step>0?-1:0), 3, 2, C.carrot); dot(x-4,y-1,C.carrotDk); dot(x-2,y-1,C.carrotDk);
+    px(x+2, y-2+(step<0?-1:0), 3, 2, C.carrot); dot(x+2,y-1,C.carrotDk); dot(x+4,y-1,C.carrotDk);
+    const BODY=[3,5,6,7,7,7,7,7,7,7,6,6,5,4,3];
+    for(let r=0;r<BODY.length;r++){const hw=BODY[r]; px(x-hw, by+r, hw*2, 1, C.yolk); dot(x-hw,by+r,C.yolkDk); dot(x+hw-1,by+r,C.yolkDk);}
+    px(x-6, by+1, 3, 4, C.yolkHi); px(x-7, by+5, 2, 4, C.yolkHi);
+    px(x+3, by+8, 4, 5, C.yolkSh); px(x-6, by+12, 12, 2, C.yolkSh);
+    px(x-1, by-3, 2, 3, C.yolk); dot(x-3, by-1, C.yolkSh); dot(x+2, by-1, C.yolkHi); dot(x-1,by-4,C.yolkHi);
+    const flap = pose==="happy" ? Math.abs(Math.sin(t*10))*3 : Math.sin(t*2)*0.6;
+    px(x-8, by+5-(flap<0?flap:0), 2, 5, C.yolkSh); dot(x-8, by+5, C.yolkDk);
+    px(x+6, by+5-(pose==="happy"?flap:0), 2, 5, C.yolkSh); dot(x+7, by+5, C.yolkDk);
+    const eyY=by+5;
+    if(blink){ px(x-4,eyY+1,3,1,C.eye); px(x+1,eyY+1,3,1,C.eye); }
+    else { px(x-4,eyY,3,3,C.eye); px(x+1,eyY,3,3,C.eye); dot(x-3,eyY,C.eyeShine); dot(x+2,eyY,C.eyeShine); }
+    px(x-1, by+9, 2, 2, C.carrot); dot(x-1,by+10,C.carrotDk); dot(x,by+10,C.carrotDk); dot(x-1,by+9,C.beakHi);
+    dot(x-5, by+8, C.cheek); dot(x+4, by+8, C.cheek);
+
+    if(pose==="water"){ px(x+7,by+4,4,3,C.metal); px(x+7,by+4,4,1,C.metalHi); px(x+11,by+5,2,1,C.metalDk); if((t*4|0)%2===0){dot(x+12,by+8,"#9fd6e6"); dot(x+12,by+11,"#9fd6e6");} }
+    if(pose==="sip"){ px(x+6,by+7,4,4,C.cup); px(x+6,by+7,4,1,"#fff"); if((t*2|0)%2===0) dot(x+7,by+4,"#fff"); }
+    if(pose==="happy"){ const hy=Math.round(by-4-Math.sin(t*6)*2); px(x-9,hy,2,2,C.rose); px(x+8,hy+1,2,2,"#ff9db0"); dot(x-1,by+11,C.carrotDk); }
+  }
+
+  // ---- lighting passes -----------------------------------------------------
+  function beam(win, strength, t){
+    g.globalCompositeOperation = "lighter";
+    for (let i=0;i<22;i++){
+      const yy = win.y+win.h + i*3;
+      const spread = 6 + i*1.6;
+      g.globalAlpha = strength * (1 - i/24) * 0.5;
+      g.fillStyle = "#fff3c8";
+      g.fillRect(win.x+6 + i*0.7, yy, win.w-4 + spread, 3);
+    }
+    g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+    for (const d of DUST){
+      const p = (d.o + t*0.03) % 1;
+      const yy = win.y+win.h + p*(FLOOR_Y - (win.y+win.h));
+      const xx = win.x+10 + p*20 + Math.sin(t + d.o*6)*3;
+      g.globalAlpha = strength*0.9*(0.4+0.6*Math.sin(p*3.14));
+      dot(xx|0, yy|0, "#fff7d8");
+    }
+    g.globalAlpha=1;
+  }
+
+  function lighting(sky, lamp, t){
+    if (sky.ambA > 0.001){
+      g.globalCompositeOperation = "multiply";
+      g.globalAlpha = sky.ambA;
+      g.fillStyle = sky.amb; g.fillRect(0,0,W,H);
+      g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+    }
+    if (sky.lamp < 0.5){
+      const strength = (1 - sky.lamp) * 0.5;
+      beam(WIN, strength, t);
+      beam(WIN2, strength*0.8, t+3);
+    }
+    if (lamp.lampX && sky.lamp > 0.15){
+      const cx = lamp.lampX, cy = lamp.lampY+6, r = 34;
+      const flick = 1 + Math.sin(t*11)*0.03 + Math.sin(t*23)*0.02;
+      const rg = g.createRadialGradient(cx, cy, 2, cx, cy, r*flick);
+      rg.addColorStop(0, `rgba(255,214,140,${0.55*sky.lamp})`);
+      rg.addColorStop(0.5, `rgba(255,190,110,${0.28*sky.lamp})`);
+      rg.addColorStop(1, "rgba(255,190,110,0)");
+      g.globalCompositeOperation = "lighter";
+      g.fillStyle = rg; g.beginPath(); g.arc(cx, cy, r*flick, 0, 6.29); g.fill();
+      g.globalCompositeOperation = "source-over";
+    }
+    // vignette
+    const vg = g.createRadialGradient(W/2, H/2-6, 60, W/2, H/2, W*0.62);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(20,10,30,0.34)");
+    g.fillStyle = vg; g.fillRect(0,0,W,H);
+  }
+
+  // ---- Yappy's daily director ---------------------------------------------
+  const STATIONS = {
+    nest:    { x:26,  pose:"sleep", say:"asleep in the nest" },
+    window:  { x:52,  pose:"look",  say:"watching the sky" },
+    plant:   { x:74,  pose:"water", say:"watering the plant" },
+    coffee:  { x:96,  pose:"sip",   say:"having a coffee" },
+    desk:    { x:121, pose:"work", face:1, say:"working at the desk" },
+    books:   { x:208, pose:"look",  say:"picking a book" },
+    door:    { x:243, pose:"look",  say:"checking the door" },
+    corner:  { x:286, pose:"sip",   say:"reading in the corner" },
+  };
+  const state = {
+    x: 121, face: 1,
+    activity: "work", station: "desk",
+    mode: "act",
+    tLeft: 3,
+  };
+
+  function pickNext(phase){
+    const night = (phase>0.55 && phase<0.95);
+    const pool = night
+      ? ["nest","nest","nest","window","corner","desk"]
+      : ["desk","plant","window","coffee","books","door","corner","desk"];
+    return pool[(Math.random()*pool.length)|0];
+  }
+  function moveToward(tx, dt){
+    const spd = 22 * dt;
+    if (state.x < tx){ state.x = Math.min(tx, state.x + spd); state.face = 1; }
+    else { state.x = Math.max(tx, state.x - spd); state.face = -1; }
+    state.activity = "walk";
+  }
+  function director(dt, phase){
+    state.tLeft -= dt;
+    if (state.mode === "walk"){
+      const tx = STATIONS[state.station].x;
+      moveToward(tx, dt);
+      if (Math.abs(state.x - tx) <= 1.2){
+        state.x = tx; state.mode = "act";
+        state.activity = STATIONS[state.station].pose;
+        state.face = STATIONS[state.station].face || state.face;
+        state.tLeft = state.activity==="sleep" ? 6 : 3 + Math.random()*3;
+      }
+      return;
+    }
+    if (state.tLeft <= 0){
+      let key = pickNext(phase);
+      if (key === state.station) key = pickNext(phase);
+      state.station = key;
+      state.mode = "walk";
+      state.activity = "walk";
+    }
+  }
+
+  // ---- the ticker under the band ------------------------------------------
+  const actEl = document.getElementById("tickAct");
+  const skyEl = document.getElementById("tickSky");
+  function readout(phase){
+    const say = state.mode === "walk"
+      ? "crossing the room"
+      : (STATIONS[state.station] || STATIONS.desk).say;
+    if (actEl && actEl.textContent !== say) actEl.textContent = say;
+    const s = skyName(phase);
+    if (skyEl && skyEl.textContent !== s) skyEl.textContent = s;
+  }
+
+  // ---- camera + blit -------------------------------------------------------
+  // The app's pull-back camera: a narrow viewport crops the world and follows
+  // Yappy rather than shrinking the whole room into illegibility.
+  let camX = 0, cw = 1, ch = 1;
+  function fit(){
+    const r = stage.parentElement.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cw = Math.max(1, Math.round(r.width * dpr));
+    ch = Math.max(1, Math.round(r.height * dpr));
+    if (stage.width !== cw || stage.height !== ch){
+      stage.width = cw; stage.height = ch;
+      dctx.imageSmoothingEnabled = false;
+    }
+  }
+  // 92 of the world's 128 rows is the framing: the whole room from the picture
+  // rail down, with Yappy big enough to read. The crop is anchored to the floor
+  // and the width follows from the container's aspect, so pixels stay square at
+  // every viewport instead of stretching to fill.
+  const VIEW_H = 92;
+  function view(){
+    const aspect = cw / ch;
+    let vh = Math.min(VIEW_H, H), vw = Math.round(vh * aspect);
+    if (vw > W){ vw = W; vh = Math.min(H, Math.round(W / aspect)); }
+    if (vw < 140){ vw = 140; vh = Math.min(H, Math.round(140 / aspect)); }
+    return { vw, vh, sy: H - vh };
+  }
+  function blit(snap){
+    const v = view();
+    const target = clamp(state.x - v.vw/2, 0, W - v.vw);
+    camX = snap ? target : lerp(camX, target, 0.06);
+    dctx.imageSmoothingEnabled = false;
+    dctx.drawImage(os, Math.round(camX), v.sy, v.vw, v.vh, 0, 0, cw, ch);
+  }
+
+  // ---- main loop -----------------------------------------------------------
+  let last = 0, tGlobal = 0;
+  function render(phase){
+    const sky = skyAt(phase);
+    g.clearRect(0,0,W,H);
+    const lamp = drawRoom(sky, tGlobal);
+    g.globalAlpha = 0.18; px(state.x-6, FEET_Y-1, 12, 2, "#20140a"); g.globalAlpha = 1;
+    drawYappy(state.x, FEET_Y, reduce ? "sleep" : state.activity, tGlobal, state.face);
+    drawLampShade(sky);
+    lighting(sky, lamp, tGlobal);
+    readout(phase);
+  }
+  function frame(ms){
+    const dt = last ? Math.min(0.05, (ms - last)/1000) : 0.016;
+    last = ms; tGlobal += dt;
+    const phase = clockPhase();
+    director(dt, phase);
+    render(phase);
+    blit(false);
+    requestAnimationFrame(frame);
+  }
+  function drawOnce(){          // reduced motion: one calm, static frame
+    fit();
+    state.x = STATIONS.nest.x; state.station = "nest"; state.mode = "act"; state.activity = "sleep";
+    render(clockPhase());
+    blit(true);
+  }
+
+  fit();
+  camX = clamp(state.x - view().vw/2, 0, W - view().vw);
+  if (typeof ResizeObserver === "function"){
+    new ResizeObserver(() => { fit(); if (reduce) drawOnce(); }).observe(stage.parentElement);
+  } else {
+    window.addEventListener("resize", () => { fit(); if (reduce) drawOnce(); });
+  }
+  const repaint = () => { if (reduce) drawOnce(); };
+  darkQ.addEventListener("change", repaint);
+  new MutationObserver(repaint).observe(document.documentElement, { attributes:true, attributeFilter:["data-theme"] });
+
+  if (reduce) drawOnce();
+  else requestAnimationFrame(frame);
 })();
 
-// Theme toggle (respects OS default; toggle stamps data-theme)
+/* Theme toggle — follows the OS until the visitor overrides it. */
 (function(){
-  var t=document.getElementById('theme-toggle'); if(!t) return;
-  t.addEventListener('click',function(e){
+  var t = document.getElementById("theme-toggle"); if (!t) return;
+  t.addEventListener("click", function(e){
     e.preventDefault();
-    var cur=document.documentElement.getAttribute('data-theme');
-    var isDark = cur? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-    document.documentElement.setAttribute('data-theme', isDark?'light':'dark');
+    var cur = document.documentElement.getAttribute("data-theme");
+    var isDark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.setAttribute("data-theme", isDark ? "light" : "dark");
   });
-})();
-
-// Reveal on scroll
-(function(){
-  if(matchMedia('(prefers-reduced-motion: reduce)').matches){document.querySelectorAll('.reveal').forEach(function(el){el.classList.add('in')});return;}
-  var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}})},{threshold:0.12});
-  document.querySelectorAll('.reveal').forEach(function(el){io.observe(el)});
 })();
 </script>
 </body>
