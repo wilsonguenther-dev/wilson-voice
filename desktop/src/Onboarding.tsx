@@ -50,6 +50,15 @@ const STEP_ORDER: Step[] = ["welcome", "permissions", "calibration", "done"];
  */
 const CALIBRATION_WATCHDOG_MS = 30_000;
 
+/**
+ * How often the permissions checklist re-reads the TCC grants while that step
+ * is open and the window is visible (YV81). The user is over in System Settings
+ * flipping a toggle and glancing back: 2s is under the time that glance takes,
+ * and it is the ONLY recurring timer the frontend owns — everything else here
+ * is one-shot or event-driven.
+ */
+const PERMISSION_POLL_MS = 2000;
+
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
 }
@@ -86,12 +95,29 @@ export default function Onboarding({
   }, []);
 
   // Live grant status: poll while on the permissions step so the checklist
-  // updates the moment the user flips a toggle in System Settings.
+  // updates the moment the user flips a toggle in System Settings. macOS
+  // publishes no notification for a TCC grant, so a poll is the only reading
+  // there is — but it is bounded twice over (YV81): it runs on THIS step only,
+  // and it stops while the window is hidden, because the checklist nobody is
+  // looking at has nothing to update. Coming back re-reads immediately, so the
+  // 2s interval is never what the user waits on after granting.
   useEffect(() => {
     if (step !== "permissions") return;
-    refreshPerms();
-    const t = setInterval(refreshPerms, 1200);
-    return () => clearInterval(t);
+    let t = 0;
+    const stop = () => { if (t) { clearInterval(t); t = 0; } };
+    const start = () => { if (!t) t = window.setInterval(refreshPerms, PERMISSION_POLL_MS); };
+    const onVisibility = () => {
+      stop();
+      if (document.hidden) return;
+      refreshPerms();               // whatever changed while we were away
+      start();
+    };
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [step, refreshPerms]);
 
   // Reflect recording state + capture the calibration transcript. Both the main

@@ -37,6 +37,14 @@ use std::time::Duration;
 
 /// How often the watchdog samples the flag. Deliberately slow — this is a
 /// background health check, not a hot path, and each sample is one Carbon call.
+///
+/// It is a POLL because macOS publishes no notification for Secure Input: there
+/// is no `NSDistributedNotification`, no KVO key, nothing to observe, so
+/// `IsSecureEventInputEnabled()` is the only reading there is. 2s × the two
+/// samples [`SUSTAIN_SAMPLES`] wants is a ~4s worst case before the user is
+/// told why fn stopped working — the longest interval that still answers the
+/// question inside the pause where they are pressing the key and nothing
+/// happens (YV81).
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Consecutive positive samples before the watchdog calls it blocked. Two
@@ -209,6 +217,12 @@ pub fn is_enabled_now() -> bool {
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Is the watchdog's [`POLL_INTERVAL`] poll running? One line of the YV81
+/// energy telemetry, so a build that starts a second one is visible in the log.
+pub fn active_polls() -> usize {
+    usize::from(RUNNING.load(Ordering::SeqCst))
+}
 
 /// Start the polling watchdog. `on_change` fires ONLY on an edge, with the new
 /// snapshot — the caller stores it and re-emits its own status. Idempotent: a

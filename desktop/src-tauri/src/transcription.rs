@@ -43,8 +43,11 @@ use crate::asr_engine;
 /// Unload a warm engine after this long without a transcription (Handy's
 /// default model-unload timeout).
 pub const IDLE_UNLOAD_AFTER: Duration = Duration::from_secs(15 * 60);
-/// How often the idle watcher wakes up to check.
-const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the idle watcher wakes up to check. YV81 raised it from 30s: it
+/// resolves a FIFTEEN-minute window, so a minute of granularity is already an
+/// order of magnitude finer than the thing it measures, and every extra wake is
+/// paid for the whole life of the process.
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard ceiling on ONE transcription. Way above any real clip (a 60 s take is
 /// ~1 s on Metal) — this exists only so a wedged native call surfaces as an
 /// error instead of freezing dictation forever.

@@ -229,27 +229,82 @@ export function advanceLive(
 // The always-on pill throttles its redraw while nothing is happening, but it
 // must NEVER park while a take is live — the mouth follows the mic and the
 // commentary is on a schedule, both of which need frames to advance.
+//
+// YV81 — the energy pass added the other end of that ladder. A rAF loop that
+// only SKIPS its redraws is still a 60Hz wake: the callback runs, the compositor
+// stays awake, and the pill is on screen all day. So once a take is over and the
+// scene has SETTLED (capsule closed, no sparkles, nothing springing), the rAF is
+// parked outright and Yappy's ambient life — breathing, sway, drifting clouds,
+// the next blink — moves onto a 10fps timer. Hidden (the panel ordered out, the
+// page reporting itself occluded) it parks completely: nothing renders for a
+// window nobody can see.
 
 export type LivePhase = "idle" | "listening" | "thinking" | "done" | "sleepy";
 /** Redraw budget while idle: ~18fps keeps the breathing perceptible. */
 export const IDLE_FRAME_MS = 55;
 /** Reduced-motion redraw budget while a take is live: slow, but never parked. */
 export const REDUCED_FRAME_MS = 120;
+/** Ambient tick once the idle scene has settled: 10fps, off a timer, rAF parked. */
+export const AMBIENT_FRAME_MS = 100;
 
 export interface FrameInputs {
   level: number;
   /** Sparkles in flight / a hop mid-air — visuals that must not stutter. */
   busyVisuals: boolean;
   reduceMotion: boolean;
+  /**
+   * Has the idle scene finished settling — capsule shut, props gone, springs
+   * at rest? Only then may the rAF park; what is left to animate is ambient.
+   * Absent reads as "still settling", which can only ever keep frames coming.
+   */
+  settled?: boolean;
+  /** Is the pill window hidden/occluded (nothing it draws can be seen)? */
+  hidden?: boolean;
+}
+
+/** How the loop is being driven right now. */
+export type FrameMode =
+  /** requestAnimationFrame, at `intervalMs` between redraws (0 = every frame). */
+  | "raf"
+  /** rAF parked; ambient life redraws off a slow timer at `intervalMs`. */
+  | "ambient"
+  /** Nothing is scheduled at all — woken by the next phase/visibility change. */
+  | "parked";
+
+export interface FramePlan {
+  mode: FrameMode;
+  /** `Infinity` when parked. */
+  intervalMs: number;
 }
 
 /**
- * Milliseconds the loop may wait before the next redraw. `0` = every animation
- * frame; `Infinity` = nothing is live and the loop may park (reduced motion
- * only — it is woken by the next phase change).
+ * What should be driving the pill's canvas right now.
+ *
+ * The order of these branches IS the contract: a live take is answered before
+ * anything else can park the loop, so no visibility flag, settle test or
+ * reduced-motion setting can silence the mouth or stall the commentary
+ * (`live.test.ts` — "never parks while a take is live").
+ */
+export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
+  const active = phase === "listening" || phase === "thinking" || phase === "done";
+  if (active || f.busyVisuals || f.level >= 0.02) {
+    return { mode: "raf", intervalMs: f.reduceMotion ? REDUCED_FRAME_MS : 0 };
+  }
+  // Nothing live. A hidden pill draws nothing; reduced motion asked for one
+  // calm static frame and no loop at all.
+  if (f.hidden || f.reduceMotion) return { mode: "parked", intervalMs: Infinity };
+  // Settled: the transients are done, so drop the rAF and keep only the
+  // ambient tick. Still settling → keep animating, throttled.
+  if (f.settled) return { mode: "ambient", intervalMs: AMBIENT_FRAME_MS };
+  return { mode: "raf", intervalMs: IDLE_FRAME_MS };
+}
+
+/**
+ * The rAF-only view of [`framePlan`]: milliseconds the animation-frame loop may
+ * wait before the next redraw. `0` = every animation frame; `Infinity` = the
+ * rAF is parked (whatever, if anything, replaces it — see `framePlan`).
  */
 export function frameIntervalMs(phase: LivePhase, f: FrameInputs): number {
-  const active = phase === "listening" || phase === "thinking" || phase === "done";
-  if (active || f.busyVisuals || f.level >= 0.02) return f.reduceMotion ? REDUCED_FRAME_MS : 0;
-  return f.reduceMotion ? Infinity : IDLE_FRAME_MS;
+  const plan = framePlan(phase, f);
+  return plan.mode === "raf" ? plan.intervalMs : Infinity;
 }

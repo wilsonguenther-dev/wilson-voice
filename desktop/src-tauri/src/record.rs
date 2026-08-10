@@ -886,7 +886,10 @@ const ARM_TIMEOUT: Duration = Duration::from_secs(3);
 const DISARM_TIMEOUT: Duration = Duration::from_secs(5);
 /// Close the persistent stream after this long without a take (mic indicator off).
 const IDLE_CLOSE: Duration = Duration::from_secs(60);
-/// How often the idle worker wakes to test the idle window.
+/// How often the idle worker wakes to test the idle window — 5s puts the mic
+/// indicator out within a tick of [`IDLE_CLOSE`] without splitting hairs over
+/// it. YV81: this tick runs ONLY while a stream is actually open; with nothing
+/// to close the worker blocks on its channel and never wakes at all.
 const IDLE_TICK: Duration = Duration::from_secs(5);
 
 const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
@@ -1119,7 +1122,18 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
     let mut idle_since = Instant::now();
 
     loop {
-        match rx.recv_timeout(IDLE_TICK) {
+        // YV81 — the tick exists ONLY to close an open stream that has gone
+        // `IDLE_CLOSE` without a take. With no stream open there is nothing for
+        // it to close, so the worker blocks on the channel instead of waking
+        // every five seconds for the rest of the session: the next command
+        // wakes it, which is the same signal-not-poll contract the arm/stop
+        // path already keeps.
+        let next = if live.is_some() {
+            rx.recv_timeout(IDLE_TICK)
+        } else {
+            rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        match next {
             Ok(CaptureCmd::Arm { journal, reply }) => {
                 // A stream whose device errored (unplugged, format changed) is
                 // useless — drop it and re-query the hardware from scratch.

@@ -15,8 +15,8 @@ import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox } from "./drag";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
-  advanceLive, createLiveState, frameIntervalMs, resetLive, toChatTone,
-  type ChatTone, type LivePhase, type LiveProp,
+  advanceLive, createLiveState, framePlan, resetLive, toChatTone,
+  type ChatTone, type FrameMode, type LivePhase, type LiveProp,
 } from "./live";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
@@ -218,27 +218,60 @@ export default function YappyPill() {
     const toIdle = () => { if (Date.now() > doneUntil) setPhase("idle"); };
     listen<AppStatus>("status", (e) => { const s = e.payload; if (s.recording) setPhase("listening"); else if (s.busy) setPhase("thinking"); else toIdle(); }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) => { if (e.payload) { setPhase("listening"); mouth.reset(); } }).then((u) => (dead ? u() : unsubs.push(u)));
-    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<number>("audio_level", (e) => { const v = typeof e.payload === "number" ? e.payload : 0; level = Math.max(0, Math.min(1, v)); if (level >= 0.02) wake(); }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YV81 — the pill window's own visibility. Two sources, because neither is
+    // complete on its own: `pill_visible` is the panel being ordered out/in by
+    // the backend (float_pill::set_shown), and `visibilitychange` is the webview
+    // reporting itself occluded/minimised. Hidden, the loop parks entirely —
+    // nothing renders for a window nobody can see; visible, it wakes.
+    let shown = true, hidden = document.hidden;
+    const onVisibility = () => {
+      const was = hidden;
+      hidden = document.hidden || !shown;
+      if (was && !hidden) wake();
+    };
+    listen<boolean>("pill_visible", (e) => { shown = e.payload !== false; onVisibility(); }).then((u) => (dead ? u() : unsubs.push(u)));
+    document.addEventListener("visibilitychange", onVisibility);
     listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + 1600; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, 1600); }).then((u) => (dead ? u() : unsubs.push(u)));
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
-    let raf = 0, lastDraw = 0, parked = false;
-    // The redraw budget comes from `frameIntervalMs` (live.ts, unit-tested): ~18fps
-    // while idle/sleepy with a silent mic and nothing in flight, FULL rate the
-    // moment a take is live, and a park only under reduced motion with nothing
-    // happening — never while recording, where the mouth follows the mic and the
-    // commentary runs on a schedule that needs frames to advance.
+    let raf = 0, tick = 0, lastDraw = 0;
+    // YV81 — is every transient finished, so that what is LEFT to draw is only
+    // ambient life (breathing, sway, drifting clouds, the next blink)? The
+    // capsule shut, no prop, no sparkle, both feet on the ground and the mood
+    // caught up. Springs are asymptotic, so "at rest" is a threshold, not zero.
+    const settledNow = () =>
+      openV < 0.01 && propV < 0.01 && sparkle.length === 0
+      && J.phase === "ground" && Math.abs(moodT - mood) < 0.01;
+    // The schedule comes from `framePlan` (live.ts, unit-tested): FULL rate the
+    // moment a take is live, ~18fps while an idle scene is still settling, then
+    // a parked rAF with ambient life on a 10fps timer once it has — and nothing
+    // at all while the pill is hidden or under reduced motion. Never a park
+    // while recording, where the mouth follows the mic and the commentary runs
+    // on a schedule that needs frames to advance.
     function loop(ts: number) {
-      const budget = frameIntervalMs(phase, { level, busyVisuals: sparkle.length > 0 || J.phase !== "ground", reduceMotion: reduce });
-      parked = !Number.isFinite(budget);
-      raf = parked ? 0 : requestAnimationFrame(loop);   // schedule the next frame first
-      if (!parked && budget > 0 && lastDraw && ts - lastDraw < budget) return;   // skip this redraw, keep the rAF alive
+      const plan = framePlan(phase, {
+        level,
+        busyVisuals: sparkle.length > 0 || J.phase !== "ground",
+        reduceMotion: reduce,
+        settled: settledNow(),
+        hidden,
+      });
+      const mode: FrameMode = plan.mode;
+      // schedule the next wake FIRST, so nothing below can strand the loop
+      raf = 0; tick = 0;
+      if (mode === "raf") raf = requestAnimationFrame(loop);
+      else if (mode === "ambient") tick = window.setTimeout(() => loop(performance.now()), plan.intervalMs);
+      if (mode === "raf" && plan.intervalMs > 0 && lastDraw && ts - lastDraw < plan.intervalMs) return;   // skip this redraw, keep the rAF alive
       lastDraw = ts;
       // dt drives the animation (clamped for stability); wallDt drives the live
-      // state machine, so a throttled frame still advances the take's clock.
+      // state machine, so a throttled frame still advances the take's clock. The
+      // clamp rides the schedule: on the ambient tick a whole frame IS 100ms, and
+      // clamping that to 50 would run Yappy's breathing at half speed (the springs
+      // it protects are settled by definition before that tick can start).
       const wallDt = Math.min(.25, (ts - tPrev) / 1000 || 0);
-      const dt = Math.min(.05, wallDt); tPrev = ts; elapsed += dt; idleFor += dt;
+      const dt = Math.min(mode === "ambient" ? .12 : .05, wallDt); tPrev = ts; elapsed += dt; idleFor += dt;
       if (phase === "idle" && idleFor > 12) setPhase("sleepy");
       if (blinkT < 0) { nextBlink -= dt; if (nextBlink <= 0) blinkT = 0; }
       let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
@@ -323,11 +356,19 @@ export default function YappyPill() {
       bubble.style.left = (bw ? Math.max(bw / 2 + 4, Math.min(W - bw / 2 - 4, cx)) : cx) + "px";
       bubble.style.top = (y0 - 10) + "px";
     }
-    // Under reduced motion the loop paints one calm frame and parks; a phase
-    // change (a take starting) wakes it, so it is never asleep while recording.
-    function wake() { if (!parked) return; parked = false; tPrev = 0; lastDraw = 0; raf = requestAnimationFrame(loop); }
+    // A parked loop paints one calm frame and stops scheduling; anything that
+    // gives it something to draw again — a phase change (a take starting), the
+    // pill coming back on screen, a live mic level — wakes it, so it is never
+    // asleep while recording. Re-entrant by design: `wake` is also reached from
+    // inside a frame (setPhase), where a wake is already scheduled.
+    function wake() { if (raf || tick) return; tPrev = 0; lastDraw = 0; raf = requestAnimationFrame(loop); }
     raf = requestAnimationFrame(loop);
-    return () => { dead = true; cancelAnimationFrame(raf); ro.disconnect(); unsubs.forEach((u) => u()); };
+    return () => {
+      dead = true;
+      cancelAnimationFrame(raf); window.clearTimeout(tick);
+      document.removeEventListener("visibilitychange", onVisibility);
+      ro.disconnect(); unsubs.forEach((u) => u());
+    };
   }, []);
 
   return (

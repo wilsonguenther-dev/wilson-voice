@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{
@@ -32,7 +32,21 @@ const EDGE_SNAP_PT: f64 = 120.0;
 /// How often the hover watch re-tests whether the cursor is over the capsule
 /// (YV65). Fast enough that the pill is already grabbable by the time a hand
 /// arrives on it, slow enough to stay off the main thread's back.
+///
+/// POLL, not an event, because the panel is click-through: an NSTrackingArea
+/// only reports enter/exit for a window that takes the cursor, which is the very
+/// thing this watch exists to turn on. It ticks ONLY while the pill is on
+/// screen — see [`PILL_SHOWN`] and [`HOVER_IDLE_TICK_MS`] (YV81).
 const HOVER_TICK_MS: u64 = 75;
+/// The hover watch's tick while the pill is HIDDEN (YV81): there is no capsule
+/// to be over, so the thread parks on a long sleep instead of waking the main
+/// thread 13 times a second to answer "no" for a window nobody can see.
+const HOVER_IDLE_TICK_MS: u64 = 1000;
+/// How often the space keeper re-asserts the panel's dock + level. One tick per
+/// 1.5s is a Space swipe's own timescale — the pill is back on top before a
+/// hand leaves the trackpad — and, like the hover watch, it does no main-thread
+/// work at all while the pill is hidden (YV81).
+const KEEPER_TICK_MS: u64 = 1500;
 
 static KEEPER_ON: AtomicBool = AtomicBool::new(false);
 static PANEL_READY: AtomicBool = AtomicBool::new(false);
@@ -40,6 +54,11 @@ static PANEL_READY: AtomicBool = AtomicBool::new(false);
 /// the space-keeper and any display change pick the new edge up on their own.
 static POSITION: AtomicU8 = AtomicU8::new(0);
 static HOVER_ON: AtomicBool = AtomicBool::new(false);
+/// YV81 — is the pill on screen right now? Set by [`show_float`] /
+/// [`hide_float`] (both main-thread), read by the two watch threads so a hidden
+/// pill costs nothing, and reported to the webview as `pill_visible` so the
+/// canvas can park its animation loop with it.
+static PILL_SHOWN: AtomicBool = AtomicBool::new(false);
 /// True from pointer-down on the capsule to pointer-up (YV65). Parks are
 /// suspended while it is set so the space-keeper cannot yank the panel back to
 /// its old dock in the middle of the gesture.
@@ -342,6 +361,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
 pub fn show_float(app: &AppHandle) -> Result<(), String> {
     ensure_float(app)?;
     park_pill(app);
+    set_shown(app, true);
 
     #[cfg(target_os = "macos")]
     {
@@ -360,6 +380,7 @@ pub fn show_float(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_float(app: &AppHandle) {
+    set_shown(app, false);
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("float") {
@@ -370,6 +391,33 @@ pub fn hide_float(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("float") {
         let _ = w.hide();
     }
+}
+
+/// YV81 — record the pill's on-screen state and tell the webview about it, on
+/// the EDGE only. The canvas parks its animation loop while the answer is
+/// `false`: a window nobody can see must not paint 60 (or even 10) times a
+/// second.
+fn set_shown(app: &AppHandle, shown: bool) {
+    if PILL_SHOWN.swap(shown, Ordering::SeqCst) == shown {
+        return;
+    }
+    let _ = app.emit_to("float", "pill_visible", shown);
+}
+
+/// Is the pill on screen? The gate both watch threads below poll against, and
+/// the `pill_shown` field of the YV81 energy telemetry line.
+pub fn is_shown() -> bool {
+    PILL_SHOWN.load(Ordering::SeqCst)
+}
+
+/// How many of this module's recurring polls are doing real work right now
+/// (YV81 telemetry). Both threads exist for the visible pill only, so a hidden
+/// pill answers `0` however many threads are alive.
+pub fn active_polls() -> usize {
+    if !is_shown() {
+        return 0;
+    }
+    usize::from(HOVER_ON.load(Ordering::SeqCst)) + usize::from(KEEPER_ON.load(Ordering::SeqCst))
 }
 
 /// Run a pill/NSPanel op on the MAIN thread from any caller thread. AppKit panel
@@ -505,6 +553,14 @@ pub fn start_hover_watch(app: AppHandle) {
     thread::Builder::new()
         .name("wv-float-hover".into())
         .spawn(move || loop {
+            // YV81 — a hidden pill has no capsule to hover, so the cursor test
+            // (and the main-thread hop it costs) is skipped entirely and the
+            // thread waits on the long tick instead. `hide_float`/`show_float`
+            // flip the gate, so the next tick after a show is back at 75ms.
+            if !is_shown() {
+                thread::sleep(Duration::from_millis(HOVER_IDLE_TICK_MS));
+                continue;
+            }
             thread::sleep(Duration::from_millis(HOVER_TICK_MS));
             let app_main = app.clone();
             let app_inner = app.clone();
@@ -559,7 +615,14 @@ pub fn start_space_keeper(app: AppHandle) {
     thread::Builder::new()
         .name("wv-float-keeper".into())
         .spawn(move || loop {
-            thread::sleep(Duration::from_millis(1500));
+            thread::sleep(Duration::from_millis(KEEPER_TICK_MS));
+            // YV81 — a hidden pill cannot lose its Space, so the tick costs a
+            // relaxed atomic read rather than a main-thread hop + a window
+            // query. The `is_visible` check below stays as the authority; this
+            // only avoids paying for it when the answer is already known.
+            if !is_shown() {
+                continue;
+            }
             let app_main = app.clone();
             let app_inner = app.clone();
             let _ = app_main.run_on_main_thread(move || {
