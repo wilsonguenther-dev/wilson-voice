@@ -47,6 +47,14 @@ const RESTORE_TIMEOUT: Duration = Duration::from_secs(8);
 /// arrive, so settle quickly instead of waiting out the full timeout.
 const FAILED_INJECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// YV73 — how many read receipts a transaction retains. A chatty target
+/// (Chromium probes the pasteboard, then reads) can request the promised text
+/// hundreds of times inside one `RESTORE_TIMEOUT`, and every request used to
+/// push an `Instant` onto a Vec nothing ever bounded. Only the NEWEST
+/// post-injection receipt is ever read (`last_receipt_after_injection`), so
+/// dropping the oldest is loss-free.
+const MAX_RECEIPTS: usize = 64;
+
 /// Shared, cross-thread record of one paste transaction.
 #[derive(Debug)]
 pub struct TxState {
@@ -57,7 +65,8 @@ pub struct TxState {
     injected_at: Option<Instant>,
     /// The chord could not be sent; short-circuit the wait.
     injection_failed: bool,
-    /// Times at which a consumer requested the promised text.
+    /// Times at which a consumer requested the promised text, capped at
+    /// [`MAX_RECEIPTS`] (oldest dropped).
     receipts: Vec<Instant>,
     /// Someone else took pasteboard ownership (the user copied elsewhere, …).
     ownership_lost: bool,
@@ -79,6 +88,9 @@ impl TxState {
 
     /// Records a read receipt, logging the first one that counts as evidence.
     pub fn record_receipt(&mut self, at: Instant) {
+        if self.receipts.len() >= MAX_RECEIPTS {
+            self.receipts.remove(0);
+        }
         self.receipts.push(at);
         if !self.logged_receipt {
             if let Some(injected) = self.injected_at {
@@ -505,5 +517,24 @@ mod tests {
         assert!(s.logged_receipt);
         s.record_receipt(Instant::now());
         assert_eq!(s.receipts.len(), 2);
+    }
+
+    /// YV73 — a target that hammers the pasteboard promise must not grow the
+    /// transaction without bound, and capping it must not cost the decision the
+    /// newest receipt is what drives.
+    #[test]
+    fn receipts_are_capped_keeping_the_newest() {
+        let injected = Instant::now();
+        let mut s = published_ago(Duration::from_millis(10));
+        s.injected_at = Some(injected);
+        for i in 1..=(MAX_RECEIPTS * 4) {
+            s.record_receipt(injected + Duration::from_millis(i as u64));
+        }
+        assert_eq!(s.receipts.len(), MAX_RECEIPTS, "receipts are bounded");
+        assert_eq!(
+            s.last_receipt_after_injection(),
+            Some(injected + Duration::from_millis((MAX_RECEIPTS * 4) as u64)),
+            "the newest receipt still decides the quiet period"
+        );
     }
 }
