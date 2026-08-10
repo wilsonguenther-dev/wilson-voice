@@ -795,6 +795,18 @@ pub const TRANSCRIPT_ERROR_EVENT: &str = "transcript_error";
 /// "Didn't catch a command" rejection that leaves the selection untouched.
 pub const PASTE_OUTCOME_EVENT: &str = "paste_outcome";
 
+/// YV79 — "this take is over", whatever the outcome. Emitted LAST by every
+/// terminal arm of the take-result match, after that arm's own `transcript` /
+/// `transcript_error` payload has landed, so a view waiting on a take clears
+/// its spinner on ONE event instead of having to subscribe to every outcome
+/// channel. The gap this closes: a SOFT outcome (the no-speech gate a silent
+/// mic hits — no permission, wrong input device, output-only headset) only
+/// ever reached [`PASTE_OUTCOME_EVENT`], the toast channel the onboarding
+/// overlay sits on top of and never hears, so first-run calibration spun on
+/// "Transcribing…" until its watchdog. Payload: `{ ok, message }`, where
+/// `message` is `null` on the success path and the reason otherwise.
+pub const TAKE_DONE_EVENT: &str = "take_done";
+
 /// YV74 — an auto-paste take that produced NO read receipt, so the transcript
 /// never reached the target app. Payload: the transcript row's id, which the
 /// toast turns into a "Copy again" action (the transcript may not be on the
@@ -1324,6 +1336,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                         "speechSeconds": entry.speech_seconds,
                     }),
                 );
+                // YV79 — terminal marker, last of this arm's emits so the
+                // `transcript` above has already handed the text over before any
+                // listener clears its busy state on this.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": true, "message": serde_json::Value::Null }),
+                );
                 let preview = if entry.text.chars().count() > 100 {
                     let s: String = entry.text.chars().take(100).collect();
                     format!("{s}…")
@@ -1349,6 +1368,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // NOT insert a transcript.
                 *state2.last_error.lock() = None;
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &msg);
+                // YV79 — the outcome onboarding used to miss entirely: nothing
+                // was typed, and the toast above lives behind the overlay. The
+                // reason rides along so the spinner is replaced by "Didn't catch
+                // any speech — hold and speak" rather than a 90 s wait.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "message": &msg }),
+                );
                 log::info!("soft take outcome: {msg}");
             }
             Ok(TakeOutcome::Rejected { message, reason }) => {
@@ -1371,7 +1398,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // offer Recover on exactly this take.
                 let _ = app2.emit(
                     TRANSCRIPT_ERROR_EVENT,
-                    serde_json::json!({ "message": message, "failed": recoverable }),
+                    serde_json::json!({ "message": &message, "failed": recoverable }),
+                );
+                // YV79 — terminal marker (see the `Soft` arm): the rejection
+                // reason is what the waiting view shows instead of spinning.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "message": &message }),
                 );
             }
             Err(e) => {
@@ -1394,6 +1427,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 let _ = app2.emit(
                     TRANSCRIPT_ERROR_EVENT,
                     serde_json::json!({ "message": e.clone(), "failed": recoverable }),
+                );
+                // YV79 — terminal marker (see the `Soft` arm), emitted after the
+                // error payload above so a listener that clears busy on this one
+                // has the reason in hand already.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "message": &e }),
                 );
                 notify(&app2, "Yap — Failed", e);
             }
@@ -4654,5 +4694,53 @@ mod tests {
             crate::dictation::degenerate_cutoff(&" the".repeat(200)),
             Some(0)
         );
+    }
+
+    /// YV79 — the onboarding overlay clears "Transcribing…" on ONE event now
+    /// ([`super::TAKE_DONE_EVENT`]), so a terminal arm that forgets to emit it
+    /// is a dead spinner for the whole calibration watchdog. `Soft` WAS exactly
+    /// that arm: a silent mic (permission denied, wrong input device) trips the
+    /// no-speech gate, which emitted only the toast channel the overlay cannot
+    /// hear. Nothing in the type system says an arm must announce itself, so
+    /// pin every one of them against the source.
+    #[test]
+    fn every_take_outcome_emits_a_terminal_event() {
+        const LIB: &str = include_str!("lib.rs");
+        let arms = LIB
+            .split_once("        match result {")
+            .expect("the transcribe worker must match on its take result")
+            .1
+            .split_once("        *state2.busy.lock() = false;")
+            .expect("the take-result match ends where the worker clears busy")
+            .0;
+        // In source order — each arm is the slice from its own head to the next.
+        const HEADS: [&str; 4] = [
+            "Ok(TakeOutcome::Dictated(",
+            "Ok(TakeOutcome::Soft(",
+            "Ok(TakeOutcome::Rejected {",
+            "Err(e) => {",
+        ];
+        let mut cursor = 0usize;
+        for (i, head) in HEADS.iter().enumerate() {
+            let start = cursor
+                + arms[cursor..].find(head).unwrap_or_else(|| {
+                    panic!("the take-result match must still have a `{head}` arm")
+                });
+            let end = match HEADS.get(i + 1) {
+                Some(next) => {
+                    start
+                        + arms[start..]
+                            .find(next)
+                            .unwrap_or_else(|| panic!("`{next}` must follow `{head}`"))
+                }
+                None => arms.len(),
+            };
+            assert!(
+                arms[start..end].contains("TAKE_DONE_EVENT"),
+                "the `{head}` arm must emit TAKE_DONE_EVENT — without it every view \
+                 waiting on this outcome spins until its watchdog"
+            );
+            cursor = start + head.len();
+        }
     }
 }
