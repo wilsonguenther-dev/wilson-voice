@@ -1,7 +1,8 @@
 # Yap — landing-page deploy runbook
 
-The Yap site is four hand-authored static files in `site/dist/` plus one very
-large binary: the notarized `.dmg` every visitor is there to download. Those two
+The Yap site is four hand-authored static files in `site/dist/` — plus the
+Departure Mono woff2 the page sets its headings in, and its OFL licence text —
+plus one very large binary: the notarized `.dmg` every visitor is there to download. Those two
 halves live in different places on purpose — the HTML is in git, the DMG is a
 GitHub release asset — so **deploying the site is a staging step, not a `git
 push`**. This file is the whole procedure.
@@ -39,7 +40,8 @@ binary is a release artifact, never a commit. So build it fresh each time,
 ```bash
 STAGE=$(mktemp -d)/yap-site
 mkdir -p "$STAGE/downloads"
-cp site/dist/*.html site/dist/*.css site/dist/vercel.json "$STAGE/"
+cp site/dist/*.html site/dist/*.css site/dist/*.woff2 \
+   site/dist/DepartureMono-LICENSE.txt site/dist/vercel.json "$STAGE/"
 gh release download v0.7.0 --repo wilsonguenther-dev/wilson-voice \
   --pattern 'Yap-0.7.0-arm64.dmg' --dir "$STAGE/downloads"
 ```
