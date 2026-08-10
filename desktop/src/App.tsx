@@ -3253,8 +3253,13 @@ export default function App() {
                     <button
                       onClick={async () => {
                         try {
-                          const p = await invoke<string>("export_history");
-                          toast(`Exported → ${p}`);
+                          const { path, count } = await invoke<{
+                            path: string;
+                            count: number;
+                          }>("export_history");
+                          toast(
+                            `Exported ${count.toLocaleString()} transcripts → ${path}`,
+                          );
                         } catch (e) {
                           toast(String(e));
                         }

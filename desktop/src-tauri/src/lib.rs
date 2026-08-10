@@ -2306,16 +2306,48 @@ fn clear_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, String> 
     state.db.clear_crash_events()
 }
 
+/// Where a transcript export landed and how many rows it holds (YV77). The
+/// count reaches the UI so "Exported" is a claim the user can check against
+/// their own history instead of an unverifiable path.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    pub path: String,
+    pub count: usize,
+}
+
 /// Export transcript history to Application Support for backup / future LoRA corpus.
+///
+/// YV77 — streams EVERY row, oldest first, as JSON Lines (one compact object per
+/// line: appendable and streamable, which is what a corpus reader wants). The
+/// bytes go to a temp file first and are `rename`d onto the final name only
+/// after a successful flush, so an interrupted or failed export can never leave
+/// a truncated file masquerading as a finished backup.
 #[tauri::command]
-fn export_history(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let json = state.db.export_transcripts_json()?;
-    let path = data_dir().join(format!(
-        "export-transcripts-{}.json",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    ));
-    std::fs::write(&path, &json).map_err(|e| e.to_string())?;
-    Ok(path.display().to_string())
+fn export_history(state: State<'_, Arc<AppState>>) -> Result<ExportResult, String> {
+    use std::io::Write;
+
+    let dir = data_dir();
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = dir.join(format!("export-transcripts-{stamp}.jsonl"));
+    let tmp = dir.join(format!(".export-transcripts-{stamp}.jsonl.part"));
+
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut w = std::io::BufWriter::new(file);
+    let count = match state.db.write_transcripts_jsonl(&mut w).and_then(|n| {
+        w.flush().map_err(|e| e.to_string())?;
+        Ok(n)
+    }) {
+        Ok(n) => n,
+        Err(e) => {
+            drop(w);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
+    drop(w);
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(ExportResult { path: path.display().to_string(), count })
 }
 
 #[tauri::command]
