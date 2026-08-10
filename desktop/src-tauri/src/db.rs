@@ -2062,10 +2062,48 @@ impl Database {
         Ok(out)
     }
 
-    /// Export transcripts as JSON lines for backup / LoRA corpus later.
-    pub fn export_transcripts_json(&self) -> Result<String, String> {
-        let entries = self.list_transcripts(10_000, None)?;
-        serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
+    /// Stream EVERY transcript, OLDEST first, into `f` — one row at a time.
+    ///
+    /// YV77: the export used to go through `list_transcripts` with a hard-coded
+    /// limit of 10,000, which is `ORDER BY created_at DESC LIMIT ?1` — so a
+    /// history longer than that silently dropped the OLDEST rows. This is
+    /// the bulk-read seam: no LIMIT, ascending so the file reads like a journal,
+    /// and `query_map` hands back one row at a time so memory stays constant no
+    /// matter how long the history gets (nothing is collected into a Vec).
+    ///
+    /// Returns the number of rows handed to `f`.
+    pub fn for_each_transcript(
+        &self,
+        mut f: impl FnMut(TranscriptEntry) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
+                        COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
+                 FROM transcripts ORDER BY created_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], map_transcript).map_err(|e| e.to_string())?;
+        let mut n = 0usize;
+        for r in rows {
+            f(r.map_err(|e| e.to_string())?)?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Write the whole history to `w` as JSON Lines for backup / LoRA corpus
+    /// later: one COMPACT JSON object per line, oldest first. Line-delimited
+    /// (not one pretty array) so the file is appendable and streamable — a
+    /// corpus reader never has to hold the history in memory, and neither does
+    /// this writer. Returns the row count. See [`Self::for_each_transcript`].
+    pub fn write_transcripts_jsonl(&self, w: &mut impl std::io::Write) -> Result<usize, String> {
+        self.for_each_transcript(|entry| {
+            let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+            w.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+            w.write_all(b"\n").map_err(|e| e.to_string())
+        })
     }
 
     /// Migrate legacy JSON history if present.
@@ -2868,6 +2906,77 @@ mod tests {
             !db.list_scratch().unwrap().iter().any(|n| n.id == note.id),
             "delete_scratch did not remove the note"
         );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// YV77 — the export writes the WHOLE history, oldest first.
+    ///
+    /// The old export was `list_transcripts` capped at 10,000, i.e. `ORDER BY
+    /// created_at DESC LIMIT`, so the cap fell on the OLDEST rows: at 10,050
+    /// takes the "backup" silently omitted the first 50 a user ever dictated.
+    /// The seed size here is deliberately just over that old cap — replaying
+    /// the pre-YV77 body against this same seed yields 10,000 rows with
+    /// t-00000..t-00049 missing and t-10049 first.
+    #[test]
+    fn export_streams_every_transcript() {
+        const N: usize = 10_050;
+        let (db, dir) = fresh_db("export");
+
+        // Seed through the row writer directly, in ONE transaction: the ids can
+        // then embed their insertion index (production ids are random UUIDs) and
+        // a 10k+ seed stays fast.
+        let base = days_ago_noon(1);
+        {
+            let mut conn = db.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            for i in 0..N {
+                let entry = TranscriptEntry {
+                    id: format!("t-{i:05}"),
+                    text: format!("transcript {i}"),
+                    backend: "native".into(),
+                    asr_seconds: 0.5,
+                    speech_seconds: 1.0,
+                    pipeline_ms: 0,
+                    word_count: 2,
+                    created_at: base + Duration::seconds(i as i64),
+                    source_app: None,
+                    raw_text: None,
+                };
+                db.insert_transcript_row_tx(&tx, &entry).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        // Drive the same writer the `export_history` command drives.
+        let out = dir.join("export.jsonl");
+        let count = {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(&out).unwrap());
+            let n = db.write_transcripts_jsonl(&mut w).unwrap();
+            std::io::Write::flush(&mut w).unwrap();
+            n
+        };
+
+        let body = std::fs::read_to_string(&out).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+
+        // (a) every row reached the file — not 10,000 of them.
+        assert_eq!(count, N, "writer reported the wrong row count");
+        assert_eq!(lines.len(), N, "export dropped rows (the old cap was 10,000)");
+
+        // (b) oldest first — line 1 is exactly the row the DESC+LIMIT cap discarded.
+        let first: TranscriptEntry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first.id, "t-00000", "export is not oldest-first");
+        let last: TranscriptEntry = serde_json::from_str(lines[N - 1]).unwrap();
+        assert_eq!(last.id, format!("t-{:05}", N - 1), "newest row is not last");
+
+        // (c) real JSON Lines: every line stands alone as a TranscriptEntry.
+        for (i, line) in lines.iter().enumerate() {
+            let e: TranscriptEntry = serde_json::from_str(line)
+                .unwrap_or_else(|err| panic!("line {i} is not a TranscriptEntry: {err}"));
+            assert_eq!(e.id, format!("t-{i:05}"), "line {i} is out of order");
+        }
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
