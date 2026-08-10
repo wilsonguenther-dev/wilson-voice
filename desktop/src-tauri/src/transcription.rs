@@ -128,6 +128,11 @@ pub struct EngineStatus {
     pub idle_seconds: u64,
     /// Seconds of idleness after which the engine is unloaded.
     pub idle_unload_seconds: u64,
+    /// YV75 — the polish sidecar's lifecycle (`not-installed` | `starting` |
+    /// `ready` | `failed`, with a reason on a failure). It rides this snapshot
+    /// because Diagnostics asks one question — "what is actually running?" —
+    /// and the answer has always included the second process.
+    pub polish_sidecar: crate::polish::SidecarStatus,
 }
 
 /// What the exit drain found (YV70), so the caller can log the shutdown it
@@ -290,6 +295,7 @@ impl TranscriptionManager {
             model_id: slot.as_ref().map(|e| e.model_id.clone()),
             idle_seconds: now_ms().saturating_sub(self.idle_ms_raw()) / 1000,
             idle_unload_seconds: self.inner.idle_timeout.as_secs(),
+            polish_sidecar: crate::polish::sidecar_status(),
         }
     }
 
