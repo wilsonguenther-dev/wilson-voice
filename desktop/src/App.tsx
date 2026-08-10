@@ -1415,7 +1415,7 @@ export default function App() {
           </div>
           <div>
             <div className="brand-name">Yap</div>
-            <div className="brand-tag">v0.6.0 · local · private</div>
+            <div className="brand-tag">v0.7.0 · local · private</div>
           </div>
         </div>
 

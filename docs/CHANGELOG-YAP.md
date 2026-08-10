@@ -1,5 +1,18 @@
 # Yap Changelog
 
+## v0.7.0
+
+- **Never lose a dictation.** Every take is written to a crash-safe capture journal before it is transcribed, so a dictation now survives the app dying mid-take and is offered back to you on the next launch. One database transaction per dictation means a saved transcript can no longer be reported as a failed take, or land twice.
+- **Rejections are recoverable, not deleted.** When the hallucination gate or a mid-take mic drop kills a transcript, the audio is kept and the take stays retryable instead of vanishing. The gate itself is now windowed and length-aware, so it stops eating long, legitimate dictations while still catching the classic Whisper filler loops.
+- **The two crashes people actually hit are gone.** Cmd-Q now releases the ASR Metal device before exit instead of tearing it out from under the GPU, and quitting mid-transcription drains the in-flight engine lease first. Both used to be reproducible crashes.
+- **Yappy talks through the whole take again.** Live commentary keeps reacting for the full duration of a dictation — escalating props and tone-aware lines as you talk — rather than going quiet after the opening beat.
+- **Drag the pill where you want it.** Grab the pill and drag it to a screen edge to dock it, Wispr-style, by direct manipulation instead of hunting through settings.
+- **An honest paste receipt.** Yap only tells you the text was pasted after it observes a real read receipt from the target app. If the paste did not land, you are told, and the transcript is still in your history.
+- **Lighter on memory and disk.** Bounded audio buffers, a startup and daily garbage collection pass over stale artifacts, and memory telemetry in Diagnostics — Yap no longer grows without limit across a long day of use.
+- **Clear History actually destroys the words.** Clearing now securely deletes the rows, rebuilds the search index, and vacuums the database, so cleared transcripts are not recoverable from the file afterwards. And **Export all** streams every transcript you have ever dictated to a JSONL file with a visible row count.
+- **Onboarding stops dead-spinning.** Every terminal outcome of a take — success, rejection, error — now reports back, so first-run setup can never hang waiting for an event that never comes. Model setup downloads quietly behind a slim ribbon.
+- **Local crash telemetry.** Panics and native macOS crash reports are captured, sanitized of your dictated words, and surfaced in Diagnostics. Nothing is ever uploaded — Yap still makes no outbound connections.
+
 - YV1: Ported the polished pill into the live YappyPill — pull-back world-fill camera (drawImage source-rect), sky-blue capsule, word-count tier props (notepad+pencil / desk+typewriter+glasses), and tone-aware working chatter (rude/friendly/rose) driven by real app events.
 - YV2: Renamed user-facing "Wilson Voice" → "Yap" (productName, window title, Info.plist display name + permission prompts, tray menu/tooltip, notifications, and all UI copy in desktop/src) while KEEPING the bundle id com.wilsonguenther.wilson-voice and the WilsonVoice data dir so macOS TCC grants and SQLite history persist.
 - YV4: Ported the live-reaction pill into the live YappyPill — LIVE escalation WHILE listening (quick→notes→desk→essay by elapsed talk time, showing the matching prop + a tone-aware live line as you go, not just at done), a bigger open capsule (capW 236 / capH 60) with the camera zoomed to ~80% of the buffer so the chick + grass read larger, and slow drifting clouds; keeps the pull-back camera, sky-blue capsule, tier props, and tone-aware done line, all driven by the real recording/audio_level/transcript events.
