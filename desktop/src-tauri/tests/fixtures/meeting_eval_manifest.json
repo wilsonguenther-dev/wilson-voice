@@ -1,0 +1,72 @@
+{
+  "generator": "desktop/src-tauri/tests/meeting_eval.rs::meeting_eval_generate_corpus",
+  "corpus_root": "~/yap-eval-corpus/meetings",
+  "fixtures": [
+    "lecture-15min",
+    "seam-stress",
+    "device-change"
+  ],
+  "synthesis": {
+    "tool": "macOS `say` -> `afconvert` (no network, no third-party asset)",
+    "voice": "Samantha",
+    "words_per_minute": 175
+  },
+  "note": "SYNTHETIC audio only — no real dictation, no meeting recording, and no third party's voice ever enters this corpus. `say` output is stable for a given macOS + voice build and NOT across them, so regenerating on another machine changes every hash below; re-run the writer and commit the diff.",
+  "files": [
+    {
+      "path": "device-change/audio.wav",
+      "bytes": 510802,
+      "sha256": "adcf8095bc6a9f99668fd41e3f55678bb3f71cf39f4573c74ef440021596af61"
+    },
+    {
+      "path": "device-change/meta.json",
+      "bytes": 743,
+      "sha256": "886ae87ee987aa27fc971d81dba3c222de455991923be6aa069b3dc1265c9335"
+    },
+    {
+      "path": "device-change/reference.txt",
+      "bytes": 290,
+      "sha256": "c78012af8652fb2df88aa070df724fb761fa9996226271c69beabc0cd7d88567"
+    },
+    {
+      "path": "device-change/segment-a-48000hz.wav",
+      "bytes": 695322,
+      "sha256": "e07be16d1f7ad7e3b243fc3b5338fa882ae0c4ee499638c0c8cfd2021a886948"
+    },
+    {
+      "path": "device-change/segment-b-24000hz.wav",
+      "bytes": 401738,
+      "sha256": "cd4f7f4077ec941c24964359e6d04ddb8880be99ceb87848f38315dc86e17c8d"
+    },
+    {
+      "path": "lecture-15min/audio.wav",
+      "bytes": 28951880,
+      "sha256": "83a6d92f45086307172e722ad24c6a22c48a500ff427c02965fabc2f7eaa2956"
+    },
+    {
+      "path": "lecture-15min/meta.json",
+      "bytes": 30387,
+      "sha256": "f53a090f3e74fa6ed27306fd2e3204b53cec5fd526f176ed6e1e63cb234913cc"
+    },
+    {
+      "path": "lecture-15min/reference.txt",
+      "bytes": 16659,
+      "sha256": "4970d455ec1b57cceddf9e8fd772681eb5617b8f33034aa7bcf5df981b51c3cd"
+    },
+    {
+      "path": "seam-stress/audio.wav",
+      "bytes": 5184044,
+      "sha256": "0668e72e2256d1a2218c03a32eb5aab6fe2a2bcbfe2c974ea8427428cec916eb"
+    },
+    {
+      "path": "seam-stress/meta.json",
+      "bytes": 5714,
+      "sha256": "f5c728c3251ad802fd0718f7f15c38d96d547874c89aa9daf007cb73f8f95afb"
+    },
+    {
+      "path": "seam-stress/reference.txt",
+      "bytes": 2540,
+      "sha256": "7aa86dd3e0c03e022f1fdf60b43efd4c7dba63c5d6122f8b03e40f3ee23c4c82"
+    }
+  ]
+}
