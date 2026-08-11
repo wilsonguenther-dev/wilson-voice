@@ -1,7 +1,14 @@
 Yap
 Copyright 2026 Wilson Guenther
 
-This product is licensed under the Apache License, Version 2.0 (the "License");
-you may not use this software except in compliance with the License.
+The Apache License, Version 2.0 (the "License") covers Yap up to and including
+the v0.7.0 release — tag v0.7.0, commit 8c8740f — and every release before it.
 A copy of the License is in the LICENSE file or at
 http://www.apache.org/licenses/LICENSE-2.0
+
+Code committed AFTER that release is proprietary and is NOT covered by the
+LICENSE file. That includes the licensing, trial and payment code
+(desktop/src-tauri/src/license.rs and the gate around it). It is licensed to
+you under TERMS.md instead, and it may not be copied, redistributed or
+sublicensed. If you cloned this repository, the LICENSE file does not grant you
+rights over anything newer than commit 8c8740f.

@@ -32,7 +32,8 @@
 
   <h2>How your dictation is handled</h2>
   <ul>
-    <li>When you hold the shortcut and speak, audio is captured <strong>locally</strong> and transcribed <strong>on your Mac</strong> by a speech model running on your own hardware. The audio is processed in memory and the temporary recording file is deleted immediately after transcription — including if transcription fails.</li>
+    <li>When you hold the shortcut and speak, audio is captured <strong>locally</strong> and transcribed <strong>on your Mac</strong> by a speech model running on your own hardware. The audio is processed in memory and the temporary recording file is deleted as soon as the transcript is saved.</li>
+    <li><strong>If a take fails, its audio is kept so you can retry it.</strong> When transcription errors out, or a quality gate throws a take away, deleting the recording would mean you had to say the whole thing again &mdash; so instead Yap moves it into a recovery folder on your Mac for <strong>up to 7 days</strong>. It stays on your machine and is never uploaded; the full rules, and the button that deletes it immediately, are under <strong>Data stored on your Mac</strong> below.</li>
     <li>The resulting text is placed on your clipboard and (optionally) pasted into the app you were typing in.</li>
     <li>A history of your transcripts is saved <strong>only on your Mac</strong>, in a local database inside your user Library folder. It is never uploaded.</li>
   </ul>
@@ -53,7 +54,8 @@
 
   <h2>Data stored on your Mac, and your control over it</h2>
   <ul>
-    <li><strong>Transcripts</strong> (the text of what you dictated) and a custom <strong>dictionary</strong> are stored in a local SQLite database in your Library folder. Yap does <strong>not</strong> keep your audio.</li>
+    <li><strong>Transcripts</strong> (the text of what you dictated) and a custom <strong>dictionary</strong> are stored in a local SQLite database in your Library folder. Yap does <strong>not</strong> keep the audio of a successful dictation &mdash; that recording is deleted once the transcript is saved.</li>
+    <li><strong>The audio of a failed take is kept, on your Mac, for up to 7 days.</strong> A take whose transcription errors out, or that a quality gate rejects, has its recording moved into a <code>recovery</code> folder beside that database and listed under <strong>Failed dictations</strong> in History, so you can press <strong>Retry</strong> instead of saying it all over again. <strong>Discard</strong> deletes the recording immediately; anything you leave alone is deleted automatically after 7 days, whether you ever open History or not. Retrying re-transcribes it on your Mac exactly like the first attempt &mdash; the audio is never uploaded, to us or to anyone.</li>
     <li><strong>Your license key</strong> is stored in a small file alongside them, and is re-verified from that file on every read. Removing the license from a Mac is a button in Settings.</li>
     <li>You can <strong>delete any transcript</strong>, <strong>clear your entire history</strong>, and <strong>export diagnostics</strong> at any time from within the app. Diagnostic logs are designed to contain <strong>no transcript text</strong>.</li>
     <li>Because the history is stored in a standard local database, we recommend keeping <strong>macOS FileVault</strong> turned on so your data is encrypted at rest along with the rest of your disk.</li>
@@ -61,7 +63,7 @@
 
   <h2>Permissions Yap asks for</h2>
   <ul>
-    <li><strong>Microphone</strong> — so it can hear you. That covers dictation and any longer recording you start yourself, such as a meeting or a class. Yap listens when you tell it to and not otherwise; the audio is transcribed on your Mac and the recording file is deleted afterwards.</li>
+    <li><strong>Microphone</strong> — so it can hear you. That covers dictation and any longer recording you start yourself, such as a meeting or a class. Yap listens when you tell it to and not otherwise; the audio is transcribed on your Mac and the recording file is deleted once the transcript is saved &mdash; or, if the take failed, held in the local recovery folder for up to 7 days so you can retry it.</li>
     <li><strong>Accessibility</strong> — so it can paste transcribed text into the app you&rsquo;re using, and read the few words just before your cursor to match the formatting you were already using. That context is used in the moment and is never stored or sent.</li>
   </ul>
   <p>macOS controls both grants, and you can revoke them at any time in System Settings › Privacy &amp; Security. Neither permission is ever used to send anything anywhere — see the complete list of network calls above.</p>

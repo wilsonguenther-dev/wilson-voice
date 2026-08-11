@@ -12,7 +12,8 @@ The one thing we do hold is what it takes to honour a license you bought, and it
 
 ## How your dictation is handled
 
-- When you hold the shortcut and speak, audio is captured **locally** and transcribed **on your Mac** by a speech model running on your own hardware. The audio is processed in memory and the temporary recording file is deleted immediately after transcription — including if transcription fails.
+- When you hold the shortcut and speak, audio is captured **locally** and transcribed **on your Mac** by a speech model running on your own hardware. The audio is processed in memory and the temporary recording file is deleted as soon as the transcript is saved.
+- **If a take fails, its audio is kept so you can retry it.** When transcription errors out, or a quality gate throws a take away, deleting the recording would mean you had to say the whole thing again — so instead Yap moves it into a recovery folder on your Mac for **up to 7 days**. It stays on your machine and is never uploaded; the full rules, and the button that deletes it immediately, are under **Data stored on your Mac** below.
 - The resulting text is placed on your clipboard and (optionally) pasted into the app you were typing in.
 - A history of your transcripts is saved **only on your Mac**, in a local database inside your user Library folder. It is never uploaded.
 
@@ -36,14 +37,15 @@ That's the complete list. Yap sends **no** analytics, telemetry, crash reports, 
 
 ## Data stored on your Mac, and your control over it
 
-- **Transcripts** (the text of what you dictated) and a custom **dictionary** are stored in a local SQLite database in your Library folder. Yap does **not** keep your audio.
+- **Transcripts** (the text of what you dictated) and a custom **dictionary** are stored in a local SQLite database in your Library folder. Yap does **not** keep the audio of a successful dictation — that recording is deleted once the transcript is saved.
+- **The audio of a failed take is kept, on your Mac, for up to 7 days.** A take whose transcription errors out, or that a quality gate rejects, has its recording moved into a `recovery` folder beside that database and listed under **Failed dictations** in History, so you can press **Retry** instead of saying it all over again. **Discard** deletes the recording immediately; anything you leave alone is deleted automatically after 7 days, whether you ever open History or not. Retrying re-transcribes it on your Mac exactly like the first attempt — the audio is never uploaded, to us or to anyone.
 - **Your license key** is stored in a small file alongside them, and is re-verified from that file on every read. Removing the license from a Mac is a button in Settings.
 - You can **delete any transcript**, **clear your entire history**, and **export diagnostics** at any time from within the app. Diagnostic logs are designed to contain **no transcript text**.
 - Because the history is stored in a standard local database, we recommend keeping **macOS FileVault** turned on so your data is encrypted at rest along with the rest of your disk.
 
 ## Permissions Yap asks for
 
-- **Microphone** — so it can hear you. That covers dictation and any longer recording you start yourself, such as a meeting or a class. Yap listens when you tell it to and not otherwise; the audio is transcribed on your Mac and the recording file is deleted afterwards.
+- **Microphone** — so it can hear you. That covers dictation and any longer recording you start yourself, such as a meeting or a class. Yap listens when you tell it to and not otherwise; the audio is transcribed on your Mac and the recording file is deleted once the transcript is saved — or, if the take failed, held in the local recovery folder for up to 7 days so you can retry it.
 - **Accessibility** — so it can paste transcribed text into the app you're using, and read the few words just before your cursor to match the formatting you were already using. That context is used in the moment and is never stored or sent.
 
 macOS controls both grants, and you can revoke them at any time in System Settings › Privacy & Security. Neither permission is ever used to send anything anywhere — see the complete list of network calls above.

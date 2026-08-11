@@ -24,9 +24,9 @@ If Yap is not for you, email us within **fourteen days** of your purchase and we
 
 ## About the earlier open-source releases
 
-Yap was open source through **version 0.7.0**, released under the Apache License, Version 2.0. That does not get taken back: **every version up to and including 0.7.0 stays under Apache 2.0 for everyone who received it**, with all the rights that license grants, and the `LICENSE` file in the repository continues to cover exactly that code. Those rights are permanent and these terms do not shrink them.
+Yap was open source through the **v0.7.0 release**, published under the Apache License, Version 2.0. That does not get taken back: **the v0.7.0 release — tag `v0.7.0`, commit `8c8740f` — and every release before it stay under Apache 2.0 for everyone who received them**, with all the rights that license grants. Those rights are permanent and these terms do not shrink them.
 
-Versions **after 0.7.0** are proprietary and are licensed to you under these terms rather than under Apache 2.0.
+Everything committed **after that release** is proprietary and is licensed to you under these terms rather than under Apache 2.0. The `LICENSE` file in the repository covers the code as it stood at that commit and nothing after it — in particular, the licensing, trial and payment code was written after v0.7.0, is not open source, and is not yours to copy or redistribute. The `NOTICE` file records the same cut-off, so a fresh clone is not misled by the Apache file sitting next to newer code.
 
 ## Recording other people is your call
 
