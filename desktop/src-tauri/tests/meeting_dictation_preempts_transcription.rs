@@ -26,7 +26,10 @@ use wilson_voice_lib::asr_engine::TimedTranscript;
 use wilson_voice_lib::meeting_asr::{
     ChunkConfig, JsonProgressStore, MeetingAsr, MeetingAsrConfig, WarmEngineChunkAsr,
 };
-use wilson_voice_lib::transcription::{CancelHandle, Transcriber, TranscriptionManager};
+use wilson_voice_lib::transcription::{
+    CancelHandle, Transcriber, TranscriptionManager, ENGINE_HANDBACK_WAIT,
+    MAX_SANCTIONED_CHUNK_DECODE_SECONDS,
+};
 
 #[path = "support/meeting.rs"]
 mod support;
@@ -35,6 +38,17 @@ use support::{expected_words, ramp_audio, window_bounds, RampDecoder};
 /// A meeting chunk decode is SLOW (400 ms — a 30 s window on Metal is ~1 s, so
 /// this is the same shape at test speed); a dictation is fast (50 ms).
 const CHUNK_DECODE: Duration = Duration::from_millis(400);
+/// …and this is the same test with the one variable that turned out to matter:
+/// a chunk decode LONGER than a dictation is willing to wait for the engine.
+///
+/// 6.5 s is not a hypothetical — `ChunkConfig::validate` sanctions a full-width
+/// chunk at up to `MAX_SANCTIONED_CHUNK_DECODE_SECONDS` (60 s), and the
+/// conditions that produce a slow decode (thermal throttle, a cold Metal
+/// warm-up) are the conditions a long meeting creates. Against the first cut of
+/// YV93 this exact number turned "the dictation waits one chunk" into
+/// `panicked: the dictation goes through: "no ASR model is loaded"`: the take
+/// was not delayed, it was destroyed.
+const SLOW_CHUNK_DECODE: Duration = Duration::from_millis(6_500);
 const DICTATION_DECODE: Duration = Duration::from_millis(50);
 /// The plan's own acceptance number for a dictation issued mid-meeting.
 const DICTATION_BUDGET: Duration = Duration::from_secs(2);
@@ -232,4 +246,176 @@ fn a_meeting_chunk_does_not_claim_the_engine_interactively() {
     }
     decoding.join().expect("thread").expect("chunk decodes");
     assert_eq!(chunks.load(Ordering::Acquire), 1);
+}
+
+/// A stub whose chunk decode can be ENDED early, the way the real engine's YV70
+/// cancel token ends a native run — and whose cancel flag is STICKY until
+/// reset, like the real one, so a manager that forgot to reset it would wedge
+/// here rather than in production.
+struct CancellableStubEngine {
+    chunks: Arc<AtomicUsize>,
+    dictations: Arc<AtomicUsize>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    decoder: RampDecoder,
+}
+
+impl Transcriber for CancellableStubEngine {
+    fn transcribe(
+        &mut self,
+        _samples: &[f32],
+        _language: Option<&str>,
+        _bias: Option<&str>,
+    ) -> Result<String, String> {
+        std::thread::sleep(DICTATION_DECODE);
+        self.dictations.fetch_add(1, Ordering::AcqRel);
+        Ok("the dictation went through".to_string())
+    }
+
+    fn transcribe_timed(
+        &mut self,
+        samples: &[f32],
+        _language: Option<&str>,
+        _bias: Option<&str>,
+    ) -> Result<TimedTranscript, String> {
+        let deadline = Instant::now() + SLOW_CHUNK_DECODE;
+        while Instant::now() < deadline {
+            if self.cancel.load(Ordering::Acquire) {
+                return Err("aborted".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.chunks.fetch_add(1, Ordering::AcqRel);
+        let (start, end) = window_bounds(samples);
+        Ok(self.decoder.transcript_for(start, end))
+    }
+
+    fn cancel_handle(&self) -> Option<CancelHandle> {
+        let flag = self.cancel.clone();
+        Some(Arc::new(move || flag.store(true, Ordering::Release)))
+    }
+
+    fn reset_cancel(&mut self) {
+        self.cancel.store(false, Ordering::Release);
+    }
+}
+
+/// Three chunks — enough for a dictation to land in the middle of one and for
+/// the meeting to carry on afterwards, short enough that the whole test is a
+/// handful of slow decodes.
+const SLOW_MEETING_SECONDS: f64 = 90.0;
+
+/// The same acceptance criterion as the test above, run at the only chunk-decode
+/// length that ever mattered: longer than the engine handback wait.
+///
+/// The contract is unchanged and the numbers are the plan's own — the dictation
+/// completes in under two seconds and the meeting loses nothing — but the
+/// mechanism has to be different, because at this decode length "wait for the
+/// next chunk boundary" IS the failure. A dictation now takes the engine off the
+/// chunk mid-decode; the chunk, which is re-decodable from disk, is the thing
+/// thrown away and re-run.
+#[test]
+fn a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait() {
+    assert!(
+        SLOW_CHUNK_DECODE <= Duration::from_secs_f64(MAX_SANCTIONED_CHUNK_DECODE_SECONDS),
+        "this test is only interesting if the geometry actually sanctions a decode \
+         this long"
+    );
+
+    let chunks = Arc::new(AtomicUsize::new(0));
+    let dictations = Arc::new(AtomicUsize::new(0));
+    let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let manager = {
+        let chunks = chunks.clone();
+        let dictations = dictations.clone();
+        TranscriptionManager::with_loader(
+            Arc::new(move |_p: &std::path::Path| {
+                Ok(Box::new(CancellableStubEngine {
+                    chunks: chunks.clone(),
+                    dictations: dictations.clone(),
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    decoder: RampDecoder::new(true),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            Duration::from_secs(120),
+        )
+    };
+    manager.load("stub", &model_path).expect("stub loads");
+
+    let dir = std::env::temp_dir().join(format!("yap-yv93-preempt-slow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch");
+
+    let meeting_manager = manager.clone();
+    let meeting_path = model_path.clone();
+    let meeting_dir = dir.clone();
+    let meeting = std::thread::spawn(move || {
+        let audio = ramp_audio(SLOW_MEETING_SECONDS);
+        let asr = WarmEngineChunkAsr::new(
+            meeting_manager.clone(),
+            "stub",
+            &meeting_path,
+            Some("en".to_string()),
+            None,
+        );
+        let mut store = JsonProgressStore::new(&meeting_dir);
+        let never = || false;
+        let mut job = MeetingAsr {
+            audio: &audio,
+            vad: None,
+            asr: &asr,
+            demand: &meeting_manager,
+            store: &mut store,
+            quit: &never,
+            config: MeetingAsrConfig {
+                chunk: ChunkConfig::default(),
+                yield_poll: Duration::from_millis(2),
+                ..MeetingAsrConfig::default()
+            },
+        };
+        job.run("m-preempt-slow").expect("the meeting transcribes")
+    });
+
+    // Into the SECOND chunk's decode — the engine is busy, and will be for
+    // seconds.
+    while chunks.load(Ordering::Acquire) < 1 {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    let started = Instant::now();
+    let dictated = manager
+        .transcribe(vec![0.1f32; 16_000], None, None)
+        .expect("the dictation goes through");
+    let elapsed = started.elapsed();
+
+    assert_eq!(dictated, "the dictation went through");
+    assert!(
+        elapsed < DICTATION_BUDGET,
+        "a dictation issued mid-chunk took {elapsed:?}, budget {DICTATION_BUDGET:?} \
+         (chunk decode {SLOW_CHUNK_DECODE:?}, handback wait {ENGINE_HANDBACK_WAIT:?})"
+    );
+
+    let out = meeting.join().expect("the meeting thread finishes");
+    assert_eq!(
+        out.text,
+        expected_words(SLOW_MEETING_SECONDS as usize).join(" "),
+        "the preempted chunk was not re-decoded — the meeting lost words"
+    );
+    assert_eq!(
+        out.chunks_failed, 0,
+        "a preempted chunk was written off as an ASR failure, which is a \
+         permanent hole in the transcript"
+    );
+    assert!(
+        out.preempted_decodes >= 1,
+        "the dictation queued behind the chunk instead of taking the engine off it"
+    );
+    assert!(
+        !out.interrupted,
+        "the meeting stood down instead of finishing"
+    );
+    assert_eq!(dictations.load(Ordering::Acquire), 1);
+    let _ = std::fs::remove_dir_all(&dir);
 }

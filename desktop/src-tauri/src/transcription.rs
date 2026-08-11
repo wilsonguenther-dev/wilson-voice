@@ -61,6 +61,30 @@ pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// someone to reword the message.
 pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
 
+/// What a meeting chunk decode gets back when a dictation took the engine off
+/// it mid-decode (YV93). NOT a decode failure: the chunk's audio is still on
+/// disk, so meeting ASR re-decodes it after the handback instead of writing an
+/// `asr_failed` hole into the transcript.
+pub const PREEMPTED_FOR_DICTATION: &str = "meeting chunk preempted by a dictation";
+
+/// The share of [`TRANSCRIBE_TIMEOUT`] one full-width meeting chunk is allowed
+/// to spend, at a real-time factor of 1.0.
+///
+/// Half the budget: the engine is shared with dictation and the timeout also
+/// has to cover a cold Metal warm-up. `meeting_asr::ChunkConfig::validate`
+/// enforces it against the widest window the geometry can produce, and
+/// [`ENGINE_HANDBACK_WAIT`] is derived from the same number below — which is
+/// the point of it living here rather than beside the geometry it constrains.
+/// The two constants disagreeing is precisely how a legal 37 s chunk could
+/// decode for 60 s against a 5 s handback wait and destroy a dictation.
+pub const WORST_CASE_RTF_BUDGET: f64 = 0.5;
+
+/// The longest decode the chunk geometry is allowed to hand the engine, in
+/// seconds of audio — and, at RTF 1.0, in seconds of wall clock. Anything
+/// wider is refused at plan time by `ChunkConfig::validate`.
+pub const MAX_SANCTIONED_CHUNK_DECODE_SECONDS: f64 =
+    TRANSCRIBE_TIMEOUT.as_secs() as f64 * WORST_CASE_RTF_BUDGET;
+
 /// How long a caller waits for the engine to come BACK from another caller
 /// before giving up (YV93).
 ///
@@ -71,10 +95,20 @@ pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
 /// engine back (finding #2b) — is worth nothing if the dictation has already
 /// given up by the time the handback happens. So a caller that finds the engine
 /// LEASED OUT (or mid-load) waits for it; a caller that finds nothing loaded at
-/// all still fails immediately. The ceiling is generous next to a chunk decode
-/// (a 30 s window is ~1 s on Metal) and short enough that a wedged engine
-/// surfaces as an error instead of a hang.
-pub const ENGINE_HANDBACK_WAIT: Duration = Duration::from_secs(5);
+/// all still fails immediately.
+///
+/// **It is DERIVED, not chosen, and that is the whole fix.** At a chosen 5 s it
+/// silently contradicted the geometry the same module sanctions: a full-width
+/// 37 s chunk is legal at up to 60 s of decode, twelve times the wait, so every
+/// decode between 5 s and 60 s — a thermally throttled machine, a cold Metal
+/// warm-up, exactly the conditions a long meeting creates — turned "the
+/// dictation waits one chunk" into `Err(NO_ENGINE_LOADED)` and a LOST take. The
+/// preemption below normally makes the real wait a cancel latency rather than a
+/// decode; this ceiling is what holds when the engine has no cancel hook at
+/// all, and it can no longer disagree with `ChunkConfig::validate` because both
+/// come off [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`].
+pub const ENGINE_HANDBACK_WAIT: Duration =
+    Duration::from_secs(MAX_SANCTIONED_CHUNK_DECODE_SECONDS as u64);
 /// How often that wait re-checks the slot.
 const ENGINE_HANDBACK_POLL: Duration = Duration::from_millis(5);
 
@@ -119,6 +153,15 @@ pub trait Transcriber: Send + 'static {
     fn cancel_handle(&self) -> Option<CancelHandle> {
         None
     }
+
+    /// Clear a cancellation left over from a PREVIOUS decode (YV93).
+    ///
+    /// The real engine's cancel flag is sticky (see
+    /// [`asr_engine::reset_cancel`]), and since YV93 it is fired in the normal
+    /// course of events — every time a dictation preempts a meeting chunk — not
+    /// only on the way out. Without this the second preemption would find an
+    /// engine that aborts every decode instantly.
+    fn reset_cancel(&mut self) {}
 }
 
 impl Transcriber for asr_engine::AsrEngine {
@@ -143,6 +186,10 @@ impl Transcriber for asr_engine::AsrEngine {
     fn cancel_handle(&self) -> Option<CancelHandle> {
         let token = asr_engine::cancel_token(self);
         Some(Arc::new(move || token.cancel()))
+    }
+
+    fn reset_cancel(&mut self) {
+        asr_engine::reset_cancel(self);
     }
 }
 
@@ -211,6 +258,20 @@ pub enum DrainOutcome {
     TimedOut,
 }
 
+/// The decode holding the engine right now.
+struct InFlight {
+    /// Its cancel hook, if the engine has one (YV70).
+    cancel: Option<CancelHandle>,
+    /// True for a meeting chunk: re-decodable from disk, so a dictation may
+    /// take the engine off it. False for a dictation, whose audio exists
+    /// nowhere else — an interactive take is never thrown away.
+    preemptible: bool,
+    /// Set once a dictation has asked this decode to stop. Read back by the
+    /// lease so the result is discarded rather than reported as a decode
+    /// failure.
+    preempted: bool,
+}
+
 /// Shared guts. Held by an `Arc` so the idle watcher can keep a `Weak` and exit
 /// on its own once the last manager handle is dropped (no shutdown flag, and no
 /// leaked thread in tests).
@@ -228,9 +289,14 @@ struct Inner {
     /// a transcription that finishes now drops its engine instead of putting a
     /// live device back into the slot the exit drain has already emptied.
     exiting: AtomicBool,
-    /// YV70 — cancel hook of the transcription currently in flight, if that
-    /// engine has one. Kept here because the engine itself is leased out.
-    in_flight_cancel: Mutex<Option<CancelHandle>>,
+    /// YV70/YV93 — the decode currently holding the engine: its cancel hook (the
+    /// engine itself is leased out, so this is the only handle on it), whether
+    /// it is the kind of work that may be thrown away, and whether it already
+    /// has been. ONE mutex for all three so a dictation arriving at any instant
+    /// either sees the meeting chunk and cancels THAT decode, or misses it and
+    /// finds the engine already on its way back — and never cancels the decode
+    /// that took its place.
+    in_flight: Mutex<Option<InFlight>>,
     /// YV80 — ONE load at a time. The first take now arms the engine at press
     /// time and the transcribe that follows calls `load` again; the slot is
     /// still empty while the first load runs, so without this the second caller
@@ -309,7 +375,7 @@ impl TranscriptionManager {
                 generation: AtomicU64::new(0),
                 leases: AtomicU64::new(0),
                 exiting: AtomicBool::new(false),
-                in_flight_cancel: Mutex::new(None),
+                in_flight: Mutex::new(None),
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 interactive_waiting: AtomicU64::new(0),
@@ -439,7 +505,13 @@ impl TranscriptionManager {
             self.unload();
             return DrainOutcome::Idle;
         }
-        if let Some(cancel) = self.inner.in_flight_cancel.lock().clone() {
+        let cancel = self
+            .inner
+            .in_flight
+            .lock()
+            .as_ref()
+            .and_then(|f| f.cancel.clone());
+        if let Some(cancel) = cancel {
             log::info!("exit: cancelling the in-flight transcription");
             cancel();
         }
@@ -596,7 +668,8 @@ impl TranscriptionManager {
         // engine is taken — so meeting ASR sees a dictation that is still only
         // waiting, which is the only moment yielding to it is worth anything.
         let _claim = self.claim_interactive();
-        self.leased(move |engine| {
+        // NOT preemptible: this take exists nowhere but in the samples above.
+        self.leased(false, move |engine| {
             engine.transcribe(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -608,9 +681,18 @@ impl TranscriptionManager {
     /// Transcribe with the alignment KEPT (YV93) — what meeting chunk ASR runs.
     ///
     /// Same lifecycle as [`transcribe`](Self::transcribe) (off-slot engine,
-    /// bounded wait, panic containment) with one deliberate difference: this
-    /// does NOT raise the interactive claim. A meeting is the thing that yields;
-    /// counting it as a waiter would make it yield to itself.
+    /// bounded wait, panic containment) with two deliberate differences:
+    ///
+    /// * it does NOT raise the interactive claim. A meeting is the thing that
+    ///   yields; counting it as a waiter would make it yield to itself.
+    /// * it IS preemptible. Yielding at chunk boundaries bounds a dictation's
+    ///   wait by one chunk decode, and one chunk decode is a number this module
+    ///   sanctions at up to [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`] — a minute
+    ///   of a user staring at a dictation that has not come back. So a
+    ///   dictation raising its claim cancels this decode outright and gets
+    ///   [`PREEMPTED_FOR_DICTATION`] back to the meeting driver, which
+    ///   re-decodes the chunk from disk afterwards. The asymmetry is the whole
+    ///   argument: a chunk is re-readable, a take is not.
     pub fn transcribe_timed(
         &self,
         samples_16k_mono: Vec<f32>,
@@ -621,7 +703,7 @@ impl TranscriptionManager {
             self.touch();
             return Ok(asr_engine::TimedTranscript::text_only(String::new()));
         }
-        self.leased(move |engine| {
+        self.leased(true, move |engine| {
             engine.transcribe_timed(
                 &samples_16k_mono,
                 language.as_deref(),
@@ -641,8 +723,43 @@ impl TranscriptionManager {
         self.inner
             .interactive_waiting
             .fetch_add(1, Ordering::AcqRel);
+        // The claim is raised BEFORE the engine is taken, so this runs while the
+        // meeting chunk still holds it — which is the only moment cancelling it
+        // is worth anything.
+        self.preempt_in_flight();
         InteractiveClaim {
             inner: self.inner.clone(),
+        }
+    }
+
+    /// Take the engine off an in-flight PREEMPTIBLE decode for an interactive
+    /// one (YV93).
+    ///
+    /// Meeting ASR already stands down at chunk boundaries; this is what
+    /// happens when the dictation arrives in the middle of a chunk instead. The
+    /// decode is cancelled (YV70's hook — the same one the exit drain uses), its
+    /// result is discarded by the lease, and the chunk is re-decoded from disk
+    /// after the handback. Without it, a dictation's wait is a whole chunk
+    /// decode, and `ChunkConfig::validate` sanctions chunk decodes up to
+    /// [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`].
+    ///
+    /// No-op when the in-flight decode has no cancel hook: marking it preempted
+    /// would throw away a decode that is going to run to completion anyway.
+    /// [`ENGINE_HANDBACK_WAIT`] is what covers the dictation in that case.
+    fn preempt_in_flight(&self) {
+        let cancel = {
+            let mut slot = self.inner.in_flight.lock();
+            match slot.as_mut() {
+                Some(f) if f.preemptible && !f.preempted && f.cancel.is_some() => {
+                    f.preempted = true;
+                    f.cancel.clone()
+                }
+                _ => None,
+            }
+        };
+        if let Some(cancel) = cancel {
+            log::info!("a dictation is waiting — cancelling the in-flight meeting chunk decode");
+            cancel();
         }
     }
 
@@ -654,17 +771,41 @@ impl TranscriptionManager {
     /// bounded: on timeout this returns `Err` and abandons the engine — the
     /// worker thread owns it and drops it whenever it finally returns, so the
     /// next transcription simply reloads. It can never hang the caller.
+    ///
+    /// `preemptible` marks work a waiting dictation may cancel outright — a
+    /// meeting chunk, which is re-decodable from disk. An interactive decode is
+    /// never preemptible: its audio exists nowhere but in the buffer it was
+    /// handed.
     fn leased<R: Send + 'static>(
         &self,
+        preemptible: bool,
         job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
         self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
-        let engine = self.take_engine()?;
+        let mut engine = self.take_engine()?;
         self.inner.leases.fetch_add(1, Ordering::AcqRel);
+        // The cancel flag is sticky, so it is cleared HERE — with the engine
+        // exclusively in hand and before anything can see it as in-flight —
+        // rather than inside the decode, where a cancel arriving in the gap
+        // between publishing and running would be reset away.
+        engine.engine.reset_cancel();
         // YV70: publish this run's cancel hook while it is in flight, so the
-        // exit drain can end the decode instead of only waiting on it.
-        *self.inner.in_flight_cancel.lock() = engine.engine.cancel_handle();
+        // exit drain can end the decode instead of only waiting on it — and,
+        // since YV93, so a waiting dictation can end a meeting chunk with it.
+        *self.inner.in_flight.lock() = Some(InFlight {
+            cancel: engine.engine.cancel_handle(),
+            preemptible,
+            preempted: false,
+        });
+        // A dictation that raised its claim between `take_engine` and the line
+        // above found no in-flight record and cancelled nothing. Re-ask now that
+        // there is one: the claim is still up (it is dropped only once the
+        // dictation is through), so this closes the window rather than papering
+        // over it.
+        if preemptible && self.interactive_pending() {
+            self.preempt_in_flight();
+        }
 
         let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<R, String>)>();
         std::thread::spawn(move || {
@@ -699,13 +840,26 @@ impl TranscriptionManager {
                 Err("transcription worker died unexpectedly".into())
             }
         };
-        *self.inner.in_flight_cancel.lock() = None;
+        let preempted = {
+            let mut slot = self.inner.in_flight.lock();
+            let preempted = slot.as_ref().is_some_and(|f| f.preempted);
+            *slot = None;
+            preempted
+        };
         // YV70: the lease is released only AFTER the engine has been put back
         // (or dropped). It used to drop first, so the exit drain could see a
         // zero lease and unload while `return_engine` was still on its way to
         // refill the slot — the live Metal device the drain exists to prevent.
         self.inner.leases.fetch_sub(1, Ordering::AcqRel);
         self.touch();
+        if preempted {
+            // Discarded whatever came back, including an `Ok`. A cancelled
+            // decode that still returns text has been cut short somewhere the
+            // caller cannot see, and half a chunk silently spliced into a
+            // meeting is worse than the second of Metal time it costs to decode
+            // the chunk again from disk.
+            return Err(PREEMPTED_FOR_DICTATION.into());
+        }
         result
     }
 
@@ -1258,5 +1412,240 @@ mod tests {
         m.transcribe(vec![0.5; 16], None, None).expect("run");
         assert_eq!(*seen.lock(), None);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // YV93 — preemption: a dictation takes the engine off a meeting chunk
+    // -----------------------------------------------------------------------
+
+    /// A stub that can be ENDED mid-decode, the way the real engine's YV70
+    /// cancel token ends a native run — including the part that matters most:
+    /// the flag is STICKY, so a stub that is never reset stays cancelled
+    /// forever. If the manager stopped resetting it, the tests below would find
+    /// every decode after the first preemption aborting instantly.
+    struct CancellableStub {
+        text: &'static str,
+        /// A meeting chunk decode (`transcribe_timed`) — the slow one.
+        chunk_delay: Duration,
+        /// A dictation (`transcribe`). Sub-second, as it is in the app.
+        dictation_delay: Duration,
+        cancel: Arc<AtomicBool>,
+        decodes: Arc<AtomicU64>,
+    }
+
+    impl CancellableStub {
+        fn run(&self, delay: Duration) -> Result<String, String> {
+            let deadline = Instant::now() + delay;
+            while Instant::now() < deadline {
+                if self.cancel.load(Ordering::Acquire) {
+                    return Err("aborted".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.decodes.fetch_add(1, Ordering::AcqRel);
+            Ok(self.text.to_string())
+        }
+    }
+
+    impl Transcriber for CancellableStub {
+        fn transcribe(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<String, String> {
+            self.run(self.dictation_delay)
+        }
+
+        fn transcribe_timed(
+            &mut self,
+            _samples: &[f32],
+            _language: Option<&str>,
+            _bias_prompt: Option<&str>,
+        ) -> Result<asr_engine::TimedTranscript, String> {
+            self.run(self.chunk_delay)
+                .map(asr_engine::TimedTranscript::text_only)
+        }
+
+        fn cancel_handle(&self) -> Option<CancelHandle> {
+            let flag = self.cancel.clone();
+            Some(Arc::new(move || flag.store(true, Ordering::Release)))
+        }
+
+        fn reset_cancel(&mut self) {
+            self.cancel.store(false, Ordering::Release);
+        }
+    }
+
+    fn cancellable_manager(
+        chunk_delay: Duration,
+        dictation_delay: Duration,
+        decodes: Arc<AtomicU64>,
+    ) -> (TranscriptionManager, PathBuf) {
+        let path = stub_model_file("stub.gguf");
+        let m = manager(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(CancellableStub {
+                    text: "the take came back",
+                    chunk_delay,
+                    dictation_delay,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    decodes: decodes.clone(),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        m.load("stub/model", &path).expect("load");
+        (m, path)
+    }
+
+    /// Wait until a decode is actually holding the engine.
+    fn wait_for_a_decode_in_flight(m: &TranscriptionManager) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !m.status().transcribing {
+            assert!(Instant::now() < deadline, "no decode ever went in flight");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The defect this exists for: a meeting chunk decode LONGER than the
+    /// handback wait did not delay the dictation, it destroyed it —
+    /// `take_engine` gave up and the dictation path has no retry above it, so
+    /// the user's take came back as `no ASR model is loaded`. A five-second
+    /// decode is not hypothetical: `ChunkConfig::validate` sanctions a
+    /// full-width chunk at up to [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`].
+    ///
+    /// So a dictation now takes the engine OFF the chunk rather than queueing
+    /// behind it, and the chunk — which is re-decodable from disk — is the one
+    /// that gets thrown away.
+    #[test]
+    fn a_dictation_cancels_an_in_flight_meeting_chunk_instead_of_queueing_behind_it() {
+        let decodes = Arc::new(AtomicU64::new(0));
+        // Ten seconds: twice the old handback wait, and well inside what the
+        // chunk geometry declares legal.
+        let (m, path) = cancellable_manager(
+            Duration::from_secs(10),
+            Duration::from_millis(50),
+            decodes.clone(),
+        );
+
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+
+        let started = Instant::now();
+        let dictated = m.transcribe(vec![0.2; 16_000], None, None);
+        let waited = started.elapsed();
+
+        assert_eq!(
+            dictated.as_deref(),
+            Ok("the take came back"),
+            "the dictation was lost to a decode the geometry itself sanctions"
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "the dictation waited {waited:?} — it queued behind the chunk instead \
+             of preempting it"
+        );
+        assert_eq!(
+            meeting.join().expect("meeting thread").unwrap_err(),
+            PREEMPTED_FOR_DICTATION,
+            "a preempted chunk must be told apart from a decode failure, or the \
+             meeting driver writes an asr_failed hole for it"
+        );
+        // …and the engine is still usable afterwards: the sticky cancel flag is
+        // reset per decode, so the NEXT chunk is not aborted by the last
+        // dictation's cancel.
+        let (m2, _p2) = (m.clone(), ());
+        assert!(
+            m2.transcribe_timed(vec![0.3; 16_000], None, None).is_ok(),
+            "the cancel flag stayed set and wedged the warm engine"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// …and the asymmetry holds the other way: a dictation is NEVER cancelled.
+    /// A second interactive caller waits (the engine comes back), because a
+    /// take exists nowhere but in the buffer being decoded.
+    #[test]
+    fn a_dictation_is_never_preempted_by_another_dictation() {
+        let decodes = Arc::new(AtomicU64::new(0));
+        let (m, path) = cancellable_manager(
+            Duration::from_millis(400),
+            Duration::from_millis(400),
+            decodes.clone(),
+        );
+
+        let first = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        let second = m.transcribe(vec![0.2; 16_000], None, None);
+
+        assert_eq!(
+            first.join().expect("first thread").as_deref(),
+            Ok("the take came back"),
+            "one dictation cancelled another"
+        );
+        assert_eq!(second.as_deref(), Ok("the take came back"));
+        assert_eq!(
+            decodes.load(Ordering::Acquire),
+            2,
+            "both takes must have actually decoded"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The floor under the preemption above, for an engine with NO cancel hook:
+    /// the dictation waits, but it must not be DESTROYED. This is the constant
+    /// that used to disagree with the geometry — 5 s of patience against a
+    /// decode the same module sanctions at up to 60 s.
+    #[test]
+    fn a_slow_uncancellable_chunk_delays_a_dictation_but_never_loses_it() {
+        let path = stub_model_file("stub.gguf");
+        // No cancel hook (the default `Transcriber` impl), 6.5 s decode — past
+        // the wait this used to have, well inside what the geometry allows.
+        let m = manager(
+            stub_loader("the take came back", Duration::from_millis(6_500), false),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        m.load("stub/model", &path).expect("load");
+
+        let meeting = {
+            let m = m.clone();
+            std::thread::spawn(move || m.transcribe_timed(vec![0.1; 16_000], None, None))
+        };
+        wait_for_a_decode_in_flight(&m);
+        let dictated = m.transcribe(vec![0.2; 16_000], None, None);
+
+        assert_eq!(
+            dictated.as_deref(),
+            Ok("the take came back"),
+            "the dictation was destroyed rather than delayed"
+        );
+        assert!(meeting.join().expect("meeting thread").is_ok());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The two constants can no longer disagree, which is the structural half
+    /// of the fix: `ChunkConfig::validate` and [`ENGINE_HANDBACK_WAIT`] are both
+    /// derived from [`MAX_SANCTIONED_CHUNK_DECODE_SECONDS`], so no legal chunk
+    /// geometry can outlast the patience a dictation has for it.
+    #[test]
+    fn the_handback_wait_covers_every_chunk_decode_the_geometry_sanctions() {
+        assert!(
+            ENGINE_HANDBACK_WAIT.as_secs_f64() >= MAX_SANCTIONED_CHUNK_DECODE_SECONDS,
+            "a sanctioned {MAX_SANCTIONED_CHUNK_DECODE_SECONDS}s chunk decode outlasts \
+             the {ENGINE_HANDBACK_WAIT:?} a dictation waits for the engine"
+        );
+        assert!(
+            MAX_SANCTIONED_CHUNK_DECODE_SECONDS <= TRANSCRIBE_TIMEOUT.as_secs_f64(),
+            "the sanctioned decode is longer than the timeout that abandons it"
+        );
     }
 }

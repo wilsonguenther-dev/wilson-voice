@@ -122,6 +122,22 @@ pub fn cancel_token(engine: &AsrEngine) -> CancelToken {
     engine.cancel.clone()
 }
 
+/// Clear a cancellation left over from a previous run (YV93).
+///
+/// `CancelToken` is STICKY — `cancel()` sets a flag that stays set until
+/// `reset()`, and the session polls it between decode steps forever after. YV70
+/// only ever cancelled on the way out of the process, so nothing noticed; YV93
+/// cancels a meeting chunk whenever a dictation wants the engine, and without
+/// this every decode after the first preemption would abort instantly and the
+/// warm engine would be permanently useless.
+///
+/// Called by the lease with the engine exclusively in hand, immediately before
+/// it is published as in-flight, so a cancel from that instant on is honoured
+/// and one from a previous run cannot abort this one.
+pub fn reset_cancel(engine: &AsrEngine) {
+    engine.cancel.reset();
+}
+
 /// Load a GGUF model from disk into a ready-to-run engine.
 ///
 /// `Backend::Auto` lets the library pick the best registered device (Metal on

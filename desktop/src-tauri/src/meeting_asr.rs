@@ -11,7 +11,7 @@
 //!    rather than on a fixed 30 s clock, so the cut falls BETWEEN two words and
 //!    the seam has nothing to duplicate. Measured on the eval lecture: 28 of 28
 //!    boundaries landed in a pause, none inside a word, and the primary merge's
-//!    insertions went from 12 to 0 against the fixed clock (WER 0.0087 → 0.0042).
+//!    insertions went from 13 to 0 against the fixed clock (WER 0.0090 → 0.0042).
 //!    Note what is NOT claimed: the two-second overlap is not silent — this
 //!    lecture pauses 0.35 s between sentences, so 1.6 s of that overlap is
 //!    speech. It does not need to be silent. It needs to not be cut mid-word.
@@ -58,7 +58,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use crate::models;
-use crate::transcription::{TranscriptionManager, NO_ENGINE_LOADED, TRANSCRIBE_TIMEOUT};
+use crate::transcription::{
+    TranscriptionManager, MAX_SANCTIONED_CHUNK_DECODE_SECONDS, NO_ENGINE_LOADED,
+    PREEMPTED_FOR_DICTATION, TRANSCRIBE_TIMEOUT, WORST_CASE_RTF_BUDGET,
+};
 use crate::vad::{VoicedSpan, WarmVad};
 
 /// The rate every buffer in this module is in. The capture path writes 16 kHz
@@ -127,7 +130,11 @@ impl ChunkConfig {
                 self.overlap_seconds, self.min_seconds
             ));
         }
-        let ceiling = TRANSCRIBE_TIMEOUT.as_secs_f64() * WORST_CASE_RTF_BUDGET;
+        // The SAME number `transcription::ENGINE_HANDBACK_WAIT` is derived
+        // from, so a geometry this accepts can never outlast the wait a
+        // dictation is willing to give it (the disagreement that used to lose
+        // takes outright).
+        let ceiling = MAX_SANCTIONED_CHUNK_DECODE_SECONDS;
         if self.max_decode_seconds() > ceiling {
             return Err(format!(
                 "widest decode {}s exceeds the {}s the {}s TRANSCRIBE_TIMEOUT leaves at RTF {}",
@@ -140,11 +147,6 @@ impl ChunkConfig {
         Ok(())
     }
 }
-
-/// Fraction of `TRANSCRIBE_TIMEOUT` a full-width window may spend, at a
-/// real-time factor of 1.0. Half the budget: the engine is shared with
-/// dictation and the timeout also has to cover a cold Metal warm-up.
-const WORST_CASE_RTF_BUDGET: f64 = 0.5;
 
 /// How a window boundary was chosen — kept per window because "the VAD found a
 /// pause" and "nothing was quiet enough, so the clock decided" are different
@@ -783,7 +785,45 @@ pub fn merge_chunk_tokens_segmented(chunks: &[Vec<String>]) -> SegmentedMerge {
 /// duplicate at a seam is impossible by construction, and a deletion needs a
 /// span whose midpoint the model placed outside the window it was decoded in.
 pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
+    merge_timed_reporting(chunks).0
+}
+
+/// What [`merge_timed`] decided at ONE seam, and on what evidence.
+///
+/// This exists so the eval harness can score the tie-break itself rather than
+/// only its effect on the WER two arms away. The seam rule is the one place in
+/// the merge where a real word can be deleted, its discriminator is a
+/// millisecond-scale time comparison, and the corpus that would catch a bad
+/// threshold is `say`-generated TTS that never stutters — so the harness gets
+/// the decisions, not a re-implementation of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeamDecision {
+    /// Index of the INCOMING chunk (the seam is at its content start).
+    pub chunk_index: usize,
+    pub boundary_seconds: f64,
+    pub kind: BoundaryKind,
+    /// The last word the outgoing window kept, and where the model ended it.
+    pub previous_text: String,
+    pub previous_end_seconds: f64,
+    /// The first word the incoming window owns, and where the model started it.
+    pub first_text: String,
+    pub first_start_seconds: f64,
+    /// The same word on both sides, under [`fold`].
+    pub text_matches: bool,
+    /// `boundary - previous_end`: ~0 for a word the cut truncated (the outgoing
+    /// buffer stops at the boundary), a real gap for a word the speaker
+    /// finished before it. Negative when the model timed the word slightly past
+    /// the end of the audio it was given.
+    pub truncation_gap_seconds: f64,
+    /// Whether the outgoing word was dropped as a second decode of the incoming
+    /// one.
+    pub popped: bool,
+}
+
+/// [`merge_timed`], plus every seam decision it made.
+pub fn merge_timed_reporting(chunks: &[ChunkOutcome]) -> (Vec<TimedSpan>, Vec<SeamDecision>) {
     let mut out: Vec<TimedSpan> = Vec::new();
+    let mut decisions: Vec<SeamDecision> = Vec::new();
     for chunk in chunks {
         let kept: Vec<&TimedSpan> = chunk
             .spans
@@ -823,13 +863,28 @@ pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
         //
         // So:
         //
-        // * [`BoundaryKind::FixedClock`] — the chunker cut here precisely
-        //   BECAUSE no pause anywhere in the search window cleared
-        //   [`ChunkConfig::min_silence_seconds`]. A word cut in half is exactly
-        //   what that seam produces, and "a repetition across a pause" is not a
-        //   shape that can occur at a cut with no pause in it. Proximity is
-        //   enough. Measured on the lecture's fixed-clock arm: 17 pops over 29
-        //   seams, insertions 29 → 12, primary merge WER 0.0141 → 0.0087.
+        // * [`BoundaryKind::FixedClock`] — a word cut in half is exactly what
+        //   this seam produces. **But "no pause cleared
+        //   [`ChunkConfig::min_silence_seconds`] anywhere in the search window"
+        //   does NOT mean no repetition can occur here**, and the first cut of
+        //   this guard claimed it did. The repetition that occurs at a cut with
+        //   no pause in it is a STUTTER — "that that", "I I", "the the", "so
+        //   so" — which by definition has no pause, and no pause is precisely
+        //   the condition that produced the fixed-clock boundary. Proximity
+        //   alone therefore deletes a real word here just as surely as it did
+        //   at the silence seam. What separates the two is
+        //   [`SEAM_TRUNCATION_SLACK`]: the outgoing window's AUDIO stops at the
+        //   boundary, so a word the cut truncated must END there (within a
+        //   frame of it), while a stutter's first token ends before the cut
+        //   with a real gap after it. Measured on the lecture's fixed-clock
+        //   arm: 17 pops over 29 seams, insertions 29 → 12, primary merge WER
+        //   0.0141 → 0.0087, and 16 of those 17 pops survive the truncation gate
+        //   because their words end within one frame of the cut. The 17th
+        //   (`into | into`, two frames short) is now kept: insertions 13, WER
+        //   0.0090 — one visible duplicate on an arm that is not the shipped
+        //   one, bought for a class of silent deletions on every arm. See
+        //   `meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated`
+        //   for the raw distribution.
         // * [`BoundaryKind::Silence`] — the VAD asserted a pause here, so the
         //   only duplicate a pause cannot explain is two spans that INTERSECT
         //   on the timeline: the same instant decoded twice. A repetition
@@ -848,22 +903,40 @@ pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
             let boundary_gap = (first.start_seconds - previous.start_seconds).abs();
             let same_instant = previous.end_seconds > first.start_seconds
                 && first.end_seconds > previous.start_seconds;
+            // Did the cut itself end this word, or did the speaker? The
+            // outgoing window has no audio past `content_start_seconds` — that
+            // instant is where its buffer stops — so a truncated fragment can
+            // only end there, and anything ending earlier is a word that
+            // finished on its own.
+            let truncated_by_the_cut =
+                previous.end_seconds >= chunk.content_start_seconds - SEAM_TRUNCATION_SLACK;
             let repairable = match chunk.start_boundary {
-                BoundaryKind::FixedClock => true,
+                BoundaryKind::FixedClock => truncated_by_the_cut,
                 BoundaryKind::Silence | BoundaryKind::Edge => same_instant,
             };
-            if repairable
-                && boundary_gap <= SEAM_DUPLICATE_TOLERANCE
-                && fold(&previous.text) == fold(&first.text)
-                && !fold(&first.text).is_empty()
-            {
+            let text_matches =
+                fold(&previous.text) == fold(&first.text) && !fold(&first.text).is_empty();
+            let popped = repairable && boundary_gap <= SEAM_DUPLICATE_TOLERANCE && text_matches;
+            decisions.push(SeamDecision {
+                chunk_index: chunk.index,
+                boundary_seconds: chunk.content_start_seconds,
+                kind: chunk.start_boundary,
+                previous_text: previous.text.clone(),
+                previous_end_seconds: previous.end_seconds,
+                first_text: first.text.clone(),
+                first_start_seconds: first.start_seconds,
+                text_matches,
+                truncation_gap_seconds: chunk.content_start_seconds - previous.end_seconds,
+                popped,
+            });
+            if popped {
                 out.pop();
             }
         }
         out.extend(kept.into_iter().cloned());
     }
     out.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
-    out
+    (out, decisions)
 }
 
 /// How far apart two decodes of the SAME word at a seam may be timestamped
@@ -872,10 +945,56 @@ pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
 ///
 /// It is a SECOND condition, never the only one: on its own, "the same word
 /// starting within a second" is also the exact shape of a speaker repeating a
-/// word across a pause. What keeps the two apart is that [`merge_timed`] only
-/// consults it at a [`BoundaryKind::FixedClock`] seam, where by construction
-/// there was no pause to repeat across.
+/// word — across a pause at a [`BoundaryKind::Silence`] seam, or with no pause
+/// at all (a stutter) at a [`BoundaryKind::FixedClock`] one. What keeps a
+/// repetition from being deleted is the per-seam evidence [`merge_timed`]
+/// requires beside it: two spans covering the same INSTANT at a silence cut,
+/// and a word the cut TRUNCATED ([`SEAM_TRUNCATION_SLACK`]) at a clock cut.
 const SEAM_DUPLICATE_TOLERANCE: f64 = 1.0;
+
+/// How far short of the cut the outgoing window's last word may end and still
+/// count as a word the cut TRUNCATED rather than a word the speaker finished.
+///
+/// This is the whole discriminator between the duplicate a fixed-clock seam
+/// manufactures and the repetition a speaker produces at one. The outgoing
+/// window's buffer ENDS at the boundary, so a word still being spoken there is
+/// emitted with its end at the buffer's end; a stutter's first token ends
+/// before the cut and the silence after it is inside the buffer, so the model
+/// times it where it actually stopped.
+///
+/// The value is one and a half Parakeet frames, and both halves of that are
+/// measured. The model's timestamp resolution is one frame — a 10 ms mel hop
+/// with 8× encoder subsampling, 80 ms — and the lecture's fixed-clock arm
+/// shows the two populations falling exactly where the argument above says they
+/// should, quantised to that grid (printed in full by
+/// `meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated`):
+///
+/// * 16 of the 29 seams carry a word the cut truncated. Every one of them ends
+///   within ONE frame of the boundary — gaps of −0.08 s, 0.00 s or +0.08 s,
+///   the model placing the word's end on the sample the audio stopped at, give
+///   or take its own resolution.
+/// * the nearest text-matching candidate the gate declines to pop ends TWO
+///   frames short (+0.16 s).
+///
+/// So the threshold goes between the clusters, at 0.12 s, with half a frame of
+/// margin on each side rather than sitting on either population's edge. The
+/// eval test asserts that margin, not just the count, so a model whose emission
+/// times drift enough to close it fails there instead of quietly deleting a
+/// word here.
+///
+/// The one seam this costs, stated rather than buried: `into | into` at 720 s
+/// (two frames short) is a genuine duplicate that the old proximity-only rule
+/// popped and this one keeps, so the fixed-clock arm's insertions go 12 → 13
+/// (WER 0.0087 → 0.0090). That is the trade the plan already made explicitly —
+/// *"a duplicate at such a seam is a VISIBLE defect; deleting words on a guess
+/// would be a silent one"* — and it is paid on the fixed-clock arm only; the
+/// shipped VAD-cut arm still has 0 insertions and WER 0.0042.
+///
+/// What it does NOT resolve, stated rather than hidden: a stutter whose first
+/// token ends within 0.12 s of the cut is indistinguishable from a truncated
+/// word by time alone, because at this resolution the two are nearly the same
+/// observation. The eval corpus's WER gate is what bounds the residue.
+pub const SEAM_TRUNCATION_SLACK: f64 = 0.12;
 
 // ---------------------------------------------------------------------------
 // Per-chunk results + the resume ledger
@@ -1107,6 +1226,10 @@ pub struct MeetingTranscript {
     pub interrupted: bool,
     /// How many chunk boundaries stood down for a dictation.
     pub preempt_yields: usize,
+    /// How many chunk decodes a dictation cancelled MID-chunk. Each one was
+    /// re-decoded (or, at [`PREEMPTED_CHUNK_RETRIES`], left for the next run) —
+    /// never written into the ledger as a failure.
+    pub preempted_decodes: usize,
 }
 
 /// One meeting transcription job.
@@ -1127,6 +1250,17 @@ pub struct MeetingAsr<'a> {
 /// is written off. Three attempts spans any plausible dictation (a 60 s take is
 /// ~1 s on Metal) without letting a wedged engine stall the meeting.
 const CONTENDED_CHUNK_RETRIES: usize = 3;
+
+/// How many times one chunk may be cancelled mid-decode by a dictation before
+/// the meeting stands down for this run rather than trying again.
+///
+/// Every retry is preceded by a full yield — the driver waits until no
+/// dictation is pending at all — so reaching this bound means the user started
+/// three more dictations while this one chunk was being decoded. Standing down
+/// then is not a failure: the ledger is complete up to the previous chunk, so
+/// the next run resumes exactly here. Spinning instead would be the livelock,
+/// and writing the chunk off as `asr_failed` would be the data loss.
+const PREEMPTED_CHUNK_RETRIES: usize = 3;
 
 /// Nothing to yield to, ever — for tests and for headless runs.
 pub struct NoDemand;
@@ -1165,6 +1299,7 @@ impl MeetingAsr<'_> {
 
         let mut decoded = 0usize;
         let mut yields = 0usize;
+        let mut preempted = 0usize;
         let mut interrupted = false;
         for window in &plan {
             if (self.quit)() {
@@ -1183,9 +1318,39 @@ impl MeetingAsr<'_> {
                 .audio
                 .window(window.audio_start_seconds, window.audio_end_seconds)?;
             let mut attempt = 0usize;
+            let mut preempts = 0usize;
             let outcome = loop {
                 match self.asr.transcribe_timed(&samples) {
-                    Ok(transcript) => break ChunkOutcome::from_transcript(window, transcript),
+                    Ok(transcript) => {
+                        break Some(ChunkOutcome::from_transcript(window, transcript))
+                    }
+                    // A dictation arrived mid-chunk and took the engine off this
+                    // decode. Not a failure and not contention: the chunk never
+                    // ran. Its audio is still on disk, so it is re-decoded once
+                    // the dictation is through — and NOT recorded in the ledger
+                    // in between, because an `asr_failed` row would make a
+                    // dictation the user issued at the wrong moment into a
+                    // permanent hole in their transcript.
+                    Err(ref e) if e == PREEMPTED_FOR_DICTATION => {
+                        preempts += 1;
+                        preempted += 1;
+                        if preempts > PREEMPTED_CHUNK_RETRIES {
+                            // The user is dictating continuously. Stand the
+                            // meeting down rather than spin: the ledger is
+                            // complete up to the previous chunk, so this window
+                            // is simply the resume point next time.
+                            log::info!(
+                                "meeting {meeting_id}: chunk {} preempted {preempts} times — \
+                                 standing down, it resumes at {:.1}s",
+                                window.index,
+                                window.content_start_seconds
+                            );
+                            break None;
+                        }
+                        if self.yield_to_interactive() {
+                            yields += 1;
+                        }
+                    }
                     // Lost the engine to a dictation that arrived between the
                     // yield and the take. That is contention, not a decode
                     // failure: wait it out and decode this chunk properly rather
@@ -1209,16 +1374,22 @@ impl MeetingAsr<'_> {
                             window.content_start_seconds,
                             window.content_end_seconds
                         );
-                        break ChunkOutcome::failed(window, e);
+                        break Some(ChunkOutcome::failed(window, e));
                     }
                 }
+            };
+            let Some(outcome) = outcome else {
+                interrupted = true;
+                break;
             };
             self.store.record_chunk(meeting_id, &outcome)?;
             chunks.push(outcome);
             decoded += 1;
         }
 
-        Ok(assemble(chunks, resumed, decoded, yields, interrupted))
+        let mut out = assemble(chunks, resumed, decoded, yields, interrupted);
+        out.preempted_decodes = preempted;
+        Ok(out)
     }
 
     /// Stand down while a dictation wants the engine. Returns true if it
@@ -1321,6 +1492,8 @@ pub fn assemble(
             processed_through_seconds: processed_through,
             interrupted,
             preempt_yields: yields,
+            // Filled in by the driver, which is the only place that knows.
+            preempted_decodes: 0,
         };
     }
 
@@ -1367,6 +1540,7 @@ pub fn assemble(
         processed_through_seconds: processed_through,
         interrupted,
         preempt_yields: yields,
+        preempted_decodes: 0,
     }
 }
 
@@ -1793,6 +1967,81 @@ mod tests {
             vec!["okay", "Right.", "Right,", "so"],
             "a genuine repetition across a VAD-cut boundary is two DISJOINT \
              spans, not one word decoded twice"
+        );
+    }
+
+    /// The same falsifiable line at the OTHER seam, which is where it was still
+    /// failing after the first fix: a repetition with no pause in it — a
+    /// stutter — straddling a [`BoundaryKind::FixedClock`] cut.
+    ///
+    /// The first cut of the fix left fixed-clock seams on pure text+proximity,
+    /// reasoning that "a repetition across a pause is not a shape that can
+    /// occur at a cut with no pause in it". True and beside the point: the
+    /// repetition that occurs at a pauseless cut is a stutter, which HAS no
+    /// pause, and no pause is exactly the condition that makes the boundary
+    /// fixed-clock in the first place. Against that code this input returned
+    /// `["think", "that", "is", "fine"]` — the speaker said five words and four
+    /// came back — and no test covered it, because
+    /// `seam_dedupe_never_deletes_real_words_on_the_timed_merge` asserts a
+    /// Silence seam and the eval corpus is `say`-generated TTS, which never
+    /// stutters.
+    ///
+    /// Blast radius, which is why this is not a corner case:
+    /// `plan_windows(audio, None, …)` falls back to `plan_windows_fixed`, whose
+    /// every interior boundary is `FixedClock` — so a meeting transcribed on a
+    /// build with no Silero instance took proximity-only dedupe at EVERY seam.
+    #[test]
+    fn seam_dedupe_never_deletes_real_words_at_a_fixed_clock_seam() {
+        // "…think that / that is fine" — a stutter, spoken straight through.
+        // The first "that" ENDS at 29.85, a clear 0.15 s before the cut at
+        // 30.0: the outgoing window's audio ran past it and the model timed it
+        // where the speaker actually stopped. A word the cut truncated could
+        // not do that — the buffer ends at 30.0.
+        let a = outcome(
+            0,
+            0.0,
+            30.0,
+            &[(29.3, 29.5, "think"), (29.6, 29.85, "that")],
+        );
+        let mut b = outcome(
+            1,
+            30.0,
+            60.0,
+            &[
+                (30.0, 30.25, "that"),
+                (30.4, 30.6, "is"),
+                (30.7, 30.9, "fine"),
+            ],
+        );
+        b.start_boundary = BoundaryKind::FixedClock;
+        let merged = merge_timed(&[a, b]);
+        let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            words,
+            vec!["think", "that", "that", "is", "fine"],
+            "a stutter at a fixed-clock seam is two real words, not one word \
+             decoded twice"
+        );
+    }
+
+    /// The same shape at a fixed-clock seam reached through the SHIPPED entry
+    /// point rather than a hand-set `start_boundary`, because that is the path
+    /// a real meeting takes when no VAD is available: `plan_windows(audio,
+    /// None, …)` is `plan_windows_fixed`, and every interior boundary it makes
+    /// is `FixedClock`.
+    #[test]
+    fn a_vad_less_plan_makes_fixed_clock_seams_everywhere() {
+        let cfg = ChunkConfig::default();
+        let audio = MemoryWindows::at_meeting_rate(vec![0.0f32; MEETING_RATE as usize * 200]);
+        let plan = plan_windows(&audio, None, 0.0, &cfg, 0).expect("a plan");
+        let kinds: Vec<BoundaryKind> = plan.iter().map(|w| w.start_boundary).collect();
+        assert!(
+            kinds.len() >= 6,
+            "200 s at a 30 s target is more than six windows: {kinds:?}"
+        );
+        assert!(
+            kinds[1..].iter().all(|k| *k == BoundaryKind::FixedClock),
+            "every interior boundary of a VAD-less plan is fixed-clock: {kinds:?}"
         );
     }
 

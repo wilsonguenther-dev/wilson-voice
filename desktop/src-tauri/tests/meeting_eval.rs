@@ -78,10 +78,11 @@ use sha2::{Digest, Sha256};
 // of itself.
 use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use wilson_voice_lib::meeting_asr::{
-    merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, plan_windows,
-    plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig, ChunkOutcome,
-    ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, SampleWindows, VoiceActivity,
-    MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET,
+    merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, merge_timed_reporting,
+    plan_windows, plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig,
+    ChunkOutcome, ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, SampleWindows,
+    SeamDecision, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM,
+    OVERLAP_TOKEN_BUDGET, SEAM_TRUNCATION_SLACK,
 };
 use wilson_voice_lib::vad::WarmVad;
 
@@ -114,7 +115,7 @@ const FIXTURE_IDS: [&str; 3] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE];
 /// | arm | merge | WER | insertions |
 /// |---|---|---|---|
 /// | fixed clock | text anchor (fallback) | 0.0048 | 0 |
-/// | fixed clock | timed (primary) | 0.0087 | 12 |
+/// | fixed clock | timed (primary) | 0.0090 | 13 |
 /// | VAD-cut | text anchor (fallback) | 0.0042 | 0 |
 /// | VAD-cut | timed (primary) | **0.0042** | **0** |
 ///
@@ -139,7 +140,7 @@ const SEAM_DRIFT_WER_GATE: f64 = 0.02;
 /// At `MAX_TAIL_TRIM = 2` this fixture scored 32 insertions over 3117 words
 /// (0.0103) from three unmerged seams and still passed a WER gate of 0.15;
 /// measured now: 0 for the text-anchor merge on both arms and for the timed
-/// merge on the VAD-cut arm, 12 (0.0038) for the timed merge on the fixed-clock
+/// merge on the VAD-cut arm, 13 (0.0042) for the timed merge on the fixed-clock
 /// arm — which is the one case where a boundary can cut a word in half, and the
 /// measurement that argues for the VAD arm being the shipped one.
 const LECTURE_INSERTION_RATE_GATE: f64 = 0.005;
@@ -656,8 +657,11 @@ impl Decoder {
         let (merged, merge) = merge_chunk_tokens_reporting(&per_chunk);
         // The PRIMARY merge (time, not text) — scored beside the fallback so
         // both paths are measured on the corpus rather than only the one the
-        // shipped model happens to take.
-        let timed_spans = merge_timed(&outcomes);
+        // shipped model happens to take. The seam DECISIONS come back with it
+        // so the tie-break can be scored directly (see
+        // `meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated`)
+        // rather than only through its effect on the WER.
+        let (timed_spans, seams) = merge_timed_reporting(&outcomes);
         // The SHIPPED predicate, not a copy of it: a quiet window is a
         // successful decode with no spans, and the harness must take the same
         // arm `assemble` takes or it scores a path the app never runs.
@@ -668,6 +672,7 @@ impl Decoder {
             segments,
             per_chunk,
             timed_spans,
+            seams,
             timestamps_are_real,
         }
     }
@@ -686,6 +691,9 @@ struct ChunkedDecode {
     /// YV93: the timed merge's output — every span the model timestamped, each
     /// kept by exactly the one window whose content range holds its midpoint.
     timed_spans: Vec<wilson_voice_lib::asr_engine::TimedSpan>,
+    /// YV93: what the timed merge decided at every seam, straight out of the
+    /// shipped merge.
+    seams: Vec<SeamDecision>,
     /// Whether the shipped model gave usable alignment on every window, i.e.
     /// whether `timed_spans` is the transcript or the fallback is.
     timestamps_are_real: bool,
@@ -1456,6 +1464,125 @@ fn meeting_eval_lecture_wer_is_under_the_gate() {
     }
 }
 
+/// How many of the lecture's 29 fixed-clock seams the tie-break pops. Measured,
+/// and asserted exactly: a threshold change that silently stops deduping
+/// half-cut words shows up as a lower number here long before it shows up as a
+/// third decimal place of WER.
+const FIXED_CLOCK_TIE_BREAK_POPS: usize = 16;
+
+/// The model's own timestamp resolution: a 10 ms mel hop with 8× encoder
+/// subsampling. Every seam gap this fixture produces is a multiple of it, which
+/// is the reason `SEAM_TRUNCATION_SLACK` is expressed in frames rather than in
+/// round decimals.
+const PARAKEET_FRAME_SECONDS: f64 = 0.08;
+
+/// Slop for comparing a frame-quantised gap against the frame itself. The gaps
+/// are differences of f64 seconds read off the model (`30.0 - 29.92` is
+/// `0.08000000000000185`), so an exact `<=` against 0.08 fails on arithmetic
+/// rather than on anything about the audio.
+const FRAME_COMPARISON_SLOP: f64 = 1e-6;
+
+/// The seam tie-break, scored directly on real audio rather than through its
+/// effect on the WER two arms away.
+///
+/// This is the one place in the merge where a real word can be deleted, and the
+/// evidence it runs on is a millisecond-scale time comparison
+/// (`SEAM_TRUNCATION_SLACK`): a word the cut TRUNCATED must end at the
+/// boundary, because that is where the outgoing window's buffer stops, while a
+/// word the speaker finished — the first half of a stutter, the shape that
+/// makes this a defect rather than a nicety — ends before it with a real gap.
+///
+/// The gate is the MARGIN, not the median: what makes 80 ms a threshold rather
+/// than a fitted constant is that the popped pairs cluster hard against the
+/// boundary and nothing sits in the neighbourhood of the line. Both edges are
+/// printed and both are asserted, so a model whose emission times drift enough
+/// to close that gap fails here instead of quietly deleting words.
+#[test]
+fn meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated() {
+    let Some(root) = corpus() else { return };
+    let decode = lecture_decode(&root);
+    if !decode.timestamps_are_real {
+        eprintln!("{LECTURE}: no alignment — the timed tie-break did not run");
+        return;
+    }
+    let clock_seams: Vec<&SeamDecision> = decode
+        .seams
+        .iter()
+        .filter(|s| s.kind == BoundaryKind::FixedClock)
+        .collect();
+    assert!(
+        !clock_seams.is_empty(),
+        "the fixed-clock arm produced no fixed-clock seams"
+    );
+
+    let popped: Vec<&&SeamDecision> = clock_seams.iter().filter(|s| s.popped).collect();
+    // Candidates the tie-break DECLINED although the words matched: exactly the
+    // set a repetition at a clock cut would land in.
+    let spared: Vec<&&SeamDecision> = clock_seams
+        .iter()
+        .filter(|s| !s.popped && s.text_matches)
+        .collect();
+    for s in &clock_seams {
+        eprintln!(
+            "  [{LECTURE}] seam {:03} at {:8.3}s  {:>14} | {:<14}  gap={:+.3}s  match={} popped={}",
+            s.chunk_index,
+            s.boundary_seconds,
+            s.previous_text,
+            s.first_text,
+            s.truncation_gap_seconds,
+            s.text_matches,
+            s.popped
+        );
+    }
+    let widest_pop = popped
+        .iter()
+        .map(|s| s.truncation_gap_seconds)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let closest_spare = spared
+        .iter()
+        .map(|s| s.truncation_gap_seconds)
+        .fold(f64::INFINITY, f64::min);
+    println!(
+        "meeting_eval {LECTURE} fixed_clock_seams={} pops={} widest_pop_gap={:.3}s \
+         spared_text_matches={} closest_spared_gap={:.3}s slack={SEAM_TRUNCATION_SLACK}s",
+        clock_seams.len(),
+        popped.len(),
+        widest_pop,
+        spared.len(),
+        closest_spare
+    );
+
+    assert_eq!(
+        popped.len(),
+        FIXED_CLOCK_TIE_BREAK_POPS,
+        "the tie-break stopped deduping half-cut words at fixed-clock seams"
+    );
+    // A word the cut truncated ends where the audio stopped, to within the
+    // model's own resolution — one frame, not two.
+    assert!(
+        widest_pop <= PARAKEET_FRAME_SECONDS + FRAME_COMPARISON_SLOP,
+        "a pop fired {widest_pop:.3}s short of the cut — more than the one frame \
+         ({PARAKEET_FRAME_SECONDS}s) a truncated word can be off by, so it is not \
+         a truncated word"
+    );
+    // …and the threshold sits BETWEEN the two populations rather than on the
+    // edge of either: this is the margin that makes 0.12 s a decision and not a
+    // fitted constant, and it is what fails first if the model's emission times
+    // start drifting.
+    assert!(
+        widest_pop < SEAM_TRUNCATION_SLACK && closest_spare > SEAM_TRUNCATION_SLACK,
+        "the {SEAM_TRUNCATION_SLACK}s threshold no longer separates the truncated \
+         words (widest {widest_pop:.3}s) from the words the speaker finished \
+         (closest {closest_spare:.3}s)"
+    );
+    assert!(
+        closest_spare - widest_pop >= PARAKEET_FRAME_SECONDS - FRAME_COMPARISON_SLOP,
+        "the truncated words and the finished words are now within one frame of \
+         each other ({widest_pop:.3}s vs {closest_spare:.3}s) — time alone can no \
+         longer tell a half-cut word from a repetition"
+    );
+}
+
 /// Acceptance gate: start times over the FULL 15-minute fixture come out
 /// monotonic.
 ///
@@ -1694,10 +1821,12 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
 }
 
 /// What the FIXED-CLOCK arm of the same fixture costs at the seams, measured by
-/// `meeting_eval_lecture_wer_is_under_the_gate`: 12 duplicated words over 29
-/// seams, after the primary merge's boundary tie-break has already removed 17 of
-/// the 29 it started with. The VAD arm has to beat it.
-const FIXED_CLOCK_TIMED_INSERTIONS: usize = 12;
+/// `meeting_eval_lecture_wer_is_under_the_gate`: 13 duplicated words over 29
+/// seams, after the primary merge's boundary tie-break has already removed 16 of
+/// the 29 it started with (the 17th is the one `SEAM_TRUNCATION_SLACK` now
+/// declines to pop, because the word ended two frames before the cut rather
+/// than at it). The VAD arm has to beat it.
+const FIXED_CLOCK_TIMED_INSERTIONS: usize = 13;
 
 /// Where the app keeps the warm Silero model. The VAD arm below needs the real
 /// one — a scripted VAD would be measuring this file's own assumptions.
