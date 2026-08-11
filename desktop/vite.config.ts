@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
+import pkg from "./package.json";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -23,6 +24,12 @@ const devTooling = process.env.YAP_DEV_TOOLING === "1";
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+
+  // YP5 — the version the UI shows comes from package.json, which moves in
+  // lockstep with tauri.conf.json and Cargo.toml at every release. It was a
+  // hand-typed string, and it was still claiming v0.7.0 after the tree had
+  // moved on — a version a user reads off the header has to be the real one.
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
 
   // Multi-page: main app + compact float pill (never share one React tree)
   build: {

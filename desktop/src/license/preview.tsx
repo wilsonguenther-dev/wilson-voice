@@ -116,7 +116,7 @@ function Preview() {
           </div>
           <div>
             <div className="brand-name">Yap</div>
-            <div className="brand-tag">v0.7.0 · local · private</div>
+            <div className="brand-tag">v{__APP_VERSION__} · local · private</div>
           </div>
         </div>
         <nav className="nav">

@@ -3733,7 +3733,10 @@ pub fn run() {
                 });
             }
 
-            log::info!("Yap v0.7.0 — NSPanel Dictate island (tauri-nspanel)");
+            log::info!(
+                "Yap v{} — NSPanel Dictate island (tauri-nspanel)",
+                env!("CARGO_PKG_VERSION")
+            );
             Ok(())
         })
         .build(tauri::generate_context!())

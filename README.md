@@ -122,4 +122,13 @@ npm run sidecar     # cargo build -p yap-polish --release, staged under its trip
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+Yap is a **paid, proprietary** app. It was open source through the **v0.7.0
+release** (tag `v0.7.0`, commit `8c8740f`): that release and every release
+before it stay under the Apache License 2.0 in [LICENSE](./LICENSE) for
+everyone who received them, permanently.
+
+Everything committed **after** that release — including the licensing, trial
+and payment code — is proprietary and is **not** covered by the `LICENSE` file.
+Cloning this repository does not grant you rights over it. See
+[NOTICE](./NOTICE) for the cut-off and [TERMS.md](./TERMS.md) for the terms
+that do apply.

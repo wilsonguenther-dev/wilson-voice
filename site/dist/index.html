@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Yap — hold a key, talk, it's typed</title>
-<meta name="description" content="Yap is a free, on-device dictation app for macOS. Hold a key, speak, and the text lands at your cursor — transcribed by a Whisper model running on your own Mac. It works on a plane.">
+<meta name="description" content="Yap is an on-device dictation app for macOS. Hold a key, speak, and the text lands at your cursor — transcribed by a Whisper model running on your own Mac. $29 once, 14-day free trial. It works on a plane.">
 <meta name="theme-color" content="#f8f0e0" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#201811" media="(prefers-color-scheme: dark)">
 <meta property="og:title" content="Yap — hold a key, talk, it's typed">
-<meta property="og:description" content="Free, on-device dictation for macOS. Nothing you say ever leaves your Mac. It works on a plane.">
+<meta property="og:description" content="On-device dictation for macOS. Nothing you say ever leaves your Mac. $29 once, 14 days free first. It works on a plane.">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect width='16' height='16' fill='%234ba3d8'/%3E%3Crect x='7' y='1' width='2' height='2' fill='%23efa72c'/%3E%3Crect x='6' y='3' width='4' height='1' fill='%23ffcf3f'/%3E%3Crect x='5' y='4' width='6' height='1' fill='%23ffcf3f'/%3E%3Crect x='4' y='5' width='8' height='4' fill='%23ffcf3f'/%3E%3Crect x='5' y='9' width='6' height='1' fill='%23ffcf3f'/%3E%3Crect x='6' y='10' width='4' height='1' fill='%23ffcf3f'/%3E%3Crect x='6' y='6' width='1' height='2' fill='%232b2118'/%3E%3Crect x='9' y='6' width='1' height='2' fill='%232b2118'/%3E%3Crect x='7' y='8' width='2' height='1' fill='%23ff7a3c'/%3E%3Crect x='5' y='11' width='2' height='1' fill='%23ff7a3c'/%3E%3Crect x='9' y='11' width='2' height='1' fill='%23ff7a3c'/%3E%3C/svg%3E">
 <link rel="preload" href="DepartureMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
@@ -40,6 +40,7 @@
       <a href="#how" class="hide-sm">How it works</a>
       <a href="#features" class="hide-sm">Features</a>
       <a href="#privacy" class="hide-sm">Privacy</a>
+      <a href="#pricing" class="hide-sm">Pricing</a>
       <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>Download</a>
     </nav>
   </div>
@@ -50,14 +51,14 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-      <span class="eyebrow">Free &middot; macOS 13+ &middot; Apple Silicon</span>
+      <span class="eyebrow">14 days free &middot; then $29 once &middot; macOS 13+</span>
       <h1>Hold a key.<br>Talk.<br>It&rsquo;s typed.</h1>
       <p class="lede">Yap drops clean text at your cursor in any app on your Mac — transcribed by a Whisper model that runs on the machine in front of you, and nowhere else.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
           Download for Mac <small>.dmg &middot; 22 MB</small>
         </a>
-        <a class="btn btn-ghost" href="#how">How it works</a>
+        <a class="btn btn-ghost" href="#pricing">$29 &mdash; see pricing</a>
       </div>
       <ul class="meta">
         <li>Signed &amp; notarized by Apple</li>
@@ -67,11 +68,12 @@
       <dl class="spec">
         <div><dt>Engine</dt><dd>Whisper, GGUF + Metal</dd></div>
         <div><dt>Runs on</dt><dd>Your Mac, on its own GPU</dd></div>
-        <div><dt>Network</dt><dd>Model download, update check</dd></div>
+        <div><dt>Network</dt><dd>Model download, update check, refund list</dd></div>
         <div><dt>Account</dt><dd>None</dd></div>
         <div><dt>Telemetry</dt><dd>None</dd></div>
         <div><dt>Requires</dt><dd>macOS 13+, Apple Silicon</dd></div>
-        <div><dt>Licence</dt><dd>Apache-2.0</dd></div>
+        <div><dt>Trial</dt><dd>14 days, no card</dd></div>
+        <div><dt>Price</dt><dd>$29 once &middot; 3 Macs &middot; yours forever</dd></div>
       </dl>
     </div>
   </section>
@@ -195,11 +197,55 @@
           <span>History lives in a database inside your own Library. Export every transcript at once, or clear them for good with a secure delete that overwrites the rows, rebuilds the search index and vacuums the file.</span>
         </div>
         <div class="fact">
-          <b>Open to read</b>
-          <span>Yap is Apache-2.0 and the source is public, so none of the above has to be taken on trust.</span>
+          <b>Your license is checked here too</b>
+          <span>Activation verifies a signature against a key inside the app — no login, no server, and nothing that can fail because you are offline. The one call licensing makes is downloading a public list of refunded licenses, identical for everyone, carrying no key, no email and no query.</span>
         </div>
       </div>
-      <p class="net"><b>The complete list of network calls Yap makes:</b> a one-time model download on first run, and an update check you can switch off in Settings. That is the whole list. <a href="privacy.html">Read the privacy policy &rarr;</a></p>
+      <p class="net"><b>The complete list of network calls Yap makes:</b> a one-time model download on first run, an update check you can switch off in Settings, and a background download of the public refunded-licenses list. That is the whole list. <a href="privacy.html">Read the privacy policy &rarr;</a></p>
+    </div>
+  </section>
+
+  <hr class="dither">
+
+  <!-- PRICING -->
+  <section class="section pricing" id="pricing">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Price</span>
+        <h2>$29. Yours forever.</h2>
+        <p>One payment, no subscription, no account, no renewal date. Try the whole app for fourteen days first and buy it only if you keep reaching for it.</p>
+      </div>
+
+      <div class="price-grid">
+        <div class="price-card">
+          <span class="tag">Yap &mdash; lifetime license</span>
+          <p class="amount"><b>$29</b><span>once</span></p>
+          <dl class="price-spec">
+            <div><dt>Yours</dt><dd>Forever &mdash; no renewal, no expiry</dd></div>
+            <div><dt>Macs</dt><dd>Three</dd></div>
+            <div><dt>Updates</dt><dd>Every future version, included</dd></div>
+            <div><dt>Refund</dt><dd>14 days, no questions</dd></div>
+          </dl>
+          <a class="btn btn-primary buy" href="https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602">
+            Buy Yap <small>$29 &middot; Stripe checkout</small>
+          </a>
+          <p class="price-note"><b>14-day free trial &mdash; no card to start.</b> Download it, use all of it for two weeks, and nothing asks you for a payment method until you decide.</p>
+        </div>
+
+        <aside class="price-side">
+          <div class="side-block">
+            <b>Founding price &mdash; $19</b>
+            <p>The first <strong>500</strong> people to enter <span class="kbd">FOUNDING19</span> at checkout pay $19 instead of $29. Same license, same lifetime, same three Macs.</p>
+            <p>There is no countdown on this page because there is no countdown. The code works until the 500th one is claimed, and then it stops. That is the entire mechanic, and it is the honest one.</p>
+          </div>
+          <div class="side-block">
+            <b>What the $29 actually buys</b>
+            <p>Software, not uptime. Yap works on a plane &mdash; the model runs on your own Mac and there is no server at the other end of it &mdash; so there is nothing here to rent you by the month.</p>
+          </div>
+        </aside>
+      </div>
+
+      <p class="net"><b>When the trial ends, only new dictation stops.</b> Your history, your search, your exports, your dictionary, your snippets and your settings keep working forever. The words you already spoke stay yours whether or not you ever buy a license. <a href="terms.html">Read the terms &rarr;</a></p>
     </div>
   </section>
 
@@ -208,7 +254,7 @@
     <div class="wrap">
       <span class="eyebrow">Ready when you are</span>
       <h2>Get Yap</h2>
-      <p>Free and open source, signed and notarized by Apple. About a minute from download to your first dictation.</p>
+      <p>Signed and notarized by Apple. About a minute from download to your first dictation, and fourteen days before it asks you for anything.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="/downloads/Yap-0.7.0-arm64.dmg" download>
           Download Yap <small>v0.7.0 &middot; Apple Silicon</small>
