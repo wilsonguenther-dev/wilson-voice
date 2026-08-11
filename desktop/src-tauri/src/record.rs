@@ -438,27 +438,39 @@ const JOURNAL_SPILL_EXT: &str = "spill.pcm";
 /// never grow memory without limit — past it, journal writes are dropped.
 const JOURNAL_QUEUE_DEPTH: usize = 64;
 
+/// One thing for the journal writer to put on disk. EVERYTHING the journal
+/// records travels as one of these, over the one bounded queue, because the
+/// queue is what keeps the disk off the capture path — a second kind of record
+/// that "only happens a few times a session" is exactly how a blocking `open` +
+/// `write` gets back in (YV92 review).
+enum JournalWrite {
+    /// 16 kHz frames, already converted to i16 by the capture path.
+    Frames(Vec<i16>),
+    /// YV92 — one `device_change` JSON line for the marker sidecar.
+    Marker(String),
+}
+
 /// One take's spill queue: the bounded hand-off from the capture path to the
 /// journal writer. Split out from `CaptureJournal` so the never-block rule is
 /// unit-testable without a writer thread or a disk.
 struct JournalQueue {
-    tx: mpsc::SyncSender<Vec<i16>>,
+    tx: mpsc::SyncSender<JournalWrite>,
     dropped: AtomicU64,
 }
 
 impl JournalQueue {
-    fn new(tx: mpsc::SyncSender<Vec<i16>>) -> Self {
+    fn new(tx: mpsc::SyncSender<JournalWrite>) -> Self {
         Self {
             tx,
             dropped: AtomicU64::new(0),
         }
     }
 
-    /// Hand a chunk to the writer if it has room. NEVER blocks and never errors:
-    /// a full queue (writer behind) or a dead writer counts the chunk as dropped
+    /// Hand a write to the writer if it has room. NEVER blocks and never errors:
+    /// a full queue (writer behind) or a dead writer counts the write as dropped
     /// and returns immediately — the audio callback pays one `try_send`.
-    fn offer(&self, chunk: Vec<i16>) {
-        if self.tx.try_send(chunk).is_err() {
+    fn offer(&self, write: JournalWrite) {
+        if self.tx.try_send(write).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -501,7 +513,7 @@ impl CaptureJournal {
         let id = Uuid::new_v4().to_string();
         let spill = dir.join(format!("{id}.{JOURNAL_SPILL_EXT}"));
         let marker = dir.join(format!("{id}.{JOURNAL_MARKER_EXT}"));
-        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(depth.max(1));
+        let (tx, rx) = mpsc::sync_channel::<JournalWrite>(depth.max(1));
         let (dir, open_spill, open_marker) = (dir.to_path_buf(), spill.clone(), marker.clone());
         let Ok(writer) = thread::Builder::new()
             .name("wv-capture-journal".into())
@@ -526,7 +538,9 @@ impl CaptureJournal {
             return;
         }
         if let Some(queue) = self.queue.as_ref() {
-            queue.offer(frames.iter().map(|&s| to_i16(s)).collect());
+            queue.offer(JournalWrite::Frames(
+                frames.iter().map(|&s| to_i16(s)).collect(),
+            ));
         }
     }
 
@@ -536,31 +550,28 @@ impl CaptureJournal {
     /// boundary is this record, and the output sample index it carries is where
     /// the previous segment ends and the new one begins.
     ///
-    /// Written straight from the capture WORKER, not the audio callback, and
-    /// only on an event that happens at most a handful of times in a session —
-    /// so one small append is allowed here where the per-frame path may never
-    /// touch the disk. Every failure is swallowed: a marker that cannot be
-    /// written must never cost the take.
+    /// Handed to the writer thread over the SAME bounded queue the frames use —
+    /// allocation + one `try_send`, no lock, no disk, no blocking (YV92 review).
+    /// It used to `open` + `writeln!` inline, and its only caller reaches it
+    /// through `LiveStream::mark_device_change`, which holds the DSP mutex the
+    /// cpal input callback locks every buffer: a real `open()` on a cold or busy
+    /// disk therefore parked the audio callback at exactly the device-change
+    /// seam this marker exists to timestamp. Whose *thread* writes is not the
+    /// question — whose *lock* it holds is.
+    ///
+    /// Queueing also makes the marker land in FIFO order behind the frames that
+    /// preceded it, and every failure is still swallowed: a full queue drops the
+    /// marker (counted, logged at retire) rather than costing the take.
     pub fn mark_device_change(&self, marker: &serde_json::Value) {
-        use std::io::Write as _;
-        let path = self.markers_path();
-        let appended = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| writeln!(f, "{marker}"));
-        if let Err(e) = appended {
-            log::warn!(
-                "YV92 device-change marker not written to {}: {e}",
-                path.display()
-            );
+        if let Some(queue) = self.queue.as_ref() {
+            queue.offer(JournalWrite::Marker(marker.to_string()));
         }
     }
 
     /// `<id>.spill.pcm` → `<id>.spill.markers.jsonl`, i.e. the sidecar lives
     /// next to the audio it annotates and is retired with it.
     fn markers_path(&self) -> PathBuf {
-        self.spill.with_extension("markers.jsonl")
+        markers_path_for(&self.spill)
     }
 
     /// Normal completion — the take made it out of capture, so the journal has
@@ -628,7 +639,7 @@ impl Drop for CaptureJournal {
 /// buffer. Any error ends the journal for this take (the audio itself is
 /// unaffected — the capture path never learns about it, its offers simply
 /// become dropped writes).
-fn journal_writer_loop(dir: &Path, spill: &Path, marker: &Path, rx: mpsc::Receiver<Vec<i16>>) {
+fn journal_writer_loop(dir: &Path, spill: &Path, marker: &Path, rx: mpsc::Receiver<JournalWrite>) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         log::warn!("YV63 journal off for this take (recovery dir): {e}");
         return;
@@ -655,22 +666,58 @@ fn journal_writer_loop(dir: &Path, spill: &Path, marker: &Path, rx: mpsc::Receiv
         return;
     }
 
+    let markers = markers_path_for(spill);
     let mut out = std::io::BufWriter::new(file);
     let mut bytes = 0usize;
     let mut buf: Vec<u8> = Vec::new();
-    while let Ok(chunk) = rx.recv() {
-        buf.clear();
-        buf.reserve(chunk.len() * 2);
-        for sample in chunk {
-            buf.extend_from_slice(&sample.to_le_bytes());
+    while let Ok(write) = rx.recv() {
+        match write {
+            JournalWrite::Frames(chunk) => {
+                buf.clear();
+                buf.reserve(chunk.len() * 2);
+                for sample in chunk {
+                    buf.extend_from_slice(&sample.to_le_bytes());
+                }
+                if let Err(e) = out.write_all(&buf).and_then(|()| out.flush()) {
+                    log::warn!("YV63 journal write stopped after {bytes} bytes: {e}");
+                    return;
+                }
+                bytes += buf.len();
+            }
+            // YV92 — the sidecar is opened lazily HERE, on the writer thread,
+            // because a device change is rare and the overwhelmingly common
+            // take never has one. A sidecar that cannot be written is logged
+            // and the audio journal carries on: the marker is an annotation,
+            // the spill is the promise.
+            JournalWrite::Marker(line) => {
+                if let Err(e) = append_marker_line(&markers, &line) {
+                    log::warn!(
+                        "YV92 device-change marker not written to {}: {e}",
+                        markers.display()
+                    );
+                }
+            }
         }
-        if let Err(e) = out.write_all(&buf).and_then(|()| out.flush()) {
-            log::warn!("YV63 journal write stopped after {bytes} bytes: {e}");
-            return;
-        }
-        bytes += buf.len();
     }
     let _ = out.flush();
+}
+
+/// `<id>.spill.pcm` → `<id>.spill.markers.jsonl`. One function so the journal
+/// and its writer thread can never disagree about where the sidecar lives.
+fn markers_path_for(spill: &Path) -> PathBuf {
+    spill.with_extension("markers.jsonl")
+}
+
+/// Append one JSON line to the marker sidecar. The only disk write in the
+/// journal that is NOT the spill, and it runs on the writer thread like every
+/// other one.
+fn append_marker_line(path: &Path, line: &str) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")?;
+    file.flush()
 }
 
 /// One take rebuilt from an orphaned journal (YV63).
@@ -1042,14 +1089,31 @@ fn await_reply<T>(
 /// Generic over the device/config types so the logic is unit-testable without
 /// touching audio hardware.
 ///
-/// YV92/OS-9 — the key is the device name **and** the format it was cached at,
-/// not the name alone. AirPods keep their name across a rate renegotiation
-/// (48000 → 24000, or down to the HFP rate the moment their microphone is
-/// engaged), so a name-only key handed the reopen a stale sample rate and the
-/// remainder of the session came out time-stretched. A caller that knows the
-/// device's CURRENT format asks with it; a caller that does not (the cheap warm
-/// path, which is trusting the cache precisely to avoid the query) asks with
-/// `None` and relies on the format-change watchdog to have invalidated first.
+/// YV92/OS-9 — an entry is keyed on the device name **and** the format it was
+/// cached at. AirPods keep their name across a rate renegotiation (48000 →
+/// 24000, or down to the HFP rate the moment their microphone is engaged), so a
+/// name-only key handed the reopen a stale sample rate and the remainder of the
+/// session came out time-stretched.
+///
+/// Be precise about who that key actually protects, because it is easy to
+/// over-claim (YV92 review): asking with `Some(format)` requires already having
+/// queried the format, which is the very HAL round-trip this cache exists to
+/// skip. So the one production lookup — [`resolve_device_config`] — asks with
+/// `None`, and what really keeps a renegotiated rate out of an open is the
+/// INVALIDATION discipline around it:
+///
+/// * while a stream is live, the format watchdog invalidates on every real
+///   change (see [`reopen_after_change`]);
+/// * when the stream idle-closes, [`close_idle_capture`] invalidates, because
+///   nothing is watching the HAL any more and the next Arm is a cold open that
+///   must not inherit a minute-old format;
+/// * a format-change edge that arrives with no stream open invalidates on the
+///   spot (`capture_worker_loop`);
+/// * any open or stream error invalidates, as it always did.
+///
+/// The format half of the key is then the belt to that braces: a caller that
+/// *does* know the current format (the tests, and any future caller that has
+/// already paid for the query) can never be handed a stale entry.
 struct DeviceConfigCache<D, C> {
     entry: Option<CachedDevice<D, C>>,
 }
@@ -1118,7 +1182,24 @@ struct LiveStream {
     stream: Option<cpal::Stream>,
     /// Streaming DSP + buffers, written by the audio callback (YV37).
     dsp: Arc<Mutex<StreamDsp>>,
+    /// The momentary GATE the audio callback reads: push this buffer, or drop
+    /// it. Shared with the callback, so a reopen closes and reopens it.
     capturing: Arc<AtomicBool>,
+    /// The take's ARMED INTENT — "a take is in flight and wants audio" — as
+    /// opposed to `capturing`, which is only whether the gate is open right
+    /// now (YV92 review).
+    ///
+    /// The two differ for exactly as long as a reopen takes, and conflating
+    /// them re-created OS-9's failure mode from the inside: `reopen_after_change`
+    /// read the momentary gate, closed it, and on a failed reopen never restored
+    /// it — so the self-healing retry on the next watchdog tick read the gate as
+    /// already-closed and faithfully restored *false*. One transient AirPods/HFP
+    /// reopen error and the stream came back live, the DSP intact, and every
+    /// remaining frame of a three-hour take dropped at the gate with nothing
+    /// logged. Armed intent is set by [`LiveStream::begin`] and cleared by
+    /// [`LiveStream::end`] — by the take, never by the device — so a reopen has
+    /// something durable to restore the gate *to*.
+    armed: AtomicBool,
     failed: Arc<AtomicBool>,
     /// What the stream is ACTUALLY running on, as opposed to what a cache
     /// believes. The format-change watchdog compares against these.
@@ -1148,12 +1229,18 @@ impl LiveStream {
         }
         self.watch.restart_segments();
         capture_level().store(0, Ordering::Relaxed);
+        // Intent first, gate second: a watchdog tick that lands between the two
+        // must never see an open gate with nothing armed behind it.
+        self.armed.store(true, Ordering::SeqCst);
         self.capturing.store(true, Ordering::SeqCst);
     }
 
     /// End a take: close the gate and take the streamed 16 kHz buffer (plus its
     /// raw fallback and AGC stats) off the DSP state.
     fn end(&self) -> CapturedAudio {
+        // Disarm before closing the gate — the take is over, so a reopen racing
+        // this must not resurrect it.
+        self.armed.store(false, Ordering::SeqCst);
         self.capturing.store(false, Ordering::SeqCst);
         capture_level().store(0, Ordering::Relaxed);
         self.dsp
@@ -1171,6 +1258,11 @@ impl LiveStream {
 
     fn is_capturing(&self) -> bool {
         self.capturing.load(Ordering::SeqCst)
+    }
+
+    /// Whether a take is in flight — what a reopen restores the gate to.
+    fn is_armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
     }
 
     fn has_failed(&self) -> bool {
@@ -1328,16 +1420,23 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 // change and three hours of half-speed audio nobody looks at
                 // until stop.
                 let event = input_format::take_event();
-                if let Some(stream) = live.as_mut() {
-                    if event.is_some() || last_watchdog.elapsed() >= WATCHDOG_TICK {
-                        last_watchdog = Instant::now();
-                        watchdog_poll(stream, &mut cache, event);
+                match live.as_mut() {
+                    Some(stream) => {
+                        if event.is_some() || last_watchdog.elapsed() >= WATCHDOG_TICK {
+                            last_watchdog = Instant::now();
+                            watchdog_poll(stream, &mut cache, event);
+                        }
                     }
+                    // No stream to reconfigure, but the HAL still said the input
+                    // moved — and the cached config is exactly what the next
+                    // cold Arm would open with. Drop it (YV92/OS-9).
+                    None if event.is_some() => cache.invalidate(),
+                    None => {}
                 }
                 let idle = live.as_ref().is_some_and(|s| !s.is_capturing());
                 if idle && idle_since.elapsed() >= IDLE_CLOSE {
                     live = None;
-                    input_format::disarm_listeners();
+                    close_idle_capture(&mut cache);
                     log::info!(
                         "capture stream closed after {}s idle (mic indicator off)",
                         IDLE_CLOSE.as_secs()
@@ -1349,6 +1448,52 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 input_format::disarm_listeners();
                 return;
             }
+        }
+    }
+}
+
+/// The idle close (YV81): the persistent stream has gone [`IDLE_CLOSE`] without
+/// a take, so it is dropped to put the macOS mic indicator out.
+///
+/// YV92/OS-9 — dropping the stream also ends the ONLY thing watching the input
+/// format: the listeners come off with it, and the worker goes back to blocking
+/// on its channel, so nothing observes the HAL again until the next Arm. Anything
+/// the cache still holds is therefore a snapshot of a world no one has looked at
+/// since, which is precisely the AirPods hole: idle-close at 60 s, the user puts
+/// the AirPods in and their mic renegotiates to HFP while nothing is open, and
+/// the next Arm opens from a cached 48 kHz config the device no longer runs —
+/// with no live stream, there is no watchdog to catch it afterwards either.
+///
+/// So the cache dies with the stream. That costs the next cold Arm one
+/// `default_input_config()` round-trip; it does not touch YV35's warm path,
+/// where a take inside the idle window never calls the opener at all.
+fn close_idle_capture<D: Clone, C: Clone>(cache: &mut DeviceConfigCache<D, C>) {
+    input_format::disarm_listeners();
+    cache.invalidate();
+}
+
+/// The cache half of the open path: the cached device + config for `name`, or
+/// the hardware's answer, plus whether it was a hit.
+///
+/// Split out — and generic over the device/config types — so the case the cache
+/// exists to get wrong is testable without cpal: a same-named device that
+/// renegotiated its rate while nothing was open must not be served from the
+/// cache. Any failed query invalidates, so a device that has gone away can never
+/// leave a live-looking entry behind.
+fn resolve_device_config<D: Clone, C: Clone>(
+    cache: &mut DeviceConfigCache<D, C>,
+    name: &str,
+    device: D,
+    query: impl FnOnce(&D) -> Result<C, String>,
+) -> Result<(D, C, bool), String> {
+    if let Some(hit) = cache.get(name, None) {
+        return Ok((hit.0, hit.1, true));
+    }
+    match query(&device) {
+        Ok(config) => Ok((device, config, false)),
+        Err(e) => {
+            cache.invalidate();
+            Err(e)
         }
     }
 }
@@ -1445,40 +1590,65 @@ fn reopen_after_change(
     cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
     to: Option<InputFormat>,
 ) {
-    let was_capturing = live.is_capturing();
+    reopen_with(live, to, |reuse| {
+        cache.invalidate();
+        open_stream_into(cache, Some(reuse))
+    });
+}
+
+/// The device-independent half of [`reopen_after_change`]: everything that
+/// decides what happens to the TAKE, with the cpal open passed in.
+///
+/// Split out because that is the half the fail-then-succeed path lives in and
+/// the half a microphone is not needed for — see
+/// `a_transient_reopen_failure_still_resumes_the_take`.
+///
+/// The gate is restored from the take's ARMED INTENT, never from the momentary
+/// `is_capturing()` this function just closed. Reading the gate to decide what
+/// to restore the gate to is only correct while every reopen succeeds: after a
+/// failed attempt the gate is already false, so the self-healing retry on the
+/// next watchdog tick would "restore" false onto a perfectly live stream and
+/// silently drop the rest of the take (YV92 review).
+fn reopen_with(
+    live: &mut LiveStream,
+    to: Option<InputFormat>,
+    open: impl FnOnce(TakeInFlight) -> Result<LiveStream, String>,
+) {
     live.capturing.store(false, Ordering::SeqCst);
     live.stream = None;
-    cache.invalidate();
     let reuse = (
         live.dsp.clone(),
         live.capturing.clone(),
         live.failed.clone(),
     );
-    match open_stream_into(cache, Some(reuse)) {
+    match open(reuse) {
         Ok(reopened) => {
             live.stream = reopened.stream;
             // `reopened.watch` is discarded on purpose — the take's segment
             // numbering lives on `live`, and the reopen only tells it what
             // actually opened.
             live.adopt_reopened(reopened.device_name, reopened.format);
-            live.capturing.store(was_capturing, Ordering::SeqCst);
+            live.capturing.store(live.is_armed(), Ordering::SeqCst);
             log::info!(
-                "YV92 watchdog: capture continues on {} at {}Hz/{}ch",
+                "YV92 watchdog: capture continues on {} at {}Hz/{}ch (armed={})",
                 live.device_name,
                 live.format.sample_rate_hz,
-                live.format.channels
+                live.format.channels,
+                live.is_armed(),
             );
         }
         Err(e) => {
-            // Keep the failure visible: Disarm stamps it onto the take (YV67)
-            // and the next Arm reopens cold.
+            // Keep the failure visible: Disarm stamps it onto the take (YV67),
+            // the watchdog retries on its next tick — and because the intent
+            // outlives this attempt, that retry reopens the gate for the take
+            // that is still running.
             live.failed.store(true, Ordering::SeqCst);
             if let Some(to) = to {
                 live.format = to;
             }
             log::error!(
                 "YV92 watchdog: could not reopen the input after a format change ({e}) — \
-                 the {} sample(s) already captured are kept",
+                 the {} sample(s) already captured are kept, retrying on the next tick",
                 live.output_samples()
             );
         }
@@ -1550,18 +1720,16 @@ fn open_stream_into(
     let opened_at = Instant::now();
     let (device, dev_name) = default_input_device()?;
 
-    let cached = cache.get(&dev_name, None);
-    let was_cached = cached.is_some();
-    let (device, supported) = match cached {
-        Some((device, config)) => (device, config),
-        None => {
-            let config = device.default_input_config().map_err(|e| {
-                cache.invalidate();
+    let (device, supported, was_cached) = resolve_device_config(
+        cache,
+        &dev_name,
+        device,
+        |device| {
+            device.default_input_config().map_err(|e| {
                 format!("Mic config failed ({e}). Enable Microphone for Yap (not Python) in System Settings.")
-            })?;
-            (device, config)
-        }
-    };
+            })
+        },
+    )?;
 
     let sample_rate = supported.sample_rate();
     let channels = supported.channels();
@@ -1634,6 +1802,10 @@ fn open_stream_into(
         stream: Some(stream),
         dsp,
         capturing,
+        // A freshly opened stream is not itself a take. On the reuse path the
+        // caller (`reopen_with`) owns the armed intent and restores the gate
+        // from ITS copy — this one is discarded with the rest of the shell.
+        armed: AtomicBool::new(false),
         failed,
         watch: InputFormatWatch::new(dev_name.clone(), format, TARGET_RATE),
         device_name: dev_name,
@@ -2491,11 +2663,11 @@ mod tests {
         // the queue fills after two chunks and every further offer must return
         // immediately, counted as a dropped JOURNAL write — never a dropped
         // frame, never an error the capture path has to handle.
-        let (tx, rx) = mpsc::sync_channel::<Vec<i16>>(2);
+        let (tx, rx) = mpsc::sync_channel::<JournalWrite>(2);
         let queue = JournalQueue::new(tx);
         let started = Instant::now();
         for i in 0..6i16 {
-            queue.offer(vec![i; 4]);
+            queue.offer(JournalWrite::Frames(vec![i; 4]));
         }
         assert!(
             started.elapsed() < Duration::from_millis(500),
@@ -2507,13 +2679,60 @@ mod tests {
             "the four chunks past the bound are dropped, not queued or awaited"
         );
         // What did fit is intact and in order — the overflow corrupts nothing.
-        assert_eq!(rx.recv().unwrap(), vec![0i16; 4]);
-        assert_eq!(rx.recv().unwrap(), vec![1i16; 4]);
+        assert_eq!(queued_frames(rx.recv().unwrap()), vec![0i16; 4]);
+        assert_eq!(queued_frames(rx.recv().unwrap()), vec![1i16; 4]);
 
         // A writer that died outright is the same story: a dropped write.
         drop(rx);
-        queue.offer(vec![9i16; 4]);
+        queue.offer(JournalWrite::Frames(vec![9i16; 4]));
         assert_eq!(queue.dropped(), 5);
+    }
+
+    fn queued_frames(write: JournalWrite) -> Vec<i16> {
+        match write {
+            JournalWrite::Frames(chunk) => chunk,
+            JournalWrite::Marker(line) => panic!("expected frames, got a marker: {line}"),
+        }
+    }
+
+    /// YV92 review — the `device_change` marker used to `open()` + `writeln!()`
+    /// inline. On the worker thread, yes, which is what the old doc-comment
+    /// argued about; but its only caller reaches it through
+    /// `LiveStream::mark_device_change`, which holds the DSP mutex the cpal
+    /// input callback locks on EVERY buffer — and in `watchdog_poll` the marker
+    /// is written while the old stream is still running and still contending for
+    /// that lock. A cold-disk `open()` there costs a dropped callback buffer at
+    /// exactly the seam the marker exists to timestamp.
+    ///
+    /// So the marker has to clear the same bar a frame does: hand off over the
+    /// bounded queue, never touch the disk on the capture path.
+    #[test]
+    fn a_device_change_marker_uses_the_same_never_block_handoff_as_a_frame() {
+        let (tx, rx) = mpsc::sync_channel::<JournalWrite>(1);
+        let queue = JournalQueue::new(tx);
+        // Fill the bound so every marker below hits a full queue — the wedged
+        // writer / slow disk case.
+        queue.offer(JournalWrite::Frames(vec![7i16; 4]));
+
+        let line = serde_json::json!({"kind": "device_change", "segment_index": 1}).to_string();
+        let started = Instant::now();
+        for _ in 0..64 {
+            queue.offer(JournalWrite::Marker(line.clone()));
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a marker must never park the path that holds the audio callback's lock"
+        );
+        assert_eq!(
+            queue.dropped(),
+            64,
+            "a marker past the bound is DROPPED like a frame — never awaited, never an error"
+        );
+        assert_eq!(
+            queued_frames(rx.recv().unwrap()),
+            vec![7i16; 4],
+            "and the overflow corrupts nothing that did fit"
+        );
     }
 
     #[test]
@@ -3029,6 +3248,7 @@ mod tests {
                 format.channels,
             ))),
             capturing: Arc::new(AtomicBool::new(false)),
+            armed: AtomicBool::new(false),
             failed: Arc::new(AtomicBool::new(false)),
             watch: InputFormatWatch::new(device, format, TARGET_RATE),
             device_name: device.to_string(),
@@ -3043,6 +3263,31 @@ mod tests {
             .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).expect("each marker line is JSON"))
             .collect()
+    }
+
+    /// Markers ride the journal's bounded queue to the writer thread (that is
+    /// what keeps `open()` off the lock the audio callback takes), so the
+    /// sidecar is observed, never assumed — same contract as `wait_for_spill`.
+    fn wait_for_marker_lines(path: &Path, want: usize) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let lines = marker_lines(path);
+            if lines.len() >= want || Instant::now() >= deadline {
+                return lines;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Exactly the gate the cpal input callback applies before it touches the
+    /// DSP (see `build_capture_stream`): closed gate, dropped buffer.
+    fn feed_one_callback(live: &LiveStream, frames: &[f32]) {
+        if !live.capturing.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(mut dsp) = live.dsp.lock() {
+            dsp.push(frames);
+        }
     }
 
     /// The whole point of the segment counter: it has to ORDER the markers of
@@ -3103,7 +3348,7 @@ mod tests {
             "and each marker lands at the output sample where its segment starts"
         );
 
-        let on_disk = marker_lines(&markers);
+        let on_disk = wait_for_marker_lines(&markers, 3);
         assert_eq!(on_disk.len(), 3, "one line per swap");
         assert_eq!(
             on_disk
@@ -3170,6 +3415,155 @@ mod tests {
             FormatEventSource::DefaultInputDevice,
         );
         assert_eq!(fresh.marker().unwrap().segment_index, 1);
+    }
+
+    /// Stands in for the successful half of `open_stream_into(cache, Some(reuse))`:
+    /// the take is carried across (same DSP, same gate), only the rate-dependent
+    /// state is rebuilt and the old stream's error flag is cleared. Everything
+    /// it omits is the cpal handle, which is the only part needing a microphone.
+    fn hardware_free_reopen(
+        device: &'static str,
+        format: InputFormat,
+    ) -> impl FnOnce(TakeInFlight) -> Result<LiveStream, String> {
+        move |(dsp, capturing, failed)| {
+            if let Ok(mut dsp) = dsp.lock() {
+                dsp.reconfigure(format.sample_rate_hz, format.channels);
+            }
+            failed.store(false, Ordering::SeqCst);
+            Ok(LiveStream {
+                stream: None,
+                dsp,
+                capturing,
+                armed: AtomicBool::new(false),
+                failed,
+                watch: InputFormatWatch::new(device, format, TARGET_RATE),
+                device_name: device.to_string(),
+                format,
+            })
+        }
+    }
+
+    /// YV92 review — the failure mode this whole item exists to remove, put back
+    /// by the fix for it.
+    ///
+    /// `reopen_after_change` used to read the take's liveness off the momentary
+    /// capture gate and then immediately close that gate. That is only correct
+    /// while every reopen succeeds. Fail one — a transient AirPods/HFP error is
+    /// ordinary — and the gate stays shut; the self-healing retry on the next
+    /// watchdog tick (`Unchanged` + `failed` → `reopen_after_change(.., None)`)
+    /// then re-read the gate as *already false* and, on a perfectly successful
+    /// reopen, restored false. Live stream, intact DSP, and every remaining
+    /// frame of a three-hour take dropped at the gate with nothing logged.
+    #[test]
+    fn a_transient_reopen_failure_still_resumes_the_take() {
+        let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
+        live.begin(None);
+        feed_one_callback(&live, &tone_at(48_000, 0.2, 220.0, 0.3));
+        let before = live.output_samples();
+        assert!(before > 0, "the take is recording before the swap");
+
+        // The AirPods go in and the reopen at the new rate fails.
+        reopen_with(&mut live, Some(fmt(24_000)), |_| {
+            Err("mic stream: device busy".to_string())
+        });
+        assert!(
+            !live.is_capturing(),
+            "with no stream open the gate is shut — nothing to gate"
+        );
+        assert!(
+            live.is_armed(),
+            "but the TAKE is still in flight; a device error does not end it"
+        );
+        assert!(live.has_failed(), "…and the watchdog is told to retry");
+        assert_eq!(
+            live.output_samples(),
+            before,
+            "the audio captured before the swap is kept (YV67)"
+        );
+
+        // The next watchdog tick: `Unchanged` + failed → reopen at the same
+        // format. This is the retry that used to restore `false`.
+        reopen_with(
+            &mut live,
+            None,
+            hardware_free_reopen("AirPods Pro", fmt(24_000)),
+        );
+        assert!(
+            live.is_capturing(),
+            "a successful retry must reopen the gate for the take still running"
+        );
+        assert!(!live.has_failed(), "the flag belonged to the closed stream");
+
+        feed_one_callback(&live, &tone_at(24_000, 0.2, 220.0, 0.3));
+        assert!(
+            live.output_samples() > before,
+            "and post-retry frames must land in the take, not be dropped at the gate"
+        );
+
+        // The other direction: a take that ENDED must not be resurrected by a
+        // reopen the watchdog does afterwards.
+        let _ = live.end();
+        assert!(!live.is_armed());
+        reopen_with(
+            &mut live,
+            None,
+            hardware_free_reopen("AirPods Pro", fmt(24_000)),
+        );
+        assert!(
+            !live.is_capturing(),
+            "a reopen restores the take's intent — it does not invent one"
+        );
+    }
+
+    /// YV92/OS-9 — the hole the format half of the cache key does NOT close,
+    /// because the one production lookup asks with `None`: the stream idle-closes
+    /// after 60 s, the AirPods mic engages and renegotiates to HFP while nothing
+    /// is open (so no watchdog is running to notice), and the next Arm is a cold
+    /// open served from a cached 48 kHz config the device no longer runs.
+    ///
+    /// What closes it is `close_idle_capture` retiring the cache with the stream.
+    #[test]
+    fn arming_cold_after_an_idle_close_opens_at_the_new_rate() {
+        let mut cache: TestCache = DeviceConfigCache::new();
+        // A take on the AirPods at 48 kHz warms the cache.
+        cache.store("AirPods Pro".into(), fmt(48_000), "bt", 48_000);
+        assert_eq!(
+            resolve_device_config(&mut cache, "AirPods Pro", "bt", |_| Ok(48_000)).unwrap(),
+            ("bt", 48_000, true),
+            "inside the idle window the warm path still skips the HAL query"
+        );
+
+        // 60 s with no take: the stream closes, the listeners come off, and the
+        // worker goes back to blocking on its channel.
+        close_idle_capture(&mut cache);
+        assert!(
+            !cache.is_cached(),
+            "nothing is watching the input any more, so nothing may be remembered about it"
+        );
+
+        // Meanwhile the AirPods mic engages: 48000 → 16000 (HFP/SCO). The next
+        // Arm is a cold open and must ask the hardware, not the cache.
+        let (_, rate, was_cached) =
+            resolve_device_config(&mut cache, "AirPods Pro", "bt", |_| Ok(16_000)).unwrap();
+        assert!(
+            !was_cached,
+            "an idle close must not leave a warm config behind"
+        );
+        assert_eq!(
+            rate, 16_000,
+            "the cold Arm opens at the rate the device runs NOW — a stale 48000 here is \
+             three hours of time-stretched audio nobody looks at until stop"
+        );
+
+        // And a failed query never leaves a live-looking entry behind.
+        cache.store("AirPods Pro".into(), fmt(16_000), "bt", 16_000);
+        assert!(
+            resolve_device_config(&mut cache, "MacBook Pro Microphone", "builtin", |_| Err(
+                "Mic config failed".to_string()
+            ))
+            .is_err()
+        );
+        assert!(!cache.is_cached());
     }
 
     /// YV67 — the `Disarm` hand-off must report a mid-take device error WITHOUT
