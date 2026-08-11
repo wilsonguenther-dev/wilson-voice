@@ -745,6 +745,7 @@ impl LicenseManager {
         // front of the user's first syllable, forever. `FLOOR_QUANTUM_MS`
         // (below) is the coarseness the floor is allowed to have; it is what
         // makes the steady state of this function pure reads.
+        //
         // Each store is compared against the resolved value SEPARATELY, so a
         // store that lost its copy — a deleted license.json, a quarantined and
         // recreated database — is repaired from the survivor rather than left
