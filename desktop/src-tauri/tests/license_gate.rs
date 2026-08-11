@@ -145,6 +145,50 @@ fn license_free_surfaces_stay_registered_and_ungated() {
     }
 }
 
+/// The gate is only as good as the claim that everything funnels through
+/// `start_recording`. If a new code path ever opens the capture stream
+/// directly — a new hotkey, a shortcut, an AppleScript hook — it walks straight
+/// past the license, and the gate above would still pass because it is looking
+/// at the wrong end. So assert the choke point itself: `record::start_recording`
+/// (the call that actually opens the mic) may only be reached from the one
+/// wrapper that asks the license first.
+#[test]
+fn capture_can_only_be_opened_through_the_gated_wrapper() {
+    let mut callers: Vec<String> = Vec::new();
+    for (func, line) in enclosing_fn(LIB_RS) {
+        let code = line.split("//").next().unwrap_or("");
+        if code.contains("record::start_recording") {
+            callers.push(func);
+        }
+    }
+    assert_eq!(
+        callers,
+        vec!["start_recording".to_string()],
+        "the mic may only be opened from the gated `start_recording` wrapper, \
+         but it is also opened from: {callers:?}"
+    );
+
+    // …and that wrapper must ask the license before it does anything else that
+    // can reach the stream.
+    let body: Vec<&str> = enclosing_fn(LIB_RS)
+        .into_iter()
+        .filter(|(f, _)| f == "start_recording")
+        .map(|(_, l)| l)
+        .collect();
+    let gate_at = body
+        .iter()
+        .position(|l| l.contains("license_allows_new_dictation"))
+        .expect("start_recording must consult the license");
+    let open_at = body
+        .iter()
+        .position(|l| l.contains("record::start_recording"))
+        .expect("start_recording opens the capture stream");
+    assert!(
+        gate_at < open_at,
+        "the license check must come BEFORE the capture stream is opened"
+    );
+}
+
 /// The pinned issuer key is a PUBLIC key and a private one must never end up
 /// beside it. PKCS#8/PEM markers in the license module would mean exactly that.
 #[test]
