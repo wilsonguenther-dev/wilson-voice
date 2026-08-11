@@ -1124,18 +1124,29 @@ struct LiveStream {
     /// believes. The format-change watchdog compares against these.
     device_name: String,
     format: InputFormat,
+    /// The format-change state machine, owned for the LIFE OF THE STREAM.
+    ///
+    /// It has to live here rather than inside `watchdog_poll`: the watch is
+    /// what numbers the spill segments, so a fresh one per tick would stamp
+    /// every `device_change` marker of a take with `segment_index: 1` and the
+    /// sidecar would no longer order. It rides through a reopen the same way
+    /// the DSP does (see [`reopen_after_change`]) and restarts its numbering at
+    /// each new take (see [`LiveStream::begin`]).
+    watch: InputFormatWatch,
 }
 
 impl LiveStream {
     /// Begin a take: drop anything the callback saw while idle (and every bit of
     /// the previous take's DSP state), arm this take's crash journal, zero the
     /// meter, then open the gate. The journal is installed AFTER the reset — the
-    /// reset is what retires a previous take's journal.
-    fn begin(&self, journal: Option<CaptureJournal>) {
+    /// reset is what retires a previous take's journal, and the segment
+    /// numbering restarts with it because the marker sidecar is per-take.
+    fn begin(&mut self, journal: Option<CaptureJournal>) {
         if let Ok(mut dsp) = self.dsp.lock() {
             dsp.reset();
             dsp.journal = journal;
         }
+        self.watch.restart_segments();
         capture_level().store(0, Ordering::Relaxed);
         self.capturing.store(true, Ordering::SeqCst);
     }
@@ -1180,6 +1191,40 @@ impl LiveStream {
     /// segment boundary.
     fn output_samples(&self) -> u64 {
         self.dsp.lock().map(|d| d.out.len() as u64).unwrap_or(0)
+    }
+
+    /// YV92/OS-9 — fold one reading of "what does the OS say the input is now"
+    /// into the stream's OWN watch, stamping it with this take's host time and
+    /// output-sample boundary.
+    ///
+    /// This is the seam the watchdog runs on, and it is a method on the live
+    /// stream precisely so the segment counter survives the tick: the second
+    /// format change of a take must produce `segment_index: 2`, not another 1.
+    /// `record::tests` drives it directly with a hardware-free `LiveStream`.
+    fn observe_input(
+        &mut self,
+        device_name: String,
+        format: InputFormat,
+        source: FormatEventSource,
+    ) -> FormatChangeAction {
+        let observation = InputObservation {
+            device_name,
+            format,
+            host_time: host_time_now(),
+            output_sample_index: self.output_samples(),
+            source,
+        };
+        self.watch.observe(observation)
+    }
+
+    /// The stream reopened: track what the HAL actually handed back, on both the
+    /// stream and its watch, WITHOUT counting another segment (the change that
+    /// caused the reopen was already counted, and a reopen after a plain stream
+    /// error is not a segment boundary at all).
+    fn adopt_reopened(&mut self, device_name: String, format: InputFormat) {
+        self.watch.resync(device_name.clone(), format);
+        self.device_name = device_name;
+        self.format = format;
     }
 }
 
@@ -1255,7 +1300,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                         }
                     }
                 }
-                if let Some(stream) = live.as_ref() {
+                if let Some(stream) = live.as_mut() {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
@@ -1351,14 +1396,10 @@ fn watchdog_poll(
         return;
     };
 
-    let mut watch = InputFormatWatch::new(live.device_name.clone(), live.format, TARGET_RATE);
-    let action = watch.observe(InputObservation {
-        device_name: name,
-        format,
-        host_time: host_time_now(),
-        output_sample_index: live.output_samples(),
-        source: event.unwrap_or(FormatEventSource::Watchdog),
-    });
+    // The watch belongs to the STREAM, not to this tick: building one here
+    // would restart the segment counter every 60 s and stamp every marker of a
+    // take `segment_index: 1`.
+    let action = live.observe_input(name, format, event.unwrap_or(FormatEventSource::Watchdog));
     match action {
         FormatChangeAction::Unchanged if !failed => {}
         FormatChangeAction::Ignored(why) => {
@@ -1416,8 +1457,10 @@ fn reopen_after_change(
     match open_stream_into(cache, Some(reuse)) {
         Ok(reopened) => {
             live.stream = reopened.stream;
-            live.device_name = reopened.device_name;
-            live.format = reopened.format;
+            // `reopened.watch` is discarded on purpose — the take's segment
+            // numbering lives on `live`, and the reopen only tells it what
+            // actually opened.
+            live.adopt_reopened(reopened.device_name, reopened.format);
             live.capturing.store(was_capturing, Ordering::SeqCst);
             log::info!(
                 "YV92 watchdog: capture continues on {} at {}Hz/{}ch",
@@ -1592,6 +1635,7 @@ fn open_stream_into(
         dsp,
         capturing,
         failed,
+        watch: InputFormatWatch::new(dev_name.clone(), format, TARGET_RATE),
         device_name: dev_name,
         format,
     })
@@ -2964,6 +3008,168 @@ mod tests {
             NATIVE_SR,
             "a zero rate is ignored"
         );
+    }
+
+    // ── The watchdog seam (YV92/OS-9) ───────────────────────────────────────
+    // The pure state machine is proved in `tests/input_format_change_handler.rs`
+    // by a test that holds ONE watch across a whole AirPods sequence. That is
+    // only meaningful if production holds one too, so these tests drive the
+    // production objects: a real `LiveStream` (its cpal handle is already an
+    // `Option`, so a hardware-free one is the same struct with `stream: None`),
+    // the real `observe_input` the watchdog calls, the real journal, and the
+    // real marker sidecar on disk.
+
+    /// A `LiveStream` with no cpal handle — everything the watchdog seam touches
+    /// is present, and nothing that needs a microphone is.
+    fn hardware_free_stream(device: &str, format: InputFormat) -> LiveStream {
+        LiveStream {
+            stream: None,
+            dsp: Arc::new(Mutex::new(StreamDsp::new(
+                format.sample_rate_hz,
+                format.channels,
+            ))),
+            capturing: Arc::new(AtomicBool::new(false)),
+            failed: Arc::new(AtomicBool::new(false)),
+            watch: InputFormatWatch::new(device, format, TARGET_RATE),
+            device_name: device.to_string(),
+            format,
+        }
+    }
+
+    fn marker_lines(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("each marker line is JSON"))
+            .collect()
+    }
+
+    /// The whole point of the segment counter: it has to ORDER the markers of
+    /// one take. Before the watch was owned by the stream, `watchdog_poll` built
+    /// a fresh one per tick, so the full AirPods sequence (48 k → 24 k → 16 k
+    /// HFP → 48 k) wrote three markers all claiming `segment_index: 1` and any
+    /// rollover driven off it would collide on every file after the first.
+    #[test]
+    fn every_swap_of_one_take_opens_the_next_segment() {
+        let dir = journal_dir("yv92-segments");
+        let journal = CaptureJournal::start(&dir).expect("journal opens");
+        let markers = journal.markers_path();
+        let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
+        live.begin(Some(journal));
+
+        let mut indices = Vec::new();
+        let mut boundaries = Vec::new();
+        for (device, rate) in [
+            ("AirPods Pro", 24_000),
+            ("AirPods Pro", 16_000), // the mic engages: HFP/SCO
+            ("MacBook Pro Microphone", 48_000),
+        ] {
+            // Audio keeps arriving between swaps, so the boundary each marker
+            // carries has to move too.
+            if let Ok(mut dsp) = live.dsp.lock() {
+                let grown = dsp.out.len() + 16_000;
+                dsp.out.resize(grown, 0.1);
+            }
+            // …the exact call `watchdog_poll` makes.
+            let action = live.observe_input(
+                device.to_string(),
+                fmt(rate),
+                FormatEventSource::StreamFormat,
+            );
+            let FormatChangeAction::Reconfigure { marker, ratio } = action else {
+                panic!("a real format change must reconfigure, got {action:?}");
+            };
+            assert_eq!(
+                ratio.from_hz, rate,
+                "the ratio follows the new nominal rate"
+            );
+            live.mark_device_change(&marker);
+            // Stand-in for the successful half of `reopen_after_change`: the
+            // cpal reopen is the only part that needs hardware.
+            live.adopt_reopened(device.to_string(), fmt(rate));
+            indices.push(marker.segment_index);
+            boundaries.push(marker.output_sample_index);
+        }
+
+        assert_eq!(
+            indices,
+            vec![1, 2, 3],
+            "each swap opens the NEXT segment — a constant index cannot order a sidecar"
+        );
+        assert_eq!(
+            boundaries,
+            vec![16_000, 32_000, 48_000],
+            "and each marker lands at the output sample where its segment starts"
+        );
+
+        let on_disk = marker_lines(&markers);
+        assert_eq!(on_disk.len(), 3, "one line per swap");
+        assert_eq!(
+            on_disk
+                .iter()
+                .map(|m| m["segment_index"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "the journal sidecar carries the same ordering the state machine decided"
+        );
+        assert_eq!(on_disk[0]["to_sample_rate"], 24_000);
+        assert_eq!(on_disk[1]["to_sample_rate"], 16_000);
+        assert_eq!(on_disk[2]["to_sample_rate"], 48_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two things that must NOT advance the counter: the burst of selectors
+    /// one renegotiation fires, and the reopen that follows a change already
+    /// counted. And the one thing that must reset it: a new take.
+    #[test]
+    fn a_reopen_is_not_a_segment_and_a_new_take_restarts_the_numbering() {
+        let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
+        live.begin(None);
+
+        let action = live.observe_input(
+            "AirPods Pro".into(),
+            fmt(24_000),
+            FormatEventSource::StreamFormat,
+        );
+        assert_eq!(action.marker().unwrap().segment_index, 1);
+        live.adopt_reopened("AirPods Pro".into(), fmt(24_000));
+        assert_eq!(live.watch.segment_index(), 1, "a reopen is not a boundary");
+        assert_eq!(live.device_name, "AirPods Pro");
+        assert_eq!(live.format, fmt(24_000));
+
+        // The rest of the HAL's burst for the same renegotiation.
+        for source in [
+            FormatEventSource::NominalSampleRate,
+            FormatEventSource::DefaultInputDevice,
+            FormatEventSource::Watchdog,
+        ] {
+            assert_eq!(
+                live.observe_input("AirPods Pro".into(), fmt(24_000), source),
+                FormatChangeAction::Unchanged,
+                "a repeat of an applied change is not another segment"
+            );
+        }
+        assert_eq!(live.watch.segment_index(), 1);
+
+        // A second swap in the SAME take is segment 2 — the regression this all
+        // exists for.
+        let second = live.observe_input(
+            "AirPods Pro".into(),
+            fmt(16_000),
+            FormatEventSource::StreamFormat,
+        );
+        assert_eq!(second.marker().unwrap().segment_index, 2);
+
+        // …and the next take starts its own numbering at 0.
+        live.begin(None);
+        assert_eq!(live.watch.segment_index(), 0);
+        let fresh = live.observe_input(
+            "MacBook Pro Microphone".into(),
+            fmt(48_000),
+            FormatEventSource::DefaultInputDevice,
+        );
+        assert_eq!(fresh.marker().unwrap().segment_index, 1);
     }
 
     /// YV67 — the `Disarm` hand-off must report a mid-take device error WITHOUT

@@ -29,8 +29,26 @@
 //! 10 kHz, and the acceptance bar for this item is ≥20 dB at 10 kHz. Four
 //! cascaded biquads measure **28.5 dB** at 10 kHz, 46.8 dB at 12 kHz and 65+ dB
 //! from 14 kHz up (`tests/biquad_lowpass_response.rs` prints the table), while
-//! staying flat to 0.000 dB across 100 Hz–3.4 kHz. It costs four multiply-adds
-//! per sample on a thread that is not the audio callback.
+//! staying flat to 0.000 dB across 100 Hz–3.4 kHz.
+//!
+//! ## Where it runs, and what that costs (be precise: it IS the audio callback)
+//!
+//! The cascade runs **inside cpal's input callback** — `record::StreamDsp`
+//! lives behind the capture stream's mutex, its `push` is called from
+//! `build_capture_stream`'s data callback, and `push` is what calls
+//! [`StreamResampler::push`]. Nothing about this filter runs on a worker
+//! thread, so it is held to real-time rules and the budget is stated rather
+//! than waved away: four Direct Form I biquads at ~5 flops each is ~20 flops
+//! per input sample, i.e. ≈1 Mflop/s at 48 kHz — microseconds per callback on
+//! any Mac Yap runs on, but not free, and the reason to add a fifth section
+//! would have to be measured rather than assumed.
+//!
+//! The other real-time rule is allocation. The filter needs a scratch buffer
+//! (the cascade is in-place and the callback's frame is `&[f32]`), so that
+//! buffer is **retained** across callbacks and **reserved up front** at
+//! [`StreamResampler::new`]/[`StreamResampler::retune`] time — both of which
+//! run on the capture worker, never in the callback. See
+//! [`SCRATCH_RESERVE_SECS`].
 //!
 //! ## What did NOT change
 //!
@@ -42,6 +60,15 @@
 /// the whole speech band flat and puts the stopband edge below the 8 kHz
 /// Nyquist everything downstream of the mic works at.
 pub const ANTI_ALIAS_CUTOFF_HZ: f32 = 7_200.0;
+
+/// How much input the anti-alias scratch buffer is reserved for, in seconds of
+/// the INPUT rate. cpal hands the callback whatever buffer the device wants
+/// (typically 512–4096 frames, ~10–85 ms at 48 kHz); one full second is far
+/// above anything a HAL input callback delivers, costs 192 kB at 48 kHz, and is
+/// allocated once on the worker thread so the callback's very first frame does
+/// not allocate. A frame larger than the reserve is still handled correctly —
+/// it just pays one `Vec` growth, once.
+const SCRATCH_RESERVE_SECS: usize = 1;
 
 /// The anti-alias cutoff for an arbitrary target rate: the fixed 7.2 kHz corner
 /// when decimating to 16 kHz (the only case the app ships), and 0.45 · target
@@ -245,7 +272,10 @@ pub struct StreamResampler {
     /// The anti-alias lowpass, or `None` when this conversion cannot fold
     /// (upsample/identity) or was explicitly built linear-only.
     anti_alias: Option<LowPassCascade>,
-    /// Reused filter scratch so a steady-state callback allocates nothing.
+    /// Filter scratch, retained across callbacks AND reserved at construction
+    /// ([`SCRATCH_RESERVE_SECS`]) — this buffer is touched from inside cpal's
+    /// input callback, so neither the first frame nor a steady-state frame may
+    /// allocate.
     scratch: Vec<f32>,
     /// Retained input, `pending[0]` being global input index `base`.
     pending: Vec<f32>,
@@ -258,9 +288,16 @@ pub struct StreamResampler {
 
 impl StreamResampler {
     /// The capture path's resampler: anti-aliased whenever `from > to`.
+    ///
+    /// Constructed on the capture worker (cold open, or `retune` from the
+    /// format-change watchdog), which is where the scratch buffer's one
+    /// allocation belongs — the callback that uses it must not allocate.
     pub fn new(from: u32, to: u32) -> Self {
         let mut r = Self::linear_only(from, to);
         r.anti_alias = LowPassCascade::for_decimation(from, to);
+        if r.anti_alias.is_some() {
+            r.scratch = Vec::with_capacity(from as usize * SCRATCH_RESERVE_SECS);
+        }
         r
     }
 
@@ -319,8 +356,11 @@ impl StreamResampler {
             self.interpolate(frame, out);
             return;
         }
-        // Filter into reusable scratch — `mem::take` swaps in an empty Vec
-        // rather than allocating, and the capacity comes straight back.
+        // Filter into the reserved scratch — `mem::take` swaps in an empty Vec
+        // rather than allocating, and the reserved capacity comes straight back
+        // when it is put down at the end of the call. This runs in the audio
+        // callback (see the module docs), so nothing here may grow the buffer
+        // for any frame the device actually delivers.
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.clear();
         scratch.extend_from_slice(frame);
@@ -386,6 +426,13 @@ impl StreamResampler {
     #[cfg(test)]
     fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// The reserved size of the filter scratch — how the "the callback never
+    /// allocates" claim is checked instead of asserted.
+    #[cfg(test)]
+    fn scratch_capacity(&self) -> usize {
+        self.scratch.capacity()
     }
 
     /// The output rate, for symmetry with [`Self::from_rate`].
@@ -467,6 +514,42 @@ mod tests {
             return 0.0;
         }
         (body.iter().map(|s| (s * s) as f64).sum::<f64>() / body.len() as f64).sqrt() as f32
+    }
+
+    /// The anti-alias cascade runs in cpal's input callback, so the scratch it
+    /// filters through must already be big enough on the FIRST frame — a `Vec`
+    /// growth inside an audio callback is exactly what the module docs promise
+    /// does not happen.
+    #[test]
+    fn the_filter_scratch_is_reserved_before_the_callback_ever_runs() {
+        let mut r = StreamResampler::new(NATIVE_SR, SR);
+        let reserved = r.scratch_capacity();
+        assert!(
+            reserved >= NATIVE_SR as usize,
+            "the scratch must be reserved off the audio thread, got {reserved}"
+        );
+
+        // Every realistic cpal input buffer, first frame included, fits.
+        let mut out = Vec::new();
+        for frames in [64usize, 512, 1024, 4096, 8192] {
+            let block = tone_at(NATIVE_SR, frames as f32 / NATIVE_SR as f32, 440.0, 0.4);
+            r.push(&block, &mut out);
+            assert_eq!(
+                r.scratch_capacity(),
+                reserved,
+                "a {frames}-frame callback must not grow the scratch"
+            );
+        }
+        assert!(!out.is_empty(), "and it still produces audio");
+
+        // A retune (the format-change path) also happens on the worker, so the
+        // new resampler is reserved too rather than allocating on its first
+        // post-swap callback.
+        r.retune(24_000, SR);
+        assert!(r.scratch_capacity() >= 24_000);
+        // An upsample has no filter and needs no scratch at all.
+        r.retune(SR, NATIVE_SR);
+        assert_eq!(r.scratch_capacity(), 0);
     }
 
     #[test]

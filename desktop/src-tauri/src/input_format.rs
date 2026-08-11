@@ -181,8 +181,10 @@ impl ResampleRatio {
 /// with no change to the state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceChangeMarker {
-    /// The segment this marker OPENS. The first segment of a capture is 0, so a
-    /// marker always carries 1 or more.
+    /// The segment this marker OPENS. The first segment of a take is 0, so a
+    /// marker always carries 1 or more, and the *n*-th change of one take
+    /// carries *n* — which is what makes the sidecar's lines orderable, and why
+    /// the watch that produces them lives on the stream rather than on the poll.
     pub segment_index: u32,
     pub host_time: u64,
     pub output_sample_index: u64,
@@ -248,6 +250,15 @@ impl FormatChangeAction {
 
 /// The pure state machine. Holds what the live stream is actually running (not
 /// what a cache thinks it is) and turns observations into actions.
+///
+/// **It has to be owned by the live stream, not by the poll.** The segment
+/// counter is the only thing that orders the markers of one take, so a watch
+/// rebuilt on every watchdog tick would hand every marker the same
+/// `segment_index: 1` and a downstream rollover would collide on every file
+/// after the first. `record::LiveStream` therefore keeps one of these for the
+/// life of the stream and carries it across a reopen with
+/// [`InputFormatWatch::resync`]; [`InputFormatWatch::restart_segments`] is what
+/// starts a new take's numbering at zero.
 #[derive(Debug, Clone)]
 pub struct InputFormatWatch {
     device_name: String,
@@ -290,6 +301,26 @@ impl InputFormatWatch {
     /// Which spill segment the capture is writing (0 until the first change).
     pub fn segment_index(&self) -> u32 {
         self.segment_index
+    }
+
+    /// The stream was reopened and the HAL handed back a device/format that may
+    /// not be exactly what was observed a moment ago (a Bluetooth link settles,
+    /// cpal picks a different default config). Track what actually opened —
+    /// **without** touching the segment counter, because a reopen driven by a
+    /// change already counted is the same segment, and a reopen after a plain
+    /// stream error is not a segment boundary at all.
+    pub fn resync(&mut self, device_name: impl Into<String>, format: InputFormat) {
+        self.device_name = device_name.into();
+        if format.is_usable() {
+            self.format = format;
+        }
+    }
+
+    /// A new take began on the same live stream. Segment numbering is per-take
+    /// (the marker sidecar is retired with the take), so the counter restarts
+    /// here rather than carrying yesterday's swaps into today's journal.
+    pub fn restart_segments(&mut self) {
+        self.segment_index = 0;
     }
 
     /// Fold one observation in. The ONLY mutation point: after a
@@ -605,6 +636,55 @@ mod tests {
         let json = marker.to_json();
         assert_eq!(json["kind"], "device_change");
         assert_eq!(json["to_sample_rate"], 24_000);
+    }
+
+    #[test]
+    fn a_reopen_resync_is_not_a_new_segment() {
+        // The reopen half of the swap: the watch already counted the change, so
+        // being told what actually opened must not count it a second time.
+        let mut watch = InputFormatWatch::new("Built-in", InputFormat::new(48_000, 1), 16_000);
+        assert!(watch
+            .observe(obs("AirPods Pro", 24_000, 10))
+            .is_reconfigure());
+        watch.resync("AirPods Pro", InputFormat::new(24_000, 1));
+        assert_eq!(watch.segment_index(), 1, "a resync never bumps the counter");
+        assert_eq!(
+            watch.observe(obs("AirPods Pro", 24_000, 11)),
+            FormatChangeAction::Unchanged,
+            "and the next tick agrees with what actually opened"
+        );
+        // An unreadable format from the reopen leaves the tracked format alone.
+        watch.resync("AirPods Pro", InputFormat::new(0, 0));
+        assert_eq!(watch.format(), InputFormat::new(24_000, 1));
+    }
+
+    #[test]
+    fn each_change_of_one_take_gets_the_next_segment_and_a_new_take_restarts() {
+        // The whole AirPods sequence inside ONE take: 48k → 24k → 16k (HFP) →
+        // 48k. Three markers, three DIFFERENT indices — a constant index cannot
+        // order a sidecar.
+        let mut watch = InputFormatWatch::new("Built-in", InputFormat::new(48_000, 1), 16_000);
+        let mut indices = Vec::new();
+        for (device, rate) in [
+            ("AirPods Pro", 24_000),
+            ("AirPods Pro", 16_000),
+            ("Built-in", 48_000),
+        ] {
+            let action = watch.observe(obs(device, rate, 100));
+            indices.push(
+                action
+                    .marker()
+                    .expect("a change reconfigures")
+                    .segment_index,
+            );
+            watch.resync(device, InputFormat::new(rate, 1));
+        }
+        assert_eq!(indices, vec![1, 2, 3]);
+
+        watch.restart_segments();
+        assert_eq!(watch.segment_index(), 0, "a new take starts at segment 0");
+        let action = watch.observe(obs("AirPods Pro", 24_000, 200));
+        assert_eq!(action.marker().unwrap().segment_index, 1);
     }
 
     #[test]

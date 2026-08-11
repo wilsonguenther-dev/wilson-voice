@@ -7,6 +7,18 @@
 //! capture path makes when it hears about it, and that decision has to be
 //! provable on a CI runner with no microphone.
 //!
+//! One thing this file CANNOT prove, and deliberately does not claim to: that
+//! production holds a single watch across a whole take. Every test here keeps
+//! one `InputFormatWatch` alive by construction, so the segment counter looks
+//! right whatever the capture path does with it — which is exactly how the
+//! shipped path once managed to stamp `segment_index: 1` on all three markers of
+//! an AirPods sequence while these tests stayed green. That ownership is proved
+//! against the production objects instead, in `record::tests`
+//! (`every_swap_of_one_take_opens_the_next_segment` and
+//! `a_reopen_is_not_a_segment_and_a_new_take_restarts_the_numbering`), which
+//! drive a real `LiveStream` through the real `observe_input` the watchdog calls
+//! and read the indices back off the real marker sidecar.
+//!
 //! Each test below is one of the three things the acceptance criteria demand of
 //! an event, plus the failure modes that make them meaningful: a burst of
 //! selectors is not three segments, a rate the OS could not read is not a
