@@ -1,17 +1,40 @@
 # Yap — Terms of Use
 
-_Last updated: July 24, 2026_
+_Last updated: August 11, 2026_
 
-Thanks for using Yap. By downloading or using the app, you agree to these terms. They're meant to be short and fair.
+Thanks for using Yap. By downloading or using the app you agree to these terms. They are written to be read, not endured, so they are short and they say what they mean.
 
-## The app
+## What Yap is, and what you are buying
 
-Yap is a free, open-source, on-device dictation app for macOS. The source code is licensed under the **Apache License, Version 2.0** (see the `LICENSE` file). You may use, modify, and redistribute the code under that license.
+Yap is an on-device dictation app for macOS. It is a paid, proprietary app: one payment of **$29**, and the app is yours for good. There is no subscription, no renewal, and no expiry date on a license you have bought.
 
-## Your responsibility
+That license is for **your own personal use**, on up to **three Macs** you own or use, and it includes **every future update to Yap** at no extra cost. You do not need an account to use it, and Yap does not check in with a server before it will let you dictate.
 
-- You are responsible for how you use text that Yap produces, and for complying with the laws that apply where you use it — including any laws about recording or transcribing speech.
-- Speech recognition is not perfect. Yap may mis-transcribe words. **Review important text before you rely on it.** Do not use Yap as the sole system of record for anything safety-, legal-, or medical-critical.
+What the license does not cover is redistribution. Please do not share, resell, publish, or sublicense your license key, and please do not distribute copies of the app as your own. If you want to put Yap on machines your company owns rather than machines you personally use, write to us and we will sort out a fair arrangement rather than sell you the wrong thing.
+
+## The free trial, and what happens when it ends
+
+Every install gets **fourteen days of the whole app**, with no card and no account. Nothing is held back during the trial — it is the same app you would buy.
+
+When the trial ends, one thing stops: **starting a new dictation**. Everything else keeps working, permanently. Your history stays readable and searchable, your exports still run, your dictionary, snippets and settings are all still there, and none of it is ever held hostage to sell you a license. The words you already spoke are yours whether or not you ever pay us a cent.
+
+## Refunds
+
+If Yap is not for you, email us within **fourteen days** of your purchase and we will refund it. No questions, no form, no explaining yourself. Refunding a purchase ends the license it bought — the app returns to its unlicensed state on your Macs the next time it can reach the internet — but your transcripts and your history remain yours and untouched.
+
+## About the earlier open-source releases
+
+Yap was open source through **version 0.7.0**, released under the Apache License, Version 2.0. That does not get taken back: **every version up to and including 0.7.0 stays under Apache 2.0 for everyone who received it**, with all the rights that license grants, and the `LICENSE` file in the repository continues to cover exactly that code. Those rights are permanent and these terms do not shrink them.
+
+Versions **after 0.7.0** are proprietary and are licensed to you under these terms rather than under Apache 2.0.
+
+## Recording other people is your call
+
+Yap can record meetings and classes on your Mac. Recording and transcribing other people is your call and your responsibility — laws differ by state and country, and some places require everyone's permission. Yap does not announce itself to anyone in the room or on the call.
+
+## Accuracy, and what you rely on
+
+Speech recognition is not perfect, and Yap will sometimes hear the wrong word. Review anything that matters before you rely on it, and do not use Yap as the sole system of record for anything safety-critical, legal, or medical.
 
 ## No warranty
 
@@ -19,19 +42,19 @@ Yap is provided **"AS IS," without warranty of any kind**, express or implied, i
 
 ## Limitation of liability
 
-To the maximum extent permitted by law, in no event will Wilson Guenther or contributors be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of data, profits, or goodwill, arising out of or related to your use of (or inability to use) Yap.
+To the maximum extent permitted by law, in no event will Wilson Guenther or contributors be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of data, profits, or goodwill, arising out of or related to your use of (or inability to use) Yap. Where liability cannot be excluded, it is limited to the amount you paid for your license.
 
 ## Trademarks
 
-The Apache 2.0 license covers the **code**. It does **not** grant rights to the **"Yap"** and **"Yappy"** names, logos, or branding, which are reserved. Please don't use them in a way that implies endorsement or that could confuse people about the source of a product.
+The **"Yap"** and **"Yappy"** names, logos, and branding are reserved, and the Apache 2.0 license on the older releases covers the **code** rather than any of that. Please don't use them in a way that implies endorsement or that could confuse people about the source of a product.
 
 ## Changes
 
-We may update these terms as the app evolves. Material changes will ship with the app and be posted alongside it, with a new "last updated" date.
+We may update these terms as the app evolves. Material changes will ship with the app and be posted alongside it, with a new "last updated" date. Changing these terms never revokes a license you have already bought.
 
 ## Governing law
 
-These terms are governed by the laws of the State of Texas, USA, without regard to its conflict-of-laws rules. _(Wilson — confirm the jurisdiction you want here.)_
+These terms are governed by the laws of the State of Texas, USA, without regard to its conflict-of-laws rules.
 
 ## Contact
 

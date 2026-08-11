@@ -22,47 +22,58 @@
 <main class="legal">
   <a class="back" href="/">← Back to Yap</a>
   <h1>Privacy Policy</h1>
-  <div class="updated">Last updated: July 24, 2026</div>
+  <div class="updated">Last updated: August 11, 2026</div>
 
   <p class="intro">Yap is a dictation app that runs <strong>entirely on your Mac</strong>. The short version: <strong>your voice and your words never leave your device, and we never see them.</strong></p>
 
   <h2>What we collect</h2>
-  <p><strong>Nothing.</strong> Yap has no account, no sign-in, and no servers that receive your data. We do not collect, transmit, sell, or have any access to your speech, your transcripts, or anything about how you use the app.</p>
+  <p><strong>Nothing about your dictation.</strong> Yap has no account, no sign-in, and no server that receives your speech, your transcripts, or anything about how you use the app.</p>
+  <p>The one thing we do hold is what it takes to honour a license you bought, and it is described in full below.</p>
 
   <h2>How your dictation is handled</h2>
   <ul>
-    <li>When you hold the shortcut and speak, audio is captured <strong>locally</strong> and transcribed <strong>on your Mac</strong> using an on-device speech model (Whisper, via Apple's MLX). The audio is processed in memory and the temporary recording file is deleted immediately after transcription — including if transcription fails.</li>
+    <li>When you hold the shortcut and speak, audio is captured <strong>locally</strong> and transcribed <strong>on your Mac</strong> by a speech model running on your own hardware. The audio is processed in memory and the temporary recording file is deleted immediately after transcription — including if transcription fails.</li>
     <li>The resulting text is placed on your clipboard and (optionally) pasted into the app you were typing in.</li>
     <li>A history of your transcripts is saved <strong>only on your Mac</strong>, in a local database inside your user Library folder. It is never uploaded.</li>
   </ul>
+
+  <h2>Buying a license</h2>
+  <p>Purchases are handled by <strong>Stripe</strong>, which acts as the merchant of record for the payment. Your card details go to Stripe and never to us — we never see or store a card number. Stripe&rsquo;s own privacy policy governs what it collects at checkout, and it is worth a read if that matters to you.</p>
+  <p>From a completed purchase we keep a single record so we can prove the license is real and re-send it if you lose it. That record holds a <strong>one-way hash of your email address</strong> (not the address itself), the license&rsquo;s own identifiers, the Stripe session and payment identifiers behind it, the plan and seat count, and the date. When you ask us to re-send a lost key, we hash the address you type and look for a match — which is why we can email your key back to you without holding a list of who bought Yap.</p>
+  <p>Your name, your address, your transcripts, and anything you dictated are not in that record, because none of them ever reach us.</p>
 
   <h2>The only times Yap uses the network</h2>
   <p>For transparency, here is <strong>every</strong> network connection Yap makes:</p>
   <ul>
     <li><strong>First-run model download.</strong> The first time you use Yap, it downloads the speech model to your Mac so it can run offline afterward. After that, transcription is fully offline.</li>
-    <li><strong>Update checks.</strong> Yap may check for a newer version so it can offer to update itself.</li>
+    <li><strong>Update checks.</strong> Yap may check for a newer version so it can offer to update itself. You can switch this off in Settings.</li>
+    <li><strong>The revocation check.</strong> This is the <strong>only</strong> network call the licensing path makes. Your license is verified <strong>on your Mac</strong>, against a public key compiled into the app — activating it, and every launch after, involves no server at all. Separately, in the background, Yap downloads one small public file listing the licenses that have been refunded or charged back, and checks its own against that list locally. It is a plain download of a file that is identical for everyone: it carries no license key, no email, no device identifier, and no query of any kind, so it cannot tell us who is running Yap or where. If it fails — you are offline, the host is down, the response is garbage — nothing changes and Yap keeps working exactly as it did.</li>
   </ul>
-  <p>That's the complete list. Yap sends <strong>no</strong> analytics, telemetry, crash reports, usage data, or personal information to us or anyone else.</p>
+  <p>That&rsquo;s the complete list. Yap sends <strong>no</strong> analytics, telemetry, crash reports, usage data, or personal information to us or anyone else.</p>
 
   <h2>Data stored on your Mac, and your control over it</h2>
   <ul>
     <li><strong>Transcripts</strong> (the text of what you dictated) and a custom <strong>dictionary</strong> are stored in a local SQLite database in your Library folder. Yap does <strong>not</strong> keep your audio.</li>
+    <li><strong>Your license key</strong> is stored in a small file alongside them, and is re-verified from that file on every read. Removing the license from a Mac is a button in Settings.</li>
     <li>You can <strong>delete any transcript</strong>, <strong>clear your entire history</strong>, and <strong>export diagnostics</strong> at any time from within the app. Diagnostic logs are designed to contain <strong>no transcript text</strong>.</li>
     <li>Because the history is stored in a standard local database, we recommend keeping <strong>macOS FileVault</strong> turned on so your data is encrypted at rest along with the rest of your disk.</li>
   </ul>
 
   <h2>Permissions Yap asks for</h2>
   <ul>
-    <li><strong>Microphone</strong> — so it can hear you when you dictate.</li>
-    <li><strong>Accessibility</strong> — so it can paste transcribed text into the app you're using.</li>
+    <li><strong>Microphone</strong> — so it can hear you. That covers dictation and any longer recording you start yourself, such as a meeting or a class. Yap listens when you tell it to and not otherwise; the audio is transcribed on your Mac and the recording file is deleted afterwards.</li>
+    <li><strong>Accessibility</strong> — so it can paste transcribed text into the app you&rsquo;re using, and read the few words just before your cursor to match the formatting you were already using. That context is used in the moment and is never stored or sent.</li>
   </ul>
-  <p>Both are used <strong>only</strong> for dictation. macOS controls these grants, and you can revoke them at any time in System Settings › Privacy &amp; Security.</p>
+  <p>macOS controls both grants, and you can revoke them at any time in System Settings › Privacy &amp; Security. Neither permission is ever used to send anything anywhere — see the complete list of network calls above.</p>
+
+  <h2>Recording other people</h2>
+  <p>Yap does not announce itself to anyone in the room or on the call. If you record or transcribe other people, that is your call and your responsibility — laws differ by state and country, and some places require everyone&rsquo;s permission.</p>
 
   <h2>Children</h2>
   <p>Yap is a general-purpose productivity tool and is not directed to children under 13.</p>
 
   <h2>Changes to this policy</h2>
-  <p>If this policy changes, the updated version will ship with the app and be posted alongside it, with a new "last updated" date.</p>
+  <p>If this policy changes, the updated version will ship with the app and be posted alongside it, with a new &ldquo;last updated&rdquo; date.</p>
 
   <div class="contact">
     <h2 style="margin-top:0">Contact</h2>
