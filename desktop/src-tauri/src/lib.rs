@@ -2661,6 +2661,37 @@ fn activate_license(
     }
 }
 
+/// YP3 — open Stripe's hosted checkout in the user's browser.
+///
+/// Takes **no argument on purpose**. The destination is
+/// `license::PAYMENT_LINK_URL`, a compile-time constant, handed to `open(1)` as
+/// one argv element — never a shell string, and never a URL the webview
+/// supplied. A command that accepted a URL would be a "open anything on this
+/// Mac" primitive reachable from any script that reaches the frontend.
+#[tauri::command]
+fn open_purchase_page() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(license::PAYMENT_LINK_URL)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "Could not open your browser ({e}). The link is {}",
+                    license::PAYMENT_LINK_URL
+                )
+            })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(format!(
+            "Open {} in your browser to buy Yap.",
+            license::PAYMENT_LINK_URL
+        ))
+    }
+}
+
 /// Remove the license from this Mac (moving a seat). The trial bookkeeping is
 /// deliberately untouched — this is not a second fortnight.
 #[tauri::command]
@@ -3301,7 +3332,8 @@ pub fn run() {
             install_update,
             license_status,
             activate_license,
-            deactivate_license
+            deactivate_license,
+            open_purchase_page
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window

@@ -116,6 +116,26 @@ pub const ISSUER_HOST: &str = "forge.87-99-149-214.sslip.io";
 /// Public revocation list (`{version, updatedAt, kids[]}`, `max-age=300`).
 pub const REVOCATION_URL: &str = "https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json";
 
+/// Where "Buy Yap" goes — the **one** place this URL is written down in the
+/// app (YP3). The frontend never holds it: the Buy button invokes
+/// `open_purchase_page`, which hands this constant to `open(1)` as a single
+/// argv element, so no string the webview can influence ever reaches a process
+/// launch.
+///
+/// Cited from the issuer's own record, `drivia-forge` `docs/YAP-LICENSING.md`
+/// § "Live objects": Payment Link `plink_1U2yNFBc7RJSrX28KrzOuXwk`, price
+/// `price_1U2yN4Bc7RJSrX287I33050v` ($29.00 one-time), product
+/// `prod_V34VzbYj8scmQC`, `allow_promotion_codes: true` so `FOUNDING19` (coupon
+/// `z8UZkIH2`, −$10, 500 redemptions, expires 2026-11-08) applies at checkout.
+///
+/// The link is currently **`active: false`** on Stripe — deliberately
+/// deactivated until the delivery path is proven end to end (see that doc's
+/// "Why the link is deactivated"). Yap ships pointing at it anyway: this is the
+/// URL, and re-activating it in Stripe is what turns purchasing on, with no
+/// client change and no release. Until then the page says the link is not yet
+/// open, which is the honest state of the world and not a bug in Yap.
+pub const PAYMENT_LINK_URL: &str = "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602";
+
 /// Filename under `data_dir()`.
 pub const LICENSE_FILE: &str = "license.json";
 
@@ -1061,6 +1081,30 @@ mod tests {
             skid_of_spki(ISSUER_PUBLIC_KEY_SPKI_B64).as_deref(),
             Some(ISSUER_SKID),
             "ISSUER_SKID must be sha256(SPKI DER)[..16] of the pinned key"
+        );
+    }
+
+    /// YP3 — the Buy button's destination, pinned.
+    ///
+    /// This is the one string in the app that decides where a customer's money
+    /// goes, and a typo in it is silent: the button opens, a Stripe page loads
+    /// (or 404s), and nothing in the build complains. So the value the issuer
+    /// documented is asserted verbatim, and its shape is asserted separately so
+    /// a future edit cannot quietly turn it into a non-Stripe or non-TLS URL.
+    #[test]
+    fn payment_link_is_the_live_link_the_issuer_documented() {
+        assert_eq!(
+            PAYMENT_LINK_URL, "https://buy.stripe.com/4gM00i88q3Fs5Dzbag1B602",
+            "the Buy button must point at plink_1U2yNFBc7RJSrX28KrzOuXwk — see \
+             drivia-forge docs/YAP-LICENSING.md § Live objects"
+        );
+        assert!(
+            PAYMENT_LINK_URL.starts_with("https://buy.stripe.com/"),
+            "checkout must be Stripe's own hosted page, over TLS"
+        );
+        assert!(
+            !PAYMENT_LINK_URL.contains(char::is_whitespace),
+            "a URL handed to open(1) must be a single argv element"
         );
     }
 

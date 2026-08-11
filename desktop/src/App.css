@@ -1311,7 +1311,11 @@ button.star.on {
 }
 
 .subnav-item {
-  flex: 1 1 auto;
+  /* YP3 — the License tab made this eight items, and `flex: 1 1 auto` wrapped
+     them 6 + 2, leaving the last row as two tabs half the width of the panel.
+     A quarter-width basis lays them out as two even rows of four and still
+     collapses to three, then two, when the window is narrow. */
+  flex: 1 1 calc(25% - 4px);
   min-width: 88px;
   padding: 8px 12px;
   border: none;
@@ -1965,4 +1969,334 @@ button.star.on {
   .yappy-house .yh-frame::after {
     box-shadow: 0 0 0 3px #4d2c1a inset;
   }
+}
+
+/* ── YP3 · Licensing — the chip, the License tab, the purchase sheet ──────────
+   One rule for all three: money copy is native SF (it is a sentence a person
+   reads), and every NUMBER — the days left, the price, the seat count, the key
+   id — wears Departure Mono, the same pixel voice the counts, the status pill
+   and the key caps already speak. The palette is the app's own cream and ember;
+   nothing here introduces a colour. */
+
+/* The header keeps two chips now: entitlement first (rarely changes), machine
+   status second (changes constantly). */
+.head-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.license-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.license-chip-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.license-chip.trial {
+  color: var(--accent-data-ink);
+  background: var(--accent-data-soft);
+  border-color: transparent;
+}
+.license-chip.trial .license-chip-value {
+  color: var(--accent-data-ink);
+}
+
+/* Inside the last three days the chip warms to the action colour — it is the
+   only escalation in the whole feature, and it never moves or animates. */
+.license-chip.urgent {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+.license-chip.urgent .license-chip-value {
+  color: var(--accent-ink);
+}
+
+.license-chip.licensed {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.license-chip.ended {
+  color: var(--warn-ink);
+  background: rgba(245, 158, 11, 0.12);
+  border-color: transparent;
+}
+
+/* ── Settings → License ── */
+
+.license-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.license-card-body h3 {
+  margin: 4px 0 6px;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+}
+
+.license-card-body p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 54ch;
+}
+
+.license-eyebrow {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.license-trial .license-eyebrow {
+  color: var(--accent-data-ink);
+}
+.license-license_required .license-eyebrow {
+  color: var(--warn-ink);
+}
+
+/* The countdown is the one big numeral in the app. Departure Mono at display
+   size, tabular so 14 → 9 does not shuffle the layout under it. */
+.license-countdown {
+  flex: none;
+  display: grid;
+  justify-items: center;
+  min-width: 84px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-data-soft);
+  color: var(--accent-data-ink);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.license-countdown strong {
+  font-size: 2.1rem;
+  line-height: 1;
+  font-weight: 400;
+}
+
+.license-countdown span {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.license-countdown.urgent {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.license-mascot {
+  flex: none;
+  image-rendering: pixelated;
+}
+
+.license-buy {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.license-buy h3 {
+  margin: 0 0 6px;
+}
+
+.license-buy p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 52ch;
+}
+
+.license-promo {
+  margin-top: 8px !important;
+}
+
+.license-promo code,
+.license-lost code,
+.buy-fine code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* Price is a number: pixel voice, never bolded SF. */
+.license-price {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-ink);
+}
+
+.license-buy-btn {
+  flex: none;
+  padding: 0.6rem 1rem;
+}
+
+.license-key-field {
+  margin-top: 10px;
+}
+
+.license-key {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  resize: vertical;
+  word-break: break-all;
+}
+
+.license-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.license-problem {
+  margin: 10px 0 0;
+  color: var(--danger-ink);
+  font-size: 0.86rem;
+  max-width: 60ch;
+}
+
+.license-ok {
+  margin: 10px 0 0;
+  color: var(--accent-ink);
+  font-size: 0.86rem;
+}
+
+.license-lost {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.license-promise p {
+  margin: 0;
+  max-width: 60ch;
+}
+
+.license-fine {
+  margin-top: 8px !important;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.mono-num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* ── The purchase sheet ──
+   Same overlay grammar as the onboarding card (YV9), one shade darker so what
+   is behind it stays visible: the app is still working, and it should look it. */
+.buy-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 120;
+  overflow: auto;
+}
+
+.buy-card {
+  width: min(520px, 100%);
+  text-align: center;
+  background: var(--bg-card);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  padding: 30px 32px 22px;
+}
+
+.buy-mascot {
+  image-rendering: pixelated;
+  margin-bottom: 6px;
+}
+
+.buy-eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.buy-card h1 {
+  margin: 6px 0 10px;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.buy-lede {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+/* The sentence this whole sheet is built to make believable. */
+.buy-keep {
+  margin: 0 auto;
+  max-width: 42ch;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.buy-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 20px 0 12px;
+}
+
+.buy-actions .primary {
+  padding: 0.6rem 1.1rem;
+}
+
+.buy-fine {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.buy-dismiss {
+  margin-top: 14px;
+  color: var(--muted);
+  border-color: transparent;
 }

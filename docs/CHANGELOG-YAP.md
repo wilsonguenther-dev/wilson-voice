@@ -6,6 +6,9 @@
 - **When the trial ends, only new dictation stops.** Your history, your search, your exports, your settings, your dictionary and your snippets keep working forever. The words you already spoke are yours — Yap does not hold them hostage to sell you a license, and pressing the hotkey out of habit gets a sentence explaining that, not a dead key.
 - **Your license is checked on your Mac, not on a server.** Activation verifies an Ed25519 signature against a key compiled into the app. There is no account, no login, no phone-home on the dictation path, and no license check that can fail because you are on a plane. The single network call Yap's licensing makes is a background refresh of the refund list, and every way it can fail — offline, DNS, a bad response — leaves your license exactly as it was.
 - **A refunded license stops working; nobody else's does.** Refunds and chargebacks revoke one specific license, never a batch, and a revoked license that is contested and won comes straight back.
+- **You can always see where you stand, and Yap only says it once.** A small chip in the header carries your trial or your license at all times, and it is the only place the countdown lives — there is exactly ONE message about the trial running out, three days before it does, and it never comes back. No daily countdown, no launch nag, no interstitial.
+- **Settings → License.** One screen with the state of this Mac, a Buy button that opens Stripe's own checkout in your browser, and a box to paste the key you already own. Bad keys get a sentence that tells you what to do next instead of the word "invalid", and "Remove from this Mac" moves a seat to another machine.
+- **The end of the trial is an offer, not a wall.** Pressing your hotkey after day 14 brings up a warm prompt with Yappy on it: buy, or paste a key. Dismiss it and the app behind it still works — your notes and history stay yours forever, and the prompt says so.
 
 ## v0.7.0
 
