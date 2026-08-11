@@ -5,7 +5,16 @@ import Onboarding from "./Onboarding";
 import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
-import { errorText } from "./errors";
+import { errorText, isLicenseRequired } from "./errors";
+import LicensePanel from "./license/LicensePanel";
+import PurchasePrompt from "./license/PurchasePrompt";
+import {
+  chipFor,
+  shouldWarnTrial,
+  trialWarningText,
+  daysLeft as trialDaysLeft,
+  type LicenseStatus,
+} from "./license/status";
 import "./App.css";
 
 type Nav =
@@ -26,7 +35,8 @@ type SettingsTab =
   | "audio"
   | "shortcut"
   | "advanced"
-  | "privacy";
+  | "privacy"
+  | "license";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "companion", label: "Companion" },
@@ -36,7 +46,37 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "shortcut", label: "Shortcut" },
   { id: "advanced", label: "Advanced" },
   { id: "privacy", label: "Privacy" },
+  // YP3 — last, because it is the tab you visit twice: once to see what is
+  // left of the trial, once to paste the key.
+  { id: "license", label: "License" },
 ];
+
+/**
+ * YP3 — the `trial_expires_at_ms` the "your trial is nearly up" toast last
+ * fired for. Persisted so the single warning survives a relaunch; keyed on the
+ * expiry rather than a boolean so a genuinely new trial is not silenced by an
+ * old flag. `localStorage` is the right home: losing it costs at most one extra
+ * toast, which is not worth a settings migration.
+ */
+const TRIAL_WARN_KEY = "yap.trialWarnedFor";
+
+function readTrialWarnedFor(): number | null {
+  try {
+    const raw = window.localStorage.getItem(TRIAL_WARN_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null; // private mode / storage disabled — warn once per launch
+  }
+}
+
+function writeTrialWarnedFor(expiresAtMs: number) {
+  try {
+    window.localStorage.setItem(TRIAL_WARN_KEY, String(expiresAtMs));
+  } catch {
+    /* the toast simply gets to fire again next launch */
+  }
+}
 
 /**
  * YV73 — how many rows the History view holds in memory.
@@ -486,6 +526,11 @@ export default function App() {
     secureInputBlocked: false,
     secureInputDetail: null,
   });
+  // YP3 — the entitlement this Mac has right now, and whether the warm purchase
+  // sheet is up. `null` until the first `license_status` lands: the chip and the
+  // License tab render nothing rather than guessing "trial" for a paying user.
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [buyPrompt, setBuyPrompt] = useState(false);
   const [perms, setPerms] = useState<PermissionReport | null>(null);
   const [history, setHistory] = useState<TranscriptEntry[]>([]);
   // YV52 — failed takes whose audio is still recoverable, and the one the live
@@ -794,6 +839,23 @@ export default function App() {
       if (!dock) return;
       setSettings((s) => (s && s.pillPosition !== dock ? { ...s, pillPosition: dock } : s));
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // YP3 — licensing. `license` is emitted on activation, removal and every
+    // revocation refresh that changed something; `license_required` is emitted
+    // by the gate itself, which is the ONLY way the hotkey / pill / tray paths
+    // (none of which can surface a returned error) can say why nothing
+    // happened. Both are read-only here: the sheet is a prompt, never a lock.
+    invoke<LicenseStatus>("license_status")
+      .then((s) => setLicense(s))
+      .catch(() => {
+        /* a licensing read that fails must never block the app from booting */
+      });
+    listen<LicenseStatus>("license", (e) => setLicense(e.payload)).then((u) =>
+      dead ? u() : unsubs.push(u),
+    );
+    listen<LicenseStatus>("license_required", (e) => {
+      setLicense(e.payload);
+      setBuyPrompt(true);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     return () => {
       dead = true;
       unsubs.forEach((u) => u());
@@ -835,6 +897,24 @@ export default function App() {
     setTimeout(() => setFlash(null), 6000);
   }, [crashes]);
 
+  // YP3 — the trial's ONE warning.
+  //
+  // A countdown that reappears at every launch, or every day of the last week,
+  // is nagware, and the person it annoys most is the one who already decided to
+  // buy. So: a single flash, the first time the trial is inside three days,
+  // recorded against that trial's expiry so it can never fire twice — not on
+  // the next launch, not on the last day. Everything else about the trial lives
+  // in the always-on chip, which says nothing until you look at it.
+  const trialWarnShown = useRef(false);
+  useEffect(() => {
+    if (trialWarnShown.current || !license) return;
+    if (!shouldWarnTrial(license, readTrialWarnedFor())) return;
+    trialWarnShown.current = true;
+    writeTrialWarnedFor(license.trial_expires_at_ms);
+    setFlash(trialWarningText(trialDaysLeft(license)));
+    setTimeout(() => setFlash(null), 6000);
+  }, [license]);
+
   // YV44 — one launch-time check that ONLY looks. The backend gates it on the
   // `checkUpdates` setting and on "skip this version", returns the release
   // without touching a byte of it, and answers null when there is nothing to
@@ -865,12 +945,53 @@ export default function App() {
   // YP2: `manual_toggle` can now reject with a structured `{code, message}` —
   // the license gate needs a sentence, not `[object Object]`. Only STARTING a
   // dictation can be refused; a take already running always gets to finish.
+  // YP3: and when the reason IS the license, a 2-second toast is the wrong
+  // surface — that person needs a way to buy, not a sentence that vanishes.
+  // The gate also emits `license_required`, so the sheet is usually already up
+  // by the time this lands; setting a boolean twice is a no-op.
   async function toggleRecord() {
     try {
       await invoke("manual_toggle");
     } catch (e) {
+      if (isLicenseRequired(e)) setBuyPrompt(true);
+      else toast(errorText(e));
+    }
+  }
+
+  // ── YP3 · licensing actions ──
+  // The URL is NOT here: `open_purchase_page` takes no argument and opens the
+  // compile-time `license::PAYMENT_LINK_URL`, so no string the webview can
+  // influence ever reaches a process launch.
+  async function buyYap() {
+    try {
+      await invoke("open_purchase_page");
+    } catch (e) {
       toast(errorText(e));
     }
+  }
+
+  /** Rejects with the backend's typed `{code, message}` so the panel can show it. */
+  async function activateLicense(key: string) {
+    const status = await invoke<LicenseStatus>("activate_license", { key });
+    setLicense(status);
+    setBuyPrompt(false);
+    toast("Yap is licensed on this Mac");
+  }
+
+  async function deactivateLicense() {
+    try {
+      setLicense(await invoke<LicenseStatus>("deactivate_license"));
+      toast("License removed from this Mac");
+    } catch (e) {
+      toast(errorText(e));
+    }
+  }
+
+  /** From the purchase sheet: land on the key box, not just the tab. */
+  function openLicenseTab() {
+    setBuyPrompt(false);
+    setNav("settings");
+    setSettingsTab("license");
   }
 
   async function copyText(text: string) {
@@ -1295,6 +1416,10 @@ export default function App() {
     }
   }
 
+  // YP3 — `null` until the first status lands, so the header never flashes a
+  // guessed state at a paying customer.
+  const licenseChip = license ? chipFor(license) : null;
+
   const pillClass = status.recording
     ? "status-pill recording"
     : status.busy
@@ -1513,7 +1638,29 @@ export default function App() {
                 "Your companion, dictation, shortcut, and privacy — all in plain language."}
             </p>
           </div>
-          <div className={pillClass}>{status.message}</div>
+          <div className="head-state">
+            {/* YP3 — the always-on entitlement chip. It never interrupts: it is
+                a button because the one thing you want after reading it is the
+                License tab. The numeral wears the pixel voice, the same
+                treatment every other piece of data in the app gets. */}
+            {licenseChip && (
+              <button
+                type="button"
+                className={`license-chip ${licenseChip.tone}`}
+                title={licenseChip.title}
+                onClick={() => {
+                  setNav("settings");
+                  setSettingsTab("license");
+                }}
+              >
+                <span className="license-chip-label">{licenseChip.label}</span>
+                {licenseChip.value && (
+                  <span className="license-chip-value">{licenseChip.value}</span>
+                )}
+              </button>
+            )}
+            <div className={pillClass}>{status.message}</div>
+          </div>
         </header>
 
         {flash && (
@@ -3434,10 +3581,33 @@ export default function App() {
                   )}
                 </section>
               )}
+
+              {/* ── YP3 · License — trial, purchase, activation ── */}
+              {settingsTab === "license" && (
+                <LicensePanel
+                  status={license}
+                  onBuy={buyYap}
+                  onActivate={activateLicense}
+                  onDeactivate={deactivateLicense}
+                />
+              )}
             </div>
           )}
         </div>
       </section>
+
+      {/* ── YP3 · the warm purchase sheet ──
+          Raised by the gate's `license_required` event (hotkey, pill, tray) and
+          by a rejected `manual_toggle`. Dismissible, and everything behind it
+          keeps working — that is the promise the copy makes and the code has to
+          keep. It sits OUTSIDE `.main` so it covers the sidebar too. */}
+      {buyPrompt && (
+        <PurchasePrompt
+          onBuy={buyYap}
+          onEnterKey={openLicenseTab}
+          onDismiss={() => setBuyPrompt(false)}
+        />
+      )}
     </div>
   );
 }
