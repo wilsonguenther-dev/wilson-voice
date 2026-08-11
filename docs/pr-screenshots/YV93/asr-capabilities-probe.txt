@@ -1,0 +1,11 @@
+$ cargo run --bin wilson-voice -- --asr-capabilities
+using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+model: handy-computer/parakeet-unified-en-0.6b-gguf
+arch: parakeet
+backend: MTL0
+native_sample_rate: 16000
+languages: en
+max_timestamp_kind: token
+max_audio_ms: 0
+supports_language_detect: false
+supports_streaming: true

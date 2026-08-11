@@ -51,7 +51,32 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard ceiling on ONE transcription. Way above any real clip (a 60 s take is
 /// ~1 s on Metal) — this exists only so a wedged native call surfaces as an
 /// error instead of freezing dictation forever.
-const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// What a caller gets when the engine is not in the slot — because nothing is
+/// loaded, or because another caller has it leased out. A constant since YV93:
+/// meeting ASR has to tell THIS apart from a real decode failure (it means
+/// "come back at the next boundary", not "this chunk is unrecoverable"), and a
+/// string compared against a literal in another module is a bug waiting for
+/// someone to reword the message.
+pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
+
+/// How long a caller waits for the engine to come BACK from another caller
+/// before giving up (YV93).
+///
+/// Before meetings there was only ever one caller, so an empty slot could only
+/// mean "nothing is loaded" and failing instantly was right. Now a dictation can
+/// arrive while a meeting chunk holds the engine, and meeting ASR's whole
+/// preemption contract — stand down at the next chunk boundary and hand the
+/// engine back (finding #2b) — is worth nothing if the dictation has already
+/// given up by the time the handback happens. So a caller that finds the engine
+/// LEASED OUT (or mid-load) waits for it; a caller that finds nothing loaded at
+/// all still fails immediately. The ceiling is generous next to a chunk decode
+/// (a 30 s window is ~1 s on Metal) and short enough that a wedged engine
+/// surfaces as an error instead of a hang.
+pub const ENGINE_HANDBACK_WAIT: Duration = Duration::from_secs(5);
+/// How often that wait re-checks the slot.
+const ENGINE_HANDBACK_POLL: Duration = Duration::from_millis(5);
 
 /// How often [`TranscriptionManager::drain_and_unload`] re-checks the lease.
 const DRAIN_POLL: Duration = Duration::from_millis(10);
@@ -72,6 +97,22 @@ pub trait Transcriber: Send + 'static {
         bias_prompt: Option<&str>,
     ) -> Result<String, String>;
 
+    /// The same decode, with the alignment kept (YV93 — meeting chunking).
+    ///
+    /// Defaulted rather than required: an engine that produces no timestamps
+    /// (and every stub in these tests) is still a legal `Transcriber`, and the
+    /// meeting seam merge already has to handle a timeless chunk — that is the
+    /// text-LCS fallback path plan finding #11 insists on keeping.
+    fn transcribe_timed(
+        &mut self,
+        samples_16k_mono: &[f32],
+        language: Option<&str>,
+        bias_prompt: Option<&str>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        self.transcribe(samples_16k_mono, language, bias_prompt)
+            .map(asr_engine::TimedTranscript::text_only)
+    }
+
     /// A handle that ends an in-flight [`Transcriber::transcribe`] on this
     /// engine early (YV70). `None` for an engine with no cancel hook, in which
     /// case the exit drain can only wait the decode out.
@@ -88,6 +129,15 @@ impl Transcriber for asr_engine::AsrEngine {
         bias_prompt: Option<&str>,
     ) -> Result<String, String> {
         asr_engine::transcribe(self, samples_16k_mono, language, bias_prompt)
+    }
+
+    fn transcribe_timed(
+        &mut self,
+        samples_16k_mono: &[f32],
+        language: Option<&str>,
+        bias_prompt: Option<&str>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        asr_engine::transcribe_timed(self, samples_16k_mono, language, bias_prompt)
     }
 
     fn cancel_handle(&self) -> Option<CancelHandle> {
@@ -192,6 +242,14 @@ struct Inner {
     /// device's whole lifetime in `load` (it stays set until the engine is in
     /// the slot or dropped), so the exit drain can wait on it like a lease.
     loading: AtomicBool,
+    /// YV93 — how many INTERACTIVE decodes (dictation, `--transcribe-file`) are
+    /// waiting for or holding the one warm engine right now. Meeting ASR reads
+    /// it between chunks and gets out of the way: the single engine is what
+    /// makes a long meeting decode able to starve the sub-second dictation path
+    /// (plan finding #2b), and this counter is how the meeting side can see the
+    /// dictation coming without the engine mutex having any fairness at all.
+    /// Raised BEFORE the engine is taken, dropped only once it is back.
+    interactive_waiting: AtomicU64,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
     idle_check_interval: Duration,
@@ -254,6 +312,7 @@ impl TranscriptionManager {
                 in_flight_cancel: Mutex::new(None),
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
+                interactive_waiting: AtomicU64::new(0),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
                 idle_check_interval,
@@ -529,31 +588,90 @@ impl TranscriptionManager {
         language: Option<String>,
         bias_prompt: Option<String>,
     ) -> Result<String, String> {
-        self.touch();
         if samples_16k_mono.is_empty() {
+            self.touch();
             return Ok(String::new());
         }
+        // YV93: an INTERACTIVE decode. The claim is raised here — before the
+        // engine is taken — so meeting ASR sees a dictation that is still only
+        // waiting, which is the only moment yielding to it is worth anything.
+        let _claim = self.claim_interactive();
+        self.leased(move |engine| {
+            engine.transcribe(
+                &samples_16k_mono,
+                language.as_deref(),
+                bias_prompt.as_deref(),
+            )
+        })
+    }
+
+    /// Transcribe with the alignment KEPT (YV93) — what meeting chunk ASR runs.
+    ///
+    /// Same lifecycle as [`transcribe`](Self::transcribe) (off-slot engine,
+    /// bounded wait, panic containment) with one deliberate difference: this
+    /// does NOT raise the interactive claim. A meeting is the thing that yields;
+    /// counting it as a waiter would make it yield to itself.
+    pub fn transcribe_timed(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        if samples_16k_mono.is_empty() {
+            self.touch();
+            return Ok(asr_engine::TimedTranscript::text_only(String::new()));
+        }
+        self.leased(move |engine| {
+            engine.transcribe_timed(
+                &samples_16k_mono,
+                language.as_deref(),
+                bias_prompt.as_deref(),
+            )
+        })
+    }
+
+    /// True while an interactive decode (a dictation, the headless CLI) is
+    /// waiting for or holding the one warm engine (YV93). Meeting ASR checks
+    /// this at every chunk boundary and stands down until it clears.
+    pub fn interactive_pending(&self) -> bool {
+        self.inner.interactive_waiting.load(Ordering::Acquire) != 0
+    }
+
+    fn claim_interactive(&self) -> InteractiveClaim {
+        self.inner
+            .interactive_waiting
+            .fetch_add(1, Ordering::AcqRel);
+        InteractiveClaim {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Run one job against the warm engine: take it out of the slot, run it on
+    /// its own thread with a hard timeout, put it back (or drop it).
+    ///
+    /// The engine is taken OUT of the mutex for the duration (no lock is held
+    /// across the native call) and runs on its own thread so the wait can be
+    /// bounded: on timeout this returns `Err` and abandons the engine — the
+    /// worker thread owns it and drops it whenever it finally returns, so the
+    /// next transcription simply reloads. It can never hang the caller.
+    fn leased<R: Send + 'static>(
+        &self,
+        job: impl FnOnce(&mut dyn Transcriber) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
+        self.touch();
         let generation = self.inner.generation.load(Ordering::Acquire);
-        let Some(engine) = self.inner.engine.lock().take() else {
-            return Err("no ASR model is loaded".into());
-        };
+        let engine = self.take_engine()?;
         self.inner.leases.fetch_add(1, Ordering::AcqRel);
         // YV70: publish this run's cancel hook while it is in flight, so the
         // exit drain can end the decode instead of only waiting on it.
         *self.inner.in_flight_cancel.lock() = engine.engine.cancel_handle();
 
-        let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<String, String>)>();
+        let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<R, String>)>();
         std::thread::spawn(move || {
             let mut engine = engine;
             // Panic containment: on unwind the engine is dropped instead of
             // returned, so a poisoned native session is never reused.
-            let sent = match catch_unwind(AssertUnwindSafe(|| {
-                engine.engine.transcribe(
-                    &samples_16k_mono,
-                    language.as_deref(),
-                    bias_prompt.as_deref(),
-                )
-            })) {
+            let sent = match catch_unwind(AssertUnwindSafe(|| job(&mut *engine.engine))) {
                 Ok(result) => (Some(engine), result),
                 Err(p) => (
                     None,
@@ -591,6 +709,28 @@ impl TranscriptionManager {
         result
     }
 
+    /// Take the engine out of the slot, waiting out another caller who has it.
+    ///
+    /// "Empty slot" stopped meaning one thing when meetings arrived: it is
+    /// either *nothing is loaded* (fail now — reloading is the caller's job) or
+    /// *someone else is using it* (wait — they are on their way back, and with
+    /// meeting ASR yielding at chunk boundaries that wait is one chunk long).
+    /// The two are told apart by the lease/loading counters, not by guessing.
+    fn take_engine(&self) -> Result<LoadedEngine, String> {
+        let started = Instant::now();
+        loop {
+            if let Some(engine) = self.inner.engine.lock().take() {
+                return Ok(engine);
+            }
+            let busy = self.inner.leases.load(Ordering::Acquire) != 0
+                || self.inner.loading.load(Ordering::Acquire);
+            if !busy || started.elapsed() >= ENGINE_HANDBACK_WAIT {
+                return Err(NO_ENGINE_LOADED.into());
+            }
+            std::thread::sleep(ENGINE_HANDBACK_POLL);
+        }
+    }
+
     /// Put a borrowed engine back — unless the app is exiting, or the model was
     /// unloaded or swapped while it was out, in which case it is dropped.
     fn return_engine(&self, engine: LoadedEngine, generation: u64) {
@@ -612,6 +752,22 @@ impl TranscriptionManager {
         if slot.is_none() {
             *slot = Some(engine);
         }
+    }
+}
+
+/// Live for exactly as long as one interactive decode is waiting for or holding
+/// the engine (YV93). RAII rather than a manual decrement so an early `return`
+/// on the error paths above can never leave meeting ASR yielding forever to a
+/// dictation that is already over.
+struct InteractiveClaim {
+    inner: Arc<Inner>,
+}
+
+impl Drop for InteractiveClaim {
+    fn drop(&mut self) {
+        self.inner
+            .interactive_waiting
+            .fetch_sub(1, Ordering::AcqRel);
     }
 }
 

@@ -12,10 +12,17 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{models, record, transcription::TranscriptionManager};
+use crate::{asr_engine, models, record, transcription::TranscriptionManager};
 
 /// Flag that switches the binary into headless transcribe mode.
 const TRANSCRIBE_FILE_FLAG: &str = "--transcribe-file";
+/// YV93 — ask for the ALIGNMENT too, printed as one JSON object on stdout.
+/// Diagnostics still go to stderr, so stdout stays machine-readable.
+const TIMED_FLAG: &str = "--timed";
+/// YV93 — the `Capabilities()` spike (plan finding #11): load the shipped model
+/// and print what it says it can do, `max_timestamp_kind` and `max_audio_ms`
+/// above all. No decode, no audio.
+const CAPABILITIES_FLAG: &str = "--asr-capabilities";
 /// Download progress is reported to stderr at most once per this many bytes —
 /// stdout stays clean so it holds ONLY the transcript.
 const PROGRESS_STEP: u64 = 8 * 1024 * 1024;
@@ -24,7 +31,12 @@ const PROGRESS_STEP: u64 = 8 * 1024 * 1024;
 /// handled and the process must exit WITHOUT starting the Tauri app; `None`
 /// means a normal GUI launch.
 pub fn handle_args() -> Option<i32> {
-    let mut args = std::env::args().skip(1);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == CAPABILITIES_FLAG) {
+        return Some(print_capabilities());
+    }
+    let timed = argv.iter().any(|a| a == TIMED_FLAG);
+    let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         let wav = if arg == TRANSCRIBE_FILE_FLAG {
             match args.next() {
@@ -39,19 +51,40 @@ pub fn handle_args() -> Option<i32> {
         } else {
             continue;
         };
-        return Some(transcribe_file(Path::new(&wav)));
+        return Some(transcribe_file(Path::new(&wav), timed));
     }
     None
 }
 
+/// `wilson-voice --asr-capabilities` — the YV93 spike, as a command anyone can
+/// re-run when the shipped model changes.
+fn print_capabilities() -> i32 {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+    match ensure_model().and_then(|(id, path)| {
+        let engine = asr_engine::load(&path)?;
+        Ok((id, asr_engine::capabilities(&engine)))
+    }) {
+        Ok((id, caps)) => {
+            println!("model: {id}");
+            println!("{}", caps.report());
+            0
+        }
+        Err(e) => {
+            eprintln!("capabilities probe failed: {e}");
+            1
+        }
+    }
+}
+
 /// Run one headless transcription, printing the text to stdout. Diagnostics go
 /// to stderr; the exit code is 0 on success, 1 on failure.
-fn transcribe_file(wav: &Path) -> i32 {
+fn transcribe_file(wav: &Path, timed: bool) -> i32 {
     // Warnings only, on stderr — `RUST_LOG=info` turns on the engine's own logs
     // without ever polluting the transcript on stdout.
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
-    match run_transcribe(wav) {
+    match run_transcribe(wav, timed) {
         Ok(text) => {
             println!("{text}");
             0
@@ -63,7 +96,7 @@ fn transcribe_file(wav: &Path) -> i32 {
     }
 }
 
-fn run_transcribe(wav: &Path) -> Result<String, String> {
+fn run_transcribe(wav: &Path, timed: bool) -> Result<String, String> {
     if !wav.is_file() {
         return Err(format!("no such wav file: {}", wav.display()));
     }
@@ -77,6 +110,16 @@ fn run_transcribe(wav: &Path) -> Result<String, String> {
     // same way on any machine, so it deliberately does NOT read the app's
     // language setting or its dictionary (unlike the model selection, which
     // mirrors the app on purpose).
+    if timed {
+        // YV93: the same decode with its alignment kept. Printed as JSON so the
+        // eval harness scores the MODEL's timestamps rather than the harness's
+        // own arithmetic over window starts.
+        let transcript = manager.transcribe_timed(samples, None, None)?;
+        if transcript.text.trim().is_empty() {
+            return Err("empty transcript".into());
+        }
+        return serde_json::to_string(&transcript).map_err(|e| format!("encode transcript: {e}"));
+    }
     let text = manager.transcribe(samples, None, None)?;
     let text = text.trim().to_string();
     if text.is_empty() {

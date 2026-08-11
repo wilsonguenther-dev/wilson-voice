@@ -1,0 +1,21 @@
+$ cargo test --test meeting_english_only_gate -- --nocapture
+
+   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-yv93/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/meeting_english_only_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_english_only_gate-38ab30a3d37cfc70)
+
+running 6 tests
+Notetaker empty-state copy (YV93):
+  - Meeting notes need a speech model. Download one in Settings › Model to record a meeting.
+  - Meeting notes need an English speech model, and Yap can't tell what 'someone/side-loaded.gguf' transcribes. Pick a catalog model in Settings › Model.
+  - Meeting notes are English-only for now. Some German Model transcribes de, fr — switch to an English model in Settings › Model to record a meeting.
+  - Meeting notes are English-only for now. Your 'Language I speak' is set to es — set it to English to record a meeting.
+test every_refusal_says_what_to_do_next ... ok
+test the_catalog_still_declares_what_the_gate_reads ... ok
+test no_model_and_an_unknown_model_are_both_refused_honestly ... ok
+test a_non_english_spoken_language_disables_the_notetaker_with_a_message ... ok
+test the_shipped_english_model_is_allowed ... ok
+test a_model_that_cannot_do_english_disables_the_notetaker ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

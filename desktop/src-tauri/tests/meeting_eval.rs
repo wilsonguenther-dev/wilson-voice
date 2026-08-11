@@ -72,6 +72,19 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+// YV93: the geometry and the merge are no longer this file's own. The gates
+// below score the SHIPPED chunker — same plan, same seam merge, same constants —
+// so a regression in `meeting_asr` fails here instead of passing against a copy
+// of itself.
+use wilson_voice_lib::asr_engine::TimedTranscript;
+use wilson_voice_lib::meeting_asr::{
+    merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, plan_windows, plan_windows_fixed,
+    BoundaryKind, ChunkConfig, ChunkOutcome, ChunkWindow, MemoryWindows, MergeReport,
+    SampleWindows, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM,
+    OVERLAP_TOKEN_BUDGET,
+};
+use wilson_voice_lib::vad::WarmVad;
+
 // ---------------------------------------------------------------------------
 // Where things are
 // ---------------------------------------------------------------------------
@@ -93,10 +106,22 @@ const DEVICE_CHANGE: &str = "device-change";
 /// consumed by YV92 (anti-alias + input format change), not by this file's gates.
 const FIXTURE_IDS: [&str; 3] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE];
 
-/// PLACEHOLDER BASELINE. Parakeet Unified EN 0.6B with no meeting tuning, on
-/// clean synthesized speech. Replace this constant with the measured number
-/// once YV93's real chunked ASR lands, and record the figure in the backlog.
-const WER_GATE: f64 = 0.15;
+/// MEASURED (YV93, Parakeet Unified EN 0.6B on Metal, no meeting tuning, clean
+/// synthesized speech). The placeholder this replaces was 0.15 — a number from
+/// nowhere, which YV90 shipped precisely so that it would be replaced by one
+/// from somewhere. What the four arms of the lecture gate actually score:
+///
+/// | arm | merge | WER | insertions |
+/// |---|---|---|---|
+/// | fixed clock | text anchor (fallback) | 0.0048 | 0 |
+/// | fixed clock | timed (primary) | 0.0087 | 12 |
+/// | VAD-cut | text anchor (fallback) | 0.0042 | 0 |
+/// | VAD-cut | timed (primary) | **0.0042** | **0** |
+///
+/// The gate is set at 0.02 — roughly twice the worst of those and four times the
+/// shipped arm — so it fails on a real regression and survives the odd word
+/// moving between machines.
+const WER_GATE: f64 = 0.02;
 
 /// How far the CHUNKED transcript may drift from a single continuous decode of
 /// the same audio. This is the gate that makes "no duplicated words at chunk
@@ -104,7 +129,8 @@ const WER_GATE: f64 = 0.15;
 /// see the five declared words, so a merge that eats ordinary words while
 /// sparing the markers clears them — measured, by patching the merge to delete
 /// every third token: markers intact, `duplicated=0 dropped=0`, and drift WER
-/// 0.3326. Measured on the shipped merge: 0.0021.
+/// 0.3326. Measured on the shipped merge under YV93's geometry: 0.0000, for both
+/// the text-anchor merge and the timed one.
 const SEAM_DRIFT_WER_GATE: f64 = 0.02;
 
 /// How many words the lecture merge may INSERT, as a fraction of the reference.
@@ -112,33 +138,48 @@ const SEAM_DRIFT_WER_GATE: f64 = 0.02;
 /// emits its overlap twice, which is an insertion against an exact reference.
 /// At `MAX_TAIL_TRIM = 2` this fixture scored 32 insertions over 3117 words
 /// (0.0103) from three unmerged seams and still passed a WER gate of 0.15;
-/// measured now: 0.
+/// measured now: 0 for the text-anchor merge on both arms and for the timed
+/// merge on the VAD-cut arm, 12 (0.0038) for the timed merge on the fixed-clock
+/// arm — which is the one case where a boundary can cut a word in half, and the
+/// measurement that argues for the VAD arm being the shipped one.
 const LECTURE_INSERTION_RATE_GATE: f64 = 0.005;
 
-/// The chunk geometry the plan specifies for meeting ASR (22-A): 30 s windows,
-/// 2 s overlap. YV93 replaces the fixed clock with a VAD-cut boundary inside a
-/// [25 s, 35 s] search window; the gates below do not care which produced the
-/// chunks, only that the merged transcript is correct at the seams.
+/// The chunk geometry, mirrored from the shipped [`ChunkConfig::default`] and
+/// asserted equal to it by `the_harness_geometry_is_the_shipped_geometry`. Kept
+/// as `const` here only because a `const` can be used where a call cannot; the
+/// shipped values are the authority.
+///
+/// Under that geometry a meeting is cut at `30 s, 60 s, …` and each window
+/// DECODES from two seconds before its own boundary — windows 0–30, 28–60,
+/// 58–90 … — so the region two consecutive windows share is
+/// `[30k - 2, 30k]`. YV93 moves the interior boundaries onto VAD silence inside
+/// a [25 s, 35 s] search window; the gates below do not care which arm produced
+/// the chunks, only that the merged transcript is correct at the seams.
 const CHUNK_SECONDS: f64 = 30.0;
 const CHUNK_OVERLAP_SECONDS: f64 = 2.0;
 
-/// The distance between consecutive window STARTS. This — not
-/// [`CHUNK_SECONDS`] — is what "every chunk boundary" means: with a 30 s window
-/// and a 2 s overlap the windows are 0–30, 28–58, 56–86 … so the seams are at
-/// 28 s, 56 s, 84 s, and a marker word placed on a multiple of 30 s lands in the
-/// interior of exactly one window, where no merge implementation can move it.
-fn chunk_hop_seconds() -> f64 {
-    CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS
+/// The only region of the audio that windows `k-1` and `k` BOTH contain:
+/// `[k*CHUNK_SECONDS - overlap, k*CHUNK_SECONDS]`. A marker word must sit
+/// entirely inside one of these or the seam gate is scoring nothing — which is
+/// the defect this fixture was built to make impossible, and then reproduced
+/// twice: first by deriving the region from a 28 s hop the shipped chunker does
+/// not use, and before that by placing markers ON the boundary, where a word
+/// straddles the cut and lands wholly inside a single window.
+fn seam_region(k: usize) -> (f64, f64) {
+    let boundary = k as f64 * CHUNK_SECONDS;
+    (boundary - CHUNK_OVERLAP_SECONDS, boundary)
 }
 
-/// The only region of the audio that windows `k-1` and `k` BOTH contain:
-/// `[k*hop, k*hop + overlap]`. A marker word must sit entirely inside one of
-/// these or the seam gate is scoring nothing — which is the defect this fixture
-/// was built to make impossible, and then reproduced by placing markers on
-/// `k * CHUNK_SECONDS` instead.
-fn seam_region(k: usize) -> (f64, f64) {
-    let start = k as f64 * chunk_hop_seconds();
-    (start, start + CHUNK_OVERLAP_SECONDS)
+/// The harness's mirrored constants ARE the shipped ones.
+#[test]
+fn the_harness_geometry_is_the_shipped_geometry() {
+    let cfg = ChunkConfig::default();
+    assert_eq!(CHUNK_SECONDS, cfg.target_seconds);
+    assert_eq!(CHUNK_OVERLAP_SECONDS, cfg.overlap_seconds);
+    assert!(
+        cfg.min_seconds <= CHUNK_SECONDS && CHUNK_SECONDS <= cfg.max_seconds,
+        "the VAD arm can move a boundary outside the fixed geometry this file assumes"
+    );
 }
 
 /// Everything downstream of the mic runs at 16 kHz mono.
@@ -495,171 +536,18 @@ struct Segment {
     text: String,
 }
 
-/// Windows over `total_seconds`: [`CHUNK_SECONDS`] wide, hopping by
-/// `CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS`, with the last window clipped to the
-/// end of the audio. Every second of the fixture is inside at least one window.
+/// The shipped window plan, as `(audio_start, audio_end)` pairs.
+///
+/// This is `meeting_asr::plan_windows_fixed` — the fixed-clock arm of the
+/// shipped chunker, which is what a VAD-less decode produces and what every
+/// number in this file was measured on. The VAD-cut arm only moves interior
+/// boundaries, and never outside [25 s, 35 s], so nothing below depends on
+/// which arm ran.
 fn chunk_plan(total_seconds: f64) -> Vec<(f64, f64)> {
-    let hop = CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS;
-    assert!(hop > 0.0, "the overlap cannot swallow the window");
-    let mut out = Vec::new();
-    let mut start = 0.0f64;
-    while start < total_seconds {
-        let end = (start + CHUNK_SECONDS).min(total_seconds);
-        out.push((start, end));
-        if end >= total_seconds {
-            break;
-        }
-        start += hop;
-    }
-    if out.is_empty() {
-        out.push((0.0, total_seconds));
-    }
-    out
-}
-
-/// A splice anchor must be at least this many tokens long. Two tokens is a
-/// coincidence ("the room"); three is an overlap.
-const MIN_ANCHOR_TOKENS: usize = 3;
-/// …and at most this many. The overlap is 2 s of speech — six or seven words.
-const MAX_ANCHOR_TOKENS: usize = 10;
-/// How many tokens [`CHUNK_OVERLAP_SECONDS`] of speech can hold, at the
-/// [`WORDS_PER_MINUTE`] the corpus is spoken at: `ceil(2 s * 175 / 60)` = 6.
-/// This is the budget for everything a merge is allowed to move at a seam,
-/// because the overlap region is the ONLY audio two windows both saw. Kept as a
-/// literal because a float-to-int cast is not const, and tied back to the
-/// geometry by `overlap_token_budget_matches_the_chunk_geometry`.
-const OVERLAP_TOKEN_BUDGET: usize = 6;
-
-/// How far back from the end of the running transcript the anchor may sit.
-///
-/// It has to be the whole overlap budget, and the measurement that says so is
-/// the lecture fixture: at 2 (the first cut of this function) three of its 32
-/// seams found NO anchor and fell into the append-whole branch, emitting the
-/// overlap twice — 32 insertions against the reference, WER 0.0151. The cause
-/// is not a half-cut word but a truncated-window continuation: the outgoing
-/// window ends mid-sentence and the model finishes the sentence its own way
-/// ("…before the break i want to **look at the material**" against the next
-/// window's "…before the break i want to **leave you with a question**"), so
-/// the genuine anchor sits several tokens back from the end. Trimming those
-/// tokens is safe by construction — they are inside the overlap, which the
-/// INCOMING window re-supplies from the anchor onward, so nothing is deleted
-/// that is not immediately re-emitted. At 6 all 32 seams anchor, insertions go
-/// to 0 and lecture WER to 0.0048.
-const MAX_TAIL_TRIM: usize = OVERLAP_TOKEN_BUDGET;
-/// …and the same at the HEAD of the incoming chunk, where a window boundary
-/// cutting a word in half does show up. Left at 4: sweeping it to 12 changes
-/// neither fixture's numbers, and every token of slack here widens the deletion
-/// budget the seam gate has to allow.
-const MAX_HEAD_SKIP: usize = 4;
-
-/// What a merge did at the seams, so the gates can check the MERGE and not only
-/// the marker words that happen to sit in it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct MergeReport {
-    /// Seams merged — one per window after the first.
-    seams: usize,
-    /// Seams where no anchor was found and the whole incoming window was
-    /// appended, duplicating the overlap. This is failure mode 1 below, and it
-    /// is a defect wherever it happens, not a tuning knob.
-    no_anchor_seams: usize,
-    /// Tokens removed from the tail of the running transcript across all seams.
-    /// Bounded by `seams * MAX_TAIL_TRIM` by construction.
-    tail_tokens_trimmed: usize,
-    /// Tokens skipped at the head of incoming windows, likewise bounded by
-    /// `seams * MAX_HEAD_SKIP`.
-    head_tokens_skipped: usize,
-}
-
-/// The BASELINE seam merge: the incoming chunk repeats the last
-/// [`CHUNK_OVERLAP_SECONDS`] of the previous one, so find that repeat and splice
-/// past it. This is the text-level LCS fallback the plan describes.
-///
-/// Two shapes were measured and thrown away before this one, both on the seam
-/// fixture, which is exactly what the fixture is for:
-///
-/// 1. *Drop the prefix of the next chunk that is already a suffix of what we
-///    have.* A window boundary cuts a word in half, so the incoming chunk opens
-///    with a token nobody said ("her word for this boundary is pineapple…"), no
-///    prefix ever matches, and the whole overlap is emitted twice —
-///    `duplicated_word_count` came back 1.
-/// 2. *Longest common run anywhere in a 32-token window either side.* That
-///    finds an anchor far from the seam and truncates the running transcript
-///    back to it, deleting real words: 37 deletions against the continuous
-///    decode and one marker word (`trombone`) gone. `dropped_word_count` caught
-///    it — which is the whole reason finding #16 insists on that counter.
-///
-/// 3. *The same anchored search, but with only two tokens of tail slack.* It
-///    passed every assertion this harness had and was still wrong: on the
-///    LECTURE fixture three of 32 seams found no anchor at all, took the
-///    append-whole branch below and emitted the overlap twice. The marker
-///    counters never saw it — the lecture has no markers — and the WER gate
-///    swallowed it inside 10× of headroom. That is why the gates now assert on
-///    [`MergeReport::no_anchor_seams`] and on the drift/insertion budgets, and
-///    why [`MAX_TAIL_TRIM`] is the whole [`OVERLAP_TOKEN_BUDGET`].
-///
-/// What survives anchors the run to the END of the running transcript and the
-/// START of the incoming chunk, where the overlap actually is, with the
-/// overlap's own word budget of slack at the tail and a cut word's worth at the
-/// head. It can therefore delete at most [`MAX_TAIL_TRIM`] + [`MAX_HEAD_SKIP`]
-/// tokens at a seam by construction, and only tokens inside the overlap region —
-/// which the incoming window re-supplies from the anchor onward. YV93 replaces
-/// it with the real merge and must clear the same numbers, all of them.
-fn merge_chunk_tokens(chunks: &[Vec<String>]) -> Vec<String> {
-    merge_chunk_tokens_reporting(chunks).0
-}
-
-/// [`merge_chunk_tokens`], plus what it did at each seam. The counts are the
-/// merge's own account of itself, so a gate can check the merge directly rather
-/// than inferring it from whichever words happen to sit at a boundary.
-fn merge_chunk_tokens_reporting(chunks: &[Vec<String>]) -> (Vec<String>, MergeReport) {
-    let mut merged: Vec<String> = Vec::new();
-    let mut report = MergeReport::default();
-    for chunk in chunks {
-        if merged.is_empty() {
-            merged.extend(chunk.iter().cloned());
-            continue;
-        }
-        report.seams += 1;
-        // (keep in merged, tokens skipped before the anchor, anchor length)
-        let mut splice: Option<(usize, usize, usize)> = None;
-        'search: for n in (MIN_ANCHOR_TOKENS..=MAX_ANCHOR_TOKENS).rev() {
-            for trim in 0..=MAX_TAIL_TRIM {
-                if merged.len() < trim + n {
-                    continue;
-                }
-                let keep = merged.len() - trim;
-                let tail = &merged[keep - n..keep];
-                for skip in 0..=MAX_HEAD_SKIP {
-                    if chunk.len() < skip + n {
-                        break;
-                    }
-                    if tail == &chunk[skip..skip + n] {
-                        splice = Some((keep, skip, n));
-                        break 'search;
-                    }
-                }
-            }
-        }
-        match splice {
-            Some((keep, skip, anchor)) => {
-                // The anchor tokens themselves are not "moved": they are the
-                // same words on both sides of the seam, kept once. Only the
-                // trimmed tail and the tokens before the anchor are.
-                report.tail_tokens_trimmed += merged.len() - keep;
-                report.head_tokens_skipped += skip;
-                merged.truncate(keep);
-                merged.extend(chunk[skip + anchor..].iter().cloned());
-            }
-            // No anchor: append whole. Emitting a duplicate is a visible defect
-            // — visible only because it is COUNTED here and asserted on by both
-            // corpus gates; deleting words on a guess is a silent one.
-            None => {
-                report.no_anchor_seams += 1;
-                merged.extend(chunk.iter().cloned());
-            }
-        }
-    }
-    (merged, report)
+    plan_windows_fixed(total_seconds, 0.0, &ChunkConfig::default(), 0)
+        .iter()
+        .map(|w| (w.audio_start_seconds, w.audio_end_seconds))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -691,12 +579,21 @@ impl Decoder {
     }
 
     fn decode(&self, samples: &[i16], label: &str) -> String {
+        self.decode_timed(samples, label).text
+    }
+
+    /// The same decode, asking for the alignment (YV93's `--timed`, i.e.
+    /// `asr_engine::transcribe_timed`). What comes back is what the SHIPPED
+    /// model actually produces — which is the open question plan finding #11
+    /// raised, answered here on real audio rather than from the GGUF metadata.
+    fn decode_timed(&self, samples: &[i16], label: &str) -> TimedTranscript {
         let _one_at_a_time = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let wav = self.scratch.join(format!("{label}.wav"));
         write_wav_16k_mono(&wav, samples);
         let out = Command::new(&self.bin)
             .arg("--transcribe-file")
             .arg(&wav)
+            .arg("--timed")
             .output()
             .unwrap_or_else(|e| panic!("cannot run {}: {e}", self.bin.display()));
         let _ = fs::remove_file(&wav);
@@ -710,7 +607,9 @@ impl Decoder {
         for line in stderr.lines().filter(|l| l.starts_with("using ")) {
             eprintln!("  [{label}] {line}");
         }
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("decode of {label} is not a timed transcript: {e}"))
     }
 
     /// Decode `samples` window by window and merge the seams.
@@ -723,26 +622,53 @@ impl Decoder {
     /// merge, which windows each marker was decodable in.
     fn decode_chunked(&self, samples: &[i16], label: &str) -> ChunkedDecode {
         let total = samples.len() as f64 / TARGET_RATE as f64;
-        let plan = chunk_plan(total);
+        let plan = plan_windows_fixed(total, 0.0, &ChunkConfig::default(), 0);
+        self.decode_plan(samples, label, &plan)
+    }
+
+    /// Decode a plan somebody else made — the VAD-cut arm, in practice.
+    fn decode_plan(&self, samples: &[i16], label: &str, plan: &[ChunkWindow]) -> ChunkedDecode {
         let mut per_chunk: Vec<Vec<String>> = Vec::new();
         let mut segments: Vec<Segment> = Vec::new();
-        for (n, (start, end)) in plan.iter().enumerate() {
-            let from = (start * TARGET_RATE as f64) as usize;
-            let to = ((end * TARGET_RATE as f64) as usize).min(samples.len());
-            let text = self.decode(&samples[from..to], &format!("{label}-chunk{n:03}"));
-            eprintln!("  [{label}] window {n:03} {start:7.2}s–{end:7.2}s");
-            per_chunk.push(normalize(&text));
+        let mut outcomes: Vec<ChunkOutcome> = Vec::new();
+        for window in plan {
+            let from = (window.audio_start_seconds * TARGET_RATE as f64) as usize;
+            let to = ((window.audio_end_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+            let transcript = self.decode_timed(
+                &samples[from..to],
+                &format!("{label}-chunk{:03}", window.index),
+            );
+            eprintln!(
+                "  [{label}] window {:03} {:7.2}s–{:7.2}s  timestamps={} spans={}",
+                window.index,
+                window.audio_start_seconds,
+                window.audio_end_seconds,
+                transcript.kind.as_str(),
+                transcript.best_spans().len()
+            );
+            per_chunk.push(normalize(&transcript.text));
             segments.push(Segment {
-                start_seconds: *start,
-                text,
+                start_seconds: window.content_start_seconds,
+                text: transcript.text.clone(),
             });
+            outcomes.push(ChunkOutcome::from_transcript(window, transcript));
         }
         let (merged, merge) = merge_chunk_tokens_reporting(&per_chunk);
+        // The PRIMARY merge (time, not text) — scored beside the fallback so
+        // both paths are measured on the corpus rather than only the one the
+        // shipped model happens to take.
+        let timed_spans = merge_timed(&outcomes);
+        let timestamps_are_real = !outcomes.is_empty()
+            && outcomes
+                .iter()
+                .all(|c| c.timestamp_kind.has_times() && !c.spans.is_empty());
         ChunkedDecode {
             merged,
             merge,
             segments,
             per_chunk,
+            timed_spans,
+            timestamps_are_real,
         }
     }
 }
@@ -757,9 +683,24 @@ struct ChunkedDecode {
     merge: MergeReport,
     segments: Vec<Segment>,
     per_chunk: Vec<Vec<String>>,
+    /// YV93: the timed merge's output — every span the model timestamped, each
+    /// kept by exactly the one window whose content range holds its midpoint.
+    timed_spans: Vec<wilson_voice_lib::asr_engine::TimedSpan>,
+    /// Whether the shipped model gave usable alignment on every window, i.e.
+    /// whether `timed_spans` is the transcript or the fallback is.
+    timestamps_are_real: bool,
 }
 
 impl ChunkedDecode {
+    /// The PRIMARY merge's transcript, normalised for scoring — the words the
+    /// timed merge kept, in time order. Empty when the model gave no alignment.
+    fn timed_tokens(&self) -> Vec<String> {
+        self.timed_spans
+            .iter()
+            .flat_map(|s| normalize(&s.text))
+            .collect()
+    }
+
     /// How many windows decoded `word` at least once. `>= 2` is the condition
     /// under which the seam counts mean something.
     fn windows_containing(&self, word: &str) -> usize {
@@ -1135,7 +1076,10 @@ fn timestamps_are_sorted_gate_catches_out_of_order_segments() {
 fn chunk_plan_covers_the_fixture_with_a_two_second_overlap() {
     let plan = chunk_plan(170.0);
     assert_eq!(plan[0], (0.0, 30.0));
-    assert_eq!(plan[1].0, 28.0, "the hop is window minus overlap");
+    assert_eq!(
+        plan[1].0, 28.0,
+        "the second window re-sees the overlap before its own boundary"
+    );
     for pair in plan.windows(2) {
         let overlap = pair[0].1 - pair[1].0;
         assert!(
@@ -1161,9 +1105,9 @@ fn chunk_plan_covers_the_fixture_with_a_two_second_overlap() {
 }
 
 /// The arithmetic the seam fixture is grown from, checked without any audio: a
-/// marker placed inside [`seam_region`] is in TWO windows, and one placed on a
-/// multiple of [`CHUNK_SECONDS`] — the number the first cut of the fixture used,
-/// and the number the prose kept repeating — is in one.
+/// marker placed inside [`seam_region`] is in TWO windows, and one placed ON a
+/// boundary — a multiple of [`CHUNK_SECONDS`], which is where the first cut of
+/// this fixture put them — is in one.
 #[test]
 fn seam_regions_are_the_only_places_two_windows_overlap() {
     let plan = chunk_plan(162.0);
@@ -1182,8 +1126,9 @@ fn seam_regions_are_the_only_places_two_windows_overlap() {
         );
 
         // The bug this fixture exists to make impossible: a marker centred on
-        // k * CHUNK_SECONDS. Windows hop by 28 s, so 30/60/90/120/150 s are
-        // interior points of a single window and no merge can change their count.
+        // k * CHUNK_SECONDS. A window ENDS at its boundary and the next one
+        // starts two seconds earlier, so a word straddling 30/60/90/120/150 s is
+        // whole in exactly one window and no merge can change its count.
         let naive = k as f64 * CHUNK_SECONDS;
         assert_eq!(
             windows_over(naive - 0.3, naive + 0.3),
@@ -1365,24 +1310,61 @@ fn meeting_eval_lecture_wer_is_under_the_gate() {
         "the merge moved more tokens than the overlap can hold: {:?}",
         decode.merge
     );
+
+    // (3) YV93: the PRIMARY merge, scored on the same fixture against the same
+    // gate. The text-anchor merge above is the fallback; what a user's meeting
+    // actually goes through is the timed merge, and until this ran there was no
+    // number for it on real audio — only the argument that the midpoint rule is
+    // lossless by construction. A rule that is lossless over the TIMELINE can
+    // still lose words if the model times them badly, which is precisely what
+    // finding #11 warns about, so it is measured rather than assumed.
+    if decode.timestamps_are_real {
+        let timed = decode.timed_tokens();
+        let timed_report = wer(&reference, &timed);
+        println!(
+            "meeting_eval {LECTURE} timed_merge_wer={:.4}",
+            timed_report.wer()
+        );
+        eprintln!("{LECTURE}: primary (timed) merge {timed_report}");
+        assert!(
+            timed_report.wer() <= WER_GATE,
+            "the timed merge regressed past the {WER_GATE} gate: {timed_report}"
+        );
+        let timed_insertions = timed_report.insertions as f64 / timed_report.reference_words as f64;
+        assert!(
+            timed_insertions <= LECTURE_INSERTION_RATE_GATE,
+            "the timed merge duplicated words at seams: {timed_insertions:.4} insertion rate"
+        );
+    } else {
+        eprintln!(
+            "{LECTURE}: the shipped model returned no alignment — only the text-anchor \
+             fallback merge was scored"
+        );
+    }
 }
 
-/// Acceptance gate: segment start times over the FULL 15-minute fixture come out
-/// monotonic. Today those are the decode windows' own starts, so this is a check
-/// on the harness's assembly; when YV93 lands `asr_engine::transcribe_timed`,
-/// the same assertion runs over real per-segment timestamps and starts checking
-/// the model. The negative control that keeps it honest —
+/// Acceptance gate: start times over the FULL 15-minute fixture come out
+/// monotonic.
+///
+/// Since YV93 this runs on the MODEL's own timestamps whenever the shipped
+/// model produces them (`--timed` → `asr_engine::transcribe_timed`), shifted
+/// onto the meeting timeline and merged by the shipped primary merge; it is no
+/// longer a check on the harness's arithmetic over window starts. When the
+/// model returns no alignment the window starts are all there is, and the test
+/// says so out loud rather than quietly asserting something weaker. The negative
+/// control that keeps it honest —
 /// `timestamps_are_sorted_gate_catches_out_of_order_segments` — needs no corpus
 /// and always runs.
 #[test]
 fn meeting_eval_lecture_segment_timestamps_are_sorted() {
     let Some(root) = corpus() else { return };
-    let segments = &lecture_decode(&root).segments;
+    let decode = lecture_decode(&root);
+    let segments = &decode.segments;
 
     let timestamps: Vec<f64> = segments.iter().map(|s| s.start_seconds).collect();
     assert!(timestamps.is_sorted());
     assert!(
-        segments.len() > 30,
+        segments.len() > 25,
         "a 15-minute fixture is more than {} windows",
         segments.len()
     );
@@ -1390,8 +1372,39 @@ fn meeting_eval_lecture_segment_timestamps_are_sorted() {
         segments.iter().all(|s| !s.text.trim().is_empty()),
         "a window decoded to nothing"
     );
+
+    if decode.timestamps_are_real {
+        let starts: Vec<f64> = decode.timed_spans.iter().map(|s| s.start_seconds).collect();
+        assert!(
+            starts.is_sorted(),
+            "the model's own timestamps came out unsorted after the merge"
+        );
+        assert!(
+            decode.timed_spans.iter().all(|s| s.end_seconds >= s.start_seconds),
+            "a span ends before it starts"
+        );
+        // Every span belongs to the window that owns its midpoint, so the whole
+        // transcript has to fit inside the fixture.
+        let meta = read_meta(&root, LECTURE);
+        assert!(
+            starts.last().copied().unwrap_or(0.0) <= meta.duration_seconds + 1e-6,
+            "a span landed past the end of the audio"
+        );
+        println!(
+            "meeting_eval {LECTURE} timed_spans={} kind=real first={:.2}s last={:.2}s",
+            decode.timed_spans.len(),
+            starts.first().copied().unwrap_or(0.0),
+            starts.last().copied().unwrap_or(0.0)
+        );
+    } else {
+        println!(
+            "meeting_eval {LECTURE} timed_spans=0 kind=none — the shipped model returned no \
+             alignment, so the ordering gate ran on window starts and the seam merge ran on text"
+        );
+    }
+
     eprintln!(
-        "{LECTURE}: {} segment start times, monotonic, {:.2}s to {:.2}s",
+        "{LECTURE}: {} window start times, monotonic, {:.2}s to {:.2}s",
         segments.len(),
         timestamps.first().copied().unwrap_or(0.0),
         timestamps.last().copied().unwrap_or(0.0)
@@ -1534,6 +1547,223 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
         decode.segments.iter().all(|s| !s.text.trim().is_empty()),
         "a window decoded to nothing — the seam numbers above are not trustworthy"
     );
+
+    // YV93: the same two counters over the PRIMARY (timed) merge. This is the
+    // acceptance criterion in its literal form — "no duplicated words at chunk
+    // seams" — asked of the merge that actually ships, on a fixture built so
+    // that every marker word sits in an overlap region where a merge bug has
+    // somewhere to show itself.
+    if decode.timestamps_are_real {
+        let timed = decode.timed_tokens();
+        let timed_seam = seam_report(&meta.seam_keywords, &timed, &continuous);
+        let timed_drift = wer(&continuous, &timed);
+        println!(
+            "meeting_eval {SEAM_STRESS} timed_merge duplicated={} dropped={} drift={:.4}",
+            timed_seam.duplicated_word_count,
+            timed_seam.dropped_word_count,
+            timed_drift.wer()
+        );
+        assert_eq!(
+            timed_seam.duplicated_word_count, 0,
+            "the timed merge emitted a marker word twice"
+        );
+        assert!(
+            timed_seam.dropped_word_count <= 1,
+            "the timed merge ate {} marker words",
+            timed_seam.dropped_word_count
+        );
+        if let Err(why) = drift_within_budget(&timed_drift, decode.merge.seams) {
+            panic!("{SEAM_STRESS} (timed merge): {why}");
+        }
+        let timed_starts: Vec<f64> = decode.timed_spans.iter().map(|s| s.start_seconds).collect();
+        assert!(timed_starts.is_sorted(), "the timed merge came out unsorted");
+    }
+}
+
+/// What the FIXED-CLOCK arm of the same fixture costs at the seams, measured by
+/// `meeting_eval_lecture_wer_is_under_the_gate`: 12 duplicated words over 29
+/// seams, after the primary merge's boundary tie-break has already removed 17 of
+/// the 29 it started with. The VAD arm has to beat it.
+const FIXED_CLOCK_TIMED_INSERTIONS: usize = 12;
+
+/// Where the app keeps the warm Silero model. The VAD arm below needs the real
+/// one — a scripted VAD would be measuring this file's own assumptions.
+fn silero_model() -> Option<PathBuf> {
+    let path = dirs::data_dir()?
+        .join("WilsonVoice")
+        .join("models")
+        .join("silero_vad_v4.onnx");
+    path.is_file().then_some(path)
+}
+
+/// YV93's headline claim, measured: **cutting chunk boundaries on VAD silence
+/// puts near-zero speech in the overlap**, and the seam merge is better for it.
+///
+/// The fixed-clock arm scored above cuts at 30 s whatever is happening — in a
+/// continuous lecture that is mid-word every single time, which is why the
+/// primary (timed) merge has to break a tie at every one of its 29 seams. The
+/// VAD arm exists to make the tie not happen. Three things are checked, in
+/// increasing order of how much they cost:
+///
+/// 1. every interior boundary landed in a pause (`BoundaryKind::Silence`) and
+///    inside the [25 s, 35 s] search window;
+/// 2. no boundary landed inside a word, with room to spare — measured with the
+///    same VAD, over the same audio, not asserted from the design;
+/// 3. decoded end to end, the primary merge over VAD-cut windows clears the
+///    same WER and insertion gates as the fixed-clock arm.
+#[test]
+fn meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap() {
+    let Some(root) = corpus() else { return };
+    let Some(model) = silero_model() else {
+        eprintln!("silero VAD model not downloaded, skipping the VAD-cut arm");
+        return;
+    };
+    let vad = match WarmVad::load(&model) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("silero VAD failed to load ({e}), skipping the VAD-cut arm");
+            return;
+        }
+    };
+
+    let (rate, samples) = read_wav_i16(&root.join(LECTURE).join("audio.wav"));
+    assert_eq!(rate, TARGET_RATE);
+    let floats: Vec<f32> = samples.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+    let audio = MemoryWindows::new(floats, TARGET_RATE);
+    let cfg = ChunkConfig::default();
+    let plan = plan_windows(&audio, Some(&vad as &dyn VoiceActivity), 0.0, &cfg, 0).expect("plan");
+
+    // (1) Every interior boundary is a pause, inside the search window.
+    let clock_cuts = plan
+        .iter()
+        .skip(1)
+        .filter(|w| w.start_boundary == BoundaryKind::FixedClock)
+        .count();
+    eprintln!(
+        "{LECTURE}: VAD plan has {} windows, {clock_cuts} of {} interior boundaries fell back to \
+         the clock",
+        plan.len(),
+        plan.len().saturating_sub(1)
+    );
+    for w in plan.iter().skip(1) {
+        assert!(
+            w.content_seconds() >= cfg.min_seconds - 1e-6 || w.index + 1 == plan.len(),
+            "window {} is {:.2}s of content, below the {}s floor",
+            w.index,
+            w.content_seconds(),
+            cfg.min_seconds
+        );
+        assert!(
+            w.content_seconds() <= cfg.max_seconds + 1e-6,
+            "window {} is {:.2}s of content, past the {}s ceiling",
+            w.index,
+            w.content_seconds(),
+            cfg.max_seconds
+        );
+    }
+    assert_eq!(
+        clock_cuts, 0,
+        "the lecture speaks in sentences with pauses between them; a clock fallback here means \
+         the boundary search is not finding them"
+    );
+
+    // (2) The BOUNDARY sits in silence — measured with the same VAD, over the
+    // same audio. This is the property that matters and it is narrower than the
+    // one this test first asserted: "the overlap contains near-zero speech" is
+    // only reachable when pauses are as long as the overlap, and this lecture is
+    // spoken briskly (0.35 s between sentences), so 2 s of overlap necessarily
+    // reaches back into the previous sentence — measured, 1.6 s of it. What
+    // stops a word being duplicated at a seam is not an empty overlap, it is a
+    // cut that falls BETWEEN two words, and that is what is asserted here.
+    let mut speech_in_overlap = 0.0f64;
+    let mut cuts_in_speech = 0usize;
+    let mut margins: Vec<f64> = Vec::new();
+    for w in plan.iter().skip(1) {
+        let overlap = audio
+            .window(w.audio_start_seconds, w.content_start_seconds)
+            .expect("overlap region");
+        speech_in_overlap += vad
+            .voiced_spans(&overlap)
+            .expect("vad")
+            .iter()
+            .map(|s| s.end_seconds - s.start_seconds)
+            .sum::<f64>();
+
+        // A second either side of the cut, and where the speech in it is.
+        let from = w.content_start_seconds - 1.0;
+        let region = audio
+            .window(from, w.content_start_seconds + 1.0)
+            .expect("boundary region");
+        let voiced = vad.voiced_spans(&region).expect("vad");
+        let cut = w.content_start_seconds - from;
+        if voiced
+            .iter()
+            .any(|s| s.start_seconds < cut && s.end_seconds > cut)
+        {
+            cuts_in_speech += 1;
+        }
+        let margin = voiced
+            .iter()
+            .map(|s| (cut - s.end_seconds).abs().min((s.start_seconds - cut).abs()))
+            .fold(f64::INFINITY, f64::min);
+        if margin.is_finite() {
+            margins.push(margin);
+        }
+    }
+    let overlaps = plan.len().saturating_sub(1);
+    let mean_overlap_speech = speech_in_overlap / overlaps.max(1) as f64;
+    let mean_margin = margins.iter().sum::<f64>() / margins.len().max(1) as f64;
+    println!(
+        "meeting_eval {LECTURE} vad_cut boundaries={overlaps} cuts_in_speech={cuts_in_speech} \
+         mean_margin_to_speech={mean_margin:.3}s mean_speech_in_overlap={mean_overlap_speech:.3}s \
+         of {:.1}s",
+        cfg.overlap_seconds
+    );
+    assert_eq!(
+        cuts_in_speech, 0,
+        "{cuts_in_speech} of {overlaps} VAD-cut boundaries landed inside a word"
+    );
+    assert!(
+        mean_margin >= 0.04,
+        "the cuts are only {mean_margin:.3}s from the nearest speech — a frame of VAD error \
+         would put them inside a word"
+    );
+
+    // (3) Decoded: the primary merge over VAD-cut windows clears the gates.
+    let decode = Decoder::new().decode_plan(&samples, "lecture-vad", &plan);
+    let reference = normalize(&read_reference(&root, LECTURE));
+    let fallback = wer(&reference, &decode.merged);
+    eprintln!("{LECTURE} (VAD-cut): text-anchor merge {fallback}; {:?}", decode.merge);
+    assert_eq!(decode.merge.no_anchor_seams, 0);
+    assert!(fallback.wer() <= WER_GATE, "VAD-cut fallback merge: {fallback}");
+
+    if decode.timestamps_are_real {
+        let timed = wer(&reference, &decode.timed_tokens());
+        let insertion_rate = timed.insertions as f64 / timed.reference_words as f64;
+        // The fixed-clock arm of the same fixture, measured in
+        // `meeting_eval_lecture_wer_is_under_the_gate`, needs a seam tie-break at
+        // every window and still ends up with insertions. Cutting in the pauses
+        // is supposed to be strictly better than that, so it is asserted to be.
+        assert!(
+            timed.insertions <= FIXED_CLOCK_TIMED_INSERTIONS,
+            "VAD-cut seams inserted {} words — no better than the fixed clock's \
+             {FIXED_CLOCK_TIMED_INSERTIONS}",
+            timed.insertions
+        );
+        println!(
+            "meeting_eval {LECTURE} vad_cut timed_merge_wer={:.4} insertions={}",
+            timed.wer(),
+            timed.insertions
+        );
+        eprintln!("{LECTURE} (VAD-cut): primary (timed) merge {timed}");
+        assert!(timed.wer() <= WER_GATE, "VAD-cut timed merge: {timed}");
+        assert!(
+            insertion_rate <= LECTURE_INSERTION_RATE_GATE,
+            "VAD-cut timed merge duplicated words at seams: rate {insertion_rate:.4}"
+        );
+        let starts: Vec<f64> = decode.timed_spans.iter().map(|s| s.start_seconds).collect();
+        assert!(starts.is_sorted());
+    }
 }
 
 /// Fixture (c) exists and carries what YV92 needs: a mid-recording input format

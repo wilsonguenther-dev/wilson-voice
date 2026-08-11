@@ -65,6 +65,13 @@ pub struct CatalogModel {
     pub name: String,
     pub description: String,
     pub architecture: String,
+    /// ISO codes the model transcribes, as the catalog declares them. YV93's
+    /// English-only meeting gate (plan finding #38) reads this: the Notetaker
+    /// refuses honestly on a model that cannot do English rather than handing a
+    /// Spanish lecture to an English-only Parakeet. `default` because a catalog
+    /// entry that omits it means "unstated", not "no languages".
+    #[serde(default)]
+    pub languages: Vec<String>,
     pub files: Vec<ModelFile>,
     pub default_quant: Option<String>,
     #[serde(default)]
