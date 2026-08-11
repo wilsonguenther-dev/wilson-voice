@@ -32,6 +32,91 @@ The printed text must contain the phrase words (e.g. `quick`, `fox`). The first
 run downloads the catalog's smallest model (Whisper Tiny, ~46 MB, sha256
 verified) into Application Support; later runs are offline.
 
+## `meeting_eval_manifest.json` + `.sha256` — the meeting eval corpus (YV90)
+
+The accuracy backstop for the yap22-A notetaker, landed BEFORE any capture or
+transcription code so that every accuracy claim downstream has a number to check
+against. The harness is `tests/meeting_eval.rs`; two numeric gates, both derived
+from the epic plan's finding #16 ("no evaluation harness anywhere in the plan …
+acceptance criteria are unfalsifiable"):
+
+| gate | fixture | assertion |
+|------|---------|-----------|
+| WER | `lecture-15min` | `wer <= 0.15` on a ~15-minute single-speaker lecture — the stated 22-A target case (a student in a lecture) |
+| seam ordering | `seam-stress` | `duplicated_word_count == 0`, `dropped_word_count <= 1` for the marker words placed to straddle each 30 s chunk boundary, and `timestamps.is_sorted()` over the chunked decode's segment start times |
+
+Measured on 2026-08-11, Parakeet Unified EN 0.6B (Metal), 904.7 s fixture:
+**WER 0.0151** (47 errors over 3117 reference words — 15 substitutions, 0
+deletions, 32 insertions) across 33 windows, and **0 duplicated / 0 dropped**
+marker words on the seam fixture, where the merged chunked transcript came out
+byte-identical to a single continuous decode of the same audio (0 errors over
+497 words). 0.15 stays as the committed gate: it is the placeholder baseline the
+backlog specifies, to be replaced with a tuned number once YV93 lands the real
+chunker.
+
+The lecture is scored on a **windowed** decode — 30 s windows, 2 s overlap,
+merged at the seams — not on one pass over the whole file, and that is a
+measurement rather than a preference: a single-pass headless decode of the
+904.7 s fixture climbed to ~5.1 GB RSS, drove the machine into swap and made no
+decoding progress (8.7 s of CPU in 59 s of wall clock) before it was killed. So
+the WER number includes seam cost, which is the number worth gating on for a
+meeting, and it is the first measured support for the plan's windowed-only ASR
+decision (finding #11).
+
+A third fixture, `device-change`, is generated here and consumed by YV92: a short
+recording whose input format changes mid-way (48 kHz built-in mic → 24 kHz, what
+AirPods report), with both native-rate halves kept beside the resampled 16 kHz
+track so the resampler can be driven at the rate the device actually declared.
+
+**The audio is NOT in this repo, and the audio is not anybody's speech.** Same
+rule as the gate corpus below: real dictation never enters a public repo, and a
+meeting recording is strictly worse — it carries other people's voices. Every
+fixture is rendered on the machine by the macOS speech synthesizer (`say -v
+Samantha -r 175` → `afconvert`) from invented, mundane sentences with no names,
+no digits and no addresses. That has a second benefit worth stating: the
+reference transcript is EXACT by construction (it is the text that was spoken),
+so a WER number measures the decoder rather than a human's guess at what was
+said.
+
+The corpus lives at `~/yap-eval-corpus/meetings/` — durable, outside the repo and
+outside any scratch directory. What is committed is the generator (a `#[ignore]`
+writer in `tests/meeting_eval.rs`, the same pattern the gate corpus uses), each
+fixture's `meta.json`, and the two manifests. `say` output is stable for a given
+macOS + voice build and NOT across them, so regenerating on another machine
+legitimately changes every hash: re-run the writer and commit the diff.
+
+```sh
+cd desktop/src-tauri
+# grow the corpus (~2 minutes of `say`), then hash it into both manifests
+cargo test --test meeting_eval meeting_eval_generate_corpus -- --ignored --nocapture
+# re-hash an existing corpus without regenerating the audio
+cargo test --test meeting_eval meeting_eval_write_manifest -- --ignored --nocapture
+# run the gates (decodes through the app's own headless engine — 26 s warm, minutes cold)
+cargo test --test meeting_eval -- --nocapture
+```
+
+Two manifests, one list. `meeting_eval_manifest.json` is the structured one the
+harness reads (sizes, hashes, fixture ids, the synthesis settings the corpus was
+grown with); `meeting_eval_manifest.sha256` is the same list in the format
+`shasum -a 256 -c` reads, because a JSON document cannot also be a checksum file
+— every line of one would have to start with a bare hex digest, which no JSON
+line can. `meeting_eval_manifest_is_committed_and_names_three_fixtures` asserts
+the two agree, so they cannot drift. To verify the corpus by hand, with no cargo
+involved:
+
+```sh
+cd ~/yap-eval-corpus/meetings
+shasum -a 256 -c "$OLDPWD/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256"
+```
+
+With the corpus absent — CI, a fresh clone, anyone else's machine — every
+corpus-gated test prints `meeting eval corpus not found at
+~/yap-eval-corpus/meetings, skipping` and passes. The metric tests do not need
+the corpus and always run, including the negative controls that keep the gates
+falsifiable: `seam_dedupe_never_deletes_real_words` builds a "dedupe" that
+satisfies the naive *no duplicated words* criterion by deleting the overlap
+outright, and proves the gate fails it.
+
 ## `gate/*.jsonl` — the public-safe hallucination-gate corpus (YV76)
 
 The committed corpus for `dictation::degenerate_cutoff` is SYNTHETIC, and that is
