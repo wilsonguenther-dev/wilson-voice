@@ -43,14 +43,34 @@ acceptance criteria are unfalsifiable"):
 | gate | fixture | assertion |
 |------|---------|-----------|
 | WER | `lecture-15min` | `wer <= 0.15` on a ~15-minute single-speaker lecture — the stated 22-A target case (a student in a lecture) |
-| seam ordering | `seam-stress` | `duplicated_word_count == 0`, `dropped_word_count <= 1` for the marker words placed to straddle each 30 s chunk boundary, and `timestamps.is_sorted()` over the chunked decode's segment start times |
+| seam ordering | `seam-stress` | `duplicated_word_count == 0`, `dropped_word_count <= 1` for the marker words placed inside the chunker's overlap regions, and `timestamps.is_sorted()` over the chunked decode's segment start times |
 
-Measured on 2026-08-11, Parakeet Unified EN 0.6B (Metal), 904.7 s fixture:
-**WER 0.0151** (47 errors over 3117 reference words — 15 substitutions, 0
-deletions, 32 insertions) across 33 windows, and **0 duplicated / 0 dropped**
-marker words on the seam fixture, where the merged chunked transcript came out
-byte-identical to a single continuous decode of the same audio (0 errors over
-497 words). 0.15 stays as the committed gate: it is the placeholder baseline the
+**Where a "chunk boundary" actually is, and why it is derived rather than
+typed.** The windows are `CHUNK_SECONDS` = 30 s wide and hop by
+`CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS` = 28 s, so they run 0–30, 28–58, 56–86,
+84–114, 112–142, 140–…, and the only regions TWO windows both contain are
+`[k*28, k*28+2]`. The first cut of this fixture centred each marker sentence on
+`k * 30 s` instead, which put four of the five markers in the interior of a
+single window — and a marker only one window sees is counted identically by a
+correct merge, a duplicating merge and a merge that eats real words. The gate was
+80% vacuous: the exact failure mode the plan's finding #16 describes, reproduced
+inside the harness built to prevent it. The fixture now derives its boundaries
+from those two constants, places the marker WORD (not the sentence) at the
+midpoint of the overlap region — the carrier sentence is synthesized in three
+pieces so the word can be positioned to the sample — and records each word's span
+in `meta.json`. Two guards run before the counts are scored: a static one that
+re-derives the seams and asserts every marker span lies inside one, and a dynamic
+one that asserts every scored marker was decoded in at least two windows,
+failing with *"marker X is inside a single window — the seam gate would be
+vacuous"*. Both are shown failing, on purpose, in `docs/pr-screenshots/YV90/`.
+
+Measured on 2026-08-11, Parakeet Unified EN 0.6B (Metal): **WER 0.0151** on the
+904.7 s lecture (47 errors over 3117 reference words — 15 substitutions, 0
+deletions, 32 insertions) across 33 windows, and on the regrown 162.0 s seam
+fixture **0 duplicated / 0 dropped** marker words, with all five markers decoded
+in exactly 2 of the 6 windows and the merged chunked transcript differing from a
+single continuous decode of the same audio by one substitution (WER 0.0021 over
+475 words). 0.15 stays as the committed gate: it is the placeholder baseline the
 backlog specifies, to be replaced with a tuned number once YV93 lands the real
 chunker.
 
@@ -89,6 +109,8 @@ legitimately changes every hash: re-run the writer and commit the diff.
 cd desktop/src-tauri
 # grow the corpus (~2 minutes of `say`), then hash it into both manifests
 cargo test --test meeting_eval meeting_eval_generate_corpus -- --ignored --nocapture
+# regrow ONLY the seam fixture — the one tied to the chunk geometry — and re-hash
+cargo test --test meeting_eval meeting_eval_generate_seam_stress -- --ignored --nocapture
 # re-hash an existing corpus without regenerating the audio
 cargo test --test meeting_eval meeting_eval_write_manifest -- --ignored --nocapture
 # run the gates (decodes through the app's own headless engine — 26 s warm, minutes cold)
@@ -115,7 +137,11 @@ corpus-gated test prints `meeting eval corpus not found at
 the corpus and always run, including the negative controls that keep the gates
 falsifiable: `seam_dedupe_never_deletes_real_words` builds a "dedupe" that
 satisfies the naive *no duplicated words* criterion by deleting the overlap
-outright, and proves the gate fails it.
+outright, and proves the gate fails it, while
+`seam_regions_are_the_only_places_two_windows_overlap` does the arithmetic that
+placed the markers — a span inside `[k*28, k*28+2]` is in two windows, one on
+`k*30` is in one — so the prose above cannot drift from `CHUNK_SECONDS` /
+`CHUNK_OVERLAP_SECONDS` again without a red test.
 
 ## `gate/*.jsonl` — the public-safe hallucination-gate corpus (YV76)
 

@@ -12,10 +12,14 @@
 //!   lecture, the stated 22-A target case (a student recording a lecture),
 //!   scored on the WINDOWED decode 22-A will actually use (see
 //!   [`lecture_decode`] for why a single pass is not an option).
-//! * **Seam ordering** — on a fixture BUILT so known marker words straddle the
-//!   30 s chunk boundaries, a chunked decode must reproduce each marker word
-//!   exactly once (never twice: a missed dedupe; never zero: a dedupe that ate
-//!   a real word), and segment start times must come out monotonic.
+//! * **Seam ordering** — on a fixture BUILT so known marker words land inside
+//!   the chunker's overlap regions (derived from [`CHUNK_SECONDS`] and
+//!   [`CHUNK_OVERLAP_SECONDS`], never from a hand-typed number), a chunked
+//!   decode must reproduce each marker word exactly once (never twice: a missed
+//!   dedupe; never zero: a dedupe that ate a real word), and segment start times
+//!   must come out monotonic. The gate refuses to score a marker that only one
+//!   window contains, because such a marker cannot distinguish a correct merge
+//!   from any other.
 //!
 //! DER/JER/enrollment-EER are deliberately out of scope: they need RTTM speaker
 //! ground truth that only exists once diarization lands in yap23.
@@ -41,6 +45,8 @@
 //! ```sh
 //! # grow the corpus (~2 minutes of `say`), then hash it
 //! cargo test --test meeting_eval meeting_eval_generate_corpus -- --ignored --nocapture
+//! # regrow only the seam fixture (after a change to the chunk geometry)
+//! cargo test --test meeting_eval meeting_eval_generate_seam_stress -- --ignored --nocapture
 //! # re-hash an existing corpus into the committed manifest
 //! cargo test --test meeting_eval meeting_eval_write_manifest -- --ignored --nocapture
 //! # run the gates
@@ -89,6 +95,25 @@ const WER_GATE: f64 = 0.15;
 /// chunks, only that the merged transcript is correct at the seams.
 const CHUNK_SECONDS: f64 = 30.0;
 const CHUNK_OVERLAP_SECONDS: f64 = 2.0;
+
+/// The distance between consecutive window STARTS. This — not
+/// [`CHUNK_SECONDS`] — is what "every chunk boundary" means: with a 30 s window
+/// and a 2 s overlap the windows are 0–30, 28–58, 56–86 … so the seams are at
+/// 28 s, 56 s, 84 s, and a marker word placed on a multiple of 30 s lands in the
+/// interior of exactly one window, where no merge implementation can move it.
+fn chunk_hop_seconds() -> f64 {
+    CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS
+}
+
+/// The only region of the audio that windows `k-1` and `k` BOTH contain:
+/// `[k*hop, k*hop + overlap]`. A marker word must sit entirely inside one of
+/// these or the seam gate is scoring nothing — which is the defect this fixture
+/// was built to make impossible, and then reproduced by placing markers on
+/// `k * CHUNK_SECONDS` instead.
+fn seam_region(k: usize) -> (f64, f64) {
+    let start = k as f64 * chunk_hop_seconds();
+    (start, start + CHUNK_OVERLAP_SECONDS)
+}
 
 /// Everything downstream of the mic runs at 16 kHz mono.
 const TARGET_RATE: u32 = 16_000;
@@ -177,7 +202,10 @@ struct FixtureMeta {
     sample_rate: u32,
     duration_seconds: f64,
     utterances: Vec<Utterance>,
-    /// Seam fixture: the chunk boundaries a marker word was placed to straddle.
+    /// Seam fixture: the window-start times the marker words were placed to
+    /// straddle — `k * (chunk_seconds - chunk_overlap_seconds)`, i.e. the START
+    /// of each overlap region, derived from the two fields below rather than
+    /// typed in. Checked against [`seam_region`] before the gate runs.
     #[serde(default)]
     boundary_seconds: Vec<f64>,
     /// Seam fixture: one unique word per boundary. Unique across the whole
@@ -186,6 +214,19 @@ struct FixtureMeta {
     /// dedupe reads as two and a dedupe that deleted a real word reads as zero.
     #[serde(default)]
     seam_keywords: Vec<String>,
+    /// Seam fixture: the exact span of each marker WORD (not of the sentence
+    /// carrying it), in the same order as `seam_keywords`. The gate asserts each
+    /// span lies inside its overlap region, so a fixture whose markers drifted
+    /// out of the seams fails loudly instead of passing vacuously.
+    #[serde(default)]
+    marker_spans: Vec<Utterance>,
+    /// Seam fixture: the chunk geometry the fixture was grown for. If either
+    /// disagrees with [`CHUNK_SECONDS`] / [`CHUNK_OVERLAP_SECONDS`] the corpus
+    /// predates a change to the chunker and must be regrown.
+    #[serde(default)]
+    chunk_seconds: Option<f64>,
+    #[serde(default)]
+    chunk_overlap_seconds: Option<f64>,
     /// Device-change fixture: where the input format changes (YV92).
     #[serde(default)]
     device_change_seconds: Option<f64>,
@@ -537,10 +578,15 @@ impl Decoder {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// Decode `samples` window by window and merge the seams, returning the
-    /// merged token stream alongside the per-window segments the ordering gate
-    /// runs on.
-    fn decode_chunked(&self, samples: &[i16], label: &str) -> (Vec<String>, Vec<Segment>) {
+    /// Decode `samples` window by window and merge the seams.
+    ///
+    /// The PER-WINDOW token vectors come back too, and they are not a debugging
+    /// convenience: they are what lets the seam gate prove it is scoring
+    /// anything at all. A marker word that only one window contains produces the
+    /// same counts under a correct merge, a duplicating merge and a
+    /// word-eating one, so the gate has to be able to see, independently of the
+    /// merge, which windows each marker was decodable in.
+    fn decode_chunked(&self, samples: &[i16], label: &str) -> ChunkedDecode {
         let total = samples.len() as f64 / TARGET_RATE as f64;
         let plan = chunk_plan(total);
         let mut per_chunk: Vec<Vec<String>> = Vec::new();
@@ -556,7 +602,31 @@ impl Decoder {
                 text,
             });
         }
-        (merge_chunk_tokens(&per_chunk), segments)
+        ChunkedDecode {
+            merged: merge_chunk_tokens(&per_chunk),
+            segments,
+            per_chunk,
+        }
+    }
+}
+
+/// The result of a windowed decode: the merged transcript, the per-window
+/// segments the ordering gate runs on, and the per-window token vectors the
+/// vacuity guard runs on.
+struct ChunkedDecode {
+    merged: Vec<String>,
+    segments: Vec<Segment>,
+    per_chunk: Vec<Vec<String>>,
+}
+
+impl ChunkedDecode {
+    /// How many windows decoded `word` at least once. `>= 2` is the condition
+    /// under which the seam counts mean something.
+    fn windows_containing(&self, word: &str) -> usize {
+        self.per_chunk
+            .iter()
+            .filter(|c| c.iter().any(|w| w == word))
+            .count()
     }
 }
 
@@ -810,6 +880,40 @@ fn chunk_plan_covers_the_fixture_with_a_two_second_overlap() {
     assert_eq!(chunk_plan(12.0), vec![(0.0, 12.0)]);
 }
 
+/// The arithmetic the seam fixture is grown from, checked without any audio: a
+/// marker placed inside [`seam_region`] is in TWO windows, and one placed on a
+/// multiple of [`CHUNK_SECONDS`] — the number the first cut of the fixture used,
+/// and the number the prose kept repeating — is in one.
+#[test]
+fn seam_regions_are_the_only_places_two_windows_overlap() {
+    let plan = chunk_plan(162.0);
+    // How many windows wholly contain the span [from, to].
+    let windows_over = |from: f64, to: f64| {
+        plan.iter()
+            .filter(|(ws, we)| *ws <= from + 1e-9 && *we >= to - 1e-9)
+            .count()
+    };
+    for k in 1..=5 {
+        let (from, to) = seam_region(k);
+        assert_eq!(
+            windows_over(from, to),
+            2,
+            "seam {k} at {from}s–{to}s must be inside exactly two windows"
+        );
+
+        // The bug this fixture exists to make impossible: a marker centred on
+        // k * CHUNK_SECONDS. Windows hop by 28 s, so 30/60/90/120/150 s are
+        // interior points of a single window and no merge can change their count.
+        let naive = k as f64 * CHUNK_SECONDS;
+        assert_eq!(
+            windows_over(naive - 0.3, naive + 0.3),
+            1,
+            "a marker on {naive}s is inside one window — which is exactly why \
+             boundaries are derived from the hop, not from CHUNK_SECONDS"
+        );
+    }
+}
+
 #[test]
 fn merge_chunk_tokens_removes_the_overlap_repeat() {
     let a = normalize("the room was quiet and the projector hummed on the desk");
@@ -830,7 +934,7 @@ fn merge_chunk_tokens_removes_the_overlap_repeat() {
         normalize("one two three four five six")
     );
 
-    // The condition that actually holds at a 30 s boundary, and the one the
+    // The condition that actually holds at a window boundary, and the one the
     // first implementation of this function got wrong: the window cut a word in
     // half, so the incoming chunk opens with a token that was never spoken and
     // no PREFIX of it can ever match. Measured on the seam fixture — the marker
@@ -892,8 +996,7 @@ fn meeting_eval_corpus_matches_committed_sha256s() {
 /// The 15-minute fixture, decoded once per test binary and shared by the WER
 /// gate and the ordering gate below — 34 windows is minutes of Metal work and
 /// there is no reason to pay for it twice.
-static LECTURE_DECODE: std::sync::OnceLock<(Vec<String>, Vec<Segment>)> =
-    std::sync::OnceLock::new();
+static LECTURE_DECODE: std::sync::OnceLock<ChunkedDecode> = std::sync::OnceLock::new();
 
 /// **Measured here, and it decided the shape of this gate.** A single-pass
 /// decode of the whole 904.7 s fixture is not viable on the shipped engine: the
@@ -904,7 +1007,7 @@ static LECTURE_DECODE: std::sync::OnceLock<(Vec<String>, Vec<Segment>)> =
 /// below therefore includes seam cost, which is the number worth gating on. It
 /// is also the first *measured* support for the plan's windowed-only decision
 /// (finding #11) rather than an argument from first principles.
-fn lecture_decode(root: &Path) -> &'static (Vec<String>, Vec<Segment>) {
+fn lecture_decode(root: &Path) -> &'static ChunkedDecode {
     LECTURE_DECODE.get_or_init(|| {
         let (rate, samples) = read_wav_i16(&root.join(LECTURE).join("audio.wav"));
         assert_eq!(rate, TARGET_RATE);
@@ -926,9 +1029,9 @@ fn meeting_eval_lecture_wer_is_under_the_gate() {
         meta.utterances.len()
     );
 
-    let (hypothesis, segments) = lecture_decode(&root);
-    let report = wer(&reference, hypothesis);
-    eprintln!("{LECTURE}: {} windows, {report}", segments.len());
+    let decode = lecture_decode(&root);
+    let report = wer(&reference, &decode.merged);
+    eprintln!("{LECTURE}: {} windows, {report}", decode.segments.len());
     println!("meeting_eval {LECTURE} wer={:.4}", report.wer());
     assert!(
         report.wer() <= WER_GATE,
@@ -946,7 +1049,7 @@ fn meeting_eval_lecture_wer_is_under_the_gate() {
 #[test]
 fn meeting_eval_lecture_segment_timestamps_are_sorted() {
     let Some(root) = corpus() else { return };
-    let (_, segments) = lecture_decode(&root);
+    let segments = &lecture_decode(&root).segments;
 
     let timestamps: Vec<f64> = segments.iter().map(|s| s.start_seconds).collect();
     assert!(timestamps.is_sorted());
@@ -969,6 +1072,15 @@ fn meeting_eval_lecture_segment_timestamps_are_sorted() {
 
 /// Acceptance gates (b) and (c): the seam counts on the boundary-stress fixture,
 /// and monotonic segment start times over the chunked decode.
+///
+/// Two guards run BEFORE the counts, and they are the substance of this test.
+/// A seam gate is only worth its assertions if each marker word genuinely sits
+/// where two windows overlap; a marker in the interior of one window yields
+/// `duplicated == 0, dropped == 0` under every possible merge, correct or not.
+/// So: the fixture's declared boundaries must be the chunker's own seams and
+/// each marker's span must lie inside its overlap region (static, from
+/// `meta.json`), and every scored marker must have been decoded in at least two
+/// windows (dynamic, from the decode that just ran).
 #[test]
 fn meeting_eval_seam_dedupe_and_ordering_hold() {
     let Some(root) = corpus() else { return };
@@ -977,27 +1089,91 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
         !meta.seam_keywords.is_empty() && !meta.boundary_seconds.is_empty(),
         "the seam fixture must declare its boundaries and marker words"
     );
+    assert_eq!(
+        (meta.chunk_seconds, meta.chunk_overlap_seconds),
+        (Some(CHUNK_SECONDS), Some(CHUNK_OVERLAP_SECONDS)),
+        "the fixture was grown for a different chunk geometry — regrow it with \
+         `cargo test meeting_eval_generate_seam_stress -- --ignored`"
+    );
+    assert_eq!(
+        meta.marker_spans.len(),
+        meta.seam_keywords.len(),
+        "every marker word declares the span it occupies"
+    );
+    assert_eq!(meta.boundary_seconds.len(), meta.seam_keywords.len());
+
+    // Static guard: the boundaries are the chunker's seams, and each marker word
+    // is inside one. This is what the first cut of this fixture got wrong — it
+    // placed markers on multiples of CHUNK_SECONDS (30 s), while the windows hop
+    // by CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS (28 s), so four of five markers
+    // sat in the interior of a single window and the counts below were true
+    // whatever the merge did.
+    for (k, ((boundary, keyword), span)) in meta
+        .boundary_seconds
+        .iter()
+        .zip(&meta.seam_keywords)
+        .zip(&meta.marker_spans)
+        .enumerate()
+    {
+        let (from, to) = seam_region(k + 1);
+        assert!(
+            (boundary - from).abs() < 1e-6,
+            "declared boundary {boundary}s is not a chunk seam (expected {from}s \
+             = {} * (CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS)) — regrow the fixture",
+            k + 1
+        );
+        assert_eq!(&span.text, keyword, "marker spans follow seam_keywords");
+        assert!(
+            span.start_seconds >= from - 1e-6 && span.end_seconds <= to + 1e-6,
+            "marker {keyword} occupies {:.3}s–{:.3}s, outside the overlap region \
+             {from:.3}s–{to:.3}s — it would sit inside a single window and the \
+             seam gate would be vacuous",
+            span.start_seconds,
+            span.end_seconds
+        );
+    }
+
     let (rate, samples) = read_wav_i16(&root.join(SEAM_STRESS).join("audio.wav"));
     assert_eq!(rate, TARGET_RATE);
 
     let decoder = Decoder::new();
     let continuous = normalize(&decoder.decode(&samples, "seam-continuous"));
-    let (chunked, segments) = decoder.decode_chunked(&samples, "seam");
+    let decode = decoder.decode_chunked(&samples, "seam");
 
-    let seam = seam_report(&meta.seam_keywords, &chunked, &continuous);
+    let seam = seam_report(&meta.seam_keywords, &decode.merged, &continuous);
     for (word, in_chunked, in_continuous) in &seam.per_keyword {
-        eprintln!("  marker {word:>10}: chunked x{in_chunked}, continuous x{in_continuous}");
+        eprintln!(
+            "  marker {word:>10}: {} of {} windows, merged x{in_chunked}, continuous x{in_continuous}",
+            decode.windows_containing(word),
+            decode.per_chunk.len()
+        );
     }
-    let drift = wer(&continuous, &chunked);
+    let drift = wer(&continuous, &decode.merged);
     eprintln!(
-        "{SEAM_STRESS}: {} boundaries, {} markers scored; chunked-vs-continuous {drift}",
+        "{SEAM_STRESS}: {} seams at {:?}, {} markers scored; chunked-vs-continuous {drift}",
         meta.boundary_seconds.len(),
+        meta.boundary_seconds,
         seam.checked_keywords
     );
     println!(
         "meeting_eval {SEAM_STRESS} duplicated={} dropped={}",
         seam.duplicated_word_count, seam.dropped_word_count
     );
+
+    // Dynamic guard: a marker this report has an opinion about must have been
+    // decodable in two windows, or the opinion is worthless.
+    for (word, _, in_continuous) in &seam.per_keyword {
+        if *in_continuous == 0 {
+            continue;
+        }
+        let windows = decode.windows_containing(word);
+        assert!(
+            windows >= 2,
+            "marker {word} is inside a single window — the seam gate would be \
+             vacuous (decoded in {windows} of {} windows)",
+            decode.per_chunk.len()
+        );
+    }
 
     let duplicated_word_count = seam.duplicated_word_count;
     let dropped_word_count = seam.dropped_word_count;
@@ -1010,10 +1186,10 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
     assert_eq!(duplicated_word_count, 0);
     assert!(dropped_word_count <= 1);
 
-    let timestamps: Vec<f64> = segments.iter().map(|s| s.start_seconds).collect();
+    let timestamps: Vec<f64> = decode.segments.iter().map(|s| s.start_seconds).collect();
     assert!(timestamps.is_sorted());
     assert!(
-        segments.iter().all(|s| !s.text.trim().is_empty()),
+        decode.segments.iter().all(|s| !s.text.trim().is_empty()),
         "a window decoded to nothing — the seam numbers above are not trustworthy"
     );
 }
@@ -1139,8 +1315,31 @@ fn lecture_sentence(i: usize) -> String {
 /// EXACTLY ONCE in the whole fixture, which is what the seam gate leans on.
 const SEAM_KEYWORDS: [&str; 5] = ["pineapple", "trombone", "lantern", "walnut", "envelope"];
 
+/// The carrier sentence is synthesized in three pieces so the marker WORD can be
+/// positioned to the sample, rather than the sentence being centred and the word
+/// landing wherever the synthesizer's prosody puts it.
+const MARKER_PREFIX: &str = "The marker word for this boundary is";
+const MARKER_SUFFIX: &str = "and it is spoken exactly once.";
+/// Silence between the three pieces, so they read as one sentence.
+const MARKER_JOIN_SECONDS: f64 = 0.06;
+
 fn straddle_sentence(keyword: &str) -> String {
-    format!("The marker word for this boundary is {keyword}, and it is spoken exactly once.")
+    format!("{MARKER_PREFIX} {keyword}, {MARKER_SUFFIX}")
+}
+
+/// `say` pads its output with a little silence at both ends, and the marker word
+/// has to be placed by where the WORD is, not where the file starts.
+fn trim_silence(samples: &[i16]) -> &[i16] {
+    // ~ -40 dBFS. Synthesized silence is digital-zero-ish, so this is generous.
+    const FLOOR: u16 = 300;
+    let Some(first) = samples.iter().position(|s| s.unsigned_abs() > FLOOR) else {
+        return &[];
+    };
+    let last = samples
+        .iter()
+        .rposition(|s| s.unsigned_abs() > FLOOR)
+        .expect("a first implies a last");
+    &samples[first..=last]
 }
 
 const DEVICE_CHANGE_FIRST: &str =
@@ -1259,38 +1458,90 @@ fn generate_lecture(root: &Path) {
         utterances,
         boundary_seconds: Vec::new(),
         seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
     };
     write_fixture(root, &meta, &audio);
 }
 
-/// Fixture (b): built so that a marker word straddles every 30 s chunk boundary.
-/// Each marker is spoken once, centred on its boundary, so a chunker with a 2 s
-/// overlap sees it in BOTH windows — which is precisely the condition under
-/// which "no duplicated words at the seam" stops being luck.
+/// Fixture (b): built so that a marker WORD lands inside every chunk seam.
+///
+/// "Seam" is derived, never typed: with 30 s windows and a 2 s overlap the
+/// windows are 0–30, 28–58, 56–86 …, so the only regions two windows both
+/// contain are `[k*28, k*28+2]` ([`seam_region`]). The first cut of this fixture
+/// centred each marker SENTENCE on `k * 30 s` instead, which put four of the
+/// five markers in the interior of a single window — and a marker only one
+/// window sees produces `duplicated == 0, dropped == 0` under a correct merge, a
+/// duplicating merge and a word-eating merge alike. The gate was 80% vacuous:
+/// the exact failure mode finding #16 describes, reproduced inside the harness
+/// built to prevent it.
+///
+/// So each marker word is now placed entirely inside its overlap region, at the
+/// region's midpoint, with the carrier sentence synthesized in three pieces so
+/// the word itself can be positioned to the sample. Both windows therefore
+/// decode the marker, and the seam counts have something to measure:
+/// `meeting_eval_seam_dedupe_and_ordering_hold` re-checks that from `meta.json`
+/// AND from the per-window decodes before it scores anything.
 fn generate_seam_stress(root: &Path) {
-    let boundaries: Vec<f64> = (1..=SEAM_KEYWORDS.len()).map(|k| k as f64 * 30.0).collect();
-    let total_seconds = boundaries.last().copied().unwrap_or(30.0) + 20.0;
+    let boundaries: Vec<f64> = (1..=SEAM_KEYWORDS.len())
+        .map(|k| seam_region(k).0)
+        .collect();
+    let last_seam_end = seam_region(SEAM_KEYWORDS.len()).1;
+    let total_seconds = last_seam_end + 20.0;
     let mut audio = vec![0i16; (total_seconds * TARGET_RATE as f64) as usize];
     let mut placed: Vec<Utterance> = Vec::new();
+    let mut marker_spans: Vec<Utterance> = Vec::new();
 
-    // The markers first: each centred on its boundary, so the boundary cuts the
-    // sentence in half.
+    let join = (MARKER_JOIN_SECONDS * TARGET_RATE as f64) as usize;
+    let prefix = synthesize(MARKER_PREFIX, TARGET_RATE);
+    let prefix = trim_silence(&prefix).to_vec();
+    let suffix = synthesize(MARKER_SUFFIX, TARGET_RATE);
+    let suffix = trim_silence(&suffix).to_vec();
+
+    // The markers first: each marker WORD centred in its overlap region, so both
+    // of the windows that share that region contain the whole word.
     let mut occupied: Vec<(usize, usize)> = Vec::new();
-    for (keyword, boundary) in SEAM_KEYWORDS.iter().zip(&boundaries) {
-        let text = straddle_sentence(keyword);
-        let spoken = synthesize(&text, TARGET_RATE);
-        let centre = (boundary * TARGET_RATE as f64) as usize;
-        let start = centre.saturating_sub(spoken.len() / 2);
-        let end = start + spoken.len();
+    for (k, keyword) in SEAM_KEYWORDS.iter().enumerate() {
+        let (from, to) = seam_region(k + 1);
+        let spoken_word = synthesize(keyword, TARGET_RATE);
+        let spoken_word = trim_silence(&spoken_word);
+        assert!(
+            seconds(spoken_word.len()) + 2.0 * MARKER_JOIN_SECONDS < CHUNK_OVERLAP_SECONDS,
+            "marker {keyword} is {:.2}s long and cannot fit inside a \
+             {CHUNK_OVERLAP_SECONDS}s overlap",
+            seconds(spoken_word.len())
+        );
+
+        let centre = ((from + to) / 2.0 * TARGET_RATE as f64) as usize;
+        let word_start = centre - spoken_word.len() / 2;
+        let word_end = word_start + spoken_word.len();
+        assert!(
+            seconds(word_start) >= from && seconds(word_end) <= to,
+            "marker {keyword} at {:.3}s–{:.3}s escaped its overlap {from}s–{to}s",
+            seconds(word_start),
+            seconds(word_end)
+        );
+
+        let start = word_start - join - prefix.len();
+        let end = word_end + join + suffix.len();
         assert!(end < audio.len(), "marker for {keyword} runs off the end");
-        audio[start..end].copy_from_slice(&spoken);
+        audio[start..start + prefix.len()].copy_from_slice(&prefix);
+        audio[word_start..word_end].copy_from_slice(spoken_word);
+        audio[word_end + join..end].copy_from_slice(&suffix);
+
         occupied.push((start, end));
         placed.push(Utterance {
-            text,
+            text: straddle_sentence(keyword),
             start_seconds: seconds(start),
             end_seconds: seconds(end),
+        });
+        marker_spans.push(Utterance {
+            text: (*keyword).to_string(),
+            start_seconds: seconds(word_start),
+            end_seconds: seconds(word_end),
         });
     }
 
@@ -1330,6 +1581,9 @@ fn generate_seam_stress(root: &Path) {
         utterances: placed,
         boundary_seconds: boundaries,
         seam_keywords: SEAM_KEYWORDS.iter().map(|s| s.to_string()).collect(),
+        marker_spans,
+        chunk_seconds: Some(CHUNK_SECONDS),
+        chunk_overlap_seconds: Some(CHUNK_OVERLAP_SECONDS),
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
     };
@@ -1377,6 +1631,9 @@ fn generate_device_change(root: &Path) {
         ],
         boundary_seconds: Vec::new(),
         seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
         device_change_seconds: Some(change_at),
         source_rates_hz: vec![48_000, 24_000],
     };
@@ -1472,6 +1729,20 @@ fn write_manifest_from(root: &Path) {
         checksum_path().display(),
         manifest.files.len()
     );
+}
+
+/// Regrow ONLY the seam fixture, then re-hash the whole corpus into both
+/// manifests. The seam fixture is the one tied to the chunk geometry, so it is
+/// the one that has to be rebuilt when [`CHUNK_SECONDS`] or
+/// [`CHUNK_OVERLAP_SECONDS`] moves; rebuilding the 15-minute lecture at the same
+/// time would change its hashes and invalidate a measured WER for no reason.
+#[test]
+#[ignore = "writer, not a check: renders the seam fixture with `say`"]
+fn meeting_eval_generate_seam_stress() {
+    let root = corpus_root();
+    fs::create_dir_all(&root).expect("corpus root");
+    generate_seam_stress(&root);
+    write_manifest_from(&root);
 }
 
 /// Re-hash an existing corpus into the committed manifest, without regenerating

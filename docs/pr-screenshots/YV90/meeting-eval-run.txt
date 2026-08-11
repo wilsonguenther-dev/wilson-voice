@@ -1,21 +1,23 @@
 # YV90 — meeting eval harness, full run with the corpus present
 # host: macOS 26.5.2, Parakeet Unified EN 0.6B (Metal), 2026-08-11
+# seam fixture REGROWN on the chunker's real seams (k * 28 s), not on multiples of 30 s
 
-   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-yv90/desktop/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
-     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
 
-running 14 tests
-test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~20 minutes of synthetic audio with `say`
-test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+running 16 tests
+test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
+test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
 test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
-lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
+test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
 test seam_dedupe_never_deletes_real_words ... ok
 test seam_gate_catches_a_duplicated_boundary_word ... ok
-test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
 test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
 test wer_counts_substitutions_insertions_and_deletions ... ok
-test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
 device-change: format change at 7.59s, native halves present (YV92)
 test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
 corpus verified: 11 files match the committed sha256s
@@ -44,13 +46,13 @@ test meeting_eval_corpus_matches_committed_sha256s ... ok
   [lecture-15min-chunk005] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [lecture-15min] window 005  140.00s– 170.00s
   [seam-chunk005] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [seam] window 005  140.00s– 170.00s
-  marker  pineapple: chunked x1, continuous x1
-  marker   trombone: chunked x1, continuous x1
-  marker    lantern: chunked x1, continuous x1
-  marker     walnut: chunked x1, continuous x1
-  marker   envelope: chunked x1, continuous x1
-seam-stress: 5 boundaries, 5 markers scored; chunked-vs-continuous WER 0.0000 (0 errors over 497 reference words: 0 sub / 0 del / 0 ins)
+  [seam] window 005  140.00s– 162.00s
+  marker  pineapple: 2 of 6 windows, merged x1, continuous x1
+  marker   trombone: 2 of 6 windows, merged x1, continuous x1
+  marker    lantern: 2 of 6 windows, merged x1, continuous x1
+  marker     walnut: 2 of 6 windows, merged x1, continuous x1
+  marker   envelope: 2 of 6 windows, merged x1, continuous x1
+seam-stress: 5 seams at [28.0, 56.0, 84.0, 112.0, 140.0], 5 markers scored; chunked-vs-continuous WER 0.0021 (1 errors over 475 reference words: 1 sub / 0 del / 0 ins)
 meeting_eval seam-stress duplicated=0 dropped=0
 test meeting_eval_seam_dedupe_and_ordering_hold ... ok
   [lecture-15min-chunk006] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
@@ -113,30 +115,65 @@ lecture-15min: 33 windows, WER 0.0151 (47 errors over 3117 reference words: 15 s
 meeting_eval lecture-15min wer=0.0151
 test meeting_eval_lecture_wer_is_under_the_gate ... ok
 
-test result: ok. 12 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 25.68s
+test result: ok. 13 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 25.20s
 
 EXIT=0
 
 # ---- and the same suite with the corpus ABSENT (what CI sees) ----
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
-     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
 
-running 14 tests
-test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~20 minutes of synthetic audio with `say`
+running 16 tests
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
-test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
 test meeting_eval_corpus_matches_committed_sha256s ... ok
 test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
+test meeting_eval_seam_dedupe_and_ordering_hold ... ok
 test meeting_eval_lecture_wer_is_under_the_gate ... ok
 test meeting_eval_lecture_segment_timestamps_are_sorted ... ok
-test meeting_eval_seam_dedupe_and_ordering_hold ... ok
+test seam_dedupe_never_deletes_real_words ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
 test seam_gate_catches_a_duplicated_boundary_word ... ok
 test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
-test merge_chunk_tokens_removes_the_overlap_repeat ... ok
-test seam_dedupe_never_deletes_real_words ... ok
 test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
 test wer_counts_substitutions_insertions_and_deletions ... ok
 
-test result: ok. 12 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 13 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
+
+# ---- and the two guards, made to FAIL, because a guard that cannot fail is not a guard ----
+#
+# (1) STATIC — the fixture as it was originally shipped: markers on multiples of
+#     CHUNK_SECONDS (30/60/90/120/150 s) while the windows hop by 28 s. Same audio,
+#     meta.json patched back to the old boundaries:
+
+thread 'meeting_eval_seam_dedupe_and_ordering_hold' panicked at tests/meeting_eval.rs:
+declared boundary 30s is not a chunk seam (expected 28s = 1 * (CHUNK_SECONDS - CHUNK_OVERLAP_SECONDS)) — regrow the fixture
+test meeting_eval_seam_dedupe_and_ordering_hold ... FAILED
+
+# (2) DYNAMIC — meta.json left correct and the AUDIO drifted instead (1.5 s of
+#     silence prepended), so every marker moves out of its overlap region while
+#     still being declared inside it. Note the numbers the old gate would have
+#     reported and passed on: duplicated=0, dropped=0, drift WER 0.0000 — the
+#     vacuous pass, caught by the per-window count:
+
+  marker  pineapple: 1 of 6 windows, merged x1, continuous x1
+  marker   trombone: 1 of 6 windows, merged x1, continuous x1
+  marker    lantern: 1 of 6 windows, merged x1, continuous x1
+  marker     walnut: 1 of 6 windows, merged x1, continuous x1
+  marker   envelope: 1 of 6 windows, merged x1, continuous x1
+seam-stress: 5 seams at [28.0, 56.0, 84.0, 112.0, 140.0], 5 markers scored; chunked-vs-continuous WER 0.0000 (0 errors over 475 reference words: 0 sub / 0 del / 0 ins)
+meeting_eval seam-stress duplicated=0 dropped=0
+
+thread 'meeting_eval_seam_dedupe_and_ordering_hold' panicked at tests/meeting_eval.rs:
+marker pineapple is inside a single window — the seam gate would be vacuous (decoded in 1 of 6 windows)
+test meeting_eval_seam_dedupe_and_ordering_hold ... FAILED
