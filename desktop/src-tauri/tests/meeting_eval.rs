@@ -1022,7 +1022,8 @@ fn seam_drift_gate_catches_a_marker_preserving_word_eater() {
         .expect_err("an overlap emitted twice is 12 insertions, past the rate gate");
     assert!(why.contains("drifted"), "{why}");
 
-    // And the merge this harness actually ships passes its own gate.
+    // And the gate is not simply "always no": a merge that reproduces the
+    // continuous decode passes it.
     let clean = continuous.clone();
     drift_within_budget(&wer(&continuous, &clean), seams).expect("an exact merge drifts by zero");
 }
