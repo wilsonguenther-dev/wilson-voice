@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ModelRibbon, useModelSetup } from "./ModelSetup";
+import { errorText } from "./errors";
 
 // YV9 — first-run onboarding. Rendered as a full-screen overlay over the main
 // app while AppSettings.onboarded is false. Self-contained: it invokes the
@@ -220,7 +221,7 @@ export default function Onboarding({
       await invoke("manual_toggle");
     } catch (e) {
       setBusy(false);
-      setCalibError(String(e));
+      setCalibError(errorText(e));
     }
   }
 

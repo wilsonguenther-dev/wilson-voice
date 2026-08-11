@@ -5,6 +5,7 @@ import Onboarding from "./Onboarding";
 import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
+import { errorText } from "./errors";
 import "./App.css";
 
 type Nav =
@@ -861,11 +862,14 @@ export default function App() {
   // Every mutating command returns Result<_, String>; on Err the promise rejects.
   // Without a catch the UI silently no-ops (and throws an unhandled rejection),
   // so a failed paste/save/delete looks identical to success. Surface it.
+  // YP2: `manual_toggle` can now reject with a structured `{code, message}` —
+  // the license gate needs a sentence, not `[object Object]`. Only STARTING a
+  // dictation can be refused; a take already running always gets to finish.
   async function toggleRecord() {
     try {
       await invoke("manual_toggle");
     } catch (e) {
-      toast(String(e));
+      toast(errorText(e));
     }
   }
 

@@ -20,6 +20,9 @@ mod focus;
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
 mod latency;
+// YP2 — offline Ed25519 license verification, the 14-day trial, and the single
+// gate that stands in front of a NEW dictation (and nothing else).
+pub mod license;
 mod logging;
 mod mic_auth;
 mod models;
@@ -376,6 +379,10 @@ struct AppState {
     /// before the paste, so a dictation the user cancelled while ASR was still
     /// running can never land ⌘V in their app seconds later.
     paste_generation: AtomicU64,
+    /// YP2 licensing. Owns `license.json`, the corroborating trial rows in
+    /// SQLite, and the cached revocation list. Read (never cached) by the ONE
+    /// gate in front of a new dictation; nothing else in the app consults it.
+    license: Arc<license::LicenseManager>,
     /// Warm embedded-ASR engine lifecycle (YV31). Owns the loaded GGUF model
     /// and its idle-unload watcher; backs the model-management commands. Since
     /// YV34 it is the app's ONLY transcriber (see `stop_and_transcribe`).
@@ -790,8 +797,38 @@ fn arm_asr_engine(app: &AppHandle, state: &Arc<AppState>) {
     });
 }
 
+/// YP2 — the ONE gate. Every way to begin a new dictation (hotkey, hands-free,
+/// tray, pill, the Home button, onboarding calibration) funnels into
+/// `start_recording`, so this is the only place it has to live.
+///
+/// What it does NOT touch, on purpose and forever: history, search, export,
+/// settings, the dictionary, snippets, scratchpad, model management, crash
+/// reports, permissions. The trial ending stops Yap from taking NEW words; it
+/// never takes back the ones already spoken. `tests/license_gate.rs` reads this
+/// file and fails if the check ever appears anywhere else.
+///
+/// Returns true when dictation may proceed.
+fn license_allows_new_dictation(app: &AppHandle, state: &AppState) -> bool {
+    let status = state.license.status();
+    if status.allows_new_dictation() {
+        return true;
+    }
+    // Gentle: a sentence that says what still works and what turns it back on,
+    // throttled so leaning on the hotkey is not a notification storm. The event
+    // lets an on-screen surface say the same thing without a system alert.
+    let _ = app.emit("license_required", &status);
+    if state.license.should_announce_gate() {
+        notify(app, "Yap", license::LICENSE_REQUIRED_MESSAGE);
+    }
+    log::info!("license: new dictation declined — trial over, no valid license");
+    false
+}
+
 fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     if *state.recording.lock() || *state.busy.lock() {
+        return;
+    }
+    if !license_allows_new_dictation(app, state) {
         return;
     }
     // Do NOT call mic_auth::request_microphone_access here — that is Permissions-only.
@@ -2522,8 +2559,47 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
     permissions::open_privacy_pane(&pane)
 }
 
+/// A command failure the frontend can BRANCH on rather than string-match. Every
+/// existing command answers `Result<_, String>` and the UI toasts the string;
+/// the license gate needs more than that — "trial over" is a different screen
+/// from "the mic is busy" — so it carries a stable `code` alongside the
+/// sentence a person reads.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandError {
+    /// Stable machine code, e.g. `license_required`.
+    pub code: String,
+    pub message: String,
+}
+
+impl CommandError {
+    fn license_required() -> Self {
+        Self {
+            code: license::LICENSE_REQUIRED_CODE.to_string(),
+            message: license::LICENSE_REQUIRED_MESSAGE.to_string(),
+        }
+    }
+}
+
+/// Start/stop a dictation from a UI surface.
+///
+/// The STOP half is never gated: a take already in flight always gets to finish
+/// and be saved, whatever the license says. Only the START half can be refused,
+/// and it is refused with a typed `license_required` rather than a silent
+/// no-op — a button that does nothing is the worst possible way to tell
+/// somebody their trial ended.
 #[tauri::command]
-fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) {
+fn manual_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
+    // Same helper the hotkey path uses, so the event + the (throttled) toast
+    // fire however the user reached this — including the floating pill, whose
+    // click handler has nowhere to put a returned error.
+    if !*state.recording.lock() && !license_allows_new_dictation(&app, state.inner()) {
+        return Err(CommandError::license_required());
+    }
+    manual_toggle_inner(app, state);
+    Ok(())
+}
+
+fn manual_toggle_inner(app: AppHandle, state: State<'_, Arc<AppState>>) {
     if *state.recording.lock() {
         // A manual stop (Home button / pill / sidebar) always exits hands-free —
         // clear BOTH latches: the app-side flag (or stop_and_transcribe's guard
@@ -2551,6 +2627,62 @@ fn focus_main_window(app: &AppHandle) {
 #[tauri::command]
 fn show_main(app: AppHandle) {
     focus_main_window(&app);
+}
+
+// ─── YP2 licensing commands ──────────────────────────────────────────
+
+/// Current entitlement. Recomputed from the stored signature on every call —
+/// there is no cached answer to go stale.
+#[tauri::command]
+fn license_status(state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
+    state.license.status()
+}
+
+/// Paste a license key. Verified BEFORE it is written, so a bad paste never
+/// lands on disk. On success the revocation list is refreshed in the background
+/// (a refund that predates this activation must be seen), but activation itself
+/// never waits on the network and never fails because of it.
+#[tauri::command]
+fn activate_license(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<license::LicenseStatus, CommandError> {
+    match state.license.activate(&key) {
+        Ok(status) => {
+            spawn_revocation_refresh(&app, state.license.clone());
+            let _ = app.emit("license", &status);
+            Ok(status)
+        }
+        Err(e) => Err(CommandError {
+            code: e.code().to_string(),
+            message: e.message().to_string(),
+        }),
+    }
+}
+
+/// Remove the license from this Mac (moving a seat). The trial bookkeeping is
+/// deliberately untouched — this is not a second fortnight.
+#[tauri::command]
+fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> license::LicenseStatus {
+    state.license.deactivate();
+    let status = state.license.status();
+    let _ = app.emit("license", &status);
+    status
+}
+
+/// Refresh the cached revocation list — the ONLY network call the licensing
+/// path makes, to the issuer host and nowhere else. Fire-and-forget: offline,
+/// DNS failure, a 500 or garbage JSON all leave local state untouched, so a Yap
+/// that never reaches the internet again keeps working exactly as it does now.
+fn spawn_revocation_refresh(app: &AppHandle, mgr: Arc<license::LicenseManager>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = license::fetch_revocations(license::REVOCATION_URL).await;
+        if mgr.apply_fetch_result(result) {
+            let _ = app.emit("license", &mgr.status());
+        }
+    });
 }
 
 /// Push the `autostart` setting into the OS (YV42) — a macOS LaunchAgent via
@@ -2921,6 +3053,22 @@ pub fn run() {
 
     let db = Arc::new(db);
 
+    // YP2: licensing state comes up BEFORE the app state that will hold it, so
+    // the trial's first write happens once, on a DB that is already open.
+    let license_manager = Arc::new(license::LicenseManager::new(
+        &data_dir(),
+        db.clone() as Arc<dyn license::LicenseStore>,
+    ));
+    log::info!(
+        "license: {}",
+        match license_manager.status().entitlement {
+            license::Entitlement::Licensed { ref plan, .. } => format!("licensed ({plan})"),
+            license::Entitlement::Trial { days_left, .. } => format!("trial, {days_left}d left"),
+            license::Entitlement::LicenseRequired { ref reason } =>
+                format!("new dictation gated ({reason})"),
+        }
+    );
+
     let state = Arc::new(AppState {
         settings: PLMutex::new(settings),
         recording: PLMutex::new(false),
@@ -2940,6 +3088,7 @@ pub fn run() {
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
         vad: PLMutex::new(None),
         paste_generation: AtomicU64::new(0),
+        license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
     });
 
@@ -3149,7 +3298,10 @@ pub fn run() {
             delete_model,
             engine_status,
             check_for_update,
-            install_update
+            install_update,
+            license_status,
+            activate_license,
+            deactivate_license
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
@@ -3168,6 +3320,12 @@ pub fn run() {
             // toggle stays authoritative even if the .app moved (which strands
             // the old LaunchAgent) or an older install left one behind.
             apply_autostart(app.handle(), state.settings.lock().autostart);
+
+            // YP2: refresh the revocation list ONCE per launch, in the
+            // background. It is best-effort by design — nothing waits on it,
+            // nothing fails without it, and a machine that is offline forever
+            // simply keeps the list it last saw.
+            spawn_revocation_refresh(app.handle(), state.license.clone());
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -4597,6 +4755,11 @@ mod tests {
         dir: &std::path::Path,
         transcription: crate::transcription::TranscriptionManager,
     ) -> Arc<super::AppState> {
+        let db = Arc::new(crate::db::Database::open(dir.join("wilson_voice.db")).unwrap());
+        let license = Arc::new(crate::license::LicenseManager::new(
+            dir,
+            db.clone() as Arc<dyn crate::license::LicenseStore>,
+        ));
         Arc::new(super::AppState {
             settings: super::PLMutex::new(AppSettings::default()),
             recording: super::PLMutex::new(false),
@@ -4605,7 +4768,7 @@ mod tests {
             command_selection: super::PLMutex::new(None),
             recorder: super::PLMutex::new(None),
             saved_audio: super::PLMutex::new(None),
-            db: Arc::new(crate::db::Database::open(dir.join("wilson_voice.db")).unwrap()),
+            db,
             last_error: super::PLMutex::new(None),
             hotkey_registered: super::PLMutex::new(false),
             tray: super::PLMutex::new(None),
@@ -4616,6 +4779,7 @@ mod tests {
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
             vad: super::PLMutex::new(None),
             paste_generation: std::sync::atomic::AtomicU64::new(0),
+            license,
             transcription,
         })
     }
