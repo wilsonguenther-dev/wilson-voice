@@ -85,17 +85,35 @@ Then bump the version everywhere it is written down: the three `href`s and the
 
 ```bash
 U=https://yap-lemon.vercel.app
-curl -s -o /dev/null -w '%{http_code}\n' $U          # 200
-curl -s -o /dev/null -w '%{http_code}\n' $U          # 200 again — see below
+# Content identity, not reachability: every page must come back byte-for-byte
+# equal to the file in the tree you deployed. Empty diff = pass.
+for p in index.html terms.html privacy.html style.css; do
+  for i in 1 2; do
+    curl -s --compressed "$U/$p" | diff - site/dist/$p > /dev/null \
+      && echo "$p load$i OK" || echo "$p load$i MISMATCH"
+  done
+done
 curl -sI $U/downloads/Yap-0.7.0-arm64.dmg | grep -i content-length   # 22410130
 curl -sL -o /tmp/yap.dmg $U/downloads/Yap-0.7.0-arm64.dmg
 shasum -a 256 /tmp/yap.dmg        # must equal the release asset's hash
 ```
 
-The page is loaded **twice** deliberately. A compressed response that is cached
+Each page is fetched **twice** deliberately. A compressed response that is cached
 wrong fails only on the *repeat* visit — the first load looks perfect — and no
 unit test, CI job, or local preview can see it. Only hitting the deployed URL a
 second time can.
+
+**A status code is not evidence.** `200` proves the host answered, not that it
+answered with the files you just staged — a project that was deployed once and
+then never redeployed serves stale HTML with a perfect `200` forever. This
+already bit a review preview: the deploy went out before a second round of
+edits, both legal pages kept serving the superseded copy, and the `200`-only
+check reported the site healthy while the reviewer was reading text that was not
+on the branch. Diff the bytes; the diff is the acceptance criterion.
+
+The same rule applies to any throwaway review preview: after the last commit
+that touches `site/dist/`, redeploy and re-diff, and say in the PR body which
+commit the preview serves so an approver knows the link and the branch agree.
 
 Sizes and hashes are the acceptance criteria, not "the page looked right": a
 truncated or proxied DMG still renders a working page and hands the user a
