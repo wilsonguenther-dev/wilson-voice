@@ -616,6 +616,21 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_crash_events_occurred
               ON crash_events(occurred_at DESC);
+
+            -- YP2 licensing: the CORROBORATING home for the trial's timestamps
+            -- (`license.rs` owns the primary copy in license.json). Two
+            -- independent stores is what stops deleting the license file from
+            -- handing out a second 14-day trial — whichever survives is
+            -- authoritative, and the earlier start always wins.
+            --
+            -- It is deliberately its OWN table, not a row in settings_kv: this
+            -- must not be reachable by anything that resets, exports or clears
+            -- settings, and a reader should be able to see at a glance that
+            -- nothing here is a decided `licensed` flag. It holds two integers.
+            CREATE TABLE IF NOT EXISTS license_state (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             ",
         )
         .map_err(|e| OpenErr::classify("schema", e))?;
@@ -966,6 +981,37 @@ impl Database {
             learned += n;
         }
         Ok(learned)
+    }
+
+    // ── YP2 licensing: the corroborating trial rows ──
+    //
+    // Read on every entitlement check and written whenever the trial's start or
+    // the clock floor moves. Both are plain integers (ms since epoch); NOTHING
+    // here decides whether the app is licensed — that answer is recomputed from
+    // the Ed25519 signature every time it is asked for (see `license.rs`).
+
+    /// Read a license bookkeeping value. A missing table or row is `None`, never
+    /// an error: licensing must never be the reason the app fails to open.
+    pub fn license_state_get(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM license_state WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Write a license bookkeeping value.
+    pub fn license_state_set(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO license_state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     pub fn list_transcripts(&self, limit: i64, query: Option<String>) -> Result<Vec<TranscriptEntry>, String> {

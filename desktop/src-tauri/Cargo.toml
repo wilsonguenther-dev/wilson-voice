@@ -68,6 +68,17 @@ transcribe-cpp = { version = "0.1.3", default-features = false }
 # Verified model downloader (YV30): resumable HTTP + mandatory sha256 check.
 reqwest = { version = "0.13", features = ["stream"] }
 sha2 = "0.10"
+# YP2 licensing. Yap's license is an Ed25519-signed claims blob verified
+# OFFLINE against a public key compiled into this binary (src/license.rs) —
+# there is no license server on the hot path and no account system. dalek is the
+# reference pure-Rust implementation; `verify_strict` is what rejects the
+# small-order / non-canonical public keys a permissive verifier would wave
+# through. default-features off keeps the RNG and the batch verifier out: this
+# app only ever VERIFIES, and the signing half lives root-only on the issuer box.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# License keys travel as base64url through email and a paste buffer. Already in
+# the graph via reqwest; declared here because we decode it ourselves.
+base64 = "0.22"
 # Tauri already pulls tokio; "time" adds the stall-timeout/backoff primitives.
 tokio = { version = "1", features = ["time"] }
 

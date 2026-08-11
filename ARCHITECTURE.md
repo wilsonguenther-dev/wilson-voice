@@ -37,6 +37,7 @@ proprietary “Wilson foundation models.” Modes = scale/speed profiles.
 - `dictionary` — preferred rewrites + learned tokens
 - `daily_stats` — recomputed from transcripts (never trust counters alone)
 - `scratchpad`, `settings_kv`
+- `license_state` — YP2. Two integers (trial start, highest wall clock ever seen) that CORROBORATE `license.json`. Deliberately its own table so nothing that resets or clears settings can reach it. It holds no verdict: whether the app is licensed is recomputed from the Ed25519 signature on every read.
 
 ## Attack surface (zero-day-minded)
 
@@ -47,6 +48,9 @@ Minimize:
 - No GraphQL / remote query server
 - Audio deleted after successful ASR (optional keep: user export)
 - Secrets never in repo or Obsidian
+- Licensing (YP2) adds exactly one host to the app's network surface: a background GET of the issuer's public revocation list. No activation call, no telemetry, no license check-in. Every failure of that fetch is a no-op — an offline Mac keeps the entitlement it had.
+- The pinned issuer key in `src/license.rs` is a PUBLIC key; the signing half is root-owned, mode 0400, on the Forge box and is captured into the encrypted off-box backup. `tests/license_gate.rs` fails the build if any signing primitive appears in the shipped half of that module.
+- The license gate is narrow ON PURPOSE and enforced by a test that reads `lib.rs`: only starting a NEW dictation can be refused. History, exports, settings and every other surface work forever, licensed or not.
 
 Optional later: Developer ID + notarization so TCC survives distribution updates.
 

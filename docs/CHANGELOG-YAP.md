@@ -1,5 +1,12 @@
 # Yap Changelog
 
+## Unreleased
+
+- **Yap is a paid app now, and the trial is a real one.** Every install gets 14 days of the whole app, no card and no account. A $29 one-time license (a $19 founding price runs against the same purchase) turns it on for good, on up to three of your Macs.
+- **When the trial ends, only new dictation stops.** Your history, your search, your exports, your settings, your dictionary and your snippets keep working forever. The words you already spoke are yours — Yap does not hold them hostage to sell you a license, and pressing the hotkey out of habit gets a sentence explaining that, not a dead key.
+- **Your license is checked on your Mac, not on a server.** Activation verifies an Ed25519 signature against a key compiled into the app. There is no account, no login, no phone-home on the dictation path, and no license check that can fail because you are on a plane. The single network call Yap's licensing makes is a background refresh of the refund list, and every way it can fail — offline, DNS, a bad response — leaves your license exactly as it was.
+- **A refunded license stops working; nobody else's does.** Refunds and chargebacks revoke one specific license, never a batch, and a revoked license that is contested and won comes straight back.
+
 ## v0.7.0
 
 - **Never lose a dictation.** Every take is written to a crash-safe capture journal before it is transcribed, so a dictation now survives the app dying mid-take and is offered back to you on the next launch. One database transaction per dictation means a saved transcript can no longer be reported as a failed take, or land twice.
