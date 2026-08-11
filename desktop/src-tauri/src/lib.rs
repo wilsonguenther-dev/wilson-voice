@@ -19,6 +19,11 @@ mod focus;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
+// YV92 — the input format-change state machine (AirPods mid-meeting) plus the
+// CoreAudio listeners that make it prompt. Public because the state machine is
+// the falsifiable half: `tests/input_format_change_handler.rs` drives it with a
+// synthetic event sequence and no audio hardware at all.
+pub mod input_format;
 mod latency;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
@@ -38,6 +43,11 @@ mod polish_protocol;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
 mod record;
+// YV92 — rate conversion and the anti-alias filter that now sits in front of
+// it. Public for the same reason `input_format` is: the ≥20 dB-at-10 kHz claim
+// belongs in a test that can measure it (`tests/biquad_lowpass_response.rs`),
+// and the eval harness compares the two decimators end to end.
+pub mod resample;
 mod secure_input;
 mod snippets;
 mod sysaudio;

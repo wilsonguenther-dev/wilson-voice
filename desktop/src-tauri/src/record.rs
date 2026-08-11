@@ -16,6 +16,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+use crate::input_format::{
+    self, FormatChangeAction, FormatEventSource, InputFormat, InputFormatWatch, InputObservation,
+};
+use crate::resample::{resample_decimate, resample_linear, Biquad, StreamResampler};
 use crate::vad;
 
 /// Shared peak level 0..=1000 for HUD (updated every audio callback window).
@@ -526,6 +530,39 @@ impl CaptureJournal {
         }
     }
 
+    /// YV92 — record a `device_change` at the point in the spill where the input
+    /// format changed. The spill itself stays ONE continuous 16 kHz stream (that
+    /// is what makes a truncated file a valid prefix of the take); the segment
+    /// boundary is this record, and the output sample index it carries is where
+    /// the previous segment ends and the new one begins.
+    ///
+    /// Written straight from the capture WORKER, not the audio callback, and
+    /// only on an event that happens at most a handful of times in a session —
+    /// so one small append is allowed here where the per-frame path may never
+    /// touch the disk. Every failure is swallowed: a marker that cannot be
+    /// written must never cost the take.
+    pub fn mark_device_change(&self, marker: &serde_json::Value) {
+        use std::io::Write as _;
+        let path = self.markers_path();
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| writeln!(f, "{marker}"));
+        if let Err(e) = appended {
+            log::warn!(
+                "YV92 device-change marker not written to {}: {e}",
+                path.display()
+            );
+        }
+    }
+
+    /// `<id>.spill.pcm` → `<id>.spill.markers.jsonl`, i.e. the sidecar lives
+    /// next to the audio it annotates and is retired with it.
+    fn markers_path(&self) -> PathBuf {
+        self.spill.with_extension("markers.jsonl")
+    }
+
     /// Normal completion — the take made it out of capture, so the journal has
     /// done its job. Joins the writer and removes the marker + spill.
     fn finish(self) {
@@ -572,6 +609,9 @@ impl CaptureJournal {
         }
         let _ = std::fs::remove_file(&self.marker);
         let _ = std::fs::remove_file(&self.spill);
+        // YV92 sidecar — retired with the take it annotates (absent on the
+        // overwhelmingly common take where no device change happened).
+        let _ = std::fs::remove_file(self.markers_path());
     }
 }
 
@@ -704,6 +744,7 @@ fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, Str
     // Retry row for it would be noise in History.
     if samples.len() < MIN_CLIP_SAMPLES {
         let _ = std::fs::remove_file(&spill);
+        let _ = std::fs::remove_file(spill.with_extension("markers.jsonl"));
         let _ = std::fs::remove_file(marker);
         return Ok(None);
     }
@@ -722,6 +763,7 @@ fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, Str
         return Err(e);
     }
     let _ = std::fs::remove_file(&spill);
+    let _ = std::fs::remove_file(spill.with_extension("markers.jsonl"));
     let _ = std::fs::remove_file(marker);
     Ok(Some(RecoveredTake {
         wav_path,
@@ -764,7 +806,11 @@ pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
     let out = if spec.sample_rate == TARGET_RATE {
         mono
     } else {
-        resample_linear(&mono, spec.sample_rate, TARGET_RATE)
+        // YV92: anti-aliased on the way down (see `resample::resample_decimate`).
+        // A 48 kHz file full of room noise used to fold its 8–24 kHz band
+        // straight into the speech band on the way to 16 kHz, and the WER that
+        // came back got blamed on the model.
+        resample_decimate(&mono, spec.sample_rate, TARGET_RATE)
     };
     if out.is_empty() {
         return Err(format!("no audio samples in {}", path.display()));
@@ -891,6 +937,13 @@ const IDLE_CLOSE: Duration = Duration::from_secs(60);
 /// it. YV81: this tick runs ONLY while a stream is actually open; with nothing
 /// to close the worker blocks on its channel and never wakes at all.
 const IDLE_TICK: Duration = Duration::from_secs(5);
+/// YV92/OS-9 — how often the capture watchdog re-reads the input device's health
+/// and format while a stream is open. Sixty seconds is the plan's own figure and
+/// it is the CEILING, not the latency: the CoreAudio property listener
+/// (`input_format::arm_listeners`) makes a real format change wake the worker on
+/// the very next tick, and this interval is what covers a machine where the
+/// listener could not be installed at all.
+const WATCHDOG_TICK: Duration = Duration::from_secs(60);
 
 const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 const NO_SAMPLES_ERR: &str = "No samples captured. Enable Microphone for Yap in System Settings.";
@@ -981,16 +1034,31 @@ fn await_reply<T>(
     }
 }
 
-/// Name-keyed cache of the input device + the stream config it accepted. The HAL
-/// property queries behind `default_input_config` cost tens of ms per open on
-/// macOS (worse on USB/Bluetooth) and land straight on the keypress→capture path
-/// whenever the persistent stream has to be reopened. Keyed by device name so
-/// switching the system default misses naturally; `invalidate` is called on ANY
-/// open or stream error so a stale rate/format self-heals on the next take.
+/// Cache of the input device + the stream config it accepted. The HAL property
+/// queries behind `default_input_config` cost tens of ms per open on macOS
+/// (worse on USB/Bluetooth) and land straight on the keypress→capture path
+/// whenever the persistent stream has to be reopened. `invalidate` is called on
+/// ANY open or stream error so a stale rate/format self-heals on the next take.
 /// Generic over the device/config types so the logic is unit-testable without
 /// touching audio hardware.
+///
+/// YV92/OS-9 — the key is the device name **and** the format it was cached at,
+/// not the name alone. AirPods keep their name across a rate renegotiation
+/// (48000 → 24000, or down to the HFP rate the moment their microphone is
+/// engaged), so a name-only key handed the reopen a stale sample rate and the
+/// remainder of the session came out time-stretched. A caller that knows the
+/// device's CURRENT format asks with it; a caller that does not (the cheap warm
+/// path, which is trusting the cache precisely to avoid the query) asks with
+/// `None` and relies on the format-change watchdog to have invalidated first.
 struct DeviceConfigCache<D, C> {
-    entry: Option<(String, D, C)>,
+    entry: Option<CachedDevice<D, C>>,
+}
+
+struct CachedDevice<D, C> {
+    name: String,
+    format: InputFormat,
+    device: D,
+    config: C,
 }
 
 impl<D: Clone, C: Clone> DeviceConfigCache<D, C> {
@@ -1000,22 +1068,33 @@ impl<D: Clone, C: Clone> DeviceConfigCache<D, C> {
 
     /// Cached device + config for `name`, or `None` on a miss. An empty name is
     /// NEVER a hit: cpal reports it when it cannot identify the device, and
-    /// caching under it would pin an unknown device forever.
-    fn get(&self, name: &str) -> Option<(D, C)> {
+    /// caching under it would pin an unknown device forever. When `format` is
+    /// given, a cached entry at a DIFFERENT format is a miss too — that is the
+    /// AirPods case above.
+    fn get(&self, name: &str, format: Option<InputFormat>) -> Option<(D, C)> {
         match &self.entry {
-            Some((cached, device, config)) if !name.is_empty() && cached == name => {
-                Some((device.clone(), config.clone()))
+            Some(entry)
+                if !name.is_empty()
+                    && entry.name == name
+                    && format.is_none_or(|f| f == entry.format) =>
+            {
+                Some((entry.device.clone(), entry.config.clone()))
             }
             _ => None,
         }
     }
 
-    fn store(&mut self, name: String, device: D, config: C) {
+    fn store(&mut self, name: String, format: InputFormat, device: D, config: C) {
         if name.is_empty() {
             self.entry = None;
             return;
         }
-        self.entry = Some((name, device, config));
+        self.entry = Some(CachedDevice {
+            name,
+            format,
+            device,
+            config,
+        });
     }
 
     fn invalidate(&mut self) {
@@ -1032,11 +1111,19 @@ impl<D: Clone, C: Clone> DeviceConfigCache<D, C> {
 /// The live cpal input stream plus everything its callback writes into. Owned by
 /// the worker thread (`cpal::Stream` is not `Send`) and kept across takes.
 struct LiveStream {
-    _stream: cpal::Stream,
+    /// `None` for the brief moment a format change is swapping the device out,
+    /// and after a swap that could not be completed. Optional rather than
+    /// mandatory so the DSP buffers — the take's audio — outlive the device the
+    /// take started on (OS-9: the recovery must not cost the recording).
+    stream: Option<cpal::Stream>,
     /// Streaming DSP + buffers, written by the audio callback (YV37).
     dsp: Arc<Mutex<StreamDsp>>,
     capturing: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    /// What the stream is ACTUALLY running on, as opposed to what a cache
+    /// believes. The format-change watchdog compares against these.
+    device_name: String,
+    format: InputFormat,
 }
 
 impl LiveStream {
@@ -1077,6 +1164,22 @@ impl LiveStream {
 
     fn has_failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
+    }
+
+    /// The take's crash journal, if it has one — the watchdog writes the
+    /// `device_change` marker through it.
+    fn mark_device_change(&self, marker: &input_format::DeviceChangeMarker) {
+        if let Ok(dsp) = self.dsp.lock() {
+            if let Some(journal) = dsp.journal.as_ref() {
+                journal.mark_device_change(&marker.to_json());
+            }
+        }
+    }
+
+    /// How many 16 kHz output samples the take has produced so far — the marker's
+    /// segment boundary.
+    fn output_samples(&self) -> u64 {
+        self.dsp.lock().map(|d| d.out.len() as u64).unwrap_or(0)
     }
 }
 
@@ -1120,6 +1223,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
         DeviceConfigCache::new();
     let mut live: Option<LiveStream> = None;
     let mut idle_since = Instant::now();
+    let mut last_watchdog = Instant::now();
 
     loop {
         // YV81 — the tick exists ONLY to close an open stream that has gone
@@ -1173,9 +1277,22 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 let _ = reply.send(captured);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // YV92 — the health watchdog. A dictation always has an Arm
+                // coming to re-check the device; a long capture does not, so
+                // this is the only thing standing between a mid-session format
+                // change and three hours of half-speed audio nobody looks at
+                // until stop.
+                let event = input_format::take_event();
+                if let Some(stream) = live.as_mut() {
+                    if event.is_some() || last_watchdog.elapsed() >= WATCHDOG_TICK {
+                        last_watchdog = Instant::now();
+                        watchdog_poll(stream, &mut cache, event);
+                    }
+                }
                 let idle = live.as_ref().is_some_and(|s| !s.is_capturing());
                 if idle && idle_since.elapsed() >= IDLE_CLOSE {
                     live = None;
+                    input_format::disarm_listeners();
                     log::info!(
                         "capture stream closed after {}s idle (mic indicator off)",
                         IDLE_CLOSE.as_secs()
@@ -1183,8 +1300,165 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 }
             }
             // Every sender is gone (process teardown) — release the stream.
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                input_format::disarm_listeners();
+                return;
+            }
         }
+    }
+}
+
+/// YV92/OS-9 — one pass of the capture health watchdog, on the
+/// [`WATCHDOG_TICK`] cadence (or immediately, when the CoreAudio listener says
+/// something moved).
+///
+/// Two questions, both of which used to be asked only at Arm and Disarm — i.e.
+/// never, during a capture that runs for hours:
+///
+/// 1. **Did the stream die?** `LiveStream::has_failed` is the flag cpal's error
+///    callback sets. Asking it here is fix (d) of OS-9: a dead stream is now
+///    discovered within a tick instead of at stop.
+/// 2. **Did the input format change?** The default input device and its nominal
+///    rate/channels are re-read and fed to the pure state machine
+///    (`input_format::InputFormatWatch`). On a real change the take is carried
+///    across to a stream reopened at the NEW rate, and a `device_change` marker
+///    goes into the journal at the exact output-sample boundary.
+fn watchdog_poll(
+    live: &mut LiveStream,
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+    event: Option<FormatEventSource>,
+) {
+    let failed = live.has_failed();
+    if failed {
+        log::warn!(
+            "YV92 watchdog: capture stream on {} reported a device error — reopening",
+            live.device_name
+        );
+    }
+    let observed = match default_input_device() {
+        Ok((device, name)) => device.default_input_config().ok().map(|config| {
+            (
+                name,
+                InputFormat::new(config.sample_rate(), config.channels()),
+            )
+        }),
+        Err(e) => {
+            log::warn!("YV92 watchdog: no input device ({e})");
+            None
+        }
+    };
+    let Some((name, format)) = observed else {
+        return;
+    };
+
+    let mut watch = InputFormatWatch::new(live.device_name.clone(), live.format, TARGET_RATE);
+    let action = watch.observe(InputObservation {
+        device_name: name,
+        format,
+        host_time: host_time_now(),
+        output_sample_index: live.output_samples(),
+        source: event.unwrap_or(FormatEventSource::Watchdog),
+    });
+    match action {
+        FormatChangeAction::Unchanged if !failed => {}
+        FormatChangeAction::Ignored(why) => {
+            log::debug!("YV92 watchdog: ignoring an input-format reading — {why}");
+        }
+        FormatChangeAction::Unchanged => {
+            // The format is fine but the stream is dead: reopen at the same
+            // format rather than leaving a silent take running.
+            reopen_after_change(live, cache, None);
+        }
+        FormatChangeAction::Reconfigure { marker, ratio } => {
+            log::warn!(
+                "YV92 watchdog: input format changed ({} {}Hz/{}ch → {} {}Hz/{}ch, source={}) — \
+                 segment {} opens at output sample {}, new resample ratio {:.4}",
+                marker.from_device,
+                marker.from.sample_rate_hz,
+                marker.from.channels,
+                marker.to_device,
+                marker.to.sample_rate_hz,
+                marker.to.channels,
+                marker.source.as_str(),
+                marker.segment_index,
+                marker.output_sample_index,
+                ratio.value(),
+            );
+            live.mark_device_change(&marker);
+            reopen_after_change(live, cache, Some(marker.to));
+        }
+    }
+}
+
+/// Swap the live device out from under a take without losing the take.
+///
+/// Order matters and is the whole point: pause the gate, close the OLD device
+/// (a cpal stream is bound to the format it was built with, so there is no
+/// in-place reconfigure), invalidate the name-keyed cache so the reopen cannot
+/// come back with the stale rate, then reopen handing the SAME DSP across. If
+/// the reopen fails, the take's audio is still in that DSP — the stream slot is
+/// simply left empty and the flag left set, so Disarm still returns every sample
+/// captured before the change and the next Arm opens cold.
+fn reopen_after_change(
+    live: &mut LiveStream,
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+    to: Option<InputFormat>,
+) {
+    let was_capturing = live.is_capturing();
+    live.capturing.store(false, Ordering::SeqCst);
+    live.stream = None;
+    cache.invalidate();
+    let reuse = (
+        live.dsp.clone(),
+        live.capturing.clone(),
+        live.failed.clone(),
+    );
+    match open_stream_into(cache, Some(reuse)) {
+        Ok(reopened) => {
+            live.stream = reopened.stream;
+            live.device_name = reopened.device_name;
+            live.format = reopened.format;
+            live.capturing.store(was_capturing, Ordering::SeqCst);
+            log::info!(
+                "YV92 watchdog: capture continues on {} at {}Hz/{}ch",
+                live.device_name,
+                live.format.sample_rate_hz,
+                live.format.channels
+            );
+        }
+        Err(e) => {
+            // Keep the failure visible: Disarm stamps it onto the take (YV67)
+            // and the next Arm reopens cold.
+            live.failed.store(true, Ordering::SeqCst);
+            if let Some(to) = to {
+                live.format = to;
+            }
+            log::error!(
+                "YV92 watchdog: could not reopen the input after a format change ({e}) — \
+                 the {} sample(s) already captured are kept",
+                live.output_samples()
+            );
+        }
+    }
+}
+
+/// The mach host time the format change was observed at — YV91's capture anchor
+/// as far as this item needs it: a monotonic tick that a later index record can
+/// be lined up against. `mach_absolute_time` on macOS, a monotonic nanosecond
+/// count elsewhere so the marker shape is identical on every platform.
+fn host_time_now() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn mach_absolute_time() -> u64;
+        }
+        // SAFETY: no arguments, no pointers, always available on macOS.
+        unsafe { mach_absolute_time() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        static EPOCH: OnceLock<Instant> = OnceLock::new();
+        EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
     }
 }
 
@@ -1194,17 +1468,46 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
 fn open_stream(
     cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
 ) -> Result<LiveStream, String> {
-    let opened_at = Instant::now();
+    open_stream_into(cache, None)
+}
+
+/// The system default input device and the name it reports, or the "no mic"
+/// error. Split out so the format watchdog can ask the same question the opener
+/// asks without duplicating cpal's default-device rules.
+fn default_input_device() -> Result<(cpal::Device, String), String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .ok_or_else(|| NO_MIC_ERR.to_string())?;
-    let dev_name = device
+    let name = device
         .description()
         .map(|d| d.name().to_string())
         .unwrap_or_default();
+    Ok((device, name))
+}
 
-    let cached = cache.get(&dev_name);
+/// The three things a reopened stream inherits from the take that was already
+/// running: the DSP (which owns the buffered audio, the AGC statistics and the
+/// crash journal), the capture gate, and the error flag. Named so the reopen
+/// signature reads as "carry the take across", not as a tuple of Arcs.
+type TakeInFlight = (Arc<Mutex<StreamDsp>>, Arc<AtomicBool>, Arc<AtomicBool>);
+
+/// Open the input stream, optionally HANDING IT AN EXISTING TAKE.
+///
+/// `reuse` is `Some` on exactly one path: YV92's format-change recovery, where
+/// the device must be reopened at a new rate *without* interrupting the take in
+/// flight. The DSP (and therefore the buffered audio, the AGC statistics and the
+/// crash journal) is carried across and only its rate-dependent state is rebuilt
+/// — see [`StreamDsp::reconfigure`]. On a cold open (`None`) everything is
+/// fresh, which is exactly what it was before this item.
+fn open_stream_into(
+    cache: &mut DeviceConfigCache<cpal::Device, cpal::SupportedStreamConfig>,
+    reuse: Option<TakeInFlight>,
+) -> Result<LiveStream, String> {
+    let opened_at = Instant::now();
+    let (device, dev_name) = default_input_device()?;
+
+    let cached = cache.get(&dev_name, None);
     let was_cached = cached.is_some();
     let (device, supported) = match cached {
         Some((device, config)) => (device, config),
@@ -1222,9 +1525,24 @@ fn open_stream(
     let sample_format = supported.sample_format();
     let conf: cpal::StreamConfig = supported.into();
 
-    let dsp = Arc::new(Mutex::new(StreamDsp::new(sample_rate, channels)));
-    let capturing = Arc::new(AtomicBool::new(false));
-    let failed = Arc::new(AtomicBool::new(false));
+    let format = InputFormat::new(sample_rate, channels);
+    let (dsp, capturing, failed) = match reuse {
+        Some((dsp, capturing, failed)) => {
+            // The take survives the device: only the rate-dependent state is
+            // rebuilt, and the error flag is cleared because it belonged to the
+            // stream we just closed.
+            if let Ok(mut dsp) = dsp.lock() {
+                dsp.reconfigure(sample_rate, channels);
+            }
+            failed.store(false, Ordering::SeqCst);
+            (dsp, capturing, failed)
+        }
+        None => (
+            Arc::new(Mutex::new(StreamDsp::new(sample_rate, channels))),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ),
+    };
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
@@ -1256,15 +1574,26 @@ fn open_stream(
         "mic device={dev_name} format={sample_format:?} rate={sample_rate} ch={channels} cached_config={was_cached} open_ms={}",
         opened_at.elapsed().as_millis()
     );
-    // The device accepted this config — remember it so the next reopen skips the
-    // HAL property queries entirely.
-    cache.store(dev_name, device, supported);
+    // The device accepted this config — remember it (with the FORMAT it was
+    // accepted at, YV92) so the next reopen skips the HAL property queries
+    // entirely while a renegotiated rate still misses.
+    cache.store(dev_name.clone(), format, device, supported);
+    // YV92 — the HAL will now tell us the moment this device's format changes
+    // or the default input moves, instead of the session discovering it at stop.
+    if !input_format::arm_listeners() {
+        log::debug!(
+            "YV92 input-format listeners unavailable — falling back to the {}s watchdog re-read",
+            WATCHDOG_TICK.as_secs()
+        );
+    }
 
     Ok(LiveStream {
-        _stream: stream,
+        stream: Some(stream),
         dsp,
         capturing,
         failed,
+        device_name: dev_name,
+        format,
     })
 }
 
@@ -1377,6 +1706,50 @@ impl StreamDsp {
     /// next.
     fn reset(&mut self) {
         *self = Self::new(self.sample_rate, self.channels);
+    }
+
+    /// YV92/OS-9 — the input format changed UNDER a live take (AirPods went in,
+    /// the link renegotiated to HFP, the default input device moved). Unlike
+    /// [`Self::reset`] this is deliberately NON-destructive: the take's buffers,
+    /// its AGC statistics and its crash journal all ride through. What is thrown
+    /// away is exactly what belongs to the old format — the resampler (a ratio
+    /// must never survive a format change) and the high-pass state, both of
+    /// which are rebuilt for the new rate.
+    ///
+    /// The resampler's tail is flushed at the OLD ratio first, so the last few
+    /// milliseconds captured before the change are neither lost nor stretched.
+    ///
+    /// One honest wart: `raw` — the never-lose-audio fallback — now holds two
+    /// native rates end to end. It is only consulted when the streamed buffer
+    /// came back unusable, and preserving audio at a slightly wrong pitch beats
+    /// discarding it, so it is kept and logged rather than truncated.
+    fn reconfigure(&mut self, sample_rate: u32, channels: u16) {
+        if sample_rate == 0 || (sample_rate == self.sample_rate && channels == self.channels) {
+            return;
+        }
+        let before = self.out.len();
+        self.resampler.finish(&mut self.out);
+        if let Some(journal) = self.journal.as_ref() {
+            journal.append(&self.out[before..]);
+        }
+        log::warn!(
+            "YV92 input format changed mid-capture: {}Hz/{}ch → {sample_rate}Hz/{channels}ch \
+             ({} samples captured so far; raw fallback now spans two rates)",
+            self.sample_rate,
+            self.channels,
+            self.out.len()
+        );
+        self.sample_rate = sample_rate;
+        self.channels = channels;
+        self.high_pass = Biquad::high_pass(sample_rate, HIGH_PASS_HZ);
+        self.resampler.retune(sample_rate, TARGET_RATE);
+    }
+
+    /// The rate the resampler is converting FROM right now — the value OS-9 says
+    /// must track the device, not the moment the stream happened to open.
+    #[cfg(test)]
+    fn resample_from_rate(&self) -> u32 {
+        self.resampler.from_rate()
     }
 
     /// Push one callback's interleaved native-rate frames through the chain.
@@ -1508,7 +1881,9 @@ fn fallback_chain(raw: &[f32], sample_rate: u32) -> Vec<f32> {
     if sample_rate == TARGET_RATE {
         leveled
     } else {
-        resample_linear(&leveled, sample_rate, TARGET_RATE)
+        // Same anti-alias filter the streaming path runs (YV92) — the fallback
+        // must not be a quieter way to ship aliased audio.
+        resample_decimate(&leveled, sample_rate, TARGET_RATE)
     }
 }
 
@@ -1518,113 +1893,6 @@ fn apply_gain(samples: &[f32], gain: f32) -> Vec<f32> {
         .iter()
         .map(|&s| (s * gain).clamp(-1.0, 1.0))
         .collect()
-}
-
-/// Linear resampler that can be fed in arbitrary frames and produces EXACTLY
-/// what `resample_linear` would over the concatenated input (asserted in the
-/// tests) — the capture path streams through this, the fallback path still runs
-/// the batch function.
-///
-/// It emits an output sample as soon as both of its input neighbours have
-/// arrived, keeping only the couple of input samples the next output still needs
-/// (so a long hold costs nothing extra), and `finish` flushes the tail with the
-/// same clamped last-neighbour rule the batch version uses.
-struct StreamResampler {
-    /// Input samples per output sample (`from / to`).
-    ratio: f64,
-    /// Retained input, `pending[0]` being global input index `base`.
-    pending: Vec<f32>,
-    base: u64,
-    /// Index of the next output sample to emit.
-    next_out: u64,
-    /// Total input samples seen so far.
-    seen: u64,
-}
-
-impl StreamResampler {
-    fn new(from: u32, to: u32) -> Self {
-        let ratio = if from == 0 || to == 0 {
-            1.0
-        } else {
-            from as f64 / to as f64
-        };
-        Self {
-            ratio,
-            pending: Vec::new(),
-            base: 0,
-            next_out: 0,
-            seen: 0,
-        }
-    }
-
-    /// Feed one frame, appending every output sample it completes.
-    fn push(&mut self, frame: &[f32], out: &mut Vec<f32>) {
-        if frame.is_empty() {
-            return;
-        }
-        self.pending.extend_from_slice(frame);
-        self.seen += frame.len() as u64;
-        // Only emit outputs the batch version would also emit for the input seen
-        // so far — the trailing partial sample is dropped there, and `finish`
-        // decides it here.
-        let ready = (self.seen as f64 / self.ratio).floor() as u64;
-        while self.next_out < ready {
-            let src = self.next_out as f64 * self.ratio;
-            let i0 = src.floor() as u64;
-            // Needs its right-hand neighbour; wait for the next frame otherwise.
-            if i0 + 1 >= self.seen {
-                break;
-            }
-            let k = (i0 - self.base) as usize;
-            let t = (src - i0 as f64) as f32;
-            out.push(self.pending[k] * (1.0 - t) + self.pending[k + 1] * t);
-            self.next_out += 1;
-        }
-        // Release everything before the next output's left neighbour.
-        let next_src = self.next_out as f64 * self.ratio;
-        let keep_from = next_src.floor() as u64;
-        let drop = keep_from.saturating_sub(self.base) as usize;
-        let drop = drop.min(self.pending.len());
-        if drop > 0 {
-            self.pending.drain(..drop);
-            self.base += drop as u64;
-        }
-    }
-
-    /// Flush the tail (the last output sample clamps to the final input sample,
-    /// exactly like `resample_linear`).
-    fn finish(&mut self, out: &mut Vec<f32>) {
-        let total = (self.seen as f64 / self.ratio).floor() as u64;
-        while self.next_out < total {
-            let src = self.next_out as f64 * self.ratio;
-            let i0 = src.floor() as u64;
-            let k = (i0 - self.base) as usize;
-            if k >= self.pending.len() {
-                break;
-            }
-            let k1 = (k + 1).min(self.pending.len() - 1);
-            let t = (src - i0 as f64) as f32;
-            out.push(self.pending[k] * (1.0 - t) + self.pending[k1] * t);
-            self.next_out += 1;
-        }
-    }
-}
-
-fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if input.is_empty() || from == 0 {
-        return Vec::new();
-    }
-    let ratio = from as f64 / to as f64;
-    let out_len = ((input.len() as f64) / ratio).floor() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let src = i as f64 * ratio;
-        let i0 = src.floor() as usize;
-        let i1 = (i0 + 1).min(input.len() - 1);
-        let t = (src - i0 as f64) as f32;
-        out.push(input[i0] * (1.0 - t) + input[i1] * t);
-    }
-    out
 }
 
 // ── Signal hygiene (Tier 0) ─────────────────────────────────────────────────
@@ -1643,78 +1911,6 @@ const HIGH_PASS_HZ: f32 = 80.0;
 const NORMALIZE_TARGET_DBFS: f32 = -20.0;
 /// Edge de-click fade length (ms) at clip start/end.
 const EDGE_FADE_MS: f32 = 5.0;
-
-/// Second-order (biquad) Butterworth high-pass, Direct Form I. The state lives
-/// in the struct so the SAME filter can run over a whole clip at once (the
-/// fallback chain) or across the capture frames as they arrive (YV37) with
-/// identical output.
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    x1: f32,
-    x2: f32,
-    y1: f32,
-    y2: f32,
-}
-
-impl Biquad {
-    /// High-pass at `cutoff_hz`; `None` for a degenerate rate/cutoff, which
-    /// callers treat as "leave the audio alone".
-    fn high_pass(sample_rate: u32, cutoff_hz: f32) -> Option<Self> {
-        if sample_rate == 0 || cutoff_hz <= 0.0 || cutoff_hz >= sample_rate as f32 / 2.0 {
-            return None;
-        }
-        // RBJ cookbook high-pass coefficients (Q = 1/√2 → maximally flat passband).
-        let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / sample_rate as f32;
-        let (sin_w0, cos_w0) = w0.sin_cos();
-        let q = std::f32::consts::FRAC_1_SQRT_2;
-        let alpha = sin_w0 / (2.0 * q);
-        let a0 = 1.0 + alpha;
-        if a0 == 0.0 || !a0.is_finite() {
-            return None;
-        }
-        Some(Self {
-            b0: ((1.0 + cos_w0) / 2.0) / a0,
-            b1: (-(1.0 + cos_w0)) / a0,
-            b2: ((1.0 + cos_w0) / 2.0) / a0,
-            a1: (-2.0 * cos_w0) / a0,
-            a2: (1.0 - alpha) / a0,
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-        })
-    }
-
-    /// Filter a frame in place. Returns false if the biquad went non-finite: it
-    /// then stops at that sample (the rest of the frame passes through
-    /// unfiltered) and clears its state, so one bad sample can never poison the
-    /// rest of the take — the batch caller falls back to the input outright.
-    fn process(&mut self, frame: &mut [f32]) -> bool {
-        for slot in frame.iter_mut() {
-            let x0 = *slot;
-            let y0 = self.b0 * x0 + self.b1 * self.x1 + self.b2 * self.x2
-                - self.a1 * self.y1
-                - self.a2 * self.y2;
-            if !y0.is_finite() {
-                self.x1 = 0.0;
-                self.x2 = 0.0;
-                self.y1 = 0.0;
-                self.y2 = 0.0;
-                return false;
-            }
-            self.x2 = self.x1;
-            self.x1 = x0;
-            self.y2 = self.y1;
-            self.y1 = y0;
-            *slot = y0;
-        }
-        true
-    }
-}
 
 /// Batch high-pass over a whole buffer (the fallback chain + the DSP tests).
 /// Returns the input unchanged on degenerate input or if the filter ever goes
@@ -1950,51 +2146,91 @@ mod tests {
     /// Stand-ins for `cpal::Device` / `cpal::SupportedStreamConfig`.
     type TestCache = DeviceConfigCache<&'static str, u32>;
 
+    fn fmt(rate: u32) -> InputFormat {
+        InputFormat::new(rate, 1)
+    }
+
     #[test]
     fn config_cache_hits_only_the_same_named_device() {
         let mut cache: TestCache = DeviceConfigCache::new();
         assert!(!cache.is_cached());
         assert_eq!(
-            cache.get("MacBook Pro Microphone"),
+            cache.get("MacBook Pro Microphone", None),
             None,
             "cold cache misses"
         );
 
-        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
+        cache.store(
+            "MacBook Pro Microphone".into(),
+            fmt(48_000),
+            "builtin",
+            48_000,
+        );
         assert!(cache.is_cached());
         assert_eq!(
-            cache.get("MacBook Pro Microphone"),
+            cache.get("MacBook Pro Microphone", None),
             Some(("builtin", 48_000)),
             "same device reuses the cached config (no HAL query on reopen)"
         );
         // A different default input device must NOT reuse another device's
         // rate/format — that would open the stream misconfigured.
-        assert_eq!(cache.get("AirPods Pro"), None);
+        assert_eq!(cache.get("AirPods Pro", None), None);
         // An unidentifiable device (cpal returns an empty name) never hits.
-        assert_eq!(cache.get(""), None);
+        assert_eq!(cache.get("", None), None);
+    }
+
+    /// YV92/OS-9 — the cache used to be keyed on the device NAME alone, so
+    /// AirPods that renegotiated from 48 kHz to 24 kHz (or down to the HFP rate
+    /// the moment their mic is engaged) kept their name and handed the reopen a
+    /// stale sample rate: the rest of the session came out time-stretched. A
+    /// caller that knows the current format now misses.
+    #[test]
+    fn config_cache_misses_when_the_same_device_reports_a_new_format() {
+        let mut cache: TestCache = DeviceConfigCache::new();
+        cache.store("AirPods Pro".into(), fmt(48_000), "bt", 48_000);
+        assert_eq!(
+            cache.get("AirPods Pro", Some(fmt(48_000))),
+            Some(("bt", 48_000)),
+            "the format it was cached at still hits"
+        );
+        assert_eq!(
+            cache.get("AirPods Pro", Some(fmt(24_000))),
+            None,
+            "the SAME device at a new rate must not reuse the stale config"
+        );
+        assert_eq!(
+            cache.get("AirPods Pro", Some(InputFormat::new(48_000, 2))),
+            None,
+            "a channel-count change is a format change too"
+        );
     }
 
     #[test]
     fn config_cache_invalidates_on_device_error_and_restores() {
         let mut cache: TestCache = DeviceConfigCache::new();
-        cache.store("AirPods Pro".into(), "bt", 24_000);
-        assert!(cache.get("AirPods Pro").is_some());
+        cache.store("AirPods Pro".into(), fmt(24_000), "bt", 24_000);
+        assert!(cache.get("AirPods Pro", None).is_some());
 
         // Stream/open error (device unplugged, rate changed) → drop everything
         // so the next arm re-queries the hardware.
         cache.invalidate();
         assert!(!cache.is_cached());
-        assert_eq!(cache.get("AirPods Pro"), None);
+        assert_eq!(cache.get("AirPods Pro", None), None);
 
         // …and the next successful open re-populates it.
-        cache.store("AirPods Pro".into(), "bt", 16_000);
-        assert_eq!(cache.get("AirPods Pro"), Some(("bt", 16_000)));
+        cache.store("AirPods Pro".into(), fmt(16_000), "bt", 16_000);
+        assert_eq!(cache.get("AirPods Pro", None), Some(("bt", 16_000)));
 
         // Re-storing under a NEW device replaces the entry (one device cached).
-        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
-        assert_eq!(cache.get("AirPods Pro"), None);
+        cache.store(
+            "MacBook Pro Microphone".into(),
+            fmt(48_000),
+            "builtin",
+            48_000,
+        );
+        assert_eq!(cache.get("AirPods Pro", None), None);
         assert_eq!(
-            cache.get("MacBook Pro Microphone"),
+            cache.get("MacBook Pro Microphone", None),
             Some(("builtin", 48_000))
         );
     }
@@ -2002,12 +2238,17 @@ mod tests {
     #[test]
     fn config_cache_never_stores_an_empty_device_name() {
         let mut cache: TestCache = DeviceConfigCache::new();
-        cache.store("MacBook Pro Microphone".into(), "builtin", 48_000);
+        cache.store(
+            "MacBook Pro Microphone".into(),
+            fmt(48_000),
+            "builtin",
+            48_000,
+        );
         // An unnamed device must clear the cache rather than pin an unknown
         // device under "" (which would then hit for every unnamed device).
-        cache.store(String::new(), "mystery", 8_000);
+        cache.store(String::new(), fmt(8_000), "mystery", 8_000);
         assert!(!cache.is_cached());
-        assert_eq!(cache.get(""), None);
+        assert_eq!(cache.get("", None), None);
     }
 
     #[test]
@@ -2585,71 +2826,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_resampler_matches_batch_for_every_framing() {
-        // 48/44.1 kHz mics downsampling to 16 kHz, the already-16 kHz identity
-        // case, and an upsample for good measure — each fed in even, ragged and
-        // single-sample frames.
-        for (from, to) in [
-            (48_000u32, 16_000u32),
-            (44_100, 16_000),
-            (16_000, 16_000),
-            (8_000, 16_000),
-        ] {
-            let input = tone_at(from, 0.05, 220.0, 0.5);
-            let batch = resample_linear(&input, from, to);
-            for sizes in [vec![512], vec![480, 137, 1, 999], vec![1], vec![7, 3]] {
-                let mut stream = StreamResampler::new(from, to);
-                let mut out = Vec::new();
-                for frame in frames(&input, &sizes) {
-                    stream.push(frame, &mut out);
-                }
-                stream.finish(&mut out);
-                assert_eq!(
-                    out.len(),
-                    batch.len(),
-                    "{from}→{to} in {sizes:?}-sized frames must yield the batch length"
-                );
-                assert!(
-                    out.iter().zip(&batch).all(|(a, b)| a == b),
-                    "{from}→{to} in {sizes:?}-sized frames must be sample-identical to the batch resample"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn stream_resampler_emits_during_capture_and_holds_no_backlog() {
-        // The point of YV37: 16 kHz samples exist WHILE the user speaks, not
-        // after release — and the retained input never grows with hold length.
-        let input = tone_at(NATIVE_SR, 0.5, 220.0, 0.4);
-        let mut stream = StreamResampler::new(NATIVE_SR, SR);
-        let mut out = Vec::new();
-        let mut after_first = 0usize;
-        for (i, frame) in frames(&input, &[512]).into_iter().enumerate() {
-            stream.push(frame, &mut out);
-            if i == 0 {
-                after_first = out.len();
-            }
-            assert!(
-                stream.pending.len() <= 512 + 4,
-                "retained input must stay bounded, got {}",
-                stream.pending.len()
-            );
-        }
-        assert!(
-            after_first > 100,
-            "the first 512-frame callback should already produce ~170 samples at 16 kHz, got {after_first}"
-        );
-        stream.finish(&mut out);
-        let expected = input.len() / 3; // 48 kHz → 16 kHz
-        assert!(
-            out.len().abs_diff(expected) <= 2,
-            "expected ~{expected} samples, got {}",
-            out.len()
-        );
-    }
-
-    #[test]
     fn streaming_high_pass_matches_the_batch_filter() {
         // The biquad carries its state across callbacks — otherwise every frame
         // boundary would restart the filter and click.
@@ -2723,6 +2899,71 @@ mod tests {
         assert!(captured.gain > 1.0, "quiet take should get AGC gain");
         // …and the state is gone with the take: the next dictation starts clean.
         assert!(dsp.out.is_empty() && dsp.raw.is_empty());
+    }
+
+    /// YV92/OS-9 — the take must survive an input format change. Feed the DSP at
+    /// 48 kHz, tell it the device is now AirPods at 24 kHz, keep feeding: the
+    /// ratio must follow the device, the audio captured before the change must
+    /// still be there, and the audio captured after it must be at the right
+    /// speed (which is what a stale ratio silently destroys).
+    #[test]
+    fn stream_dsp_retunes_on_a_format_change_without_losing_the_take() {
+        let mut dsp = StreamDsp::new(NATIVE_SR, 1);
+        let first = tone_at(NATIVE_SR, 0.5, 300.0, 0.3);
+        for frame in frames(&first, &[512]) {
+            dsp.push(frame);
+        }
+        let after_first = dsp.out.len();
+        assert!(after_first > 0);
+        assert_eq!(dsp.resample_from_rate(), NATIVE_SR);
+
+        // AirPods go in: same take, half the input rate.
+        dsp.reconfigure(24_000, 1);
+        assert_eq!(
+            dsp.resample_from_rate(),
+            24_000,
+            "a ratio must never survive a format change"
+        );
+        assert!(
+            dsp.out.len() >= after_first,
+            "reconfigure must flush the old-rate tail, never drop it"
+        );
+        let kept = dsp.out.len();
+
+        let second = tone_at(24_000, 0.5, 300.0, 0.3);
+        for frame in frames(&second, &[256]) {
+            dsp.push(frame);
+        }
+        // 0.5 s in at 24 kHz is 0.5 s out at 16 kHz — 8000 samples. At the STALE
+        // 48 kHz ratio it would have been ~4000, i.e. the half-speed track OS-9
+        // describes.
+        let produced = dsp.out.len() - kept;
+        assert!(
+            produced.abs_diff(8_000) <= 4,
+            "expected ~8000 samples from 0.5s at the NEW rate, got {produced}"
+        );
+        let captured = dsp.take();
+        assert!(
+            captured.samples.len() >= 8_000 + after_first - 4,
+            "every sample from both formats rides out with the take"
+        );
+        assert_eq!(captured.sample_rate, 24_000);
+        assert!(captured.samples.iter().all(|s| s.is_finite()));
+
+        // A no-op reconfigure (same format) changes nothing at all.
+        let mut same = StreamDsp::new(NATIVE_SR, 1);
+        for frame in frames(&first, &[512]) {
+            same.push(frame);
+        }
+        let before = same.out.len();
+        same.reconfigure(NATIVE_SR, 1);
+        assert_eq!(same.out.len(), before);
+        same.reconfigure(0, 1);
+        assert_eq!(
+            same.resample_from_rate(),
+            NATIVE_SR,
+            "a zero rate is ignored"
+        );
     }
 
     /// YV67 — the `Disarm` hand-off must report a mid-take device error WITHOUT

@@ -1,0 +1,27 @@
+$ cargo test --test biquad_lowpass_response -- --nocapture --test-threads=1
+     Running tests/biquad_lowpass_response.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/biquad_lowpass_response-d96a398a320a86f5)
+
+running 6 tests
+test airpods_rates_get_a_filter_too_and_16khz_input_gets_none ... anti-alias rejection at 10 kHz (24 kHz input): 66.66 dB
+ok
+test anti_alias_filter_leaves_the_speech_band_alone ...        100 Hz → -0.000 dB
+       300 Hz →  0.000 dB
+      1000 Hz → -0.000 dB
+      2000 Hz →  0.000 dB
+      3400 Hz →  0.000 dB
+ok
+test anti_alias_filter_rejects_at_least_20_db_at_10_khz ... anti-alias rejection at 10 kHz (48 kHz input): 28.46 dB
+ok
+test anti_alias_filter_rejects_the_whole_band_that_would_fold ...      10000 Hz →  28.46 dB
+     12000 Hz →  46.83 dB
+     14000 Hz →  63.87 dB
+     16000 Hz →  68.48 dB
+     20000 Hz →  65.44 dB
+     23000 Hz →  67.37 dB
+ok
+test linear_interpolation_alone_folds_a_10khz_tone_into_the_speech_band ... 6 kHz alias of a 10 kHz tone — linear: 0.5000, anti-aliased: 0.0188 (28.5 dB better)
+ok
+test the_cutoff_sits_below_the_target_nyquist_and_degenerate_filters_are_none ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
