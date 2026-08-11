@@ -1,23 +1,29 @@
 # YV90 — meeting eval harness, full run with the corpus present
 # host: macOS 26.5.2, Parakeet Unified EN 0.6B (Metal), 2026-08-11
-# seam fixture REGROWN on the chunker's real seams (k * 28 s), not on multiples of 30 s
+# seam fixture grown on the chunker's real seams (k * 28 s), not on multiples of 30 s
+# revision 3: the seam/merge gates assert on the MERGE and on all 475 / 3117 words,
+#             not only on the five declared marker words
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+   Compiling wilson-voice v0.8.0 (<repo>/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
      Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
 
-running 16 tests
+running 19 tests
 test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
 test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
-test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
 test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
-test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
 test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test merge_reports_the_seams_that_found_no_anchor ... ok
+test overlap_token_budget_matches_the_chunk_geometry ... ok
 test seam_dedupe_never_deletes_real_words ... ok
-test seam_gate_catches_a_duplicated_boundary_word ... ok
+lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
 test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test seam_gate_catches_a_duplicated_boundary_word ... ok
 test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
 test wer_counts_substitutions_insertions_and_deletions ... ok
-lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
 device-change: format change at 7.59s, native halves present (YV92)
 test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
 corpus verified: 11 files match the committed sha256s
@@ -28,19 +34,7 @@ test meeting_eval_corpus_matches_committed_sha256s ... ok
   [seam-chunk000] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [seam] window 000    0.00s–  30.00s
   [lecture-15min-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 001   28.00s–  58.00s
-  [seam-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [seam] window 001   28.00s–  58.00s
-  [lecture-15min-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 002   56.00s–  86.00s
-  [seam-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [seam] window 002   56.00s–  86.00s
-  [lecture-15min-chunk003] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 003   84.00s– 114.00s
-  [seam-chunk003] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [seam] window 003   84.00s– 114.00s
-  [lecture-15min-chunk004] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 004  112.00s– 142.00s
+  … 13 lines of per-window decode elided …
   [seam-chunk004] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [seam] window 004  112.00s– 142.00s
   [lecture-15min-chunk005] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
@@ -61,48 +55,7 @@ test meeting_eval_seam_dedupe_and_ordering_hold ... ok
   [lecture-15min] window 007  196.00s– 226.00s
   [lecture-15min-chunk008] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [lecture-15min] window 008  224.00s– 254.00s
-  [lecture-15min-chunk009] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 009  252.00s– 282.00s
-  [lecture-15min-chunk010] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 010  280.00s– 310.00s
-  [lecture-15min-chunk011] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 011  308.00s– 338.00s
-  [lecture-15min-chunk012] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 012  336.00s– 366.00s
-  [lecture-15min-chunk013] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 013  364.00s– 394.00s
-  [lecture-15min-chunk014] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 014  392.00s– 422.00s
-  [lecture-15min-chunk015] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 015  420.00s– 450.00s
-  [lecture-15min-chunk016] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 016  448.00s– 478.00s
-  [lecture-15min-chunk017] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 017  476.00s– 506.00s
-  [lecture-15min-chunk018] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 018  504.00s– 534.00s
-  [lecture-15min-chunk019] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 019  532.00s– 562.00s
-  [lecture-15min-chunk020] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 020  560.00s– 590.00s
-  [lecture-15min-chunk021] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 021  588.00s– 618.00s
-  [lecture-15min-chunk022] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 022  616.00s– 646.00s
-  [lecture-15min-chunk023] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 023  644.00s– 674.00s
-  [lecture-15min-chunk024] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 024  672.00s– 702.00s
-  [lecture-15min-chunk025] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 025  700.00s– 730.00s
-  [lecture-15min-chunk026] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 026  728.00s– 758.00s
-  [lecture-15min-chunk027] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 027  756.00s– 786.00s
-  [lecture-15min-chunk028] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 028  784.00s– 814.00s
-  [lecture-15min-chunk029] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
-  [lecture-15min] window 029  812.00s– 842.00s
+  … 42 lines of per-window decode elided …
   [lecture-15min-chunk030] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [lecture-15min] window 030  840.00s– 870.00s
   [lecture-15min-chunk031] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
@@ -111,45 +64,149 @@ test meeting_eval_seam_dedupe_and_ordering_hold ... ok
   [lecture-15min] window 032  896.00s– 904.74s
 lecture-15min: 33 segment start times, monotonic, 0.00s to 896.00s
 test meeting_eval_lecture_segment_timestamps_are_sorted ... ok
-lecture-15min: 33 windows, WER 0.0151 (47 errors over 3117 reference words: 15 sub / 0 del / 32 ins)
-meeting_eval lecture-15min wer=0.0151
+lecture-15min: 33 windows, WER 0.0048 (15 errors over 3117 reference words: 15 sub / 0 del / 0 ins); merge MergeReport { seams: 32, no_anchor_seams: 0, tail_tokens_trimmed: 15, head_tokens_skipped: 0 }
+meeting_eval lecture-15min wer=0.0048
+lecture-15min: insertion rate 0.0000 (gate 0.005), 32 seams, 15 tail tokens trimmed, 0 head tokens skipped
 test meeting_eval_lecture_wer_is_under_the_gate ... ok
 
-test result: ok. 13 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 25.20s
+test result: ok. 16 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 26.88s
 
 EXIT=0
 
 # ---- and the same suite with the corpus ABSENT (what CI sees) ----
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
      Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
 
-running 16 tests
+running 19 tests
 meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
-meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
-meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
-test meeting_eval_corpus_matches_committed_sha256s ... ok
 test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
-test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
-test meeting_eval_seam_dedupe_and_ordering_hold ... ok
-test meeting_eval_lecture_wer_is_under_the_gate ... ok
+test meeting_eval_corpus_matches_committed_sha256s ... ok
 test meeting_eval_lecture_segment_timestamps_are_sorted ... ok
-test seam_dedupe_never_deletes_real_words ... ok
-test seam_regions_are_the_only_places_two_windows_overlap ... ok
-test seam_gate_catches_a_duplicated_boundary_word ... ok
-test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
-test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test meeting_eval_lecture_wer_is_under_the_gate ... ok
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+test merge_reports_the_seams_that_found_no_anchor ... ok
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
 test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+test overlap_token_budget_matches_the_chunk_geometry ... ok
+test seam_dedupe_never_deletes_real_words ... ok
+test seam_gate_catches_a_duplicated_boundary_word ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test meeting_eval_seam_dedupe_and_ordering_hold ... ok
+test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
 test wer_counts_substitutions_insertions_and_deletions ... ok
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
 
-test result: ok. 13 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
+EXIT=0
 
+# ===================================================================
+# FALSIFIABILITY — the two probes the new assertions exist for.
+# Neither patch is shipped; each was applied, run, and reverted.
+# ===================================================================
+
+# ---- probe 1: the merge THIS PR SHIPPED ONE REVISION AGO ----
+# MAX_TAIL_TRIM back to 2. Nothing else changed. Three of the lecture's 32
+# seams find no anchor, take the append-whole branch and emit their overlap
+# twice; the old assertions (marker counts on a fixture with no markers in it,
+# and a WER gate with 10x of headroom) all passed. The new ones do not.
+
+   Compiling wilson-voice v0.8.0 (<repo>/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+     Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+
+running 1 test
+lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
+  [lecture-15min-chunk000] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 000    0.00s–  30.00s
+  [lecture-15min-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 001   28.00s–  58.00s
+  [lecture-15min-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 002   56.00s–  86.00s
+  … 54 lines of per-window decode elided …
+  [lecture-15min-chunk030] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 030  840.00s– 870.00s
+  [lecture-15min-chunk031] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 031  868.00s– 898.00s
+  [lecture-15min-chunk032] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [lecture-15min] window 032  896.00s– 904.74s
+lecture-15min: 33 windows, WER 0.0151 (47 errors over 3117 reference words: 15 sub / 0 del / 32 ins); merge MergeReport { seams: 32, no_anchor_seams: 3, tail_tokens_trimmed: 2, head_tokens_skipped: 0 }
+meeting_eval lecture-15min wer=0.0151
+
+thread 'meeting_eval_lecture_wer_is_under_the_gate' (<pid>) panicked at src-tauri/tests/meeting_eval.rs:1325:5:
+assertion `left == right` failed: 3 of 32 lecture seams found no anchor and appended the whole window, duplicating the overlap: WER 0.0151 (47 errors over 3117 reference words: 15 sub / 0 del / 32 ins)
+  left: 3
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test meeting_eval_lecture_wer_is_under_the_gate ... FAILED
+
+failures:
+
+failures:
+    meeting_eval_lecture_wer_is_under_the_gate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 21.05s
+
+error: test failed, to rerun pass `--test meeting_eval`
+EXIT=101
+
+# ---- probe 2: a merge that deletes real words while sparing every marker ----
+# merge_chunk_tokens_reporting patched to drop every third token unless it is
+# one of the five markers — the reviewer's probe, verbatim. duplicated=0 and
+# dropped=0 still come back clean, which is precisely why they are not the whole
+# gate; the drift the harness was already computing, and now asserts on, is.
+
+   Compiling wilson-voice v0.8.0 (<repo>/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+     Running tests/meeting_eval.rs (<target>/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+
+running 1 test
+  [seam-continuous] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam-chunk000] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam] window 000    0.00s–  30.00s
+  [seam-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam] window 001   28.00s–  58.00s
+  [seam-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  … 1 lines of per-window decode elided …
+  [seam-chunk003] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam] window 003   84.00s– 114.00s
+  [seam-chunk004] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam] window 004  112.00s– 142.00s
+  [seam-chunk005] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [seam] window 005  140.00s– 162.00s
+  marker  pineapple: 2 of 6 windows, merged x1, continuous x1
+  marker   trombone: 2 of 6 windows, merged x1, continuous x1
+  marker    lantern: 2 of 6 windows, merged x1, continuous x1
+  marker     walnut: 2 of 6 windows, merged x1, continuous x1
+  marker   envelope: 2 of 6 windows, merged x1, continuous x1
+seam-stress: 5 seams at [28.0, 56.0, 84.0, 112.0, 140.0], 5 markers scored; chunked-vs-continuous WER 0.3326 (158 errors over 475 reference words: 1 sub / 157 del / 0 ins)
+meeting_eval seam-stress duplicated=0 dropped=0
+
+thread 'meeting_eval_seam_dedupe_and_ordering_hold' (<pid>) panicked at src-tauri/tests/meeting_eval.rs:1519:9:
+seam-stress: the merge deleted 157 words the continuous decode produced, over 5 seams — a merge that splices inside the overlap can lose at most 50 (6 tail + 4 head per seam). WER 0.3326 (158 errors over 475 reference words: 1 sub / 157 del / 0 ins)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test meeting_eval_seam_dedupe_and_ordering_hold ... FAILED
+
+failures:
+
+failures:
+    meeting_eval_seam_dedupe_and_ordering_hold
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 8.18s
+
+error: test failed, to rerun pass `--test meeting_eval`
+EXIT=101
+
+# ---- probes 3 and 4: the VACUITY guards, from the previous revision of this
+#      harness, kept because they still gate every run ----
 # ---- and the two guards, made to FAIL, because a guard that cannot fail is not a guard ----
 #
 # (1) STATIC — the fixture as it was originally shipped: markers on multiples of

@@ -20,6 +20,15 @@
 //!   must come out monotonic. The gate refuses to score a marker that only one
 //!   window contains, because such a marker cannot distinguish a correct merge
 //!   from any other.
+//! * **Seam drift, and the merge itself** — because five marker words are five
+//!   words. A merge that eats ordinary words while sparing the markers clears
+//!   the counters above (measured: `duplicated=0 dropped=0` with 157 real words
+//!   deleted), and a fixture with no markers in it — the lecture — is not
+//!   scored by them at all. So the whole chunked transcript is also held to a
+//!   [`SEAM_DRIFT_WER_GATE`] against a single continuous decode of the same
+//!   audio, and the merge reports what it did at every seam
+//!   ([`MergeReport`]) so an unmerged seam is a failure wherever it happens
+//!   rather than only where a marker happens to sit.
 //!
 //! DER/JER/enrollment-EER are deliberately out of scope: they need RTTM speaker
 //! ground truth that only exists once diarization lands in yap23.
@@ -88,6 +97,23 @@ const FIXTURE_IDS: [&str; 3] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE];
 /// clean synthesized speech. Replace this constant with the measured number
 /// once YV93's real chunked ASR lands, and record the figure in the backlog.
 const WER_GATE: f64 = 0.15;
+
+/// How far the CHUNKED transcript may drift from a single continuous decode of
+/// the same audio. This is the gate that makes "no duplicated words at chunk
+/// seams" falsifiable in the way finding #16 demands: the marker counters only
+/// see the five declared words, so a merge that eats ordinary words while
+/// sparing the markers clears them — measured, by patching the merge to delete
+/// every third token: markers intact, `duplicated=0 dropped=0`, and drift WER
+/// 0.3326. Measured on the shipped merge: 0.0021.
+const SEAM_DRIFT_WER_GATE: f64 = 0.02;
+
+/// How many words the lecture merge may INSERT, as a fraction of the reference.
+/// An unmerged seam shows up here and nowhere else: a seam that finds no anchor
+/// emits its overlap twice, which is an insertion against an exact reference.
+/// At `MAX_TAIL_TRIM = 2` this fixture scored 32 insertions over 3117 words
+/// (0.0103) from three unmerged seams and still passed a WER gate of 0.15;
+/// measured now: 0.
+const LECTURE_INSERTION_RATE_GATE: f64 = 0.005;
 
 /// The chunk geometry the plan specifies for meeting ASR (22-A): 30 s windows,
 /// 2 s overlap. YV93 replaces the fixed clock with a VAD-cut boundary inside a
@@ -420,6 +446,45 @@ fn seam_report(keywords: &[String], chunked: &[String], continuous: &[String]) -
     rep
 }
 
+/// The seam gate's CONTENT check: does the merged chunked transcript still say
+/// what a single continuous decode of the same audio says?
+///
+/// A pure function, and deliberately separate from [`seam_report`], because the
+/// two answer different questions and only one of them scales. `seam_report`
+/// scores the five declared marker words — necessary, since only those are
+/// KNOWN to sit in an overlap region, and demonstrably not sufficient, since a
+/// merge that deletes ordinary words while sparing the markers passes it (see
+/// `seam_drift_gate_catches_a_marker_preserving_word_eater`, which builds
+/// exactly that merge). This one scores every word.
+///
+/// Two bounds, because they fail differently:
+///
+/// * a STRUCTURAL bound — a merge that only ever splices inside the overlap can
+///   lose at most [`MAX_TAIL_TRIM`] + [`MAX_HEAD_SKIP`] tokens per seam, so more
+///   than that means it spliced somewhere it had no business splicing;
+/// * a RATE bound — [`SEAM_DRIFT_WER_GATE`] over the whole transcript, which
+///   also catches insertions (an unmerged overlap) and substitutions, and which
+///   does not grow with the number of seams.
+fn drift_within_budget(drift: &WerReport, seams: usize) -> Result<(), String> {
+    let deletion_budget = seams * (MAX_TAIL_TRIM + MAX_HEAD_SKIP);
+    if drift.deletions > deletion_budget {
+        return Err(format!(
+            "the merge deleted {} words the continuous decode produced, over {seams} seams — \
+             a merge that splices inside the overlap can lose at most {deletion_budget} \
+             ({MAX_TAIL_TRIM} tail + {MAX_HEAD_SKIP} head per seam). {drift}",
+            drift.deletions
+        ));
+    }
+    if drift.wer() > SEAM_DRIFT_WER_GATE {
+        return Err(format!(
+            "the chunked transcript drifted {:.4} from the continuous decode of the same \
+             audio, past the {SEAM_DRIFT_WER_GATE} gate. {drift}",
+            drift.wer()
+        ));
+    }
+    Ok(())
+}
+
 /// One decoded window of a meeting. `start_seconds` is the window's own start
 /// today; when YV93 lands `asr_engine::transcribe_timed` it becomes the real
 /// segment timestamp, and the ordering gate below stops being a check on the
@@ -457,12 +522,53 @@ fn chunk_plan(total_seconds: f64) -> Vec<(f64, f64)> {
 const MIN_ANCHOR_TOKENS: usize = 3;
 /// …and at most this many. The overlap is 2 s of speech — six or seven words.
 const MAX_ANCHOR_TOKENS: usize = 10;
-/// The boundary can cut a word in half, so the TAIL of the outgoing chunk may
-/// end in a token nobody said. Allow the anchor to sit this far back from the
-/// end of the running transcript, and no further.
-const MAX_TAIL_TRIM: usize = 2;
-/// …and the same at the HEAD of the incoming chunk.
+/// How many tokens [`CHUNK_OVERLAP_SECONDS`] of speech can hold, at the
+/// [`WORDS_PER_MINUTE`] the corpus is spoken at: `ceil(2 s * 175 / 60)` = 6.
+/// This is the budget for everything a merge is allowed to move at a seam,
+/// because the overlap region is the ONLY audio two windows both saw. Kept as a
+/// literal because a float-to-int cast is not const, and tied back to the
+/// geometry by `overlap_token_budget_matches_the_chunk_geometry`.
+const OVERLAP_TOKEN_BUDGET: usize = 6;
+
+/// How far back from the end of the running transcript the anchor may sit.
+///
+/// It has to be the whole overlap budget, and the measurement that says so is
+/// the lecture fixture: at 2 (the first cut of this function) three of its 32
+/// seams found NO anchor and fell into the append-whole branch, emitting the
+/// overlap twice — 32 insertions against the reference, WER 0.0151. The cause
+/// is not a half-cut word but a truncated-window continuation: the outgoing
+/// window ends mid-sentence and the model finishes the sentence its own way
+/// ("…before the break i want to **look at the material**" against the next
+/// window's "…before the break i want to **leave you with a question**"), so
+/// the genuine anchor sits several tokens back from the end. Trimming those
+/// tokens is safe by construction — they are inside the overlap, which the
+/// INCOMING window re-supplies from the anchor onward, so nothing is deleted
+/// that is not immediately re-emitted. At 6 all 32 seams anchor, insertions go
+/// to 0 and lecture WER to 0.0048.
+const MAX_TAIL_TRIM: usize = OVERLAP_TOKEN_BUDGET;
+/// …and the same at the HEAD of the incoming chunk, where a window boundary
+/// cutting a word in half does show up. Left at 4: sweeping it to 12 changes
+/// neither fixture's numbers, and every token of slack here widens the deletion
+/// budget the seam gate has to allow.
 const MAX_HEAD_SKIP: usize = 4;
+
+/// What a merge did at the seams, so the gates can check the MERGE and not only
+/// the marker words that happen to sit in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct MergeReport {
+    /// Seams merged — one per window after the first.
+    seams: usize,
+    /// Seams where no anchor was found and the whole incoming window was
+    /// appended, duplicating the overlap. This is failure mode 1 below, and it
+    /// is a defect wherever it happens, not a tuning knob.
+    no_anchor_seams: usize,
+    /// Tokens removed from the tail of the running transcript across all seams.
+    /// Bounded by `seams * MAX_TAIL_TRIM` by construction.
+    tail_tokens_trimmed: usize,
+    /// Tokens skipped at the head of incoming windows, likewise bounded by
+    /// `seams * MAX_HEAD_SKIP`.
+    head_tokens_skipped: usize,
+}
 
 /// The BASELINE seam merge: the incoming chunk repeats the last
 /// [`CHUNK_OVERLAP_SECONDS`] of the previous one, so find that repeat and splice
@@ -482,20 +588,40 @@ const MAX_HEAD_SKIP: usize = 4;
 ///    decode and one marker word (`trombone`) gone. `dropped_word_count` caught
 ///    it — which is the whole reason finding #16 insists on that counter.
 ///
+/// 3. *The same anchored search, but with only two tokens of tail slack.* It
+///    passed every assertion this harness had and was still wrong: on the
+///    LECTURE fixture three of 32 seams found no anchor at all, took the
+///    append-whole branch below and emitted the overlap twice. The marker
+///    counters never saw it — the lecture has no markers — and the WER gate
+///    swallowed it inside 10× of headroom. That is why the gates now assert on
+///    [`MergeReport::no_anchor_seams`] and on the drift/insertion budgets, and
+///    why [`MAX_TAIL_TRIM`] is the whole [`OVERLAP_TOKEN_BUDGET`].
+///
 /// What survives anchors the run to the END of the running transcript and the
-/// START of the incoming chunk, where the overlap actually is, with a couple of
-/// tokens of slack at each side for the cut word. It can therefore delete at
-/// most [`MAX_TAIL_TRIM`] + [`MAX_HEAD_SKIP`] tokens at a seam by construction,
-/// and only tokens inside the overlap region. YV93 replaces it with the real
-/// merge and must clear the same two numbers.
+/// START of the incoming chunk, where the overlap actually is, with the
+/// overlap's own word budget of slack at the tail and a cut word's worth at the
+/// head. It can therefore delete at most [`MAX_TAIL_TRIM`] + [`MAX_HEAD_SKIP`]
+/// tokens at a seam by construction, and only tokens inside the overlap region —
+/// which the incoming window re-supplies from the anchor onward. YV93 replaces
+/// it with the real merge and must clear the same numbers, all of them.
 fn merge_chunk_tokens(chunks: &[Vec<String>]) -> Vec<String> {
+    merge_chunk_tokens_reporting(chunks).0
+}
+
+/// [`merge_chunk_tokens`], plus what it did at each seam. The counts are the
+/// merge's own account of itself, so a gate can check the merge directly rather
+/// than inferring it from whichever words happen to sit at a boundary.
+fn merge_chunk_tokens_reporting(chunks: &[Vec<String>]) -> (Vec<String>, MergeReport) {
     let mut merged: Vec<String> = Vec::new();
+    let mut report = MergeReport::default();
     for chunk in chunks {
         if merged.is_empty() {
             merged.extend(chunk.iter().cloned());
             continue;
         }
-        let mut splice: Option<(usize, usize)> = None; // (keep in merged, skip in chunk)
+        report.seams += 1;
+        // (keep in merged, tokens skipped before the anchor, anchor length)
+        let mut splice: Option<(usize, usize, usize)> = None;
         'search: for n in (MIN_ANCHOR_TOKENS..=MAX_ANCHOR_TOKENS).rev() {
             for trim in 0..=MAX_TAIL_TRIM {
                 if merged.len() < trim + n {
@@ -508,23 +634,32 @@ fn merge_chunk_tokens(chunks: &[Vec<String>]) -> Vec<String> {
                         break;
                     }
                     if tail == &chunk[skip..skip + n] {
-                        splice = Some((keep, skip + n));
+                        splice = Some((keep, skip, n));
                         break 'search;
                     }
                 }
             }
         }
         match splice {
-            Some((keep, skip)) => {
+            Some((keep, skip, anchor)) => {
+                // The anchor tokens themselves are not "moved": they are the
+                // same words on both sides of the seam, kept once. Only the
+                // trimmed tail and the tokens before the anchor are.
+                report.tail_tokens_trimmed += merged.len() - keep;
+                report.head_tokens_skipped += skip;
                 merged.truncate(keep);
-                merged.extend(chunk[skip..].iter().cloned());
+                merged.extend(chunk[skip + anchor..].iter().cloned());
             }
             // No anchor: append whole. Emitting a duplicate is a visible defect
-            // the seam gate counts; deleting words on a guess is a silent one.
-            None => merged.extend(chunk.iter().cloned()),
+            // — visible only because it is COUNTED here and asserted on by both
+            // corpus gates; deleting words on a guess is a silent one.
+            None => {
+                report.no_anchor_seams += 1;
+                merged.extend(chunk.iter().cloned());
+            }
         }
     }
-    merged
+    (merged, report)
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +737,10 @@ impl Decoder {
                 text,
             });
         }
+        let (merged, merge) = merge_chunk_tokens_reporting(&per_chunk);
         ChunkedDecode {
-            merged: merge_chunk_tokens(&per_chunk),
+            merged,
+            merge,
             segments,
             per_chunk,
         }
@@ -611,10 +748,13 @@ impl Decoder {
 }
 
 /// The result of a windowed decode: the merged transcript, the per-window
-/// segments the ordering gate runs on, and the per-window token vectors the
-/// vacuity guard runs on.
+/// segments the ordering gate runs on, the per-window token vectors the
+/// vacuity guard runs on, and the merge's own account of what it did at every
+/// seam — the last of which is what lets a gate fail an unmerged seam on a
+/// fixture that carries no marker words at all.
 struct ChunkedDecode {
     merged: Vec<String>,
+    merge: MergeReport,
     segments: Vec<Segment>,
     per_chunk: Vec<Vec<String>>,
 }
@@ -808,6 +948,145 @@ fn seam_dedupe_never_deletes_real_words() {
     let rep = seam_report(&keywords, &neither, &neither);
     assert_eq!(rep.dropped_word_count, 0);
     assert_eq!(rep.checked_keywords, 0);
+}
+
+/// **The same falsifiable line, one level up — and the hole the previous cut of
+/// this harness had.** `seam_dedupe_never_deletes_real_words` proves the marker
+/// counters catch a dedupe that eats a MARKER. This one proves what happens when
+/// it eats everything BUT the markers: the counters come back clean, and the
+/// gate has to fail it anyway. Reproduced against the real merge and the real
+/// fixture before it was written here — every third token deleted, markers
+/// preserved, `duplicated=0 dropped=0`, drift WER 0.3326, test green.
+#[test]
+fn seam_drift_gate_catches_a_marker_preserving_word_eater() {
+    let keywords: Vec<String> = ["pineapple", "trombone", "lantern"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // Sized like the seam fixture — five seams, ~475 words — so the budgets it
+    // is held to are the ones the corpus gate applies.
+    let mut continuous = normalize(
+        "the first thing worth noticing is that the marker word here is pineapple and the \
+         argument continues for a while after it before the second marker word which is \
+         trombone arrives and then the talk runs on again until the last marker word lantern \
+         is spoken out loud near the end of the recording",
+    );
+    let filler = normalize(
+        "the notation gets in the way rather more often than the idea itself does and that is \
+         worth saying out loud before anyone writes any of it down",
+    );
+    while continuous.len() < 475 {
+        continuous.extend(filler.iter().cloned());
+    }
+    let seams = 5;
+
+    // A word-eater that is careful to spare every marker.
+    let eaten: Vec<String> = continuous
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| i % 3 != 2 || keywords.iter().any(|k| k == *w))
+        .map(|(_, w)| w.clone())
+        .collect();
+
+    let rep = seam_report(&keywords, &eaten, &continuous);
+    assert_eq!(
+        (rep.duplicated_word_count, rep.dropped_word_count),
+        (0, 0),
+        "the marker counters are clean — which is exactly the hole this gate fills"
+    );
+    assert_eq!(rep.checked_keywords, 3);
+
+    let drift = wer(&continuous, &eaten);
+    assert!(
+        drift.deletions > seams * (MAX_TAIL_TRIM + MAX_HEAD_SKIP),
+        "the control must exceed the structural budget to be a control: {drift}"
+    );
+    let why = drift_within_budget(&drift, seams)
+        .expect_err("a merge that deleted a third of the transcript must not pass");
+    assert!(why.contains("deleted"), "{why}");
+
+    // …and the RATE bound catches the other direction, which no deletion budget
+    // can see: one seam that finds no anchor and emits its overlap twice.
+    let mut doubled = continuous.clone();
+    let repeat: Vec<String> = continuous[20..32].to_vec();
+    for (n, w) in repeat.into_iter().enumerate() {
+        doubled.insert(32 + n, w);
+    }
+    let drift = wer(&continuous, &doubled);
+    assert_eq!((drift.deletions, drift.insertions), (0, 12));
+    assert!(
+        drift.deletions <= seams * (MAX_TAIL_TRIM + MAX_HEAD_SKIP),
+        "the deletion budget is untouched — only the rate bound can catch this"
+    );
+    let why = drift_within_budget(&drift, seams)
+        .expect_err("an overlap emitted twice is 12 insertions, past the rate gate");
+    assert!(why.contains("drifted"), "{why}");
+
+    // And the merge this harness actually ships passes its own gate.
+    let clean = continuous.clone();
+    drift_within_budget(&wer(&continuous, &clean), seams).expect("an exact merge drifts by zero");
+}
+
+/// The counter that makes an unmerged seam visible on a fixture with no marker
+/// words in it — the lecture, where three seams went unmerged unnoticed.
+#[test]
+fn merge_reports_the_seams_that_found_no_anchor() {
+    // Overlapping windows: one seam, anchored, nothing appended twice.
+    let a = normalize("the room was quiet and the projector hummed on the desk");
+    let b = normalize("hummed on the desk while the lecture carried on");
+    let (_, rep) = merge_chunk_tokens_reporting(&[a, b]);
+    assert_eq!((rep.seams, rep.no_anchor_seams), (1, 0));
+
+    // Nothing in common: the merge appends whole, and SAYS SO. This is the
+    // branch that emitted the lecture's duplicated runs.
+    let a = normalize("one two three four five");
+    let b = normalize("six seven eight nine ten");
+    let (merged, rep) = merge_chunk_tokens_reporting(&[a, b]);
+    assert_eq!((rep.seams, rep.no_anchor_seams), (1, 1));
+    assert_eq!(merged.len(), 10, "the whole window went in");
+
+    // The lecture's actual shape, reduced: the outgoing window ran past the
+    // seam and finished the sentence its own way, so the genuine anchor sits
+    // four tokens back from the end of the running transcript. At the old
+    // MAX_TAIL_TRIM of 2 this found no anchor and emitted the overlap twice.
+    let a = normalize("that much is true before the break i want to look at the material");
+    let b = normalize("before the break i want to leave you with a question and a warning");
+    let (merged, rep) = merge_chunk_tokens_reporting(&[a, b]);
+    assert_eq!(
+        (rep.seams, rep.no_anchor_seams),
+        (1, 0),
+        "the overlap is six tokens — inside OVERLAP_TOKEN_BUDGET — so it anchors"
+    );
+    assert_eq!(
+        merged,
+        normalize(
+            "that much is true before the break i want to leave you with a question and a warning"
+        ),
+        "the incoming window's rendering of the overlap wins, and nothing is said twice"
+    );
+    assert!(
+        rep.tail_tokens_trimmed <= MAX_TAIL_TRIM,
+        "{rep:?} may only move tokens the overlap can hold"
+    );
+}
+
+/// [`OVERLAP_TOKEN_BUDGET`] is a literal because a float-to-int cast is not
+/// const. It is not a guess: this ties it back to the chunk geometry and the
+/// corpus's own speaking rate, so changing either without changing it fails.
+#[test]
+fn overlap_token_budget_matches_the_chunk_geometry() {
+    let derived = (CHUNK_OVERLAP_SECONDS * WORDS_PER_MINUTE as f64 / 60.0).ceil() as usize;
+    assert_eq!(
+        OVERLAP_TOKEN_BUDGET, derived,
+        "{CHUNK_OVERLAP_SECONDS}s at {WORDS_PER_MINUTE} wpm holds {derived} words"
+    );
+    assert_eq!(MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET);
+    const {
+        assert!(
+            MAX_ANCHOR_TOKENS > OVERLAP_TOKEN_BUDGET,
+            "an anchor must be able to span the whole overlap"
+        )
+    };
 }
 
 #[test]
@@ -1031,11 +1310,59 @@ fn meeting_eval_lecture_wer_is_under_the_gate() {
 
     let decode = lecture_decode(&root);
     let report = wer(&reference, &decode.merged);
-    eprintln!("{LECTURE}: {} windows, {report}", decode.segments.len());
+    eprintln!(
+        "{LECTURE}: {} windows, {report}; merge {:?}",
+        decode.segments.len(),
+        decode.merge
+    );
     println!("meeting_eval {LECTURE} wer={:.4}", report.wer());
     assert!(
         report.wer() <= WER_GATE,
         "{LECTURE} regressed past the {WER_GATE} gate: {report}"
+    );
+
+    // The seam gates below run on the seam fixture, which is the only one with
+    // marker words in its overlap regions — so THIS fixture, 32 seams of it,
+    // used to be merged with nothing checking the merge. Two things check it
+    // now, and both would have failed the first cut of this harness.
+    //
+    // (1) Every seam found an anchor. A seam that does not emits its overlap
+    // twice; three of these 32 did, and no assertion in this file noticed.
+    assert_eq!(
+        decode.merge.seams,
+        decode.per_chunk.len() - 1,
+        "one seam per window after the first"
+    );
+    assert_eq!(
+        decode.merge.no_anchor_seams, 0,
+        "{} of {} lecture seams found no anchor and appended the whole window, \
+         duplicating the overlap: {report}",
+        decode.merge.no_anchor_seams, decode.merge.seams
+    );
+
+    // (2) The insertion rate, which is where an unmerged overlap lands when the
+    // reference is exact. A gate on total WER alone has room for both.
+    let insertion_rate = report.insertions as f64 / report.reference_words as f64;
+    eprintln!(
+        "{LECTURE}: insertion rate {insertion_rate:.4} (gate {LECTURE_INSERTION_RATE_GATE}), \
+         {} seams, {} tail tokens trimmed, {} head tokens skipped",
+        decode.merge.seams, decode.merge.tail_tokens_trimmed, decode.merge.head_tokens_skipped
+    );
+    assert!(
+        insertion_rate <= LECTURE_INSERTION_RATE_GATE,
+        "the merge inserted {} words over {} — rate {insertion_rate:.4} past the \
+         {LECTURE_INSERTION_RATE_GATE} gate, which is what an unmerged seam looks like",
+        report.insertions,
+        report.reference_words
+    );
+
+    // …and the structural bound on what a merge is allowed to move, which holds
+    // whatever the anchor search does.
+    assert!(
+        decode.merge.tail_tokens_trimmed <= decode.merge.seams * MAX_TAIL_TRIM
+            && decode.merge.head_tokens_skipped <= decode.merge.seams * MAX_HEAD_SKIP,
+        "the merge moved more tokens than the overlap can hold: {:?}",
+        decode.merge
     );
 }
 
@@ -1185,6 +1512,20 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
     );
     assert_eq!(duplicated_word_count, 0);
     assert!(dropped_word_count <= 1);
+
+    // The marker counters are the BOUNDARY-specific check and they are not the
+    // whole gate: they see five words. The drift report — computed above, and
+    // for one revision of this file printed and never asserted — sees all 475.
+    // A merge that deletes every third token while sparing the five markers
+    // clears the two counters above and fails here.
+    if let Err(why) = drift_within_budget(&drift, decode.merge.seams) {
+        panic!("{SEAM_STRESS}: {why}");
+    }
+    assert_eq!(
+        decode.merge.no_anchor_seams, 0,
+        "{} of {} seams found no anchor and duplicated their overlap: {drift}",
+        decode.merge.no_anchor_seams, decode.merge.seams
+    );
 
     let timestamps: Vec<f64> = decode.segments.iter().map(|s| s.start_seconds).collect();
     assert!(timestamps.is_sorted());

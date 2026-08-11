@@ -43,7 +43,22 @@ acceptance criteria are unfalsifiable"):
 | gate | fixture | assertion |
 |------|---------|-----------|
 | WER | `lecture-15min` | `wer <= 0.15` on a ~15-minute single-speaker lecture — the stated 22-A target case (a student in a lecture) |
+| merge | `lecture-15min` | `no_anchor_seams == 0` over all 32 seams, and an insertion rate `<= 0.005` — an unmerged seam emits its overlap twice, which is an insertion against an exact reference and nothing else |
 | seam ordering | `seam-stress` | `duplicated_word_count == 0`, `dropped_word_count <= 1` for the marker words placed inside the chunker's overlap regions, and `timestamps.is_sorted()` over the chunked decode's segment start times |
+| seam drift | `seam-stress` | the merged chunked transcript is within `0.02` WER of a single continuous decode of the same audio, and lost at most `MAX_TAIL_TRIM + MAX_HEAD_SKIP` words per seam |
+
+**Why the marker counters are not the gate, only part of it.** They score the
+five declared marker words, because those are the only words KNOWN to sit in an
+overlap region. That makes them necessary and not sufficient: a merge that eats
+ordinary words while sparing the markers passes them. Measured, not argued —
+patching the merge to delete every third token except the markers left
+`duplicated=0 dropped=0` while the chunked transcript drifted 0.3326 WER from the
+continuous decode, 157 real words gone. So the drift the harness was already
+computing is now asserted (`drift_within_budget`, with its own corpus-free
+negative control `seam_drift_gate_catches_a_marker_preserving_word_eater`), and
+the merge reports what it did at each seam so the LECTURE — which has no marker
+words at all — is checked too. Both probes are in
+`docs/pr-screenshots/YV90/meeting-eval-run.txt`, applied, run and reverted.
 
 **Where a "chunk boundary" actually is, and why it is derived rather than
 typed.** The windows are `CHUNK_SECONDS` = 30 s wide and hop by
@@ -64,15 +79,27 @@ one that asserts every scored marker was decoded in at least two windows,
 failing with *"marker X is inside a single window — the seam gate would be
 vacuous"*. Both are shown failing, on purpose, in `docs/pr-screenshots/YV90/`.
 
-Measured on 2026-08-11, Parakeet Unified EN 0.6B (Metal): **WER 0.0151** on the
-904.7 s lecture (47 errors over 3117 reference words — 15 substitutions, 0
-deletions, 32 insertions) across 33 windows, and on the regrown 162.0 s seam
-fixture **0 duplicated / 0 dropped** marker words, with all five markers decoded
-in exactly 2 of the 6 windows and the merged chunked transcript differing from a
-single continuous decode of the same audio by one substitution (WER 0.0021 over
-475 words). 0.15 stays as the committed gate: it is the placeholder baseline the
-backlog specifies, to be replaced with a tuned number once YV93 lands the real
-chunker.
+Measured on 2026-08-11, Parakeet Unified EN 0.6B (Metal): **WER 0.0048** on the
+904.7 s lecture (15 errors over 3117 reference words — 15 substitutions, 0
+deletions, **0 insertions**) across 33 windows and 32 seams, every one of which
+found its anchor; and on the 162.0 s seam fixture **0 duplicated / 0 dropped**
+marker words, all five decoded in exactly 2 of the 6 windows, with the merged
+chunked transcript differing from a single continuous decode of the same audio by
+one substitution (drift WER 0.0021 over 475 words). 0.15 stays as the committed
+WER gate: it is the placeholder baseline the backlog specifies, to be replaced
+with a tuned number once YV93 lands the real chunker.
+
+The lecture number moved from 0.0151 to 0.0048 when `MAX_TAIL_TRIM` went from 2
+to the overlap's own word budget (`OVERLAP_TOKEN_BUDGET` = `ceil(2 s * 175 wpm /
+60)` = 6). At 2, three of the 32 lecture seams found no anchor and appended the
+whole incoming window — 32 insertions, the overlap said twice at 112 s, 252 s and
+504 s. The cause is not a half-cut word: the outgoing window ends mid-sentence
+and the model finishes the sentence its own way ("…before the break i want to
+**look at the material**" against the next window's "…before the break i want to
+**leave you with a question**"), so the genuine anchor sits several tokens back
+from the end. Trimming that far is safe by construction — the trimmed tokens are
+inside the overlap, which the incoming window re-supplies from the anchor onward
+— and it is bounded, which is what `MergeReport` reports and the gates assert.
 
 The lecture is scored on a **windowed** decode — 30 s windows, 2 s overlap,
 merged at the seams — not on one pass over the whole file, and that is a
