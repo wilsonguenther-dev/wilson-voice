@@ -76,12 +76,12 @@ use sha2::{Digest, Sha256};
 // below score the SHIPPED chunker — same plan, same seam merge, same constants —
 // so a regression in `meeting_asr` fails here instead of passing against a copy
 // of itself.
-use wilson_voice_lib::asr_engine::TimedTranscript;
+use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use wilson_voice_lib::meeting_asr::{
-    merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, plan_windows, plan_windows_fixed,
-    BoundaryKind, ChunkConfig, ChunkOutcome, ChunkWindow, MemoryWindows, MergeReport,
-    SampleWindows, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM,
-    OVERLAP_TOKEN_BUDGET,
+    merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, plan_windows,
+    plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig, ChunkOutcome,
+    ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, SampleWindows, VoiceActivity,
+    MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET,
 };
 use wilson_voice_lib::vad::WarmVad;
 
@@ -658,10 +658,10 @@ impl Decoder {
         // both paths are measured on the corpus rather than only the one the
         // shipped model happens to take.
         let timed_spans = merge_timed(&outcomes);
-        let timestamps_are_real = !outcomes.is_empty()
-            && outcomes
-                .iter()
-                .all(|c| c.timestamp_kind.has_times() && !c.spans.is_empty());
+        // The SHIPPED predicate, not a copy of it: a quiet window is a
+        // successful decode with no spans, and the harness must take the same
+        // arm `assemble` takes or it scores a path the app never runs.
+        let timestamps_are_real = timestamps_are_usable(&outcomes);
         ChunkedDecode {
             merged,
             merge,
@@ -889,6 +889,119 @@ fn seam_dedupe_never_deletes_real_words() {
     let rep = seam_report(&keywords, &neither, &neither);
     assert_eq!(rep.dropped_word_count, 0);
     assert_eq!(rep.checked_keywords, 0);
+
+    // …and the same line held against the merge that actually SHIPS. Everything
+    // above scores the TEXT fallback ([`merge_chunk_tokens`]); the primary path
+    // is [`merge_timed`], and running the falsifiable line only against the arm
+    // the app does not take is how a real deletion stayed invisible: the timed
+    // merge's tie-break popped the previous span on start-time proximity alone,
+    // which is exactly the shape of a speaker repeating a word across a pause —
+    // and the VAD-cut chunker puts the boundary IN that pause. Measured before
+    // the fix: `["okay", "Right,", "so"]` out of four real words.
+    let across_a_pause = merge_timed(&[
+        timed_chunk(
+            0,
+            0.0,
+            30.0,
+            &[(28.6, 29.0, "okay"), (29.4, 29.9, "Right.")],
+        ),
+        timed_chunk(1, 30.0, 60.0, &[(30.2, 30.7, "Right,"), (31.0, 31.6, "so")]),
+    ]);
+    // Scored with [`wer`] rather than [`seam_report`] on purpose: the marker
+    // counters assume a marker is said ONCE and read a genuine repetition as a
+    // duplicate, which is the very confusion that produced the bug.
+    let spoken = normalize("okay right right so");
+    let merged = normalize(&spans_text(&across_a_pause));
+    let drift = wer(&spoken, &merged);
+    assert_eq!(
+        (drift.deletions, drift.insertions, drift.substitutions),
+        (0, 0, 0),
+        "the timed merge must keep both halves of a genuine repetition: {merged:?}"
+    );
+
+    // The tie-break it exists for still fires, at the one kind of seam where a
+    // word CAN be cut in half — a fixed-clock cut, which the chunker only makes
+    // when no pause cleared the floor anywhere in the search window.
+    let mut incoming = timed_chunk(
+        1,
+        30.0,
+        60.0,
+        &[(30.1, 30.6, "particular"), (30.8, 31.2, "case")],
+    );
+    incoming.start_boundary = BoundaryKind::FixedClock;
+    let half_cut = merge_timed(&[
+        timed_chunk(
+            0,
+            0.0,
+            30.0,
+            &[(28.0, 28.5, "the"), (29.8, 30.0, "particular")],
+        ),
+        incoming,
+    ]);
+    assert_eq!(
+        normalize(&spans_text(&half_cut)),
+        normalize("the particular case")
+    );
+}
+
+/// A finished chunk with word spans, cut on a VAD silence (the shipped arm), for
+/// the merge gates that need no audio.
+fn timed_chunk(index: usize, start: f64, end: f64, spans: &[(f64, f64, &str)]) -> ChunkOutcome {
+    ChunkOutcome {
+        index,
+        audio_start_seconds: (start - CHUNK_OVERLAP_SECONDS).max(0.0),
+        content_start_seconds: start,
+        content_end_seconds: end,
+        start_boundary: BoundaryKind::Silence,
+        status: ChunkStatus::Done,
+        text: spans
+            .iter()
+            .map(|(_, _, t)| *t)
+            .collect::<Vec<_>>()
+            .join(" "),
+        spans: spans
+            .iter()
+            .map(|(a, b, t)| TimedSpan {
+                start_seconds: *a,
+                end_seconds: *b,
+                text: (*t).to_string(),
+            })
+            .collect(),
+        timestamp_kind: TimedKind::Word,
+        error: None,
+    }
+}
+
+fn spans_text(spans: &[TimedSpan]) -> String {
+    spans
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A quiet window is a SUCCESSFUL decode with nothing in it, and it must not
+/// drag the whole meeting off the time-primary merge — which would throw away
+/// every real word timestamp the other windows produced and hand the user the
+/// fallback's chunk-granularity rows instead.
+#[test]
+fn one_silent_chunk_does_not_demote_the_whole_meeting_to_the_text_fallback() {
+    let speech_a = timed_chunk(0, 0.0, 30.0, &[(1.0, 1.5, "alpha")]);
+    let mut silent = timed_chunk(1, 30.0, 60.0, &[]);
+    silent.timestamp_kind = TimedKind::None;
+    let speech_b = timed_chunk(2, 60.0, 90.0, &[(61.0, 61.5, "beta")]);
+    assert!(timestamps_are_usable(&[
+        speech_a.clone(),
+        silent.clone(),
+        speech_b.clone()
+    ]));
+
+    // …but a window that produced TEXT with no times is real evidence that this
+    // model does not do alignment, and the fallback is right to take over.
+    let mut untimed = timed_chunk(1, 30.0, 60.0, &[]);
+    untimed.text = "words with no times at all".into();
+    untimed.timestamp_kind = TimedKind::None;
+    assert!(!timestamps_are_usable(&[speech_a, untimed, speech_b]));
 }
 
 /// **The same falsifiable line, one level up — and the hole the previous cut of

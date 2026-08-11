@@ -666,14 +666,52 @@ pub fn merge_chunk_tokens(chunks: &[Vec<String>]) -> Vec<String> {
 
 /// [`merge_chunk_tokens`], plus what it did at each seam.
 pub fn merge_chunk_tokens_reporting(chunks: &[Vec<String>]) -> (Vec<String>, MergeReport) {
+    let merged = merge_chunk_tokens_segmented(chunks);
+    (merged.tokens, merged.report)
+}
+
+/// [`merge_chunk_tokens_reporting`], plus WHICH merged tokens each input chunk
+/// ended up owning.
+///
+/// This exists because `MeetingTranscript.segments` on the text-fallback path
+/// used to be built from each chunk's RAW text, which still contains the
+/// overlap the merge had just removed from `text` — so the field YV94 persists
+/// and the detail UI renders duplicated ~6 words at every seam while the merged
+/// `text` beside it did not. Segments are sliced out of the MERGED stream now,
+/// so `segments.join(" ") == text` holds by construction on both merge paths.
+///
+/// The ranges are contiguous and cover the whole merged stream: token `i` of
+/// the merge belongs to exactly one chunk. Anchor tokens — the words both
+/// windows decoded, kept once — are attributed to the EARLIER chunk, which is
+/// the window whose content range holds them.
+pub struct SegmentedMerge {
+    pub tokens: Vec<String>,
+    pub report: MergeReport,
+    /// One `[start, end)` range into [`SegmentedMerge::tokens`] per input
+    /// chunk, in input order. May be empty for a chunk the merge fully absorbed.
+    pub chunk_ranges: Vec<(usize, usize)>,
+}
+
+impl SegmentedMerge {
+    /// The tokens chunk `i` owns, as one string. Empty if it owns none.
+    pub fn chunk_text(&self, i: usize) -> String {
+        let (start, end) = self.chunk_ranges[i];
+        self.tokens[start..end].join(" ")
+    }
+}
+
+pub fn merge_chunk_tokens_segmented(chunks: &[Vec<String>]) -> SegmentedMerge {
     let mut merged: Vec<String> = Vec::new();
     let mut folded: Vec<String> = Vec::new();
     let mut report = MergeReport::default();
+    let mut chunk_ranges: Vec<(usize, usize)> = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let chunk_folded: Vec<String> = chunk.iter().map(|t| fold(t)).collect();
         if merged.is_empty() {
+            let start = merged.len();
             merged.extend(chunk.iter().cloned());
             folded.extend(chunk_folded);
+            chunk_ranges.push((start, merged.len()));
             continue;
         }
         report.seams += 1;
@@ -706,17 +744,33 @@ pub fn merge_chunk_tokens_reporting(chunks: &[Vec<String>]) -> (Vec<String>, Mer
                 report.head_tokens_skipped += skip;
                 merged.truncate(keep);
                 folded.truncate(keep);
+                // The tail trim shortens what the EARLIER chunks own, so their
+                // ranges shrink with it — that is what keeps the ranges a
+                // partition of the merged stream rather than a set of stale
+                // offsets into a vector that has since been truncated.
+                for range in chunk_ranges.iter_mut() {
+                    range.0 = range.0.min(keep);
+                    range.1 = range.1.min(keep);
+                }
+                let start = merged.len();
                 merged.extend(chunk[skip + anchor..].iter().cloned());
                 folded.extend(chunk_folded[skip + anchor..].iter().cloned());
+                chunk_ranges.push((start, merged.len()));
             }
             None => {
                 report.no_anchor_seams += 1;
+                let start = merged.len();
                 merged.extend(chunk.iter().cloned());
                 folded.extend(chunk_folded);
+                chunk_ranges.push((start, merged.len()));
             }
         }
     }
-    (merged, report)
+    SegmentedMerge {
+        tokens: merged,
+        report,
+        chunk_ranges,
+    }
 }
 
 /// PRIMARY seam dedupe: a span belongs to the window whose CONTENT range holds
@@ -754,11 +808,52 @@ pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
         // seam against the first word after it — never as an alignment search
         // over the transcript (finding #11). The later window wins because it
         // saw the whole word; the earlier one only saw as much as the cut left.
-        // VAD-cut boundaries make this rare by putting the cut in silence, which
-        // is exactly why they are the shipped arm.
+        //
+        // **What the tie-break is allowed to assume depends on the seam it is
+        // standing at, and that is the correction this code needed.** On its
+        // own, "the same word, starting within a second" is also the exact
+        // shape of a speaker repeating a word across a pause — "Right. Right.",
+        // "Yeah. Yeah.", "so, so" — and the VAD-cut chunker deliberately puts
+        // the boundary IN that pause, so the shipped arm manufactures the shape
+        // this rule then deleted. Measured on the shipped module before the
+        // guard below: `okay / Right. / Right, / so` came back as
+        // `okay / Right, / so`, one real word gone. That is the plan's own
+        // falsifiable line, "seam dedupe never deletes real words", failing on
+        // the PRIMARY path while the eval harness only exercised the fallback.
+        //
+        // So:
+        //
+        // * [`BoundaryKind::FixedClock`] — the chunker cut here precisely
+        //   BECAUSE no pause anywhere in the search window cleared
+        //   [`ChunkConfig::min_silence_seconds`]. A word cut in half is exactly
+        //   what that seam produces, and "a repetition across a pause" is not a
+        //   shape that can occur at a cut with no pause in it. Proximity is
+        //   enough. Measured on the lecture's fixed-clock arm: 17 pops over 29
+        //   seams, insertions 29 → 12, primary merge WER 0.0141 → 0.0087.
+        // * [`BoundaryKind::Silence`] — the VAD asserted a pause here, so the
+        //   only duplicate a pause cannot explain is two spans that INTERSECT
+        //   on the timeline: the same instant decoded twice. A repetition
+        //   across a pause is disjoint by construction, because the pause IS
+        //   the gap. Measured on the shipped VAD-cut arm: 0 insertions, primary
+        //   merge WER 0.0042 — the same numbers as before this fix, with the
+        //   deletion gone.
+        //
+        // The intersection test is deliberately NOT applied at a fixed-clock
+        // seam. Emission times drift between two decodes with different left
+        // context (finding #11): measured on this fixture, 8 of the 17
+        // fixed-clock duplicate pairs are DISJOINT in time, one by 0.24 s, so
+        // requiring intersection there would silently stop deduping half of
+        // them (measured: insertions 12 → 20).
         if let (Some(previous), Some(first)) = (out.last(), kept.first()) {
             let boundary_gap = (first.start_seconds - previous.start_seconds).abs();
-            if boundary_gap <= SEAM_DUPLICATE_TOLERANCE
+            let same_instant = previous.end_seconds > first.start_seconds
+                && first.end_seconds > previous.start_seconds;
+            let repairable = match chunk.start_boundary {
+                BoundaryKind::FixedClock => true,
+                BoundaryKind::Silence | BoundaryKind::Edge => same_instant,
+            };
+            if repairable
+                && boundary_gap <= SEAM_DUPLICATE_TOLERANCE
                 && fold(&previous.text) == fold(&first.text)
                 && !fold(&first.text).is_empty()
             {
@@ -773,9 +868,13 @@ pub fn merge_timed(chunks: &[ChunkOutcome]) -> Vec<TimedSpan> {
 
 /// How far apart two decodes of the SAME word at a seam may be timestamped
 /// before they stop being the same word. A second is generous next to a word
-/// (RNNT emission times drift between runs — finding #11 — but not by a second)
-/// and tight next to the 25 s minimum window, so it cannot reach a genuine
-/// repetition in ordinary speech at the far end of a chunk.
+/// (RNNT emission times drift between runs — finding #11 — but not by a second).
+///
+/// It is a SECOND condition, never the only one: on its own, "the same word
+/// starting within a second" is also the exact shape of a speaker repeating a
+/// word across a pause. What keeps the two apart is that [`merge_timed`] only
+/// consults it at a [`BoundaryKind::FixedClock`] seam, where by construction
+/// there was no pause to repeat across.
 const SEAM_DUPLICATE_TOLERANCE: f64 = 1.0;
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1081,15 @@ impl Default for MeetingAsrConfig {
 pub struct MeetingTranscript {
     pub text: String,
     /// Timed rows on the meeting timeline, monotonic by construction.
+    ///
+    /// **Invariant, on BOTH merge paths: `segments.join(" ") == text`.** This is
+    /// the field YV94 persists into `meeting_segments` and the field the detail
+    /// screen and the Markdown export render, so it — not `text` — is what the
+    /// user actually reads. The fallback path used to build these rows from
+    /// each chunk's RAW text, which still contained the overlap the merge had
+    /// just removed, and shipped ~6 duplicated words at every seam to the user
+    /// while the `text` beside it was clean. Asserted by
+    /// `segments_reconstruct_the_merged_text_on_both_merge_paths`.
     pub segments: Vec<TimedSpan>,
     /// True when the model gave real alignment and [`merge_timed`] was the
     /// merge; false when the text-anchor fallback ran.
@@ -1134,6 +1242,38 @@ impl MeetingAsr<'_> {
     }
 }
 
+/// Whether a set of finished chunks can be merged on TIME (the primary path)
+/// rather than on text.
+///
+/// Public and used by the eval harness so there is one rule, not two: a second
+/// copy of this predicate in `tests/meeting_eval.rs` is a second thing to get
+/// wrong, and getting it wrong is invisible — the harness would score an arm the
+/// app never takes.
+///
+/// A chunk that decoded to NOTHING is not evidence against the times. A 30 s
+/// window in which nobody spoke — a lull, someone muted, a break — is a
+/// perfectly SUCCESSFUL decode with zero spans, and demanding spans from it
+/// demoted the whole meeting to the text fallback: every real word timestamp
+/// from every other chunk discarded, segments collapsed to chunk granularity,
+/// over one quiet window. So the requirement falls on the chunks that actually
+/// produced text, and at least one chunk has to carry spans or there is nothing
+/// to merge on at all.
+pub fn timestamps_are_usable(chunks: &[ChunkOutcome]) -> bool {
+    let decodable = chunks.iter().filter(|c| c.status == ChunkStatus::Done);
+    let mut any_spans = false;
+    for chunk in decodable {
+        if !chunk.spans.is_empty() {
+            any_spans = true;
+        } else if !chunk.text.trim().is_empty() {
+            return false;
+        }
+        if !chunk.text.trim().is_empty() && !chunk.timestamp_kind.has_times() {
+            return false;
+        }
+    }
+    any_spans
+}
+
 /// Merge finished chunks into one transcript. Split out of [`MeetingAsr::run`]
 /// so a caller with a full ledger (a relaunch that has nothing left to decode,
 /// the meeting-detail screen) can rebuild the transcript without any audio.
@@ -1156,14 +1296,7 @@ pub fn assemble(
         .fold(0.0f64, f64::max);
 
     // PRIMARY path: every decoded chunk carried usable times.
-    let decodable: Vec<&ChunkOutcome> = chunks
-        .iter()
-        .filter(|c| c.status == ChunkStatus::Done)
-        .collect();
-    let timed = !decodable.is_empty()
-        && decodable
-            .iter()
-            .all(|c| c.timestamp_kind.has_times() && !c.spans.is_empty());
+    let timed = timestamps_are_usable(&chunks);
 
     if timed {
         let segments = merge_timed(&chunks);
@@ -1192,9 +1325,12 @@ pub fn assemble(
     }
 
     // FALLBACK: no usable alignment — anchor the seams on text.
-    let per_chunk: Vec<Vec<String>> = chunks
+    let spoken: Vec<&ChunkOutcome> = chunks
         .iter()
         .filter(|c| !c.text.trim().is_empty())
+        .collect();
+    let per_chunk: Vec<Vec<String>> = spoken
+        .iter()
         .map(|c| {
             c.text
                 .split_whitespace()
@@ -1202,18 +1338,26 @@ pub fn assemble(
                 .collect::<Vec<String>>()
         })
         .collect();
-    let (merged, report) = merge_chunk_tokens_reporting(&per_chunk);
-    let segments: Vec<TimedSpan> = chunks
+    let segmented = merge_chunk_tokens_segmented(&per_chunk);
+    let report = segmented.report;
+    // Segments come out of the MERGED stream, never out of `c.text`: the raw
+    // chunk text covers `audio_start..content_end` and therefore still carries
+    // the overlap the merge just removed. Building rows from it re-emitted
+    // ~6 duplicated words at every seam in the one field YV94 persists and the
+    // detail UI renders, while the `text` beside it was clean. Slicing the
+    // merged stream makes `segments.join(" ") == text` true by construction.
+    let segments: Vec<TimedSpan> = spoken
         .iter()
-        .filter(|c| !c.text.trim().is_empty())
-        .map(|c| TimedSpan {
+        .enumerate()
+        .map(|(i, c)| TimedSpan {
             start_seconds: c.content_start_seconds,
             end_seconds: c.content_end_seconds,
-            text: c.text.clone(),
+            text: segmented.chunk_text(i),
         })
+        .filter(|s| !s.text.is_empty())
         .collect();
     MeetingTranscript {
-        text: merged.join(" ").trim().to_string(),
+        text: segmented.tokens.join(" ").trim().to_string(),
         segments,
         timestamps_are_real: false,
         merge: report,
@@ -1614,6 +1758,234 @@ mod tests {
         let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(words, vec!["pineapple", "trombone", "lantern"]);
         assert!(merged.windows(2).all(|p| p[0].start_seconds <= p[1].start_seconds));
+    }
+
+    /// The tie-break that saves a half-cut word must not eat a word the speaker
+    /// genuinely said twice — and this is the exact shape the VAD-cut chunker
+    /// manufactures, because the pause between "Right." and "Right," is where it
+    /// deliberately puts the boundary.
+    ///
+    /// Reproduced against the shipped merge before the fix: it returned
+    /// `["okay", "Right,", "so"]` — the second-to-last real word deleted, which
+    /// is precisely the plan's falsifiable line
+    /// `seam dedupe never deletes real words` failing on the PRIMARY path while
+    /// the eval harness only exercised the text fallback.
+    #[test]
+    fn seam_dedupe_never_deletes_real_words_on_the_timed_merge() {
+        // The speaker says "Right." then, after a pause, "Right, so …" — and the
+        // chunker cut in that pause, so the two live in different windows.
+        let a = outcome(
+            0,
+            0.0,
+            30.0,
+            &[(28.6, 29.0, "okay"), (29.4, 29.9, "Right.")],
+        );
+        let b = outcome(1, 30.0, 60.0, &[(30.2, 30.7, "Right,"), (31.0, 31.6, "so")]);
+        assert_eq!(
+            b.start_boundary,
+            BoundaryKind::Silence,
+            "the shape only arises at a cut the VAD put in a pause"
+        );
+        let merged = merge_timed(&[a, b]);
+        let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            words,
+            vec!["okay", "Right.", "Right,", "so"],
+            "a genuine repetition across a VAD-cut boundary is two DISJOINT \
+             spans, not one word decoded twice"
+        );
+    }
+
+    /// …and the case the tie-break exists for still fires, at the only kind of
+    /// seam where a word CAN be cut in half: a fixed-clock cut, which happens
+    /// exactly when the VAD found no pause anywhere in the search window.
+    #[test]
+    fn a_word_the_boundary_cut_in_half_is_still_deduped() {
+        let a = outcome(
+            0,
+            0.0,
+            30.0,
+            &[(28.0, 28.5, "the"), (29.8, 30.0, "particular")],
+        );
+        let mut b = outcome(
+            1,
+            30.0,
+            60.0,
+            &[(30.1, 30.6, "particular"), (30.8, 31.2, "case")],
+        );
+        b.start_boundary = BoundaryKind::FixedClock;
+        let merged = merge_timed(&[a, b]);
+        let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            words,
+            vec!["the", "particular", "case"],
+            "the later window saw the whole word and wins"
+        );
+    }
+
+    /// A VAD-cut seam still dedupes the one duplicate a pause cannot explain:
+    /// two spans that cover the SAME INSTANT, which is the same audio decoded
+    /// twice however imperfect the VAD's idea of "silence" was.
+    #[test]
+    fn a_silence_seam_still_dedupes_two_decodes_of_the_same_instant() {
+        let a = outcome(0, 0.0, 30.0, &[(28.0, 28.5, "the"), (29.7, 30.0, "point")]);
+        let b = outcome(1, 30.0, 60.0, &[(29.9, 30.4, "point"), (30.8, 31.2, "is")]);
+        assert_eq!(b.start_boundary, BoundaryKind::Silence);
+        let merged = merge_timed(&[a, b]);
+        let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(words, vec!["the", "point", "is"]);
+    }
+
+    /// One 30 s window in which nobody spoke — a lull, a mute, a break — is a
+    /// SUCCESSFUL decode with zero spans. Demanding spans from it used to demote
+    /// the entire meeting to the text fallback, discarding every real word
+    /// timestamp from every other chunk.
+    #[test]
+    fn one_silent_chunk_does_not_demote_the_whole_meeting_to_the_text_fallback() {
+        let a = outcome(0, 0.0, 30.0, &[(1.0, 1.5, "alpha")]);
+        let mut silent = outcome(1, 30.0, 60.0, &[]);
+        silent.timestamp_kind = TimedKind::None; // no audio, nothing to time
+        let b = outcome(2, 60.0, 90.0, &[(61.0, 61.5, "beta")]);
+
+        let out = assemble(vec![a, silent, b], 0, 3, 0, false);
+        assert!(
+            out.timestamps_are_real,
+            "a silent window is not evidence against the other windows' times"
+        );
+        assert_eq!(out.text, "alpha beta");
+        assert_eq!(out.segments.len(), 2);
+        assert_eq!(out.chunks_failed, 0);
+    }
+
+    /// …and with nothing timed anywhere, the fallback is still what runs.
+    #[test]
+    fn a_meeting_with_no_spans_at_all_still_falls_back_to_text() {
+        let mut a = outcome(0, 0.0, 30.0, &[]);
+        a.text = "alpha beta gamma".into();
+        a.timestamp_kind = TimedKind::None;
+        let out = assemble(vec![a], 0, 1, 0, false);
+        assert!(!out.timestamps_are_real);
+        assert_eq!(out.text, "alpha beta gamma");
+    }
+
+    /// **The user-visible transcript is `segments`, not `text`.** `segments` is
+    /// what YV94 persists into `meeting_segments` and what the detail screen and
+    /// the Markdown export render, so a merge that dedupes `text` and leaves the
+    /// overlap in `segments` ships the duplicate to the user anyway. Both merge
+    /// paths must agree.
+    #[test]
+    fn segments_reconstruct_the_merged_text_on_both_merge_paths() {
+        // PRIMARY (timed) path.
+        let a = outcome(
+            0,
+            0.0,
+            30.0,
+            &[(28.0, 28.5, "pineapple"), (29.0, 29.6, "trombone")],
+        );
+        let b = outcome(
+            1,
+            30.0,
+            60.0,
+            &[
+                (28.1, 28.6, "pineapple"),
+                (29.05, 29.7, "trombone"),
+                (30.4, 31.0, "lantern"),
+            ],
+        );
+        let timed = assemble(vec![a, b], 0, 2, 0, false);
+        assert!(timed.timestamps_are_real);
+        assert_eq!(joined(&timed.segments), timed.text);
+
+        // FALLBACK (text-anchor) path — the chunk texts carry the overlap.
+        let mut a = outcome(0, 0.0, 30.0, &[]);
+        a.text = "the quick brown fox jumps over the lazy".into();
+        a.timestamp_kind = TimedKind::None;
+        let mut b = outcome(1, 30.0, 60.0, &[]);
+        b.text = "over the lazy dog and then it stopped".into();
+        b.timestamp_kind = TimedKind::None;
+
+        let fallback = assemble(vec![a, b], 0, 2, 0, false);
+        assert!(!fallback.timestamps_are_real);
+        assert_eq!(
+            fallback.text,
+            "the quick brown fox jumps over the lazy dog and then it stopped"
+        );
+        assert_eq!(
+            joined(&fallback.segments),
+            fallback.text,
+            "the segment rows used to re-emit the overlap the text had just \
+             deduped — ~6 duplicated words at every seam"
+        );
+        assert_eq!(fallback.segments.len(), 2);
+        assert_eq!(
+            fallback.segments[1].text, "dog and then it stopped",
+            "the incoming chunk owns only what it added past the anchor"
+        );
+    }
+
+    /// A seam that finds no anchor appends the chunk whole — a VISIBLE duplicate
+    /// rather than a silent deletion — and the segment rows must show exactly
+    /// what the text does, duplicate included.
+    #[test]
+    fn segments_track_an_unanchored_seam_too() {
+        let mut a = outcome(0, 0.0, 30.0, &[]);
+        a.text = "alpha beta gamma".into();
+        a.timestamp_kind = TimedKind::None;
+        let mut b = outcome(1, 30.0, 60.0, &[]);
+        b.text = "delta epsilon zeta".into();
+        b.timestamp_kind = TimedKind::None;
+        let out = assemble(vec![a, b], 0, 2, 0, false);
+        assert_eq!(out.merge.no_anchor_seams, 1);
+        assert_eq!(joined(&out.segments), out.text);
+        assert_eq!(out.segments[0].text, "alpha beta gamma");
+        assert_eq!(out.segments[1].text, "delta epsilon zeta");
+    }
+
+    /// The ranges a segmented merge hands back are a PARTITION of the merged
+    /// stream: contiguous, in order, covering every token exactly once. The tail
+    /// trim is the part that makes this non-trivial — it shortens what an
+    /// earlier chunk owns after that chunk's range was already recorded.
+    #[test]
+    fn segmented_merge_ranges_partition_the_merged_stream() {
+        let chunks: Vec<Vec<String>> = [
+            "one two three four five six seven",
+            "five six seven eight nine ten eleven",
+            "ten eleven twelve thirteen",
+            "nothing in common here at all",
+        ]
+        .iter()
+        .map(|s| s.split(' ').map(String::from).collect())
+        .collect();
+        let seg = merge_chunk_tokens_segmented(&chunks);
+        assert_eq!(seg.chunk_ranges.len(), chunks.len());
+        let mut cursor = 0usize;
+        for (start, end) in &seg.chunk_ranges {
+            assert_eq!(
+                *start, cursor,
+                "ranges must be contiguous: {:?}",
+                seg.chunk_ranges
+            );
+            assert!(end >= start);
+            cursor = *end;
+        }
+        assert_eq!(
+            cursor,
+            seg.tokens.len(),
+            "ranges must cover the whole merge"
+        );
+        let rebuilt: Vec<String> = (0..chunks.len())
+            .map(|i| seg.chunk_text(i))
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(rebuilt.join(" "), seg.tokens.join(" "));
+    }
+
+    fn joined(segments: &[TimedSpan]) -> String {
+        segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// The fallback merge removes the repeat when there are no times to merge
