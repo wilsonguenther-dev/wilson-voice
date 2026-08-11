@@ -1,0 +1,43 @@
+$ cargo test --test input_format_change_handler -- --nocapture --test-threads=1
+     Running tests/input_format_change_handler.rs (<target>/debug/deps/input_format_change_handler-6931395f9b86fbab)
+
+running 7 tests
+test a_burst_of_selectors_for_one_renegotiation_is_a_single_segment ... ok
+test a_ratio_never_survives_a_format_change ... ok
+test a_same_named_device_at_a_new_rate_is_still_a_format_change ... ok
+test a_stream_format_event_opens_a_segment_writes_a_marker_and_retunes_the_ratio ... ok
+test an_unreadable_format_is_ignored_rather_than_installed ... ok
+test input_format_listeners_install_on_this_mac ... ignored, needs a real input device: run by hand on a Mac with a microphone
+test the_listener_edge_is_taken_once_and_names_its_selector ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test --lib -- input_format:: resample:: record::tests::stream_dsp_retunes record::tests::config_cache record::tests::every_swap record::tests::a_reopen_is_not_a_segment
+     Running unittests src/lib.rs (<target>/debug/deps/wilson_voice_lib-95f0ae4fb3227172)
+
+running 21 tests
+test input_format::tests::a_zero_rate_never_installs_a_ratio ... ok
+test input_format::tests::a_reopen_resync_is_not_a_new_segment ... ok
+test input_format::tests::an_unchanged_format_is_not_a_segment_boundary ... ok
+test input_format::tests::selectors_map_back_to_their_sources ... ok
+test input_format::tests::each_change_of_one_take_gets_the_next_segment_and_a_new_take_restarts ... ok
+test record::tests::config_cache_never_stores_an_empty_device_name ... ok
+test record::tests::config_cache_misses_when_the_same_device_reports_a_new_format ... ok
+test input_format::tests::the_marker_names_both_sides_of_the_change ... ok
+test record::tests::config_cache_invalidates_on_device_error_and_restores ... ok
+test record::tests::config_cache_hits_only_the_same_named_device ... ok
+test record::tests::a_reopen_is_not_a_segment_and_a_new_take_restarts_the_numbering ... ok
+test resample::tests::degenerate_rates_never_build_a_filter_or_panic ... ok
+test resample::tests::retune_replaces_the_ratio_and_the_filter_wholesale ... ok
+test resample::tests::upsampling_and_identity_conversions_are_never_filtered ... ok
+test resample::tests::the_filter_scratch_is_reserved_before_the_callback_ever_runs ... ok
+test resample::tests::stream_resampler_matches_batch_for_every_framing ... ok
+test record::tests::every_swap_of_one_take_opens_the_next_segment ... ok
+test resample::tests::anti_alias_cascade_is_eighth_order_and_flat_in_the_speech_band ... ok
+test resample::tests::anti_aliased_stream_resampler_matches_the_batch_decimator ... ok
+test resample::tests::stream_resampler_emits_during_capture_and_holds_no_backlog ... ok
+test record::tests::stream_dsp_retunes_on_a_format_change_without_losing_the_take ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 333 filtered out; finished in 0.00s
+

@@ -1,0 +1,87 @@
+$ cargo test --test meeting_eval -- --nocapture --test-threads=1
+# corpus present at ~/yap-eval-corpus/meetings (3 fixtures, sha256-verified)
+
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+
+running 20 tests
+test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
+test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... meeting_eval antialias in_band_fold_linear=0.094703 in_band_fold_antialiased=0.003846 removed_db=27.8
+meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
+  linear (pre-YV92): WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  anti-aliased:      WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
+ok
+test meeting_eval_corpus_matches_committed_sha256s ... corpus verified: 11 files match the committed sha256s
+ok
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... device-change: format change at 7.59s, native halves present (YV92)
+ok
+test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
+test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
+  [lecture-15min] window 000    0.00s–  30.00s
+  [lecture-15min] window 001   28.00s–  58.00s
+  [lecture-15min] window 002   56.00s–  86.00s
+  [lecture-15min] window 003   84.00s– 114.00s
+  [lecture-15min] window 004  112.00s– 142.00s
+  [lecture-15min] window 005  140.00s– 170.00s
+  [lecture-15min] window 006  168.00s– 198.00s
+  [lecture-15min] window 007  196.00s– 226.00s
+  [lecture-15min] window 008  224.00s– 254.00s
+  [lecture-15min] window 009  252.00s– 282.00s
+  [lecture-15min] window 010  280.00s– 310.00s
+  [lecture-15min] window 011  308.00s– 338.00s
+  [lecture-15min] window 012  336.00s– 366.00s
+  [lecture-15min] window 013  364.00s– 394.00s
+  [lecture-15min] window 014  392.00s– 422.00s
+  [lecture-15min] window 015  420.00s– 450.00s
+  [lecture-15min] window 016  448.00s– 478.00s
+  [lecture-15min] window 017  476.00s– 506.00s
+  [lecture-15min] window 018  504.00s– 534.00s
+  [lecture-15min] window 019  532.00s– 562.00s
+  [lecture-15min] window 020  560.00s– 590.00s
+  [lecture-15min] window 021  588.00s– 618.00s
+  [lecture-15min] window 022  616.00s– 646.00s
+  [lecture-15min] window 023  644.00s– 674.00s
+  [lecture-15min] window 024  672.00s– 702.00s
+  [lecture-15min] window 025  700.00s– 730.00s
+  [lecture-15min] window 026  728.00s– 758.00s
+  [lecture-15min] window 027  756.00s– 786.00s
+  [lecture-15min] window 028  784.00s– 814.00s
+  [lecture-15min] window 029  812.00s– 842.00s
+  [lecture-15min] window 030  840.00s– 870.00s
+  [lecture-15min] window 031  868.00s– 898.00s
+  [lecture-15min] window 032  896.00s– 904.74s
+lecture-15min: 33 segment start times, monotonic, 0.00s to 896.00s
+ok
+test meeting_eval_lecture_wer_is_under_the_gate ... lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
+lecture-15min: 33 windows, WER 0.0048 (15 errors over 3117 reference words: 15 sub / 0 del / 0 ins); merge MergeReport { seams: 32, no_anchor_seams: 0, tail_tokens_trimmed: 15, head_tokens_skipped: 0 }
+meeting_eval lecture-15min wer=0.0048
+lecture-15min: insertion rate 0.0000 (gate 0.005), 32 seams, 15 tail tokens trimmed, 0 head tokens skipped
+ok
+test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+  [seam] window 000    0.00s–  30.00s
+  [seam] window 001   28.00s–  58.00s
+  [seam] window 002   56.00s–  86.00s
+  [seam] window 003   84.00s– 114.00s
+  [seam] window 004  112.00s– 142.00s
+  [seam] window 005  140.00s– 162.00s
+  marker  pineapple: 2 of 6 windows, merged x1, continuous x1
+  marker   trombone: 2 of 6 windows, merged x1, continuous x1
+  marker    lantern: 2 of 6 windows, merged x1, continuous x1
+  marker     walnut: 2 of 6 windows, merged x1, continuous x1
+  marker   envelope: 2 of 6 windows, merged x1, continuous x1
+seam-stress: 5 seams at [28.0, 56.0, 84.0, 112.0, 140.0], 5 markers scored; chunked-vs-continuous WER 0.0021 (1 errors over 475 reference words: 1 sub / 0 del / 0 ins)
+meeting_eval seam-stress duplicated=0 dropped=0
+ok
+test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test merge_reports_the_seams_that_found_no_anchor ... ok
+test overlap_token_budget_matches_the_chunk_geometry ... ok
+test seam_dedupe_never_deletes_real_words ... ok
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
+test seam_gate_catches_a_duplicated_boundary_word ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
+test wer_counts_substitutions_insertions_and_deletions ... ok
+
+test result: ok. 17 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 28.86s
+

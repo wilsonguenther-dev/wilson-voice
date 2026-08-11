@@ -1570,6 +1570,161 @@ fn meeting_eval_device_change_fixture_is_ready_for_yv92() {
     eprintln!("{DEVICE_CHANGE}: format change at {at:.2}s, native halves present (YV92)");
 }
 
+/// YV92's aliasing arm (plan finding OS-8), run through the shipped pipeline.
+///
+/// The two decimators are compared on the ONE signal that can tell them apart:
+/// native-rate speech with broadband energy above the 8 kHz Nyquist, i.e. the
+/// far-field room noise a three-hour lecture recording is full of and a
+/// five-second close-mic dictation is not. Under pure linear interpolation that
+/// band folds into 0–8 kHz with single-digit-dB rejection and the WER that comes
+/// back gets blamed on the model; under the anti-aliased decimator it is gone
+/// before the fold.
+///
+/// The noise is synthesised here rather than committed, so no fixture and no
+/// manifest hash changes: it is a deterministic comb of tones from 8.5 kHz to
+/// just under Nyquist, which is unambiguously in the fold band and needs no RNG
+/// agreement between machines. Both arms decode through the same binary, so the
+/// only difference between the two numbers is the resampler.
+#[test]
+fn meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise() {
+    let Some(root) = corpus() else { return };
+    let meta = read_meta(&root, DEVICE_CHANGE);
+    let path = root.join(DEVICE_CHANGE).join("segment-a-48000hz.wav");
+    let (rate, native) = read_wav_i16(&path);
+    assert_eq!(rate, 48_000, "the aliasing arm needs the native-rate half");
+    let reference = normalize(&meta.utterances[0].text);
+
+    let speech: Vec<f32> = native.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+    let noisy = with_ultrasonic_noise(&speech, rate);
+
+    let decoder = Decoder::new();
+    // "Before": the pre-YV92 path — decimate with no lowpass at all.
+    let aliased_f = wilson_voice_lib::resample::resample_linear(&noisy, rate, TARGET_RATE);
+    // "After": what the app ships now.
+    let filtered_f = wilson_voice_lib::resample::resample_decimate(&noisy, rate, TARGET_RATE);
+    let aliased = to_i16(&aliased_f);
+    let filtered = to_i16(&filtered_f);
+    assert_eq!(aliased.len(), filtered.len());
+
+    // Before scoring anything: prove the two arms actually differ in the way
+    // the finding says they do. The residual against the SAME decimation of the
+    // clean half is exactly the noise energy each path let into the 0–8 kHz
+    // band, so this measures the fold itself rather than a proxy for it.
+    let clean_aliased = wilson_voice_lib::resample::resample_linear(&speech, rate, TARGET_RATE);
+    let clean_filtered = wilson_voice_lib::resample::resample_decimate(&speech, rate, TARGET_RATE);
+    let folded_linear = residual_rms(&aliased_f, &clean_aliased);
+    let folded_filtered = residual_rms(&filtered_f, &clean_filtered);
+    let removed_db = 20.0 * (folded_linear / folded_filtered.max(1e-12)).log10();
+    println!(
+        "meeting_eval antialias in_band_fold_linear={folded_linear:.6} in_band_fold_antialiased={folded_filtered:.6} removed_db={removed_db:.1}"
+    );
+    assert!(
+        removed_db >= 20.0,
+        "the anti-aliased decimator must keep ≥20 dB more of the >8 kHz band out of the \
+         speech band on real fixture audio, got {removed_db:.1} dB"
+    );
+
+    let before = wer(
+        &reference,
+        &normalize(&decoder.decode(&aliased, "alias-linear")),
+    );
+    let after = wer(
+        &reference,
+        &normalize(&decoder.decode(&filtered, "alias-filtered")),
+    );
+    println!(
+        "meeting_eval antialias broadband-noise wer_linear={:.4} wer_antialiased={:.4}",
+        before.wer(),
+        after.wer()
+    );
+    eprintln!("  linear (pre-YV92): {before}");
+    eprintln!("  anti-aliased:      {after}");
+    assert!(
+        after.wer() <= before.wer(),
+        "the anti-aliased decimator must not regress WER on broadband-noise audio: \
+         linear {:.4} → anti-aliased {:.4}",
+        before.wer(),
+        after.wer()
+    );
+
+    // …and the filter must not be paying for that by eating the speech: on the
+    // CLEAN half, where there is nothing above 8 kHz to fold, the anti-aliased
+    // decode must be no worse than the linear one either.
+    let clean_before = wer(
+        &reference,
+        &normalize(&decoder.decode(&to_i16(&clean_aliased), "clean-linear")),
+    );
+    let clean_after = wer(
+        &reference,
+        &normalize(&decoder.decode(&to_i16(&clean_filtered), "clean-filtered")),
+    );
+    println!(
+        "meeting_eval antialias clean wer_linear={:.4} wer_antialiased={:.4}",
+        clean_before.wer(),
+        clean_after.wer()
+    );
+    assert!(
+        clean_after.wer() <= clean_before.wer(),
+        "the filter must not cost accuracy on audio with nothing to fold: \
+         linear {:.4} → anti-aliased {:.4}",
+        clean_before.wer(),
+        clean_after.wer()
+    );
+}
+
+/// Add broadband energy ABOVE the 8 kHz target Nyquist — the band that folds.
+/// Deterministic (a fixed comb of tones with fixed phases), scaled to half the
+/// speech RMS so it is a realistic room-noise floor rather than a stress test
+/// nobody would ever record.
+fn with_ultrasonic_noise(speech: &[f32], rate: u32) -> Vec<f32> {
+    let speech_rms =
+        (speech.iter().map(|s| (s * s) as f64).sum::<f64>() / speech.len().max(1) as f64).sqrt();
+    let tones: Vec<f32> = (0..58).map(|k| 8_500.0 + k as f32 * 250.0).collect();
+    let scale = (0.5 * speech_rms / (tones.len() as f64 / 2.0).sqrt()) as f32;
+    speech
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let t = i as f32 / rate as f32;
+            let noise: f32 = tones
+                .iter()
+                .enumerate()
+                .map(|(k, &hz)| {
+                    let phase = k as f32 * 0.7;
+                    (2.0 * std::f32::consts::PI * hz * t + phase).sin()
+                })
+                .sum();
+            (s + noise * scale).clamp(-1.0, 1.0)
+        })
+        .collect()
+}
+
+/// RMS of `a - b` over their common length — the energy one decimation added
+/// that the other did not.
+fn residual_rms(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let sum: f64 = a
+        .iter()
+        .zip(b.iter())
+        .take(n)
+        .map(|(x, y)| {
+            let d = (x - y) as f64;
+            d * d
+        })
+        .sum();
+    (sum / n as f64).sqrt() as f32
+}
+
+fn to_i16(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The generator — synthetic audio only, run by hand, never in CI
 // ---------------------------------------------------------------------------
