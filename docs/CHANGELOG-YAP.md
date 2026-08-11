@@ -1,6 +1,6 @@
 # Yap Changelog
 
-## Unreleased
+## v0.8.0
 
 - **Yap is a paid app now, and the trial is a real one.** Every install gets 14 days of the whole app, no card and no account. A $29 one-time license (a $19 founding price runs against the same purchase) turns it on for good, on up to three of your Macs.
 - **When the trial ends, only new dictation stops.** Your history, your search, your exports, your settings, your dictionary and your snippets keep working forever. The words you already spoke are yours — Yap does not hold them hostage to sell you a license, and pressing the hotkey out of habit gets a sentence explaining that, not a dead key.
@@ -11,6 +11,9 @@
 - **The terms, the privacy policy and the price now say the same thing the app does.** The Terms of Use describe what $29 actually buys — personal use, three Macs, every future update, no renewal — alongside the fourteen-day trial, a no-questions fourteen-day refund, and a plain paragraph about recording other people, which is your call and your responsibility because Yap does not announce itself to anyone in the room. The Apache-2.0 carve-out now names the **shipped release** rather than a version number the working tree still claimed — the v0.7.0 release (tag `v0.7.0`, commit `8c8740f`) and everything before it stay Apache-2.0 for everyone who received them, and every commit after it, licensing and payment code included, is proprietary. The in-repo version moved to **0.8.0** so a clone can no longer read as "this IS 0.7.0, so the Apache file covers it", and `NOTICE` and the README carry the same cut-off so the Apache file is never encountered alone. The privacy policy now covers the purchase too: Stripe handles the payment, we keep a one-way hash of your email and the license's own metadata, and the licensing path's single network call downloads a public refund list that carries no key, no email and no query. It also stops claiming Yap never keeps audio, because YV52 does: a take that fails or is rejected keeps its recording in a local recovery folder for up to 7 days so you can retry it, Discard deletes it on the spot, and the policy now says exactly that in all three places it used to say the opposite.
 - **The site has a price on it.** A pricing section states $29 once, yours forever, three Macs, refundable for fourteen days, with the founding $19 code described honestly — a real 500-person cap and no countdown timer, because there is no countdown. The "free and open source" line is gone from the page it outlived.
 - **The end of the trial is an offer, not a wall.** Pressing your hotkey after day 14 brings up a warm prompt with Yappy on it: buy, or paste a key. Dismiss it and the app behind it still works — your notes and history stay yours forever, and the prompt says so.
+- **Auto-update is live.** The updater keypair now has a retrievable password backing it, so this release is the first one signed and verifiable end to end — installed Macs on v0.7.0 and later can update in place instead of a manual DMG reinstall.
+- **Yappy keeps talking for the whole take again.** Live commentary had gone quiet partway through longer dictations; it now escalates and reacts for the full duration, not just the opening beat.
+- **Lighter when you're not dictating.** The ASR model now loads lazily — Yap idles with nothing armed and the first dictation of a session spins the engine up — and an energy pass parked idle pill animations, audited polling for busy timers, and unloads the polish sidecar when it isn't in use.
 
 ## v0.7.0
 
