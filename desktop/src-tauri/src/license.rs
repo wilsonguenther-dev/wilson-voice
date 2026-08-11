@@ -361,6 +361,16 @@ impl LicenseStore for crate::db::Database {
 #[derive(Default)]
 pub struct MemoryStore {
     map: Mutex<std::collections::HashMap<String, String>>,
+    /// How many writes this store has taken. The gate runs on the
+    /// press→capture path, so "does the steady state write?" is a property
+    /// worth being able to assert on.
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+impl MemoryStore {
+    pub fn writes(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl LicenseStore for MemoryStore {
@@ -368,6 +378,8 @@ impl LicenseStore for MemoryStore {
         self.map.lock().get(key).cloned()
     }
     fn set(&self, key: &str, value: &str) {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.map.lock().insert(key.to_string(), value.to_string());
     }
 }
@@ -647,6 +659,16 @@ pub struct LicenseManager {
 /// How often the gate is allowed to speak up on the hotkey path.
 const GATE_NOTICE_INTERVAL_SECS: u64 = 15;
 
+/// How coarse the rollback floor is allowed to be.
+///
+/// The floor exists to stop the Mac's clock being wound back to replay the
+/// trial, and an hour of slack costs an attacker one hour out of fourteen days.
+/// What it buys is that `status()` — which the gate calls on EVERY dictation
+/// start, on the press→capture path YV35 measures — does no disk write in its
+/// steady state. Making this 0 would put a SQLite write and a file rewrite in
+/// front of the user's first syllable, every single time they talk.
+const FLOOR_QUANTUM_MS: i64 = 60 * 60 * 1000;
+
 fn wall_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -702,30 +724,57 @@ impl LicenseManager {
     pub fn status(&self) -> LicenseStatus {
         let mut file = self.file.lock();
 
+        let db_started_at_ms = parse_ms(self.store.get(DB_KEY_TRIAL_STARTED));
+        let db_floor_ms = parse_ms(self.store.get(DB_KEY_CLOCK_FLOOR));
         let trial = evaluate_trial(TrialInputs {
             file_started_at_ms: file.trial_started_at_ms,
-            db_started_at_ms: parse_ms(self.store.get(DB_KEY_TRIAL_STARTED)),
+            db_started_at_ms,
             file_floor_ms: file.max_seen_wall_ms,
-            db_floor_ms: parse_ms(self.store.get(DB_KEY_CLOCK_FLOOR)),
+            db_floor_ms,
             wall_now_ms: (self.now)(),
             monotonic_now_ms: self.monotonic_now_ms(),
         });
 
-        // Write the trial's start and the new clock floor back to BOTH stores.
-        // Idempotent; only touches disk when something actually moved.
+        // Persist the trial's start and the new clock floor to BOTH stores —
+        // but only when the value has genuinely moved.
+        //
+        // This matters because `status()` sits on the press→capture path: the
+        // gate asks it on every dictation start, and YV35 measures that span in
+        // milliseconds. The clock floor advances on literally every call, so
+        // writing it every time would put a SQLite write and a file rewrite in
+        // front of the user's first syllable, forever. `FLOOR_QUANTUM_MS`
+        // (below) is the coarseness the floor is allowed to have; it is what
+        // makes the steady state of this function pure reads.
+        // Each store is compared against the resolved value SEPARATELY, so a
+        // store that lost its copy — a deleted license.json, a quarantined and
+        // recreated database — is repaired from the survivor rather than left
+        // half-populated. That repair is the whole reason there are two of them.
         let mut dirty = false;
         if file.trial_started_at_ms != Some(trial.started_at_ms) {
             file.trial_started_at_ms = Some(trial.started_at_ms);
             dirty = true;
         }
-        if file.max_seen_wall_ms.unwrap_or(i64::MIN) < trial.floor_ms {
+        if db_started_at_ms != Some(trial.started_at_ms) {
+            self.store
+                .set(DB_KEY_TRIAL_STARTED, &trial.started_at_ms.to_string());
+        }
+        if file
+            .max_seen_wall_ms
+            .unwrap_or(i64::MIN)
+            .saturating_add(FLOOR_QUANTUM_MS)
+            <= trial.floor_ms
+        {
             file.max_seen_wall_ms = Some(trial.floor_ms);
             dirty = true;
         }
-        self.store
-            .set(DB_KEY_TRIAL_STARTED, &trial.started_at_ms.to_string());
-        self.store
-            .set(DB_KEY_CLOCK_FLOOR, &trial.floor_ms.to_string());
+        if db_floor_ms
+            .unwrap_or(i64::MIN)
+            .saturating_add(FLOOR_QUANTUM_MS)
+            <= trial.floor_ms
+        {
+            self.store
+                .set(DB_KEY_CLOCK_FLOOR, &trial.floor_ms.to_string());
+        }
 
         // Re-verify the stored key from scratch, every time. There is no cached
         // answer to go stale, and no boolean anywhere that says "licensed".
@@ -1457,6 +1506,89 @@ mod tests {
         let reopened =
             LicenseManager::with_clock(dir.path(), store, Box::new(|| 5_000_000 + 13 * DAY_MS));
         assert_eq!(reopened.status().trial_days_left, 1);
+    }
+
+    /// The gate calls `status()` on every dictation start, on the
+    /// press→capture span YV35 measures in milliseconds. Once the trial's
+    /// bookkeeping has settled, asking it again must cost pure reads — no
+    /// SQLite write, no file rewrite — or Yap pays disk I/O for the privilege
+    /// of letting the user speak.
+    #[test]
+    fn trial_steady_state_costs_no_writes() {
+        let dir = tempdir::TempDir::new("no-writes");
+        let store = Arc::new(MemoryStore::default());
+        let mgr = LicenseManager::with_clock(
+            dir.path(),
+            store.clone() as Arc<dyn LicenseStore>,
+            Box::new(|| 5_000_000),
+        );
+        let settled = store.writes();
+        let file_mtime = std::fs::metadata(dir.path().join(LICENSE_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        for _ in 0..50 {
+            assert!(mgr.allows_new_dictation());
+        }
+        assert_eq!(
+            store.writes(),
+            settled,
+            "a settled trial must not write to the DB on the dictation-start path"
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path().join(LICENSE_FILE))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            file_mtime,
+            "a settled trial must not rewrite license.json on the dictation-start path"
+        );
+    }
+
+    /// …but the floor DOES still advance, or the rollback protection above is
+    /// decoration. One quantum later, both stores move.
+    #[test]
+    fn trial_floor_advances_once_per_quantum() {
+        let dir = tempdir::TempDir::new("floor-quantum");
+        let store = Arc::new(MemoryStore::default());
+        let handle = store.clone() as Arc<dyn LicenseStore>;
+        let _first = LicenseManager::with_clock(dir.path(), handle.clone(), Box::new(|| 5_000_000));
+        let later = LicenseManager::with_clock(
+            dir.path(),
+            handle,
+            Box::new(|| 5_000_000 + FLOOR_QUANTUM_MS + 1),
+        );
+        let _ = later.status();
+        assert!(
+            parse_ms(store.get(DB_KEY_CLOCK_FLOOR)).unwrap() >= 5_000_000 + FLOOR_QUANTUM_MS,
+            "the rollback floor must still advance across quanta"
+        );
+    }
+
+    /// A store that lost its copy is repaired from the survivor — that is the
+    /// entire reason the trial is written twice.
+    #[test]
+    fn trial_missing_db_row_is_rebuilt_from_the_file() {
+        let dir = tempdir::TempDir::new("repair-db");
+        let first = Arc::new(MemoryStore::default()) as Arc<dyn LicenseStore>;
+        let mgr = LicenseManager::with_clock(dir.path(), first, Box::new(|| 5_000_000));
+        let started = mgr.file_snapshot().trial_started_at_ms.unwrap();
+
+        // Fresh (empty) DB, same license.json — as if the database had been
+        // quarantined and recreated.
+        let rebuilt = Arc::new(MemoryStore::default());
+        let mgr2 = LicenseManager::with_clock(
+            dir.path(),
+            rebuilt.clone() as Arc<dyn LicenseStore>,
+            Box::new(|| 5_000_000 + DAY_MS),
+        );
+        let _ = mgr2.status();
+        assert_eq!(
+            parse_ms(rebuilt.get(DB_KEY_TRIAL_STARTED)),
+            Some(started),
+            "the corroborating row must be rebuilt, not silently left missing"
+        );
     }
 
     // ── (5) the gate ──
