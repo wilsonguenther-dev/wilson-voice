@@ -12,11 +12,8 @@ import PurchasePrompt from "./license/PurchasePrompt";
 // rules live in `meetings/consent.ts` so they are unit-tested once, here and in
 // the preview page, rather than being inline strings in this file.
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
-import {
-  acknowledgedLabel,
-  shouldOpenNotice,
-  type MeetingConsent,
-} from "./meetings/consent";
+import { acknowledgedLabel, type MeetingConsent } from "./meetings/consent";
+import { watchMeetingConsent } from "./meetings/consentWatch";
 import {
   chipFor,
   shouldWarnTrial,
@@ -911,28 +908,21 @@ export default function App() {
   // YV96 — the one-time capture notice: read the stored acknowledgement once on
   // mount, then watch for a meeting actually starting.
   //
-  // It hangs off the backend's `meeting` event rather than off any particular
-  // button because 22-A has FOUR entry points (tray item, ⌃⌘M, the pill, the
-  // Meetings CTA) and a notice wired to one of them is a notice three ways of
-  // recording never show. `shouldOpenNotice` is idempotent, so the 1 Hz tick
-  // that follows the first one costs a boolean and changes nothing.
-  useEffect(() => {
-    let dead = false;
-    const unsubs: Array<() => void> = [];
-    invoke<MeetingConsent>("meeting_consent")
-      .then((c) => {
-        if (!dead) setConsent(c);
-      })
-      .catch(() => {});
-    listen<{ recording: boolean }>("meeting", (e) => {
-      if (shouldOpenNotice(consentRef.current, e.payload))
-        setConsentOpen("recording");
-    }).then((u) => (dead ? u() : unsubs.push(u)));
-    return () => {
-      dead = true;
-      unsubs.forEach((u) => u());
-    };
-  }, []);
+  // The subscription itself lives in `meetings/consentWatch.ts` so it can be
+  // tested across the process boundary it depends on: the event name and the
+  // payload field are a contract with Rust that no compiler checks, and a rename
+  // on either side would leave this sheet unreachable with the build still
+  // green. `shouldOpenNotice` inside it is idempotent, so the 1 Hz tick that
+  // follows the first one costs a boolean and changes nothing.
+  useEffect(
+    () =>
+      watchMeetingConsent({
+        currentConsent: () => consentRef.current,
+        onConsent: setConsent,
+        onOpen: () => setConsentOpen("recording"),
+      }),
+    [],
+  );
 
   // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
   // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is

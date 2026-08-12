@@ -199,6 +199,23 @@ pub struct MeetingStats {
 /// old acknowledgement as covering new words.
 pub const CONSENT_NOTICE_KEY: &str = "meeting_consent_notice_ack_v1";
 
+/// The Tauri event name the meeting status is broadcast under — the ONE place
+/// it is written on the Rust side.
+///
+/// This exists because the notice's trigger crosses a process boundary on a
+/// bare string. YV95's `meeting_status_sink` emits it once a second; the
+/// webview's `watchMeetingConsent` (`src/meetings/consentWatch.ts`) listens for
+/// it and raises the one-time capture notice. Nothing type-checks that pair:
+/// rename one end and the app still builds, every unit test still passes, and
+/// the notice — the whole of YV96 — silently never renders again.
+///
+/// So both ends name the constant instead of the string, and
+/// `tests/meeting_event_contract.rs` asserts the Rust value, the TypeScript
+/// value and the listener's subscription are the same word. Emitters must use
+/// `MEETING_EVENT` rather than a `"meeting"` literal; that test fails them if
+/// they do not.
+pub const MEETING_EVENT: &str = "meeting";
+
 /// What the acknowledgement row actually stores: an RFC3339 timestamp of the
 /// first close. The value is bookkeeping, not a decision — nothing reads it back
 /// except the UI, which shows it in Settings → Privacy.

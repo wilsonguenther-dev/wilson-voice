@@ -32,9 +32,30 @@ export interface MeetingConsent {
 }
 
 /**
+ * The Tauri event this notice hangs off — the ONE place the name is written on
+ * the frontend side.
+ *
+ * The name is a contract across a process boundary that no compiler checks: the
+ * emitter is `meetings::MEETING_EVENT` in Rust (YV95 emits it once a second from
+ * `meeting_status_sink`), the listener is `watchMeetingConsent` in
+ * `consentWatch.ts`, and a rename on either side would leave the sheet silently
+ * unreachable — the whole deliverable gone with a green build.
+ * `src-tauri/tests/meeting_event_contract.rs` reads this literal out of this
+ * file and asserts it against the Rust constant, and `consentWatch.test.ts`
+ * asserts the listener actually subscribes to it, so the two ends cannot drift
+ * apart without something going red.
+ */
+export const MEETING_EVENT = "meeting";
+
+/**
  * The slice of YV95's `meeting` event this module needs. Typed locally, not
  * imported from `pill/meeting.ts`, so the notice does not acquire a dependency
  * on the recording surface's shape — it only ever asks one question of it.
+ *
+ * `recording` is the serialized name of `MeetingStatus::recording` (the struct
+ * is `#[serde(rename_all = "camelCase")]`, and a one-word field survives that
+ * unchanged). The wiring test feeds a full serialized `MeetingStatus` through
+ * this type so the field name is pinned by a test rather than by memory.
  */
 export interface RecordingSignal {
   recording: boolean;
