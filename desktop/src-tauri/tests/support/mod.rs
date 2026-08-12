@@ -194,3 +194,180 @@ pub fn exclusive() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+// ── YV97 · the summary stubs ────────────────────────────────────────────────
+//
+// The summarizer's five acceptance criteria are all properties of its PURE
+// stages — chunking, grammar generation, defensive parsing, the ported gate, the
+// merge. A stub model is what makes them testable at all: the real 1.5B is
+// nondeterministic, slow, and not installed in CI, and none of the properties
+// under test are properties of the model.
+
+/// A meeting-shaped token count, standing in for a real BPE vocabulary.
+///
+/// One token per word, plus the three things that actually split a word into
+/// several: an interior capital (`Delacroix-Bell`, `AirPods`), a punctuation or
+/// separator character (BPE rarely merges `-`, `_`, `:` or `—` into a
+/// neighbouring word), and length past a common-subword ceiling. Digits split
+/// too, which is why a `seg_0001:` tag costs five tokens and one word.
+///
+/// The point of modelling it this way rather than as a flat multiplier: on
+/// name-dense, tagged, disfluent meeting text this runs WELL ABOVE the
+/// rewriter's 1.3-tokens/word proxy, which is finding #35 in one function. On
+/// plain lowercase prose it stays near 1.0, so a chunker measured against it is
+/// not simply being handed a bigger number everywhere.
+pub fn meeting_token_count(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|word| {
+            let chars = word.chars().count();
+            1 + word.chars().filter(|c| c.is_uppercase()).count()
+                + word.chars().filter(|c| !c.is_alphanumeric()).count()
+                + word.chars().filter(char::is_ascii_digit).count() / 2
+                + chars.saturating_sub(6) / 4
+        })
+        .sum()
+}
+
+/// A scripted stand-in for the sidecar: answers come from a closure over the
+/// request, and every request is recorded so a test can assert what was ASKED,
+/// not only what came back.
+pub struct StubModel {
+    responder: Box<
+        dyn Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError>
+            + Send
+            + Sync,
+    >,
+    requests: std::sync::Mutex<Vec<wilson_voice_lib::polish_protocol::PolishRequest>>,
+    counts: AtomicU64,
+}
+
+use wilson_voice_lib::summarize::{SummaryClient, SummaryError, TokenCounter};
+
+impl StubModel {
+    pub fn new(
+        responder: impl Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            responder: Box::new(responder),
+            requests: std::sync::Mutex::new(Vec::new()),
+            counts: AtomicU64::new(0),
+        }
+    }
+
+    /// Every request the pipeline sent, in order.
+    pub fn requests(&self) -> Vec<wilson_voice_lib::polish_protocol::PolishRequest> {
+        self.requests.lock().expect("stub lock").clone()
+    }
+
+    /// Requests of one summarize stage (`map` / `reduce`).
+    pub fn stage(&self, stage: &str) -> Vec<wilson_voice_lib::polish_protocol::PolishRequest> {
+        self.requests()
+            .into_iter()
+            .filter(|r| r.mode == stage)
+            .collect()
+    }
+
+    /// How many times the pipeline asked the tokenizer anything.
+    pub fn token_count_calls(&self) -> u64 {
+        self.counts.load(Ordering::Relaxed)
+    }
+}
+
+impl TokenCounter for StubModel {
+    fn count_tokens(&self, text: &str) -> Result<usize, SummaryError> {
+        self.counts.fetch_add(1, Ordering::Relaxed);
+        Ok(meeting_token_count(text))
+    }
+}
+
+impl SummaryClient for StubModel {
+    fn generate(
+        &self,
+        req: &wilson_voice_lib::polish_protocol::PolishRequest,
+    ) -> Result<String, SummaryError> {
+        self.requests.lock().expect("stub lock").push(req.clone());
+        (self.responder)(req)
+    }
+
+    fn model_id(&self) -> String {
+        "stub-1.5b".to_string()
+    }
+}
+
+/// The `seg_NNNN` labels present in a rendered chunk — how a stub answers with
+/// ids that really are in the chunk it was handed.
+pub fn labels_in(chunk_text: &str) -> Vec<String> {
+    chunk_text
+        .lines()
+        .filter_map(|l| {
+            l.split_once(": ")
+                .map(|(label, _)| label.trim().to_string())
+        })
+        .collect()
+}
+
+/// The body of one rendered chunk line, without its label.
+pub fn bodies_in(chunk_text: &str) -> Vec<String> {
+    chunk_text
+        .lines()
+        .filter_map(|l| l.split_once(": ").map(|(_, body)| body.trim().to_string()))
+        .collect()
+}
+
+/// A well-formed MAP answer of exactly the shape the grammar admits.
+pub fn map_answer(
+    narrative: &str,
+    actions: &[(&str, &str)],
+    decisions: &[(&str, &str)],
+    questions: &[(&str, &str)],
+) -> String {
+    let items = |items: &[(&str, &str)]| {
+        serde_json::Value::Array(
+            items
+                .iter()
+                .map(|(text, segment)| serde_json::json!({ "text": text, "segment": segment }))
+                .collect(),
+        )
+    };
+    serde_json::json!({
+        "narrative": narrative,
+        "actions": items(actions),
+        "decisions": items(decisions),
+        "questions": items(questions),
+    })
+    .to_string()
+}
+
+/// A tiny meeting whose words are the vocabulary the summary tests draw from —
+/// so a "grounded" item in a test really is grounded, and the V3 floor is being
+/// exercised rather than accidentally satisfied.
+pub const SEGMENT_TEXTS: [&str; 3] = [
+    "we should move the onboarding review before the release goes out",
+    "we are shipping without the calendar work this cycle and that is settled",
+    "nobody owns the escalation path yet and someone should fix the actions counter",
+];
+
+/// [`SEGMENT_TEXTS`] as YV94 rows, four seconds apart.
+pub fn segments() -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
+    segments_from(&SEGMENT_TEXTS)
+}
+
+/// Arbitrary texts as YV94 rows.
+pub fn segments_from(texts: &[&str]) -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| wilson_voice_lib::meetings::MeetingSegment {
+            id: format!("segment-{i}"),
+            meeting_id: "meeting-under-test".to_string(),
+            start_seconds: i as f64 * 4.0,
+            end_seconds: i as f64 * 4.0 + 3.5,
+            text: (*text).to_string(),
+            confidence: None,
+            created_at: chrono::Utc::now(),
+        })
+        .collect()
+}

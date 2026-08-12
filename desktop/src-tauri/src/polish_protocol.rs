@@ -23,6 +23,23 @@
 //! {"id":7,"ok":false,"err":"deadline"}
 //! ```
 //!
+//! YV97 added two more request KINDS on the same line protocol, so the meeting
+//! summarizer runs on this same binary and this same wire (it spawns its own
+//! short-lived child rather than borrowing the dictation path's warm one — see
+//! `summarize::SidecarSession` for why that matters to dictation latency):
+//!
+//! ```jsonc
+//! // → a constrained MAP pass: the grammar rides ON the request, because it
+//! //   enumerates the segment ids of THIS chunk and nothing else.
+//! {"id":8,"kind":"summarize","mode":"map","style":"default","max_out":288,
+//!  "deadline_ms":30000,"text":"seg_0001: …","grammar":"root ::= …"}
+//! // → the tokenizer, exposed: chunk sizing measured in the real vocabulary
+//! {"id":9,"kind":"count_tokens","mode":"","style":"default","max_out":0,
+//!  "deadline_ms":5000,"text":"…"}
+//! // ← the count, typed and mirrored into `text`
+//! {"id":9,"ok":true,"text":"417","ms":3,"tokens":417}
+//! ```
+//!
 //! **This file is the single source of truth for both sides.** `yap-polish`
 //! compiles it directly (`#[path = "../../src-tauri/src/polish_protocol.rs"]`)
 //! rather than keeping a second copy, so the two ends cannot drift. That is why
@@ -31,15 +48,65 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One rewrite request. Serialized as a single line on the sidecar's stdin.
+// ── YV97 · request kinds ────────────────────────────────────────────────────
+//
+// The sidecar started as a rewriter and one request shape was all it needed.
+// The meeting summarizer needs two more things from the SAME warm process — a
+// constrained generation, and the tokenizer that already exists inside it — so
+// the wire grows a `kind` discriminator rather than a second sidecar.
+
+/// The original rewrite request. The default when a line carries no `kind`, so
+/// every request written before YV97 still means what it meant.
+pub const KIND_POLISH: &str = "polish";
+/// A summarization pass (MAP or REDUCE — see [`PolishRequest::mode`], which
+/// carries the stage for this kind).
+pub const KIND_SUMMARIZE: &str = "summarize";
+/// "How many tokens is this text, in YOUR vocabulary?" — no decode, no
+/// generation, no model output. Finding #35: chunk sizing measured with the
+/// 1.3-tokens/word proxy runs well under the truth on meeting-shaped text
+/// (proper nouns, disfluencies), and the sidecar is the only process that holds
+/// the actual vocabulary.
+pub const KIND_COUNT_TOKENS: &str = "count_tokens";
+
+/// MAP stage of a summarize request.
+pub const SUMMARIZE_MAP: &str = "map";
+/// REDUCE stage of a summarize request.
+pub const SUMMARIZE_REDUCE: &str = "reduce";
+
+/// Output budget for one MAP pass, in tokens (finding #35).
+///
+/// Deliberately NOT [`max_out_for`]: that formula is `input × 1.4 + 24`, written
+/// for a rewriter where output ≈ input, and handing it to a *summary* gives the
+/// summary a larger budget than the thing it summarizes. A per-chunk extraction
+/// is a fixed-size object — a handful of actions, decisions and questions — so
+/// it gets a fixed budget.
+pub const SUMMARY_MAP_MAX_OUT: u32 = 288;
+/// Output budget for the REDUCE narrative, in tokens. One paragraph or three,
+/// never a re-transcript.
+pub const SUMMARY_REDUCE_MAX_OUT: u32 = 384;
+
+/// The GBNF start symbol every generated grammar uses.
+pub const GRAMMAR_ROOT: &str = "root";
+
+fn default_kind() -> String {
+    KIND_POLISH.to_string()
+}
+
+/// One request. Serialized as a single line on the sidecar's stdin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolishRequest {
     /// Monotonic per-process request id. Responses that do not carry it are
     /// stale (a previous dictation the parent stopped waiting for) and MUST be
     /// discarded — see [`parse_response_for`].
     pub id: u64,
-    /// Dictation mode, lowercased: `email` `document` `notes` `chat` `plain`
-    /// `list`. `code` never reaches the model at all.
+    /// [`KIND_POLISH`] (the default, and what a pre-YV97 line deserializes as),
+    /// [`KIND_SUMMARIZE`], or [`KIND_COUNT_TOKENS`].
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// For [`KIND_POLISH`]: the dictation mode, lowercased — `email` `document`
+    /// `notes` `chat` `plain` `list`; `code` never reaches the model at all.
+    /// For [`KIND_SUMMARIZE`]: the stage, [`SUMMARIZE_MAP`] or
+    /// [`SUMMARIZE_REDUCE`]. Ignored for [`KIND_COUNT_TOKENS`].
     pub mode: String,
     /// Tone dial: `very casual` | `casual` | `default` | `formal`.
     pub style: String,
@@ -55,6 +122,114 @@ pub struct PolishRequest {
     /// decisions in-process and is not sent anywhere, not even locally.
     #[serde(default)]
     pub topic: Option<String>,
+    /// GBNF for a constrained decode, rooted at [`GRAMMAR_ROOT`]. Present ⇒ the
+    /// sidecar builds a per-request sampler CHAIN with the grammar ahead of
+    /// greedy (finding #17); absent ⇒ plain greedy, exactly as before.
+    ///
+    /// It lives on the request, not on the sidecar, because the summarizer
+    /// generates a different grammar for every chunk: the evidence field is an
+    /// enum over the segment ids present in THAT chunk (finding #18), which is
+    /// what turns provenance from a model behaviour into a mechanical one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grammar: Option<String>,
+}
+
+impl PolishRequest {
+    /// A rewrite request — the pre-YV97 shape, unconstrained.
+    pub fn polish(
+        id: u64,
+        mode: &str,
+        style: &str,
+        max_out: u32,
+        deadline_ms: u64,
+        text: String,
+    ) -> Self {
+        Self {
+            id,
+            kind: KIND_POLISH.to_string(),
+            mode: mode.to_string(),
+            style: style.to_string(),
+            max_out,
+            deadline_ms,
+            text,
+            topic: None,
+            grammar: None,
+        }
+    }
+
+    /// One summarization pass. `grammar` constrains the output shape (MAP);
+    /// `None` leaves the narrative free text (REDUCE).
+    pub fn summarize(
+        id: u64,
+        stage: &str,
+        max_out: u32,
+        deadline_ms: u64,
+        text: String,
+        grammar: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            kind: KIND_SUMMARIZE.to_string(),
+            mode: stage.to_string(),
+            style: "default".to_string(),
+            max_out,
+            deadline_ms,
+            text,
+            topic: None,
+            grammar,
+        }
+    }
+
+    /// Ask the sidecar's tokenizer how long this text is. No decode happens.
+    pub fn count_tokens(id: u64, deadline_ms: u64, text: String) -> Self {
+        Self {
+            id,
+            kind: KIND_COUNT_TOKENS.to_string(),
+            mode: String::new(),
+            style: "default".to_string(),
+            max_out: 0,
+            deadline_ms,
+            text,
+            topic: None,
+            grammar: None,
+        }
+    }
+
+    /// The grammar for this request, if it carries a usable one.
+    pub fn grammar_text(&self) -> Option<&str> {
+        self.grammar
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+    }
+}
+
+/// Which sampler the sidecar must build for one request (finding #17).
+///
+/// Grammar state is PER GRAMMAR: a single `LlamaSampler::greedy()` built once
+/// outside the serve loop and `.reset()` per request cannot carry one, and a
+/// grammar bolted onto a shared instance would leak one request's constraint
+/// into the next. So the sampler is built per request, from this plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SamplerPlan {
+    /// `LlamaSampler::greedy()` — a rewriter is deterministic.
+    Greedy,
+    /// `LlamaSampler::chain_simple([grammar(model, …), greedy()])`. Order is
+    /// load-bearing: the grammar masks the logits, greedy then picks from what
+    /// survives. Greedy first would select a token the grammar forbids.
+    GrammarThenGreedy { grammar: String, root: String },
+}
+
+/// The sampler this request needs. Pure, so both ends agree on the rule and the
+/// decision is testable without a model resident.
+pub fn sampler_plan(req: &PolishRequest) -> SamplerPlan {
+    match req.grammar_text() {
+        Some(grammar) => SamplerPlan::GrammarThenGreedy {
+            grammar: grammar.to_string(),
+            root: GRAMMAR_ROOT.to_string(),
+        },
+        None => SamplerPlan::Greedy,
+    }
 }
 
 /// The `type` value of the readiness line. The only message on this wire that
@@ -118,6 +293,16 @@ pub struct PolishResponse {
     pub out_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ms: Option<u64>,
+    /// [`KIND_COUNT_TOKENS`] answer: the length of the request text in the
+    /// model's own vocabulary. Also mirrored into `text` so a caller that only
+    /// has the text channel (the existing `exchange`) can read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
+    /// Set when the sidecar had to DROP input to fit the context (finding #35 —
+    /// truncate and warn, never a hard `too_long` refusal for a summary). The
+    /// answer is real; it is just not over all of the text that was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 impl PolishResponse {
@@ -130,7 +315,47 @@ impl PolishResponse {
             err: None,
             out_tokens: Some(out_tokens),
             ms: Some(ms),
+            tokens: None,
+            truncated: None,
         }
+    }
+
+    /// A successful generation that had to drop input to fit the context.
+    pub fn ok_truncated(id: u64, text: String, out_tokens: u32, ms: u64) -> Self {
+        Self {
+            truncated: Some(true),
+            ..Self::ok(id, text, out_tokens, ms)
+        }
+    }
+
+    /// A [`KIND_COUNT_TOKENS`] answer. The number is carried twice on purpose:
+    /// typed in `tokens`, and as `text` so the parent's existing text-only
+    /// response path can read it without a second code path.
+    pub fn counted(id: u64, tokens: u32, ms: u64) -> Self {
+        Self {
+            id,
+            ok: true,
+            text: Some(tokens.to_string()),
+            err: None,
+            out_tokens: None,
+            ms: Some(ms),
+            tokens: Some(tokens),
+            truncated: None,
+        }
+    }
+
+    /// The token count this response carries, from either channel.
+    pub fn token_count(&self) -> Option<u32> {
+        if !self.ok {
+            return None;
+        }
+        self.tokens
+            .or_else(|| self.text.as_deref().and_then(|t| t.trim().parse().ok()))
+    }
+
+    /// Whether input was dropped to fit the context.
+    pub fn was_truncated(&self) -> bool {
+        self.truncated.unwrap_or(false)
     }
 
     /// A failure. `reason` is a short tag (`deadline`, `decode`, `bad_request`,
@@ -143,6 +368,8 @@ impl PolishResponse {
             err: Some(reason.to_string()),
             out_tokens: None,
             ms: None,
+            tokens: None,
+            truncated: None,
         }
     }
 
@@ -178,23 +405,85 @@ pub fn max_out_for(text: &str) -> u32 {
     (in_tokens * 1.4).ceil() as u32 + 24
 }
 
+/// The truncation marker appended to text that had to be cut to fit a budget.
+/// Visible on purpose: a silently shortened input is a summary that quietly
+/// omits the end of a meeting.
+pub const TRUNCATION_MARKER: &str = "[truncated]";
+
+/// Fit `text` into `budget` tokens as measured by `count`, dropping whole lines
+/// from the end, then characters if even one line will not fit.
+///
+/// Returns the kept text and whether anything was dropped — finding #35's
+/// "truncate and warn", replacing the sidecar's `too_long` refusal for summarize
+/// requests. A refusal is the wrong answer for a summary: the caller has no
+/// smaller question to ask, so a hard error turns one oversized chunk into no
+/// summary at all.
+///
+/// `count` is the caller's real tokenizer (the sidecar's vocabulary), which is
+/// why this is a callback and not a word-count heuristic. It is called O(log n)
+/// times — a binary search over the line count, not a scan.
+pub fn fit_to_budget<F>(text: &str, budget: usize, count: &mut F) -> (String, bool)
+where
+    F: FnMut(&str) -> usize,
+{
+    if budget == 0 {
+        return (String::new(), !text.is_empty());
+    }
+    if count(text) <= budget {
+        return (text.to_string(), false);
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    // Largest prefix of whole lines that fits. `lo` is known-good (0 lines),
+    // `hi` known-bad, so the loop always terminates on the boundary.
+    let (mut lo, mut hi) = (0usize, lines.len());
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        if count(&lines[..mid].join("\n")) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo > 0 {
+        return (
+            format!("{}\n{TRUNCATION_MARKER}", lines[..lo].join("\n")),
+            true,
+        );
+    }
+    // Not even the first line fits: cut it by characters, on char boundaries.
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect();
+        if count(&candidate) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    (chars[..lo].iter().collect::<String>(), true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn polish_protocol_roundtrip_serializes_and_parses() {
-        let req = PolishRequest {
-            id: 7,
-            mode: "email".to_string(),
-            style: "default".to_string(),
-            max_out: 96,
-            deadline_ms: 1200,
-            text: "hey jordan quick update the build is green".to_string(),
-            topic: None,
-        };
+        let req = PolishRequest::polish(
+            7,
+            "email",
+            "default",
+            96,
+            1200,
+            "hey jordan quick update the build is green".to_string(),
+        );
         let line = serde_json::to_string(&req).expect("request serializes");
-        assert!(!line.contains('\n'), "a request is exactly one line: {line}");
+        assert!(
+            !line.contains('\n'),
+            "a request is exactly one line: {line}"
+        );
         let back: PolishRequest = serde_json::from_str(&line).expect("request parses");
         assert_eq!(back, req);
 
@@ -206,7 +495,10 @@ mod tests {
         );
         let back: PolishResponse = serde_json::from_str(&line).expect("response parses");
         assert_eq!(back, resp);
-        assert_eq!(back.into_text().as_deref(), Some("Hey Jordan,\n\nQuick update…"));
+        assert_eq!(
+            back.into_text().as_deref(),
+            Some("Hey Jordan,\n\nQuick update…")
+        );
 
         // The failure shape carries no text and yields none.
         let failed = PolishResponse::err(7, "deadline");
@@ -214,14 +506,140 @@ mod tests {
         assert_eq!(line, r#"{"id":7,"ok":false,"err":"deadline"}"#);
         assert_eq!(failed.into_text(), None);
 
-        // The documented wire lines parse as written in the spec.
+        // The documented wire lines parse as written in the spec. A line with no
+        // `kind` — every request written before YV97 — is still a polish
+        // request, which is what keeps the two ends compatible in both
+        // directions during a partial upgrade.
         let spec_req = r#"{"id":7,"mode":"email","style":"default","max_out":96,"deadline_ms":1200,"text":"hey jordan","topic":null}"#;
-        assert_eq!(
-            serde_json::from_str::<PolishRequest>(spec_req)
-                .expect("spec request parses")
-                .id,
-            7
+        let parsed = serde_json::from_str::<PolishRequest>(spec_req).expect("spec request parses");
+        assert_eq!(parsed.id, 7);
+        assert_eq!(parsed.kind, KIND_POLISH);
+        assert_eq!(parsed.grammar, None);
+    }
+
+    /// YV97 — the summarize/count_tokens kinds ride the SAME line protocol, and
+    /// a grammar-carrying request is the only thing that changes the sampler.
+    #[test]
+    fn polish_protocol_summarize_and_count_kinds_roundtrip() {
+        let map = PolishRequest::summarize(
+            11,
+            SUMMARIZE_MAP,
+            SUMMARY_MAP_MAX_OUT,
+            30_000,
+            "seg_0001: we agreed to ship on friday".to_string(),
+            Some("root ::= \"{}\"".to_string()),
         );
+        let line = serde_json::to_string(&map).expect("summarize request serializes");
+        assert!(!line.contains('\n'), "one request, one line: {line}");
+        let back: PolishRequest = serde_json::from_str(&line).expect("summarize request parses");
+        assert_eq!(back, map);
+        assert_eq!(back.kind, KIND_SUMMARIZE);
+        assert_eq!(back.mode, SUMMARIZE_MAP);
+        assert_eq!(back.max_out, SUMMARY_MAP_MAX_OUT);
+
+        let count = PolishRequest::count_tokens(12, 5_000, "how long is this".to_string());
+        let line = serde_json::to_string(&count).expect("count request serializes");
+        let back: PolishRequest = serde_json::from_str(&line).expect("count request parses");
+        assert_eq!(back.kind, KIND_COUNT_TOKENS);
+        assert_eq!(back.grammar_text(), None);
+
+        // The answer carries the number twice — typed, and in the text channel
+        // the parent's existing response path already reads.
+        let answer = PolishResponse::counted(12, 417, 3);
+        let line = serde_json::to_string(&answer).expect("count answer serializes");
+        let back = parse_response_for(&line, 12).expect("count answer parses");
+        assert_eq!(back.token_count(), Some(417));
+        assert_eq!(back.clone().into_text().as_deref(), Some("417"));
+        assert!(!back.was_truncated());
+        // A failure carries no count, whatever else is on the line.
+        assert_eq!(PolishResponse::err(12, "deadline").token_count(), None);
+
+        let cut = PolishResponse::ok_truncated(13, "summary".to_string(), 40, 900);
+        assert!(cut.was_truncated());
+        assert!(serde_json::to_string(&cut)
+            .expect("truncated answer serializes")
+            .contains(r#""truncated":true"#));
+    }
+
+    /// Finding #17 — the sampler is chosen PER REQUEST, and the grammar sits
+    /// ahead of greedy in the chain. Greedy first would pick a token the grammar
+    /// forbids and the constraint would be decorative.
+    #[test]
+    fn polish_protocol_sampler_plan_is_per_request() {
+        let plain = PolishRequest::polish(1, "notes", "default", 64, 1200, "ship it".to_string());
+        assert_eq!(sampler_plan(&plain), SamplerPlan::Greedy);
+
+        let grammar = "root ::= \"{\" \"}\"".to_string();
+        let constrained = PolishRequest::summarize(
+            2,
+            SUMMARIZE_MAP,
+            SUMMARY_MAP_MAX_OUT,
+            30_000,
+            "seg_0001: ship it".to_string(),
+            Some(grammar.clone()),
+        );
+        assert_eq!(
+            sampler_plan(&constrained),
+            SamplerPlan::GrammarThenGreedy {
+                grammar,
+                root: GRAMMAR_ROOT.to_string(),
+            }
+        );
+
+        // A blank grammar is not a grammar — it must not produce a chain that
+        // would fail to build at request time.
+        let blank = PolishRequest::summarize(
+            3,
+            SUMMARIZE_REDUCE,
+            SUMMARY_REDUCE_MAX_OUT,
+            30_000,
+            "narrate".to_string(),
+            Some("   ".to_string()),
+        );
+        assert_eq!(sampler_plan(&blank), SamplerPlan::Greedy);
+    }
+
+    /// Finding #35 — overflow truncates and warns; it never refuses.
+    #[test]
+    fn polish_protocol_fit_to_budget_truncates_and_warns() {
+        // A stand-in vocabulary: one token per whitespace word plus one per
+        // capital letter, i.e. proper nouns cost more than the 1.3/word proxy.
+        let mut count =
+            |t: &str| t.split_whitespace().count() + t.chars().filter(|c| c.is_uppercase()).count();
+
+        let text = "one two three\nfour five six\nseven eight nine";
+        // Fits: unchanged, and not marked.
+        let (kept, cut) = fit_to_budget(text, 99, &mut count);
+        assert_eq!(kept, text);
+        assert!(!cut);
+
+        // Does not fit: whole lines are dropped from the END, the marker is
+        // added, and what is kept is inside the budget.
+        let (kept, cut) = fit_to_budget(text, 7, &mut count);
+        assert!(cut, "over budget must report truncation");
+        assert!(kept.starts_with("one two three"));
+        assert!(kept.ends_with(TRUNCATION_MARKER), "warn marker: {kept:?}");
+        assert!(!kept.contains("seven eight nine"));
+        assert!(
+            count(kept.trim_end_matches(TRUNCATION_MARKER)) <= 7,
+            "the kept text is inside the budget: {kept:?}"
+        );
+
+        // Not even one line fits: cut by characters rather than refuse. No
+        // marker here — the budget is a hard context limit and the marker's own
+        // tokens would break it.
+        let (kept, cut) = fit_to_budget("alpha beta gamma delta", 2, &mut count);
+        assert!(cut);
+        assert!(
+            count(&kept) <= 2,
+            "char-level cut stays in budget: {kept:?}"
+        );
+        assert!(!kept.is_empty());
+
+        // A zero budget yields nothing, and says so, rather than panicking.
+        let (kept, cut) = fit_to_budget("anything", 0, &mut count);
+        assert!(kept.is_empty());
+        assert!(cut);
     }
 
     #[test]
