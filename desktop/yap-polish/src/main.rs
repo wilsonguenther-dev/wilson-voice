@@ -520,8 +520,18 @@ fn handle(
             // worse than the rules output it would replace.
             return PolishResponse::err(req.id, "deadline");
         }
+        // `sample` is "sample AND accept": llama_sampler_sample calls
+        // llama_sampler_accept on the chosen token before returning it
+        // (llama.cpp/src/llama-sampler.cpp). A second, explicit accept here was
+        // invisible under bare greedy — greedy holds no state — but is fatal the
+        // moment a grammar is in the chain: the second accept advances the
+        // grammar a token it never emitted, its stacks empty, and the process
+        // dies on
+        //   llama-grammar.cpp:940: GGML_ASSERT(!stacks.empty()) failed
+        // — SIGABRT, mid-request, on the FIRST constrained pass. Reproduced
+        // against qwen2.5-1.5b-instruct-q4_k_m before this line was removed.
+        // One sample, one accept.
         let token = sampler.sample(ctx, batch.n_tokens() - 1);
-        sampler.accept(token);
         if model.is_eog_token(token) {
             break;
         }
@@ -572,6 +582,39 @@ fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// YV97 — the decode loop accepts each sampled token EXACTLY once.
+    ///
+    /// `LlamaSampler::sample` is documented "Sample and accept", and the
+    /// vendored `llama_sampler_sample` calls `llama_sampler_accept` on the
+    /// chosen token before returning it. A second explicit accept is invisible
+    /// under bare greedy — greedy carries no state — and fatal the moment a
+    /// grammar joins the chain: the grammar advances twice per emitted token,
+    /// its stacks empty, and llama.cpp aborts the process on
+    /// `llama-grammar.cpp:940: GGML_ASSERT(!stacks.empty()) failed`. Verified:
+    /// with this line present, a single constrained MAP request against
+    /// qwen2.5-1.5b-instruct-q4_k_m killed the sidecar with SIGABRT before it
+    /// answered — so YV97 would have produced zero real summaries.
+    ///
+    /// Pinned at the source level on purpose: building a grammar sampler needs a
+    /// resident GGUF, so nothing in CI can reach that code path, and that
+    /// untested seam is exactly what let the bug through. Same technique
+    /// `crash.rs` uses to keep its no-network guarantee honest.
+    #[test]
+    fn the_decode_loop_never_double_accepts_a_sampled_token() {
+        // Assembled at runtime so this assertion cannot match its own source.
+        let needle = format!("sampler.{}(", "accept");
+        for (n, line) in include_str!("main.rs").lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            assert!(
+                !code.contains(&needle),
+                "main.rs:{}: sample() already accepts — a second accept aborts the \
+                 process under a grammar: {}",
+                n + 1,
+                line.trim()
+            );
+        }
+    }
 
     /// The static half of the prompt is what gets prefix-cached; if it varied
     /// per request the KV reuse in `handle` would silently never hit.

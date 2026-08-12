@@ -27,6 +27,43 @@ use wilson_voice_lib::polish_protocol::{
 };
 use wilson_voice_lib::summarize::{map_grammar, parse_map_output, summarize_segments};
 
+/// Every emitted GBNF rule fits on ONE line — the constraint llama.cpp's
+/// grammar parser actually enforces.
+///
+/// `parse_rule` ends a rule at the newline (`parse_space(.., newline_ok =
+/// false)`) and then demands the next `name ::=`, so a rule pretty-printed
+/// across several indented lines is a PARSE ERROR, not a formatting choice. The
+/// `root` rule used to be wrapped over four lines and llama.cpp rejected it with
+/// *"expecting ::= at \"actions\"…"* — `LlamaSampler::grammar` returned `Err`,
+/// the sidecar answered `grammar`, and every constrained MAP pass failed, on
+/// every meeting, with a real model. Nothing else in this suite can catch that:
+/// building a grammar sampler needs a resident GGUF, so this asserts the
+/// property directly on the text instead.
+#[test]
+fn every_grammar_rule_fits_on_one_line() {
+    let labels: Vec<String> = (1..=4).map(|i| format!("seg_{i:04}")).collect();
+    let grammar = map_grammar(&labels).expect("labels make a grammar");
+    for line in grammar.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            line.contains("::="),
+            "llama.cpp ends a rule at the newline, so a continuation line is a \
+             parse error, not an indent: {line:?}"
+        );
+        assert!(
+            !line.starts_with(char::is_whitespace),
+            "a rule starts in column 0; leading space reads as a continuation: {line:?}"
+        );
+    }
+    // …and there is exactly one definition per rule name the schema needs.
+    for rule in ["root", "items", "item", "string", "char", "evid", "ws"] {
+        let defs = grammar
+            .lines()
+            .filter(|l| l.starts_with(&format!("{rule} ::=")))
+            .count();
+        assert_eq!(defs, 1, "`{rule}` must be defined exactly once");
+    }
+}
+
 #[test]
 fn a_constrained_request_carries_a_grammar_and_plans_grammar_then_greedy() {
     let labels: Vec<String> = (1..=3).map(|i| format!("seg_{i:04}")).collect();

@@ -319,6 +319,16 @@ fn strip_label(rendered: &str, label: &str) -> String {
 /// here* is what turns provenance from a model behaviour into a mechanical
 /// guarantee. `None` when there is nothing to cite — an empty alternation is not
 /// a grammar, and a request carrying one would be refused by the sidecar.
+///
+/// **One rule per line, no continuations.** llama.cpp's GBNF parser ends a rule
+/// at the newline (`parse_space(.., newline_ok = false)` inside a rule body) and
+/// then demands the next `name ::=`, so the pretty-printed `root` this used to
+/// emit — its four object fields wrapped across four indented lines — failed to
+/// parse with *"expecting ::= at \"actions\"…"*. `LlamaSampler::grammar` then
+/// returned `Err`, the sidecar answered `grammar`, and EVERY constrained MAP
+/// pass failed. Nothing in CI could catch it: building a grammar sampler needs a
+/// resident GGUF, so the only test that reaches this is the `#[ignore]`d
+/// `summarize_e2e_real_sidecar`, which is now part of the merge gate.
 pub fn map_grammar(labels: &[String]) -> Option<String> {
     if labels.is_empty() {
         return None;
@@ -330,10 +340,10 @@ pub fn map_grammar(labels: &[String]) -> Option<String> {
         .join(" | ");
     Some(format!(
         concat!(
-            "root ::= \"{{\" ws \"\\\"narrative\\\"\" ws \":\" ws string ws \",\"\n",
-            "         ws \"\\\"actions\\\"\" ws \":\" ws items ws \",\"\n",
-            "         ws \"\\\"decisions\\\"\" ws \":\" ws items ws \",\"\n",
-            "         ws \"\\\"questions\\\"\" ws \":\" ws items ws \"}}\"\n",
+            "root ::= \"{{\" ws \"\\\"narrative\\\"\" ws \":\" ws string ws \",\"",
+            " ws \"\\\"actions\\\"\" ws \":\" ws items ws \",\"",
+            " ws \"\\\"decisions\\\"\" ws \":\" ws items ws \",\"",
+            " ws \"\\\"questions\\\"\" ws \":\" ws items ws \"}}\"\n",
             "items ::= \"[\" ws \"]\" | \"[\" ws item (ws \",\" ws item)* ws \"]\"\n",
             "item ::= \"{{\" ws \"\\\"text\\\"\" ws \":\" ws string ws \",\" ws \"\\\"segment\\\"\" ws \":\" ws evid ws \"}}\"\n",
             "string ::= \"\\\"\" char* \"\\\"\"\n",
