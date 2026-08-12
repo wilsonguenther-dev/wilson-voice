@@ -110,8 +110,7 @@ fn a_fabricated_due_date_or_address_is_rejected() {
 
     // V1/V2 — nothing, and a paragraph pretending to be one item.
     assert_eq!(validate_item(&source, "   "), None);
-    let paragraph = std::iter::repeat("onboarding review")
-        .take(40)
+    let paragraph = std::iter::repeat_n("onboarding review", 40)
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(validate_item(&source, &paragraph), None);
@@ -172,18 +171,19 @@ fn the_narrative_is_gated_and_capped() {
 
     // A "summary" that is really a re-transcript is refused, not trimmed —
     // trimming a runaway keeps its first half and hides the failure.
-    let runaway = std::iter::repeat("the onboarding review should move")
-        .take(200)
+    let runaway = std::iter::repeat_n("the onboarding review should move", 200)
         .collect::<Vec<_>>()
         .join(" ");
     assert_eq!(validate_narrative(&source, &runaway), None);
 
     // Between the two: grounded, long, capped at the word limit the acceptance
     // names, cut at a sentence rather than mid-clause.
-    let long = std::iter::repeat("The onboarding review should move before the release goes out.")
-        .take(30)
-        .collect::<Vec<_>>()
-        .join(" ");
+    let long = std::iter::repeat_n(
+        "The onboarding review should move before the release goes out.",
+        30,
+    )
+    .collect::<Vec<_>>()
+    .join(" ");
     let capped = validate_narrative(&source, &long).expect("grounded prose is kept");
     let words = capped.split_whitespace().count();
     assert!(

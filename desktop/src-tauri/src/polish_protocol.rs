@@ -437,7 +437,7 @@ where
     // `hi` known-bad, so the loop always terminates on the boundary.
     let (mut lo, mut hi) = (0usize, lines.len());
     while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
+        let mid = lo + (hi - lo).div_ceil(2);
         if count(&lines[..mid].join("\n")) <= budget {
             lo = mid;
         } else {
@@ -454,7 +454,7 @@ where
     let chars: Vec<char> = text.chars().collect();
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
+        let mid = lo + (hi - lo).div_ceil(2);
         let candidate: String = chars[..mid].iter().collect();
         if count(&candidate) <= budget {
             lo = mid;
