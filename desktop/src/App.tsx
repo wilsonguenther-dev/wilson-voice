@@ -8,6 +8,15 @@ import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
 import LicensePanel from "./license/LicensePanel";
 import PurchasePrompt from "./license/PurchasePrompt";
+// YV96 — the one-time meeting-capture notice. Its copy and its two open/close
+// rules live in `meetings/consent.ts` so they are unit-tested once, here and in
+// the preview page, rather than being inline strings in this file.
+import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
+import {
+  acknowledgedLabel,
+  shouldOpenNotice,
+  type MeetingConsent,
+} from "./meetings/consent";
 import {
   chipFor,
   shouldWarnTrial,
@@ -673,6 +682,20 @@ export default function App() {
   const [confirmDeleteMeeting, setConfirmDeleteMeeting] = useState<string | null>(
     null,
   );
+  // YV96 — the one-time capture notice. `null` until the backend answers, which
+  // is why `shouldOpenNotice` treats `null` as "do not open".
+  const [consent, setConsent] = useState<MeetingConsent | null>(null);
+  // Why the sheet is open, not just whether: `recording` is the first-capture
+  // showing (a meeting is running behind it), `review` is a deliberate re-read
+  // from Settings → Privacy. The sheet says the true thing in each case, and
+  // this avoids mirroring YV95's meeting status into a second piece of state.
+  const [consentOpen, setConsentOpen] = useState<null | "recording" | "review">(
+    null,
+  );
+  // Read by the `meeting` subscription, which is deliberately subscribed ONCE:
+  // re-subscribing whenever the consent state changes would drop ticks.
+  const consentRef = useRef<MeetingConsent | null>(null);
+  consentRef.current = consent;
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // YV62 — the signature block is edited locally and saved on blur. A save per
   // keystroke would rewrite settings.json on every character of a multi-line
@@ -880,6 +903,32 @@ export default function App() {
       clearTimeout(t);
     };
   }, [nav, meetingQuery, loadMeetings]);
+
+  // YV96 — the one-time capture notice: read the stored acknowledgement once on
+  // mount, then watch for a meeting actually starting.
+  //
+  // It hangs off the backend's `meeting` event rather than off any particular
+  // button because 22-A has FOUR entry points (tray item, ⌃⌘M, the pill, the
+  // Meetings CTA) and a notice wired to one of them is a notice three ways of
+  // recording never show. `shouldOpenNotice` is idempotent, so the 1 Hz tick
+  // that follows the first one costs a boolean and changes nothing.
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    invoke<MeetingConsent>("meeting_consent")
+      .then((c) => {
+        if (!dead) setConsent(c);
+      })
+      .catch(() => {});
+    listen<{ recording: boolean }>("meeting", (e) => {
+      if (shouldOpenNotice(consentRef.current, e.payload))
+        setConsentOpen("recording");
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+    };
+  }, []);
 
   // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
   // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is
@@ -1097,6 +1146,25 @@ export default function App() {
   }
 
   // ── YV94 · meeting actions ──
+
+  /**
+   * YV96 — close the one-time notice, and record that it was shown.
+   *
+   * Every exit routes here — the button, Esc, a click on the backdrop — because
+   * a one-time notice is about display, not assent: there is no version of
+   * "closed it" that means the user did not see it. Nothing on the capture path
+   * waits on this call, so a failed write costs a second showing and never a
+   * blocked recording.
+   */
+  async function closeConsentNotice() {
+    setConsentOpen(null);
+    if (consent && !consent.shouldShow) return;
+    try {
+      setConsent(await invoke<MeetingConsent>("acknowledge_meeting_consent"));
+    } catch {
+      /* shown again next time, which is the safe direction to fail in */
+    }
+  }
 
   /**
    * Export one meeting as Markdown. PDF was cut for v1 (finding #33): webview
@@ -3939,6 +4007,28 @@ export default function App() {
                     <button onClick={replayOnboarding}>Replay onboarding</button>
                   </div>
 
+                  {/* ── YV96 Recording others — the one-time notice, findable ──
+                      The notice itself shows once, on the first meeting anyone
+                      records. This line is how it stays reachable afterwards:
+                      a one-time notice a user cannot find again is a notice
+                      they cannot act on. It is NOT a reminder toggle and not a
+                      home-state setting — both were explicitly cut when O1 was
+                      closed (finding #13) — it is the same words, on demand. */}
+                  <h2 className="settings-section">
+                    Recording other people
+                    <span className="sub">
+                      Yap does not announce itself. Whether you may record
+                      someone is your call, and the law differs by state and
+                      country.
+                    </span>
+                  </h2>
+                  <p className="tiny">{acknowledgedLabel(consent)}</p>
+                  <div className="actions wrap">
+                    <button onClick={() => setConsentOpen("review")}>
+                      Read the recording notice
+                    </button>
+                  </div>
+
                   {/* ── YV75 Engine — what is actually running right now ──
                       High cleanup hands the take to a second process
                       (`yap-polish`), and that process needs seconds to load
@@ -4055,6 +4145,19 @@ export default function App() {
           onBuy={buyYap}
           onEnterKey={openLicenseTab}
           onDismiss={() => setBuyPrompt(false)}
+        />
+      )}
+
+      {/* ── YV96 · the one-time meeting-capture notice ──
+          Raised by the backend's `meeting` event the first time a recording
+          actually starts, whichever entry point started it, and re-openable
+          from Settings → Privacy. It sits OUTSIDE `.main` for the same reason
+          the purchase sheet does, and — the whole point of the closed O1
+          decision — the recording behind it is already running. */}
+      {consentOpen && (
+        <MeetingConsentNotice
+          recording={consentOpen === "recording"}
+          onClose={closeConsentNotice}
         />
       )}
     </div>

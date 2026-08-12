@@ -2438,3 +2438,108 @@ button.star.on {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ── YV96 · the one-time meeting-capture notice ───────────────────────────
+   Same overlay grammar as the onboarding card (YV9) and the purchase sheet
+   (YP3) — a person should not have to learn a third kind of sheet — but a
+   narrower measure, because this one is read rather than scanned, and left
+   aligned, because three paragraphs centred is a poster, not a notice. */
+.consent-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 120;
+  overflow: auto;
+}
+
+.consent-card {
+  width: min(520px, 100%);
+  background: var(--bg-card);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  padding: 26px 28px 20px;
+}
+
+.consent-eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.consent-card h1 {
+  margin: 6px 0 12px;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.consent-body {
+  margin: 0 0 10px;
+  max-width: 58ch;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+/* The nudge, made visible. Red because it is the same fact the pill and the
+   menu bar are carrying at the same moment. */
+.consent-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  color: var(--danger-ink);
+  font-size: 0.85rem;
+}
+
+.consent-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 60%, transparent);
+  animation: consent-pulse 2s ease-out infinite;
+}
+
+/* A compositor-only animation: box-shadow spread on one 9px dot, no JS timer,
+   no layout. The webview must not be woken 60 times a second to say "still
+   recording" — the same principle OS-12 applies to the pill. */
+@keyframes consent-pulse {
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--danger) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consent-dot {
+    animation: none;
+  }
+}
+
+.consent-actions {
+  display: flex;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+
+.consent-actions .primary {
+  padding: 0.6rem 1.1rem;
+}
+
+.consent-fine {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
