@@ -71,7 +71,7 @@ const MIN_POLISH_WORDS: usize = 4;
 const MAX_POLISH_WORDS: usize = 400;
 
 /// Content-word retention floor (§2.5 V3).
-pub(crate) const RETENTION_FLOOR: f64 = 0.80;
+const RETENTION_FLOOR: f64 = 0.80;
 /// Length band around the input, list markers and newlines excluded (§2.5 V2).
 const MAX_LENGTH_RATIO: f64 = 2.5;
 const MIN_LENGTH_RATIO: f64 = 0.45;
@@ -85,7 +85,8 @@ pub(crate) const TEMPLATE_MARKERS: &[&str] = &["<|im_start|>", "<|im_end|>", "<t
 
 /// Assistant openers (§2.5 V6). A typist does not announce itself; a rewrite
 /// that starts this way answered the dictation instead of retyping it.
-pub(crate) const ASSISTANT_PREAMBLES: &[&str] = &["sure,", "here is", "here's the", "i've ", "certainly"];
+pub(crate) const ASSISTANT_PREAMBLES: &[&str] =
+    &["sure,", "here is", "here's the", "i've ", "certainly"];
 
 /// Filename of the bundled sidecar. Tauri strips the target triple from
 /// `bundle.externalBin` when it stages the binary next to the app executable,
@@ -365,7 +366,7 @@ pub fn rejected_total() -> u64 {
 
 /// Count the rejection, log the TAG, and hand the caller its `None`. The
 /// rejected text and the input are never logged — YV20/M2 hygiene.
-pub(crate) fn reject(reason: &'static str) -> Option<String> {
+fn reject(reason: &'static str) -> Option<String> {
     POLISH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
     log::info!("polish rejected: {reason}");
     None
