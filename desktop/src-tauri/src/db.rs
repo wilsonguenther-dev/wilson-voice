@@ -5,6 +5,9 @@
 //! GraphQL is overkill for a single-user desktop app; typed Tauri commands
 //! over this SQLite layer give fast retrieval without a network hop.
 
+use crate::meetings::{
+    self, Meeting, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
+};
 use crate::snippets::SnippetRule;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -189,6 +192,11 @@ pub struct Insights {
     /// Sessions that have real speech_seconds (eligible for WPM).
     #[serde(default)]
     pub wpm_sample_sessions: i64,
+    /// YV94 / finding #29 — the Meetings strip. The app has no telemetry by
+    /// design, so this local rollup is the ONLY signal that the Notetaker is
+    /// being used at all. Defaulted so an older frontend bundle keeps parsing.
+    #[serde(default)]
+    pub meetings: MeetingStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +453,60 @@ impl OpenErr {
     }
 }
 
+/// YV94 — walk `PRAGMA user_version` up to [`SCHEMA_VERSION`], one transaction
+/// per step.
+///
+/// Rules this encodes, all of them a reaction to what `db.rs` did before
+/// (finding #26 — `let _ = conn.execute("ALTER TABLE …")` discards the error, so
+/// a failed migration was indistinguishable from a successful one):
+///
+///   * **Errors propagate.** A step that fails aborts the open; `Database::open`
+///     then decides quarantine-vs-propagate the same way it does for any other
+///     schema failure. A half-applied schema never gets written down as done.
+///   * **One transaction per step**, and `PRAGMA user_version` is set INSIDE it.
+///     SQLite keeps `user_version` in the database header and the write is
+///     transactional, so a crash mid-migration rolls the whole step back and the
+///     next launch retries it.
+///   * **A newer DB is left alone.** If a future build wrote version 2 and the
+///     user reopens this build, we do not "downgrade" — we log and carry on with
+///     the tables we understand. Every step is additive, so that is safe.
+///   * **Shipped steps are immutable.** Add an arm; never edit one.
+fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version > SCHEMA_VERSION {
+        log::warn!(
+            "DB schema version {version} is newer than this build expects ({SCHEMA_VERSION}); \
+             leaving it alone"
+        );
+        return Ok(());
+    }
+    while version < SCHEMA_VERSION {
+        let next = version + 1;
+        let sql = match next {
+            1 => meetings::MIGRATION_1_MEETINGS,
+            // Unreachable while SCHEMA_VERSION and this match are edited
+            // together, which is the point of failing loudly if they are not.
+            other => {
+                log::error!("no migration defined for schema version {other}");
+                break;
+            }
+        };
+        log::info!("applying DB migration {next}");
+        // `PRAGMA user_version` takes no bind parameter, hence the format!; `next`
+        // is a local integer, never user input.
+        conn.execute_batch(&format!(
+            "BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {next};\nCOMMIT;"
+        ))
+        .inspect_err(|_| {
+            // BEGIN succeeded but a later statement failed: leave no open tx
+            // behind for the rest of the session.
+            let _ = conn.execute_batch("ROLLBACK;");
+        })?;
+        version = next;
+    }
+    Ok(())
+}
+
 impl Database {
     /// Open the DB, recovering ONLY from genuine corruption: on a corrupt/unreadable
     /// file the bad files are quarantined (kept for manual recovery) and a fresh DB
@@ -634,6 +696,18 @@ impl Database {
             ",
         )
         .map_err(|e| OpenErr::classify("schema", e))?;
+
+        // YV94 — the versioned ladder. Everything ABOVE this point is the
+        // pre-ladder baseline (`CREATE TABLE IF NOT EXISTS` + the error-swallowing
+        // `ALTER TABLE`s below), which is left exactly as it is: it has shipped to
+        // every install since v0.1 and rewriting it as migration 0 would mean
+        // asserting, without proof, what shape those DBs are actually in.
+        //
+        // The ladder starts at the meeting tables (finding #26) because that is
+        // the first schema in this app with FTS5 sync triggers and a foreign key,
+        // and because nothing needs backfilling yet — a fresh install and a
+        // three-year-old one both go 0 → 1 the same way.
+        run_migrations(&conn).map_err(|e| OpenErr::classify("migrate", e))?;
 
         // Migrations (idempotent)
         let _ = conn.execute(
@@ -1151,6 +1225,498 @@ impl Database {
             .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    // --- YV94: meetings ---------------------------------------------------
+    //
+    // Everything below reads or writes the two tables migration 1 introduces.
+    // The invariants worth stating once, here, rather than in every method:
+    //
+    //   * `meeting_segments_fts` is an EXTERNAL-CONTENT index. It is never
+    //     written directly — the ai/ad/au triggers own it. Any code path that
+    //     mutates `meeting_segments.text` outside SQL would desync it.
+    //   * Deleting a meeting deletes its segments EXPLICITLY first, then the
+    //     row. The `ON DELETE CASCADE` stays as a net, but the explicit delete
+    //     is what guarantees the `ad` trigger runs and the FTS shadow rows go
+    //     with the words.
+    //   * `secure_delete = ON` (set in `open_inner`) means those deletes
+    //     overwrite the freed pages rather than just unlinking them. That is
+    //     the whole point for a privacy feature, and it is why the delete path
+    //     must never run on the UI thread — Tauri already runs non-async
+    //     commands on a worker, and `delete_meeting` is called from one.
+
+    /// The applied schema version. Exposed so the migration test can assert it
+    /// rather than reaching into the connection.
+    pub fn schema_version(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Open a new meeting row in state `recording`.
+    pub fn create_meeting(&self, title: &str, source: &str) -> Result<Meeting, String> {
+        let now = Utc::now();
+        let title = {
+            let t = title.trim();
+            if t.is_empty() { "Meeting" } else { t }.to_string()
+        };
+        let row = Meeting {
+            id: Uuid::new_v4().to_string(),
+            title,
+            source: source.to_string(),
+            started_at: now,
+            ended_at: None,
+            duration_seconds: 0.0,
+            state: meetings::MeetingState::Recording.as_str().to_string(),
+            error: None,
+            processed_through_seconds: 0.0,
+            audio_kept: true,
+            mic_wav_path: None,
+            summary: None,
+            summary_model: None,
+            created_at: now,
+            segment_count: 0,
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO meetings
+             (id, title, source, started_at, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id,
+                row.title,
+                row.source,
+                row.started_at.to_rfc3339(),
+                row.state,
+                row.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(row)
+    }
+
+    /// Rename a meeting. An all-whitespace title is refused rather than stored,
+    /// so the list can never render a blank row.
+    pub fn rename_meeting(&self, id: &str, title: &str) -> Result<(), String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("a meeting needs a title".into());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET title = ?2 WHERE id = ?1",
+            params![id, title],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Move a meeting through its lifecycle. `error` is written on every call so
+    /// a recovered meeting does not keep a stale failure string.
+    pub fn set_meeting_state(
+        &self,
+        id: &str,
+        state: meetings::MeetingState,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET state = ?2, error = ?3 WHERE id = ?1",
+            params![id, state.as_str(), error],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV93's resume anchor. Monotonic by construction: a lower value than the
+    /// one already stored is ignored, so a retried chunk cannot rewind progress.
+    pub fn set_meeting_progress(&self, id: &str, processed_through: f64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET processed_through_seconds = MAX(processed_through_seconds, ?2)
+             WHERE id = ?1",
+            params![id, processed_through.max(0.0)],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Close out capture: end time, duration, and the WAV the retention sweep
+    /// will later purge.
+    pub fn finish_meeting(
+        &self,
+        id: &str,
+        duration_seconds: f64,
+        mic_wav_path: Option<&Path>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let wav = mic_wav_path.map(|p| p.to_string_lossy().to_string());
+        conn.execute(
+            "UPDATE meetings
+             SET ended_at = ?2, duration_seconds = ?3, mic_wav_path = ?4,
+                 audio_kept = CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END
+             WHERE id = ?1",
+            params![id, Utc::now().to_rfc3339(), duration_seconds.max(0.0), wav],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV97 writes here. Kept separate from `set_meeting_state` so a summary can
+    /// land without implying the meeting's state changed.
+    pub fn set_meeting_summary(
+        &self,
+        id: &str,
+        summary: &str,
+        model: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET summary = ?2, summary_model = ?3 WHERE id = ?1",
+            params![id, summary, model],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Append transcript segments. ONE transaction for the whole batch: YV93
+    /// hands over a chunk at a time, and half a chunk in the index would be a
+    /// silently wrong search result rather than a visible failure.
+    pub fn append_meeting_segments(
+        &self,
+        meeting_id: &str,
+        segments: &[NewMeetingSegment],
+    ) -> Result<usize, String> {
+        if segments.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let mut written = 0usize;
+        for seg in segments {
+            tx.execute(
+                "INSERT INTO meeting_segments
+                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    meeting_id,
+                    seg.start_seconds,
+                    seg.end_seconds,
+                    seg.text,
+                    seg.confidence,
+                    now,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            written += 1;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(written)
+    }
+
+    /// Meetings newest-first. A non-empty `query` searches segment text through
+    /// FTS5 **and** the title, so "yesterday's standup" is findable both by what
+    /// it was called and by what was said in it.
+    pub fn list_meetings(&self, limit: i64, query: Option<String>) -> Result<Vec<Meeting>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let q = query.unwrap_or_default().trim().to_string();
+        let mut out = Vec::new();
+
+        if q.is_empty() {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {MEETING_COLS} FROM meetings m
+                     ORDER BY m.started_at DESC LIMIT ?1"
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit], map_meeting)
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                out.push(r.map_err(|e| e.to_string())?);
+            }
+            return Ok(out);
+        }
+
+        let fts = q
+            .split_whitespace()
+            .map(|t| format!("\"{}\"*", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let like = format!("%{q}%");
+        let sql = format!(
+            "SELECT {MEETING_COLS} FROM meetings m
+             WHERE m.title LIKE ?2
+                OR m.id IN (
+                     SELECT s.meeting_id FROM meeting_segments_fts f
+                     JOIN meeting_segments s ON s.rowid = f.rowid
+                     WHERE meeting_segments_fts MATCH ?3
+                   )
+             ORDER BY m.started_at DESC LIMIT ?1"
+        );
+        // An FTS5 MATCH can reject a query string outright (a lone `*`, an
+        // unbalanced quote). That must degrade to a substring search, never to
+        // an error toast — same posture as `list_transcripts`.
+        let mut fts_ok = false;
+        {
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let mapped = stmt.query_map(params![limit, like, fts], map_meeting);
+            if let Ok(rows) = mapped {
+                for r in rows {
+                    out.push(r.map_err(|e| e.to_string())?);
+                }
+                fts_ok = true;
+            }
+        }
+        if fts_ok {
+            return Ok(out);
+        }
+
+        out.clear();
+        let mut stmt2 = conn
+            .prepare(&format!(
+                "SELECT {MEETING_COLS} FROM meetings m
+                 WHERE m.title LIKE ?2
+                    OR m.id IN (SELECT s.meeting_id FROM meeting_segments s
+                                WHERE s.text LIKE ?2)
+                 ORDER BY m.started_at DESC LIMIT ?1"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt2
+            .query_map(params![limit, like], map_meeting)
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_meeting(&self, id: &str) -> Result<Option<Meeting>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            &format!("SELECT {MEETING_COLS} FROM meetings m WHERE m.id = ?1"),
+            params![id],
+            map_meeting,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// Segments in wall-clock order — the order YV93 produced them and the only
+    /// order a transcript may ever be read in.
+    pub fn list_meeting_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at
+                 FROM meeting_segments WHERE meeting_id = ?1
+                 ORDER BY start_seconds ASC, created_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![meeting_id], map_meeting_segment)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// The Markdown for one meeting (see `meetings::render_markdown`).
+    pub fn meeting_markdown(&self, id: &str) -> Result<(Meeting, String), String> {
+        let meeting = self
+            .get_meeting(id)?
+            .ok_or_else(|| format!("no meeting {id}"))?;
+        let segments = self.list_meeting_segments(id)?;
+        let md = meetings::render_markdown(&meeting, &segments);
+        Ok((meeting, md))
+    }
+
+    /// Delete a meeting and everything the DB holds about it, returning the
+    /// audio paths the caller must unlink. Prefer [`Self::delete_meeting_with_audio`].
+    ///
+    /// Order matters: segments first (so `meeting_segments_ad` fires and the
+    /// FTS5 shadow rows are told to forget those tokens), then the row. Both in
+    /// one transaction — a delete that half-succeeds on a privacy feature is
+    /// worse than one that fails loudly.
+    ///
+    /// After the commit, `wal_checkpoint(TRUNCATE)` folds the WAL into the main
+    /// DB: `secure_delete` zeroes the freed pages, but the pre-delete frames sit
+    /// in the -wal until a checkpoint, and "I deleted it" must not mean "until
+    /// the next restart". No `VACUUM` here — that rewrites the whole file and is
+    /// reserved for `clear_transcripts`, which is a rarer, heavier promise.
+    pub fn delete_meeting(&self, id: &str) -> Result<Vec<PathBuf>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let wavs: Vec<PathBuf> = {
+            let mut stmt = conn
+                .prepare("SELECT mic_wav_path FROM meetings WHERE id = ?1")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![id], |r| r.get::<_, Option<String>>(0))
+                .map_err(|e| e.to_string())?;
+            let mut v = Vec::new();
+            for r in rows {
+                if let Some(p) = r.map_err(|e| e.to_string())? {
+                    v.push(PathBuf::from(p));
+                }
+            }
+            v
+        };
+
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM meeting_segments WHERE meeting_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM meetings WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            // The rows are gone either way; a busy checkpoint is not a failure
+            // of the delete, and the exit checkpoint will finish the job.
+            log::warn!("meeting delete: checkpoint after delete failed: {e}");
+        }
+        Ok(wavs)
+    }
+
+    /// "Delete this meeting" as the user means it: rows, search index, and the
+    /// audio on disk. A privacy feature that half-deletes is worse than none.
+    pub fn delete_meeting_with_audio(&self, id: &str) -> Result<(), String> {
+        let wavs = self.delete_meeting(id)?;
+        for wav in &wavs {
+            match std::fs::remove_file(wav) {
+                Ok(()) => log::info!("meeting delete: removed {}", wav.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // Reported, not returned: the words are already gone, and
+                // failing the command would tell the user nothing was deleted.
+                Err(e) => log::warn!("meeting delete: {} not removed: {e}", wav.display()),
+            }
+        }
+        Ok(())
+    }
+
+    /// YV94 retention (finding #28) — meetings older than `cutoff` lose their
+    /// AUDIO, never their transcript. Returns the WAV paths to unlink; the row
+    /// is marked `audio_kept = 0` so the UI can say "audio expired" instead of
+    /// offering a play button that fails.
+    pub fn purge_meeting_audio(&self, cutoff: DateTime<Utc>) -> Result<Vec<PathBuf>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let cutoff = cutoff.to_rfc3339();
+        let mut paths = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT mic_wav_path FROM meetings
+                     WHERE mic_wav_path IS NOT NULL AND started_at < ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![cutoff], |r| r.get::<_, Option<String>>(0))
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                if let Some(p) = r.map_err(|e| e.to_string())? {
+                    paths.push(PathBuf::from(p));
+                }
+            }
+        }
+        conn.execute(
+            "UPDATE meetings SET mic_wav_path = NULL, audio_kept = 0
+             WHERE mic_wav_path IS NOT NULL AND started_at < ?1",
+            params![cutoff],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(paths)
+    }
+
+    /// The Insights strip (finding #29). One pass over two small tables.
+    pub fn meeting_stats(&self) -> Result<MeetingStats, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stats = MeetingStats {
+            audio_retention_days: meetings::AUDIO_RETENTION_DAYS,
+            ..Default::default()
+        };
+
+        let (total, seconds, with_audio): (i64, f64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(duration_seconds),0),
+                        COALESCE(SUM(CASE WHEN mic_wav_path IS NOT NULL THEN 1 ELSE 0 END),0)
+                 FROM meetings",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        stats.total_meetings = total;
+        stats.total_seconds = seconds;
+        stats.meetings_with_audio = with_audio;
+
+        for (state, slot) in [("complete", 0usize), ("partial", 1), ("failed", 2)] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM meetings WHERE state = ?1",
+                    params![state],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            match slot {
+                0 => stats.complete_meetings = n,
+                1 => stats.partial_meetings = n,
+                _ => stats.failed_meetings = n,
+            }
+        }
+
+        stats.segments_indexed = conn
+            .query_row("SELECT COUNT(*) FROM meeting_segments", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        let week_ago = (Utc::now() - Duration::days(7)).to_rfc3339();
+        stats.meetings_last_7 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meetings WHERE started_at >= ?1",
+                params![week_ago],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let first: Option<String> = conn
+            .query_row("SELECT MIN(started_at) FROM meetings", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        let last: Option<String> = conn
+            .query_row("SELECT MAX(started_at) FROM meetings", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        stats.first_meeting_at = first.clone().map(parse_dt);
+        stats.last_meeting_at = last.map(parse_dt);
+
+        // Activation: days from the first thing this user ever dictated to the
+        // first meeting they recorded. `None` when either end is missing — a
+        // zero would read as "same day", which is a different claim.
+        if let Some(first_meeting) = stats.first_meeting_at {
+            let first_dictation: Option<String> = conn
+                .query_row("SELECT MIN(created_at) FROM transcripts", [], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .flatten();
+            // Calendar days, not elapsed 24-hour blocks: "3 days to first
+            // meeting" is a claim about dates on a calendar, and truncating an
+            // elapsed duration turns 6 h 59 m into "0 days" one day and "1 day"
+            // the next for the same pair of events.
+            stats.days_to_first_meeting = first_dictation.map(parse_dt).map(|d| {
+                (first_meeting.with_timezone(&Local).date_naive()
+                    - d.with_timezone(&Local).date_naive())
+                .num_days()
+                .max(0)
+            });
+        }
+
+        Ok(stats)
     }
 
     /// Starred terms first (always-bias), then usage-ranked by hits (YV47).
@@ -2058,6 +2624,20 @@ impl Database {
             }
         }
 
+        // YV94 — the Meetings strip. `meeting_stats` takes the same
+        // (non-reentrant) connection lock, so this guard MUST be released first;
+        // holding it here would deadlock the Insights screen.
+        drop(conn);
+        let meetings = self.meeting_stats().unwrap_or_else(|e| {
+            // Insights is a read-only screen: a meeting rollup that fails must
+            // not blank the dictation numbers next to it.
+            log::warn!("meeting stats unavailable: {e}");
+            MeetingStats {
+                audio_retention_days: meetings::AUDIO_RETENTION_DAYS,
+                ..Default::default()
+            }
+        });
+
         Ok(Insights {
             total_words,
             total_sessions,
@@ -2073,6 +2653,7 @@ impl Database {
             p95_pipeline_ms,
             speech_seconds_total: total_speech,
             wpm_sample_sessions: wpm_sessions,
+            meetings,
         })
     }
 
@@ -2236,6 +2817,46 @@ impl Database {
         let _ = std::fs::rename(&json_path, json_path.with_extension("json.migrated"));
         Ok(n)
     }
+}
+
+/// YV94 — the `meetings` projection every read uses, including the JOIN count
+/// of segments. Named once so the column ORDER and `map_meeting` cannot drift.
+/// The table must be aliased `m` by the caller.
+const MEETING_COLS: &str = "m.id, m.title, m.source, m.started_at, m.ended_at, \
+     m.duration_seconds, m.state, m.error, m.processed_through_seconds, m.audio_kept, \
+     m.mic_wav_path, m.summary, m.summary_model, m.created_at, \
+     (SELECT COUNT(*) FROM meeting_segments s WHERE s.meeting_id = m.id)";
+
+fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
+    Ok(Meeting {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        source: row.get(2)?,
+        started_at: parse_dt(row.get(3)?),
+        ended_at: row.get::<_, Option<String>>(4)?.map(parse_dt),
+        duration_seconds: row.get(5)?,
+        state: row.get(6)?,
+        error: row.get(7)?,
+        processed_through_seconds: row.get(8)?,
+        audio_kept: row.get::<_, i64>(9)? != 0,
+        mic_wav_path: row.get(10)?,
+        summary: row.get(11)?,
+        summary_model: row.get(12)?,
+        created_at: parse_dt(row.get(13)?),
+        segment_count: row.get(14)?,
+    })
+}
+
+fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegment> {
+    Ok(MeetingSegment {
+        id: row.get(0)?,
+        meeting_id: row.get(1)?,
+        start_seconds: row.get(2)?,
+        end_seconds: row.get(3)?,
+        text: row.get(4)?,
+        confidence: row.get(5)?,
+        created_at: parse_dt(row.get(6)?),
+    })
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {

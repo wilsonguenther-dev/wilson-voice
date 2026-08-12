@@ -1,0 +1,56 @@
+$ sqlite3 <fresh-db> "PRAGMA user_version"
+1
+
+$ sqlite3 <fresh-db> ".schema meetings"
+CREATE TABLE meetings (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT 'Meeting',
+  source TEXT NOT NULL DEFAULT 'manual',       -- manual only in 22-A (calendar/detected are 24/26)
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  duration_seconds REAL NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'recording',     -- recording|transcribing|summarizing|complete|failed|partial
+  error TEXT,
+  processed_through_seconds REAL NOT NULL DEFAULT 0,  -- YV93 resume anchor
+  audio_kept INTEGER NOT NULL DEFAULT 1,
+  mic_wav_path TEXT,                           -- NULL once purged; sys_wav_path added in 22-B migration
+  summary TEXT,
+  summary_model TEXT,                          -- both populated by YV97
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_meetings_started ON meetings(started_at DESC);
+$ sqlite3 <fresh-db> ".schema meeting_segments"
+CREATE TABLE meeting_segments (
+  id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  start_seconds REAL NOT NULL,
+  end_seconds REAL NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  confidence REAL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_segments_meeting ON meeting_segments(meeting_id, start_seconds);
+CREATE TRIGGER meeting_segments_ai AFTER INSERT ON meeting_segments BEGIN
+  INSERT INTO meeting_segments_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER meeting_segments_ad AFTER DELETE ON meeting_segments BEGIN
+  INSERT INTO meeting_segments_fts(meeting_segments_fts, rowid, text)
+    VALUES('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER meeting_segments_au AFTER UPDATE ON meeting_segments BEGIN
+  INSERT INTO meeting_segments_fts(meeting_segments_fts, rowid, text)
+    VALUES('delete', old.rowid, old.text);
+  INSERT INTO meeting_segments_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+$ sqlite3 <fresh-db> "SELECT type||' '||name FROM sqlite_master WHERE name LIKE 'meeting%' OR name='idx_meetings_started' ORDER BY name"
+index idx_meetings_started
+table meeting_segments
+trigger meeting_segments_ad
+trigger meeting_segments_ai
+trigger meeting_segments_au
+table meeting_segments_fts
+table meeting_segments_fts_config
+table meeting_segments_fts_data
+table meeting_segments_fts_docsize
+table meeting_segments_fts_idx
+table meetings

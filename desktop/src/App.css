@@ -2300,3 +2300,141 @@ button.star.on {
   color: var(--muted);
   border-color: transparent;
 }
+
+/* ── YV94 · Meetings ───────────────────────────────────────────────────────
+   The Notetaker's two screens reuse the History card, toolbar and empty-state
+   shapes wholesale — a meeting is another thing Yap kept for you, not a new
+   idiom. Only four things here are genuinely new: the state chip, the title
+   field, the transcript's timestamp gutter, and the Insights strip. */
+
+.meeting-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 590;
+}
+
+/* The lifecycle chip. Data, so it wears the pixel voice like every other
+   numeral and chip in the app. Only the two states that mean "something went
+   wrong" get a colour — a green "complete" badge on every row is decoration. */
+.meeting-state {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+  border: 1px solid var(--border);
+}
+.meeting-state.failed {
+  color: var(--danger-ink);
+  border-color: color-mix(in srgb, var(--danger-ink) 35%, transparent);
+}
+.meeting-state.partial,
+.meeting-state.recording,
+.meeting-state.transcribing,
+.meeting-state.summarizing {
+  color: var(--warn-ink);
+  border-color: color-mix(in srgb, var(--warn-ink) 30%, transparent);
+}
+
+.meeting-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Editable in place: ASR calls a meeting "Meeting"; a person calls it what it
+   was. Chromeless until you touch it, so it reads as the heading it is. */
+.meeting-title-edit {
+  font-size: 1.25rem;
+  font-weight: 620;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 0;
+}
+.meeting-title-edit:hover {
+  border-color: var(--border);
+}
+.meeting-title-edit:focus {
+  border-color: var(--accent);
+  background: var(--bg-card);
+  outline: none;
+}
+
+/* One line per segment, on a fixed timestamp gutter so a 3-hour transcript
+   scans as a column of times rather than a wall of text.
+
+   The measure is capped: a transcript is the longest continuous prose in the
+   app, and at a 1400 px window an uncapped line runs past 160 characters, which
+   is where the eye stops finding the start of the next line. The metadata row
+   is capped with it so the two ends of that line stay visually related. */
+.transcript,
+.meeting-detail .card-meta,
+.meeting-detail .empty {
+  max-width: 88ch;
+}
+
+.transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.transcript li {
+  display: grid;
+  grid-template-columns: 4.6rem 2.6rem 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+.transcript li:hover {
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+}
+
+.seg-time,
+.seg-who {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.seg-who {
+  color: var(--accent-data-ink);
+}
+.seg-text {
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+/* The Insights strip: a full-width panel above the existing grid, with its own
+   four tiles. `.stats-row`'s bottom margin is dropped here — the kv list under
+   it supplies the spacing. */
+.meeting-strip {
+  margin-bottom: 12px;
+}
+.meeting-strip .stats-row {
+  margin-bottom: 10px;
+}
+
+/* The speaker label is never hidden, at any width: it is the column that makes
+   the 22-B upgrade legible ("now it can tell you apart from the room"), and a
+   transcript that drops attribution to save 2.6rem is a worse transcript. */
+@media (max-width: 900px) {
+  .transcript li {
+    grid-template-columns: 4.2rem 2.4rem 1fr;
+    gap: 8px;
+  }
+  .meeting-strip .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
