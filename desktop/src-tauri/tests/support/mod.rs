@@ -233,7 +233,7 @@ pub fn meeting_token_count(text: &str) -> usize {
 /// not only what came back.
 pub struct StubModel {
     responder: Box<
-        dyn Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError>
+        dyn Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Generated, SummaryError>
             + Send
             + Sync,
     >,
@@ -241,11 +241,24 @@ pub struct StubModel {
     counts: AtomicU64,
 }
 
-use wilson_voice_lib::summarize::{SummaryClient, SummaryError, TokenCounter};
+use wilson_voice_lib::summarize::{Generated, SummaryClient, SummaryError, TokenCounter};
 
 impl StubModel {
+    /// A stub whose answers all fitted the model's context.
     pub fn new(
         responder: impl Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self::truncating(move |req| responder(req).map(Generated::whole))
+    }
+
+    /// A stub that can also answer "…and I had to cut your input to fit" — the
+    /// sidecar's `truncated:true`, which must reach the reader and not only the
+    /// log.
+    pub fn truncating(
+        responder: impl Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Generated, SummaryError>
             + Send
             + Sync
             + 'static,
@@ -287,7 +300,7 @@ impl SummaryClient for StubModel {
     fn generate(
         &self,
         req: &wilson_voice_lib::polish_protocol::PolishRequest,
-    ) -> Result<String, SummaryError> {
+    ) -> Result<Generated, SummaryError> {
         self.requests.lock().expect("stub lock").push(req.clone());
         (self.responder)(req)
     }

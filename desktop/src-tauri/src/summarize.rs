@@ -61,6 +61,27 @@ use crate::polish_protocol::{
 /// rather than fails.
 pub const MAP_CHUNK_TOKENS: usize = 1400;
 
+/// Token budget for ONE reduce pass's input, measured the same way.
+///
+/// REDUCE is a model call like any other and gets the same treatment as MAP: its
+/// input is measured against the real vocabulary and packed to fit. Joining
+/// every chunk narrative into one request instead — the obvious implementation —
+/// is unbounded in meeting length, and a three-hour meeting (YV91's hard cap) is
+/// ~27 chunks of up to [`MAX_NARRATIVE_WORDS`] each, well past anything a 4k
+/// context holds. The sidecar would take that prompt, cut its tail to fit, and
+/// answer `truncated:true`; the stored "summary of the meeting" would in fact be
+/// a summary of the meeting's first half. So narratives are folded
+/// hierarchically instead (see [`reduce_narrative`]), and whatever truncation
+/// still happens is carried out to the reader.
+pub const REDUCE_CHUNK_TOKENS: usize = 1400;
+
+/// How many fold levels [`reduce_narrative`] may run before it stops asking.
+///
+/// A 3-way fold reaches one narrative from 6,561 in eight levels, so this bounds
+/// nothing a real meeting reaches — it exists so a counter that answers
+/// nonsensically (every group holding one narrative) cannot spin forever.
+const MAX_FOLD_LEVELS: usize = 8;
+
 /// Deadlines. These are background work on a finished meeting, not a keystroke
 /// path, so they are seconds rather than the rewriter's 1.2 s.
 const COUNT_DEADLINE_MS: u64 = 5_000;
@@ -613,8 +634,12 @@ fn grounded(source: &str, output: &str) -> f64 {
     if claimed.is_empty() {
         return 1.0;
     }
-    let have = crate::polish::content_words(source);
-    let found = claimed.iter().filter(|w| have.contains(w)).count();
+    // A set, not the source vector: the hierarchical fold grounds every level
+    // against the WHOLE meeting, so a linear scan per claimed word would make the
+    // gate quadratic in a three-hour transcript.
+    let have: std::collections::HashSet<String> =
+        crate::polish::content_words(source).into_iter().collect();
+    let found = claimed.iter().filter(|w| have.contains(*w)).count();
     found as f64 / claimed.len() as f64
 }
 
@@ -689,10 +714,36 @@ fn same_item(a: &str, b: &str) -> bool {
 
 // ── the pipeline ────────────────────────────────────────────────────────────
 
+/// One answer from the model, and whether the sidecar had to cut the request to
+/// make it fit.
+///
+/// The flag is on the answer rather than in a log line on purpose. The sidecar
+/// truncates an oversized prompt and reports `truncated:true` precisely so the
+/// caller can say so; a `log::warn!` and nothing else means the user is handed a
+/// summary that quietly omits part of their meeting, which is the failure this
+/// whole path exists to avoid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Generated {
+    pub text: String,
+    /// The sidecar cut this request's input to fit its context.
+    pub truncated: bool,
+}
+
+impl Generated {
+    /// An answer to a request that fitted whole.
+    pub fn whole(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            truncated: false,
+        }
+    }
+}
+
 /// A model that can answer a summarize request and count tokens.
 pub trait SummaryClient: TokenCounter {
-    /// Run one request and return its text. `Err` for anything else at all.
-    fn generate(&self, req: &PolishRequest) -> Result<String, SummaryError>;
+    /// Run one request and return its text, plus whether the sidecar had to
+    /// truncate the input to fit. `Err` for anything else at all.
+    fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError>;
     /// A stable id for what produced the summary, stored beside it.
     fn model_id(&self) -> String;
 }
@@ -708,6 +759,12 @@ pub struct MeetingSummary {
     pub questions: Vec<SummaryItem>,
     pub chunks: usize,
     pub truncated_chunks: usize,
+    /// A pass — MAP or REDUCE — was handed more than its context could hold and
+    /// the input was cut. Distinct from [`MeetingSummary::truncated_chunks`],
+    /// which counts a single transcript LINE too long for a whole pass: this one
+    /// says the model never saw part of what it was asked to summarize, so the
+    /// reader has to be told (see [`render_summary`]).
+    pub truncated: bool,
     pub dropped_items: usize,
     pub model: String,
 }
@@ -742,6 +799,7 @@ pub fn summarize_segments(
 
     let mut extracts = Vec::with_capacity(chunks.len());
     let mut truncated_chunks = 0usize;
+    let mut truncated = false;
     for chunk in &chunks {
         if chunk.truncated {
             truncated_chunks += 1;
@@ -762,8 +820,9 @@ pub fn summarize_segments(
         match client.generate(&req) {
             // Parsed defensively: a MAP pass that hit its token budget
             // mid-array still contributes every item that closed.
-            Ok(raw) => {
-                let mut extract = parse_map_output(&raw, &labels, &source);
+            Ok(answer) => {
+                truncated |= answer.truncated;
+                let mut extract = parse_map_output(&answer.text, &labels, &source);
                 // The chunk narrative goes through the same gate the items do.
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
@@ -777,7 +836,8 @@ pub fn summarize_segments(
     }
     let merged = merge_extracts(&extracts);
 
-    let narrative = reduce_narrative(&merged.narratives, &full_text, client);
+    let (narrative, reduce_truncated) = reduce_narrative(&merged.narratives, &full_text, client);
+    truncated |= reduce_truncated;
     let offsets: Vec<(String, f64)> = lines
         .iter()
         .map(|l| (l.label.clone(), l.start_seconds))
@@ -806,6 +866,7 @@ pub fn summarize_segments(
         &questions,
         truncated_chunks,
         chunks.len(),
+        truncated,
     );
     Ok(MeetingSummary {
         markdown,
@@ -815,44 +876,165 @@ pub fn summarize_segments(
         questions,
         chunks: chunks.len(),
         truncated_chunks,
+        truncated,
         dropped_items: merged.dropped,
         model: client.model_id(),
     })
 }
 
-/// REDUCE: one pass over the chunk narratives, or none at all.
+/// Pack `narratives` into fold groups that each fit `budget` measured tokens.
+///
+/// The same shape as [`plan_chunks`] and for the same reason: each narrative is
+/// measured ONCE, and the blank-line join between two of them is charged two
+/// tokens, which is the conservative direction. A single narrative that will not
+/// fit a whole pass on its own is cut with [`TRUNCATION_MARKER`] rather than
+/// dropped, and the caller is told — that is finding #35's "truncate AND warn",
+/// applied to REDUCE instead of left to the sidecar to do silently.
+fn plan_fold(
+    narratives: &[String],
+    budget: usize,
+    counter: &dyn TokenCounter,
+) -> Result<(Vec<Vec<String>>, bool), SummaryError> {
+    let budget = budget.max(32);
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut current_tokens = 0usize;
+    let mut cut_any = false;
+
+    for narrative in narratives {
+        let mut narrative = narrative.clone();
+        let mut cost = counter.count_tokens(&narrative)? + 2;
+        if cost > budget {
+            let marker = counter.count_tokens(TRUNCATION_MARKER)? + 2;
+            let mut count = |candidate: &str| {
+                counter
+                    .count_tokens(candidate)
+                    .map_or(usize::MAX, |n| n + 2)
+            };
+            let (kept, was_cut) =
+                fit_to_budget(&narrative, budget.saturating_sub(marker), &mut count);
+            narrative = format!(
+                "{} {TRUNCATION_MARKER}",
+                kept.trim_end_matches(TRUNCATION_MARKER).trim_end()
+            );
+            cost = counter.count_tokens(&narrative)? + 2;
+            cut_any |= was_cut;
+            log::warn!("summary: one chunk narrative exceeded a whole REDUCE pass and was cut");
+        }
+        if !current.is_empty() && current_tokens + cost > budget {
+            groups.push(std::mem::take(&mut current));
+            current_tokens = 0;
+        }
+        current_tokens += cost;
+        current.push(narrative);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    Ok((groups, cut_any))
+}
+
+/// REDUCE: fold the chunk narratives down to one, a budget's worth at a time.
 ///
 /// A single-chunk meeting skips the model entirely — there is nothing to merge,
 /// and asking a 1.5B model to rewrite a summary it just wrote only invites drift.
-/// A rejected or failed REDUCE falls back to the chunk narratives themselves,
-/// which are already validated output.
-fn reduce_narrative(narratives: &[String], source: &str, client: &dyn SummaryClient) -> String {
-    let joined = narratives.join("\n\n");
-    if joined.trim().is_empty() {
-        return String::new();
+///
+/// Everything else is folded HIERARCHICALLY rather than joined into one request
+/// (the finding this function exists to fix). Joining is unbounded in meeting
+/// length: at YV91's three-hour cap a meeting is ~27 chunks, each contributing up
+/// to [`MAX_NARRATIVE_WORDS`], and the sidecar's own REDUCE budget is `n_ctx`
+/// minus the output reservation. Handed that, the sidecar cuts the tail and
+/// answers `truncated:true` — so the narrative would describe the FRONT of the
+/// meeting while being stored as the summary of all of it. Folding keeps every
+/// pass inside [`REDUCE_CHUNK_TOKENS`], measured with the model's own tokenizer,
+/// so the tail is merged rather than dropped.
+///
+/// Returns the narrative and whether anything was truncated on the way — which
+/// the caller renders, because a shortened input the reader never hears about is
+/// exactly the silent omission this is fixing.
+///
+/// Every pass fails toward LESS output rather than wrong output: a rejected or
+/// failed REDUCE keeps the narratives it was given, which are already validated.
+fn reduce_narrative(
+    narratives: &[String],
+    source: &str,
+    client: &dyn SummaryClient,
+) -> (String, bool) {
+    let mut level: Vec<String> = narratives
+        .iter()
+        .filter(|n| !n.trim().is_empty())
+        .cloned()
+        .collect();
+    match level.len() {
+        0 => return (String::new(), false),
+        1 => return (clamp_words(&level[0], MAX_NARRATIVE_WORDS), false),
+        _ => {}
     }
-    let fallback = clamp_words(&joined, MAX_NARRATIVE_WORDS);
-    if narratives.len() < 2 {
-        return fallback;
-    }
-    let req = PolishRequest::summarize(
-        next_id(),
-        SUMMARIZE_REDUCE,
-        SUMMARY_REDUCE_MAX_OUT,
-        REDUCE_DEADLINE_MS,
-        joined,
-        None,
-    );
-    match client.generate(&req) {
-        Ok(raw) => validate_narrative(source, &raw).unwrap_or(fallback),
-        Err(e) => {
-            log::warn!(
-                "summary: REDUCE failed ({}) — keeping the MAP narratives",
-                e.tag()
-            );
-            fallback
+    let mut truncated = false;
+
+    for _ in 0..MAX_FOLD_LEVELS {
+        let (groups, cut) = match plan_fold(&level, REDUCE_CHUNK_TOKENS, client) {
+            Ok(planned) => planned,
+            Err(e) => {
+                // The tokenizer is the only thing that can say what fits. Without
+                // it, refuse to guess at a prompt size and keep the MAP output.
+                log::warn!(
+                    "summary: could not measure the REDUCE input ({}) — keeping the MAP narratives",
+                    e.tag()
+                );
+                return (clamp_words(&level.join("\n\n"), MAX_NARRATIVE_WORDS), true);
+            }
+        };
+        truncated |= cut;
+        if groups.len() >= level.len() && level.len() > 1 {
+            // Every group holds one narrative, so another level would merge
+            // nothing and this would spin. Stop, keep what fits one narrative's
+            // cap, and say that it is not all of it.
+            break;
         }
+        let mut next: Vec<String> = Vec::with_capacity(groups.len());
+        for group in &groups {
+            let joined = group.join("\n\n");
+            let fallback = clamp_words(&joined, MAX_NARRATIVE_WORDS);
+            if group.len() < 2 {
+                // Nothing to merge in this group — pass it through untouched
+                // rather than spend a pass letting a 1.5B model reword it.
+                next.push(joined);
+                continue;
+            }
+            let req = PolishRequest::summarize(
+                next_id(),
+                SUMMARIZE_REDUCE,
+                SUMMARY_REDUCE_MAX_OUT,
+                REDUCE_DEADLINE_MS,
+                joined,
+                None,
+            );
+            match client.generate(&req) {
+                Ok(answer) => {
+                    // Belt and braces: the fold is sized so this cannot happen,
+                    // but if the sidecar still had to cut, the reader hears it.
+                    truncated |= answer.truncated;
+                    next.push(validate_narrative(source, &answer.text).unwrap_or(fallback));
+                }
+                Err(e) => {
+                    log::warn!(
+                        "summary: a REDUCE pass failed ({}) — keeping its MAP narratives",
+                        e.tag()
+                    );
+                    next.push(fallback);
+                }
+            }
+        }
+        if next.len() == 1 {
+            return (clamp_words(&next[0], MAX_NARRATIVE_WORDS), truncated);
+        }
+        level = next;
     }
+    // Levels exhausted, or a fold that could not converge. Keep the front of what
+    // we have and flag it — the flag is the whole difference between a short
+    // summary and a summary that lies about its coverage.
+    (clamp_words(&level.join("\n\n"), MAX_NARRATIVE_WORDS), true)
 }
 
 /// The stored summary: a narrative, then flat lists with citations.
@@ -866,6 +1048,7 @@ pub fn render_summary(
     questions: &[SummaryItem],
     truncated_chunks: usize,
     chunks: usize,
+    truncated: bool,
 ) -> String {
     let mut out = String::new();
     if !narrative.trim().is_empty() {
@@ -897,6 +1080,15 @@ pub fn render_summary(
         out.push_str(&format!(
             "_{truncated_chunks} of {chunks} parts of this meeting were too long for one pass and were truncated._\n"
         ));
+    }
+    if truncated {
+        // The other half of the same principle. The line above counts transcript
+        // LINES the chunker had to cut; this one is the model saying it never saw
+        // all of what it was asked to summarize. A `log::warn!` reaches nobody who
+        // reads the summary, so the flag has to land here.
+        out.push_str(
+            "_Part of this meeting did not fit the model in one pass and was shortened before summarizing, so the summary above may not cover all of it._\n",
+        );
     }
     if out.trim().is_empty() {
         // An honest empty answer beats an invented one.
@@ -1064,12 +1256,16 @@ impl TokenCounter for SidecarSummaryClient {
 }
 
 impl SummaryClient for SidecarSummaryClient {
-    fn generate(&self, req: &PolishRequest) -> Result<String, SummaryError> {
+    fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError> {
         let response = self.call(req)?;
-        if response.was_truncated() {
+        let truncated = response.was_truncated();
+        if truncated {
             log::warn!("summary: the sidecar truncated a pass to fit its context");
         }
-        response.into_text().ok_or(SummaryError::Protocol)
+        response
+            .into_text()
+            .map(|text| Generated { text, truncated })
+            .ok_or(SummaryError::Protocol)
     }
 
     fn model_id(&self) -> String {

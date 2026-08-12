@@ -2891,10 +2891,11 @@ fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<Stri
         .db
         .set_meeting_summary(&id, &summary.markdown, Some(&summary.model))?;
     log::info!(
-        "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s)",
+        "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s), truncated={}",
         summary.chunks,
         summary.actions.len(),
-        summary.dropped_items
+        summary.dropped_items,
+        summary.truncated
     );
     Ok(summary.markdown)
 }
