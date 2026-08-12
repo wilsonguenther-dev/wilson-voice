@@ -181,6 +181,79 @@ pub struct MeetingStats {
     pub audio_retention_days: i64,
 }
 
+// ── YV96 · the one-time meeting-capture notice ──────────────────────────────
+//
+// O1 was closed by Wilson as "consent liability on the user — one TERMS line +
+// one-time notice", which is why this is three constants and a struct rather
+// than the six-item consent system §8 of the plan originally specified
+// (finding #13). There is deliberately NO reminder toggle, no home-state legal
+// setting, no gate-vs-nudge branching, and no per-meeting `consent_ack` column:
+// the acknowledgement is app-wide, so one row in the existing `settings_kv`
+// table is the whole mechanism.
+
+/// The `settings_kv` key that records the notice has been shown and closed.
+///
+/// Versioned in the name on purpose: if the copy is ever materially rewritten
+/// (a new jurisdiction claim, a change to what Yap captures), the honest move is
+/// a `_v2` key so the new text is shown once, rather than silently treating an
+/// old acknowledgement as covering new words.
+pub const CONSENT_NOTICE_KEY: &str = "meeting_consent_notice_ack_v1";
+
+/// The Tauri event name the meeting status is broadcast under — the ONE place
+/// it is written on the Rust side.
+///
+/// This exists because the notice's trigger crosses a process boundary on a
+/// bare string. YV95's `meeting_status_sink` emits it once a second; the
+/// webview's `watchMeetingConsent` (`src/meetings/consentWatch.ts`) listens for
+/// it and raises the one-time capture notice. Nothing type-checks that pair:
+/// rename one end and the app still builds, every unit test still passes, and
+/// the notice — the whole of YV96 — silently never renders again.
+///
+/// So both ends name the constant instead of the string, and
+/// `tests/meeting_event_contract.rs` asserts the Rust value, the TypeScript
+/// value and the listener's subscription are the same word. Emitters must use
+/// `MEETING_EVENT` rather than a `"meeting"` literal; that test fails them if
+/// they do not.
+pub const MEETING_EVENT: &str = "meeting";
+
+/// What the acknowledgement row actually stores: an RFC3339 timestamp of the
+/// first close. The value is bookkeeping, not a decision — nothing reads it back
+/// except the UI, which shows it in Settings → Privacy.
+///
+/// The notice **never** gates recording (see [`MeetingConsent::blocks_recording`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingConsent {
+    /// True until the notice has been shown once and closed. The UI opens the
+    /// sheet on a record attempt when this is true, and never otherwise.
+    pub should_show: bool,
+    /// When the notice was first closed. `None` until then; never overwritten by
+    /// a later close, so "when did this user first see it" stays answerable.
+    pub acknowledged_at: Option<String>,
+    /// Always `false`, and asserted by `tests/consent_sheet_shown_once.rs`.
+    ///
+    /// This field exists so the nudge-not-gate decision is a value the UI reads
+    /// rather than a convention a future entry point can forget: a surface that
+    /// wires the sheet in front of `toggle_meeting_recording` has to actively
+    /// ignore this to break O1.
+    pub blocks_recording: bool,
+}
+
+impl MeetingConsent {
+    /// Build the state the UI renders from the raw `settings_kv` value.
+    ///
+    /// Any stored value — even an empty string from a half-written write — counts
+    /// as acknowledged: the failure mode of re-showing a legal notice forever is
+    /// worse than the failure mode of not showing it twice.
+    pub fn from_ack(ack: Option<String>) -> Self {
+        Self {
+            should_show: ack.is_none(),
+            acknowledged_at: ack,
+            blocks_recording: false,
+        }
+    }
+}
+
 /// Migration 1 — the meeting tables, their indexes, the FTS5 index over segment
 /// text, and the ai/ad/au trigger trio that keeps it in sync.
 ///

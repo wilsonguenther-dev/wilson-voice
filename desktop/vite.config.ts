@@ -16,7 +16,10 @@ const host = process.env.TAURI_DEV_HOST;
  * only added when asked for — a shipped app must never carry a page that draws
  * an entitlement out of thin air.
  *
- *   YAP_DEV_TOOLING=1 npm run build   # then dist/dev/license-preview.html
+ * `dev/meeting-consent-preview.html` does the same for YV96's one-time capture
+ * notice, which is unreachable a second time by construction.
+ *
+ *   YAP_DEV_TOOLING=1 npm run build   # then dist/dev/*.html
  */
 // @ts-expect-error process is a nodejs global
 const devTooling = process.env.YAP_DEV_TOOLING === "1";
@@ -38,7 +41,16 @@ export default defineConfig(async () => ({
         main: resolve(__dirname, "index.html"),
         float: resolve(__dirname, "float.html"),
         ...(devTooling
-          ? { licensePreview: resolve(__dirname, "dev/license-preview.html") }
+          ? {
+              licensePreview: resolve(__dirname, "dev/license-preview.html"),
+              // YV96 — the one-time capture notice, which is otherwise
+              // unreachable a second time: it shows once and the ack lives in
+              // SQLite, so reviewing it would mean deleting a row between takes.
+              meetingConsentPreview: resolve(
+                __dirname,
+                "dev/meeting-consent-preview.html",
+              ),
+            }
           : {}),
       },
     },

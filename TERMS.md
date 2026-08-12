@@ -30,7 +30,9 @@ Everything committed **after that release** is proprietary and is licensed to yo
 
 ## Recording other people is your call
 
-Yap can record meetings and classes on your Mac. Recording and transcribing other people is your call and your responsibility — laws differ by state and country, and some places require everyone's permission. Yap does not announce itself to anyone in the room or on the call.
+Yap can record meetings and classes on your Mac, and that is a different thing from dictating to yourself: it captures your microphone as an audio recording, keeps that recording on this Mac for seven days, and turns it into a transcript you keep for good. None of it is uploaded, and no one else can read it.
+
+Recording and transcribing other people is your call and your responsibility — laws differ by state and country, some places require everyone's permission, and a few treat a phone call differently from a conversation in a room. Yap does not announce itself to anyone in the room or on the call, it does not know where you are, and it does not decide whether you may record. The first time you record a meeting it says all of this to you once, in plain language, and then stays out of your way.
 
 ## Accuracy, and what you rely on
 

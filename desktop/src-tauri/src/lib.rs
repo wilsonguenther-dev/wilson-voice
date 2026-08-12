@@ -2626,6 +2626,28 @@ fn rename_meeting(
     state.db.rename_meeting(&id, &title)
 }
 
+/// YV96 — should the one-time meeting-capture notice be shown?
+///
+/// Read once on mount and again after every close. Cheap enough to be a plain
+/// SELECT on a one-row table; deliberately NOT cached in `AppState`, because the
+/// only thing that can change it is the command below.
+#[tauri::command]
+fn meeting_consent(state: State<'_, Arc<AppState>>) -> meetings::MeetingConsent {
+    state.db.meeting_consent()
+}
+
+/// YV96 — the notice has been shown and closed. Idempotent; first close wins.
+///
+/// This command **does not** start, stop, or authorise a recording, and nothing
+/// on the capture path calls it: O1 closed as a nudge, so the notice rides along
+/// beside the recording rather than standing in front of it.
+#[tauri::command]
+fn acknowledge_meeting_consent(
+    state: State<'_, Arc<AppState>>,
+) -> Result<meetings::MeetingConsent, String> {
+    state.db.acknowledge_meeting_consent()
+}
+
 /// Delete a meeting: rows, FTS entries, and the WAV.
 ///
 /// `secure_delete = ON` means the cascade physically overwrites the freed pages
@@ -3494,6 +3516,10 @@ pub fn run() {
             rename_meeting,
             delete_meeting,
             export_meeting_markdown,
+            // YV96 — the one-time capture notice. Two reads and one write on a
+            // single `settings_kv` row; nothing here can block a recording.
+            meeting_consent,
+            acknowledge_meeting_consent,
             export_history,
             open_privacy_settings,
             manual_toggle,

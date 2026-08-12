@@ -6,7 +6,7 @@
 //! over this SQLite layer give fast retrieval without a network hop.
 
 use crate::meetings::{
-    self, Meeting, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
+    self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
@@ -1251,6 +1251,69 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())
+    }
+
+    // ── YV96 · `settings_kv`, and the one key the consent notice needs ──
+    //
+    // `settings_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)` has existed in
+    // the baseline schema since v0.1 with no reader and no writer anywhere in
+    // the tree — every user-facing setting lives in the Tauri store. The
+    // one-time meeting notice is the first thing to use it, which is exactly
+    // what finding #13 asked for: an app-wide acknowledgement belongs in one
+    // app-wide row, not in a `meetings.consent_ack` column that every future
+    // row would carry and nothing would ever read.
+
+    /// Read one `settings_kv` value. A missing row is `None`, never an error.
+    pub fn setting_get(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM settings_kv WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Write one `settings_kv` value, overwriting whatever was there.
+    pub fn setting_set(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO settings_kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Has the one-time meeting-capture notice been shown and closed yet?
+    ///
+    /// Never fails: a consent notice that errors is a notice that either blocks
+    /// a recording or shows itself forever, and both are worse than the answer
+    /// "assume it still needs showing".
+    pub fn meeting_consent(&self) -> MeetingConsent {
+        MeetingConsent::from_ack(self.setting_get(meetings::CONSENT_NOTICE_KEY))
+    }
+
+    /// Record that the notice was shown and closed — by acknowledging it OR by
+    /// dismissing it, because a one-time notice is about display, not assent
+    /// (the liability sits with the user per TERMS.md, and Yap adjudicates
+    /// nothing).
+    ///
+    /// Idempotent, and the FIRST timestamp wins: `INSERT … ON CONFLICT DO
+    /// NOTHING` means a second close cannot move the date the user first saw
+    /// this text.
+    pub fn acknowledge_meeting_consent(&self) -> Result<MeetingConsent, String> {
+        {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO NOTHING",
+                params![meetings::CONSENT_NOTICE_KEY, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(self.meeting_consent())
     }
 
     /// Open a new meeting row in state `recording`.
