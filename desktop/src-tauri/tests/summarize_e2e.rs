@@ -154,6 +154,46 @@ fn summarize_e2e_over_the_yv90_lecture_fixture() {
     );
 }
 
+/// A meeting whose MAP passes ALL fail is an error, never an `Ok` placeholder.
+///
+/// The failure mode this pins: every MAP error is a warn-and-continue, so a
+/// sidecar that is down for every chunk used to leave `extracts` empty, REDUCE
+/// with nothing to fold, and `render_summary` emitting
+/// "_No summary could be produced for this meeting._" — returned as `Ok`, which
+/// the command then writes over whatever summary the user already had. Local
+/// app, no undo, no version history: that is data loss reported as success.
+///
+/// The distinction that matters is "every call failed" vs "the meeting was
+/// genuinely quiet" — a chunk that succeeds with nothing in it still pushes an
+/// empty extract, so the quiet meeting keeps its `Ok` (asserted below).
+#[test]
+fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
+    let segments = support::segments();
+
+    let dead = StubModel::new(|_| Err(wilson_voice_lib::summarize::SummaryError::Protocol));
+    let err = summarize_segments(&segments, &dead)
+        .expect_err("every MAP pass failed — there is no summary to return");
+    assert_eq!(
+        err.tag(),
+        "protocol",
+        "a dead sidecar reports a protocol failure, not a summary"
+    );
+
+    // The other half of the guarantee: a meeting the model had nothing to say
+    // about is still a successful summary, and must not be swept up by the guard.
+    let quiet = StubModel::new(|req| {
+        if req.mode == "reduce" {
+            Ok(String::new())
+        } else {
+            Ok(map_answer("", &[], &[], &[]))
+        }
+    });
+    let summary =
+        summarize_segments(&segments, &quiet).expect("a quiet meeting is still a real summary");
+    assert!(summary.actions.is_empty());
+    assert_eq!(summary.chunks, 1);
+}
+
 /// The same path against the REAL sidecar and a real GGUF — the one YV99's
 /// on-camera demo drives. Ignored by default: it needs a polish model installed
 /// and takes minutes on a 15-minute transcript.

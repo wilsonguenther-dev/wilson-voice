@@ -792,6 +792,11 @@ pub struct SummaryItem {
 /// Every stage fails toward LESS output rather than wrong output — a chunk whose
 /// MAP pass fails contributes nothing and does not stop the others, and a REDUCE
 /// that fails or is rejected falls back to the chunk narratives it was given.
+///
+/// The floor under "less output" is `Err`, not an empty `Ok`: if EVERY chunk's
+/// MAP pass failed there is nothing to summarize from, and returning a
+/// placeholder as success would let the caller overwrite a summary the user
+/// already had. See the `extracts.is_empty()` guard below.
 pub fn summarize_segments(
     segments: &[MeetingSegment],
     client: &dyn SummaryClient,
@@ -843,6 +848,20 @@ pub fn summarize_segments(
             }
             Err(e) => log::warn!("summary: a MAP pass failed ({}) — continuing", e.tag()),
         }
+    }
+    // One failed chunk is survivable — the others still carry the meeting. ZERO
+    // surviving chunks is not a thin summary, it is no summary: the narrative
+    // would render as the "_No summary could be produced_" placeholder, and the
+    // caller would happily write that over a good summary the user already had,
+    // in an app with no undo and no version history. A meeting that genuinely
+    // had nothing to extract still produces an EMPTY extract per chunk here, so
+    // this branch means the model calls failed, not that the meeting was quiet.
+    if extracts.is_empty() && !chunks.is_empty() {
+        log::warn!(
+            "summary: every one of {} MAP pass(es) failed — refusing to overwrite with a placeholder",
+            chunks.len()
+        );
+        return Err(SummaryError::Protocol);
     }
     let merged = merge_extracts(&extracts);
 

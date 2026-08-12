@@ -2854,17 +2854,35 @@ fn acknowledge_meeting_consent(
 
 /// YV97 — summarize one recorded meeting, locally.
 ///
-/// Not `async`: Tauri dispatches a non-async command onto a worker thread, which
-/// is where this belongs — a MAP pass per chunk is seconds of decoding, and the
-/// webview keeps painting throughout. The summarizer spawns its OWN sidecar for
-/// the job (see [`summarize::SidecarSession`]) rather than borrowing the warm
-/// dictation one, so a summary running in the background cannot stall a take.
+/// MUST be `async` + `spawn_blocking`, same as [`paste_entry`]. A *sync*
+/// `#[tauri::command]` resolves to `ExecutionContext::Blocking` and runs inline
+/// ON the main thread — and this body is minutes of work, not milliseconds: up
+/// to 30s waiting for the sidecar's model to load, one `count_tokens` round-trip
+/// per transcript line (~1,700 at YV91's 3h cap), a MAP pass per chunk at up to
+/// 60s each, then REDUCE folds at 90s each. On main that is a multi-minute
+/// freeze of the tray, the global hotkey and the pill — dictation starvation,
+/// which is exactly what the separate sidecar exists to prevent. `spawn_blocking`
+/// puts it on a blocking-pool thread where the claim below is actually true.
+///
+/// The summarizer spawns its OWN sidecar for the job (see
+/// [`summarize::SidecarSession`]) rather than borrowing the warm dictation one,
+/// so a summary running in the background cannot stall a take.
 ///
 /// The meeting's state is moved to `summarizing` for the duration and back to
 /// what it was on the way out, so a crash mid-summary leaves a row that says
 /// what was happening rather than one that lies about being complete.
 #[tauri::command]
-fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<String, String> {
+async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<String, String> {
+    // The managed handle is cloned OUT of the borrow before the hop: the
+    // closure must be `'static`, and `Arc<AppState>` is what makes that free.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || summarize_meeting_blocking(&state, id))
+        .await
+        .map_err(|e| format!("summary task join failed: {e}"))?
+}
+
+/// The body of [`summarize_meeting`], off the main thread.
+fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, String> {
     let meeting = state
         .db
         .get_meeting(&id)?
