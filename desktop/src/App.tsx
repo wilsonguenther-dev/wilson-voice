@@ -1163,6 +1163,16 @@ export default function App() {
   async function closeConsentNotice() {
     setConsentOpen(null);
     if (consent && !consent.shouldShow) return;
+    // Close the door before the round-trip, not after: the `meeting` tick
+    // arrives every second, and a write that took longer than that would
+    // re-open the sheet the user just closed. If the write then fails, this
+    // session stays quiet (they have seen it) and the next launch shows it
+    // again — the safe direction to be wrong in.
+    consentRef.current = {
+      shouldShow: false,
+      acknowledgedAt: null,
+      blocksRecording: false,
+    };
     try {
       setConsent(await invoke<MeetingConsent>("acknowledge_meeting_consent"));
     } catch {
