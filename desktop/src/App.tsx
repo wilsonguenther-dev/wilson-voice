@@ -20,6 +20,7 @@ import "./App.css";
 type Nav =
   | "home"
   | "permissions"
+  | "meetings"
   | "insights"
   | "dictionary"
   | "scratchpad"
@@ -365,6 +366,93 @@ interface Insights {
   p95PipelineMs?: number;
   speechSecondsTotal?: number;
   wpmSampleSessions?: number;
+  /** YV94 — the Meetings strip (finding #29). Absent on an older backend. */
+  meetings?: MeetingStats;
+}
+
+/**
+ * YV94 — the local Notetaker rollup. Yap ships no telemetry, so this is the
+ * only signal that meetings are being recorded, kept and trusted. The DER proxy
+ * and the "meetings with an action checked off" line from finding #29 need
+ * diarization (yap23) and summaries (yap25); they are absent rather than faked.
+ */
+interface MeetingStats {
+  totalMeetings: number;
+  meetingsLast7: number;
+  totalSeconds: number;
+  completeMeetings: number;
+  partialMeetings: number;
+  failedMeetings: number;
+  segmentsIndexed: number;
+  firstMeetingAt?: string | null;
+  daysToFirstMeeting?: number | null;
+  lastMeetingAt?: string | null;
+  meetingsWithAudio: number;
+  audioRetentionDays: number;
+}
+
+/** YV94 — one recorded meeting. Mirrors the `meetings` row. */
+interface Meeting {
+  id: string;
+  title: string;
+  source: string;
+  startedAt: string;
+  endedAt?: string | null;
+  durationSeconds: number;
+  /** recording | transcribing | summarizing | complete | failed | partial */
+  state: string;
+  error?: string | null;
+  processedThroughSeconds?: number;
+  audioKept: boolean;
+  micWavPath?: string | null;
+  summary?: string | null;
+  summaryModel?: string | null;
+  createdAt: string;
+  segmentCount: number;
+}
+
+/** One chronological transcript segment. 22-A records one track: the mic. */
+interface MeetingSegment {
+  id: string;
+  meetingId: string;
+  startSeconds: number;
+  endSeconds: number;
+  text: string;
+  confidence?: number | null;
+  createdAt: string;
+}
+
+interface MeetingDetail {
+  meeting: Meeting;
+  segments: MeetingSegment[];
+  audioOnDisk: boolean;
+}
+
+/**
+ * YV94 — 22-A captures ONE track: the mic, which is whoever is holding the Mac.
+ * Labelling it costs nothing today and is what makes the 22-B upgrade legible
+ * ("now it can tell you apart from the room") — plan finding #10.
+ */
+const MIC_SPEAKER_LABEL = "Me";
+
+/** `3725.4` → `01:02:05`. Mirrors `meetings::format_offset` in Rust. */
+function formatOffset(seconds: number): string {
+  const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+/** `750` → `12m 30s`. Mirrors `meetings::format_duration` in Rust. */
+function formatMeetingDuration(seconds: number): string {
+  const total = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
 }
 
 interface DayCount {
@@ -572,6 +660,19 @@ export default function App() {
   const [editTrigger, setEditTrigger] = useState("");
   const [editExpansion, setEditExpansion] = useState("");
   const [scratch, setScratch] = useState<ScratchNote[]>([]);
+  // YV94 — the Meetings tab. Loaded when the tab is opened rather than in
+  // `refreshAll`: meetings are rare compared to dictations, each list row costs
+  // a segment-count subquery, and nothing on any other screen reads them.
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetingQuery, setMeetingQuery] = useState("");
+  // The meeting whose transcript is open. `null` = the list.
+  const [openMeeting, setOpenMeeting] = useState<MeetingDetail | null>(null);
+  const [meetingBusy, setMeetingBusy] = useState(false);
+  // Delete is destructive and irreversible (rows, search index and the audio),
+  // so the button arms first and the second click commits.
+  const [confirmDeleteMeeting, setConfirmDeleteMeeting] = useState<string | null>(
+    null,
+  );
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // YV62 — the signature block is edited locally and saved on blur. A save per
   // keystroke would rewrite settings.json on every character of a multi-line
@@ -684,6 +785,28 @@ export default function App() {
     setFailed(await invoke<FailedDictation[]>("list_failed_dictations"));
   }, []);
 
+  // YV94 — the Meetings list. `query` searches segment text through FTS5 and the
+  // title through LIKE, so a meeting is findable by what it was called AND by
+  // what was said in it.
+  const loadMeetings = useCallback(async (q?: string) => {
+    try {
+      setMeetings(
+        await invoke<Meeting[]>("list_meetings", { query: q || null }),
+      );
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const openMeetingDetail = useCallback(async (id: string) => {
+    try {
+      setOpenMeeting(await invoke<MeetingDetail>("get_meeting", { id }));
+      setConfirmDeleteMeeting(null);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   const refreshPerms = useCallback(async () => {
     try {
       setPerms(await invoke<PermissionReport>("get_permissions"));
@@ -742,6 +865,21 @@ export default function App() {
       }));
     }
   }, [loadHistory, refreshPerms]);
+
+  // YV94 — load (and search) the Meetings list only while that tab is open. The
+  // 200 ms debounce is the same shape History's search uses: one query per pause
+  // in typing, not one per keystroke.
+  useEffect(() => {
+    if (nav !== "meetings") return;
+    let dead = false;
+    const t = setTimeout(() => {
+      if (!dead) loadMeetings(meetingQuery);
+    }, meetingQuery ? 200 : 0);
+    return () => {
+      dead = true;
+      clearTimeout(t);
+    };
+  }, [nav, meetingQuery, loadMeetings]);
 
   // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
   // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is
@@ -955,6 +1093,65 @@ export default function App() {
     } catch (e) {
       if (isLicenseRequired(e)) setBuyPrompt(true);
       else toast(errorText(e));
+    }
+  }
+
+  // ── YV94 · meeting actions ──
+
+  /**
+   * Export one meeting as Markdown. PDF was cut for v1 (finding #33): webview
+   * print pagination over a 3-hour transcript is a real time sink for a feature
+   * nobody has asked for, and a .md opens in every editor and note app.
+   */
+  async function exportMeeting(id: string) {
+    setMeetingBusy(true);
+    try {
+      const { path } = await invoke<{ path: string; count: number }>(
+        "export_meeting_markdown",
+        { id },
+      );
+      toast(`Exported → ${path}`);
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setMeetingBusy(false);
+    }
+  }
+
+  /**
+   * Delete a meeting: rows, search index and the audio, in one go. `secure_delete`
+   * means the pages are physically overwritten, so on a long meeting this is real
+   * work — the button stays disabled until the backend answers rather than
+   * reporting success while bytes are still on disk (the YV78 lesson).
+   */
+  async function removeMeeting(id: string) {
+    setMeetingBusy(true);
+    try {
+      await invoke("delete_meeting", { id });
+      setConfirmDeleteMeeting(null);
+      setOpenMeeting((m) => (m?.meeting.id === id ? null : m));
+      await loadMeetings(meetingQuery);
+      toast("Meeting deleted");
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setMeetingBusy(false);
+    }
+  }
+
+  async function renameMeeting(id: string, title: string) {
+    const next = title.trim();
+    if (!next) return;
+    try {
+      await invoke("rename_meeting", { id, title: next });
+      setOpenMeeting((m) =>
+        m?.meeting.id === id
+          ? { ...m, meeting: { ...m.meeting, title: next } }
+          : m,
+      );
+      await loadMeetings(meetingQuery);
+    } catch (e) {
+      toast(errorText(e));
     }
   }
 
@@ -1567,6 +1764,9 @@ export default function App() {
             [
               ["home", "Home", history.length],
               ["permissions", "Permissions", needsPerms ? 1 : null],
+              // YV94 — Meetings sits next to Home because it is the second
+              // thing Yap keeps for you, not a setting.
+              ["meetings", "Meetings", meetings.length],
               ["insights", "Insights", null],
               ["dictionary", "Dictionary", dictionary.length],
               ["scratchpad", "Scratchpad", scratch.length],
@@ -1619,6 +1819,7 @@ export default function App() {
             <h1>
               {nav === "home" && (userName ? `Welcome back, ${userName}` : "Welcome back")}
               {nav === "permissions" && "Permissions"}
+              {nav === "meetings" && "Meetings"}
               {nav === "insights" && "Insights"}
               {nav === "dictionary" && "Dictionary"}
               {nav === "scratchpad" && "Scratchpad"}
@@ -1629,6 +1830,8 @@ export default function App() {
                 "Hold fn⌃ and talk — your words land where the cursor is."}
               {nav === "permissions" &&
                 "macOS must grant these to Yap itself. Without them, dictation or paste fails."}
+              {nav === "meetings" &&
+                "Recorded meetings, searchable and exportable. Audio is kept for 7 days; the transcript stays."}
               {nav === "insights" &&
                 "Local analytics from your SQLite history — nothing leaves this Mac."}
               {nav === "dictionary" &&
@@ -2107,6 +2310,187 @@ export default function App() {
             </>
           )}
 
+          {/* YV94 — Meetings. Two states in one screen: the list, and one
+              meeting's transcript. Nothing here STARTS a meeting — capture is
+              YV91 and the entry points (tray, hotkey, pill, the empty state's
+              own button) are YV95. This ships the surface that makes a recorded
+              meeting findable, readable, exportable and deletable. */}
+          {nav === "meetings" && !openMeeting && (
+            <>
+              <div className="toolbar">
+                <input
+                  type="search"
+                  value={meetingQuery}
+                  onChange={(e) => setMeetingQuery(e.target.value)}
+                  placeholder="Search meetings — titles and every word said in them…"
+                  aria-label="Search meetings"
+                />
+                {meetingQuery && (
+                  <button className="ghost" onClick={() => setMeetingQuery("")}>
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {meetings.length === 0 ? (
+                <div className="empty">
+                  <h3>
+                    {meetingQuery ? "No meetings match that" : "No meetings yet"}
+                  </h3>
+                  <p>
+                    {meetingQuery
+                      ? "Search covers meeting titles and every word transcribed inside them."
+                      : "Recorded meetings land here — searchable, exportable, and deletable in one click. Audio is kept for 7 days; the transcript is kept for good."}
+                  </p>
+                </div>
+              ) : (
+                <ul className="feed">
+                  {meetings.map((m) => (
+                    <li key={m.id} className="card">
+                      <div className="card-meta">
+                        <span>
+                          {formatTime(m.startedAt)} ·{" "}
+                          {formatMeetingDuration(m.durationSeconds)}
+                        </span>
+                        <span>
+                          {m.segmentCount}{" "}
+                          {m.segmentCount === 1 ? "segment" : "segments"}
+                          {m.audioKept ? "" : " · audio expired"}
+                        </span>
+                      </div>
+                      <p className="meeting-title">
+                        {m.title}
+                        <span className={`meeting-state ${m.state}`}>
+                          {m.state}
+                        </span>
+                      </p>
+                      {m.error && <p className="tiny bad">{m.error}</p>}
+                      <div className="actions">
+                        <button
+                          className="primary"
+                          onClick={() => openMeetingDetail(m.id)}
+                        >
+                          Open transcript
+                        </button>
+                        <button
+                          className="ghost"
+                          disabled={meetingBusy}
+                          onClick={() => exportMeeting(m.id)}
+                        >
+                          Export Markdown
+                        </button>
+                        <button
+                          className="ghost danger"
+                          disabled={meetingBusy}
+                          onClick={() =>
+                            confirmDeleteMeeting === m.id
+                              ? removeMeeting(m.id)
+                              : setConfirmDeleteMeeting(m.id)
+                          }
+                        >
+                          {confirmDeleteMeeting === m.id
+                            ? "Delete for good?"
+                            : "Delete"}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+
+          {nav === "meetings" && openMeeting && (
+            <div className="meeting-detail">
+              <div className="actions">
+                <button className="ghost" onClick={() => setOpenMeeting(null)}>
+                  ← All meetings
+                </button>
+                <button
+                  className="primary"
+                  disabled={meetingBusy}
+                  onClick={() => exportMeeting(openMeeting.meeting.id)}
+                >
+                  Export Markdown
+                </button>
+                <button
+                  className="ghost danger"
+                  disabled={meetingBusy}
+                  onClick={() =>
+                    confirmDeleteMeeting === openMeeting.meeting.id
+                      ? removeMeeting(openMeeting.meeting.id)
+                      : setConfirmDeleteMeeting(openMeeting.meeting.id)
+                  }
+                >
+                  {confirmDeleteMeeting === openMeeting.meeting.id
+                    ? "Delete for good?"
+                    : "Delete meeting"}
+                </button>
+              </div>
+
+              {/* The title is editable in place — ASR names a meeting
+                  "Meeting", a person names it after what it was. */}
+              <input
+                className="meeting-title-edit"
+                defaultValue={openMeeting.meeting.title}
+                aria-label="Meeting title"
+                key={openMeeting.meeting.id}
+                onBlur={(e) =>
+                  renameMeeting(openMeeting.meeting.id, e.target.value)
+                }
+              />
+              <p className="card-meta">
+                <span>
+                  {formatTime(openMeeting.meeting.startedAt)} ·{" "}
+                  {formatMeetingDuration(openMeeting.meeting.durationSeconds)} ·{" "}
+                  {openMeeting.meeting.state}
+                </span>
+                <span>
+                  {openMeeting.audioOnDisk
+                    ? "audio kept"
+                    : `audio deleted after ${
+                        insights?.meetings?.audioRetentionDays ?? 7
+                      } days`}
+                </span>
+              </p>
+
+              {openMeeting.meeting.summary && (
+                <div className="panel">
+                  <h3>Summary</h3>
+                  <p>{openMeeting.meeting.summary}</p>
+                </div>
+              )}
+
+              {openMeeting.segments.length === 0 ? (
+                <div className="empty">
+                  <h3>No transcript yet</h3>
+                  <p>
+                    {openMeeting.meeting.state === "recording" ||
+                    openMeeting.meeting.state === "transcribing"
+                      ? "Yap is still working through the audio."
+                      : "This meeting has no transcribed segments."}
+                  </p>
+                </div>
+              ) : (
+                <ol className="transcript">
+                  {openMeeting.segments.map((s) => (
+                    <li key={s.id}>
+                      {/* Timestamp and speaker are DATA, so they wear the
+                          pixel voice the rest of the app gives numbers. 22-A
+                          records one track — the mic — labelled "Me"; the
+                          system track arrives as "Them" in 22-B. */}
+                      <span className="seg-time">
+                        {formatOffset(s.startSeconds)}
+                      </span>
+                      <span className="seg-who">{MIC_SPEAKER_LABEL}</span>
+                      <span className="seg-text">{s.text}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+
           {nav === "insights" && insights && (
             <div className="insights">
               <div className="stats-row">
@@ -2133,6 +2517,71 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              {/* YV94 / finding #29 — the Meetings strip. Yap ships no
+                  telemetry, so without a local rollup there is no way to tell
+                  whether the Notetaker is used, retained or trusted. It renders
+                  only once a meeting exists: an all-zero row on a screen about
+                  dictation is noise. */}
+              {insights.meetings && insights.meetings.totalMeetings > 0 && (
+                <div className="panel meeting-strip">
+                  <h3>Meetings</h3>
+                  <div className="stats-row">
+                    <div className="stat">
+                      <div className="stat-n">
+                        {insights.meetings.totalMeetings.toLocaleString()}
+                      </div>
+                      <div className="stat-l">recorded</div>
+                    </div>
+                    <div className="stat">
+                      <div className="stat-n">
+                        {insights.meetings.meetingsLast7}
+                      </div>
+                      <div className="stat-l">last 7 days</div>
+                    </div>
+                    <div className="stat">
+                      <div className="stat-n">
+                        {Math.round(insights.meetings.totalSeconds / 60)}
+                      </div>
+                      <div className="stat-l">minutes captured</div>
+                    </div>
+                    <div className="stat">
+                      <div className="stat-n">
+                        {insights.meetings.segmentsIndexed.toLocaleString()}
+                      </div>
+                      <div className="stat-l">segments searchable</div>
+                    </div>
+                  </div>
+                  <ul className="kv">
+                    <li>
+                      <span>Finished cleanly</span>
+                      <strong>
+                        {insights.meetings.completeMeetings} of{" "}
+                        {insights.meetings.totalMeetings}
+                        {insights.meetings.partialMeetings > 0 &&
+                          ` · ${insights.meetings.partialMeetings} partial`}
+                        {insights.meetings.failedMeetings > 0 &&
+                          ` · ${insights.meetings.failedMeetings} failed`}
+                      </strong>
+                    </li>
+                    <li>
+                      <span>Audio still on disk</span>
+                      <strong>
+                        {insights.meetings.meetingsWithAudio} ·{" "}
+                        {insights.meetings.audioRetentionDays}-day retention
+                      </strong>
+                    </li>
+                    {insights.meetings.daysToFirstMeeting != null && (
+                      <li>
+                        <span>Dictation → first meeting</span>
+                        <strong>
+                          {insights.meetings.daysToFirstMeeting} days
+                        </strong>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
               <div className="panel-grid">
                 <div className="panel">
                   <h3>Last 7 days</h3>

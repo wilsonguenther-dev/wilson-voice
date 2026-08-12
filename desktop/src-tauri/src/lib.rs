@@ -10,7 +10,11 @@ mod command_mode;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
 mod crash;
-mod db;
+// YV94: public because the schema is now the thing under test. The migration
+// ladder, the FTS5 sync triggers and the delete-cascade are claims about a real
+// SQLite file, so `tests/db_migration_idempotent.rs`, `meeting_fts_search.rs`,
+// `meeting_delete_cascade.rs` and `meeting_stats_rollup.rs` open one and check.
+pub mod db;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
 pub mod dictation;
@@ -29,6 +33,10 @@ mod latency;
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
 mod logging;
+// YV94 — the Notetaker's row types, its migration-1 SQL, and the pure Markdown
+// renderer. Public so the export's "round-trips readably" claim is a test
+// (`tests/meeting_markdown_export.rs`) rather than an eyeball.
+pub mod meetings;
 mod mic_auth;
 mod models;
 mod paste;
@@ -1727,6 +1735,36 @@ fn purge_expired_failed_takes(db: &Database) -> usize {
     }
 }
 
+/// YV94 retention (finding #28) — meeting AUDIO older than the window is
+/// deleted; the transcript is kept forever.
+///
+/// Time-based, deliberately NOT delete-after-summarize: there is no summarize
+/// stage yet (YV97), so delete-after-summarize would mean either "the audio is
+/// never deleted" or "the transcript is the only artifact and the room can never
+/// be re-heard". Flip the default once YV97 has shipped and proven itself.
+fn purge_expired_meeting_audio(db: &Database) -> usize {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(meetings::AUDIO_RETENTION_DAYS);
+    match db.purge_meeting_audio(cutoff) {
+        Ok(paths) => {
+            for path in &paths {
+                let _ = std::fs::remove_file(path);
+            }
+            if !paths.is_empty() {
+                log::info!(
+                    "YV94 retention: purged audio for {} meeting(s) older than {} days",
+                    paths.len(),
+                    meetings::AUDIO_RETENTION_DAYS
+                );
+            }
+            paths.len()
+        }
+        Err(e) => {
+            log::warn!("meeting audio purge skipped: {e}");
+            0
+        }
+    }
+}
+
 /// YV73 — one pass of the disk sweep, from the hygiene thread.
 ///
 /// The YV52 retention purge runs FIRST, so the row list this reads afterwards
@@ -1736,6 +1774,10 @@ fn purge_expired_failed_takes(db: &Database) -> usize {
 /// prove is unreachable.
 fn run_disk_sweep(db: &Database) {
     purge_expired_failed_takes(db);
+    // YV94 — same posture, one window later: expired meeting audio is dropped
+    // before the orphan sweep runs, so the sweep never sees those WAVs as
+    // "unreachable files I should think about".
+    purge_expired_meeting_audio(db);
     let keep = match db.list_failed_dictations() {
         Ok(rows) => Some(rows.into_iter().map(|r| r.wav_path).collect::<Vec<_>>()),
         Err(e) => {
@@ -2518,6 +2560,122 @@ fn acknowledge_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, St
 #[tauri::command]
 fn clear_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
     state.db.clear_crash_events()
+}
+
+// --- YV94: Meetings ------------------------------------------------------
+//
+// Read/list/export/delete only. Nothing here STARTS a meeting: capture is
+// YV91's and the entry points are YV95's, so this item ships the surface that
+// makes a recorded meeting findable, readable, exportable and deletable — and
+// nothing it cannot honestly do yet.
+
+/// Default page size for the Meetings list. Meetings are far rarer than
+/// dictations (hence 200 there), and each row carries a segment COUNT subquery.
+const MEETING_LIST_LIMIT: i64 = 100;
+
+/// Meetings newest-first. `query` searches segment text through FTS5 and the
+/// title through LIKE.
+#[tauri::command]
+fn list_meetings(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<i64>,
+    query: Option<String>,
+) -> Result<Vec<meetings::Meeting>, String> {
+    state
+        .db
+        .list_meetings(limit.unwrap_or(MEETING_LIST_LIMIT).clamp(1, 500), query)
+}
+
+/// One meeting plus its transcript, in wall-clock order.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDetail {
+    pub meeting: meetings::Meeting,
+    pub segments: Vec<meetings::MeetingSegment>,
+    /// Whether the WAV named by the row is still on disk. The row can point at
+    /// a file the hygiene sweep removed, and a UI that promises audio it cannot
+    /// produce is worse than one that says the audio expired.
+    pub audio_on_disk: bool,
+}
+
+#[tauri::command]
+fn get_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<MeetingDetail, String> {
+    let meeting = state
+        .db
+        .get_meeting(&id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    let segments = state.db.list_meeting_segments(&id)?;
+    let audio_on_disk = meeting
+        .mic_wav_path
+        .as_deref()
+        .map(|p| Path::new(p).is_file())
+        .unwrap_or(false);
+    Ok(MeetingDetail {
+        meeting,
+        segments,
+        audio_on_disk,
+    })
+}
+
+#[tauri::command]
+fn rename_meeting(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    state.db.rename_meeting(&id, &title)
+}
+
+/// Delete a meeting: rows, FTS entries, and the WAV.
+///
+/// `secure_delete = ON` means the cascade physically overwrites the freed pages
+/// rather than unlinking them, so this is real work on a 3-hour meeting. It runs
+/// off the UI thread for free — Tauri dispatches a NON-async command onto a
+/// worker thread, and this is deliberately not `async fn`, so the webview keeps
+/// painting while the pages are scrubbed.
+#[tauri::command]
+fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    state.db.delete_meeting_with_audio(&id)
+}
+
+/// Export one meeting as Markdown into Application Support, alongside the
+/// transcript export (YV77). Same temp-file-then-rename discipline: a reader
+/// never sees a half-written file under the final name.
+///
+/// Markdown only — PDF was cut for v1 (finding #33): webview print pagination
+/// over a 3-hour transcript is a real time sink for a feature nobody has asked
+/// for, and a .md file opens in every editor, note app and chat window.
+#[tauri::command]
+fn export_meeting_markdown(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<ExportResult, String> {
+    use std::io::Write;
+
+    let (meeting, markdown) = state.db.meeting_markdown(&id)?;
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = meetings::export_file_stem(&meeting.title, meeting.started_at);
+    let path = dir.join(format!("{stem}.md"));
+    let tmp = dir.join(format!(".{stem}.md.part"));
+
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut w = std::io::BufWriter::new(file);
+    if let Err(e) = w
+        .write_all(markdown.as_bytes())
+        .and_then(|()| w.flush())
+        .map_err(|e| e.to_string())
+    {
+        drop(w);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    drop(w);
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(ExportResult {
+        path: path.display().to_string(),
+        count: meeting.segment_count as usize,
+    })
 }
 
 /// Where a transcript export landed and how many rows it holds (YV77). The
@@ -3329,6 +3487,13 @@ pub fn run() {
             list_crash_events,
             acknowledge_crash_events,
             clear_crash_events,
+            // YV94 — Meetings. Read, export and delete only; starting one is
+            // YV95's surface.
+            list_meetings,
+            get_meeting,
+            rename_meeting,
+            delete_meeting,
+            export_meeting_markdown,
             export_history,
             open_privacy_settings,
             manual_toggle,
