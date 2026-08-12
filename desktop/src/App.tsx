@@ -693,9 +693,13 @@ export default function App() {
     null,
   );
   // Read by the `meeting` subscription, which is deliberately subscribed ONCE:
-  // re-subscribing whenever the consent state changes would drop ticks.
+  // re-subscribing whenever the consent state changes would drop ticks. Synced
+  // in an effect rather than written during render, which React reserves for
+  // itself.
   const consentRef = useRef<MeetingConsent | null>(null);
-  consentRef.current = consent;
+  useEffect(() => {
+    consentRef.current = consent;
+  }, [consent]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // YV62 — the signature block is edited locally and saved on blur. A save per
   // keystroke would rewrite settings.json on every character of a multi-line
