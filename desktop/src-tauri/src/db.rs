@@ -484,6 +484,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         let next = version + 1;
         let sql = match next {
             1 => meetings::MIGRATION_1_MEETINGS,
+            2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1339,6 +1340,7 @@ impl Database {
             summary_model: None,
             created_at: now,
             segment_count: 0,
+            diagnostics: None,
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -1420,6 +1422,24 @@ impl Database {
                  audio_kept = CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END
              WHERE id = ?1",
             params![id, Utc::now().to_rfc3339(), duration_seconds.max(0.0), wav],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV95 / OS-12 — write (or rewrite) the session's diagnostics blob.
+    ///
+    /// Called twice per meeting: once at start with the preflight readings, so a
+    /// meeting that never reaches its stop path (a crash, a kill) still carries
+    /// the state the machine was in when it began, and once at stop with the
+    /// thermal transitions and the closing battery sample. The second call is a
+    /// full overwrite rather than a merge because the controller holds the whole
+    /// blob in memory — there is no partial writer to race with.
+    pub fn set_meeting_diagnostics(&self, id: &str, json: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET diagnostics = ?2 WHERE id = ?1",
+            params![id, json],
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -2888,7 +2908,8 @@ impl Database {
 const MEETING_COLS: &str = "m.id, m.title, m.source, m.started_at, m.ended_at, \
      m.duration_seconds, m.state, m.error, m.processed_through_seconds, m.audio_kept, \
      m.mic_wav_path, m.summary, m.summary_model, m.created_at, \
-     (SELECT COUNT(*) FROM meeting_segments s WHERE s.meeting_id = m.id)";
+     (SELECT COUNT(*) FROM meeting_segments s WHERE s.meeting_id = m.id), \
+     m.diagnostics";
 
 fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
     Ok(Meeting {
@@ -2907,6 +2928,11 @@ fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
         summary_model: row.get(12)?,
         created_at: parse_dt(row.get(13)?),
         segment_count: row.get(14)?,
+        // YV95 — migration 2's diagnostics blob. `None` for every meeting
+        // recorded before this build, which is why it is Option and not a
+        // defaulted string: "we never measured" and "we measured nothing" are
+        // different answers.
+        diagnostics: row.get(15)?,
     })
 }
 

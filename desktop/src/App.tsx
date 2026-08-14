@@ -6,6 +6,16 @@ import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
+// YV95 — the meeting status shape and its label rules are shared with the pill
+// (src/pill/meeting.ts) so the two surfaces cannot render the same second
+// differently, and so those rules are unit-tested once instead of twice.
+import {
+  IDLE_MEETING,
+  disabledReason,
+  elapsedLabel,
+  recordLabel,
+  type MeetingStatus,
+} from "./pill/meeting";
 import LicensePanel from "./license/LicensePanel";
 import PurchasePrompt from "./license/PurchasePrompt";
 // YV96 — the one-time meeting-capture notice. Its copy and its two open/close
@@ -674,6 +684,11 @@ export default function App() {
   // The meeting whose transcript is open. `null` = the list.
   const [openMeeting, setOpenMeeting] = useState<MeetingDetail | null>(null);
   const [meetingBusy, setMeetingBusy] = useState(false);
+  // YV95 — is a meeting recording right now? Driven by the backend's 1 Hz
+  // `meeting` emit (OS-12 fix 1: no timer in the webview), plus one
+  // `meeting_status` call on mount so a window opened mid-meeting is correct
+  // immediately rather than a second later.
+  const [meetingStatus, setMeetingStatus] = useState<MeetingStatus>(IDLE_MEETING);
   // Delete is destructive and irreversible (rows, search index and the audio),
   // so the button arms first and the second click commits.
   const [confirmDeleteMeeting, setConfirmDeleteMeeting] = useState<string | null>(
@@ -923,6 +938,32 @@ export default function App() {
       }),
     [],
   );
+
+  // YV95 — the meeting status subscription. One `invoke` on mount plus the
+  // backend's 1 Hz `meeting` event; when a meeting ENDS, the Meetings list is
+  // reloaded so the row the user just recorded is there without a refresh.
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    invoke<MeetingStatus>("meeting_status")
+      .then((s) => { if (!dead) setMeetingStatus(s); })
+      .catch(() => {});
+    listen<MeetingStatus>("meeting", (e) => {
+      setMeetingStatus((prev) => {
+        if (prev.recording && !e.payload.recording) {
+          // The meeting just closed out — pull the row it wrote.
+          loadMeetings(meetingQuery);
+          refreshInsights();
+        }
+        return e.payload;
+      });
+    }).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+    // `loadMeetings`/`meetingQuery` are read inside the updater; re-subscribing
+    // on every keystroke in the search box would drop events mid-meeting, so
+    // this deliberately subscribes ONCE.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // YV75 — refresh the engine snapshot (ASR model + polish sidecar) whenever
   // Privacy & Diagnostics is opened. A sidecar that was cold a minute ago is
@@ -1183,6 +1224,24 @@ export default function App() {
         { id },
       );
       toast(`Exported → ${path}`);
+    } catch (e) {
+      toast(errorText(e));
+    } finally {
+      setMeetingBusy(false);
+    }
+  }
+
+  /**
+   * YV95 — start or stop a meeting. The Meetings tab's button, the tray item,
+   * ⌃⌘M and the pill's stop control all reach the SAME backend toggle, so the
+   * four can never disagree about what pressing them does.
+   */
+  async function toggleMeetingRecording() {
+    setMeetingBusy(true);
+    try {
+      const next = await invoke<MeetingStatus>("toggle_meeting_recording");
+      setMeetingStatus(next);
+      if (!next.recording) await loadMeetings(meetingQuery);
     } catch (e) {
       toast(errorText(e));
     } finally {
@@ -2389,6 +2448,30 @@ export default function App() {
               meeting findable, readable, exportable and deletable. */}
           {nav === "meetings" && !openMeeting && (
             <>
+              {/* YV95 — the live recording banner. Present ONLY while a meeting
+                  is running, and it carries the same clock the pill shows,
+                  rendered once in Rust and emitted at 1 Hz. */}
+              {meetingStatus.recording && (
+                <div className="recording-bar" role="status">
+                  <span className="rec-dot" aria-hidden />
+                  <div className="recording-copy">
+                    <strong>{meetingStatus.title || "Recording a meeting"}</strong>
+                    <span className="tiny">
+                      Recording for {elapsedLabel(meetingStatus)} · stop from here, the
+                      menu bar, ⌃⌘M, or the pill.
+                    </span>
+                  </div>
+                  <span className="rec-clock">{elapsedLabel(meetingStatus)}</span>
+                  <button
+                    className="primary danger"
+                    disabled={meetingBusy}
+                    onClick={toggleMeetingRecording}
+                  >
+                    Stop meeting
+                  </button>
+                </div>
+              )}
+
               <div className="toolbar">
                 <input
                   type="search"
@@ -2400,6 +2483,18 @@ export default function App() {
                 {meetingQuery && (
                   <button className="ghost" onClick={() => setMeetingQuery("")}>
                     Clear
+                  </button>
+                )}
+                {/* Once there ARE meetings the CTA is a toolbar button; the
+                    big empty-state version below is for the first one. */}
+                {meetings.length > 0 && !meetingStatus.recording && (
+                  <button
+                    className="primary"
+                    disabled={meetingBusy || !!disabledReason(meetingStatus)}
+                    title={disabledReason(meetingStatus) || undefined}
+                    onClick={toggleMeetingRecording}
+                  >
+                    Record a meeting
                   </button>
                 )}
               </div>
@@ -2414,6 +2509,25 @@ export default function App() {
                       ? "Search covers meeting titles and every word transcribed inside them."
                       : "Recorded meetings land here — searchable, exportable, and deletable in one click. Audio is kept for 7 days; the transcript is kept for good."}
                   </p>
+                  {/* YV95 / finding #6 — the empty state IS the entry point.
+                      Everything above this item shipped a feature with no way
+                      to reach it; this is the one big button that fixes that. */}
+                  {!meetingQuery && (
+                    <>
+                      <button
+                        className="primary big"
+                        disabled={meetingBusy || !!disabledReason(meetingStatus)}
+                        title={disabledReason(meetingStatus) || undefined}
+                        onClick={toggleMeetingRecording}
+                      >
+                        {recordLabel(meetingStatus)}
+                      </button>
+                      <p className="tiny">
+                        {disabledReason(meetingStatus) ??
+                          `Or press ⌃⌘M from anywhere, or pick “Record a meeting” in the menu bar. Everything stays on this Mac.`}
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <ul className="feed">

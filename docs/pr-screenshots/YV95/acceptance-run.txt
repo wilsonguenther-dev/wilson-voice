@@ -1,0 +1,354 @@
+YV95 — acceptance run, 2026-08-12T01:18:32Z
+host: macOS 26.5.2, arm64
+
+$ grep -rn "register_shortcut\|GlobalShortcut" desktop/src-tauri/src/
+desktop/src-tauri/src/lib.rs:102:use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+--- the chord table those registrations are built from ---
+86:pub const PASTE_LAST: Binding = Binding {
+89-    accelerator: "Ctrl+Cmd+V",
+90-    ctrl: true,
+91-    cmd: true,
+92-    shift: false,
+93-    alt: false,
+94-    code: Code::KeyV,
+98:pub const UNDO_AI_EDIT: Binding = Binding {
+101-    accelerator: "Ctrl+Cmd+Z",
+102-    ctrl: true,
+103-    cmd: true,
+104-    shift: false,
+105-    alt: false,
+106-    code: Code::KeyZ,
+110:pub const DICTATION_TOGGLE_LEGACY: Binding = Binding {
+113-    accelerator: "Cmd+Shift+V",
+114-    ctrl: false,
+115-    cmd: true,
+116-    shift: true,
+117-    alt: false,
+118-    code: Code::KeyV,
+129:pub const MEETING_TOGGLE: Binding = Binding {
+132-    accelerator: "Ctrl+Cmd+M",
+133-    ctrl: true,
+134-    cmd: true,
+135-    shift: false,
+136-    alt: false,
+137-    code: Code::KeyM,
+
+════ cargo test --test tray_hotkey_no_collision ════
+running 5 tests
+test every_global_chord_has_a_modifier_and_a_key ... ok
+test every_accelerator_string_describes_its_own_chord ... ok
+test the_meeting_toggle_cannot_be_produced_by_a_dictation_hold ... ok
+test no_two_global_chords_are_the_same ... ok
+test the_meeting_toggle_is_distinct_from_the_dictation_binding ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+════ cargo test --test pill_idle_tick_during_recording ════
+running 6 tests
+test a_hidden_pill_never_polls_fast ... ok
+test a_three_hour_meeting_costs_an_order_of_magnitude_fewer_polls ... ok
+test dictation_keeps_the_fast_tick ... ok
+test the_first_mouse_enter_steps_the_tick_back_up ... ok
+test the_recording_flag_is_the_one_the_watch_thread_reads ... ok
+test hover_polling_stays_at_the_idle_tick_while_a_meeting_records ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+════ cargo test --test meeting_manual_start_stop ════
+running 10 tests
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_ticks_once_per_interval_and_not_more ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+
+════ cargo test --test meeting_diagnostics_row ════
+running 4 tests
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.38s
+
+
+════ cargo test --test db_migration_idempotent ════
+running 5 tests
+test migration_one_creates_the_whole_meeting_schema ... ok
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test a_newer_database_is_left_alone ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+════ the schema after migration 2, on a DB a test just wrote ════
+$ sqlite3 <db> 'PRAGMA user_version'
+2
+$ sqlite3 <db> 'PRAGMA table_info(meetings)' | tail -3
+12|summary_model|TEXT|0||0
+13|created_at|TEXT|1||0
+14|diagnostics|TEXT|0||0
+$ sqlite3 <db> "SELECT state, round(duration_seconds,1), json_extract(diagnostics,'$.thermalAtStart'), json_extract(diagnostics,'$.batteryAtStart.percent'), json_extract(diagnostics,'$.stopReason') FROM meetings"
+transcribing|0.3|nominal|62|user stopped
+$ sqlite3 <db> "SELECT json_extract(diagnostics,'$.thermalTransitions') FROM meetings"
+[{"atSeconds":0.100068334,"from":"nominal","to":"fair"},{"atSeconds":0.197430084,"from":"fair","to":"serious"},{"atSeconds":0.247376959,"from":"serious","to":"fair"}]
+
+════ the menu-bar dropdown, in order (from the Menu::with_items call) ════
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &dictation_i,
+                    &paste_last_i,
+                    &paste_raw_i,
+                    &sep_meeting,
+                    &meeting_i,
+                    &sep1,
+                    &hands_free_i,
+                    &sep2,
+                    &show_i,
+                    &settings_i,
+                    &shortcuts_i,
+                    &sep3,
+                    &feedback_i,
+                    &sep4,
+                    &quit_i,
+                ],
+            )?;
+            // Keep handles so state transitions can reflect into the dropdown.
+            *state.tray_dictation.lock() = Some(dictation_i);
+            *state.tray_hands_free.lock() = Some(hands_free_i);
+
+
+════════════════════════════════════════════════════════════════════════════
+YV95 — panel-fix re-run, 2026-08-12
+two BLOCKING findings, both closed. host: macOS 26.5.2, arm64 (M-series)
+════════════════════════════════════════════════════════════════════════════
+
+BLOCKING 1 — CI red: meeting_diagnostics_row::a_completed_meeting_carries_its_
+             thermal_and_battery_readings, `left: [Fair], right: [Fair,
+             Serious, Fair]`.
+
+Root cause, confirmed: a wall-clock race, not a logic error. RampProbe advances
+one step per read on the CONTROLLER's ticker thread; the test slept a fixed
+TEST_TICK * 8 (320 ms) and then asserted EXACT equality on a path that needs six
+samples at a 40 ms tick. Eight sleeps of 40 ms plus per-iteration work already
+exceeds the budget on an idle box, so the margin was 0-1 ticks; a loaded GitHub
+macos-14 runner delivered two.
+
+Fix: the test now waits for the ramp instead of for the clock.
+`RampProbe::ramp_fully_observed()` is true once `steps_read() > ramp.len()`. The
+ticker body is strictly sequential (read → observe → emit → sleep), so the
+(n+1)-th read cannot start until the n-th sample was folded in under the
+diagnostics lock — which makes that counter a happens-before proof, observable
+from outside the controller. `wait_for` polls it against a 30 s deadline, so a
+genuinely stuck ticker still fails the suite by name rather than hanging it.
+Widening the sleep was rejected: it cannot make a starvable-thread assertion
+reliable, only less often wrong.
+
+FALSIFIED before shipping. The failure would not reproduce under load alone
+(16 then 128 spinners + `nice -n 20`, 12 and 10 runs: 0 failures — a 12-core
+M-series schedules sleeping threads too well), so the CI condition was injected
+directly: a 35 ms delay inside `RampProbe::thermal()`, which runs ON the ticker
+thread. Two temporary control binaries, identical but for the wait:
+
+  OLD (sleep TEST_TICK * 8)  test ... FAILED
+      assertion `left == right` failed: every real change is recorded, and
+      nothing else is
+        left: [Fair, Serious]
+       right: [Fair, Serious, Fair]
+  NEW (wait for ramp)        test ... ok
+
+Same defect class as the runner's `left: [Fair]`, reproduced on demand, and the
+fix survives the identical delay. The controls were deleted afterwards.
+
+$ cargo test --features custom-protocol --test meeting_diagnostics_row
+running 4 tests
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+
+BLOCKING 2 — finding #6's phase merge gate is not closed by four disabled
+             controls, and nothing forced YV91 (#108) to add the install line.
+
+The honest half stands: no CaptureEngine is installed, so capture_available() is
+false, all four entry points ship disabled with NO_ENGINE_MESSAGE as the reason,
+and nothing claims a recording is happening. What was missing is that the gate
+had no teeth — merging would leave main with a permanently dead Record button
+and only a comment asking someone to fix it.
+
+Fix: tests/capture_engine_is_installed.rs, a source-level gate.
+`the_record_button_cannot_stay_dead_once_the_capture_module_lands` reads src/ and
+fails the build the first time src/meeting.rs (keyed on `MeetingSession`, so an
+unrelated stub cannot trip it) exists without a non-comment
+`meeting_control::install_capture_engine(` call in lib.rs. Comment lines are
+filtered explicitly, because lib.rs carries the wiring instructions as a marked
+comment and a naive contains() would report the gate satisfied by its own TODO.
+Whichever of #108 / #112 merges second cannot go green without doing the wiring.
+
+FALSIFIED both ways:
+
+  $ printf 'pub struct MeetingSession;\n' > src/meeting.rs
+  $ cargo test --features custom-protocol --test capture_engine_is_installed
+  test the_record_button_cannot_stay_dead_once_the_capture_module_lands ... FAILED
+    src/meeting.rs is in the tree (YV91 landed), but nothing calls
+    meeting_control::install_capture_engine() outside a comment. That ships a
+    Record button, a ^CmdM chord, a pill control and an empty-state CTA that are
+    all permanently disabled - finding #6's phase merge gate, reopened. Fix: at
+    the marked spot in lib.rs::setup, install an engine adapting
+    meeting::MeetingSession to meeting_control::CaptureEngine, then run the timed
+    repro in docs/pr-screenshots/YV95/manual-repro-10-second-start.md.
+  $ rm src/meeting.rs   # back to the branch state
+  test the_record_button_cannot_stay_dead_once_the_capture_module_lands ... ok
+
+The companion test pins the other half — with nothing installed,
+capture_available() is false, MeetingStatus.unavailableReason is
+NO_ENGINE_MESSAGE verbatim, and start() refuses instead of opening a row.
+
+$ cargo test --features custom-protocol --test capture_engine_is_installed
+running 2 tests
+test the_record_button_cannot_stay_dead_once_the_capture_module_lands ... ok
+test with_no_engine_installed_every_entry_point_says_why ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+The 10-second timed repro itself stays UNRUN and no figure is claimed. It is
+unmeetable on this branch by construction, and the results table in
+manual-repro-10-second-start.md now names the gate that unblocks it rather than
+reading as an oversight.
+
+
+════ full local gate, mirroring .github/workflows/ci.yml step for step ════
+
+$ npm ci && npm run build                       -> built in 679ms
+$ npm test                                       -> 4 files, 57 tests passed
+$ cargo build -p yap-polish --release + stage    -> ok
+$ cargo test -p yap-polish --release             -> 6 passed
+$ cargo fmt --all -- --check                     -> informational; the four
+    files changed here are fmt-clean (pre-existing diffs elsewhere untouched)
+$ cargo clippy --all-targets --features custom-protocol
+                                                 -> informational; zero warnings
+    attributable to the changed files
+$ cargo build --release --features custom-protocol -> Finished in 1m 08s
+$ cargo test --features custom-protocol          -> 469 passed, 0 failed
+    (run with YAP_EVAL_CORPUS unset to a nonexistent path, which is what the CI
+     runner sees: meeting_eval skips when ~/yap-eval-corpus/meetings is absent)
+
+NOTE, pre-existing and out of scope: on a machine that HAS the durable corpus,
+meeting_eval_corpus_matches_committed_sha256s and
+meeting_eval_seam_dedupe_and_ordering_hold fail — seam-stress/audio.wav is
+5,440,044 bytes locally vs the 5,184,044 this branch's manifest records, i.e.
+the fixture was regrown by a sibling item after YV95 branched. Verified
+pre-existing by stashing every change here and re-running against the pristine
+branch: identical two failures. Not reachable from this item's diff, and invisible
+to CI, which has no corpus. It belongs to whichever item regrew the fixture.
+
+================================================================================
+PANEL FIX ROUND 2 — 2026-08-11
+OS-12 fix (1): the Yappy pill's CANVAS LOOP now parks for a meeting
+================================================================================
+
+The finding, restated: framePlan() parked on `hidden || reduceMotion` only. A
+meeting deliberately SHOWS the pill (float_pill::show_for_recording), so
+hidden=false for the whole session and a settled Yappy fell through to
+{ mode: "ambient", intervalMs: 100 } — a full canvas redraw + spring update +
+bubble.style.left/top write every 100ms, for three hours = 108,000 frames. The
+module comment claimed the opposite ("the canvas loop can stay parked through a
+three-hour meeting"), and the PR's energy table did not carry the row at all.
+
+--- FALSIFIED FIRST (the fix line removed, everything else unchanged) ----------
+
+$ perl -0pi -e 's/  if \(f\.meetingRecording && f\.settled\).*\n//' src/pill/live.ts
+$ npx vitest run src/pill/live.test.ts
+   × frame policy — parking (YV81) > a_meeting_parks_the_canvas_loop
+     → expected 'ambient' to be 'parked' // Object.is equality
+   Tests  1 failed | 25 passed (26)
+
+…i.e. the test reproduces the reported defect exactly, and the reported value
+('ambient') is the one it reports. Restored:
+
+$ npx vitest run src/pill/live.test.ts
+   Tests  26 passed (26)
+
+--- THE FIX --------------------------------------------------------------------
+
+src/pill/live.ts       FrameInputs gains `meetingRecording`; framePlan parks on
+                       it after the live-take branch and after hidden/reduceMotion,
+                       gated on `settled` — unlike `hidden`, THIS pill is in view,
+                       so parking mid-capsule-close would freeze a half-shut
+                       capsule on screen for the whole meeting.
+src/pill/YappyPill.tsx meetingRef mirrors useMeetingStatus() into the mount-once
+                       draw loop (a closure captured before the meeting existed
+                       cannot read it); wakeRef un-parks the loop when the meeting
+                       ENDS — parking is only safe if something wakes it. Also
+                       settledNow() now requires `blinkT < 0`, because a park can
+                       now happen while the pill is visible and a frame frozen
+                       60ms into a blink would hold a half-shut eye for 3 hours.
+                       The false comment on the badge is replaced by one that
+                       says which half of OS-12 fix (1) the DOM overlay is.
+src/pill/meeting.ts    module docs no longer imply the 10,800-vs-648,000 clock
+                       numbers describe the whole cost.
+power-budget-10min.md  energy table gains the missing row (108,000 -> 0) and the
+                       run is now specified per pill style.
+
+--- ACCEPTANCE RE-RUN ----------------------------------------------------------
+
+$ npx vitest run src/pill/live.test.ts
+ ✓ src/pill/live.test.ts (26 tests) 59ms          [25 before, + a_meeting_parks_the_canvas_loop]
+
+$ npm test
+ Test Files  4 passed (4)
+      Tests  58 passed (58)
+
+$ cargo test --features custom-protocol --test pill_idle_tick_during_recording
+running 6 tests
+test a_hidden_pill_never_polls_fast ... ok
+test a_three_hour_meeting_costs_an_order_of_magnitude_fewer_polls ... ok
+test dictation_keeps_the_fast_tick ... ok
+test the_recording_flag_is_the_one_the_watch_thread_reads ... ok
+test the_first_mouse_enter_steps_the_tick_back_up ... ok
+test hover_polling_stays_at_the_idle_tick_while_a_meeting_records ... ok
+test result: ok. 6 passed; 0 failed
+
+$ cargo test --features custom-protocol --test tray_hotkey_no_collision
+running 5 tests
+test every_global_chord_has_a_modifier_and_a_key ... ok
+test no_two_global_chords_are_the_same ... ok
+test the_meeting_toggle_is_distinct_from_the_dictation_binding ... ok
+test every_accelerator_string_describes_its_own_chord ... ok
+test the_meeting_toggle_cannot_be_produced_by_a_dictation_hold ... ok
+test result: ok. 5 passed; 0 failed
+
+--- FULL LOCAL GATE ------------------------------------------------------------
+
+$ npm ci && npx tsc --noEmit                        → clean
+$ npm run build                                     → built in 646ms
+$ npm test                                          → 4 files, 58 tests passed
+$ cargo build -p yap-polish --release && stage      → Finished
+$ cargo test -p yap-polish --release                → 6 passed
+$ cargo build --release --features custom-protocol  → Finished
+$ YAP_EVAL_CORPUS=/nonexistent-corpus cargo test --features custom-protocol
+                                                    → 372 lib + every integration
+                                                      suite green, 0 failed
+                                                      (corpus absent = what CI sees)
+
+The powermetrics run is STILL NOT RUN and no milliwatt figure is claimed — it
+needs root and a capture engine (see §3/§6 of the PR). That is exactly the
+measurement that would have caught this, which is why the missing row is now
+written down as a countable, tested number rather than left to it.

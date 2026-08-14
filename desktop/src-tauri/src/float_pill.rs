@@ -37,11 +37,13 @@ const EDGE_SNAP_PT: f64 = 120.0;
 /// only reports enter/exit for a window that takes the cursor, which is the very
 /// thing this watch exists to turn on. It ticks ONLY while the pill is on
 /// screen — see [`PILL_SHOWN`] and [`HOVER_IDLE_TICK_MS`] (YV81).
-const HOVER_TICK_MS: u64 = 75;
+pub const HOVER_TICK_MS: u64 = 75;
 /// The hover watch's tick while the pill is HIDDEN (YV81): there is no capsule
 /// to be over, so the thread parks on a long sleep instead of waking the main
 /// thread 13 times a second to answer "no" for a window nobody can see.
-const HOVER_IDLE_TICK_MS: u64 = 1000;
+///
+/// YV95 / OS-12 gave this constant a second job — see [`hover_tick_ms`].
+pub const HOVER_IDLE_TICK_MS: u64 = 1000;
 /// How often the space keeper re-asserts the panel's dock + level. One tick per
 /// 1.5s is a Space swipe's own timescale — the pill is back on top before a
 /// hand leaves the trackpad — and, like the hover watch, it does no main-thread
@@ -79,8 +81,14 @@ static HIT_Y: AtomicI32 = AtomicI32::new(0);
 static HIT_W: AtomicI32 = AtomicI32::new(0);
 static HIT_H: AtomicI32 = AtomicI32::new(0);
 /// Mirrors the last `set_ignore_cursor_events` call so AppKit is only touched
-/// on a transition, not 13 times a second.
+/// on a transition, not 13 times a second. Doubles as the "is the cursor on the
+/// capsule right now" answer the hover watch feeds back into its own cadence
+/// (YV95 / OS-12) — it is set from the same test.
 static INTERACTIVE: AtomicBool = AtomicBool::new(false);
+/// YV95 — is a MEETING being recorded (as opposed to a seconds-long dictation)?
+/// Set by the meeting controller's status sink. Read by the hover watch, which
+/// is the whole point: see [`hover_tick_ms`].
+static MEETING_RECORDING: AtomicBool = AtomicBool::new(false);
 
 /// Where the pill docks on screen (YV53). Wispr-style side docks in addition to
 /// the historical bottom-centre island.
@@ -414,6 +422,56 @@ pub fn is_shown() -> bool {
     PILL_SHOWN.load(Ordering::SeqCst)
 }
 
+/// YV95 — tell the pill a meeting is (or is no longer) recording. Called from
+/// the meeting controller's status sink, so the flag flips on exactly the same
+/// event the UI does.
+pub fn set_meeting_recording(recording: bool) {
+    MEETING_RECORDING.store(recording, Ordering::SeqCst);
+}
+
+pub fn meeting_recording() -> bool {
+    MEETING_RECORDING.load(Ordering::SeqCst)
+}
+
+/// Is the cursor currently on the capsule? (The panel takes the cursor exactly
+/// when it is, so this is the same bit.)
+pub fn is_hovered() -> bool {
+    INTERACTIVE.load(Ordering::SeqCst)
+}
+
+/// **YV95 / OS-12 fix (2)** — how long the hover watch sleeps before its next
+/// cursor test.
+///
+/// YV81's rule was binary: hidden → 1 Hz, shown → 13 Hz. That was written for a
+/// pill whose visible life is one dictation, a few seconds long. A meeting makes
+/// the pill visible for **up to three hours**, which under the old rule is
+/// ~144,000 cursor tests and ~144,000 `run_on_main_thread` hops — precisely the
+/// state YV81 exists to prevent, held for 180 minutes, on battery.
+///
+/// So visibility stops being the whole question and INTERACTION joins it: a pill
+/// that is on screen during a meeting but has no cursor on it is doing exactly
+/// what a hidden pill was doing — answering "no" — and pays the hidden price
+/// for it. The step up to [`HOVER_TICK_MS`] happens on the first mouse-enter and
+/// lasts as long as the cursor is on the capsule, so the responsiveness that
+/// makes the pill grabbable is unchanged for anybody actually reaching for it;
+/// the cost is that the FIRST touch during a meeting is noticed within a second
+/// instead of within 75 ms.
+///
+/// Dictation is deliberately left alone. A take lasts seconds, the pill is the
+/// primary control for it, and 13 Hz for the length of a sentence is not what
+/// OS-12 measured.
+pub fn hover_tick_ms(shown: bool, hovered: bool, meeting_recording: bool) -> u64 {
+    if !shown {
+        // A window nobody can see must not paint — or poll — 13 times a second.
+        return HOVER_IDLE_TICK_MS;
+    }
+    if meeting_recording && !hovered {
+        // Visible, but nobody is touching it, and this will be true for hours.
+        return HOVER_IDLE_TICK_MS;
+    }
+    HOVER_TICK_MS
+}
+
 /// How many of this module's recurring polls are doing real work right now
 /// (YV81 telemetry). Both threads exist for the visible pill only, so a hidden
 /// pill answers `0` however many threads are alive.
@@ -561,11 +619,18 @@ pub fn start_hover_watch(app: AppHandle) {
             // (and the main-thread hop it costs) is skipped entirely and the
             // thread waits on the long tick instead. `hide_float`/`show_float`
             // flip the gate, so the next tick after a show is back at 75ms.
+            //
+            // YV95 / OS-12 — the same reasoning, one case wider: during a
+            // MEETING the pill is visible for hours, so "visible but nobody has
+            // touched it" also waits on the long tick. See `hover_tick_ms`.
+            thread::sleep(Duration::from_millis(hover_tick_ms(
+                is_shown(),
+                is_hovered(),
+                meeting_recording(),
+            )));
             if !is_shown() {
-                thread::sleep(Duration::from_millis(HOVER_IDLE_TICK_MS));
                 continue;
             }
-            thread::sleep(Duration::from_millis(HOVER_TICK_MS));
             let app_main = app.clone();
             let app_inner = app.clone();
             let _ = app_main.run_on_main_thread(move || update_interactive(&app_inner));

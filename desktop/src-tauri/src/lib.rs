@@ -22,7 +22,12 @@ pub mod db;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
 pub mod dictation;
-mod float_pill;
+// YV95: public because OS-12's energy rule is now a function with a test.
+// `hover_tick_ms` is the whole of fix (2) — a visible-but-untouched pill during
+// a three-hour meeting polls at 1 Hz, not 13 Hz — and
+// `tests/pill_idle_tick_during_recording.rs` drives it directly rather than
+// trying to infer a sleep duration from the outside.
+pub mod float_pill;
 mod focus;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
@@ -52,6 +57,14 @@ pub mod meeting;
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
+// YV95 — the manual start/stop control plane (finding #6's "no way to start a
+// meeting"), and the OS-12 instrumentation it writes into the meeting row.
+// Public because "a user can start and stop a meeting" is the item's acceptance
+// line, and `tests/meeting_manual_start_stop.rs` +
+// `tests/meeting_diagnostics_row.rs` assert it against a synthetic capture
+// engine instead of a stopwatch.
+pub mod meeting_control;
+pub mod meeting_energy;
 mod mic_auth;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
@@ -80,6 +93,11 @@ pub mod resample;
 // (OS-7). Public so the zero-allocation claim is a test rather than a comment.
 pub mod rtring;
 mod secure_input;
+// YV95 — every global chord in one table, so "the meeting hotkey does not
+// collide with dictation-hold" (finding #6) is `tests/tray_hotkey_no_collision.rs`
+// reading the same constants `run()` registers, not an eyeball over three
+// literals.
+pub mod shortcuts;
 mod snippets;
 // YV91 made this public: finding #9's rule (a meeting NEVER mutes the Mac) is
 // enforced by `sysaudio::mute_for_take`, and that gate is asserted from
@@ -108,7 +126,7 @@ use parking_lot::Mutex as PLMutex;
 use permissions::PermissionReport;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{
@@ -116,7 +134,10 @@ use tauri::{
     tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Emitter, Manager, State, WindowEvent, Wry,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+// YV95: the chords themselves now live in `shortcuts.rs` (one table, one
+// collision test), so this only needs the plugin's extension trait and the
+// pressed/released discriminator.
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -414,6 +435,16 @@ struct AppState {
     tray_hands_free: PLMutex<Option<CheckMenuItem<Wry>>>,
     /// YV51 — the "Undo AI Edit" item; its enabled state follows `undo_available`.
     tray_paste_raw: PLMutex<Option<MenuItem<Wry>>>,
+    /// YV95 — the "Record a meeting" / "Stop meeting" item. Its label follows
+    /// the meeting controller, and it is DISABLED when no capture engine is
+    /// installed, because a Record button that does nothing is worse than one
+    /// that says why it cannot.
+    tray_meeting: PLMutex<Option<MenuItem<Wry>>>,
+    /// YV95 — the one owner of "a meeting is recording". Built in `setup` (it
+    /// needs an `AppHandle` for its status sink), so this is a `OnceLock` rather
+    /// than a field: every entry point reads it through [`AppState::meeting`]
+    /// and none of them can start a second one.
+    meeting: std::sync::OnceLock<Arc<meeting_control::MeetingController>>,
     /// YV51 — does the newest take have a raw transcript that differs from the
     /// polished text that was pasted? Gates the "Undo AI Edit" tray item and
     /// ⌃⌘Z, so the action is only offered when there IS an AI edit to undo.
@@ -467,6 +498,94 @@ fn home_dir() -> PathBuf {
 /// Everything in here is purged after `db::FAILED_TAKE_RETENTION_DAYS`.
 fn recovery_dir() -> PathBuf {
     data_dir().join("recovery")
+}
+
+/// YV95 — where a meeting's audio is written.
+///
+/// Deliberately NOT `recordings/` (swept clean at every startup by
+/// `record::sweep_stale_wavs`, which would delete a three-hour meeting the app
+/// crashed out of) and not `recovery/` (purged on the failed-take schedule). A
+/// meeting's WAV is owned by its row and by YV94's 7-day retention sweep, and
+/// nothing else may decide it is garbage.
+fn meetings_dir() -> PathBuf {
+    let p = data_dir().join("meetings");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+impl AppState {
+    /// The meeting controller, once `setup` has built it. `None` only during the
+    /// first moments of startup, and every caller treats that as "not yet".
+    fn meeting(&self) -> Option<Arc<meeting_control::MeetingController>> {
+        self.meeting.get().cloned()
+    }
+}
+
+/// YV95 — the single status broadcast for a meeting: the pill and the main
+/// window both listen to `meeting`, and both render the SAME `elapsedLabel`
+/// string, so the clock cannot disagree with itself.
+///
+/// OS-12 fix (1) lives here: this is called once per second by the controller's
+/// ticker, and the only thing it does per tick is emit. The tray label is
+/// touched on the recording EDGE only — a menu mutation is a main-thread hop,
+/// and 10,800 of them over a meeting is the exact cost this item exists to not
+/// pay.
+fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
+    static TRAY_SHOWS_RECORDING: AtomicBool = AtomicBool::new(false);
+    Arc::new(move |status| {
+        let _ = app.emit("meeting", status);
+        // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
+        float_pill::set_meeting_recording(status.recording);
+        if TRAY_SHOWS_RECORDING.swap(status.recording, Ordering::SeqCst) == status.recording {
+            return;
+        }
+        let recording = status.recording;
+        let app_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(state) = app_main.try_state::<Arc<AppState>>() {
+                if let Some(item) = state.tray_meeting.lock().clone() {
+                    let _ = item.set_text(if recording {
+                        "Stop meeting"
+                    } else {
+                        MEETING_TRAY_START_LABEL
+                    });
+                }
+            }
+        });
+    })
+}
+
+/// The tray item's idle label. A verb and a noun, so the item reads the same way
+/// to somebody who has never heard of this feature — the acceptance line for
+/// this item is a user who has not read a changelog.
+const MEETING_TRAY_START_LABEL: &str = "Record a meeting";
+
+/// YV95 — every entry point (tray item, ⌃⌘M, the pill's stop control, the
+/// Meetings empty state) funnels through here, so all four do exactly one thing.
+///
+/// The pill is shown for the duration when the user has it enabled: an
+/// always-visible recording indicator is the cheap, real trust feature YV96's
+/// consent copy leans on, and the OS-12 fixes above are what make it affordable.
+fn toggle_meeting(app: &AppHandle, state: &Arc<AppState>) -> Result<meeting_control::MeetingStatus, String> {
+    let controller = state.meeting().ok_or("Yap is still starting up")?;
+    let was_recording = controller.is_recording();
+    let status = controller.toggle(&meetings_dir(), None)?;
+    if status.recording && !was_recording {
+        if state.settings.lock().show_floating_pill {
+            float_pill::show_for_recording(app);
+        }
+        notify(
+            app,
+            "Recording this meeting",
+            format!("Stop with {} or the menu bar.", shortcuts::MEETING_TOGGLE.label),
+        );
+    } else if !status.recording && was_recording {
+        // Never yank the pill out from under a dictation that is still running.
+        if !*state.recording.lock() {
+            float_pill::after_recording(app, state.settings.lock().show_floating_pill);
+        }
+    }
+    Ok(status)
 }
 
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
@@ -2742,6 +2861,77 @@ fn export_meeting_markdown(
     })
 }
 
+// ── YV95 · starting and stopping one ──────────────────────────────────────────
+//
+// Three commands, one behaviour: `toggle_meeting` is what the UI actually calls
+// (the pill's stop control and the empty state's button are the same action seen
+// from two states), and the explicit start/stop pair exists so a caller that
+// knows which one it wants cannot get the other by racing the toggle.
+
+/// The current meeting status. Called on mount by both windows so a freshly
+/// opened Yap never has to wait a second for the first tick to know.
+#[tauri::command]
+fn meeting_status(state: State<'_, Arc<AppState>>) -> meeting_control::MeetingStatus {
+    match state.meeting() {
+        Some(c) => c.status(),
+        None => meeting_control::MeetingController::new(
+            state.db.clone(),
+            Arc::new(|_: &meeting_control::MeetingStatus| {}),
+        )
+        .status(),
+    }
+}
+
+/// Start or stop the meeting — the one action behind all four entry points.
+#[tauri::command]
+fn toggle_meeting_recording(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let st = state.inner().clone();
+    toggle_meeting(&app, &st)
+}
+
+/// Start a meeting. Errors (no capture engine, one already running) come back as
+/// a string the UI shows verbatim — this is the button a first-time user
+/// presses, and a silent failure here is the whole of finding #6 all over again.
+#[tauri::command]
+fn start_meeting(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    title: Option<String>,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let controller = state.meeting().ok_or("Yap is still starting up")?;
+    if controller.is_recording() {
+        return Ok(controller.status());
+    }
+    let st = state.inner().clone();
+    controller.start(&meetings_dir(), title)?;
+    let status = controller.status();
+    if st.settings.lock().show_floating_pill {
+        float_pill::show_for_recording(&app);
+    }
+    Ok(status)
+}
+
+/// Stop the running meeting. Idempotent: stopping a meeting that already stopped
+/// is the state the user asked for, not an error to show them.
+#[tauri::command]
+fn stop_meeting(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<meeting_control::MeetingStatus, String> {
+    let controller = state.meeting().ok_or("Yap is still starting up")?;
+    if !controller.is_recording() {
+        return Ok(controller.status());
+    }
+    controller.stop("user stopped")?;
+    if !*state.recording.lock() {
+        float_pill::after_recording(&app, state.settings.lock().show_floating_pill);
+    }
+    Ok(controller.status())
+}
+
 /// Where a transcript export landed and how many rows it holds (YV77). The
 /// count reaches the UI so "Exported" is a claim the user can check against
 /// their own history instead of an unverifiable path.
@@ -3383,6 +3573,8 @@ pub fn run() {
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
         tray_paste_raw: PLMutex::new(None),
+        tray_meeting: PLMutex::new(None),
+        meeting: std::sync::OnceLock::new(),
         undo_available: PLMutex::new(false),
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
         vad: PLMutex::new(None),
@@ -3502,10 +3694,23 @@ pub fn run() {
                 .with_handler({
                     let state = state.clone();
                     move |app, shortcut, event| {
+                        // YV95 ⌃⌘M — start/stop a meeting. A TOGGLE on
+                        // key-down, not a hold: a meeting lasts an hour, and the
+                        // dictation-hold gesture is the one thing finding #6
+                        // says it must not be confused with.
+                        if shortcut == &shortcuts::MEETING_TOGGLE.shortcut() {
+                            if event.state == ShortcutState::Pressed {
+                                log::info!("⌃⌘M pressed — toggle meeting");
+                                if let Err(e) = toggle_meeting(app, &state) {
+                                    log::warn!("meeting toggle from ⌃⌘M: {e}");
+                                    notify(app, "Yap", e);
+                                }
+                            }
+                            return;
+                        }
                         // ⌃⌘V — Paste Last Transcript (Wispr-parity, always on,
                         // independent of the ⌘⇧V dictation toggle below).
-                        let paste_last_sc =
-                            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyV);
+                        let paste_last_sc = shortcuts::PASTE_LAST.shortcut();
                         if shortcut == &paste_last_sc {
                             if event.state == ShortcutState::Pressed {
                                 log::info!("⌃⌘V pressed — paste last transcript");
@@ -3516,8 +3721,7 @@ pub fn run() {
                         // YV51 ⌃⌘Z — Undo AI edit: re-paste the raw take over
                         // the polished one. Inert (logged no-op) when the raw
                         // matches what was pasted.
-                        let undo_sc =
-                            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyZ);
+                        let undo_sc = shortcuts::UNDO_AI_EDIT.shortcut();
                         if shortcut == &undo_sc {
                             if event.state == ShortcutState::Pressed {
                                 log::info!("⌃⌘Z pressed — undo ai edit (paste raw)");
@@ -3598,6 +3802,12 @@ pub fn run() {
             // single `settings_kv` row; nothing here can block a recording.
             meeting_consent,
             acknowledge_meeting_consent,
+            // YV95 — the entry point finding #6 says the phase cannot merge
+            // without.
+            meeting_status,
+            toggle_meeting_recording,
+            start_meeting,
+            stop_meeting,
             export_history,
             open_privacy_settings,
             manual_toggle,
@@ -3617,6 +3827,36 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // YV95 — build the meeting controller first: the tray item below
+            // reads `capture_available()` for its enabled state, and every entry
+            // point resolves through `state.meeting()`.
+            //
+            // The capture engine itself is NOT installed here. It is YV91's
+            // `meeting::MeetingSession` (PR #108 — RT-safe ring, host-time
+            // anchors, bounded journal, power assertion, dictation fan-out), and
+            // wiring it is one line at this exact spot, over a thin adapter
+            // implementing `meeting_control::CaptureEngine` in terms of
+            // `MeetingSession::start(SessionConfig)`:
+            //
+            //     meeting_control::install_capture_engine(Arc::new(<adapter>));
+            //
+            // Until that line exists the control plane is honest about it: the
+            // tray item is disabled, the Meetings empty state says so in words,
+            // and no code path pretends a recording is happening. Two capture
+            // implementations in one app would be a far worse defect than a
+            // button that tells the truth about what is missing.
+            //
+            // That honesty is time-boxed, not permanent: finding #6 is a phase
+            // merge gate, and four disabled controls do not close it.
+            // `tests/capture_engine_is_installed.rs` fails the build the moment
+            // `src/meeting.rs` exists without the line above, so whichever of
+            // #108 / #112 merges second cannot leave `main` with a dead Record
+            // button.
+            let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
+                state.db.clone(),
+                meeting_status_sink(app.handle().clone()),
+            )));
 
             // Regular app so Yap shows in the Dock, Launchpad, and Applications — it
             // has a real main window (and a social layer coming), not just a menubar
@@ -3704,8 +3944,27 @@ pub fn run() {
                 *state.undo_available.lock(),
                 Some("Ctrl+Cmd+Z"),
             )?;
+            // YV95 — the meeting entry point, one item above the dictation
+            // controls' separator so it reads as its own mode rather than as a
+            // variant of dictation. DISABLED (with the reason in the label) when
+            // no capture engine is installed: finding #6 is about a feature
+            // nobody can reach, and a button that silently does nothing is the
+            // same defect wearing a nicer hat.
+            let meeting_available = meeting_control::capture_available();
+            let meeting_i = MenuItem::with_id(
+                app,
+                "meeting_toggle",
+                if meeting_available {
+                    MEETING_TRAY_START_LABEL.to_string()
+                } else {
+                    format!("{MEETING_TRAY_START_LABEL} (unavailable)")
+                },
+                meeting_available,
+                Some(shortcuts::MEETING_TOGGLE.accelerator),
+            )?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep_meeting = PredefinedMenuItem::separator(app)?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let shortcuts_i =
@@ -3723,6 +3982,8 @@ pub fn run() {
                     &dictation_i,
                     &paste_last_i,
                     &paste_raw_i,
+                    &sep_meeting,
+                    &meeting_i,
                     &sep1,
                     &hands_free_i,
                     &sep2,
@@ -3739,6 +4000,7 @@ pub fn run() {
             *state.tray_dictation.lock() = Some(dictation_i);
             *state.tray_hands_free.lock() = Some(hands_free_i);
             *state.tray_paste_raw.lock() = Some(paste_raw_i);
+            *state.tray_meeting.lock() = Some(meeting_i);
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -3761,6 +4023,12 @@ pub fn run() {
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
                         "quit" => {
+                            // YV95 — a live meeting is finalized, not abandoned:
+                            // quitting must never be the reason an hour of audio
+                            // has no row pointing at it.
+                            if let Some(c) = state.meeting() {
+                                c.stop_if_running("app quit");
+                            }
                             state.db.checkpoint(); // flush WAL before we exit
                             app.exit(0);
                         }
@@ -3780,6 +4048,13 @@ pub fn run() {
                         }
                         "paste_last" => {
                             paste_last_transcript(app, &state);
+                        }
+                        // YV95 — start/stop a meeting from the menu bar.
+                        "meeting_toggle" => {
+                            if let Err(e) = toggle_meeting(app, &state) {
+                                log::warn!("meeting toggle from tray: {e}");
+                                notify(app, "Yap", e);
+                            }
                         }
                         "paste_raw" => {
                             paste_raw_last_transcript(app, &state);
@@ -3976,11 +4251,27 @@ pub fn run() {
                 let _ = app.handle().run_on_main_thread(move || {
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
-                    let paste_sc =
-                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyV);
+                    let paste_sc = shortcuts::PASTE_LAST.shortcut();
                     match h.global_shortcut().register(paste_sc) {
                         Ok(()) => log::info!("⌃⌘V paste-last registered"),
                         Err(e) => log::warn!("⌃⌘V register failed: {e}"),
+                    }
+                    // YV95 ⌃⌘M — the meeting toggle (finding #6). Registered
+                    // unconditionally so the tray item's accelerator fires
+                    // system-wide, exactly like the two above; a failure here is
+                    // logged and the tray item still works.
+                    match h
+                        .global_shortcut()
+                        .register(shortcuts::MEETING_TOGGLE.shortcut())
+                    {
+                        Ok(()) => log::info!(
+                            "{} meeting-toggle registered",
+                            shortcuts::MEETING_TOGGLE.label
+                        ),
+                        Err(e) => log::warn!(
+                            "{} register failed: {e}",
+                            shortcuts::MEETING_TOGGLE.label
+                        ),
                     }
                     // YV51 ⌃⌘Z — Undo AI edit (paste the raw take). Also
                     // registered unconditionally so the tray item's accelerator
@@ -3988,8 +4279,7 @@ pub fn run() {
                     // redo is ⇧⌘Z), so it does not shadow an app shortcut; if
                     // another app has claimed it, registration fails loudly here
                     // and the tray item still works.
-                    let undo_sc =
-                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyZ);
+                    let undo_sc = shortcuts::UNDO_AI_EDIT.shortcut();
                     match h.global_shortcut().register(undo_sc) {
                         Ok(()) => log::info!("⌃⌘Z undo-ai-edit registered"),
                         Err(e) => log::warn!("⌃⌘Z register failed: {e}"),
@@ -3999,7 +4289,7 @@ pub fn run() {
                         emit_status(&h, &st);
                         return;
                     }
-                    let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+                    let sc = shortcuts::DICTATION_TOGGLE_LEGACY.shortcut();
                     match h.global_shortcut().register(sc) {
                         Ok(()) => {
                             log::info!("secondary ⌘⇧V registered");
@@ -5090,6 +5380,8 @@ mod tests {
             tray_dictation: super::PLMutex::new(None),
             tray_hands_free: super::PLMutex::new(None),
             tray_paste_raw: super::PLMutex::new(None),
+            tray_meeting: super::PLMutex::new(None),
+            meeting: std::sync::OnceLock::new(),
             undo_available: super::PLMutex::new(false),
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
             vad: super::PLMutex::new(None),

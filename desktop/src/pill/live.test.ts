@@ -260,6 +260,40 @@ describe("frame policy — parking (YV81)", () => {
     }
   });
 
+  /**
+   * YV95 / OS-12 fix (1). The PR claimed "the canvas loop can stay parked
+   * through a three-hour meeting" while `framePlan` parked only on
+   * `hidden || reduceMotion` — and a meeting deliberately SHOWS the pill, so a
+   * settled Yappy fell through to the 10fps ambient tick for the whole session:
+   * 108,000 canvas redraws + spring updates + bubble repositions over three
+   * hours, ten times the JS wakes the 1 Hz clock costs. This is that claim as a
+   * test.
+   */
+  it("a_meeting_parks_the_canvas_loop", () => {
+    const meeting = { ...quiet, settled: true, hidden: false, meetingRecording: true };
+    expect(framePlan("idle", meeting).mode).toBe("parked");
+    expect(framePlan("idle", meeting).intervalMs).toBe(Infinity);
+    expect(frameIntervalMs("idle", meeting)).toBe(Infinity);
+    // Sleepy is idle's deeper cousin and parks the same way.
+    expect(framePlan("sleepy", meeting).mode).toBe("parked");
+    // The exact regression: without the flag this same frame is the ambient
+    // tick, i.e. 3h at 100ms = 108,000 redraws.
+    expect(framePlan("idle", { ...meeting, meetingRecording: false }).mode).toBe("ambient");
+    expect((3 * 3600 * 1000) / AMBIENT_FRAME_MS).toBe(108_000);
+
+    // A meeting does NOT silence a live take — dictation during a meeting still
+    // animates at full rate, because the live branch is answered first.
+    for (const phase of ["listening", "thinking", "done"] as LivePhase[]) {
+      expect(framePlan(phase, meeting).mode).toBe("raf");
+    }
+    // …nor does it park a scene that has not settled yet: a pill frozen
+    // mid-capsule-close would stay frozen ON SCREEN for the whole meeting.
+    expect(framePlan("idle", { ...meeting, settled: false }).mode).toBe("raf");
+    expect(framePlan("idle", { ...meeting, busyVisuals: true }).mode).toBe("raf");
+    // A meeting cannot un-park a hidden pill either.
+    expect(framePlan("idle", { ...meeting, hidden: true }).mode).toBe("parked");
+  });
+
   it("keeps animating while the idle scene is still settling", () => {
     // The capsule is still shutting / a sparkle is still in flight: frames
     // keep coming, so nothing freezes mid-transition.

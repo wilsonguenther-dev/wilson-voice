@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox } from "./drag";
+import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
   advanceLive, createLiveState, framePlan, resetLive, toChatTone,
@@ -74,6 +75,22 @@ export default function YappyPill() {
   // CANVAS-drawn (the element itself fills the whole transparent window), so its
   // hit-box is published from the draw loop below, not from a DOM rect.
   const drag = usePillDrag();
+  // YV95 — a meeting's recording state rides above the canvas as DOM.
+  const meeting = useMeetingStatus();
+  // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
+  // the pill visible for hours, so the canvas parks instead of holding the 10fps
+  // ambient tick open for the whole session. The draw loop lives in a mount-once
+  // effect, so it reads the flag through a ref rather than closing over a value
+  // that was captured before the meeting existed. `wakeRef` is the other half:
+  // parking is only safe if something un-parks it when the meeting ends.
+  const meetingRef = useRef(false);
+  const wakeRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const recording = meeting.recording === true;
+    const was = meetingRef.current;
+    meetingRef.current = recording;
+    if (was && !recording) wakeRef.current();   // meeting over → Yappy gets his life back
+  }, [meeting.recording]);
 
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
@@ -241,15 +258,21 @@ export default function YappyPill() {
     // ambient life (breathing, sway, drifting clouds, the next blink)? The
     // capsule shut, no prop, no sparkle, both feet on the ground and the mood
     // caught up. Springs are asymptotic, so "at rest" is a threshold, not zero.
+    // `blinkT < 0` = no blink in flight. It matters now that a park can happen
+    // while the pill is ON SCREEN (a meeting): a frame frozen 60ms into a blink
+    // would hold a half-shut eye for the rest of the meeting. Under YV81's
+    // parks this only ever delayed the ambient tick by ~130ms.
     const settledNow = () =>
-      openV < 0.01 && propV < 0.01 && sparkle.length === 0
+      openV < 0.01 && propV < 0.01 && sparkle.length === 0 && blinkT < 0
       && J.phase === "ground" && Math.abs(moodT - mood) < 0.01;
     // The schedule comes from `framePlan` (live.ts, unit-tested): FULL rate the
     // moment a take is live, ~18fps while an idle scene is still settling, then
     // a parked rAF with ambient life on a 10fps timer once it has — and nothing
-    // at all while the pill is hidden or under reduced motion. Never a park
-    // while recording, where the mouth follows the mic and the commentary runs
-    // on a schedule that needs frames to advance.
+    // at all while the pill is hidden, under reduced motion, or holding a
+    // settled pose through a meeting (OS-12). Never a park while a take is live,
+    // where the mouth follows the mic and the commentary runs on a schedule that
+    // needs frames to advance — dictation DURING a meeting animates normally,
+    // because the live-take branch is answered before anything can park.
     function loop(ts: number) {
       const plan = framePlan(phase, {
         level,
@@ -257,6 +280,7 @@ export default function YappyPill() {
         reduceMotion: reduce,
         settled: settledNow(),
         hidden,
+        meetingRecording: meetingRef.current,
       });
       const mode: FrameMode = plan.mode;
       // schedule the next wake FIRST, so nothing below can strand the loop
@@ -362,9 +386,13 @@ export default function YappyPill() {
     // asleep while recording. Re-entrant by design: `wake` is also reached from
     // inside a frame (setPhase), where a wake is already scheduled.
     function wake() { if (raf || tick) return; tPrev = 0; lastDraw = 0; raf = requestAnimationFrame(loop); }
+    // The meeting effect above holds the only reference that can un-park a loop
+    // parked BY a meeting: nothing else fires when a meeting ends.
+    wakeRef.current = wake;
     raf = requestAnimationFrame(loop);
     return () => {
       dead = true;
+      wakeRef.current = () => {};
       cancelAnimationFrame(raf); window.clearTimeout(tick);
       document.removeEventListener("visibilitychange", onVisibility);
       ro.disconnect(); unsubs.forEach((u) => u());
@@ -375,6 +403,13 @@ export default function YappyPill() {
     <div className="kami-stage">
       <div ref={bubbleRef} className="kami-bubble"></div>
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
+      {/* YV95 — the recording state is a DOM overlay, not a canvas layer, so
+          the pulse is a compositor animation and the clock is text the backend
+          already rendered. That is only half of OS-12 fix (1): the canvas loop
+          is what actually has to stop, which is `meetingRecording` in the frame
+          policy above (live.ts) — an overlay that costs nothing does not park a
+          loop that was still redrawing behind it 10 times a second. */}
+      <MeetingBadge status={meeting} />
     </div>
   );
 }
