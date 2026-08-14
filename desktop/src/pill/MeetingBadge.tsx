@@ -13,7 +13,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { elapsedLabel, IDLE_MEETING, type MeetingStatus } from "./meeting";
+import { elapsedLabel, IDLE_MEETING, MEETING_EVENT, type MeetingStatus } from "./meeting";
 
 /**
  * Subscribe to the backend's meeting status: the current value on mount (so a
@@ -29,7 +29,7 @@ export function useMeetingStatus(): MeetingStatus {
     let dead = false;
     const unsubs: Array<() => void> = [];
     invoke<MeetingStatus>("meeting_status").then((s) => { if (!dead) setStatus(s); }).catch(() => {});
-    listen<MeetingStatus>("meeting", (e) => setStatus(e.payload)).then((u) =>
+    listen<MeetingStatus>(MEETING_EVENT, (e) => setStatus(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
     return () => { dead = true; unsubs.forEach((u) => u()); };

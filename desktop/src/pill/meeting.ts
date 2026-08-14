@@ -23,6 +23,20 @@
  * which dwarfs the clock this module was written to make cheap.
  */
 
+/**
+ * The Tauri event the backend broadcasts status on, re-exported from the ONE
+ * place the frontend declares it (`meetings/consent.ts`).
+ *
+ * Three surfaces listen to this string — the main window's banner, the pill's
+ * badge, and YV96's one-time capture notice — and they were written on three
+ * different branches. `src-tauri/tests/meeting_event_contract.rs` reads the
+ * declaration out of `consent.ts` and asserts it against Rust's
+ * `meetings::MEETING_EVENT`, and `no_surface_retypes_the_meeting_event_name`
+ * asserts that nothing re-types the literal, so a rename cannot leave one of the
+ * three listening to a name nobody emits.
+ */
+export { MEETING_EVENT } from "../meetings/consent";
+
 /** Mirrors `meeting_control::MeetingStatus` (serde camelCase). */
 export interface MeetingStatus {
   recording: boolean;

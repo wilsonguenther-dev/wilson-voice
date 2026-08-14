@@ -41,8 +41,7 @@
 //! rather than a notification observer with a lifetime of its own.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -74,6 +73,16 @@ pub struct CaptureOutcome {
     pub seconds: f64,
     /// A note worth showing the user, e.g. "stopped early: disk below 1 GB".
     pub note: Option<String>,
+    /// The engine's own verdict that this recording is incomplete — a watchdog
+    /// stop, or a session that stopped being the registered capture partway
+    /// through (YV91 `MeetingState::Partial`).
+    ///
+    /// Separate from `wav_path`, because the two say different things: a wav
+    /// landed AND the recording is short is exactly the case that must not be
+    /// filed as a clean take. Without this the control plane would read "a file
+    /// exists" as "the meeting is whole", and YV93 would transcribe it onward to
+    /// `complete` with nothing left saying otherwise.
+    pub partial: bool,
 }
 
 /// A capture in flight.
@@ -208,8 +217,67 @@ struct Active {
     started: Instant,
     capture: Box<dyn ActiveCapture>,
     diagnostics: Arc<Mutex<MeetingDiagnostics>>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<TickerStop>,
     ticker: Option<JoinHandle<()>>,
+}
+
+/// The ticker's parking spot.
+///
+/// **Why this is not an `AtomicBool` + `thread::sleep` (fix round 3).** It was,
+/// and `stop()` — which runs on the macOS MAIN THREAD when the user reaches for
+/// the tray item or ⌃⌘M — set the flag and then `join()`ed a thread that was in
+/// the middle of a one-second `sleep`. The join could not return until that
+/// sleep expired, so every stop from a menu or a hotkey froze the UI for up to a
+/// full second before any of the actual finalize work even began. A recorder
+/// whose Stop button beachballs is a recorder people press twice.
+///
+/// A condvar makes "stop" an event the sleeping thread is woken FOR rather than
+/// a flag it discovers when it happens to look, so the join returns in
+/// microseconds. The tick interval becomes a `wait_timeout` deadline, which is
+/// what it always meant.
+#[derive(Default)]
+struct TickerStop {
+    stopped: Mutex<bool>,
+    woken: Condvar,
+}
+
+impl TickerStop {
+    fn stop(&self) {
+        if let Ok(mut g) = self.stopped.lock() {
+            *g = true;
+        }
+        self.woken.notify_all();
+    }
+
+    /// Park until `tick` elapses or someone calls [`TickerStop::stop`].
+    /// Returns `true` if the caller should run another tick.
+    ///
+    /// Two things this has to get right, and the first one was wrong when it was
+    /// written — `stopping_immediately_after_starting_is_not_a_race` caught it:
+    ///
+    /// * **The flag is checked BEFORE parking.** `stop()` can land before the
+    ///   ticker thread has even been scheduled, and a `notify_all` with nobody
+    ///   waiting is a notification that never happened. Waiting first would then
+    ///   sit out the whole interval for a meeting that is already over — the
+    ///   exact freeze this type exists to remove, moved one thread over.
+    /// * **A spurious wakeup is not a tick.** `wait_timeout_while` re-parks for
+    ///   the remaining time unless the flag is actually set, so the 1 Hz emit
+    ///   stays 1 Hz.
+    fn wait(&self, tick: Duration) -> bool {
+        let Ok(guard) = self.stopped.lock() else {
+            return false;
+        };
+        if *guard {
+            return false;
+        }
+        match self
+            .woken
+            .wait_timeout_while(guard, tick, |stopped| !*stopped)
+        {
+            Ok((g, _)) => !*g,
+            Err(_) => false,
+        }
+    }
 }
 
 /// The one owner of "is a meeting running". Held in `AppState`.
@@ -340,7 +408,7 @@ impl MeetingController {
             if pill_visible { "visible" } else { "hidden" }
         );
 
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(TickerStop::default());
         let ticker = self.spawn_ticker(
             meeting.id.clone(),
             meeting.title.clone(),
@@ -373,7 +441,7 @@ impl MeetingController {
         title: String,
         started: Instant,
         diagnostics: Arc<Mutex<MeetingDiagnostics>>,
-        stop: Arc<AtomicBool>,
+        stop: Arc<TickerStop>,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         let probe = Arc::clone(&self.probe);
@@ -381,11 +449,9 @@ impl MeetingController {
         thread::Builder::new()
             .name("yap-meeting-tick".into())
             .spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    thread::sleep(tick);
-                    if stop.load(Ordering::SeqCst) {
-                        break;
-                    }
+                // `wait` is the tick AND the stop signal: it returns false the
+                // moment `stop()` fires, so a user stop never waits out a tick.
+                while stop.wait(tick) {
                     let elapsed = started.elapsed();
                     let secs = elapsed.as_secs();
                     // The extra work this tick does beyond the clock: ONE
@@ -425,7 +491,11 @@ impl MeetingController {
         let mut active = guard.take().ok_or("no meeting is recording")?;
         drop(guard);
 
-        active.stop.store(true, Ordering::SeqCst);
+        // Wake the ticker rather than waiting for it to notice. This runs on
+        // the main thread whenever the user stops from the tray item or ⌃⌘M, and
+        // a `join()` against a sleeping thread is a frozen menu bar for as long
+        // as the sleep had left to run. See [`TickerStop`].
+        active.stop.stop();
         if let Some(t) = active.ticker.take() {
             let _ = t.join();
         }
@@ -436,12 +506,15 @@ impl MeetingController {
 
         let (duration, wav, note, state) = match outcome {
             Ok(o) => {
-                let state = if o.wav_path.is_some() {
-                    // Capture landed. YV93's transcription pipeline moves it on
-                    // to `complete`; until it has run, `transcribing` is what is
-                    // actually true.
+                let state = if o.wav_path.is_some() && !o.partial {
+                    // Capture landed WHOLE. YV93's transcription pipeline moves
+                    // it on to `complete`; until it has run, `transcribing` is
+                    // what is actually true.
                     MeetingState::Transcribing
                 } else {
+                    // Nothing landed, or the engine says the recording is short.
+                    // Either way `complete` would be a lie, and this is the one
+                    // place that decision is made.
                     MeetingState::Partial
                 };
                 // The audio clock is the honest duration; fall back to the wall
@@ -510,6 +583,111 @@ impl MeetingController {
     /// When the meeting started, for a UI that wants to show a wall-clock start.
     pub fn started_at(&self) -> Option<DateTime<Utc>> {
         self.active.lock().ok()?.as_ref().map(|a| a.started_at)
+    }
+}
+
+// ───────────────────────── the real engine (YV91 → YV95) ────────────────────
+//
+// This is the one line the module docs above promised, made real. YV91 (#108)
+// is merged, so `meeting::MeetingSession` exists and the control plane is no
+// longer allowed to ship four disabled buttons —
+// `tests/capture_engine_is_installed.rs` fails the build if `lib.rs::setup`
+// does not install this.
+
+/// The shipping [`CaptureEngine`]: YV91's `MeetingSession` behind YV95's seam.
+pub struct SessionEngine;
+
+impl CaptureEngine for SessionEngine {
+    fn start(&self, dir: &Path) -> Result<Box<dyn ActiveCapture>, String> {
+        // Hold the input stream FIRST. This opens it if it is closed and blocks
+        // until it is actually running, which is the only moment its true native
+        // format is knowable — and a meeting whose resampler was configured from
+        // a guessed rate is three hours of audio at the wrong speed.
+        //
+        // `MeetingSession::start` re-holds the same stream through its own
+        // `MicStream`; the worker's hold is a flag, not a count, and the session
+        // releases it on every path out, so this extra hold is balanced by the
+        // session's own release rather than leaked.
+        let format = crate::record::hold_stream_for_meeting()?;
+        let config = crate::meeting::SessionConfig::new(
+            dir,
+            format.sample_rate_hz.max(1),
+            format.channels.max(1),
+        );
+        match crate::meeting::MeetingSession::start(config) {
+            Ok(session) => Ok(Box::new(SessionCapture {
+                session: Some(session),
+            })),
+            Err(e) => {
+                crate::record::release_stream_for_meeting();
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+/// A live `MeetingSession`, seen through the control plane's narrow window.
+struct SessionCapture {
+    /// `Option` only so `stop` can move the session out of a `Box<Self>`.
+    session: Option<crate::meeting::MeetingSession>,
+}
+
+impl ActiveCapture for SessionCapture {
+    fn seconds(&self) -> f64 {
+        self.session
+            .as_ref()
+            .map(|s| s.capture().elapsed().as_secs_f64())
+            .unwrap_or(0.0)
+    }
+
+    fn stop(mut self: Box<Self>) -> Result<CaptureOutcome, String> {
+        let session = self
+            .session
+            .take()
+            .ok_or_else(|| "the meeting capture was already stopped".to_string())?;
+        // A watchdog stop is the engine's own verdict and it is read BEFORE the
+        // finalize consumes the session, so the reason survives into the note.
+        let watchdog = session.watchdog_stop();
+        match session.stop() {
+            Some(finalized) => {
+                let partial = finalized.state != crate::meeting::MeetingState::Complete;
+                let mut notes: Vec<String> = Vec::new();
+                if let Some(reason) = watchdog {
+                    notes.push(format!("stopped early: {reason}"));
+                } else if partial {
+                    notes.push(
+                        "the recording ended early — part of this meeting is missing".to_string(),
+                    );
+                }
+                if finalized.spliced_silence_samples > 0 {
+                    notes.push(format!(
+                        "{} of audio never reached disk and was spliced as silence",
+                        meetings::format_offset(
+                            finalized.spliced_silence_samples as f64 / 16_000.0
+                        )
+                    ));
+                }
+                Ok(CaptureOutcome {
+                    wav_path: finalized.tracks.first().cloned(),
+                    seconds: finalized.seconds,
+                    note: if notes.is_empty() {
+                        None
+                    } else {
+                        Some(notes.join("; "))
+                    },
+                    partial,
+                })
+            }
+            // No journal to finalize: the session held a stream but nothing ever
+            // reached disk. `partial` rather than an error, because the row must
+            // still close and say why.
+            None => Ok(CaptureOutcome {
+                wav_path: None,
+                seconds: 0.0,
+                note: Some("no audio reached disk for this meeting".to_string()),
+                partial: true,
+            }),
+        }
     }
 }
 

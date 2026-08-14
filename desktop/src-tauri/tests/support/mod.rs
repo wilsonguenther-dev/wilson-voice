@@ -98,6 +98,10 @@ pub const FAKE_NO_AUDIO: u8 = 1;
 pub const FAKE_START_FAILS: u8 = 2;
 /// `stop` errors out after a successful start.
 pub const FAKE_STOP_FAILS: u8 = 3;
+/// A wav lands, but the engine says the recording is short (YV91's watchdog
+/// stop, or a session that stopped being the registered capture). The control
+/// plane must file this as `partial`, NOT as `transcribing`.
+pub const FAKE_PARTIAL: u8 = 4;
 
 static FAKE_MODE: AtomicU8 = AtomicU8::new(FAKE_OK);
 static FAKE_STARTS: AtomicUsize = AtomicUsize::new(0);
@@ -150,15 +154,22 @@ impl ActiveCapture for FakeCapture {
                 wav_path: None,
                 seconds,
                 note: Some("no audio reached the disk".into()),
+                partial: true,
             }),
             _ => {
                 // A real file, because `finish_meeting` stores a path the
                 // retention sweep later has to find and delete.
                 std::fs::write(&self.path, b"RIFF....WAVEfake").map_err(|e| e.to_string())?;
+                let partial = FAKE_MODE.load(Ordering::SeqCst) == FAKE_PARTIAL;
                 Ok(CaptureOutcome {
                     wav_path: Some(self.path.clone()),
                     seconds,
-                    note: None,
+                    note: if partial {
+                        Some("stopped early: the Mac ran out of disk".into())
+                    } else {
+                        None
+                    },
+                    partial,
                 })
             }
         }

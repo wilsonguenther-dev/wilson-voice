@@ -322,3 +322,115 @@ fn the_unavailable_message_says_what_is_missing() {
     assert!(NO_ENGINE_MESSAGE.contains("capture engine"));
     assert!(!NO_ENGINE_MESSAGE.is_empty());
 }
+
+// ───────────── regression guards for the final review's BLOCKING findings ────
+
+/// **BLOCKING finding 2 — `stop()` joined the 1 Hz ticker on the main thread.**
+///
+/// `stop()` runs on the macOS MAIN THREAD whenever the user reaches for the tray
+/// item or ⌃⌘M. It used to set an `AtomicBool` and then `join()` the ticker —
+/// which was, at that moment, in the middle of a `thread::sleep(TICK_INTERVAL)`.
+/// The join could not return until that sleep expired, so every stop from a menu
+/// or a hotkey froze the menu bar for up to a full second before any of the real
+/// finalize work had even started.
+///
+/// The ticker now parks on a condvar, so stopping WAKES it instead of waiting
+/// for it to look. This test states that as a bound: with a deliberately long
+/// tick, `stop()` must return in a small fraction of it.
+///
+/// Falsify by putting `thread::sleep(tick)` back in `spawn_ticker`'s loop: the
+/// elapsed time becomes ~`SLOW_TICK` and this fails by name.
+#[test]
+fn stopping_a_meeting_does_not_wait_out_a_tick() {
+    /// Far longer than production's 1 s, so a fixed-cost stop and a
+    /// waits-for-the-sleep stop cannot be confused on any machine.
+    const SLOW_TICK: Duration = Duration::from_secs(5);
+    /// Generous enough to absorb a loaded CI runner and the real finalize work
+    /// (a wav write and three SQLite statements), and still nowhere near
+    /// `SLOW_TICK`. The defect this guards produces ~5 s here, not 1.5 s.
+    const CEILING: Duration = Duration::from_millis(1_500);
+
+    let _guard = support::exclusive();
+    support::install_fake_engine();
+    support::set_fake_mode(support::FAKE_OK);
+    let dir = temp_dir("yv95-stop-latency");
+    let db = Arc::new(open_db(&dir));
+    let (_seen, f) = sink();
+    let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(SLOW_TICK);
+
+    c.start(&dir, None).expect("start");
+    // Land INSIDE the ticker's first park, which is where the old join blocked.
+    std::thread::sleep(Duration::from_millis(150));
+
+    let began = std::time::Instant::now();
+    c.stop("user stopped").expect("stop");
+    let took = began.elapsed();
+
+    assert!(
+        took < CEILING,
+        "stop() took {took:?} — it is waiting out the {SLOW_TICK:?} tick instead of \
+         waking the ticker, and this call runs on the macOS main thread for the \
+         tray item and ⌃⌘M"
+    );
+    assert!(!c.is_recording());
+}
+
+/// A meeting whose ticker never got to run at all still stops promptly: the
+/// condvar's notify has to be safe against a thread that has not reached its
+/// first `wait` yet, which is why the flag is set under the same lock.
+#[test]
+fn stopping_immediately_after_starting_is_not_a_race() {
+    let _guard = support::exclusive();
+    support::install_fake_engine();
+    support::set_fake_mode(support::FAKE_OK);
+    let dir = temp_dir("yv95-stop-immediate");
+    let db = Arc::new(open_db(&dir));
+    let (_seen, f) = sink();
+    let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(Duration::from_secs(30));
+
+    for _ in 0..5 {
+        c.start(&dir, None).expect("start");
+        let began = std::time::Instant::now();
+        c.stop("user stopped").expect("stop");
+        assert!(
+            began.elapsed() < Duration::from_millis(1_500),
+            "an immediate stop waited on the 30 s tick"
+        );
+    }
+}
+
+/// **The `partial` seam with YV91 (#108), which merged while this branch was
+/// open.** A capture that lands a wav but reports the recording as short must
+/// close as `partial`, not as `transcribing` — otherwise YV93 walks it on to
+/// `complete` and nothing is left saying the meeting is missing a piece.
+#[test]
+fn a_short_recording_that_still_wrote_a_wav_is_partial() {
+    let _guard = support::exclusive();
+    support::install_fake_engine();
+    support::set_fake_mode(support::FAKE_PARTIAL);
+    let dir = temp_dir("yv95-partial");
+    let db = Arc::new(open_db(&dir));
+    let (_seen, f) = sink();
+    let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(TEST_TICK);
+
+    c.start(&dir, None).expect("start");
+    let stopped = c.stop("user stopped").expect("stop");
+    support::set_fake_mode(support::FAKE_OK);
+
+    assert_eq!(
+        stopped.state,
+        MeetingState::Partial,
+        "a wav landed, but the engine said the recording is short — \
+         `transcribing` would file it as whole"
+    );
+    assert!(
+        stopped.note.is_some(),
+        "a partial meeting must say why in the row, not only in the log"
+    );
+    let row = db.get_meeting(&stopped.id).expect("row").expect("row");
+    assert_eq!(row.state, MeetingState::Partial.as_str());
+    assert!(
+        row.mic_wav_path.is_some(),
+        "the audio that WAS captured is still findable"
+    );
+}

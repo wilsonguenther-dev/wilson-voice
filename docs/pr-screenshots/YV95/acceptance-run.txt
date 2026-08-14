@@ -352,3 +352,158 @@ The powermetrics run is STILL NOT RUN and no milliwatt figure is claimed — it
 needs root and a capture engine (see §3/§6 of the PR). That is exactly the
 measurement that would have caught this, which is why the missing row is now
 written down as a countable, tested number rather than left to it.
+
+================================================================================
+2026-08-14 — rebase onto main + fix round 3 (the drain pass)
+================================================================================
+
+Rebased onto origin/main after YV90/#107, YV92/#109, YV94/#111, YV96/#113 AND
+YV91/#108, YV93/#110 all merged. Four conflicts, all resolved keeping BOTH sides
+(nothing merged was reverted):
+
+  docs/CHANGELOG-YAP.md   YV96's entry + YV95's entry, in merge order
+  desktop/src/App.css     YV96's consent sheet + YV95's recording bar
+  desktop/src/App.tsx     YV96's watchMeetingConsent effect + YV95's status effect
+  src-tauri/src/lib.rs    YV96's two consent commands + YV95's four meeting commands
+
+The App.tsx one is a SEMANTIC conflict, not a textual one: both effects subscribe
+to the same `meeting` event, written on branches that never saw each other. Guard
+added — `meeting_event_contract::no_surface_retypes_the_meeting_event_name`.
+Falsified by putting the literal back in App.tsx:
+
+  $ sed -i '' 's|listen<MeetingStatus>(MEETING_EVENT|listen<MeetingStatus>("meeting"|' src/App.tsx
+  $ cargo test --test meeting_event_contract
+  test no_surface_retypes_the_meeting_event_name ... FAILED
+    App.tsx:952: listen<MeetingStatus>("meeting", (e) => {
+  (restored → 4 passed)
+
+--------------------------------------------------------------------------------
+The capture engine is now installed. Finding #6's merge gate is CLOSED.
+--------------------------------------------------------------------------------
+
+#108 merged, so `src/meeting.rs` exists and `tests/capture_engine_is_installed.rs`
+— added by this PR in round 1 precisely to make this non-optional — went red on
+the rebase. `meeting_control::SessionEngine` is the adapter, installed at the
+marked spot in `lib.rs::setup`. Every entry point is now live rather than
+disabled-but-honest.
+
+  $ cargo test --test capture_engine_is_installed
+  running 2 tests
+  test the_record_button_cannot_stay_dead_once_the_capture_module_lands ... ok
+  test the_control_plane_is_honest_when_no_engine_is_installed ... ok
+
+The adapter holds the input stream BEFORE building `SessionConfig`, because the
+device's native rate is only knowable once a stream is open and a meeting whose
+resampler was configured from a guess is three hours of audio at the wrong speed.
+`record::hold_stream_for_meeting()` now answers with the `InputFormat` it opened.
+
+`CaptureOutcome` gained `partial`: a wav that landed AND a recording the engine
+says is short is exactly the case that must not be filed as whole. Guarded by
+`a_short_recording_that_still_wrote_a_wav_is_partial`.
+
+--------------------------------------------------------------------------------
+BLOCKING 1 — hover_tick_ms starved dictation and swallowed the first pill click
+--------------------------------------------------------------------------------
+
+(a) Starvation. `hover_tick_ms(shown, hovered, meeting)` had no way to say "a take
+    is live", so a dictation taken DURING a meeting — a designed case; YV91 fans
+    the same block to both consumers and live.ts's framePlan puts the live-take
+    branch ABOVE the meeting park for exactly this reason — polled at 1 Hz. The
+    pill is that take's primary control. `dictating` is now the fourth input and
+    is checked FIRST, so the two files answer the question identically.
+
+    Falsify: move the `dictating` branch below `meeting_recording` →
+    a_dictation_inside_a_meeting_keeps_the_fast_tick reports 1000.
+
+(b) Swallowed click. The panel is click-through until the watch notices, so a 1 Hz
+    notice is not latency — it is a click aimed at Yap delivered to the app
+    underneath, which during a meeting is the meeting.
+
+    The main-thread test rate is UNCHANGED (still HOVER_IDLE_TICK_MS through the
+    far-field of a meeting — the backlog's acceptance line still holds verbatim).
+    What changed is that the cadence is no longer the only thing that can wake the
+    watch: the wait is sliced at PROXIMITY_SLICE_MS = 30 ms and breaks out on the
+    RISING edge of an off-main-thread proximity check.
+
+    That check is `+[NSEvent mouseLocation]` (a class method objc2 exposes without
+    a MainThreadMarker — no NSWindow, no view, no main queue) compared against the
+    capsule's screen rect, cached in atomics by `update_interactive` while it is on
+    the main thread anyway.
+
+    It is ADVISORY AND CAN ONLY CAUSE MORE WORK. `update_interactive` remains the
+    sole authority on set_ignore_cursor_events. A false positive costs one hop that
+    finds nothing changed; a false negative falls back to the cadence that shipped
+    in round 2. Neither is a behaviour change, which is what makes a geometry
+    conversion that cannot be verified headlessly safe to ship.
+
+  $ cargo test --test pill_idle_tick_during_recording
+  running 13 tests   (was 6)
+  ... 13 passed
+
+--------------------------------------------------------------------------------
+BLOCKING 2 — stop() joined the 1 s ticker on the macOS main thread
+--------------------------------------------------------------------------------
+
+`stop()` set an AtomicBool and then `join()`ed a thread mid-`sleep(TICK_INTERVAL)`.
+The join could not return until the sleep expired, so a stop from the tray item or
+⌃⌘M — both main-thread handlers — froze the menu bar for up to a full second
+before the real finalize work even started.
+
+The ticker now parks on a condvar (`TickerStop`). Stopping WAKES it.
+
+  $ cargo test --test meeting_manual_start_stop
+  running 13 tests    (was 10)
+  ... 13 passed in 1.19s   (was 33.46s with the sleep)
+
+  Falsification — put `thread::sleep(tick)` back:
+  test stopping_a_meeting_does_not_wait_out_a_tick ... FAILED
+    stop() took 4.847988417s — it is waiting out the 5s tick instead of waking
+    the ticker, and this call runs on the macOS main thread for the tray item
+    and ⌃⌘M
+  test stopping_immediately_after_starting_is_not_a_race ... FAILED
+  (restored → 13 passed)
+
+The first version of the condvar was ALSO wrong, and this file's own new guard
+caught it: it did not check the flag before parking, so a stop that landed before
+the ticker thread was scheduled missed the notify and sat out the whole interval —
+the same freeze, moved one thread over. `wait_timeout_while` with a pre-check.
+
+Second half of the same finding: with a real engine installed, stopping also
+finalizes YV91's journal into a playable wav and writes three SQLite rows. The two
+main-thread entry points (tray item, ⌃⌘M) now hand the toggle to a short-lived
+thread — `toggle_meeting_off_thread`. Everything it does to the UI already hops
+back to the main thread on its own.
+
+--------------------------------------------------------------------------------
+Gate (this machine, 2026-08-14)
+--------------------------------------------------------------------------------
+
+  npm ci && npx tsc --noEmit                        → clean
+  npm run build                                     → built in 653ms
+  npm test                                          → 6 files, 79 tests passed
+  cargo build -p yap-polish --release               → Finished
+  cargo build --release --features custom-protocol  → Finished, rc=0
+  cargo test --features custom-protocol             → 463 lib + every integration
+                                                      suite green, 0 failed
+  rustfmt --check on every file this branch touches → clean
+    (one pre-existing diff at float_pill.rs:361 is on main too, untouched)
+
+  Flaky-prone suites, 3 consecutive runs, all green:
+    meeting_diagnostics_row, meeting_manual_start_stop,
+    pill_idle_tick_during_recording, tray_hotkey_no_collision,
+    capture_engine_is_installed, meeting_event_contract
+
+  meeting_eval: 21 passed / 3 ignored. The two corpus-drift failures reported in
+  earlier rounds are GONE — the manifest on main and the corpus on this machine
+  agree again.
+
+--------------------------------------------------------------------------------
+Still not claimed
+--------------------------------------------------------------------------------
+
+The `powermetrics` milliwatt figure and the timed 10-second UX repro remain
+UNRUN and UNCLAIMED. Both need root and/or a person in front of the machine.
+`power-budget-10min.md` and `manual-repro-10-second-start.md` still carry empty
+results tables rather than numbers nobody measured. The capture engine landing
+does unblock the repro — that gate is now closed — but running it is a human's
+job, not this pass's.

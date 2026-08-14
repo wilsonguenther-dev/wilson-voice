@@ -533,7 +533,7 @@ impl AppState {
 fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
     static TRAY_SHOWS_RECORDING: AtomicBool = AtomicBool::new(false);
     Arc::new(move |status| {
-        let _ = app.emit("meeting", status);
+        let _ = app.emit(meetings::MEETING_EVENT, status);
         // The pill's hover watch drops to 1 Hz while this is set (OS-12 fix 2).
         float_pill::set_meeting_recording(status.recording);
         if TRAY_SHOWS_RECORDING.swap(status.recording, Ordering::SeqCst) == status.recording {
@@ -586,6 +586,37 @@ fn toggle_meeting(app: &AppHandle, state: &Arc<AppState>) -> Result<meeting_cont
         }
     }
     Ok(status)
+}
+
+/// YV95 — the same toggle, but never on the main thread.
+///
+/// The tray item's handler and the ⌃⌘M shortcut handler both run on the macOS
+/// MAIN THREAD, and stopping a meeting is not cheap work: it wakes and joins the
+/// 1 Hz ticker, finalizes YV91's journal into a playable wav, joins the capture
+/// watchdog and writes three rows to SQLite. Doing that inline freezes the menu
+/// bar — and the Stop control the user just pressed — for as long as it takes.
+///
+/// So the two main-thread entry points hand the work to a short-lived thread and
+/// return immediately. Everything the toggle does to the UI already hops back to
+/// the main thread on its own (`float_pill::show_for_recording`/`after_recording`
+/// go through `dispatch_main`; the tray label is set from the status sink's own
+/// `run_on_main_thread`), so nothing here needs a second hop of its own.
+///
+/// The controller is still the only thing that decides whether a toggle is a
+/// start or a stop, and it makes that decision under its own lock — so two
+/// impatient presses cannot become two meetings, they become a start and a stop.
+fn toggle_meeting_off_thread(app: &AppHandle, state: &Arc<AppState>, source: &'static str) {
+    let app = app.clone();
+    let state = state.clone();
+    std::thread::Builder::new()
+        .name("yap-meeting-toggle".into())
+        .spawn(move || {
+            if let Err(e) = toggle_meeting(&app, &state) {
+                log::warn!("meeting toggle from {source}: {e}");
+                notify(&app, "Yap", e);
+            }
+        })
+        .ok();
 }
 
 /// Can a take actually be transcribed right now? YV34 leaves exactly one
@@ -1030,6 +1061,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             let stop = active.stop_signal();
             *state.recorder.lock() = Some(active);
             *state.recording.lock() = true;
+            // YV95 — the pill's hover watch must keep its fast cadence for a
+            // take even when a meeting is recording underneath it.
+            float_pill::set_dictating(true);
             *state.last_error.lock() = None;
             // YV28: silence the whole Mac so nothing plays over the user while
             // they talk. Restored the instant recording stops (see below).
@@ -1080,6 +1114,7 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
         return;
     }
     *state.recording.lock() = false;
+    float_pill::set_dictating(false);
     *state.hands_free.lock() = false;
     // YV49: a cancelled command press must not leave its selection armed for
     // the next, ordinary take.
@@ -1275,6 +1310,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         return;
     }
     *state.recording.lock() = false;
+    float_pill::set_dictating(false);
     // YV28: un-mute the Mac immediately on release — restore the exact prior
     // mute + volume BEFORE the (async) transcription so audio comes right back.
     restore_system_output(&state);
@@ -3701,10 +3737,7 @@ pub fn run() {
                         if shortcut == &shortcuts::MEETING_TOGGLE.shortcut() {
                             if event.state == ShortcutState::Pressed {
                                 log::info!("⌃⌘M pressed — toggle meeting");
-                                if let Err(e) = toggle_meeting(app, &state) {
-                                    log::warn!("meeting toggle from ⌃⌘M: {e}");
-                                    notify(app, "Yap", e);
-                                }
+                                toggle_meeting_off_thread(app, &state, "⌃⌘M");
                             }
                             return;
                         }
@@ -3853,6 +3886,11 @@ pub fn run() {
             // `src/meeting.rs` exists without the line above, so whichever of
             // #108 / #112 merges second cannot leave `main` with a dead Record
             // button.
+            // YV91 (#108) is merged, so this is no longer a comment asking
+            // someone to do it later: `meeting::MeetingSession` exists and the
+            // Record button is wired to it. `tests/capture_engine_is_installed.rs`
+            // is what keeps this line here.
+            meeting_control::install_capture_engine(Arc::new(meeting_control::SessionEngine));
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),
                 meeting_status_sink(app.handle().clone()),
@@ -4051,10 +4089,7 @@ pub fn run() {
                         }
                         // YV95 — start/stop a meeting from the menu bar.
                         "meeting_toggle" => {
-                            if let Err(e) = toggle_meeting(app, &state) {
-                                log::warn!("meeting toggle from tray: {e}");
-                                notify(app, "Yap", e);
-                            }
+                            toggle_meeting_off_thread(app, &state, "the tray item");
                         }
                         "paste_raw" => {
                             paste_raw_last_transcript(app, &state);

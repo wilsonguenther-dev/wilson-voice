@@ -2054,7 +2054,12 @@ pub struct MicStream;
 
 impl CaptureStream for MicStream {
     fn hold(&self) -> Result<(), String> {
-        crate::record::hold_stream_for_meeting()
+        // The format the worker reports back is used by YV95's capture adapter,
+        // which holds the stream once BEFORE building the `SessionConfig` this
+        // session was constructed from; by the time the session re-holds it here
+        // the answer is already spoken for, so it is discarded rather than
+        // second-guessed.
+        crate::record::hold_stream_for_meeting().map(|_| ())
     }
 
     fn release(&self) {

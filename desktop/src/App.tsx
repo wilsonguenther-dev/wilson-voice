@@ -11,6 +11,7 @@ import { errorText, isLicenseRequired } from "./errors";
 // differently, and so those rules are unit-tested once instead of twice.
 import {
   IDLE_MEETING,
+  MEETING_EVENT,
   disabledReason,
   elapsedLabel,
   recordLabel,
@@ -948,7 +949,7 @@ export default function App() {
     invoke<MeetingStatus>("meeting_status")
       .then((s) => { if (!dead) setMeetingStatus(s); })
       .catch(() => {});
-    listen<MeetingStatus>("meeting", (e) => {
+    listen<MeetingStatus>(MEETING_EVENT, (e) => {
       setMeetingStatus((prev) => {
         if (prev.recording && !e.payload.recording) {
           // The meeting just closed out — pull the row it wrote.
