@@ -1,0 +1,110 @@
+$ cargo test --test matrix_coverage --test matrix_row5_journal_backpressure --test matrix_row15_single_instance --test matrix_row16_sleep_wake --test matrix_row17_meeting_cap --test matrix_phase_offline
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 10 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... ignored, merge checklist — run with --ignored after #108 or #110 lands
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... ignored, merge checklist — run with --ignored after #108 lands
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_matrix_still_covers_the_eight_failures_22a_owns ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test the_published_sweeps_are_runnable_and_complete ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+
+test result: ok. 8 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/matrix_phase_offline.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_phase_offline-ff98ae8d2ec69983)
+
+running 2 tests
+test every_module_on_the_list_still_exists ... ok
+test the_whole_meeting_path_has_no_network_surface ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/matrix_row15_single_instance.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row15_single_instance-10f8f3965b945ab1)
+
+running 4 tests
+test the_published_row_points_at_the_manual_repro_not_at_this_file ... ok
+test the_plugin_is_a_pinned_dependency ... ok
+test the_duplicate_focuses_the_running_app_instead_of_recording ... ok
+test single_instance_is_the_first_plugin_registered ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row16_sleep_wake.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row16_sleep_wake-6bebce8a6f29617b)
+
+running 9 tests
+test a_user_stop_cancels_any_pending_resume ... ok
+test a_wake_with_no_preceding_sleep_never_pretends_the_gap_did_not_happen ... ok
+test declining_the_offer_ends_the_meeting_cleanly ... ok
+test duplicate_notifications_are_idempotent ... ok
+test sleep_finalizes_and_marks_paused_by_sleep ... ok
+test sleep_while_idle_does_nothing_at_all ... ok
+test the_row_is_published_as_unwired_because_nothing_registers_the_notification ... ok
+test two_lid_closes_in_one_meeting_produce_two_offers_and_no_lost_state ... ok
+test wake_offers_resume_as_a_new_segment_never_a_pretended_continuity ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row17_meeting_cap.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row17_meeting_cap-a51445a189c640fc)
+
+running 4 tests
+test the_continuation_meeting_is_linked_and_never_stacks_its_own_suffix ... ok
+test the_published_row_says_the_cap_is_enforced_elsewhere ... ok
+test an_all_day_recording_is_three_linked_meetings ... ok
+test the_cap_thresholds_are_not_re_declared_alongside_the_matrix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row5_journal_backpressure.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row5_journal_backpressure-0e40e6712236a977)
+
+running 7 tests
+test a_short_hiccup_costs_nothing ... ok
+test draining_restores_capacity_after_an_overflow ... ok
+test the_quality_note_half_is_published_as_unwired ... ok
+test a_wedged_writer_drops_and_never_grows ... ok
+test zero_depth_degrades_instead_of_dividing_by_zero ... ok
+test dropped_writes_become_an_honest_quality_note ... ok
+test record_rs_journal_still_hands_off_with_try_send ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+# 34 integration tests across six binaries, all green, plus the 2 `#[ignore]`d
+# merge-checklist tests (rows 4/6/3a/3b/17 — see tripwire-proof.txt probe 1 for
+# why they are a checklist and not a CI gate), plus 9 unit tests inside
+# src/meeting_matrix.rs.
+#
+# Row 15's binary is in the sweep as a GUARD; the row's published coverage is the
+# manual two-process repro in docs/yap22a-phase-demo.md, step 5.
+
+$ cargo test --test matrix_coverage -- --ignored   # the merge checklist, green while #108/#110 are open
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 2 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... ok
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+
+$ cargo test --lib meeting_matrix
+     Running unittests src/lib.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/wilson_voice_lib-95f0ae4fb3227172)
+
+running 9 tests
+test meeting_matrix::tests::row_16_admits_that_nobody_owns_its_wiring ... ok
+test meeting_matrix::tests::matrix_ids_are_unique_and_nonempty ... ok
+test meeting_matrix::tests::policy_only_cells_say_the_app_does_not_do_this_yet ... ok
+test meeting_matrix::tests::coverage_cells_name_the_runnable_thing ... ok
+test meeting_matrix::tests::the_unwired_rows_are_exactly_5b_16_and_17 ... ok
+test meeting_matrix::tests::row_5b_admits_the_quality_note_reaches_no_surface ... ok
+test meeting_matrix::tests::the_two_rows_whose_tests_must_be_renamed_are_110s ... ok
+test meeting_matrix::tests::exactly_one_row_claims_wired_shipping_behaviour ... ok
+test meeting_matrix::tests::rendered_table_has_a_line_per_row ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 364 filtered out; finished in 0.00s
+

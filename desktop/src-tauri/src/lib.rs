@@ -53,6 +53,12 @@ mod logging;
 // dictation fan-out. Public so the acceptance tests
 // (`tests/meeting_capture_*.rs`) drive the REAL session, not a copy of it.
 pub mod meeting;
+// YV99 — the 22-A error matrix as a const table plus the pure policy for the
+// three rows this item owns (journal backpressure, sleep/wake, the 3 h cap).
+// Public because the matrix's whole purpose is to be checked from the outside:
+// `tests/matrix_coverage.rs` walks the table against the filesystem, and
+// `matrix_row5/16/17_*.rs` drive the state machines with synthetic events.
+pub mod meeting_matrix;
 // YV94 — the Notetaker's row types, its migration-1 SQL, and the pure Markdown
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.

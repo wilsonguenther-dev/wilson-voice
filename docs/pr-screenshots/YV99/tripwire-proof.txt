@@ -1,0 +1,266 @@
+# Proof every tripwire fires, and that the two which another open PR will trip
+# are a merge CHECKLIST rather than a cross-PR CI break. Regenerated for
+# revision 3 (five BLOCKING findings: rows 5 and 15 published as Test while
+# nothing drives them, AC2 unsatisfiable by construction, a changelog that
+# claimed a deleted latch, and #108/#110 reddening on assertions they do not own).
+#
+# Read probe 1 first: it is the fix for the merge-order finding.
+
+########################################################################
+# 1. #108 lands MEETING_HARD_CAP — CI stays GREEN, the checklist goes RED
+########################################################################
+# Appending row 17's call site to src/logging.rs simulates #108 merging.
+
+$ cargo test --test matrix_coverage
+   --> src-tauri/src/logging.rs:187:11
+    |
+187 | pub const MEETING_HARD_CAP: u64 = 10_800;
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 10 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... ignored, merge checklist — run with --ignored after #108 or #110 lands
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... ignored, merge checklist — run with --ignored after #108 lands
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_matrix_still_covers_the_eight_failures_22a_owns ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_published_sweeps_are_runnable_and_complete ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+
+test result: ok. 8 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+$ cargo test --test matrix_coverage -- --ignored
+   --> src-tauri/src/logging.rs:187:11
+    |
+187 | pub const MEETING_HARD_CAP: u64 = 10_800;
+    |           ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 2 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... ok
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... FAILED
+
+failures:
+
+---- merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges stdout ----
+
+thread 'merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges' (7098146) panicked at src-tauri/tests/matrix_coverage.rs:282:13:
+FLIP ME — matrix row 17: `MEETING_HARD_CAP` is now code in /private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/src-tauri/src/logging.rs, so the wiring from #108 (YV91) has landed. Promote the row to Coverage::Test("matrix_row17_meeting_cap.rs") in src/meeting_matrix.rs and rewrite `matrix_row17_meeting_cap.rs` to drive the shipping call site — for row 17 that means importing `meeting::MEETING_HARD_CAP` / `meeting::MEETING_CAP_WARN_AT` and driving `meeting::watchdog_tick`, NOT re-declaring the thresholds here.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 2. #110 merges under its CURRENT file names — the checklist still fires
+########################################################################
+# The rename to matrix_new_quit_mid_processing.rs is a merge condition, so
+# the checklist watches the OLD name too and cannot be dodged.
+
+$ cargo test --test matrix_coverage -- --ignored
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 2 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... FAILED
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... ok
+
+failures:
+
+---- merge_checklist_landswith_rows_flip_the_day_their_pr_merges stdout ----
+
+thread 'merge_checklist_landswith_rows_flip_the_day_their_pr_merges' (7098684) panicked at src-tauri/tests/matrix_coverage.rs:252:13:
+FLIP ME — matrix row 3a: `meeting_transcription_resume.rs` is now present, so #110 (YV93) has merged. Change this row's Coverage::LandsWith to Coverage::Test("matrix_new_quit_mid_processing.rs") in src/meeting_matrix.rs, rename the file to `matrix_new_quit_mid_processing.rs` if it is not already (the acceptance sweep globs `matrix_*` and cannot see any other name), regenerate the table in docs/yap22a-error-matrix.md, and re-run the sweep.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    merge_checklist_landswith_rows_flip_the_day_their_pr_merges
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 3. Row 5b — somebody wires quality_note: the CI gate fires
+########################################################################
+
+$ cargo test --test matrix_coverage unowned_policy
+   --> src-tauri/src/logging.rs:187:4
+    |
+187 | fn probe() { let _ = crate::meeting_matrix::quality_note(1, 512, 16_000); }
+    |    ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 1 test
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... FAILED
+
+failures:
+
+---- unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not stdout ----
+
+thread 'unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not' (7099225) panicked at src-tauri/tests/matrix_coverage.rs:211:13:
+TRIPWIRE — matrix row 5b: `quality_note` is now code in /private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/src-tauri/src/logging.rs, so somebody wired it. This row is no longer `PolicyOnly`: promote it to Coverage::Test("matrix_row5_journal_backpressure.rs") in src/meeting_matrix.rs and rewrite `matrix_row5_journal_backpressure.rs` to drive that call site — assert the shipping surface performs the behaviour, not that the pure function returns the right value. This test exists so a policy cannot keep being published as covered after its call site appeared — and so it cannot keep being published as covered before it.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 4. Row 16 — somebody registers the sleep notification: the CI gate fires
+########################################################################
+
+$ cargo test --test matrix_coverage unowned_policy
+   --> src-tauri/src/logging.rs:187:4
+    |
+187 | fn probe() { let _ = "NSWorkspaceWillSleepNotification"; }
+    |    ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 1 test
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... FAILED
+
+failures:
+
+---- unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not stdout ----
+
+thread 'unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not' (7099771) panicked at src-tauri/tests/matrix_coverage.rs:211:13:
+TRIPWIRE — matrix row 16: `NSWorkspaceWillSleepNotification` is now code in /private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/src-tauri/src/logging.rs, so somebody wired it. This row is no longer `PolicyOnly`: promote it to Coverage::Test("matrix_row16_sleep_wake.rs") in src/meeting_matrix.rs and rewrite `matrix_row16_sleep_wake.rs` to drive that call site — assert the shipping surface performs the behaviour, not that the pure function returns the right value. This test exists so a policy cannot keep being published as covered after its call site appeared — and so it cannot keep being published as covered before it.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 5. AC2 — a row naming a test the matrix_* sweep cannot reach
+########################################################################
+# Reverting row 3a to the name #110 uses today is exactly the state the
+# acceptance criterion was unsatisfiable in.
+
+$ cargo test --test matrix_coverage every_row_names
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 1 test
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... FAILED
+
+failures:
+
+---- every_row_names_a_test_the_acceptance_sweep_can_reach stdout ----
+
+thread 'every_row_names_a_test_the_acceptance_sweep_can_reach' (7100337) panicked at src-tauri/tests/matrix_coverage.rs:369:5:
+these rows name a test the acceptance sweep `cargo test --test 'matrix_*'` can never reach, so the phase's own criterion could never go green for them: ["row 3a → meeting_transcription_resume.rs"]. Either rename the test, or the row is outside the acceptance command and the command is the thing that has to change.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_row_names_a_test_the_acceptance_sweep_can_reach
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 6. Row 15 promoted back to a Test cell on the strength of a source grep
+########################################################################
+
+$ cargo test --test matrix_row15_single_instance the_published_row
+     Running tests/matrix_row15_single_instance.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row15_single_instance-10f8f3965b945ab1)
+
+running 1 test
+test the_published_row_points_at_the_manual_repro_not_at_this_file ... FAILED
+
+failures:
+
+---- the_published_row_points_at_the_manual_repro_not_at_this_file stdout ----
+
+thread 'the_published_row_points_at_the_manual_repro_not_at_this_file' (7100872) panicked at src-tauri/tests/matrix_row15_single_instance.rs:87:5:
+assertion `left == right` failed: row 15's failure is two live processes. This file greps source text; it cannot start one. If it is ever promoted back to Coverage::Test, the test behind it has to actually launch a second instance during a recording.
+  left: Test("matrix_row15_single_instance.rs")
+ right: Manual("docs/yap22a-phase-demo.md")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_published_row_points_at_the_manual_repro_not_at_this_file
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test matrix_row15_single_instance`
+
+########################################################################
+# 7. The published AC2 sweep drops one row's test
+########################################################################
+
+$ cargo test --test matrix_coverage the_published_sweeps
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 1 test
+test the_published_sweeps_are_runnable_and_complete ... FAILED
+
+failures:
+
+---- the_published_sweeps_are_runnable_and_complete stdout ----
+
+thread 'the_published_sweeps_are_runnable_and_complete' (7101416) panicked at src-tauri/tests/matrix_coverage.rs:441:9:
+matrix row 6 is covered by `matrix_row6_orphan_recovery`, which the full AC2 sweep in docs/yap22a-error-matrix.md does not name — so that command does not actually cover all of the matrix. Rows named: ["matrix_coverage", "matrix_row4_disk_preflight", "matrix_row5_journal_backpressure", "matrix_row15_single_instance", "matrix_row16_sleep_wake", "matrix_row17_meeting_cap", "matrix_new_quit_mid_processing", "matrix_new_asr_chunk_timeout", "matrix_phase_offline"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_published_sweeps_are_runnable_and_complete
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 8. Every probe reverted — the suite is green again
+########################################################################
+
+$ cargo test --test matrix_coverage
+     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
+
+running 10 tests
+test merge_checklist_landswith_rows_flip_the_day_their_pr_merges ... ignored, merge checklist — run with --ignored after #108 or #110 lands
+test merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges ... ignored, merge checklist — run with --ignored after #108 lands
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_matrix_still_covers_the_eight_failures_22a_owns ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test the_published_sweeps_are_runnable_and_complete ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+
+test result: ok. 8 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
