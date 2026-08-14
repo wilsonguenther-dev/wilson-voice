@@ -1,0 +1,48 @@
+YV101 — the two named acceptance suites, with --nocapture so the user-facing
+copy and the runtime OS read are printed, not just asserted.
+
+$ cargo test --features custom-protocol --test syscapture_os_gate --test meeting_availability_144_gate -- --nocapture
+
+   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22b-yv101/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running tests/meeting_availability_144_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_availability_144_gate-dd87174679b5cd3a)
+
+running 8 tests
+test a_macos_13_mac_records_meetings_and_disables_only_system_audio ... macOS 13 system-audio empty state: System audio capture requires macOS 14.4 or later, and this Mac is on macOS 13.6. Meeting notes still record your microphone.
+ok
+test every_variant_including_the_new_one_has_a_sentence ...   - Meeting notes need a speech model. Download one in Settings › Model to record a meeting.
+  - Meeting notes need an English speech model, and Yap can't tell what 'someone/side-loaded.gguf' transcribes. Pick a catalog model in Settings › Model.
+  - Meeting notes are English-only for now. Some German Model transcribes de — switch to an English model in Settings › Model to record a meeting.
+  - Meeting notes are English-only for now. Your 'Language I speak' is set to es — set it to English to record a meeting.
+  - System audio capture requires macOS 14.4 or later, and this Mac is on macOS 13.0. Meeting notes still record your microphone.
+  - System audio capture requires macOS 14.4 or later. Meeting notes still record your microphone.
+ok
+test mic_only_recording_is_available_on_every_version_including_the_macos_12_floor ... ok
+test system_audio_is_available_at_and_above_14_4 ... ok
+test system_audio_specifically_reports_requires_macos_14_4_below_the_floor ... ok
+test the_english_only_gate_still_applies_to_both_modes ... ok
+test the_os_gate_is_the_reason_the_disabled_control_shows_on_an_old_mac ... ok
+test the_public_meeting_availability_is_the_mic_only_door ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/syscapture_os_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_os_gate-ebd5b40e54a88731)
+
+running 10 tests
+test an_unknown_os_version_fails_closed ... ok
+test coreaudio_is_weak_linked_at_build_time ... ok
+test info_plist_declares_the_system_audio_usage_description ... NSAudioCaptureUsageDescription = Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac.
+ok
+test the_boundary_is_inclusive ... ok
+test the_deployment_floor_is_still_macos_12 ... ok
+test the_gate_refuses_below_14_4_and_allows_at_or_above ... ok
+test the_refusal_sentence_is_plain_and_says_the_version ... system-audio gate copy (YV101): System audio capture requires macOS 14.4 or later
+ok
+test the_runtime_read_reports_a_real_macos_version ... ProcessInfo.operatingSystemVersion = 26.5.2 (OsVersion { major: 26, minor: 5, patch: 2 })
+system audio gate here = Available
+ok
+test the_weak_link_launch_check_is_wired_into_ci ... ok
+test version_ordering_is_numeric ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+

@@ -1,0 +1,24 @@
+YV101 — the Info.plist string and the untouched deployment floor,
+read out of the BUNDLE, not out of the source file.
+
+$ npx tauri build --bundles app
+$ plutil -p Yap.app/Contents/Info.plist
+
+  "CFBundleIdentifier" => "com.wilsonguenther.wilson-voice"
+  "LSMinimumSystemVersion" => "12.0"
+  "NSAppleEventsUsageDescription" => "Yap pastes transcribed text into the app you're typing in."
+  "NSAudioCaptureUsageDescription" => "Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac."
+  "NSMicrophoneUsageDescription" => "Yap records your voice locally to transcribe dictation with Whisper. Audio never leaves your Mac."
+
+LSMinimumSystemVersion is still 12.0 — this item is a runtime gate, not a
+deployment-target bump. Raising the floor would 'fix' the launch failure by
+dropping every macOS 12/13 user instead, which is what §2.1 refuses.
+
+==============================================================
+The weak-linked, ad-hoc-signed bundle binary LOADS and RUNS.
+A dyld bind failure would abort before main; this reaches the
+app's own headless CLI and reports the missing file.
+==============================================================
+$ Yap.app/Contents/MacOS/wilson-voice --transcribe-file /tmp/definitely-not-a-file.wav
+transcribe failed: no such wav file: /tmp/definitely-not-a-file.wav
+exit=1

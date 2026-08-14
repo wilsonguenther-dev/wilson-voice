@@ -8,6 +8,8 @@
 	<string>Yap</string>
 	<key>LSUIElement</key>
 	<false/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Yap pastes transcribed text into the app you're typing in.</string>
 	<key>NSMicrophoneUsageDescription</key>

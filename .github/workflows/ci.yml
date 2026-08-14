@@ -77,6 +77,19 @@ jobs:
       - name: cargo build (release, embedded frontend)
         working-directory: desktop/src-tauri
         run: cargo build --release --features custom-protocol
+
+      # YV101 (plan finding OS-11). Yap's deployment floor is macOS 12.0, and
+      # its dependency graph imports CoreAudio symbols that only exist on 13+
+      # and 14.2+. A HARD import of one of those is a dyld failure for the whole
+      # app on every macOS 12/13 machine — Yap does not open at all, and nothing
+      # else in this workflow can see it: the build is green, the tests are
+      # green, and the binary is unlaunchable for a whole population of users.
+      # `build.rs` weak-links CoreAudio; this step is the standing proof, run
+      # against the release Mach-O that was just built (never a debug build).
+      - name: "ci: assert weak-linked 14.4 CoreAudio symbols"
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+
       - name: cargo test
         working-directory: desktop/src-tauri
         run: cargo test --features custom-protocol
