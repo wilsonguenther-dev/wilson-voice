@@ -684,9 +684,25 @@ impl InputFormatWatch {
     /// was aimed — if the user moved the output mid-rebuild, the adopted UID
     /// differs, and the next watchdog re-read (source
     /// [`FormatEventSource::Watchdog`]) sees it and rebuilds again.
+    ///
+    /// Adoption is guarded on both halves, for the same reason. An empty UID is
+    /// not a device, it is a failed CoreAudio read — the natural value on the
+    /// very failure path this call must be made on — and adopting it would
+    /// empty [`InputFormatWatch::output_device_uid`], after which
+    /// [`InputFormatWatch::observe_output`] short-circuits on
+    /// [`InputFormatWatch::NO_OUTPUT_WATCHED`] before any comparison and no
+    /// notification and no watchdog re-read can ever reach the rebuild path
+    /// again. That is the same "deaf for the rest of the meeting" failure the
+    /// guard release exists to prevent, arriving through the UID instead of the
+    /// flag. So a blank reading keeps the last known-good device and lets the
+    /// next re-read recover, exactly as an unusable format keeps the last
+    /// known-good format.
     pub fn finish_aggregate_work(&mut self, device_uid: impl Into<String>, format: InputFormat) {
         self.aggregate_work_in_flight = false;
-        self.output_device_uid = device_uid.into();
+        let uid = device_uid.into();
+        if !uid.is_empty() {
+            self.output_device_uid = uid;
+        }
         if format.is_usable() {
             self.output_format = format;
         }

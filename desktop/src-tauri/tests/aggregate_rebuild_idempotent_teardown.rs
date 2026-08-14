@@ -217,6 +217,71 @@ fn releasing_the_guard_twice_is_safe_and_the_watch_still_works_afterwards() {
 }
 
 #[test]
+fn a_failed_device_read_on_release_keeps_the_last_known_good_device_not_a_blank_one() {
+    // The third door into the same "deaf for the rest of the meeting" failure.
+    // `finish_aggregate_work` must be called on the FAILURE path, and the
+    // natural UID on that path is the empty string — CoreAudio was asked for the
+    // current default output and did not answer. Adopting it unconditionally
+    // empties `output_device_uid`, after which `observe_output` short-circuits
+    // on NO_OUTPUT_WATCHED before it ever compares devices: no notification and
+    // no watchdog re-read can reach the rebuild path again, so the tap stays
+    // pointed at the wrong device for the rest of the meeting. Releasing the
+    // guard correctly would not save it, because the guard is not what is shut.
+    //
+    // So a blank reading is treated as "no reading" — the same rule the format
+    // half already follows via `is_usable()` — and the last known-good device
+    // stands until a real one replaces it.
+    let mut watch = tapping();
+    let mut devices = FakeTapDevices::default();
+    start_session(&mut watch, &mut devices, BUILT_IN);
+
+    watch.observe_output(ev(AIRPODS, 0, selectors::DEFAULT_OUTPUT_DEVICE));
+    assert!(watch.tick_output(500).is_rebuild_aggregate());
+    devices.destroy();
+    devices.create();
+    // The post-rebuild device read fails. The caller still releases — it must —
+    // and hands over what it got: nothing. Same for the format, which is
+    // already guarded and stays here as the control.
+    watch.finish_aggregate_work("", InputFormat::new(0, 0));
+    assert!(!watch.is_aggregate_work_in_flight());
+    assert_eq!(
+        watch.output_device_uid(),
+        AIRPODS,
+        "a failed read must not blank the watched device"
+    );
+    assert_eq!(watch.output_format(), speakers());
+
+    // An hour of genuine changes afterwards. Every one of these returned
+    // Ignored(NO_OUTPUT_WATCHED) before the fix, and `rebuilds_issued` never
+    // moved past 1.
+    let mut now = 60_000_u64;
+    for round in 0..4_u32 {
+        let target = if round % 2 == 0 { STUDIO } else { AIRPODS };
+        watch.observe_output(ev(target, now, selectors::DEFAULT_OUTPUT_DEVICE));
+        now += 600;
+        let action = watch.tick_output(now);
+        assert!(
+            action.is_rebuild_aggregate(),
+            "round {round}: the watch must still hear genuine changes, got {action:?}"
+        );
+        assert_eq!(action.marker().unwrap().to_device, target);
+        devices.destroy();
+        devices.create();
+        watch.finish_aggregate_work(target, speakers());
+        now += 900_000;
+    }
+
+    assert_eq!(
+        watch.rebuilds_issued(),
+        5,
+        "one before the failure, four after"
+    );
+    assert_eq!(devices.destroys, 5);
+    assert_eq!(devices.creates, 6, "one session start plus five rebuilds");
+    assert!(devices.tap_live && devices.aggregate_live);
+}
+
+#[test]
 fn a_user_switch_that_lands_inside_the_guard_window_is_recovered_by_the_watchdog() {
     // The honest cost of the guard, stated rather than hidden: it cannot tell a
     // genuine user-initiated switch that happens DURING our create/destroy from
