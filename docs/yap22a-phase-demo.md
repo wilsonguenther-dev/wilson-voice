@@ -9,9 +9,8 @@ with **Wi-Fi off**, demonstrated on camera.*
 
 ## Status
 
-**Not yet runnable — and that is the honest state of the phase, not a gap in
-this document.** The demo needs four pull requests that are open at the time of
-writing:
+**Runnable once this item is on `main`.** Every pull request the demo depends on
+has merged:
 
 | PR | Item | What the demo needs from it |
 |---|---|---|
@@ -20,23 +19,25 @@ writing:
 | #112 | YV95 | The manual start/stop entry point — ⌃⌘M and the tray item |
 | #114 | YV97 | The summary stage |
 
-The machine-checkable half of the "with Wi-Fi off" claim does not wait for them:
-`cargo test --test matrix_phase_offline` asserts every module on the meeting
-path has no network surface at all, on every commit. Run the script below once
-the four PRs are on `main`, attach the recording, and record the numbers in the
-results table at the bottom.
+The machine-checkable half of the "with Wi-Fi off" claim runs on every commit
+without a human: `cargo test --test matrix_phase_offline` asserts every module
+on the meeting path — capture, journal, ring, control plane, chunker,
+transcription, storage, summary, export, policy — has no network surface at all.
+This script is the other half. Run it on an installed build, attach the
+recording, and record the numbers in the results table at the bottom.
 
-**Two matrix rows are not on that list and are not waiting on a queue.** Row 16
-— sleep or lid close mid-meeting — has its policy written and tested
-(`matrix_row16_sleep_wake`) and its **call site written by nobody**: no branch
-registers `NSWorkspaceWillSleepNotification`, so the demo below deliberately
-does not include a lid-close step and the phase does not claim that failure is
-handled. Row `5b` is the same shape: `meeting_matrix::quality_note` computes the
-sentence a meeting owes the user when the disk cost it audio, and no surface
-calls it, so a meeting that dropped writes still says nothing about it. Somebody
-has to build both; see `yap22a-error-matrix.md` § *Policy only*. Row 17's 3 h cap
-is a different case — its enforcement is real and ships in #108, it is simply
-longer than a ten-minute demo can exercise.
+**Three matrix rows are deliberately not in this script, because the app does
+not do them.** Row 16 — sleep or lid close mid-meeting — has its policy written
+and tested (`matrix_row16_sleep_wake`) and its **call site written by nobody**:
+nothing registers `NSWorkspaceWillSleepNotification`, so there is no lid-close
+step and the phase does not claim that failure is handled. Row `5b` is the same
+shape: `meeting_matrix::quality_note` computes the sentence a meeting owes the
+user when the disk cost it audio, and no surface calls it, so a meeting that
+dropped writes still says nothing about it. Row `17b` likewise: the watchdog
+stops a recording at three hours and nothing starts the continuation meeting.
+Somebody has to build all three; see `yap22a-error-matrix.md` § *Policy only*.
+Row 17's cap itself is real and enforced — it is simply longer than a ten-minute
+demo can exercise.
 
 **Step 5 below is row 15's coverage, not a bonus.** The matrix publishes that row
 as a manual repro pointing at this script, because the failure is two live
@@ -107,4 +108,4 @@ Fill this in when the demo is run; link the recording.
 
 | Date | Build | Duration | State | Row 15 step | WER (if measured) | Recording |
 |---|---|---|---|---|---|---|
-| _pending #108/#110/#112/#114_ | | | | | | |
+| _not yet run_ | | | | | | |

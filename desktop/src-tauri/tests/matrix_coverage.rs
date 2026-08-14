@@ -7,48 +7,42 @@
 //! (`meeting_matrix::ROWS`), and this file walks it against the filesystem:
 //!
 //!   * a row claiming a test must name a file that exists and contains tests;
+//!   * **and that test must drive the code the row is about** — the row names a
+//!     shipping symbol and the module it lives in, both of which are checked
+//!     here. This is the half that was missing, and the finding that produced
+//!     it is worth stating plainly: row 5 was published as a green
+//!     `cargo test` cell whose test read `record.rs`, the *dictation* journal,
+//!     while the row is about the meeting journal a three-hour recording lives
+//!     or dies by. Two bounded queues, two drop counters, same shape — the test
+//!     passed and proved nothing about the row. A `Test` cell is the strongest
+//!     claim in the table, so it is the one that needs a tripwire pointing at
+//!     the code, not just at a file name;
 //!   * a row claiming a manual repro must name a document that exists and
 //!     actually describes that row;
-//!   * a row whose mechanism is still in an unmerged PR must say so, name the
-//!     PR, and — the tripwire — that PR's test file must NOT be present yet.
-//!     The day #108 or #110 merges, that tripwire fires and the fix is one line
-//!     per row: `Coverage::LandsWith` becomes `Coverage::Test`. That is the same
-//!     device `tests/meeting_event_contract.rs` uses for YV95's emitter, and for
-//!     the same reason: a comment saying "depends on #108" is a thing a merge
-//!     queue reads zero times.
-//!   * a row whose *decision* is tested here but whose *call site* exists
-//!     nowhere must say `PolicyOnly` — and gets the symmetric tripwire, run in
-//!     the opposite direction: the named call site must still be ABSENT from
+//!   * a row whose *decision* is tested but whose *call site* exists nowhere
+//!     must say `PolicyOnly` — and gets the symmetric tripwire, run in the
+//!     opposite direction: the named call site must still be ABSENT from
 //!     `src/`. Without this half, a tested-but-unwired policy reads exactly like
-//!     a shipped feature, which is the failure mode that produced this variant.
+//!     a shipped feature, which is the failure mode that produced the variant.
 //!   * every row that names a test names a `matrix_*` one, so the phase's
 //!     acceptance sweep can actually reach it. That rule is what stops "all
-//!     eight rows green in one run" from being unsatisfiable by construction,
-//!     and it is why rows `3a`/`3b` publish a rename as a merge condition on
-//!     #110 rather than pointing at the names that PR uses today.
+//!     eight rows green in one run" from being unsatisfiable by construction.
 //!
 //! It also asserts `docs/yap22a-error-matrix.md` still carries the table this
 //! code renders, so the document and the code cannot drift apart, and that the
 //! acceptance sweep printed in that document names every row's test.
 //!
-//! ## Which tripwires run in CI, and why the rest are `#[ignore]`d
+//! ## Every tripwire in this file is a CI gate
 //!
-//! A tripwire fires on a change to the tree — and the tree changes underneath
-//! this branch when somebody ELSE's pull request merges. #108 declares
-//! `MEETING_HARD_CAP` and adds `matrix_row4_disk_preflight.rs`; #110 adds the
-//! two transcription tests. Left as ordinary tests, those tripwires would turn
-//! #108's and #110's builds red on assertions those PRs do not own, in a file
-//! they do not touch, and the only fix would be an edit to `src/meeting_matrix.rs`
-//! — i.e. this item's work, blocking someone else's merge.
-//!
-//! So the rule is: **a tripwire that a known open PR will trip is a merge
-//! checklist, not a CI gate.** Those live in `#[ignore]`d tests whose panic
-//! message is the flip instruction, run deliberately with
-//! `cargo test --test matrix_coverage -- --ignored` as the first step after
-//! #108 or #110 lands. A tripwire nothing open owns — rows `5b` and 16, whose
-//! call sites are in no branch at all — stays a real CI gate, because the only
-//! way it can go red is somebody wiring the row, which is exactly the event it
-//! is there to catch.
+//! An earlier revision kept some of them behind `#[ignore]` as a "merge
+//! checklist", because a tripwire that fires on somebody ELSE's merge would
+//! redden that PR's build over assertions it does not own. That reasoning was
+//! sound while YV91 and YV93 were open. They have merged; this branch consumed
+//! the checklist (rows 4, 6, 17, `3a`, `3b` flipped to `Test`, and `3a`/`3b`'s
+//! test files were renamed here to the names the sweep can reach), and nothing
+//! this matrix depends on is outstanding. So there is no `--ignored` step left:
+//! every assertion below runs on every commit, which is the only state in which
+//! "CI checks the matrix" is true without a footnote.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,17 +79,51 @@ fn shipping_sources() -> Vec<PathBuf> {
     out
 }
 
-/// True if `needle` appears on a line that is not wholly a comment.
+/// The line with its comment tail and every string literal removed.
 ///
-/// The distinction matters: PR #108's `power.rs` carries the sentence
-/// "*are matrix row #16's `NSWorkspaceWillSleepNotification` path*" in its
-/// module docs and registers nothing. A comment mentioning the call site is
-/// evidence the row is NOT wired; only code is evidence that it is.
+/// Both exclusions are load-bearing, and both were learned from a false result.
+/// `power.rs` carries the sentence "*are matrix row #16's
+/// `NSWorkspaceWillSleepNotification` path*" in its module docs and registers
+/// nothing: a comment naming a call site is evidence the row is NOT wired. And
+/// this very test file, plus every row's test, contains the row's subject inside
+/// a string literal — `subject: "MeetingJournal"` in the published table, or a
+/// panic message quoting it — so a "does the test mention its subject?" check
+/// that counted literals would be satisfied by a test that only asserts what the
+/// table says about itself. Which is a tautology, and the whole family of defect
+/// this file exists to catch.
+fn code_only(line: &str) -> String {
+    let t = line.trim_start();
+    if t.starts_with("//") || t.starts_with("*") || t.starts_with("/*") {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '/' if chars.peek() == Some(&'/') => break,
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// True if `needle` appears as executable code — not in a comment, not inside a
+/// string literal. See [`code_only`] for why both exclusions matter.
 fn mentions_as_code(body: &str, needle: &str) -> bool {
-    body.lines().any(|line| {
-        let t = line.trim_start();
-        !(t.starts_with("//") || t.starts_with("*") || t.starts_with("/*")) && t.contains(needle)
-    })
+    body.lines().any(|line| code_only(line).contains(needle))
 }
 
 /// Repository root — `desktop/src-tauri/` → `../../`.
@@ -111,17 +139,17 @@ fn repo_root() -> PathBuf {
 fn every_matrix_row_is_covered_by_something_that_exists() {
     for row in ROWS {
         match row.coverage {
-            Coverage::Test(file) => {
-                let path = tests_dir().join(file);
+            Coverage::Test { test, .. } => {
+                let path = tests_dir().join(test);
                 let body = fs::read_to_string(&path).unwrap_or_else(|e| {
                     panic!(
-                        "matrix row {} claims `{file}`, which does not read: {e}",
+                        "matrix row {} claims `{test}`, which does not read: {e}",
                         row.id
                     )
                 });
                 assert!(
                     body.contains("#[test]"),
-                    "matrix row {} claims `{file}`, which contains no tests",
+                    "matrix row {} claims `{test}`, which contains no tests",
                     row.id
                 );
             }
@@ -139,15 +167,6 @@ fn every_matrix_row_is_covered_by_something_that_exists() {
                     "matrix row {} claims `{doc}`, which never mentions the row",
                     row.id
                 );
-            }
-            Coverage::LandsWith { pr, .. } => {
-                assert!(
-                    pr.starts_with('#'),
-                    "matrix row {} must name the PR that carries it, got `{pr}`",
-                    row.id
-                );
-                // The "that PR has not merged yet" half is the merge checklist
-                // below, deliberately `#[ignore]`d — see the module docs.
             }
             Coverage::PolicyOnly {
                 test, wiring_pr, ..
@@ -179,23 +198,95 @@ fn every_matrix_row_is_covered_by_something_that_exists() {
     }
 }
 
-/// The `PolicyOnly` tripwire, run in the direction `LandsWith`'s cannot: the
+/// **The `Test` tripwire.** A row published as covered end-to-end must name the
+/// shipping symbol it is about, that symbol must be real code in the module the
+/// row names, and the row's test must actually mention it as code.
+///
+/// This is the finding that produced it, stated so it cannot come back: row 5
+/// ("journal write falls behind") shipped as `Coverage::Test`, and its test
+/// asserted things about `record.rs` — the journal a five-second dictation
+/// uses. The row is about a three-hour meeting, where the journal is not a
+/// crash-recovery copy but the recording itself. Both modules have a bounded
+/// `sync_channel`, a `try_send` and a `dropped` counter, so every assertion in
+/// that test passed while the meeting journal went unexercised by the row that
+/// claimed to cover it.
+///
+/// Nothing in the old gate could catch that: it checked the test file existed
+/// and contained `#[test]`. A cell that a reader interprets as "the app does
+/// this and we proved it" has to be anchored to the code that does it.
+#[test]
+fn test_rows_drive_the_shipping_code_they_name() {
+    let mut checked = 0;
+    for row in ROWS {
+        let Some((subject, module)) = row.coverage.shipping_subject() else {
+            continue;
+        };
+        let test = row
+            .coverage
+            .test_file()
+            .expect("a Test row always names a test");
+
+        // 1. The subject is real, shipping code — in the module the row names,
+        //    not merely somewhere in the tree.
+        let module_path = src_dir().join(module);
+        let module_body = fs::read_to_string(&module_path).unwrap_or_else(|e| {
+            panic!(
+                "matrix row {} says its subject lives in `src/{module}`, which does not read: {e}",
+                row.id
+            )
+        });
+        assert!(
+            mentions_as_code(&module_body, subject),
+            "matrix row {}: `{subject}` is not code in `src/{module}`. A `Test` cell is a claim \
+             that the SHIPPING app does this — if the symbol moved, follow it; if it is gone, \
+             the row is no longer covered and must not keep saying it is.",
+            row.id
+        );
+
+        // 2. …and the row's test actually touches it. Not in a doc comment
+        //    about what the file would like to check — as code.
+        let test_body = fs::read_to_string(tests_dir().join(test)).unwrap_or_else(|e| {
+            panic!(
+                "matrix row {} claims `{test}`, which does not read: {e}",
+                row.id
+            )
+        });
+        assert!(
+            mentions_as_code(&test_body, subject),
+            "TRIPWIRE — matrix row {}: `{test}` never touches `{subject}`, the shipping code this \
+             row is about. This is how row 5 was published as covered by a test that exercised \
+             the dictation journal in `record.rs` instead of the meeting journal: same shape, \
+             green, and evidence for nothing. Either drive `{subject}` from that test, or change \
+             the row to name what it really covers.",
+            row.id
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 6,
+        "only {checked} rows were checked — a tripwire over an empty set is worse than no \
+         tripwire, so if the table stopped publishing `Test` rows that is a deliberate act \
+         this number has to record"
+    );
+}
+
+/// The `PolicyOnly` tripwire, run in the direction the `Test` one cannot: the
 /// named call site must still be ABSENT from the shipping tree.
 ///
-/// Scoped to the rows **no open PR owns** — `5b` (`quality_note`) and 16
-/// (`NSWorkspaceWillSleepNotification`). Neither symbol appears in #108 or #110
-/// (checked against `gh pr diff` when this was written), so nothing on the
-/// queue can turn this red; the only way it fires is somebody writing the call
-/// site, which is precisely the event that must force the row to be promoted.
-/// Row 17's call site IS on the queue, so it is a checklist item below instead.
+/// Rows `5b` (`quality_note`), 16 (`NSWorkspaceWillSleepNotification`) and
+/// `17b` (`continuation_title`). None of those symbols is called by anything on
+/// `main`, so the only way this goes red is somebody writing the call site,
+/// which is precisely the event that must force the row to be promoted.
 ///
-/// A policy with no caller is a policy that is not in effect. Rows `5b` and 16
+/// A policy with no caller is a policy that is not in effect. Those three rows
 /// are published as *not wired*, and the only thing keeping that honest as the
 /// tree changes is this test. The fix when it fires is not to delete the
-/// assertion: it is to promote the row to `Coverage::Test` and rewrite its test
-/// to drive the code that now ships.
+/// assertion: it is to promote the row to `Coverage::Test`, name the shipping
+/// subject, and rewrite its test to drive the code that now ships.
 #[test]
 fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
+    let mut checked = 0;
     for row in ROWS {
         let Coverage::PolicyOnly {
             absent_call_site,
@@ -212,93 +303,30 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
                 !mentions_as_code(&body, absent_call_site),
                 "TRIPWIRE — matrix row {}: `{absent_call_site}` is now code in {}, so somebody \
                  wired it. This row is no longer `PolicyOnly`: promote it to \
-                 Coverage::Test(\"{test}\") in src/meeting_matrix.rs and rewrite `{test}` to \
-                 drive that call site — assert the shipping surface performs the behaviour, \
-                 not that the pure function returns the right value. This test exists \
-                 so a policy cannot keep being published as covered after its call site \
-                 appeared — and so it cannot keep being published as covered before it.",
+                 Coverage::Test in src/meeting_matrix.rs — naming `{absent_call_site}`'s module \
+                 as the subject — and rewrite `{test}` to drive that call site: assert the \
+                 shipping surface performs the behaviour, not that the pure function returns \
+                 the right value. This test exists so a policy cannot keep being published as \
+                 covered after its call site appeared — and so it cannot keep being published \
+                 as covered before it.",
                 row.id,
                 path.display(),
             );
         }
+        checked += 1;
     }
+    assert_eq!(
+        checked, 3,
+        "rows 5b, 16 and 17b are the unwired policies; if that set changed, the change is a \
+         claim about what the app now does and belongs in the table's tests too"
+    );
 }
 
-// ── The merge checklist: tripwires an open PR will trip ─────────────────────
-//
-// Everything below is `#[ignore]`d on purpose, and the reason is in the module
-// docs: these fire on a change that belongs to ANOTHER pull request, so as
-// ordinary tests they would redden that PR's build over this file. Run them the
-// moment #108 or #110 lands:
-//
-//     cargo test --test matrix_coverage -- --ignored
-//
-// Each panic message is the flip instruction. Nothing else in the suite tells
-// you a row went stale, so this command is a step in the merge, not a nicety.
-
-/// `LandsWith` rows: the day the owning PR's test file appears, the row is a
-/// `Test` row and must say so.
-///
-/// Watches BOTH names for a row still owing a rename, so merging #110 under its
-/// current file names trips this exactly as loudly as merging it renamed.
-#[test]
-#[ignore = "merge checklist — run with --ignored after #108 or #110 lands"]
-fn merge_checklist_landswith_rows_flip_the_day_their_pr_merges() {
-    for row in ROWS {
-        let Coverage::LandsWith { pr, test, .. } = row.coverage else {
-            continue;
-        };
-        for name in row.coverage.landing_file_names() {
-            assert!(
-                !tests_dir().join(name).exists(),
-                "FLIP ME — matrix row {}: `{name}` is now present, so {pr} has merged. \
-                 Change this row's Coverage::LandsWith to Coverage::Test(\"{test}\") in \
-                 src/meeting_matrix.rs, rename the file to `{test}` if it is not already \
-                 (the acceptance sweep globs `matrix_*` and cannot see any other name), \
-                 regenerate the table in docs/yap22a-error-matrix.md, and re-run the sweep.",
-                row.id
-            );
-        }
-    }
-}
-
-/// `PolicyOnly` rows whose call site is carried by an open PR — row 17's
-/// `MEETING_HARD_CAP`, which arrives with #108.
-#[test]
-#[ignore = "merge checklist — run with --ignored after #108 lands"]
-fn merge_checklist_policy_rows_owned_by_an_open_pr_flip_when_it_merges() {
-    for row in ROWS {
-        let Coverage::PolicyOnly {
-            absent_call_site,
-            wiring_pr: Some(pr),
-            test,
-        } = row.coverage
-        else {
-            continue;
-        };
-
-        for path in shipping_sources() {
-            let body = fs::read_to_string(&path).unwrap_or_default();
-            assert!(
-                !mentions_as_code(&body, absent_call_site),
-                "FLIP ME — matrix row {}: `{absent_call_site}` is now code in {}, so the wiring \
-                 from {pr} has landed. Promote the row to Coverage::Test(\"{test}\") in \
-                 src/meeting_matrix.rs and rewrite `{test}` to drive the shipping call site — \
-                 for row 17 that means importing `meeting::MEETING_HARD_CAP` / \
-                 `meeting::MEETING_CAP_WARN_AT` and driving `meeting::watchdog_tick`, NOT \
-                 re-declaring the thresholds here.",
-                row.id,
-                path.display(),
-            );
-        }
-    }
-}
-
-/// The narrower, blunter form of the same rule for row 17's constants, stated
-/// where a reader of the cap row will look for it: 22-A has exactly one cap.
+/// The narrower, blunter form of the no-duplicate-threshold rule, stated where a
+/// reader of the cap row will look for it: 22-A has exactly one cap.
 ///
 /// This is the finding that produced it — YV99 shipped `MEETING_HARD_CAP` and
-/// `MEETING_WARN_AT` of its own while #108 shipped `MEETING_HARD_CAP` and
+/// `MEETING_WARN_AT` of its own while YV91 shipped `MEETING_HARD_CAP` and
 /// `MEETING_CAP_WARN_AT`, with no compile-time link between the pair. Change
 /// the one that runs, and the matrix row published as the required behaviour
 /// stays green and wrong.
@@ -314,7 +342,7 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
         assert!(
             !matrix.contains(forbidden),
             "src/meeting_matrix.rs declares `{forbidden}`. The cap that actually runs is \
-             `meeting::MEETING_HARD_CAP` / `meeting::MEETING_CAP_WARN_AT` (PR #108), enforced by \
+             `meeting::MEETING_HARD_CAP` / `meeting::MEETING_CAP_WARN_AT`, enforced by \
              `meeting::watchdog_tick`. A second copy here is a number that can drift away from \
              the shipping one with nothing to catch it."
         );
@@ -329,9 +357,10 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
         })
         .map(|p| p.display().to_string())
         .collect();
-    assert!(
-        declarations.len() <= 1,
-        "the 3 h cap is declared in more than one module: {declarations:?}"
+    assert_eq!(
+        declarations.len(),
+        1,
+        "the 3 h cap must be declared in exactly one module, found: {declarations:?}"
     );
 }
 
@@ -340,7 +369,10 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
 #[test]
 fn the_matrix_still_covers_the_eight_failures_22a_owns() {
     let ids: Vec<&str> = ROWS.iter().map(|r| r.id).collect();
-    assert_eq!(ids, vec!["4", "5", "5b", "6", "15", "16", "17", "3a", "3b"]);
+    assert_eq!(
+        ids,
+        vec!["4", "5", "5b", "6", "15", "16", "17", "17b", "3a", "3b"]
+    );
 }
 
 /// **The acceptance criterion, made satisfiable.** AC2 is "`cargo test --test
@@ -348,13 +380,8 @@ fn the_matrix_still_covers_the_eight_failures_22a_owns() {
 /// construction: rows `3a`/`3b` pointed at `meeting_transcription_resume.rs`
 /// and `meeting_chunk_timeout_isolation.rs`, which no `matrix_*` glob will ever
 /// match, so the sweep would have reached six of eight rows forever with
-/// nothing in the tree forcing the names to converge.
-///
-/// This is that forcing function. Every row that names a test names a
-/// `matrix_`-prefixed one; for the two rows whose file is called something else
-/// today, the required name is what the row publishes and the rename is a merge
-/// condition on #110 (rendered into the table, and watched from both sides by
-/// the merge checklist above).
+/// nothing in the tree forcing the names to converge. Those two files are
+/// renamed on this branch; this is the rule that keeps them that way.
 #[test]
 fn every_row_names_a_test_the_acceptance_sweep_can_reach() {
     let offenders: Vec<String> = ROWS
@@ -367,10 +394,9 @@ fn every_row_names_a_test_the_acceptance_sweep_can_reach() {
 
     assert!(
         offenders.is_empty(),
-        "these rows name a test the acceptance sweep `cargo test --test '{REQUIRED_TEST_PREFIX}*'` \
-         can never reach, so the phase's own criterion could never go green for them: {offenders:?}. \
-         Either rename the test, or the row is outside the acceptance command and the command is \
-         the thing that has to change."
+        "these rows name a test the acceptance sweep cannot reach, so the phase's own criterion \
+         could never go green for them: {offenders:?}. Either rename the test, or the row is \
+         outside the acceptance command and the command is the thing that has to change."
     );
 }
 
@@ -396,52 +422,53 @@ fn named_test_binaries(block: &str) -> Vec<String> {
         .collect()
 }
 
-/// The document publishes two sweeps: the one that is runnable on this branch
-/// and the full one AC2 asks for. Neither may lie.
+/// The document publishes the acceptance sweep as an exact command, and it may
+/// not lie in either direction:
 ///
-///   * the runnable one may only name binaries that exist here — a command in a
-///     doc that errors with "no test target named …" teaches people to stop
-///     running the commands in docs;
-///   * the full one must name every row's test, which is what makes "all eight
-///     rows in one run" a thing that will be true rather than a glob that
-///     silently covers six.
+///   * every binary it names must exist here — a command in a doc that errors
+///     with "no test target named …" teaches people to stop running the
+///     commands in docs;
+///   * it must name every row's test, which is what makes "all eight rows in one
+///     run" a thing that will be true rather than a glob that silently covers
+///     six.
 #[test]
-fn the_published_sweeps_are_runnable_and_complete() {
+fn the_published_sweep_is_runnable_and_complete() {
     let doc = fs::read_to_string(repo_root().join("docs/yap22a-error-matrix.md"))
         .expect("read docs/yap22a-error-matrix.md");
-    // Anchored on the section, not on the document: the merge-checklist command
-    // higher up is also a fenced block, and indexing from the top of the file
-    // would silently check the wrong two.
+    // Anchored on the section, not on the document: other fenced blocks appear
+    // higher up, and indexing from the top of the file would check the wrong one.
     let section = doc
         .split_once("## Running the whole sweep")
         .expect("docs/yap22a-error-matrix.md must publish a `Running the whole sweep` section")
         .1;
     let blocks = code_blocks(section);
     assert!(
-        blocks.len() >= 2,
-        "the matrix document must publish both the sweep that runs today and the full AC2 sweep"
+        !blocks.is_empty(),
+        "the matrix document must publish the acceptance sweep as a runnable command"
     );
 
-    let today = named_test_binaries(&blocks[0]);
-    assert!(!today.is_empty(), "the first sweep names no test binaries");
-    for binary in &today {
+    let sweep = named_test_binaries(&blocks[0]);
+    assert!(
+        !sweep.is_empty(),
+        "the published sweep names no test binaries"
+    );
+    for binary in &sweep {
         assert!(
             tests_dir().join(format!("{binary}.rs")).exists(),
-            "the sweep published as runnable today names `{binary}`, which does not exist here"
+            "the published sweep names `{binary}`, which does not exist here"
         );
     }
 
-    let full = named_test_binaries(&blocks[1]);
     for row in ROWS {
         let Some(test) = row.coverage.test_file() else {
             continue;
         };
         let stem = test.trim_end_matches(".rs");
         assert!(
-            full.iter().any(|b| b == stem),
-            "matrix row {} is covered by `{stem}`, which the full AC2 sweep in \
+            sweep.iter().any(|b| b == stem),
+            "matrix row {} is covered by `{stem}`, which the sweep in \
              docs/yap22a-error-matrix.md does not name — so that command does not actually \
-             cover all of the matrix. Rows named: {full:?}",
+             cover all of the matrix. Rows named: {sweep:?}",
             row.id
         );
     }

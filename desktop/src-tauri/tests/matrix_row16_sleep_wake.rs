@@ -18,8 +18,8 @@
 //! **What these tests do NOT prove, stated first so nobody has to infer it.**
 //! Nothing in this repository registers `NSWorkspaceWillSleepNotification`, so
 //! nothing calls [`SleepPolicy::observe`] and closing a lid mid-meeting still
-//! does whatever it did before. No open PR owns that call site — #108 mentions
-//! the notification in a comment in `power.rs` and registers nothing. That is
+//! does whatever it did before. Nothing owns that call site — `power.rs`
+//! mentions the notification in a comment and registers nothing. That is
 //! why row 16 is published as `Coverage::PolicyOnly` and not `Coverage::Test`,
 //! and `the_row_is_published_as_unwired` below is the assertion that keeps the
 //! published table honest while this stays true.
@@ -52,7 +52,7 @@ fn the_row_is_published_as_unwired_because_nothing_registers_the_notification() 
     );
     let cell = row.coverage.cell();
     assert!(cell.contains("NOT WIRED"), "{cell}");
-    assert!(cell.contains("no open PR"), "{cell}");
+    assert!(cell.contains("nothing calls"), "{cell}");
 }
 
 fn recording() -> SleepPolicy {

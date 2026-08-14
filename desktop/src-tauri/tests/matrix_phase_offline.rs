@@ -27,17 +27,30 @@
 use std::fs;
 use std::path::PathBuf;
 
-/// Every module a meeting's audio, transcript, and export actually flows
-/// through, on this branch. Anything added to the meeting path belongs here.
+/// Every module a meeting's audio, transcript, summary and export actually flow
+/// through. Anything added to the meeting path belongs here.
+///
+/// This list grew when the rest of the phase merged, and growing it is the
+/// point: YV91's capture session, YV93's chunker, YV95's control plane and
+/// YV97's summarizer are all on the path a 10-minute offline meeting takes, so
+/// the phase's "ships alone, offline" claim is about them too. A list frozen at
+/// the modules that existed when this file was written would have kept passing
+/// while covering less and less of the thing it claims.
 const MEETING_PATH: &[&str] = &[
-    "meetings.rs",       // the schema, the row types, the Markdown export
-    "meeting_matrix.rs", // YV99's policy
-    "record.rs",         // capture + the crash-safe journal
-    "input_format.rs",   // the AirPods / format-change state machine
-    "resample.rs",       // anti-alias decimation to 16 kHz
-    "asr_engine.rs",     // the local Parakeet/whisper.cpp engine wrapper
-    "transcription.rs",  // the engine lease and the timeout ladder
-    "db.rs",             // storage, FTS, delete-cascade
+    "meeting.rs",         // YV91's capture session, journal and watchdog
+    "meeting_control.rs", // YV95's start/stop control plane
+    "meeting_asr.rs",     // YV93's chunker, resume ledger and preemption
+    "meeting_energy.rs",  // the pill's energy accounting during a meeting
+    "meetings.rs",        // the schema, the row types, the Markdown export
+    "meeting_matrix.rs",  // YV99's policy
+    "summarize.rs",       // YV97's local MAP/REDUCE summary
+    "record.rs",          // capture + the crash-safe journal
+    "rtring.rs",          // the RT-safe capture ring
+    "input_format.rs",    // the AirPods / format-change state machine
+    "resample.rs",        // anti-alias decimation to 16 kHz
+    "asr_engine.rs",      // the local Parakeet/whisper.cpp engine wrapper
+    "transcription.rs",   // the engine lease and the timeout ladder
+    "db.rs",              // storage, FTS, delete-cascade
 ];
 
 fn src(file: &str) -> String {
@@ -78,7 +91,11 @@ fn the_whole_meeting_path_has_no_network_surface() {
 /// here.
 #[test]
 fn every_module_on_the_list_still_exists() {
-    assert!(MEETING_PATH.len() >= 8);
+    assert!(
+        MEETING_PATH.len() >= 14,
+        "the meeting path lost modules — shrinking this list makes the offline claim cheaper \
+         to satisfy, which is the one direction it must never move in silence"
+    );
     for module in MEETING_PATH {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src")

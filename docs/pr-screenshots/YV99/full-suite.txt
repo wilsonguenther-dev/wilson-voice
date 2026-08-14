@@ -1,65 +1,111 @@
-$ cargo test --no-fail-fast   # full suite on this branch, revision 3
+$ cd desktop/src-tauri && cargo test   # the whole suite, on this branch rebased onto YV90-YV98
 
-     Running unittests src/lib.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/wilson_voice_lib-95f0ae4fb3227172)
-test result: ok. 373 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
-     Running unittests src/main.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/wilson_voice-d6271bcc4966c8e3)
+     Running unittests src/lib.rs 
+test result: ok. 500 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.55s
+     Running unittests src/main.rs 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/biquad_lowpass_response.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/biquad_lowpass_response-d96a398a320a86f5)
+     Running tests/asr_capabilities_probe.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s
+     Running tests/biquad_lowpass_response.rs 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-     Running tests/consent_sheet_shown_once.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/consent_sheet_shown_once-e9d4008747eee6cc)
+     Running tests/capture_engine_is_installed.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/capture_journal_recovery.rs 
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+     Running tests/consent_sheet_shown_once.rs 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/db_migration_idempotent.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/db_migration_idempotent-c7c8ca5a74dd4161)
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
-     Running tests/formatting_fixtures.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/formatting_fixtures-986e442bfe963053)
+     Running tests/db_migration_idempotent.rs 
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/formatting_fixtures.rs 
 test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/gate_corpus.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/gate_corpus-b936ab03590d7991)
+     Running tests/gate_corpus.rs 
 test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/input_format_change_handler.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/input_format_change_handler-6931395f9b86fbab)
+     Running tests/input_format_change_handler.rs 
 test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/license_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/license_gate-d3e173dbf35081b4)
+     Running tests/license_gate.rs 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_coverage-f3701bd0a97c7e9d)
-test result: ok. 8 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/matrix_phase_offline.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_phase_offline-ff98ae8d2ec69983)
+     Running tests/matrix_coverage.rs 
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+     Running tests/matrix_new_asr_chunk_timeout.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+     Running tests/matrix_new_quit_mid_processing.rs 
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/matrix_phase_offline.rs 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-     Running tests/matrix_row15_single_instance.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row15_single_instance-10f8f3965b945ab1)
+     Running tests/matrix_row15_single_instance.rs 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/matrix_row16_sleep_wake.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row16_sleep_wake-6bebce8a6f29617b)
+     Running tests/matrix_row16_sleep_wake.rs 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/matrix_row17_meeting_cap.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row17_meeting_cap-a51445a189c640fc)
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/matrix_row5_journal_backpressure.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/matrix_row5_journal_backpressure-0e40e6712236a977)
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-     Running tests/meeting_audio_retention.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_audio_retention-53ca10bcf2d62372)
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-     Running tests/meeting_delete_cascade.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_delete_cascade-b1061975f0b73207)
+     Running tests/matrix_row17_meeting_cap.rs 
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/matrix_row4_disk_preflight.rs 
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/matrix_row5_journal_backpressure.rs 
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+     Running tests/matrix_row6_orphan_recovery.rs 
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+     Running tests/meeting_audio_retention.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/meeting_capture_memory.rs 
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.18s
+     Running tests/meeting_capture_rt_safety.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/meeting_delete_cascade.rs 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
-     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
-test result: FAILED. 15 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out; finished in 21.60s
-error: test failed, to rerun pass `--test meeting_eval`
-     Running tests/meeting_event_contract.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_event_contract-ee23ead36ef172b5)
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
-     Running tests/meeting_fts_search.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_fts_search-bfda6bc0365a35dc)
+     Running tests/meeting_diagnostics_row.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+     Running tests/meeting_dictation_fanout.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/meeting_dictation_preempts_transcription.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.82s
+     Running tests/meeting_english_only_gate.rs 
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/meeting_eval.rs 
+test result: ok. 21 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 42.13s
+     Running tests/meeting_event_contract.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/meeting_fts_search.rs 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/meeting_markdown_export.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_markdown_export-8cff8f57cf7b0aa5)
+     Running tests/meeting_manual_start_stop.rs 
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s
+     Running tests/meeting_markdown_export.rs 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/meeting_stats_rollup.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/meeting_stats_rollup-b1dda00d822ec21a)
+     Running tests/meeting_no_automute.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/meeting_no_model_resident.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/meeting_power_assertion.rs 
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/meeting_stats_rollup.rs 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-     Running tests/supply_chain.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-fix-yv99/desktop/target/debug/deps/supply_chain-a2b3eff8550e174b)
+     Running tests/pill_idle_tick_during_recording.rs 
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/summarize_e2e.rs 
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/summarize_empty_is_never_stored.rs 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/summarize_grammar_chain.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/summarize_map_extraction.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/summarize_reduce_budget.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+     Running tests/summarize_token_chunking.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/summarize_validators_v1_v7.rs 
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/supply_chain.rs 
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/support_bundle_contents.rs 
+test result: ok. 6 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/support_bundle_redaction.rs 
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/tray_hotkey_no_collision.rs 
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/vocab_corpus_is_literals_only.rs 
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+   Doc-tests wilson_voice_lib
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: 1 target failed:
 
-# The two meeting_eval failures are PRE-EXISTING on origin/main and are not
-# touched by this branch: the durable corpus at ~/yap-eval-corpus/meetings was
-# regrown for YV93's window geometry, and the regrown manifest ships in PR #110.
-#   meeting_eval_corpus_matches_committed_sha256s
-#   meeting_eval_seam_dedupe_and_ordering_hold
-# On CI the corpus is absent, the eval harness skips by design (YV90), and this
-# is why the same failures do not appear in the PR's checks.
-
-# Everything else is green, including the 373 lib unit tests (up from 367 on
-# main: the six new meeting_matrix assertions that keep rows 5b, 15, 16 and 17
-# honest and hold #110 to the test names AC2 needs).
-# matrix_coverage shows 8 passed / 2 ignored: the two ignored are the merge
-# checklist, run deliberately with `-- --ignored` after #108 or #110 lands.
+# 53 suites, 764 tests, 0 failures, 0 ignored in the matrix suites.
+# Also green: npx tsc --noEmit, npm test (86), npm run build, cargo build --release path via CI.

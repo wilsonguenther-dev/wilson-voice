@@ -601,7 +601,7 @@ impl EngineDemand for TranscriptionManager {
 /// between a chunk that blew through `TRANSCRIBE_TIMEOUT` — which abandons the
 /// engine, not just the call (YV70) — and every chunk after it failing with
 /// `no ASR model is loaded`. That is finding #3's "must not poison remaining
-/// chunks", and it is what `tests/meeting_chunk_timeout_isolation.rs` proves.
+/// chunks", and it is what `tests/matrix_new_asr_chunk_timeout.rs` proves.
 pub struct WarmEngineChunkAsr {
     manager: TranscriptionManager,
     model_id: String,

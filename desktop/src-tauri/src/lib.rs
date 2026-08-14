@@ -122,7 +122,7 @@ pub mod sysaudio;
 // YV93 — public because the preemption contract (a dictation request takes the
 // one warm engine back from meeting ASR at the next chunk boundary) is proved
 // against the REAL manager in `tests/meeting_dictation_preempts_transcription.rs`
-// and `tests/meeting_chunk_timeout_isolation.rs`.
+// and `tests/matrix_new_asr_chunk_timeout.rs` (error-matrix row `3b`).
 pub mod transcription;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.

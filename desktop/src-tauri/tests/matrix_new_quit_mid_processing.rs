@@ -1,3 +1,7 @@
+//! Renamed from `meeting_transcription_resume.rs` by YV99: this file is
+//! error-matrix row `3a`, and the phase's acceptance sweep is a run over the
+//! `matrix_*` binaries — under the old name the sweep could never reach it.
+//!
 //! YV93 — a meeting that was killed mid-transcription resumes at the last
 //! completed chunk instead of re-running a full Metal decode from zero.
 //!
@@ -180,8 +184,7 @@ fn transcription_resumes_from_the_last_completed_chunk() {
         "…and it picks up at the resume point, minus the overlap it needs for context"
     );
     assert!(
-        first_windows.len() + second_windows.len()
-            < 2 * ((MEETING_SECONDS / 30.0).ceil() as usize),
+        first_windows.len() + second_windows.len() < 2 * ((MEETING_SECONDS / 30.0).ceil() as usize),
         "a resume that re-decodes everything is not a resume"
     );
 
@@ -270,7 +273,10 @@ fn a_meeting_with_no_timestamps_merges_on_text_and_still_resumes() {
     };
     let partial = job.run("m-fallback").expect("partial run");
     assert!(!partial.timestamps_are_real, "no alignment in this fixture");
-    assert_eq!(partial.merge.no_anchor_seams, 0, "every seam found its anchor");
+    assert_eq!(
+        partial.merge.no_anchor_seams, 0,
+        "every seam found its anchor"
+    );
     drop(job);
 
     let second = RampDecoder::new(false);
@@ -405,7 +411,9 @@ fn a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once() {
 
     // The ledger remembers WHAT KIND of cut 90.0s is. Without this the fix has
     // nothing to read and the assertion below can only be satisfied by luck.
-    let ledger: MeetingProgress = JsonProgressStore::new(&dir).load("straddle").expect("ledger");
+    let ledger: MeetingProgress = JsonProgressStore::new(&dir)
+        .load("straddle")
+        .expect("ledger");
     let last = ledger
         .chunks
         .iter()
@@ -559,10 +567,7 @@ fn quitting_mid_decode_leaves_the_unfinished_chunk_for_the_next_launch() {
          decoded — advancing past the abandoned one is the permanent hole"
     );
     assert!(
-        ledger
-            .chunks
-            .iter()
-            .all(|c| c.status == ChunkStatus::Done),
+        ledger.chunks.iter().all(|c| c.status == ChunkStatus::Done),
         "an abandoned chunk is NOT a failure: an `asr_failed` row here is never \
          retried, which is what makes the hole permanent — got {:?}",
         ledger.chunks.iter().map(|c| c.status).collect::<Vec<_>>()
