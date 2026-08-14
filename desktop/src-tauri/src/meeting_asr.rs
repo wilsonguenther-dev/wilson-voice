@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use crate::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use crate::models;
 use crate::transcription::{
-    TranscriptionManager, MAX_SANCTIONED_CHUNK_DECODE_SECONDS, NO_ENGINE_LOADED,
+    TranscriptionManager, ABANDONED_FOR_EXIT, MAX_SANCTIONED_CHUNK_DECODE_SECONDS, NO_ENGINE_LOADED,
     PREEMPTED_FOR_DICTATION, TRANSCRIBE_TIMEOUT, WORST_CASE_RTF_BUDGET,
 };
 use crate::vad::{VoicedSpan, WarmVad};
@@ -152,16 +152,58 @@ impl ChunkConfig {
 /// pause" and "nothing was quiet enough, so the clock decided" are different
 /// confidence levels at the seam, and the second one is what the text-anchor
 /// fallback exists for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryKind {
     /// The start of the meeting, or its end. Not a cut.
+    #[default]
     Edge,
     /// Cut in the middle of a VAD-detected silence.
     Silence,
     /// No silence in the search window cleared `min_silence_seconds`; the
     /// target clock decided.
     FixedClock,
+}
+
+/// Where a run begins, and what kind of cut that instant is.
+///
+/// The seconds alone are not enough, and treating them as enough was a real
+/// defect. On a RESUMED run the first window does not start at the beginning of
+/// the meeting: it starts at the boundary the PREVIOUS run chose, and
+/// [`merge_timed`] picks its seam rule from that boundary's kind. Seeding it as
+/// [`BoundaryKind::Edge`] — which is what "the plan starts here" used to imply —
+/// sent a fixed-clock resume seam down the intersection rule, so the word the
+/// cut had truncated was kept twice: an uninterrupted run producing
+/// `the meeting starts` came back from a resumed one as
+/// `the meeting meeting starts`.
+///
+/// It is a struct rather than a second `f64` argument so that the kind cannot be
+/// forgotten at a call site: [`ResumePoint::start`] is the only way to say "this
+/// is the top of the audio", and it says so by name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResumePoint {
+    pub seconds: f64,
+    /// The cut this instant IS. [`BoundaryKind::Edge`] only at the top of the
+    /// audio — a resume point is by definition a cut somebody made.
+    pub boundary: BoundaryKind,
+}
+
+impl ResumePoint {
+    /// The top of the audio: a true edge, not a cut.
+    pub fn start() -> ResumePoint {
+        ResumePoint {
+            seconds: 0.0,
+            boundary: BoundaryKind::Edge,
+        }
+    }
+
+    /// Resume at `seconds`, at a boundary of the given kind.
+    pub fn at(seconds: f64, boundary: BoundaryKind) -> ResumePoint {
+        ResumePoint {
+            seconds: seconds.max(0.0),
+            boundary,
+        }
+    }
 }
 
 /// One window of the meeting.
@@ -179,6 +221,16 @@ pub struct ChunkWindow {
     pub content_start_seconds: f64,
     pub content_end_seconds: f64,
     pub start_boundary: BoundaryKind,
+    /// The kind of the cut this window ENDS at — i.e. the kind of the next
+    /// window's start.
+    ///
+    /// Recorded (and persisted on [`ChunkOutcome`]) for exactly one reason: it
+    /// is the only place a resumed run can learn what kind of boundary its
+    /// resume point is. The run that chose it is gone, and the window that would
+    /// have carried it as `start_boundary` is precisely the one that was never
+    /// decoded.
+    #[serde(default)]
+    pub end_boundary: BoundaryKind,
 }
 
 impl ChunkWindow {
@@ -218,6 +270,7 @@ pub fn windows_from_boundaries(
             content_start_seconds: content_start,
             content_end_seconds: content_end,
             start_boundary: kinds.get(k).copied().unwrap_or(BoundaryKind::Edge),
+            end_boundary: kinds.get(k + 1).copied().unwrap_or(BoundaryKind::Edge),
         });
     }
     out
@@ -293,12 +346,15 @@ pub fn pick_boundary(
 /// the fallback whenever no VAD is available.
 pub fn plan_windows_fixed(
     total_seconds: f64,
-    from_seconds: f64,
+    from: ResumePoint,
     cfg: &ChunkConfig,
     first_index: usize,
 ) -> Vec<ChunkWindow> {
-    let mut boundaries = vec![from_seconds.max(0.0)];
-    let mut kinds = vec![BoundaryKind::Edge];
+    let mut boundaries = vec![from.seconds.max(0.0)];
+    // NOT `Edge`. On a resumed run this is the cut the previous run made, and
+    // the seam rule at the very first window is chosen by its kind — see
+    // [`ResumePoint`].
+    let mut kinds = vec![from.boundary];
     loop {
         let prev = *boundaries.last().expect("seeded above");
         if total_seconds - prev <= cfg.max_seconds {
@@ -322,7 +378,7 @@ pub fn plan_windows_fixed(
 pub fn plan_windows(
     audio: &dyn SampleWindows,
     vad: Option<&dyn VoiceActivity>,
-    from_seconds: f64,
+    from: ResumePoint,
     cfg: &ChunkConfig,
     first_index: usize,
 ) -> Result<Vec<ChunkWindow>, String> {
@@ -330,14 +386,15 @@ pub fn plan_windows(
     let Some(vad) = vad else {
         return Ok(plan_windows_fixed(
             audio.total_seconds(),
-            from_seconds,
+            from,
             cfg,
             first_index,
         ));
     };
     let total = audio.total_seconds();
-    let mut boundaries = vec![from_seconds.max(0.0)];
-    let mut kinds = vec![BoundaryKind::Edge];
+    let mut boundaries = vec![from.seconds.max(0.0)];
+    // NOT `Edge` — see `plan_windows_fixed` and [`ResumePoint`].
+    let mut kinds = vec![from.boundary];
     loop {
         let prev = *boundaries.last().expect("seeded above");
         if total - prev <= cfg.max_seconds {
@@ -1021,6 +1078,15 @@ pub struct ChunkOutcome {
     pub content_start_seconds: f64,
     pub content_end_seconds: f64,
     pub start_boundary: BoundaryKind,
+    /// The kind of the cut this chunk ENDS at — persisted because a relaunch
+    /// that resumes here has no other way to know what kind of seam it is
+    /// standing at, and [`merge_timed`] picks its rule from that (see
+    /// [`ResumePoint`]). `#[serde(default)]` so a ledger written before this
+    /// field existed still loads: it costs the old, wrong `Edge` behaviour on
+    /// exactly one seam of one already-in-flight meeting, where refusing to
+    /// parse would cost the whole transcript.
+    #[serde(default)]
+    pub end_boundary: BoundaryKind,
     pub status: ChunkStatus,
     pub text: String,
     pub spans: Vec<TimedSpan>,
@@ -1048,6 +1114,7 @@ impl ChunkOutcome {
             content_start_seconds: window.content_start_seconds,
             content_end_seconds: window.content_end_seconds,
             start_boundary: window.start_boundary,
+            end_boundary: window.end_boundary,
             status: ChunkStatus::Done,
             text: transcript.text,
             spans,
@@ -1063,6 +1130,7 @@ impl ChunkOutcome {
             content_start_seconds: window.content_start_seconds,
             content_end_seconds: window.content_end_seconds,
             start_boundary: window.start_boundary,
+            end_boundary: window.end_boundary,
             status: ChunkStatus::AsrFailed,
             text: String::new(),
             spans: Vec::new(),
@@ -1262,6 +1330,12 @@ const CONTENDED_CHUNK_RETRIES: usize = 3;
 /// and writing the chunk off as `asr_failed` would be the data loss.
 const PREEMPTED_CHUNK_RETRIES: usize = 3;
 
+/// How close a ledger chunk's end has to be to the resume point to be the chunk
+/// that MADE it. Both numbers are the same `f64` written and read back through
+/// JSON, so this is a serialisation-noise tolerance, not a search radius — one
+/// sample at 16 kHz is 62.5 µs, four orders of magnitude wider than this.
+const RESUME_BOUNDARY_EPSILON: f64 = 1e-9;
+
 /// Nothing to yield to, ever — for tests and for headless runs.
 pub struct NoDemand;
 impl EngineDemand for NoDemand {
@@ -1282,10 +1356,33 @@ impl MeetingAsr<'_> {
         let mut chunks: Vec<ChunkOutcome> = resume.chunks.clone();
         chunks.sort_by_key(|c| c.index);
         let resumed = chunks.len();
-        let from = resume.processed_through_seconds.max(0.0);
+        // The resume point is a place AND a kind. The seconds come from the
+        // ledger's high-water mark; the kind comes from whichever chunk ended
+        // exactly there, because that chunk's `end_boundary` is the cut the
+        // previous run made and the one `merge_timed` is about to stand at.
+        // Defaulting it to `Edge` — which is what "a plan starts here" used to
+        // mean — routes a fixed-clock resume seam through the intersection rule
+        // and duplicates the word the cut truncated, so the resumed transcript
+        // is NOT identical to an uninterrupted one. See [`ResumePoint`].
+        let from_seconds = resume.processed_through_seconds.max(0.0);
+        let from = ResumePoint::at(
+            from_seconds,
+            chunks
+                .iter()
+                .rev()
+                .find(|c| (c.content_end_seconds - from_seconds).abs() <= RESUME_BOUNDARY_EPSILON)
+                .map(|c| c.end_boundary)
+                // No chunk ends here: either the ledger is empty (the top of the
+                // audio, a genuine edge) or it disagrees with its own high-water
+                // mark, in which case the conservative rule — the one that can
+                // only ever keep a word twice, never delete one — is right.
+                .unwrap_or(BoundaryKind::Edge),
+        );
         if resumed > 0 {
             log::info!(
-                "meeting {meeting_id}: resuming ASR at {from:.1}s ({resumed} chunks already done)"
+                "meeting {meeting_id}: resuming ASR at {from_seconds:.1}s at a {:?} boundary \
+                 ({resumed} chunks already done)",
+                from.boundary
             );
         }
 
@@ -1350,6 +1447,30 @@ impl MeetingAsr<'_> {
                         if self.yield_to_interactive() {
                             yields += 1;
                         }
+                    }
+                    // The app is quitting and the exit drain cancelled this
+                    // decode mid-chunk. Not a failure, and — unlike a preemption
+                    // — not something to retry either: the engine has been
+                    // unloaded and the process is leaving, so every retry would
+                    // come back `NO_ENGINE_LOADED` and the third would be
+                    // written off as `asr_failed`. Stand down with NOTHING
+                    // recorded, so `processed_through_seconds` still points at
+                    // the end of the last chunk that really was decoded and the
+                    // next launch resumes exactly at this window.
+                    //
+                    // This arm is the other half of the fix in
+                    // `transcription::abandon_in_flight`, and its absence is what
+                    // made a Cmd-Q during chunk 1 of a five-chunk meeting leave
+                    // 30–60 s permanently blank with the ledger claiming 300 s
+                    // were done.
+                    Err(ref e) if e == ABANDONED_FOR_EXIT => {
+                        log::info!(
+                            "meeting {meeting_id}: chunk {} abandoned to the exit drain — \
+                             it resumes at {:.1}s",
+                            window.index,
+                            window.content_start_seconds
+                        );
+                        break None;
                     }
                     // Lost the engine to a dictation that arrived between the
                     // yield and the take. That is contention, not a decode
@@ -1772,7 +1893,7 @@ mod tests {
     #[test]
     fn windows_tile_the_meeting_and_overlap_by_exactly_the_overlap() {
         let cfg = ChunkConfig::default();
-        let plan = plan_windows_fixed(100.0, 0.0, &cfg, 0);
+        let plan = plan_windows_fixed(100.0, ResumePoint::start(), &cfg, 0);
         assert!(plan.len() >= 3, "100 s at 30 s windows: {}", plan.len());
         assert_eq!(plan[0].content_start_seconds, 0.0);
         assert_eq!(
@@ -1805,11 +1926,11 @@ mod tests {
     #[test]
     fn short_and_empty_meetings_do_not_produce_junk_windows() {
         let cfg = ChunkConfig::default();
-        let one = plan_windows_fixed(12.0, 0.0, &cfg, 0);
+        let one = plan_windows_fixed(12.0, ResumePoint::start(), &cfg, 0);
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].audio_start_seconds, 0.0);
         assert_eq!(one[0].audio_end_seconds, 12.0);
-        assert!(plan_windows_fixed(0.0, 0.0, &cfg, 0).is_empty());
+        assert!(plan_windows_fixed(0.0, ResumePoint::start(), &cfg, 0).is_empty());
     }
 
     /// Resuming plans from the resume point — the audio before it is never read
@@ -1817,7 +1938,7 @@ mod tests {
     #[test]
     fn a_resumed_plan_starts_at_the_resume_point() {
         let cfg = ChunkConfig::default();
-        let plan = plan_windows_fixed(200.0, 61.0, &cfg, 2);
+        let plan = plan_windows_fixed(200.0, ResumePoint::at(61.0, BoundaryKind::FixedClock), &cfg, 2);
         assert_eq!(plan[0].content_start_seconds, 61.0);
         assert_eq!(plan[0].index, 2);
         assert_eq!(
@@ -1851,7 +1972,7 @@ mod tests {
         // A 0.6 s pause every 10 s of the ten-second search region, so each
         // region has one at +6 s (i.e. 31 s past the previous boundary).
         let vad = ScriptedVad(vec![(0.0, 6.0), (6.6, 10.0)]);
-        let plan = plan_windows(&audio, Some(&vad), 0.0, &cfg, 0).expect("plan");
+        let plan = plan_windows(&audio, Some(&vad), ResumePoint::start(), &cfg, 0).expect("plan");
         assert!(plan.len() >= 6);
         for w in plan.iter().skip(1) {
             assert_eq!(
@@ -1869,14 +1990,75 @@ mod tests {
         assert_eq!(plan.last().unwrap().content_end_seconds, 200.0);
     }
 
+    /// A resumed plan starts at the cut the PREVIOUS run made, and says so.
+    ///
+    /// The unit-level half of the resume-seam fix. `windows_from_boundaries`
+    /// takes `kinds[0]` from the caller, and both planners used to hard-code
+    /// that seed to `Edge` — the honest description of a plan that begins at
+    /// 0.0 s, and a false one for every plan that begins at a resume point.
+    /// `merge_timed` reads exactly this field to choose its seam rule, so an
+    /// `Edge` here silently swaps the "did the cut truncate this word?" test for
+    /// the "do these two spans cover the same instant?" one, and keeps both
+    /// decodes of a truncated word.
+    #[test]
+    fn a_resumed_plan_carries_the_kind_of_the_boundary_it_resumes_at() {
+        let cfg = ChunkConfig::default();
+        let audio = MemoryWindows::at_meeting_rate(vec![0.0; MEETING_RATE as usize * 200]);
+
+        for kind in [BoundaryKind::FixedClock, BoundaryKind::Silence] {
+            let fixed = plan_windows_fixed(200.0, ResumePoint::at(90.0, kind), &cfg, 3);
+            assert_eq!(fixed[0].content_start_seconds, 90.0);
+            assert_eq!(fixed[0].start_boundary, kind, "fixed-clock planner");
+
+            let vadless =
+                plan_windows(&audio, None, ResumePoint::at(90.0, kind), &cfg, 3).expect("plan");
+            assert_eq!(vadless[0].start_boundary, kind, "no-VAD planner");
+        }
+
+        // …and the top of the audio is still a true edge.
+        assert_eq!(
+            plan_windows_fixed(200.0, ResumePoint::start(), &cfg, 0)[0].start_boundary,
+            BoundaryKind::Edge
+        );
+    }
+
+    /// Every window records the cut it ENDS at, because that is the only thing a
+    /// relaunch can read the resume point's kind out of: the run that chose it
+    /// is gone, and the window that would have carried it as `start_boundary` is
+    /// precisely the one that never got decoded.
+    #[test]
+    fn a_window_records_the_boundary_it_ends_at_and_it_is_the_next_windows_start() {
+        let cfg = ChunkConfig::default();
+        let plan = plan_windows_fixed(100.0, ResumePoint::start(), &cfg, 0);
+        assert!(plan.len() >= 3);
+        for pair in plan.windows(2) {
+            assert_eq!(
+                pair[0].end_boundary, pair[1].start_boundary,
+                "one boundary, two windows — they cannot disagree about its kind"
+            );
+        }
+        assert_eq!(
+            plan.last().expect("windows").end_boundary,
+            BoundaryKind::Edge,
+            "the end of the audio is an edge, not a cut"
+        );
+        assert_eq!(plan[0].end_boundary, BoundaryKind::FixedClock);
+
+        // It survives the ledger: `ChunkOutcome` is what a relaunch reads.
+        let chunk = ChunkOutcome::failed(&plan[0], "irrelevant".to_string());
+        let round_tripped: ChunkOutcome =
+            serde_json::from_str(&serde_json::to_string(&chunk).expect("encode")).expect("decode");
+        assert_eq!(round_tripped.end_boundary, BoundaryKind::FixedClock);
+    }
+
     /// No VAD is not an error — it is the fixed clock, which is what the eval
     /// corpus was measured on.
     #[test]
     fn planning_without_a_vad_is_the_fixed_clock() {
         let cfg = ChunkConfig::default();
         let audio = MemoryWindows::at_meeting_rate(vec![0.0; MEETING_RATE as usize * 100]);
-        let with_none = plan_windows(&audio, None, 0.0, &cfg, 0).expect("plan");
-        assert_eq!(with_none, plan_windows_fixed(100.0, 0.0, &cfg, 0));
+        let with_none = plan_windows(&audio, None, ResumePoint::start(), &cfg, 0).expect("plan");
+        assert_eq!(with_none, plan_windows_fixed(100.0, ResumePoint::start(), &cfg, 0));
     }
 
     fn outcome(index: usize, start: f64, end: f64, spans: &[(f64, f64, &str)]) -> ChunkOutcome {
@@ -1886,6 +2068,7 @@ mod tests {
             content_start_seconds: start,
             content_end_seconds: end,
             start_boundary: BoundaryKind::Silence,
+            end_boundary: BoundaryKind::Silence,
             status: ChunkStatus::Done,
             text: spans
                 .iter()
@@ -2033,7 +2216,7 @@ mod tests {
     fn a_vad_less_plan_makes_fixed_clock_seams_everywhere() {
         let cfg = ChunkConfig::default();
         let audio = MemoryWindows::at_meeting_rate(vec![0.0f32; MEETING_RATE as usize * 200]);
-        let plan = plan_windows(&audio, None, 0.0, &cfg, 0).expect("a plan");
+        let plan = plan_windows(&audio, None, ResumePoint::start(), &cfg, 0).expect("a plan");
         let kinds: Vec<BoundaryKind> = plan.iter().map(|w| w.start_boundary).collect();
         assert!(
             kinds.len() >= 6,

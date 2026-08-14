@@ -67,6 +67,22 @@ pub const NO_ENGINE_LOADED: &str = "no ASR model is loaded";
 /// `asr_failed` hole into the transcript.
 pub const PREEMPTED_FOR_DICTATION: &str = "meeting chunk preempted by a dictation";
 
+/// What a meeting chunk decode gets back when the EXIT DRAIN cancelled it
+/// (YV93). Like [`PREEMPTED_FOR_DICTATION`] this is NOT a decode failure — the
+/// chunk's audio is on disk and the next launch re-decodes it — but unlike it,
+/// there is nothing to wait for: the engine has been unloaded and the process is
+/// on its way out, so the driver stands the meeting down instead of retrying.
+///
+/// The distinction is load-bearing rather than cosmetic. [`drain_and_unload`]
+/// fired YV70's cancel and marked nothing, so a cancelled chunk came back as a
+/// plain `Err` — indistinguishable from a real decode failure. The driver wrote
+/// an `asr_failed` row for it, `processed_through_seconds` advanced past it, and
+/// the relaunch resumed AFTER a chunk that had never been decoded: a permanent
+/// hole in the user's transcript, punched by pressing Cmd-Q at the wrong second.
+///
+/// [`drain_and_unload`]: TranscriptionManager::drain_and_unload
+pub const ABANDONED_FOR_EXIT: &str = "meeting chunk abandoned — the app is exiting";
+
 /// The share of [`TRANSCRIBE_TIMEOUT`] one full-width meeting chunk is allowed
 /// to spend, at a real-time factor of 1.0.
 ///
@@ -258,6 +274,20 @@ pub enum DrainOutcome {
     TimedOut,
 }
 
+/// Why an in-flight decode's result is on its way to the bin (YV93).
+///
+/// Both causes cancel the decode and discard whatever comes back, and both mean
+/// "this chunk did not fail" — but they call for opposite things from the
+/// meeting driver, which is exactly why one flag could not carry them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Discard {
+    /// A dictation took the engine mid-chunk. Re-decode after the handback.
+    ForDictation,
+    /// The exit drain cancelled it. Do NOT re-decode: the engine has been
+    /// unloaded and the process is leaving. The next launch resumes here.
+    ForExit,
+}
+
 /// The decode holding the engine right now.
 struct InFlight {
     /// Its cancel hook, if the engine has one (YV70).
@@ -266,10 +296,10 @@ struct InFlight {
     /// take the engine off it. False for a dictation, whose audio exists
     /// nowhere else — an interactive take is never thrown away.
     preemptible: bool,
-    /// Set once a dictation has asked this decode to stop. Read back by the
-    /// lease so the result is discarded rather than reported as a decode
-    /// failure.
-    preempted: bool,
+    /// Set once something has asked this decode to stop and undertaken to throw
+    /// its result away. Read back by the lease so the caller is told which of
+    /// the two happened instead of being handed a decode failure.
+    discard: Option<Discard>,
 }
 
 /// Shared guts. Held by an `Arc` so the idle watcher can keep a `Weak` and exit
@@ -505,16 +535,7 @@ impl TranscriptionManager {
             self.unload();
             return DrainOutcome::Idle;
         }
-        let cancel = self
-            .inner
-            .in_flight
-            .lock()
-            .as_ref()
-            .and_then(|f| f.cancel.clone());
-        if let Some(cancel) = cancel {
-            log::info!("exit: cancelling the in-flight transcription");
-            cancel();
-        }
+        self.abandon_in_flight();
         let deadline = Instant::now() + wait;
         while self.engine_in_flight() {
             if Instant::now() >= deadline {
@@ -750,8 +771,8 @@ impl TranscriptionManager {
         let cancel = {
             let mut slot = self.inner.in_flight.lock();
             match slot.as_mut() {
-                Some(f) if f.preemptible && !f.preempted && f.cancel.is_some() => {
-                    f.preempted = true;
+                Some(f) if f.preemptible && f.discard.is_none() && f.cancel.is_some() => {
+                    f.discard = Some(Discard::ForDictation);
                     f.cancel.clone()
                 }
                 _ => None,
@@ -759,6 +780,49 @@ impl TranscriptionManager {
         };
         if let Some(cancel) = cancel {
             log::info!("a dictation is waiting — cancelling the in-flight meeting chunk decode");
+            cancel();
+        }
+    }
+
+    /// The exit half of [`preempt_in_flight`](Self::preempt_in_flight): stop the
+    /// in-flight decode because the app is quitting, and — when it is a meeting
+    /// chunk — undertake to throw its result away, so the driver hears
+    /// [`ABANDONED_FOR_EXIT`] instead of an unexplained `Err`.
+    ///
+    /// **This half was missing, and its absence was a data-loss bug.** The exit
+    /// drain fired YV70's cancel and marked nothing, so the lease reported the
+    /// cancelled decode as a plain failure; the meeting driver could only read
+    /// that as `asr_failed`, which is a status it never retries, and
+    /// `processed_through_seconds` then advanced past a window whose audio had
+    /// never been transcribed. Quitting during chunk 1 of a five-chunk meeting
+    /// left `processed_through=300s` with 30–60s permanently empty.
+    ///
+    /// Two deliberate asymmetries with the dictation half:
+    ///
+    /// * `ForExit` OVERWRITES a `ForDictation` mark. Both discard the result,
+    ///   but only one of them is worth retrying, and once the engine is being
+    ///   unloaded the retry is guaranteed to fail — as `NO_ENGINE_LOADED`,
+    ///   which the driver writes off as a failure after its contention
+    ///   retries. Exit wins because exit is the terminal condition.
+    /// * A NON-preemptible decode (a dictation) is still cancelled — freeing
+    ///   the Metal device before `exit()` is what YV70 exists for — but is
+    ///   never marked. Its audio exists nowhere else, so there is no re-decode
+    ///   to promise, and rewriting its error would only hide the reason.
+    fn abandon_in_flight(&self) {
+        let cancel = {
+            let mut slot = self.inner.in_flight.lock();
+            match slot.as_mut() {
+                Some(f) => {
+                    if f.preemptible && f.cancel.is_some() {
+                        f.discard = Some(Discard::ForExit);
+                    }
+                    f.cancel.clone()
+                }
+                None => None,
+            }
+        };
+        if let Some(cancel) = cancel {
+            log::info!("exit: cancelling the in-flight transcription");
             cancel();
         }
     }
@@ -796,15 +860,26 @@ impl TranscriptionManager {
         *self.inner.in_flight.lock() = Some(InFlight {
             cancel: engine.engine.cancel_handle(),
             preemptible,
-            preempted: false,
+            discard: None,
         });
         // A dictation that raised its claim between `take_engine` and the line
         // above found no in-flight record and cancelled nothing. Re-ask now that
         // there is one: the claim is still up (it is dropped only once the
         // dictation is through), so this closes the window rather than papering
         // over it.
-        if preemptible && self.interactive_pending() {
-            self.preempt_in_flight();
+        //
+        // The exit drain has exactly the same window and the same fix, and it is
+        // the WIDER of the two: the drain reads `in_flight` once, and a chunk
+        // that took the engine a microsecond earlier would otherwise decode for
+        // up to `MAX_SANCTIONED_CHUNK_DECODE_SECONDS` past the user's Cmd-Q and
+        // then be recorded as a failure by a driver that never heard the quit.
+        // Exit is checked FIRST because it is terminal — see `abandon_in_flight`.
+        if preemptible {
+            if self.inner.exiting.load(Ordering::Acquire) {
+                self.abandon_in_flight();
+            } else if self.interactive_pending() {
+                self.preempt_in_flight();
+            }
         }
 
         let (tx, rx) = mpsc::channel::<(Option<LoadedEngine>, Result<R, String>)>();
@@ -840,11 +915,11 @@ impl TranscriptionManager {
                 Err("transcription worker died unexpectedly".into())
             }
         };
-        let preempted = {
+        let discard = {
             let mut slot = self.inner.in_flight.lock();
-            let preempted = slot.as_ref().is_some_and(|f| f.preempted);
+            let discard = slot.as_ref().and_then(|f| f.discard);
             *slot = None;
-            preempted
+            discard
         };
         // YV70: the lease is released only AFTER the engine has been put back
         // (or dropped). It used to drop first, so the exit drain could see a
@@ -852,13 +927,19 @@ impl TranscriptionManager {
         // refill the slot — the live Metal device the drain exists to prevent.
         self.inner.leases.fetch_sub(1, Ordering::AcqRel);
         self.touch();
-        if preempted {
-            // Discarded whatever came back, including an `Ok`. A cancelled
-            // decode that still returns text has been cut short somewhere the
-            // caller cannot see, and half a chunk silently spliced into a
-            // meeting is worse than the second of Metal time it costs to decode
-            // the chunk again from disk.
-            return Err(PREEMPTED_FOR_DICTATION.into());
+        // Discard whatever came back, including an `Ok`. A cancelled decode that
+        // still returns text has been cut short somewhere the caller cannot see,
+        // and half a chunk silently spliced into a meeting is worse than the
+        // second of Metal time it costs to decode the chunk again from disk.
+        //
+        // WHICH of the two the caller is told matters as much as the discard
+        // itself: one says "come back after the handback", the other says "stop,
+        // the next launch owns this window". Collapsing them to one message is
+        // how a Cmd-Q became an `asr_failed` row and a permanent hole.
+        match discard {
+            Some(Discard::ForDictation) => return Err(PREEMPTED_FOR_DICTATION.into()),
+            Some(Discard::ForExit) => return Err(ABANDONED_FOR_EXIT.into()),
+            None => {}
         }
         result
     }

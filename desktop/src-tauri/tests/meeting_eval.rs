@@ -80,9 +80,9 @@ use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use wilson_voice_lib::meeting_asr::{
     merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, merge_timed_reporting,
     plan_windows, plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig,
-    ChunkOutcome, ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, SampleWindows,
-    SeamDecision, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM,
-    OVERLAP_TOKEN_BUDGET, SEAM_TRUNCATION_SLACK,
+    ChunkOutcome, ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, ResumePoint,
+    SampleWindows, SeamDecision, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP,
+    MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET, SEAM_TRUNCATION_SLACK,
 };
 use wilson_voice_lib::vad::WarmVad;
 
@@ -545,7 +545,7 @@ struct Segment {
 /// boundaries, and never outside [25 s, 35 s], so nothing below depends on
 /// which arm ran.
 fn chunk_plan(total_seconds: f64) -> Vec<(f64, f64)> {
-    plan_windows_fixed(total_seconds, 0.0, &ChunkConfig::default(), 0)
+    plan_windows_fixed(total_seconds, ResumePoint::start(), &ChunkConfig::default(), 0)
         .iter()
         .map(|w| (w.audio_start_seconds, w.audio_end_seconds))
         .collect()
@@ -623,7 +623,7 @@ impl Decoder {
     /// merge, which windows each marker was decodable in.
     fn decode_chunked(&self, samples: &[i16], label: &str) -> ChunkedDecode {
         let total = samples.len() as f64 / TARGET_RATE as f64;
-        let plan = plan_windows_fixed(total, 0.0, &ChunkConfig::default(), 0);
+        let plan = plan_windows_fixed(total, ResumePoint::start(), &ChunkConfig::default(), 0);
         self.decode_plan(samples, label, &plan)
     }
 
@@ -961,6 +961,7 @@ fn timed_chunk(index: usize, start: f64, end: f64, spans: &[(f64, f64, &str)]) -
         content_start_seconds: start,
         content_end_seconds: end,
         start_boundary: BoundaryKind::Silence,
+        end_boundary: BoundaryKind::Silence,
         status: ChunkStatus::Done,
         text: spans
             .iter()
@@ -1873,7 +1874,7 @@ fn meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap() {
     let floats: Vec<f32> = samples.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
     let audio = MemoryWindows::new(floats, TARGET_RATE);
     let cfg = ChunkConfig::default();
-    let plan = plan_windows(&audio, Some(&vad as &dyn VoiceActivity), 0.0, &cfg, 0).expect("plan");
+    let plan = plan_windows(&audio, Some(&vad as &dyn VoiceActivity), ResumePoint::start(), &cfg, 0).expect("plan");
 
     // (1) Every interior boundary is a pause, inside the search window.
     let clock_cuts = plan
