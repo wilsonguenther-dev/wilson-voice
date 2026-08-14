@@ -79,8 +79,11 @@ pub mod polish;
 // variant" rule is assertable from an integration test.
 pub mod power;
 // The JSONL contract with the `yap-polish` sidecar. Compiled into BOTH binaries
-// from this one file (see the module docs) so the two ends cannot drift.
-mod polish_protocol;
+// from this one file (see the module docs) so the two ends cannot drift. Public
+// since YV97: the summary path's request kinds, its sampler plan and its
+// truncate-and-warn budget fitting all live here, and
+// `tests/summarize_grammar_chain.rs` holds them to their contract.
+pub mod polish_protocol;
 #[cfg(target_os = "macos")]
 mod ptt_macos;
 mod record;
@@ -99,6 +102,10 @@ mod secure_input;
 // literals.
 pub mod shortcuts;
 mod snippets;
+// YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
+// under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
+// of its acceptance criteria are integration tests over these pure functions.
+pub mod summarize;
 // YV91 made this public: finding #9's rule (a meeting NEVER mutes the Mac) is
 // enforced by `sysaudio::mute_for_take`, and that gate is asserted from
 // `tests/meeting_no_automute.rs` against a fake output device.
@@ -2845,6 +2852,101 @@ fn acknowledge_meeting_consent(
     state.db.acknowledge_meeting_consent()
 }
 
+/// YV97 — summarize one recorded meeting, locally.
+///
+/// MUST be `async` + `spawn_blocking`, same as [`paste_entry`]. A *sync*
+/// `#[tauri::command]` resolves to `ExecutionContext::Blocking` and runs inline
+/// ON the main thread — and this body is minutes of work, not milliseconds: up
+/// to 30s waiting for the sidecar's model to load, one `count_tokens` round-trip
+/// per transcript line (~1,700 at YV91's 3h cap), a MAP pass per chunk at up to
+/// 60s each, then REDUCE folds at 90s each. On main that is a multi-minute
+/// freeze of the tray, the global hotkey and the pill — dictation starvation,
+/// which is exactly what the separate sidecar exists to prevent. `spawn_blocking`
+/// puts it on a blocking-pool thread where the claim below is actually true.
+///
+/// The summarizer spawns its OWN sidecar for the job (see
+/// [`summarize::SidecarSession`]) rather than borrowing the warm dictation one,
+/// so a summary running in the background cannot stall a take.
+///
+/// The meeting's state is moved to `summarizing` for the duration and back to
+/// what it was on the way out, so a crash mid-summary leaves a row that says
+/// what was happening rather than one that lies about being complete.
+///
+/// A summarize that produces nothing WRITES nothing. Re-summarizing a meeting
+/// whose model run came back empty — a dead sidecar, a wedged model, a
+/// grammar-legal but contentless answer — returns an error and leaves the
+/// existing `meetings.summary` exactly as it was; see the `is_empty` refusal
+/// below and `tests/summarize_empty_is_never_stored.rs`.
+#[tauri::command]
+async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<String, String> {
+    // The managed handle is cloned OUT of the borrow before the hop: the
+    // closure must be `'static`, and `Arc<AppState>` is what makes that free.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || summarize_meeting_blocking(&state, id))
+        .await
+        .map_err(|e| format!("summary task join failed: {e}"))?
+}
+
+/// The body of [`summarize_meeting`], off the main thread.
+fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, String> {
+    let meeting = state
+        .db
+        .get_meeting(&id)?
+        .ok_or_else(|| "that meeting is no longer here".to_string())?;
+    let segments = state.db.list_meeting_segments(&id)?;
+    if segments.is_empty() {
+        return Err("that meeting has no transcript to summarize".to_string());
+    }
+    let model = state.settings.lock().polish_model.trim().to_string();
+    let session = summarize::SidecarSession::for_installed_model(&model)
+        .map_err(|_| "no local summary model is installed".to_string())?;
+    let client = summarize::SidecarSummaryClient::new(session);
+
+    let previous =
+        meetings::MeetingState::parse(&meeting.state).unwrap_or(meetings::MeetingState::Complete);
+    let _ = state
+        .db
+        .set_meeting_state(&id, meetings::MeetingState::Summarizing, None);
+    let summary = summarize::summarize_segments(&segments, &client);
+    let _ = state.db.set_meeting_state(&id, previous, None);
+
+    let summary = summary.map_err(|e| match e {
+        // Said in the user's words rather than as a tag, because this is the one
+        // failure whose whole point is that NOTHING changed — a toast that only
+        // said "summary failed" would leave the reader wondering what happened to
+        // the summary they already had.
+        summarize::SummaryError::Empty => {
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string()
+        }
+        other => format!("summary failed: {}", other.tag()),
+    })?;
+    // Belt and braces on the ONE write of `meetings.summary`. `summarize_segments`
+    // already refuses to return an empty summary, but the refusal that protects
+    // the user's data belongs next to the destructive act as well: a later caller
+    // that builds a `MeetingSummary` some other way (a resumed job, a partial
+    // re-summarize) must not be able to overwrite a good summary with nothing
+    // just by skipping the pipeline's guard.
+    if summary.is_empty() {
+        log::warn!("summary: refusing to overwrite meetings.summary with an empty result");
+        return Err(
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string(),
+        );
+    }
+    state
+        .db
+        .set_meeting_summary(&id, &summary.markdown, Some(&summary.model))?;
+    log::info!(
+        "summary: meeting summarized over {} chunk(s), {} action(s), {} dropped item(s), truncated={}",
+        summary.chunks,
+        summary.actions.len(),
+        summary.dropped_items,
+        summary.truncated
+    );
+    Ok(summary.markdown)
+}
+
 /// Delete a meeting: rows, FTS entries, and the WAV.
 ///
 /// `secure_delete = ON` means the cascade physically overwrites the freed pages
@@ -3827,6 +3929,7 @@ pub fn run() {
             // YV94 — Meetings. Read, export and delete only; starting one is
             // YV95's surface.
             list_meetings,
+            summarize_meeting,
             get_meeting,
             rename_meeting,
             delete_meeting,

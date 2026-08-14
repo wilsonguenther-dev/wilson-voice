@@ -77,15 +77,16 @@ const MAX_LENGTH_RATIO: f64 = 2.5;
 const MIN_LENGTH_RATIO: f64 = 0.45;
 /// Non-ASCII ratio the output may add over the input before it reads as script
 /// drift (§2.5 V7).
-const MAX_NON_ASCII_DRIFT: f64 = 0.25;
+pub(crate) const MAX_NON_ASCII_DRIFT: f64 = 0.25;
 
 /// Template / chat-scaffold markers that must never survive into the paste
 /// (§2.5 V6).
-const TEMPLATE_MARKERS: &[&str] = &["<|im_start|>", "<|im_end|>", "<think>", "```"];
+pub(crate) const TEMPLATE_MARKERS: &[&str] = &["<|im_start|>", "<|im_end|>", "<think>", "```"];
 
 /// Assistant openers (§2.5 V6). A typist does not announce itself; a rewrite
 /// that starts this way answered the dictation instead of retyping it.
-const ASSISTANT_PREAMBLES: &[&str] = &["sure,", "here is", "here's the", "i've ", "certainly"];
+pub(crate) const ASSISTANT_PREAMBLES: &[&str] =
+    &["sure,", "here is", "here's the", "i've ", "certainly"];
 
 /// Filename of the bundled sidecar. Tauri strips the target triple from
 /// `bundle.externalBin` when it stages the binary next to the app executable,
@@ -246,17 +247,17 @@ pub fn build_request(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Opt
     if !(MIN_POLISH_WORDS..=MAX_POLISH_WORDS).contains(&words) {
         return None;
     }
-    Some(PolishRequest {
-        id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-        mode: mode_tag(mode).to_string(),
-        style: cfg.style.tag().to_string(),
-        max_out: max_out_for(text),
-        deadline_ms: cfg.deadline_ms,
-        text: text.to_string(),
-        // The pushed session topic, once there is one. NEVER the AX cursor
-        // context — that steers decisions in-process and is not sent anywhere.
-        topic: None,
-    })
+    // The pushed session topic, once there is one, would go on the request's
+    // `topic`. NEVER the AX cursor context — that steers decisions in-process
+    // and is not sent anywhere.
+    Some(PolishRequest::polish(
+        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        mode_tag(mode),
+        cfg.style.tag(),
+        max_out_for(text),
+        cfg.deadline_ms,
+        text.to_string(),
+    ))
 }
 
 /// The whole stage for one take against a given client: request shaping, then
@@ -402,7 +403,7 @@ fn strip_list_marker(line: &str) -> &str {
 /// Content words for V3: case-folded tokens of ≥ 4 characters, minus the
 /// vocabulary the cleanup pipeline is LICENSED to consume (fillers, discourse
 /// particles, retraction markers — see `dictation`, which owns those lists).
-fn content_words(text: &str) -> Vec<String> {
+pub(crate) fn content_words(text: &str) -> Vec<String> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’'))
         .filter(|w| w.chars().count() >= 4)
         .map(str::to_lowercase)
@@ -438,7 +439,7 @@ fn retention(input: &str, output: &str) -> f64 {
 }
 
 /// Every run of digits in `text` ("3:30" → `["3", "30"]`).
-fn digit_runs(text: &str) -> Vec<String> {
+pub(crate) fn digit_runs(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_digit())
         .filter(|run| !run.is_empty())
         .map(str::to_string)
@@ -447,7 +448,7 @@ fn digit_runs(text: &str) -> Vec<String> {
 
 /// Email addresses and URLs, case-folded and stripped of the punctuation a
 /// sentence wraps them in.
-fn contact_tokens(text: &str) -> Vec<String> {
+pub(crate) fn contact_tokens(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|t| {
             t.trim_matches(|c: char| !(c.is_alphanumeric() || "@:/._-+~%#?=&".contains(c)))
@@ -468,7 +469,7 @@ fn is_contact(token: &str) -> bool {
 }
 
 /// Share of characters outside ASCII — the V7 script-drift signal.
-fn non_ascii_ratio(text: &str) -> f64 {
+pub(crate) fn non_ascii_ratio(text: &str) -> f64 {
     let total = text.chars().count();
     if total == 0 {
         return 0.0;
@@ -1270,15 +1271,14 @@ mod polish_fallback_tests {
         );
         // …and a hand-built code request never reaches the client either.
         let client = ScriptedClient::new("print(value)");
-        let req = PolishRequest {
-            id: 1,
-            mode: mode_tag(DictationMode::Code).to_string(),
-            style: "default".to_string(),
-            max_out: 64,
-            deadline_ms: 1200,
-            text: "print the value and return it".to_string(),
-            topic: None,
-        };
+        let req = PolishRequest::polish(
+            1,
+            mode_tag(DictationMode::Code),
+            "default",
+            64,
+            1200,
+            "print the value and return it".to_string(),
+        );
         assert_eq!(
             polish_with("print the value and return it", req, &client),
             None
@@ -1414,15 +1414,14 @@ mod polish_fallback_tests {
 
     /// The request the stubs answer, with the id they hard-code.
     fn stub_request() -> PolishRequest {
-        PolishRequest {
-            id: 7,
-            mode: "notes".to_string(),
-            style: "default".to_string(),
-            max_out: max_out_for(RAW),
-            deadline_ms: DEFAULT_POLISH_DEADLINE_MS,
-            text: RAW.to_string(),
-            topic: None,
-        }
+        PolishRequest::polish(
+            7,
+            "notes",
+            "default",
+            max_out_for(RAW),
+            DEFAULT_POLISH_DEADLINE_MS,
+            RAW.to_string(),
+        )
     }
 
     /// Poll `f` until it answers, then give up. A test waits for a handshake
