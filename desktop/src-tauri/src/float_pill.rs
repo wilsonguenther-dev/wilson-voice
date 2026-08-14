@@ -5,7 +5,7 @@
 //!   nonactivatingPanel, floating/status level, canJoinAllSpaces,
 //!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -37,11 +37,13 @@ const EDGE_SNAP_PT: f64 = 120.0;
 /// only reports enter/exit for a window that takes the cursor, which is the very
 /// thing this watch exists to turn on. It ticks ONLY while the pill is on
 /// screen — see [`PILL_SHOWN`] and [`HOVER_IDLE_TICK_MS`] (YV81).
-const HOVER_TICK_MS: u64 = 75;
+pub const HOVER_TICK_MS: u64 = 75;
 /// The hover watch's tick while the pill is HIDDEN (YV81): there is no capsule
 /// to be over, so the thread parks on a long sleep instead of waking the main
 /// thread 13 times a second to answer "no" for a window nobody can see.
-const HOVER_IDLE_TICK_MS: u64 = 1000;
+///
+/// YV95 / OS-12 gave this constant a second job — see [`hover_tick_ms`].
+pub const HOVER_IDLE_TICK_MS: u64 = 1000;
 /// How often the space keeper re-asserts the panel's dock + level. One tick per
 /// 1.5s is a Space swipe's own timescale — the pill is back on top before a
 /// hand leaves the trackpad — and, like the hover watch, it does no main-thread
@@ -79,8 +81,38 @@ static HIT_Y: AtomicI32 = AtomicI32::new(0);
 static HIT_W: AtomicI32 = AtomicI32::new(0);
 static HIT_H: AtomicI32 = AtomicI32::new(0);
 /// Mirrors the last `set_ignore_cursor_events` call so AppKit is only touched
-/// on a transition, not 13 times a second.
+/// on a transition, not 13 times a second. Doubles as the "is the cursor on the
+/// capsule right now" answer the hover watch feeds back into its own cadence
+/// (YV95 / OS-12) — it is set from the same test.
 static INTERACTIVE: AtomicBool = AtomicBool::new(false);
+/// YV95 — is a MEETING being recorded (as opposed to a seconds-long dictation)?
+/// Set by the meeting controller's status sink. Read by the hover watch, which
+/// is the whole point: see [`hover_tick_ms`].
+static MEETING_RECORDING: AtomicBool = AtomicBool::new(false);
+/// YV95 (fix round 3) — is a DICTATION take live right now?
+///
+/// The hover watch's meeting cadence must never apply to a take: a dictation
+/// lasts seconds, the pill is its primary control, and this flag is what keeps
+/// the two cases apart when they overlap. Set from `lib.rs` at exactly the three
+/// places `AppState::recording` is written, so it cannot drift from the thing it
+/// mirrors. See [`hover_tick_ms`].
+static DICTATING: AtomicBool = AtomicBool::new(false);
+
+/// The capsule's rect in **AppKit screen points** (bottom-left origin), packed
+/// as `f64::to_bits`. Written on the main thread by [`update_interactive`],
+/// where the window geometry is legal to read; read by the hover watch's cheap
+/// proximity check, which runs OFF the main thread.
+///
+/// Zero width/height means "not known yet", and the proximity check answers
+/// `false` — the same "never reported" convention [`point_in_hitbox`] uses.
+static CAPSULE_SCREEN_X: AtomicU64 = AtomicU64::new(0);
+static CAPSULE_SCREEN_Y: AtomicU64 = AtomicU64::new(0);
+static CAPSULE_SCREEN_W: AtomicU64 = AtomicU64::new(0);
+static CAPSULE_SCREEN_H: AtomicU64 = AtomicU64::new(0);
+/// The last answer the cheap proximity check gave, so the hover watch reacts to
+/// the EDGE (cursor arrived) rather than re-waking on every slice while the
+/// cursor simply sits on the pill.
+static CURSOR_NEAR: AtomicBool = AtomicBool::new(false);
 
 /// Where the pill docks on screen (YV53). Wispr-style side docks in addition to
 /// the historical bottom-centre island.
@@ -414,6 +446,220 @@ pub fn is_shown() -> bool {
     PILL_SHOWN.load(Ordering::SeqCst)
 }
 
+/// YV95 — tell the pill a meeting is (or is no longer) recording. Called from
+/// the meeting controller's status sink, so the flag flips on exactly the same
+/// event the UI does.
+pub fn set_meeting_recording(recording: bool) {
+    MEETING_RECORDING.store(recording, Ordering::SeqCst);
+}
+
+pub fn meeting_recording() -> bool {
+    MEETING_RECORDING.load(Ordering::SeqCst)
+}
+
+/// YV95 — tell the pill a dictation take is (or is no longer) live. Called from
+/// `lib.rs` beside every write to `AppState::recording`, so the pill's idea of
+/// "a take is running" is the app's idea of it.
+pub fn set_dictating(dictating: bool) {
+    DICTATING.store(dictating, Ordering::SeqCst);
+}
+
+pub fn dictating() -> bool {
+    DICTATING.load(Ordering::SeqCst)
+}
+
+/// Is the cursor currently on the capsule? (The panel takes the cursor exactly
+/// when it is, so this is the same bit.)
+pub fn is_hovered() -> bool {
+    INTERACTIVE.load(Ordering::SeqCst)
+}
+
+/// **YV95 / OS-12 fix (2)** — how long the hover watch waits between
+/// **main-thread** cursor tests.
+///
+/// YV81's rule was binary: hidden → 1 Hz, shown → 13 Hz. That was written for a
+/// pill whose visible life is one dictation, a few seconds long. A meeting makes
+/// the pill visible for **up to three hours**, which under the old rule is
+/// ~144,000 cursor tests and ~144,000 `run_on_main_thread` hops — precisely the
+/// state YV81 exists to prevent, held for 180 minutes, on battery.
+///
+/// So visibility stops being the whole question and INTERACTION joins it: a pill
+/// that is on screen during a meeting but has no cursor on it is doing exactly
+/// what a hidden pill was doing — answering "no" — and pays the hidden price
+/// for it.
+///
+/// ## Two things this function is NOT allowed to cost (fix round 3)
+///
+/// The first version of this policy took three inputs and got both of them
+/// wrong, because it treated "a meeting is recording" as a statement about the
+/// pill rather than about the machine:
+///
+/// 1. **It starved dictation.** Dictating *during* a meeting is a designed case
+///    — YV91 fans the same block out to both consumers, and `live.ts`'s
+///    `framePlan` deliberately puts the live-take branch BEFORE the meeting
+///    park for exactly this reason. The Rust side did not have the matching
+///    ordering, so a take taken during a meeting polled at 1 Hz: the pill is
+///    that take's primary control, and it became unresponsive for the length of
+///    every sentence. `dictating` is now an input, and it is checked FIRST, so
+///    the two files answer this question the same way.
+///
+/// 2. **It swallowed the first click on the pill.** The panel is click-through
+///    until this watch notices the cursor on the capsule, so "noticed within a
+///    second" is not a second of latency — it is a click delivered to whatever
+///    app is underneath, which during a meeting is the meeting. Slowing the
+///    poll down is only safe because the cadence below is no longer the only
+///    thing that can wake the watch: [`start_hover_watch`] sleeps in short
+///    slices and breaks out the instant the OFF-main-thread proximity check
+///    ([`cursor_on_capsule_cheap`]) sees the cursor arrive. The main-thread test
+///    rate is what this function sets, and it is still 1 Hz through the
+///    far-field of a meeting; the *reachability* of the pill is no longer tied
+///    to it.
+pub fn hover_tick_ms(shown: bool, hovered: bool, meeting_recording: bool, dictating: bool) -> u64 {
+    if !shown {
+        // A window nobody can see must not paint — or poll — 13 times a second.
+        return HOVER_IDLE_TICK_MS;
+    }
+    // A take lasts seconds and the pill is its primary control. This branch is
+    // deliberately ABOVE the meeting branch: a dictation inside a meeting is a
+    // dictation, and OS-12 never measured a few seconds of 13 Hz.
+    if dictating {
+        return HOVER_TICK_MS;
+    }
+    if meeting_recording && !hovered {
+        // Visible, but nobody is touching it, and this will be true for hours.
+        return HOVER_IDLE_TICK_MS;
+    }
+    HOVER_TICK_MS
+}
+
+/// How long the hover watch actually sleeps at a stretch before re-running the
+/// cheap proximity check. Short enough that a cursor arriving on the capsule is
+/// noticed faster than any hand can follow it with a click; cheap enough to be
+/// irrelevant to OS-12, because a slice costs four relaxed atomic loads and one
+/// `+[NSEvent mouseLocation]` on a background thread — no main-thread hop, no
+/// window query, no AppKit object.
+pub const PROXIMITY_SLICE_MS: u64 = 30;
+
+/// The slice plan for one `tick_ms` wait: `(sleeps, last_ms)`. The first
+/// `sleeps - 1` naps are `slice_ms` long and the last is `last_ms`, so the total
+/// is always exactly `tick_ms`.
+///
+/// Pure, so "a 1 Hz tick is still 1 Hz" is arithmetic a test can check rather
+/// than a claim in a comment — the whole defence of fix (2) is that the
+/// MAIN-THREAD test rate did not change, and this is the function that has to
+/// keep that true.
+pub fn sleep_slices(tick_ms: u64, slice_ms: u64) -> (u64, u64) {
+    let slice = slice_ms.max(1);
+    let sleeps = (tick_ms / slice).max(1);
+    (sleeps, tick_ms - (sleeps - 1) * slice)
+}
+
+/// Should the hover watch abandon the rest of its wait and test the cursor on
+/// the main thread right now?
+///
+/// Only on the RISING edge — the cursor was not on the capsule and now is.
+/// Without the edge, a cursor parked on the pill would break every slice and
+/// turn the slow tick into a 33 Hz one, which is worse than the bug this whole
+/// item is about.
+pub fn should_wake_early(was_near: bool, is_near: bool) -> bool {
+    is_near && !was_near
+}
+
+/// The capsule's rect in AppKit screen points, from the geometry the main
+/// thread can see.
+///
+/// * `win_origin_phys` — the float window's outer position, Tauri physical px,
+///   top-left origin (`WebviewWindow::outer_position`).
+/// * `scale` — the pill's monitor scale factor. `park_pill` pins the pill to the
+///   PRIMARY monitor, so this is the primary's scale and the conversion below
+///   is anchored to the same screen AppKit measures from.
+/// * `primary_height_pts` — the primary display's height in points.
+/// * `hit` — the capsule rect the webview reported, window-relative logical
+///   points with a TOP-LEFT origin (DOM coordinates).
+///
+/// AppKit's screen space has its origin at the bottom-left of the primary
+/// display with y increasing upwards, which is why the y term is flipped twice:
+/// once to get the window's bottom edge, once to get the capsule's.
+///
+/// Returns `None` when nothing has been reported yet — the same convention
+/// [`point_in_hitbox`] uses for a zero-sized rect.
+pub fn capsule_screen_rect(
+    win_origin_phys: (f64, f64),
+    scale: f64,
+    primary_height_pts: f64,
+    hit: (f64, f64, f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    let (hx, hy, hw, hh) = hit;
+    if hw <= 0.0 || hh <= 0.0 || scale <= 0.0 {
+        return None;
+    }
+    let win_x_pts = win_origin_phys.0 / scale;
+    let win_top_pts = win_origin_phys.1 / scale;
+    // The capsule's top edge, measured down from the top of the primary display.
+    let capsule_top_pts = win_top_pts + hy;
+    // …and the same edge measured up from the bottom, which is AppKit's y.
+    let capsule_bottom_appkit = primary_height_pts - (capsule_top_pts + hh);
+    Some((win_x_pts + hx, capsule_bottom_appkit, hw, hh))
+}
+
+/// Is `point` (AppKit screen points) inside the cached capsule rect?
+fn point_in_screen_rect(point: (f64, f64), rect: (f64, f64, f64, f64)) -> bool {
+    let (px, py) = point;
+    let (x, y, w, h) = rect;
+    w > 0.0 && h > 0.0 && px >= x && px <= x + w && py >= y && py <= y + h
+}
+
+fn store_f64(cell: &AtomicU64, v: f64) {
+    cell.store(v.to_bits(), Ordering::Relaxed);
+}
+
+fn load_f64(cell: &AtomicU64) -> f64 {
+    f64::from_bits(cell.load(Ordering::Relaxed))
+}
+
+/// Publish the capsule's screen rect for the background proximity check.
+fn set_capsule_screen_rect(rect: Option<(f64, f64, f64, f64)>) {
+    let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    store_f64(&CAPSULE_SCREEN_X, x);
+    store_f64(&CAPSULE_SCREEN_Y, y);
+    store_f64(&CAPSULE_SCREEN_W, w);
+    store_f64(&CAPSULE_SCREEN_H, h);
+}
+
+/// The **cheap**, off-main-thread answer to "is the cursor on the capsule?".
+///
+/// `+[NSEvent mouseLocation]` is a class method on a thread-safe class (objc2
+/// exposes it without a `MainThreadMarker`, which is that crate's way of saying
+/// so) and it reads the window server's last known cursor position in AppKit
+/// screen points — no NSWindow, no view, no main queue.
+///
+/// **This answer is advisory and can only ever cause MORE work.** It is used in
+/// exactly one place: to end a sleep early so [`update_interactive`] — still the
+/// only authority on `set_ignore_cursor_events` — runs sooner. If the cached
+/// rect is stale or the arithmetic above is wrong, the worst case is a spurious
+/// main-thread hop that finds nothing changed and does nothing, or a miss that
+/// falls back to the ordinary [`hover_tick_ms`] cadence. Neither is a behaviour
+/// change; the cadence is the floor, not the ceiling.
+#[cfg(target_os = "macos")]
+fn cursor_on_capsule_cheap() -> bool {
+    let rect = (
+        load_f64(&CAPSULE_SCREEN_X),
+        load_f64(&CAPSULE_SCREEN_Y),
+        load_f64(&CAPSULE_SCREEN_W),
+        load_f64(&CAPSULE_SCREEN_H),
+    );
+    if rect.2 <= 0.0 || rect.3 <= 0.0 {
+        return false;
+    }
+    let p = objc2_app_kit::NSEvent::mouseLocation();
+    point_in_screen_rect((p.x, p.y), rect)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_on_capsule_cheap() -> bool {
+    false
+}
+
 /// How many of this module's recurring polls are doing real work right now
 /// (YV81 telemetry). Both threads exist for the visible pill only, so a hidden
 /// pill answers `0` however many threads are alive.
@@ -561,11 +807,38 @@ pub fn start_hover_watch(app: AppHandle) {
             // (and the main-thread hop it costs) is skipped entirely and the
             // thread waits on the long tick instead. `hide_float`/`show_float`
             // flip the gate, so the next tick after a show is back at 75ms.
+            //
+            // YV95 / OS-12 — the same reasoning, one case wider: during a
+            // MEETING the pill is visible for hours, so "visible but nobody has
+            // touched it" also waits on the long tick. See `hover_tick_ms`.
+            //
+            // The wait is SLICED (fix round 3). `hover_tick_ms` still sets the
+            // main-thread test rate — 1 Hz through the far-field of a meeting,
+            // exactly as OS-12 asks — but the thread no longer commits to being
+            // asleep for the whole of it. Between slices it asks the cheap,
+            // off-main-thread question "is the cursor on the capsule yet?", and
+            // the instant the answer flips to yes it stops waiting and lets the
+            // main thread turn click-through off. That is what makes a slow poll
+            // safe: a slow poll that also gates the panel's clicks does not
+            // delay the first click on the pill, it feeds it to the app
+            // underneath.
+            let tick = hover_tick_ms(is_shown(), is_hovered(), meeting_recording(), dictating());
+            let (sleeps, last_ms) = sleep_slices(tick, PROXIMITY_SLICE_MS);
+            for i in 0..sleeps {
+                thread::sleep(Duration::from_millis(if i + 1 == sleeps {
+                    last_ms
+                } else {
+                    PROXIMITY_SLICE_MS
+                }));
+                let near = cursor_on_capsule_cheap();
+                let was = CURSOR_NEAR.swap(near, Ordering::Relaxed);
+                if should_wake_early(was, near) {
+                    break;
+                }
+            }
             if !is_shown() {
-                thread::sleep(Duration::from_millis(HOVER_IDLE_TICK_MS));
                 continue;
             }
-            thread::sleep(Duration::from_millis(HOVER_TICK_MS));
             let app_main = app.clone();
             let app_inner = app.clone();
             let _ = app_main.run_on_main_thread(move || update_interactive(&app_inner));
@@ -577,6 +850,10 @@ fn update_interactive(app: &AppHandle) {
     let Some(w) = app.get_webview_window("float") else {
         return;
     };
+    // While we are on the main thread anyway, refresh the screen rect the
+    // background proximity check reads. Window geometry is only legal to ask
+    // for from here, and this costs nothing extra: the hop already happened.
+    refresh_capsule_screen_rect(&w);
     // Never hand the panel back to click-through mid-gesture: a fast drag
     // outruns the cursor test and the mouse-up would land on the floor.
     let want = DRAGGING.load(Ordering::SeqCst)
@@ -584,6 +861,32 @@ fn update_interactive(app: &AppHandle) {
     if INTERACTIVE.swap(want, Ordering::SeqCst) != want {
         let _ = w.set_ignore_cursor_events(!want);
     }
+}
+
+/// Recompute and publish the capsule's AppKit screen rect. Main thread only —
+/// `outer_position`/`primary_monitor` are window-server queries.
+fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
+    let rect = (|| {
+        let origin = w.outer_position().ok()?;
+        let mon = w.primary_monitor().ok().flatten()?;
+        let scale = mon.scale_factor();
+        if scale <= 0.0 {
+            return None;
+        }
+        let primary_height_pts = mon.size().height as f64 / scale;
+        capsule_screen_rect(
+            (origin.x as f64, origin.y as f64),
+            scale,
+            primary_height_pts,
+            (
+                HIT_X.load(Ordering::SeqCst) as f64,
+                HIT_Y.load(Ordering::SeqCst) as f64,
+                HIT_W.load(Ordering::SeqCst) as f64,
+                HIT_H.load(Ordering::SeqCst) as f64,
+            ),
+        )
+    })();
+    set_capsule_screen_rect(rect);
 }
 
 fn cursor_over_capsule(app: &AppHandle, w: &tauri::WebviewWindow) -> bool {

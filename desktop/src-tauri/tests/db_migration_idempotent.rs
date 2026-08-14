@@ -13,7 +13,12 @@ mod support;
 use support::{open_db, temp_dir};
 
 /// The version this build's meeting schema lives at.
-const EXPECTED_VERSION: i64 = 1;
+///
+/// 1 = YV94's meeting tables. 2 = YV95's `diagnostics` column (OS-12's thermal +
+/// battery instrumentation), which is what makes the ladder worth having: the
+/// second step is the first one that had to run against databases the first step
+/// already wrote.
+const EXPECTED_VERSION: i64 = 2;
 
 #[test]
 fn opening_the_db_twice_is_a_no_op() {
@@ -174,4 +179,58 @@ fn migration_one_creates_the_whole_meeting_schema() {
             "{banned} is a later phase's column, not 22-A's: {cols:?}"
         );
     }
+}
+
+/// YV95 — migration 2 adds ONE nullable column, and every row written before it
+/// survives with a NULL there rather than being rewritten.
+///
+/// The interesting case is not a fresh install (which never sees step 2 as a
+/// separate event) but an EXISTING database full of YV94 meetings: this walks
+/// one up the ladder and checks the old rows are still exactly what they were.
+#[test]
+fn migration_two_adds_diagnostics_without_touching_existing_rows() {
+    let dir = temp_dir("diagnostics-column");
+    let path = dir.join("wilson_voice.db");
+
+    // A database that stopped at version 1, with a meeting already in it.
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before YV95", &["hello there"]);
+        drop(db);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "BEGIN IMMEDIATE; ALTER TABLE meetings DROP COLUMN diagnostics; \
+             PRAGMA user_version = 1; COMMIT;",
+        )
+        .expect("rewind to the YV94 schema");
+        id
+    };
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db.get_meeting(&id).unwrap().expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV95");
+    assert_eq!(m.segment_count, 1, "its segments are untouched");
+    assert!(
+        m.diagnostics.is_none(),
+        "a meeting recorded before the column existed reads as 'never measured'"
+    );
+
+    // The column is real, nullable, and writable.
+    db.set_meeting_diagnostics(&id, r#"{"version":1,"pillVisible":true}"#)
+        .unwrap();
+    assert!(db
+        .get_meeting(&id)
+        .unwrap()
+        .unwrap()
+        .diagnostics
+        .unwrap()
+        .contains("pillVisible"));
+
+    // Re-opening does not re-run the step.
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert!(db.get_meeting(&id).unwrap().unwrap().diagnostics.is_some());
 }

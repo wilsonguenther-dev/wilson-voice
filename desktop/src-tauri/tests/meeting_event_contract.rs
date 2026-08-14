@@ -19,20 +19,22 @@ use std::path::{Path, PathBuf};
 use wilson_voice_lib::meetings::MEETING_EVENT;
 
 /// YV95 (PR #112) owns the emitter: `meeting_status_sink` broadcasts
-/// `MeetingStatus` under this name once a second. It is a SEPARATE pull request
-/// and is not merged yet, so on this branch the listener has nothing to hear —
-/// which is correct (there is no meeting recording to notice) but is exactly one
-/// merge away from being a live bug.
+/// `MeetingStatus` under this name once a second.
 ///
-/// **When YV95 lands, this test goes red and the fix is two lines:** point its
-/// emit at `meetings::MEETING_EVENT` instead of the `"meeting"` literal, and set
-/// this constant to `None`. From then on the emitter is permanently required,
-/// and a future refactor cannot delete it — or rename it — quietly.
+/// **It has landed.** The tripwire is spent: `None` flips
+/// `the_listener_has_an_emitter_or_a_named_blocker` from "there had better be no
+/// emitter yet" to "there had better still be one", so from here on a refactor
+/// cannot delete or rename the emit without failing this file by name. Together
+/// with `every_meeting_emit_uses_the_shared_constant` (which forbids the bare
+/// `"meeting"` literal the emitter originally used) and
+/// `the_frontend_listens_to_the_name_the_backend_emits`, all three ends of the
+/// seam — Rust's constant, the emit site, and the TypeScript listener — are now
+/// pinned to each other.
 ///
-/// This is deliberately not a comment: a comment saying "depends on #112" is a
-/// thing a merge queue reads zero times. A constant that fails a test is a thing
-/// it cannot merge past.
-const EMITTER_LANDS_WITH: Option<&str> = Some("YV95 / PR #112 — meeting_status_sink");
+/// This is exactly the seam the YV95 rebase had to resolve by hand: YV96's
+/// listener and YV95's emitter were written on branches that never saw each
+/// other, and both of them own this one string.
+const EMITTER_LANDS_WITH: Option<&str> = None;
 
 fn src_tauri() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -173,4 +175,73 @@ fn the_listener_has_an_emitter_or_a_named_blocker() {
              do not delete the test."
         ),
     }
+}
+
+/// **The rebase seam, as a test.**
+///
+/// YV95 (the emitter + the pill badge + the main window's banner) and YV96 (the
+/// one-time capture notice) were written on branches that never saw each other,
+/// and BOTH of them subscribe to this one string. The merge that put them in the
+/// same tree is exactly where a "meeting" typed by hand in one of the four
+/// places would have gone unnoticed: every unit test passes, the build is green,
+/// and one of the four surfaces silently never hears anything again.
+///
+/// So no frontend file may re-type the name. `consent.ts` declares it once;
+/// `pill/meeting.ts` re-exports that declaration; everybody else imports one of
+/// those two. The declaration itself is checked against Rust by
+/// `the_frontend_listens_to_the_name_the_backend_emits` above.
+#[test]
+fn no_surface_retypes_the_meeting_event_name() {
+    // The one legal declaration, and the one legal re-export of it.
+    const DECLARES: &str = "meetings/consent.ts";
+    const REEXPORTS: &str = "pill/meeting.ts";
+
+    let root = src_tauri().parent().expect("desktop/").join("src");
+    let mut offenders = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read src/").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "node_modules") {
+                    continue;
+                }
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "ts" || e == "tsx") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    assert!(!files.is_empty(), "found no frontend sources to check");
+
+    for path in files {
+        let rel = path
+            .strip_prefix(&root)
+            .expect("under src/")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == DECLARES || rel == REEXPORTS || rel.ends_with(".test.ts") {
+            continue;
+        }
+        let code = fs::read_to_string(&path).expect("read frontend source");
+        for (n, line) in code.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Prose in a comment may name the event; code may not.
+            if trimmed.starts_with("//") || trimmed.starts_with("*") {
+                continue;
+            }
+            if line.contains("\"meeting\"") || line.contains("'meeting'") {
+                offenders.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the `meeting` event name is re-typed instead of imported from \
+         `{DECLARES}` (or its re-export in `{REEXPORTS}`) — a rename would leave \
+         these surfaces listening to a name nobody emits:\n  {}",
+        offenders.join("\n  ")
+    );
 }

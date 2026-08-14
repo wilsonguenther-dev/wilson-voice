@@ -238,6 +238,16 @@ export function advanceLive(
 // the next blink — moves onto a 10fps timer. Hidden (the panel ordered out, the
 // page reporting itself occluded) it parks completely: nothing renders for a
 // window nobody can see.
+//
+// YV95 / OS-12 — that ladder assumed "visible" means "a take is happening or
+// just did", i.e. seconds. A meeting pins the pill on screen for up to three
+// hours with `hidden` false the whole time, so the bottom rung it lands on is
+// the 10fps ambient tick: 108,000 canvas redraws over three hours, which is ten
+// times the JS wakes the 1 Hz elapsed-clock emit costs. A settled pill during a
+// meeting has nothing to animate — the clock is DOM text, the recording pulse is
+// a CSS compositor animation — so `meetingRecording` parks the canvas the way
+// `hidden` does. This is the fix OS-12 (1) asks for; without it "the canvas loop
+// can stay parked through a three-hour meeting" is false.
 
 export type LivePhase = "idle" | "listening" | "thinking" | "done" | "sleepy";
 /** Redraw budget while idle: ~18fps keeps the breathing perceptible. */
@@ -260,6 +270,14 @@ export interface FrameInputs {
   settled?: boolean;
   /** Is the pill window hidden/occluded (nothing it draws can be seen)? */
   hidden?: boolean;
+  /**
+   * Is a meeting recording right now (YV95 / OS-12 fix 1)? The pill is then
+   * deliberately VISIBLE for hours rather than seconds, so `hidden` — the only
+   * thing that used to park a shown-but-quiet pill — is false for the whole
+   * session and the loop would otherwise sit on the 10fps ambient tick from the
+   * first minute of a lecture to the last. Absent reads as "no meeting".
+   */
+  meetingRecording?: boolean;
 }
 
 /** How the loop is being driven right now. */
@@ -293,6 +311,15 @@ export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
   // Nothing live. A hidden pill draws nothing; reduced motion asked for one
   // calm static frame and no loop at all.
   if (f.hidden || f.reduceMotion) return { mode: "parked", intervalMs: Infinity };
+  // A meeting is recording (YV95). The pill is pinned on screen for up to three
+  // hours, so the ambient tick — 10fps of canvas redraw, spring update and
+  // bubble reposition — is no longer "the idle scene between takes", it is
+  // 108,000 frames of a chick breathing next to a clock that is DOM and a pulse
+  // that is a compositor animation. Once the transients have settled there is
+  // nothing on the canvas left to move, so park it outright, exactly as `hidden`
+  // does. Gated on `settled` (unlike `hidden`, which nobody can see): a pill
+  // frozen mid-capsule-close would be frozen in view for the whole meeting.
+  if (f.meetingRecording && f.settled) return { mode: "parked", intervalMs: Infinity };
   // Settled: the transients are done, so drop the rAF and keep only the
   // ambient tick. Still settling → keep animating, throttled.
   if (f.settled) return { mode: "ambient", intervalMs: AMBIENT_FRAME_MS };

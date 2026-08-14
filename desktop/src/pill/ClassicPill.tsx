@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Mic, Square } from "lucide-react";
 import { usePillDrag, watchPillHitbox } from "./drag";
+import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
 interface AppStatus {
   recording: boolean;
@@ -30,6 +31,8 @@ export default function ClassicPill() {
   const wakeRef = useRef<() => void>(() => {});
   // YV65 — press-and-drag the capsule to re-dock the pill.
   const drag = usePillDrag();
+  // YV95 — the pill is the always-visible recording indicator for a meeting.
+  const meeting = useMeetingStatus();
 
   // YV65 — publish the capsule's rect so the panel only takes the cursor over
   // the pill itself; the transparent shadow margin stays click-through.
@@ -119,7 +122,11 @@ export default function ClassicPill() {
 
   const live = status.recording;
   const busy = status.busy && !live;
-  const cls = live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
+  // A meeting expands the capsule for as long as it runs, and outranks the
+  // resting "seed" — but never the live dictation state, which is the shorter,
+  // more urgent thing on screen.
+  const base = live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
+  const cls = meeting.recording ? `${base} meeting` : base;
   const onToggle = useCallback(() => {
     if (busy) return;
     // YV65 — the click that closes a drag must never start/stop dictation.
@@ -141,6 +148,7 @@ export default function ClassicPill() {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
+        <MeetingBadge status={meeting} />
         <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
           {live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
         </button>

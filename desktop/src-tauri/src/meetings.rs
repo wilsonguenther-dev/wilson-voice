@@ -32,9 +32,12 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version this build expects. `db.rs` walks the ladder up to it.
 ///
-/// 1 = the meeting tables below. Bump ONLY by appending a new arm to the
-/// migration match in `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 1;
+/// 1 = the meeting tables below.
+/// 2 = YV95's `diagnostics` column (OS-12's thermal + battery instrumentation).
+///
+/// Bump ONLY by appending a new arm to the migration match in
+/// `db::run_migrations`; never edit a shipped step.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// How long a meeting's audio is kept before the startup/hygiene sweep purges
 /// it. The transcript is kept forever — only the WAV goes (finding #28).
@@ -114,6 +117,13 @@ pub struct Meeting {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub segment_count: i64,
+    /// YV95 / OS-12 — the session's energy diagnostics as a JSON blob
+    /// (`meeting_energy::MeetingDiagnostics`): thermal state at start, every
+    /// thermal transition observed while recording, and the battery preflight.
+    /// `None` for meetings recorded before migration 2, and for a session whose
+    /// probes all failed — "never measured" is not "measured nothing".
+    #[serde(default)]
+    pub diagnostics: Option<String>,
 }
 
 /// One chronological transcript segment. 22-A has no speaker columns — every
@@ -313,6 +323,24 @@ CREATE TRIGGER IF NOT EXISTS meeting_segments_au AFTER UPDATE ON meeting_segment
 END;
 "#;
 
+/// Migration 2 — YV95 / OS-12's diagnostics column.
+///
+/// One nullable TEXT column holding a JSON blob, not five typed columns: this is
+/// diagnostic exhaust nothing queries or filters on, and a column per reading
+/// would mean a migration every time a later phase learns to record one more
+/// thing about a session. `ALTER TABLE … ADD COLUMN` with a NULL default is an
+/// O(1) header rewrite in SQLite — it does not touch existing rows — so this is
+/// free even on a database full of meetings.
+///
+/// Not `IF NOT EXISTS` (SQLite's ADD COLUMN has no such clause): the ladder in
+/// `db::run_migrations` guarantees a step runs exactly once, inside its own
+/// transaction, with `user_version` written in the same transaction. That is the
+/// mechanism finding #26 asked for, and re-deriving idempotency per statement
+/// would say we do not trust it.
+pub const MIGRATION_2_MEETING_DIAGNOSTICS: &str = r#"
+ALTER TABLE meetings ADD COLUMN diagnostics TEXT;
+"#;
+
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.
 pub fn format_offset(seconds: f64) -> String {
@@ -467,6 +495,7 @@ mod tests {
             processed_through_seconds: 750.0,
             audio_kept: true,
             mic_wav_path: None,
+            diagnostics: None,
             summary: None,
             summary_model: None,
             created_at: Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap(),

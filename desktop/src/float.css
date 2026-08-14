@@ -414,3 +414,130 @@ body,
   border-right: 1px solid rgba(255, 255, 255, 0.14);
   border-bottom: 1px solid rgba(255, 255, 255, 0.14);
 }
+
+/* ── YV95 · MEETING RECORDING ─────────────────────────────────────────────────
+ * The pill's persistent recording state: a pulsing dot, the elapsed clock, and
+ * a stop control (finding #6 item 3).
+ *
+ * Energy (OS-12 fix 1): the pulse is a CSS keyframe on OPACITY only. Opacity is
+ * a compositor property — the animation runs off the main thread, never wakes
+ * the JS thread, and costs nothing per frame in the webview's script engine. The
+ * clock is plain text replaced once a second by the backend's emit. Neither the
+ * classic pill's rAF loop nor Yappy's canvas loop is involved, which is what
+ * lets both stay parked for the length of a three-hour meeting.
+ */
+:root {
+  --accent-meeting: 0 84% 62%; /* red — recording, the one universal signal */
+}
+
+.meeting-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+  font-variant-numeric: tabular-nums; /* the clock must not jitter each second */
+  -webkit-font-smoothing: antialiased;
+}
+
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: hsl(var(--accent-meeting));
+  box-shadow: 0 0 8px hsl(var(--accent-meeting) / 0.75);
+  animation: rec-pulse 2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+/* A user who has turned motion off still gets the state — as a steady dot. */
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+
+.rec-time {
+  font:
+    600 12px/1 ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    monospace;
+  letter-spacing: 0.02em;
+  color: #f5f5f7;
+}
+
+.rec-stop {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  flex: none;
+  cursor: pointer;
+  color: #fff;
+  background: hsl(var(--accent-meeting) / 0.34);
+  box-shadow: inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.72);
+  transition: background 0.16s ease;
+}
+.rec-stop:hover {
+  background: hsl(var(--accent-meeting) / 0.38);
+}
+.rec-stop:focus-visible {
+  outline: 2px solid hsl(var(--accent-meeting));
+  outline-offset: 2px;
+}
+.rec-stop svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+}
+
+/* A meeting expands the capsule for as long as it runs — the same expansion the
+ * live/busy/done states use, so there is one pill shape, not two. */
+.pill.meeting {
+  height: 44px;
+  min-width: 168px;
+  gap: 10px;
+  padding: 0 12px;
+  box-shadow:
+    inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
+    0 12px 34px rgba(0, 0, 0, 0.46),
+    0 0 22px hsl(var(--accent-meeting) / 0.18);
+}
+/* While ONLY a meeting is running there is no dictation waveform to show, so the
+ * resting seed and the empty wave are dropped rather than sitting next to the
+ * clock pretending to mean something. A dictation taken mid-meeting brings its
+ * own `.live` class back and the wave returns with it. */
+.pill.meeting:not(.live):not(.busy):not(.done) .seed,
+.pill.meeting:not(.live):not(.busy):not(.done) .wave {
+  display: none;
+}
+.pill.meeting:not(.live):not(.busy):not(.done) .ctrl {
+  display: none;
+}
+
+/* Yappy draws its capsule on a canvas, so the badge floats over it, anchored to
+ * the same bottom-centre island the capsule is drawn on. */
+.kami-stage .meeting-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  padding: 5px 8px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #17181c 0%, #0c0c0f 100%);
+  box-shadow:
+    inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
+    0 8px 20px rgba(0, 0, 0, 0.42);
+}

@@ -1060,8 +1060,13 @@ enum CaptureCmd {
     /// [`IDLE_CLOSE`], so a meeting with no concurrent dictation captures
     /// exactly 60 seconds and then finalizes a 60-second wav as `complete`.
     /// A meeting must own its own audio source.
+    /// The reply carries the format the stream is actually running at. YV95's
+    /// capture adapter builds the meeting's `SessionConfig` from it: the native
+    /// rate is only knowable once a stream is open, and configuring a meeting's
+    /// resampler from a guess is how a three-hour recording comes back at the
+    /// wrong speed.
     Hold {
-        reply: mpsc::SyncSender<Result<(), String>>,
+        reply: mpsc::SyncSender<Result<InputFormat, String>>,
     },
     /// The meeting ended: the stream may go idle again (and the idle clock
     /// starts now, so the mic indicator goes out a minute after the MEETING,
@@ -1434,7 +1439,7 @@ fn dispatch(cmd: CaptureCmd) -> Result<(), String> {
 /// audio source outright. Blocking (bounded by [`ARM_TIMEOUT`]) because a
 /// meeting that cannot open the microphone must fail at start, loudly, rather
 /// than record silence for an hour.
-pub fn hold_stream_for_meeting() -> Result<(), String> {
+pub fn hold_stream_for_meeting() -> Result<InputFormat, String> {
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Hold { reply: reply_tx })?;
     reply_rx
@@ -1554,7 +1559,11 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     }
                 }
                 held_for_meeting = true;
-                let _ = reply.send(Ok(()));
+                let format = live
+                    .as_ref()
+                    .map(|s| s.format)
+                    .unwrap_or_else(|| InputFormat::new(TARGET_RATE, 1));
+                let _ = reply.send(Ok(format));
             }
             Ok(CaptureCmd::Release) => {
                 held_for_meeting = false;
