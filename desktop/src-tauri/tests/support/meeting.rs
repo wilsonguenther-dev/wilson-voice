@@ -142,6 +142,19 @@ impl ChunkAsr for RampDecoder {
 /// How much of a straddling word falls either side of the cut, in seconds.
 const STRADDLE_HALF: f64 = 0.4;
 
+/// How close a window edge has to be to a boundary to BE that boundary.
+///
+/// A millisecond, not an epsilon, and the difference is the whole reason the
+/// first cut of this fixture was silently inert. The window bounds are read back
+/// off the ramp, whose samples are `f32`: at 90 s an `f32` resolves ~7.6e-6 s, so
+/// the reconstructed end of a window that really does stop at 90.000000 s comes
+/// back as 90.000002 s. Against a 1e-6 tolerance that window was NOT at the
+/// boundary, so it emitted the *whole* word past the cut instead of the fragment
+/// — and a fragment that is never emitted is a truncated word that never
+/// duplicates. Every assertion in this file's straddle test passed, on a build
+/// with the bug in it, because the fixture had quietly stopped straddling.
+const BOUNDARY_EPS: f64 = 1e-3;
+
 /// A decoder whose words STRADDLE the chunk boundaries — the one case
 /// [`RampDecoder`] structurally cannot produce, and the only case the seam
 /// tie-break exists for.
@@ -195,7 +208,7 @@ impl StraddleDecoder {
 
     fn is_interior_boundary(&self, second: f64) -> bool {
         second > 0.0
-            && second < self.total_seconds - 1e-9
+            && second < self.total_seconds - BOUNDARY_EPS
             && (second / self.boundary_every).fract().abs() < 1e-9
     }
 
@@ -216,9 +229,9 @@ impl StraddleDecoder {
             spans.push((centre - 0.2, centre + 0.2, word_at(second)));
         }
         let mut boundary = self.boundary_every;
-        while boundary < end + 1e-9 {
-            if self.is_interior_boundary(boundary) && boundary > start + 1e-9 {
-                if (end - boundary).abs() <= 1e-6 {
+        while boundary < end + BOUNDARY_EPS {
+            if self.is_interior_boundary(boundary) && boundary > start + BOUNDARY_EPS {
+                if (end - boundary).abs() <= BOUNDARY_EPS {
                     // This window's audio ends AT the cut: the fragment it heard.
                     spans.push((
                         boundary - STRADDLE_HALF,

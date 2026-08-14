@@ -332,6 +332,36 @@ fn a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once() {
     let expected = expected_words(MEETING_SECONDS as usize).join(" ");
     let demand = NoDemand;
 
+    // ── The fixture is itself under test ────────────────────────────────────
+    // Everything below is vacuous unless a word really does go THROUGH the cut,
+    // and the first cut of this fixture silently stopped doing that (see
+    // `BOUNDARY_EPS` in tests/support/meeting.rs). So the two decodes of the
+    // straddling word are asserted before they are relied on: the outgoing
+    // window's copy must END at the cut, the incoming window's copy must START
+    // there, and the two must NOT overlap — because non-overlap is exactly what
+    // the intersection rule cannot see through and the truncation rule can.
+    let probe = StraddleDecoder::new(30.0, MEETING_SECONDS);
+    let outgoing = probe.absolute_spans(58.0, 90.0);
+    let incoming = probe.absolute_spans(88.0, 120.0);
+    let cut_off = outgoing.last().expect("the outgoing window decodes words");
+    let re_seen = incoming
+        .iter()
+        .find(|(_, _, t)| t == &cut_off.2)
+        .expect("the incoming window re-sees the straddling word");
+    assert_eq!(cut_off.2, "w0090", "the word the 90 s cut goes through");
+    assert!(
+        (cut_off.1 - 90.0).abs() < 1e-9,
+        "the truncated copy must end AT the cut, not {}",
+        cut_off.1
+    );
+    assert!(
+        re_seen.0 >= cut_off.1,
+        "the two copies must be disjoint ({:?} then {:?}) — overlapping ones are \
+         caught by the intersection rule and this test proves nothing",
+        cut_off,
+        re_seen
+    );
+
     // ── The reference: no interruption, straddling words at every seam ──────
     let whole = StraddleDecoder::new(30.0, MEETING_SECONDS);
     let mut store = JsonProgressStore::new(&dir);
@@ -384,6 +414,13 @@ fn a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once() {
     assert_eq!(
         last.content_end_seconds, 90.0,
         "the last ledger chunk ends at the resume point"
+    );
+    let truncated = last.spans.last().expect("the last ledger chunk has words");
+    assert_eq!(truncated.text, "w0090");
+    assert!(
+        (truncated.end_seconds - 90.0).abs() < 1e-3,
+        "the ledger must actually carry a word the cut truncated, ending at the \
+         resume point — got {truncated:?}"
     );
     assert_eq!(
         last.end_boundary,

@@ -1,0 +1,21 @@
+==============================================================================
+PROBE 1 — the resume plan re-seeds kinds[0] = Edge (the shipped defect)
+  src/meeting_asr.rs: plan_windows_fixed + plan_windows, 'vec![from.boundary]'
+  reverted to 'vec![BoundaryKind::Edge]'
+==============================================================================
+test a_corrupt_ledger_starts_over_instead_of_failing ... ok
+test the_ledger_is_written_after_every_chunk_not_at_the_end ... ok
+test a_meeting_with_no_timestamps_merges_on_text_and_still_resumes ... ok
+test the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure ... ok
+test transcription_resumes_from_the_last_completed_chunk ... ok
+test an_uninterrupted_run_transcribes_every_word_exactly_once ... ok
+test quitting_mid_decode_leaves_the_unfinished_chunk_for_the_next_launch ... ok
+test a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+--- unit ---
+test meeting_asr::tests::a_resumed_plan_carries_the_kind_of_the_boundary_it_resumes_at ... FAILED
+thread 'meeting_asr::tests::a_resumed_plan_carries_the_kind_of_the_boundary_it_resumes_at' (8849894) panicked at src-tauri/src/meeting_asr.rs:2011:13:
+assertion `left == right` failed: fixed-clock planner
+  left: Edge
+ right: FixedClock
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 454 filtered out; finished in 0.00s
