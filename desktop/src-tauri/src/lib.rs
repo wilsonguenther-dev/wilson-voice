@@ -3026,6 +3026,79 @@ fn acknowledge_meeting_consent(
     state.db.acknowledge_meeting_consent()
 }
 
+/// YV102 — what Yap currently believes about system-audio permission.
+///
+/// Read on mount and after the setup step runs. Separate key, separate command,
+/// separate answer from [`meeting_consent`]: one is a legal notice, the other is
+/// a macOS permission, and the only thing they have in common is the table they
+/// live in.
+#[tauri::command]
+fn system_audio_setup(state: State<'_, Arc<AppState>>) -> meetings::SystemAudioSetup {
+    state.db.system_audio_setup()
+}
+
+/// YV102 — **the "Set up meeting recording" step.** Provokes the TCC alert on
+/// purpose, from Settings, with the explanation already on screen.
+///
+/// There is no permission-request API for system audio: creating and starting a
+/// process tap IS the request (OS-10, quoting AudioCap's README). So this runs a
+/// real 200 ms tap and throws the audio away. What it buys is the *timing* — the
+/// alert arrives while the user is reading a sentence about why, instead of at
+/// T-0 of their first Zoom join, where a dismissal is terminal because TCC never
+/// asks twice.
+///
+/// `async` + `spawn_blocking` for the same reason every other blocking command
+/// in this file is: the 200 ms dwell is a real sleep on a real CoreAudio device,
+/// and the webview's invoke must not be what waits on it.
+///
+/// **Never returns `LooksDenied`.** 200 ms is far below
+/// `syscapture::DENIAL_GRACE`, so a quiet Mac cannot be turned into a denial
+/// verdict by this path — that verdict is only ever earned by a real session.
+#[tauri::command]
+async fn run_system_audio_setup(
+    state: State<'_, Arc<AppState>>,
+) -> Result<meetings::SystemAudioSetup, String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        let verdict = prewarm_system_audio();
+        db.record_system_audio_setup(verdict)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The platform half of [`run_system_audio_setup`], split out so the command is
+/// one shape on every target.
+///
+/// The macOS 14.4 gate is checked HERE rather than trusted from the UI: the
+/// affordance is disabled below 14.4 (YV101), and a disabled affordance is a
+/// courtesy, not an enforcement.
+#[cfg(target_os = "macos")]
+fn prewarm_system_audio() -> meetings::SetupVerdict {
+    use os_version_gate::{system_audio_gate_now, SystemAudioGate};
+    if !matches!(system_audio_gate_now(), SystemAudioGate::Available) {
+        return meetings::SetupVerdict::Unavailable;
+    }
+    let report = syscapture::imp::prewarm_system_audio_permission();
+    match (report.opened, report.verdict) {
+        (false, _) => {
+            if let Some(error) = &report.error {
+                log::warn!("system-audio pre-warm failed: {error}");
+            }
+            meetings::SetupVerdict::Failed
+        }
+        (true, syscapture::SystemAudioPermission::Granted) => meetings::SetupVerdict::Granted,
+        // Opened, nothing audible in 200 ms. The alert has been shown; the
+        // answer is genuinely not knowable yet, and saying so is the item.
+        (true, _) => meetings::SetupVerdict::Ran,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prewarm_system_audio() -> meetings::SetupVerdict {
+    meetings::SetupVerdict::Unavailable
+}
+
 /// YV97 — summarize one recorded meeting, locally.
 ///
 /// MUST be `async` + `spawn_blocking`, same as [`paste_entry`]. A *sync*
@@ -4134,6 +4207,8 @@ pub fn run() {
             // single `settings_kv` row; nothing here can block a recording.
             meeting_consent,
             acknowledge_meeting_consent,
+            system_audio_setup,
+            run_system_audio_setup,
             // YV95 — the entry point finding #6 says the phase cannot merge
             // without.
             meeting_status,

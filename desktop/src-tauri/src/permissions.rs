@@ -153,6 +153,34 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     }
 }
 
+/// YV102 — the pane a denied system-audio tap has to be fixed in, and the ONLY
+/// recovery there is: TCC never re-asks after a denial.
+///
+/// **The anchor was verified on the target OS, not guessed**, because OS-10 is
+/// explicit that a wrong one opens the top of System Settings, which is a worse
+/// dead end than no link at all. The plan's candidate string —
+/// `…?Privacy_SystemAudio` — **does not exist**. Enumerating the anchors the
+/// Settings pane extension actually recognises:
+///
+/// ```text
+/// $ strings -a /System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex\
+///     /Contents/MacOS/SecurityPrivacyExtension | grep -oE 'Privacy_[A-Za-z0-9]+' | sort -u
+/// … Privacy_Accessibility  Privacy_AudioCapture  Privacy_Camera  Privacy_Microphone
+/// Privacy_ScreenCapture … (no Privacy_SystemAudio)
+/// ```
+///
+/// `Privacy_AudioCapture` is the real one. Opening it and reading the window
+/// title back out of the window server (macOS 26.5.2, build 25F84) gives
+/// `Screen & System Audio Recording` — the pane that carries the **System Audio
+/// Recording Only** list Yap needs to appear in. Transcript and screenshot:
+/// `docs/pr-screenshots/YV102/`.
+///
+/// The fallback below is not decoration: on macOS 14.4–14.x the pane is titled
+/// "System Audio Recording Only" and is reached by the same anchor, but if a
+/// future OS retires it, landing on Privacy & Security is still one scroll from
+/// the answer, whereas an unrecognised anchor lands on General.
+pub const SYSTEM_AUDIO_PANE: &str = "SystemAudio";
+
 /// Open the correct System Settings privacy pane (macOS 13+ / 15 URLs).
 pub fn open_privacy_pane(pane: &str) -> Result<(), String> {
     // Prefer modern Settings URLs; fall back to legacy preference panes.
@@ -166,6 +194,13 @@ pub fn open_privacy_pane(pane: &str) -> Result<(), String> {
         ],
         "InputMonitoring" | "ListenEvent" => &[
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        ],
+        // YV102 — see SYSTEM_AUDIO_PANE. Verified anchor first, Privacy &
+        // Security second; never a bare System Settings launch, which is the
+        // dead end OS-10 warns about.
+        "SystemAudio" | "AudioCapture" => &[
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
         ],
         _ => &["x-apple.systempreferences:com.apple.preference.security"],
     };

@@ -1247,6 +1247,15 @@ button.star.on {
   margin-top: 2px;
 }
 
+/* YV102 — the one state in the system-audio setup step that is a problem the
+   user has to go fix: macOS has not granted System Audio Recording, and it will
+   not ask again. Warn ink rather than danger ink on purpose — nothing is
+   broken, mic-only meeting recording is still running, and the fix is one trip
+   to System Settings. */
+.tiny.warn {
+  color: var(--warn-ink);
+}
+
 .scratch {
   display: grid;
   grid-template-columns: 220px 1fr;

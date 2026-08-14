@@ -1318,6 +1318,38 @@ impl Database {
         Ok(self.meeting_consent())
     }
 
+    // ── YV102 · the system-audio setup step's own row ──────────────────────
+
+    /// What Yap currently believes about system-audio permission on this Mac.
+    ///
+    /// Reads its OWN key. `meeting_consent()` above reads a different one, and
+    /// `tests/settings_kv.rs` asserts that acking either leaves the other
+    /// exactly where it was — the two facts are independent and the storage has
+    /// to keep them that way.
+    pub fn system_audio_setup(&self) -> meetings::SystemAudioSetup {
+        meetings::SystemAudioSetup::from_row(
+            self.setting_get(meetings::SYSTEM_AUDIO_SETUP_ACK_KEY),
+        )
+    }
+
+    /// Record what the setup step (or a later meeting's discriminator) found.
+    ///
+    /// **Overwrites**, where `acknowledge_meeting_consent` deliberately does
+    /// not. The consent row answers "when did this user first see the notice",
+    /// which cannot change; this row answers "what is the permission state
+    /// now", which can — a user who allows the tap after a denial must not be
+    /// stuck looking at the denied banner forever.
+    pub fn record_system_audio_setup(
+        &self,
+        verdict: meetings::SetupVerdict,
+    ) -> Result<meetings::SystemAudioSetup, String> {
+        self.setting_set(
+            meetings::SYSTEM_AUDIO_SETUP_ACK_KEY,
+            &meetings::SystemAudioSetup::encode(verdict, &Utc::now().to_rfc3339()),
+        )?;
+        Ok(self.system_audio_setup())
+    }
+
     /// Open a new meeting row in state `recording`.
     pub fn create_meeting(&self, title: &str, source: &str) -> Result<Meeting, String> {
         let now = Utc::now();
