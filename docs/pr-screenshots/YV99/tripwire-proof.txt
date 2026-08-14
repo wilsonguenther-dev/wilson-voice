@@ -1,0 +1,160 @@
+# Proof every gate in the matrix fires — regenerated for the finisher round that
+# rebased this branch onto a main carrying YV90-YV98.
+#
+# The round's BLOCKING finding was that row 5 was published as `Coverage::Test`
+# while the test behind it read `record.rs` — the DICTATION journal — instead of
+# `meeting::MeetingJournal`, and that `Test` rows carried no tripwire at all, so
+# nothing could catch that class of misattribution. Probes 1 and 2 are the fix,
+# falsified. Probes 3-5 re-falsify the gates this rebase changed.
+#
+# Every probe was applied to a green tree, run, and reverted.
+
+########################################################################
+# 1. Row 5's test stops driving the meeting journal (the BLOCKING finding)
+########################################################################
+# The test is cut back to what it used to be: source assertions about
+# record.rs plus the pure quality-note checks. Nothing touches
+# MeetingJournal as code any more. The row still SAYS it is covered.
+$ cargo test --test matrix_coverage test_rows_drive
+
+running 1 test
+test test_rows_drive_the_shipping_code_they_name ... FAILED
+
+failures:
+
+---- test_rows_drive_the_shipping_code_they_name stdout ----
+
+thread 'test_rows_drive_the_shipping_code_they_name' (9313415) panicked at src-tauri/tests/matrix_coverage.rs:254:9:
+TRIPWIRE — matrix row 5: `matrix_row5_journal_backpressure.rs` never touches `MeetingJournal`, the shipping code this row is about. This is how row 5 was published as covered by a test that exercised the dictation journal in `record.rs` instead of the meeting journal: same shape, green, and evidence for nothing. Either drive `MeetingJournal` from that test, or change the row to name what it really covers.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_rows_drive_the_shipping_code_they_name
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 2. The meeting journal's hand-off becomes a blocking send
+########################################################################
+# src/meeting.rs: MeetingJournal::append tx.try_send(msg) -> tx.send(msg),
+# which is the change a well-meaning fix for 'we are dropping writes' makes.
+$ cargo test --test matrix_row5_journal_backpressure
+
+running 7 tests
+test the_quality_note_half_is_published_as_unwired ... ok
+test dropped_writes_become_an_honest_quality_note ... ok
+test the_dictation_journal_keeps_the_same_never_block_rule ... ok
+test the_meeting_journal_hand_off_is_try_send_and_the_drop_is_counted ... FAILED
+test a_short_hiccup_costs_the_meeting_nothing ... ok
+test a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait ... FAILED
+test the_meeting_journal_takes_writes_again_once_the_writer_catches_up ... FAILED
+
+failures:
+
+---- the_meeting_journal_hand_off_is_try_send_and_the_drop_is_counted stdout ----
+
+thread 'the_meeting_journal_hand_off_is_try_send_and_the_drop_is_counted' (9314097) panicked at src-tauri/tests/matrix_row5_journal_backpressure.rs:260:5:
+row 5: the meeting journal hand-off must be try_send, found:
+ {
+        if samples.is_empty() {
+            return 0;
+        }
+        let Some(tx) = self.tx.as_ref() else { return 0 };
+        let msg = JournalMsg::Audio {
+            track,
+            samples: samples.iter().map(|&s| to_i16(s)).collect(),
+        };
+        if tx.send(msg).is_err() {
+            self.dropped
+                .fetch_add(samples.len() as u64, Ordering::Relaxed);
+            return 0;
+        }
+        samples.len()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait stdout ----
+
+thread 'a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait' (9314094) panicked at src-tauri/tests/matrix_row5_journal_backpressure.rs:104:9:
+append #1 waited 5.001919625s: the journal hand-off is blocking on the disk, which on the real path is the cpal input callback parking mid-meeting
+
+---- the_meeting_journal_takes_writes_again_once_the_writer_catches_up stdout ----
+
+thread 'the_meeting_journal_takes_writes_again_once_the_writer_catches_up' (9314098) panicked at src-tauri/tests/matrix_row5_journal_backpressure.rs:172:9:
+filling the queue took 5.002010542s by append #1 — the hand-off is waiting for the writer
+
+
+failures:
+    a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait
+    the_meeting_journal_hand_off_is_try_send_and_the_drop_is_counted
+    the_meeting_journal_takes_writes_again_once_the_writer_catches_up
+
+test result: FAILED. 4 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.01s
+
+error: test failed, to rerun pass `--test matrix_row5_journal_backpressure`
+
+########################################################################
+# 3. Somebody wires continuation_title (row 17b must stop saying NOT WIRED)
+########################################################################
+# A call site appended to src/logging.rs stands in for the UI that would
+# start the continuation meeting.
+$ cargo test --test matrix_coverage unowned_policy
+
+running 1 test
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... FAILED
+
+failures:
+
+---- unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not stdout ----
+
+thread 'unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not' (9314780) panicked at src-tauri/tests/matrix_coverage.rs:302:13:
+TRIPWIRE — matrix row 17b: `continuation_title` is now code in desktop/src-tauri/src/logging.rs, so somebody wired it. This row is no longer `PolicyOnly`: promote it to Coverage::Test in src/meeting_matrix.rs — naming `continuation_title`'s module as the subject — and rewrite `matrix_row17_meeting_cap.rs` to drive that call site: assert the shipping surface performs the behaviour, not that the pure function returns the right value. This test exists so a policy cannot keep being published as covered after its call site appeared — and so it cannot keep being published as covered before it.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `--test matrix_coverage`
+
+########################################################################
+# 4. A row drifts back to a test name the acceptance sweep cannot reach
+########################################################################
+# Row 3a is pointed back at meeting_transcription_resume.rs, the name YV93
+# merged under.
+$ cargo test --test matrix_coverage
+test the_matrix_still_covers_the_eight_failures_22a_owns ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test the_published_sweep_is_runnable_and_complete ... FAILED
+test every_matrix_row_is_covered_by_something_that_exists ... FAILED
+test the_committed_matrix_document_matches_the_code ... FAILED
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... FAILED
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test test_rows_drive_the_shipping_code_they_name ... FAILED
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+these rows name a test the acceptance sweep cannot reach, so the phase's own criterion could never go green for them: ["row 3a → meeting_transcription_resume.rs"]. Either rename the test, or the row is outside the acceptance command and the command is the thing that has to change.
+test result: FAILED. 4 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+########################################################################
+# 5. A module quietly drops off the offline meeting path
+########################################################################
+# summarize.rs removed from MEETING_PATH. Every remaining module is still
+# network-free, so the offline assertion itself stays green — which is
+# exactly why the list needs its own guard.
+$ cargo test --test matrix_phase_offline
+test every_module_on_the_list_still_exists ... FAILED
+test the_whole_meeting_path_has_no_network_surface ... ok
+the meeting path lost modules — shrinking this list makes the offline claim cheaper to satisfy, which is the one direction it must never move in silence
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+########################################################################
+# After every probe was reverted: the tree is green again.
+########################################################################
+$ cargo test --test matrix_coverage --test matrix_row5_journal_backpressure --test matrix_phase_offline
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s

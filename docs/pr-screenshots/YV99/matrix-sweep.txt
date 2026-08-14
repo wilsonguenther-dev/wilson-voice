@@ -1,0 +1,125 @@
+$ cd desktop/src-tauri
+$ cargo test --test matrix_coverage --test matrix_row4_disk_preflight --test matrix_row5_journal_backpressure --test matrix_row6_orphan_recovery --test matrix_row15_single_instance --test matrix_row16_sleep_wake --test matrix_row17_meeting_cap --test matrix_new_quit_mid_processing --test matrix_new_asr_chunk_timeout --test matrix_phase_offline
+
+   Compiling wilson-voice v0.8.0 
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running tests/matrix_coverage.rs 
+
+running 9 tests
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_matrix_still_covers_the_eight_failures_22a_owns ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test the_published_sweep_is_runnable_and_complete ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test test_rows_drive_the_shipping_code_they_name ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/matrix_new_asr_chunk_timeout.rs 
+
+running 2 tests
+test a_chunk_that_exceeds_the_transcribe_timeout_fails_alone ... ok
+test a_failed_chunk_is_not_retried_on_resume ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/matrix_new_quit_mid_processing.rs 
+
+running 8 tests
+test a_corrupt_ledger_starts_over_instead_of_failing ... ok
+test the_ledger_is_written_after_every_chunk_not_at_the_end ... ok
+test a_meeting_with_no_timestamps_merges_on_text_and_still_resumes ... ok
+test the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure ... ok
+test an_uninterrupted_run_transcribes_every_word_exactly_once ... ok
+test quitting_mid_decode_leaves_the_unfinished_chunk_for_the_next_launch ... ok
+test transcription_resumes_from_the_last_completed_chunk ... ok
+test a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/matrix_phase_offline.rs 
+
+running 2 tests
+test every_module_on_the_list_still_exists ... ok
+test the_whole_meeting_path_has_no_network_surface ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/matrix_row15_single_instance.rs 
+
+running 4 tests
+test the_published_row_points_at_the_manual_repro_not_at_this_file ... ok
+test the_plugin_is_a_pinned_dependency ... ok
+test the_duplicate_focuses_the_running_app_instead_of_recording ... ok
+test single_instance_is_the_first_plugin_registered ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row16_sleep_wake.rs 
+
+running 9 tests
+test a_user_stop_cancels_any_pending_resume ... ok
+test declining_the_offer_ends_the_meeting_cleanly ... ok
+test a_wake_with_no_preceding_sleep_never_pretends_the_gap_did_not_happen ... ok
+test two_lid_closes_in_one_meeting_produce_two_offers_and_no_lost_state ... ok
+test wake_offers_resume_as_a_new_segment_never_a_pretended_continuity ... ok
+test sleep_while_idle_does_nothing_at_all ... ok
+test sleep_finalizes_and_marks_paused_by_sleep ... ok
+test duplicate_notifications_are_idempotent ... ok
+test the_row_is_published_as_unwired_because_nothing_registers_the_notification ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row17_meeting_cap.rs 
+
+running 8 tests
+test a_dying_meeting_at_the_cap_is_stopped_for_the_reason_that_matters ... ok
+test the_cap_warning_fires_at_2h45m_and_only_once ... ok
+test an_all_day_recording_is_three_linked_meetings ... ok
+test the_published_rows_separate_what_ships_from_what_does_not ... ok
+test the_meeting_stops_at_the_three_hour_cap ... ok
+test the_published_thresholds_are_the_ones_the_watchdog_enforces ... ok
+test the_continuation_meeting_is_linked_and_never_stacks_its_own_suffix ... ok
+test the_cap_thresholds_are_not_re_declared_alongside_the_matrix ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/matrix_row4_disk_preflight.rs 
+
+running 6 tests
+test the_preflight_formula_is_the_one_the_row_specifies ... ok
+test the_watchdog_rule_is_one_gigabyte_and_it_is_pure ... ok
+test a_start_that_fits_is_allowed ... ok
+test the_watchdog_stops_a_running_meeting_cleanly_and_marks_it_partial ... ok
+test a_meeting_the_watchdog_never_stops_is_complete_not_partial ... ok
+test a_start_that_would_not_fit_is_refused_before_a_single_byte_is_written ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/matrix_row5_journal_backpressure.rs 
+
+running 7 tests
+test the_quality_note_half_is_published_as_unwired ... ok
+test dropped_writes_become_an_honest_quality_note ... ok
+test the_meeting_journal_hand_off_is_try_send_and_the_drop_is_counted ... ok
+test the_dictation_journal_keeps_the_same_never_block_rule ... ok
+test a_short_hiccup_costs_the_meeting_nothing ... ok
+test a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait ... ok
+test the_meeting_journal_takes_writes_again_once_the_writer_catches_up ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/matrix_row6_orphan_recovery.rs 
+
+running 5 tests
+test a_marker_with_no_audio_is_cleaned_up_rather_than_becoming_a_row ... ok
+test a_truncated_index_line_does_not_cost_the_recording ... ok
+test a_crashed_two_track_meeting_recovers_both_tracks ... ok
+test an_orphan_marker_and_spill_become_a_playable_wav_marked_partial ... ok
+test several_orphans_are_all_recovered_and_a_dictation_journal_is_left_alone ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+

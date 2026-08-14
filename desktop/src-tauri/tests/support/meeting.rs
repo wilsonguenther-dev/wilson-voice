@@ -1,8 +1,8 @@
 //! Shared fixtures for the YV93 meeting-ASR test files.
 //!
-//! Compiled into each of `meeting_transcription_resume`,
+//! Compiled into each of `matrix_new_quit_mid_processing`,
 //! `meeting_dictation_preempts_transcription` and
-//! `meeting_chunk_timeout_isolation` via `#[path]` rather than living in the
+//! `matrix_new_asr_chunk_timeout` via `#[path]` rather than living in the
 //! crate: a stub decoder is test scaffolding and has no business shipping in
 //! the binary. It sits under `tests/support/` so cargo does not build it as a
 //! test target of its own.

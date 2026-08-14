@@ -1,3 +1,7 @@
+//! Renamed from `meeting_chunk_timeout_isolation.rs` by YV99: this file is
+//! error-matrix row `3b`, and the phase's acceptance sweep is a run over the
+//! `matrix_*` binaries — under the old name the sweep could never reach it.
+//!
 //! YV93 — one chunk that blows through `TRANSCRIBE_TIMEOUT` must not poison the
 //! rest of the meeting.
 //!
@@ -145,7 +149,11 @@ fn a_chunk_that_exceeds_the_transcribe_timeout_fails_alone() {
     // The neighbours are untouched — this is the "must not poison" clause.
     for chunk in ledger.chunks.iter().filter(|c| c.index != 1) {
         assert_eq!(chunk.status, ChunkStatus::Done, "chunk {}", chunk.index);
-        assert!(!chunk.text.is_empty(), "chunk {} lost its text", chunk.index);
+        assert!(
+            !chunk.text.is_empty(),
+            "chunk {} lost its text",
+            chunk.index
+        );
     }
     assert!(
         out.text.contains(&word_at(5)),
