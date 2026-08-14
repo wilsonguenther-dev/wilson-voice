@@ -12,8 +12,10 @@
 use std::path::Path;
 use std::sync::Once;
 
+use serde::{Deserialize, Serialize};
 use transcribe_cpp::{
-    Backend, CancelToken, Model, ModelOptions, RunExtension, RunOptions, Session, WhisperRunOptions,
+    Backend, CancelToken, Model, ModelOptions, RunExtension, RunOptions, Session, TimestampKind,
+    WhisperRunOptions,
 };
 
 static BACKEND_INIT: Once = Once::new();
@@ -120,6 +122,22 @@ pub fn cancel_token(engine: &AsrEngine) -> CancelToken {
     engine.cancel.clone()
 }
 
+/// Clear a cancellation left over from a previous run (YV93).
+///
+/// `CancelToken` is STICKY — `cancel()` sets a flag that stays set until
+/// `reset()`, and the session polls it between decode steps forever after. YV70
+/// only ever cancelled on the way out of the process, so nothing noticed; YV93
+/// cancels a meeting chunk whenever a dictation wants the engine, and without
+/// this every decode after the first preemption would abort instantly and the
+/// warm engine would be permanently useless.
+///
+/// Called by the lease with the engine exclusively in hand, immediately before
+/// it is published as in-flight, so a cancel from that instant on is honoured
+/// and one from a previous run cannot abort this one.
+pub fn reset_cancel(engine: &AsrEngine) {
+    engine.cancel.reset();
+}
+
 /// Load a GGUF model from disk into a ready-to-run engine.
 ///
 /// `Backend::Auto` lets the library pick the best registered device (Metal on
@@ -194,9 +212,329 @@ pub fn transcribe(
         .map_err(|e| format!("transcription failed: {e}"))
 }
 
+// ---------------------------------------------------------------------------
+// YV93 — the TIMED decode
+// ---------------------------------------------------------------------------
+
+/// One timed row of a decode — a segment or a word, depending on which list it
+/// came out of. Times are SECONDS from the start of the buffer that was
+/// decoded; the meeting chunker shifts them onto the meeting's timeline.
+///
+/// Deliberately not `transcribe_cpp::Segment`: the native rows carry index
+/// bookkeeping (`first_word`, `n_tokens`, …) that means nothing once a row has
+/// been moved onto another timeline, and re-exporting a native type would put
+/// the ASR crate in the signature of everything downstream of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimedSpan {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+impl TimedSpan {
+    /// Shift onto another timeline (a chunk's own start, in the meeting case).
+    pub fn shifted(&self, by_seconds: f64) -> TimedSpan {
+        TimedSpan {
+            start_seconds: self.start_seconds + by_seconds,
+            end_seconds: self.end_seconds + by_seconds,
+            text: self.text.clone(),
+        }
+    }
+}
+
+/// What granularity of timestamp a decode actually came back with. This is the
+/// answer to plan finding #11 ("nobody has confirmed what the shipped Parakeet
+/// build returns") at RUN time rather than at spike time, because it is what
+/// the merge has to branch on: with [`TimedKind::None`] there are no times to
+/// dedupe on and the seam falls back to text alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimedKind {
+    None,
+    Segment,
+    Word,
+    Token,
+}
+
+impl TimedKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TimedKind::None => "none",
+            TimedKind::Segment => "segment",
+            TimedKind::Word => "word",
+            TimedKind::Token => "token",
+        }
+    }
+
+    /// True when the decode carried times the seam merge can use as its PRIMARY
+    /// key (finding #11 keeps text-LCS as the fallback, never the primary).
+    pub fn has_times(self) -> bool {
+        !matches!(self, TimedKind::None)
+    }
+
+    fn from_native(kind: TimestampKind) -> TimedKind {
+        match kind {
+            TimestampKind::Segment => TimedKind::Segment,
+            TimestampKind::Word => TimedKind::Word,
+            TimestampKind::Token => TimedKind::Token,
+            // `Auto` is a REQUEST, never an answer: a result tagged Auto is one
+            // the native side did not resolve, so treat it as "no times".
+            TimestampKind::None | TimestampKind::Auto => TimedKind::None,
+        }
+    }
+}
+
+/// A decode with its alignment kept — the whole point of [`transcribe_timed`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimedTranscript {
+    pub text: String,
+    /// The finest granularity actually populated below.
+    pub kind: TimedKind,
+    /// Segment rows, empty when the model produced none.
+    pub segments: Vec<TimedSpan>,
+    /// Word rows, empty when the model produced none.
+    pub words: Vec<TimedSpan>,
+}
+
+impl TimedTranscript {
+    /// A transcript with text and nothing else — what a caller gets from a
+    /// model that produces no alignment at all, and what the stub engines in
+    /// the lifecycle tests return.
+    pub fn text_only(text: impl Into<String>) -> TimedTranscript {
+        TimedTranscript {
+            text: text.into(),
+            kind: TimedKind::None,
+            segments: Vec::new(),
+            words: Vec::new(),
+        }
+    }
+
+    /// The best timed rows this transcript has: words when the model gave word
+    /// (or finer) alignment, else segments, else nothing.
+    pub fn best_spans(&self) -> &[TimedSpan] {
+        if !self.words.is_empty() {
+            &self.words
+        } else {
+            &self.segments
+        }
+    }
+}
+
+fn span(t0_ms: i64, t1_ms: i64, text: &str) -> TimedSpan {
+    TimedSpan {
+        start_seconds: t0_ms as f64 / 1000.0,
+        end_seconds: t1_ms as f64 / 1000.0,
+        text: text.trim().to_string(),
+    }
+}
+
+/// Batch-transcribe 16 kHz mono f32 samples, KEEPING the alignment (YV93).
+///
+/// A second method on purpose (plan finding #39): [`transcribe`] has two live
+/// callers — the dictation path and `cli.rs` — and neither wants the extra rows
+/// or the extra allocation. Nothing about this call changes the decode itself;
+/// it asks for `TimestampKind::Auto` ("richest this family supports") and keeps
+/// what comes back instead of throwing it away at `.map(|t| t.text)`.
+pub fn transcribe_timed(
+    engine: &mut AsrEngine,
+    samples_16k_mono: &[f32],
+    language: Option<&str>,
+    bias_prompt: Option<&str>,
+) -> Result<TimedTranscript, String> {
+    let family = bias_prompt
+        .filter(|p| !p.is_empty() && engine.accepts_initial_prompt())
+        .map(|p| {
+            RunExtension::Whisper(WhisperRunOptions {
+                initial_prompt: Some(p.to_string()),
+                ..WhisperRunOptions::default()
+            })
+        });
+    let options = RunOptions {
+        language: language.map(str::to_string),
+        timestamps: TimestampKind::Auto,
+        family,
+        ..RunOptions::default()
+    };
+    let transcript = engine
+        .session
+        .run(samples_16k_mono, &options)
+        .map_err(|e| format!("transcription failed: {e}"))?;
+    Ok(TimedTranscript {
+        text: transcript.text.trim().to_string(),
+        kind: TimedKind::from_native(transcript.timestamp_kind),
+        segments: transcript
+            .segments
+            .iter()
+            .map(|s| span(s.t0_ms, s.t1_ms, &s.text))
+            .collect(),
+        words: transcript
+            .words
+            .iter()
+            .map(|w| span(w.t0_ms, w.t1_ms, &w.text))
+            .collect(),
+    })
+}
+
+/// What the loaded model says it can do (YV93 spike, plan finding #11).
+///
+/// The two fields the chunker is built on are `max_timestamp_kind` (is there an
+/// alignment to dedupe seams with at all?) and `max_audio_ms` (is a 35 s window
+/// even accepted?). Printed by `wilson-voice --asr-capabilities`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCapabilities {
+    pub arch: String,
+    pub backend: String,
+    pub native_sample_rate: i32,
+    pub languages: Vec<String>,
+    pub max_timestamp_kind: TimedKind,
+    pub max_audio_ms: i64,
+    pub supports_language_detect: bool,
+    pub supports_streaming: bool,
+}
+
+/// Read the loaded model's capabilities. Cheap — GGUF metadata, no decode.
+pub fn capabilities(engine: &AsrEngine) -> ModelCapabilities {
+    let model = engine.session.model();
+    let caps = model.capabilities();
+    ModelCapabilities {
+        arch: model.arch(),
+        backend: model.backend(),
+        native_sample_rate: caps.native_sample_rate,
+        languages: caps.languages.clone(),
+        max_timestamp_kind: TimedKind::from_native(caps.max_timestamp_kind),
+        max_audio_ms: caps.max_audio_ms,
+        supports_language_detect: caps.supports_language_detect,
+        supports_streaming: caps.supports_streaming,
+    }
+}
+
+impl ModelCapabilities {
+    /// The probe's report, one `key: value` per line. The two lines the YV93
+    /// acceptance criteria grep for (`max_timestamp_kind: …`, `max_audio_ms: …`)
+    /// are produced here, so the format is asserted by a unit test rather than
+    /// by whoever last edited the printer.
+    pub fn report(&self) -> String {
+        let langs = if self.languages.is_empty() {
+            "(language-agnostic)".to_string()
+        } else {
+            self.languages.join(",")
+        };
+        format!(
+            "arch: {}\nbackend: {}\nnative_sample_rate: {}\nlanguages: {}\nmax_timestamp_kind: {}\nmax_audio_ms: {}\nsupports_language_detect: {}\nsupports_streaming: {}",
+            self.arch,
+            self.backend,
+            self.native_sample_rate,
+            langs,
+            self.max_timestamp_kind.as_str(),
+            self.max_audio_ms,
+            self.supports_language_detect,
+            self.supports_streaming,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probe prints the two lines the YV93 acceptance criteria grep for,
+    /// in the shape they grep for them (`max_timestamp_kind: .+`,
+    /// `max_audio_ms: [0-9]+`) — provable without a 731 MB model on disk.
+    #[test]
+    fn capabilities_report_carries_the_two_lines_the_spike_is_for() {
+        let caps = ModelCapabilities {
+            arch: "parakeet".into(),
+            backend: "Metal".into(),
+            native_sample_rate: 16_000,
+            languages: vec!["en".into()],
+            max_timestamp_kind: TimedKind::Word,
+            max_audio_ms: 0,
+            supports_language_detect: false,
+            supports_streaming: true,
+        };
+        let report = caps.report();
+        let kind = report
+            .lines()
+            .find(|l| l.starts_with("max_timestamp_kind: "))
+            .expect("max_timestamp_kind line");
+        assert!(
+            kind.trim_start_matches("max_timestamp_kind: ").len() > 0,
+            "empty timestamp kind: {kind}"
+        );
+        let audio = report
+            .lines()
+            .find(|l| l.starts_with("max_audio_ms: "))
+            .expect("max_audio_ms line");
+        assert!(
+            audio
+                .trim_start_matches("max_audio_ms: ")
+                .chars()
+                .all(|c| c.is_ascii_digit()),
+            "max_audio_ms is not a plain integer: {audio}"
+        );
+    }
+
+    /// `Auto` is what a decode is ASKED for, never what it comes back with — a
+    /// result still tagged Auto means the native side resolved nothing, which
+    /// the merge must read as "no usable times" and not as "some times".
+    #[test]
+    fn auto_timestamps_are_not_mistaken_for_real_ones() {
+        assert_eq!(TimedKind::from_native(TimestampKind::Auto), TimedKind::None);
+        assert_eq!(TimedKind::from_native(TimestampKind::None), TimedKind::None);
+        assert_eq!(
+            TimedKind::from_native(TimestampKind::Word),
+            TimedKind::Word
+        );
+        assert!(!TimedKind::None.has_times());
+        assert!(TimedKind::Segment.has_times());
+    }
+
+    /// Words win over segments when both are present: they are the finer key,
+    /// and the seam merge wants the finest one the model produced.
+    #[test]
+    fn best_spans_prefers_words_then_segments_then_nothing() {
+        let seg = TimedSpan {
+            start_seconds: 0.0,
+            end_seconds: 1.0,
+            text: "hello there".into(),
+        };
+        let word = TimedSpan {
+            start_seconds: 0.0,
+            end_seconds: 0.4,
+            text: "hello".into(),
+        };
+        let t = TimedTranscript {
+            text: "hello there".into(),
+            kind: TimedKind::Word,
+            segments: vec![seg.clone()],
+            words: vec![word.clone()],
+        };
+        assert_eq!(t.best_spans(), &[word]);
+        let t = TimedTranscript {
+            kind: TimedKind::Segment,
+            words: Vec::new(),
+            ..t
+        };
+        assert_eq!(t.best_spans(), &[seg]);
+        assert!(TimedTranscript::text_only("hi").best_spans().is_empty());
+    }
+
+    /// A span moved onto the meeting timeline keeps its width and its text.
+    #[test]
+    fn shifting_a_span_moves_it_without_stretching_it() {
+        let s = TimedSpan {
+            start_seconds: 1.5,
+            end_seconds: 2.25,
+            text: "walnut".into(),
+        };
+        let moved = s.shifted(28.0);
+        assert_eq!(moved.start_seconds, 29.5);
+        assert_eq!(moved.end_seconds, 30.25);
+        assert_eq!(moved.text, "walnut");
+    }
+
 
     /// YV47 — the prompt is capped to what transcribe-cpp will actually keep.
     /// Overflow drops the LEAST-important terms (the head), never the starred

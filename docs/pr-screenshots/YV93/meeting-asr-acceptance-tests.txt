@@ -1,0 +1,49 @@
+$ cargo test --test meeting_transcription_resume --test meeting_dictation_preempts_transcription --test meeting_chunk_timeout_isolation --test asr_capabilities_probe -- --nocapture
+
+   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-yv93/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.93s
+     Running tests/asr_capabilities_probe.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/asr_capabilities_probe-28b017f18d6a8dee)
+
+running 2 tests
+model: handy-computer/parakeet-unified-en-0.6b-gguf
+arch: parakeet
+backend: MTL0
+native_sample_rate: 16000
+languages: en
+max_timestamp_kind: token
+max_audio_ms: 0
+supports_language_detect: false
+supports_streaming: true
+test the_chunk_geometry_fits_inside_the_models_audio_ceiling ... ok
+test the_capabilities_probe_prints_max_timestamp_kind_and_max_audio_ms ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s
+
+     Running tests/meeting_chunk_timeout_isolation.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_chunk_timeout_isolation-87fb5baa9e0f5745)
+
+running 2 tests
+test a_chunk_that_exceeds_the_transcribe_timeout_fails_alone ... ok
+test a_failed_chunk_is_not_retried_on_resume ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/meeting_dictation_preempts_transcription.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_dictation_preempts_transcription-044240a39cbd13f6)
+
+running 3 tests
+test the_interactive_claim_is_raised_for_a_dictation_and_dropped_after_it ... ok
+test a_meeting_chunk_does_not_claim_the_engine_interactively ... ok
+test a_dictation_issued_mid_meeting_completes_in_under_two_seconds ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.39s
+
+     Running tests/meeting_transcription_resume.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_transcription_resume-c7cc6ad0f4ec1e96)
+
+running 5 tests
+test a_corrupt_ledger_starts_over_instead_of_failing ... ok
+test the_ledger_is_written_after_every_chunk_not_at_the_end ... ok
+test a_meeting_with_no_timestamps_merges_on_text_and_still_resumes ... ok
+test an_uninterrupted_run_transcribes_every_word_exactly_once ... ok
+test transcription_resumes_from_the_last_completed_chunk ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

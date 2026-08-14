@@ -1,0 +1,60 @@
+$ cargo test --test meeting_eval -- --nocapture --test-threads 1   (corpus present)
+
+   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap22a-yv93/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.82s
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-7b4d1e355ca3ad5f)
+
+running 22 tests
+test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
+test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... meeting_eval antialias in_band_fold_linear=0.094703 in_band_fold_antialiased=0.003846 removed_db=27.8
+meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
+  linear (pre-YV92): WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  anti-aliased:      WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
+ok
+test meeting_eval_corpus_matches_committed_sha256s ... corpus verified: 11 files match the committed sha256s
+ok
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... device-change: format change at 7.59s, native halves present (YV92)
+ok
+test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
+test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
+meeting_eval lecture-15min timed_spans=3129 kind=real first=0.56s last=904.00s
+lecture-15min: 30 window start times, monotonic, 0.00s to 870.00s
+ok
+test meeting_eval_lecture_wer_is_under_the_gate ... lecture-15min: 904.7s of audio, 3117 reference words, 139 utterances
+lecture-15min: 30 windows, WER 0.0048 (15 errors over 3117 reference words: 15 sub / 0 del / 0 ins); merge MergeReport { seams: 29, tail_tokens_trimmed: 7, head_tokens_skipped: 2, no_anchor_seams: 0 }
+meeting_eval lecture-15min wer=0.0048
+lecture-15min: insertion rate 0.0000 (gate 0.005), 29 seams, 7 tail tokens trimmed, 2 head tokens skipped
+meeting_eval lecture-15min timed_merge_wer=0.0087
+lecture-15min: primary (timed) merge WER 0.0087 (27 errors over 3117 reference words: 15 sub / 0 del / 12 ins)
+ok
+test meeting_eval_manifest_is_committed_and_names_three_fixtures ... ok
+  marker  pineapple: 2 of 6 windows, merged x1, continuous x1
+  marker   trombone: 2 of 6 windows, merged x1, continuous x1
+  marker    lantern: 2 of 6 windows, merged x1, continuous x1
+  marker     walnut: 2 of 6 windows, merged x1, continuous x1
+  marker   envelope: 2 of 6 windows, merged x1, continuous x1
+seam-stress: 5 seams at [28.0, 58.0, 88.0, 118.0, 148.0], 5 markers scored; chunked-vs-continuous WER 0.0000 (0 errors over 518 reference words: 0 sub / 0 del / 0 ins)
+meeting_eval seam-stress duplicated=0 dropped=0
+meeting_eval seam-stress timed_merge duplicated=0 dropped=0 drift=0.0000
+ok
+test meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap ... lecture-15min: VAD plan has 29 windows, 0 of 28 interior boundaries fell back to the clock
+meeting_eval lecture-15min vad_cut boundaries=28 cuts_in_speech=0 mean_margin_to_speech=0.054s mean_speech_in_overlap=1.631s of 2.0s
+lecture-15min (VAD-cut): text-anchor merge WER 0.0042 (13 errors over 3117 reference words: 13 sub / 0 del / 0 ins); MergeReport { seams: 28, tail_tokens_trimmed: 0, head_tokens_skipped: 4, no_anchor_seams: 0 }
+meeting_eval lecture-15min vad_cut timed_merge_wer=0.0042 insertions=0
+lecture-15min (VAD-cut): primary (timed) merge WER 0.0042 (13 errors over 3117 reference words: 13 sub / 0 del / 0 ins)
+ok
+test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test merge_reports_the_seams_that_found_no_anchor ... ok
+test overlap_token_budget_matches_the_chunk_geometry ... ok
+test seam_dedupe_never_deletes_real_words ... ok
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
+test seam_gate_catches_a_duplicated_boundary_word ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test the_harness_geometry_is_the_shipped_geometry ... ok
+test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
+test wer_counts_substitutions_insertions_and_deletions ... ok
+
+test result: ok. 19 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 51.19s
+

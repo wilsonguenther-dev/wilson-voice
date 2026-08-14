@@ -369,6 +369,109 @@ impl WarmVad {
     }
 }
 
+/// One voiced region of a clip, in SECONDS from the start of the buffer that
+/// was analysed (YV93). The meeting chunker cuts its window boundaries in the
+/// gaps BETWEEN these, so an overlap region holds near-zero speech.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoicedSpan {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// Frames of padding around each voiced run in the chunker's silence map
+/// ([`WarmVad::speech_spans`]) — 30 ms, one frame. Enough that a boundary cut
+/// at the edge of a pause cannot clip the first phoneme after it; far less than
+/// the 450 ms pre-roll the dictation path uses, which is the point.
+const SPAN_PAD_FRAMES: usize = 1;
+
+impl WarmVad {
+    /// The voiced spans of a 16 kHz mono buffer (YV93) — the SILENCE MAP the
+    /// meeting chunker cuts its window boundaries in.
+    ///
+    /// Same warm Silero session as [`isolate`](WarmVad::isolate), deliberately
+    /// NOT the same smoothing, and the reason is measured rather than argued.
+    /// The dictation path wraps the detector in 450 ms of pre-roll and 450 ms of
+    /// hangover so a natural inter-word pause never ends an utterance — exactly
+    /// the right behaviour when the question is "where does this take begin and
+    /// end", and exactly wrong when the question is "where is it quiet". Run
+    /// over the 15-minute eval lecture (sentences separated by 0.35 s pauses),
+    /// the smoothed mask bridged **every** pause: 29 of 29 chunk boundaries fell
+    /// back to the clock, i.e. the VAD arm of the chunker did nothing at all.
+    ///
+    /// So this path takes the RAW per-frame decisions, drops single-frame blips
+    /// with the same onset rule the smoothed path uses, and pads each voiced run
+    /// by one frame. What comes back are the pauses as they actually are.
+    ///
+    /// Returns `Err` on inference failure so the caller can fall back to the
+    /// fixed clock rather than cutting on a guess.
+    pub fn speech_spans(&self, samples: &[f32], rate: u32) -> Result<Vec<VoicedSpan>, String> {
+        if rate != VAD_SR {
+            return Err(format!("silero needs {VAD_SR} Hz, got {rate}"));
+        }
+        if samples.len() < FRAME_SAMPLES {
+            return Err("clip shorter than one VAD frame".into());
+        }
+        let n_frames = samples.len() / FRAME_SAMPLES;
+        let mut mask = vec![false; n_frames];
+        {
+            let mut engine = self.engine.lock();
+            engine.reset();
+            for (f, slot) in mask.iter_mut().enumerate() {
+                let base = f * FRAME_SAMPLES;
+                *slot = engine.inner.is_voice(&samples[base..base + FRAME_SAMPLES])?;
+            }
+        }
+        let mask = pad_voiced_runs(&drop_blips(&mask, ONSET_FRAMES), SPAN_PAD_FRAMES);
+        Ok(mask_to_segments(&mask, FRAME_SAMPLES)
+            .into_iter()
+            .map(|s| VoicedSpan {
+                start_seconds: s.start as f64 / rate as f64,
+                end_seconds: (s.end.min(samples.len())) as f64 / rate as f64,
+            })
+            .collect())
+    }
+}
+
+/// Drop voiced runs shorter than `min_run` frames — a click, a keystroke, one
+/// frame of a fan. The smoothed path gets this from its onset counter; the raw
+/// path has to do it explicitly. Pure → unit tested.
+fn drop_blips(mask: &[bool], min_run: usize) -> Vec<bool> {
+    let mut out = mask.to_vec();
+    let mut i = 0;
+    while i < out.len() {
+        if !out[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < out.len() && out[i] {
+            i += 1;
+        }
+        if i - start < min_run.max(1) {
+            out[start..i].fill(false);
+        }
+    }
+    out
+}
+
+/// Widen every voiced run by `pad` frames on each side, so a cut at the edge of
+/// a pause keeps its distance from speech. Pure → unit tested.
+fn pad_voiced_runs(mask: &[bool], pad: usize) -> Vec<bool> {
+    if pad == 0 {
+        return mask.to_vec();
+    }
+    let mut out = vec![false; mask.len()];
+    for (i, voiced) in mask.iter().enumerate() {
+        if !voiced {
+            continue;
+        }
+        let from = i.saturating_sub(pad);
+        let to = (i + pad + 1).min(mask.len());
+        out[from..to].fill(true);
+    }
+    out
+}
+
 // ── The model asset ─────────────────────────────────────────────────────────
 
 /// Where the Silero VAD model asset lives under Application Support.

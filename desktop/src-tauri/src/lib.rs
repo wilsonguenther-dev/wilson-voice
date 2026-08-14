@@ -4,7 +4,11 @@
 //! Optional legacy ⌘⇧V via Carbon global-shortcut.
 //! HUD: floating float.html pill, parked bottom-center (no cursor chase).
 
-mod asr_engine;
+// YV93 — public because the timed decode (`transcribe_timed`) and the shipped
+// model's `Capabilities()` are what the meeting chunker is built on, and both
+// are probed from outside the crate (`tests/asr_capabilities_probe.rs`, the
+// eval harness).
+pub mod asr_engine;
 mod cli;
 mod command_mode;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
@@ -29,6 +33,12 @@ mod hygiene;
 // synthetic event sequence and no audio hardware at all.
 pub mod input_format;
 mod latency;
+// YV93 — meeting ASR: the VAD-cut chunker, the seam merge, the preemptible +
+// resumable chunk driver, and the English-only gate. Public because every one
+// of those is a falsifiable claim with a test file of its own
+// (`tests/meeting_*.rs`) and because the eval harness (`tests/meeting_eval.rs`)
+// must score the SHIPPED chunk geometry and the SHIPPED merge, not a copy.
+pub mod meeting_asr;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
@@ -43,7 +53,9 @@ pub mod meeting;
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
 pub mod meetings;
 mod mic_auth;
-mod models;
+// YV93 — public so the English-only meeting gate can be asserted against the
+// real bundled catalog from `tests/meeting_english_only_gate.rs`.
+pub mod models;
 mod paste;
 mod paste_tx;
 mod permissions;
@@ -73,8 +85,14 @@ mod snippets;
 // enforced by `sysaudio::mute_for_take`, and that gate is asserted from
 // `tests/meeting_no_automute.rs` against a fake output device.
 pub mod sysaudio;
-mod transcription;
-mod vad;
+// YV93 — public because the preemption contract (a dictation request takes the
+// one warm engine back from meeting ASR at the next chunk boundary) is proved
+// against the REAL manager in `tests/meeting_dictation_preempts_transcription.rs`
+// and `tests/meeting_chunk_timeout_isolation.rs`.
+pub mod transcription;
+// YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
+// its boundaries on.
+pub mod vad;
 
 // YV91 finding #27: the two counters `tests/meeting_no_model_resident.rs` reads
 // to prove a meeting capture never brings an ASR model resident and never
@@ -3057,6 +3075,42 @@ async fn delete_model(state: State<'_, Arc<AppState>>, id: String) -> Result<(),
     Ok(())
 }
 
+/// Whether the Notetaker can run at all, and if not, the one sentence the empty
+/// state shows (YV93, plan finding #38).
+///
+/// 22-A is English end to end — Parakeet EN with `lang_detect:false` and no
+/// meeting-language path — while the app's "Language I speak" picker implies
+/// otherwise. A user who set that picker to Spanish and recorded a lecture would
+/// get a page of plausible English nonsense, which is worse than an error
+/// because it looks like output. The surface that consumes this lands with the
+/// Meetings UI (YV95); the decision itself is here so it is made in one place.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotetakerStatus {
+    pub available: bool,
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+async fn notetaker_status(state: State<'_, Arc<AppState>>) -> Result<NotetakerStatus, String> {
+    let (model_id, language) = {
+        let settings = state.settings.lock();
+        (settings.native_model.clone(), settings.language.clone())
+    };
+    Ok(
+        match meeting_asr::meeting_availability(Some(&model_id), Some(&language)) {
+            Ok(()) => NotetakerStatus {
+                available: true,
+                message: None,
+            },
+            Err(blocked) => NotetakerStatus {
+                available: false,
+                message: Some(blocked.message()),
+            },
+        },
+    )
+}
+
 /// Warm-engine lifecycle snapshot: what is resident, whether a load or a
 /// transcription is in flight, and how close the idle watcher is to unloading.
 #[tauri::command]
@@ -3553,6 +3607,7 @@ pub fn run() {
             select_model,
             delete_model,
             engine_status,
+            notetaker_status,
             check_for_update,
             install_update,
             license_status,
