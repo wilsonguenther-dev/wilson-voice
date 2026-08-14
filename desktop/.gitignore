@@ -6,6 +6,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+# …except YV98's redaction fixture: a hand-authored synthetic log that leaks on
+# purpose, so the support bundle's redaction pass has something to be tested
+# against. No line of it came from a real dictation or a real machine.
+!src-tauri/tests/fixtures/support/*.log
 
 node_modules
 dist

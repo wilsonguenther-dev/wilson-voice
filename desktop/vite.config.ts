@@ -19,6 +19,10 @@ const host = process.env.TAURI_DEV_HOST;
  * `dev/meeting-consent-preview.html` does the same for YV96's one-time capture
  * notice, which is unreachable a second time by construction.
  *
+ * `dev/support-bundle-preview.html` does the same for YV98's crash-report
+ * sheet, whose interesting state is a Mac whose mail client AppKit refuses to
+ * drive — not something you can produce on demand.
+ *
  *   YAP_DEV_TOOLING=1 npm run build   # then dist/dev/*.html
  */
 // @ts-expect-error process is a nodejs global
@@ -49,6 +53,12 @@ export default defineConfig(async () => ({
               meetingConsentPreview: resolve(
                 __dirname,
                 "dev/meeting-consent-preview.html",
+              ),
+              // YV98 — the crash-report sheet in both of its states: a Mac
+              // that can compose, and one that can only reveal.
+              supportBundlePreview: resolve(
+                __dirname,
+                "dev/support-bundle-preview.html",
               ),
             }
           : {}),
