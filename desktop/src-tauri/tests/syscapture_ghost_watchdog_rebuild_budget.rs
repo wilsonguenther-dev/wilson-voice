@@ -344,11 +344,19 @@ fn a_rebuild_that_never_reports_back_times_out_instead_of_hanging_the_budget() {
 /// The degrade carries the causes that were plausible at the time, so the
 /// banner and the stored row can both stay honest about what else it might have
 /// been.
+///
+/// The environment here is a tap whose aggregate is pointed at a device the
+/// audio is no longer going to — routine with AirPods — **while the machine is
+/// demonstrably still producing output**. `system_output_active: Some(false)`
+/// would be a different test entirely and now has one: a meeting with nothing
+/// playing never reaches a degrade at all, because the silence is explained
+/// (`syscapture_ghost_watchdog_false_positives.rs`).
 #[test]
 fn the_degrade_carries_the_other_plausible_causes_too() {
     let mut dog = GhostWatchdog::new();
     let env = TapEnvironment {
-        system_output_active: Some(false),
+        aggregate_matches_output_device: false,
+        system_output_active: Some(true),
         ..TapEnvironment::default()
     };
     let mut last = TapWatchdogAction::Continue;
@@ -375,8 +383,9 @@ fn the_degrade_carries_the_other_plausible_causes_too() {
     };
     assert_eq!(verdict, TapVerdict::GhostTapUnrecovered);
     assert_eq!(after_rebuilds, MAX_TAP_REBUILDS_PER_MEETING);
-    assert!(causes.contains(SilenceCause::EveryoneMuted));
+    assert!(causes.contains(SilenceCause::OutputRoutedElsewhere));
     // …and the banner never says "permission" for a tap that delivered audio.
+    assert!(!verdict.blames_permission());
     assert!(!verdict.banner().to_lowercase().contains("permission"));
     assert!(verdict
         .banner()
@@ -434,7 +443,12 @@ fn transcript_of_the_51_minute_m2_air_session_from_thread_825780() {
         }
     }
     println!();
-    println!("stored on the meeting row as `{}`:", "tap_rebuilds");
+    // Named from the module that produces the blob, not from a literal that can
+    // drift away from it. (Also the one clippy warning this suite carried.)
+    println!(
+        "stored on the meeting row as `{}`:",
+        wilson_voice_lib::syscapture::TAP_REBUILDS_COLUMN
+    );
     println!(
         "{}",
         serde_json::to_string_pretty(&dog.log().to_json()).unwrap()

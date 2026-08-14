@@ -80,10 +80,111 @@ gate what happens next.
 
 ## The one thing a reviewer should check by hand
 
-`TapWatchdogAction` has three variants and none of them stops a meeting. Matrix
+`TapWatchdogAction` has four variants and none of them stops a meeting. Matrix
 row #2's rule — a lost system-audio track degrades the meeting and never ends
 it, because Track A is still recording the person holding the Mac — is enforced
 by the *type*, not by a comment, and
 `no_tap_outcome_can_ever_stop_a_meeting` in
 `syscapture_ghost_watchdog_rebuild_first.rs` is the exhaustive match that fails
 to compile if a stop variant is ever added.
+
+
+---
+
+# Revision — review round 2, both BLOCKING findings
+
+The review found two ways this watchdog fired on a **healthy** meeting, both
+reproduced at the shipping 60 s tick, both the ordinary path rather than an edge
+case. Both were real. Neither is argued with here; the reproductions are in
+`review-round-2-false-positives.txt`, produced by mutating the shipping module
+back to its as-submitted behaviour with the new test file held constant.
+
+## Finding 1 — a granted tap with nothing to record, badged "permission is off"
+
+Reproduced exactly as reported: `system_output_active: Some(false)` held for
+twenty minutes produced
+
+    RebuildFull { attempt: 1, kind: AllZeroBuffers, causes: SilenceCauses(2) }   t=60s
+    RebuildFull { attempt: 2, kind: AllZeroBuffers, causes: SilenceCauses(2) }   t=120s
+    RebuildFull { attempt: 3, kind: AllZeroBuffers, causes: SilenceCauses(2) }   t=180s
+    DegradeTrackLost { verdict: PermissionLikelyDenied, after_rebuilds: 3, … }   t=240s
+
+— three real CoreAudio tap+aggregate teardown/recreate cycles in the first four
+minutes of an in-person meeting, each one emitting the device-change
+notifications YV103's guard exists to absorb, followed by a false privacy
+accusation. `SilenceCauses(2)` is bit 1: `EveryoneMuted`. The module computed
+its own explanation, attached it to the very same action, and then rebuilt
+anyway. That is what "the enumerated causes are decorative" means, in the
+module's own output.
+
+**What was wrong in the reasoning, not just in the code.** `ever_nonzero`
+distinguishes a TCC denial from OS-4's ghost — that is exactly what OS-4 claims
+for it and all it can do. It does not distinguish a denial from *genuine
+silence*, and the first cut treated the two as one question.
+
+**The fix, in two parts.**
+
+1. `silence_is_explained` — silence while nothing is playing (and the IOProc is
+   still firing) never starts the budget. The cause is now acted on instead of
+   recited. A dead IOProc is deliberately NOT covered: a quiet room does not
+   explain callbacks that stopped, so `IoProcSilent` still rebuilds.
+2. A permission verdict now requires positive evidence — `Some(true)` observed
+   while the tap was quiet, latched in `GhostState::output_active_observed`.
+   Without it the degrade carries the new `TapVerdict::NoSystemAudioObserved`,
+   whose banner says no audio was playing and never mentions permission.
+   `TapVerdict::blames_permission()` is the single place that question is
+   answered.
+
+The three other causes (wrong output device, inverted `exclusive` flag, nil
+dispatch queue) deliberately still ride along without suppressing: the rebuild
+might actually fix those.
+
+## Finding 2 — a tap that is DELIVERING, rebuilt again and then degraded
+
+Also reproduced exactly: after one genuine rebuild whose caller never reported
+back, a tap with `since_nonzero == 20 ms` — audio on every callback — produced
+
+    RebuildFull { attempt: 2, kind: PreviousRebuildTimedOut, … }   t=160s equivalent
+    RebuildFull { attempt: 3, kind: PreviousRebuildTimedOut, … }
+    DegradeTrackLost { verdict: GhostTapUnrecovered, after_rebuilds: 3, … }
+
+with the banner "System audio stopped coming through and could not be
+restarted" on a tap that was recording fine. And the review's sharpest point was
+right: this was the **default** path, not an exception. The in-flight timeout
+was 20 s while `meeting::WATCHDOG_INTERVAL` is 60 s, so an in-flight rebuild was
+always already expired at the next tick — the "wait for it" branch was
+unreachable in the shipping configuration — and no call site in `src/` calls
+`finish_rebuild`.
+
+**The fix, in three parts.**
+
+1. `ghost_tick` reads liveness **before** the timeout. A tap that is no longer
+   ghost-silent closes its open attempt (`RebuildSettled { Succeeded }`), clears
+   `rebuild_issued_at`, and nothing is torn down.
+2. `TAP_REBUILD_IN_FLIGHT_TIMEOUT` is derived from `meeting::WATCHDOG_INTERVAL`
+   (two intervals) rather than written down as a number, so the wait branch is
+   reachable at the interval the product ticks at — and stays reachable if the
+   interval ever changes.
+3. A stale flag on a tap whose silence turned out to be explained is released as
+   `TapRebuildOutcome::Unknown` rather than spending another attempt. "We do not
+   know whether that rebuild helped" is a different fact from "it never
+   reported", and the log now distinguishes them.
+
+## What did NOT change
+
+The OS-4 ghost path is untouched, and `ghost-session-transcript.txt` re-run
+after the fix prints the same ladder line for line and the same stored blob
+(rebuilds at 6:00 / 16:00 / 17:00, degrade in the 16-minute hole,
+`ghost_tap_unrecovered`), which is why that file is unchanged in this
+revision. The fix removes false
+positives; it does not make the watchdog slower to answer a real ghost. Rule (a)
+is also intact: with silence that has no innocent explanation, the FIRST action
+is still a full rebuild however long the silence has run, and
+`syscapture_ghost_watchdog_rebuild_first.rs` still asserts it.
+
+## Still not claimed
+
+Everything under "What could NOT be run" at the top of this file stands
+unchanged: there is no tap at this commit, no signed build with the TCC grant,
+and no hardware repro. The new suite is a pure state-machine test like the rest,
+and it is proved non-vacuous by mutation rather than by assertion.

@@ -24,9 +24,9 @@
 use std::time::Duration;
 
 use wilson_voice_lib::syscapture::{
-    full_rebuild_sequence, ghost_tick, GhostState, SilenceCause, TapEnvironment, TapLiveness,
-    TapSilenceKind, TapStep, TapWatchdogAction, TapWatchdogInputs, MAX_TAP_REBUILDS_PER_MEETING,
-    TAP_SILENCE_REBUILD_AFTER,
+    full_rebuild_sequence, ghost_tick, plausible_silence_causes, GhostState, SilenceCause,
+    TapEnvironment, TapLiveness, TapSilenceKind, TapStep, TapWatchdogAction, TapWatchdogInputs,
+    MAX_TAP_REBUILDS_PER_MEETING, TAP_SILENCE_REBUILD_AFTER,
 };
 
 /// A tap that has been producing real audio and has just gone to zeros.
@@ -196,11 +196,17 @@ fn a_dead_ioproc_rebuilds_too_and_says_so() {
 /// Rule (d): the innocent explanations ride along with the rebuild instead of
 /// being silently ruled out. This is what keeps the log line an enumeration
 /// rather than an accusation.
+///
+/// Three of the five ride, and the choice is not arbitrary: a tap pointed at
+/// the wrong output device, an inverted `exclusive` flag and a nil dispatch
+/// queue are all things the seven steps might actually fix, so they are named
+/// AND acted on. The fourth — nothing is playing — is the one the rebuild
+/// cannot fix, and it gets the test below instead.
 #[test]
 fn the_other_silence_causes_are_carried_on_the_rebuild() {
     let env = TapEnvironment {
         aggregate_matches_output_device: false,
-        system_output_active: Some(false),
+        system_output_active: Some(true),
         exclusive_flag_mutated_post_init: true,
         dispatch_queue_installed: false,
     };
@@ -213,14 +219,46 @@ fn the_other_silence_causes_are_carried_on_the_rebuild() {
         panic!("expected a rebuild, got {action:?}");
     };
     assert!(causes.contains(SilenceCause::OutputRoutedElsewhere));
-    assert!(causes.contains(SilenceCause::EveryoneMuted));
     assert!(causes.contains(SilenceCause::ExclusiveFlagInverted));
     assert!(causes.contains(SilenceCause::NilDispatchQueue));
-    assert_eq!(causes.len(), 4);
+    assert!(!causes.contains(SilenceCause::EveryoneMuted));
+    assert_eq!(causes.len(), 3);
     assert_eq!(
         causes.as_log_string(),
-        "output_routed_elsewhere|everyone_muted|exclusive_flag_inverted|nil_dispatch_queue"
+        "output_routed_elsewhere|exclusive_flag_inverted|nil_dispatch_queue"
     );
+}
+
+/// …and the fifth reading is the one that is **acted on rather than recited**.
+///
+/// When the machine is producing no output at all there is nothing for the tap
+/// to have captured, so the zeros are the truth and a rebuild is three real
+/// CoreAudio teardowns of a working tap. The enumeration is unchanged — all
+/// four adverse readings are still named by `plausible_silence_causes`, so a
+/// later degrade can still list them — but the watchdog does not act.
+///
+/// This is the review's first blocking finding, as a test: an ordinary
+/// in-person meeting used to spend its whole rebuild budget in the first three
+/// minutes and then badge itself permission-denied.
+#[test]
+fn nothing_playing_suppresses_the_rebuild_instead_of_merely_being_listed() {
+    let env = TapEnvironment {
+        aggregate_matches_output_device: false,
+        system_output_active: Some(false),
+        exclusive_flag_mutated_post_init: true,
+        dispatch_queue_installed: false,
+    };
+    let live = ghost_after(Duration::from_secs(90));
+    assert_eq!(
+        tick(live, env, GhostState::default()),
+        TapWatchdogAction::Continue,
+        "silence with nothing playing is explained, so it never starts the budget"
+    );
+    // The enumeration itself is untouched: naming a cause and acting on it are
+    // different jobs, and this module still does both.
+    let causes = plausible_silence_causes(&live, &env);
+    assert!(causes.contains(SilenceCause::EveryoneMuted));
+    assert_eq!(causes.len(), 4);
 }
 
 /// The rebuild the action names is the SEVEN-step one, in OS-4's order, and it
@@ -253,8 +291,9 @@ fn the_rebuild_is_the_full_seven_step_sequence_in_apples_order() {
 
 /// Type-level, and the reason it is worth a test: matrix row #2 says a lost
 /// system-audio track NEVER ends the meeting, because Track A is still
-/// recording the person holding the Mac. `TapWatchdogAction` has three variants
-/// and none of them is a stop, so no future caller can wire one by accident.
+/// recording the person holding the Mac. Not one variant of
+/// `TapWatchdogAction` is a stop, so no future caller can wire one by accident,
+/// and this match is what makes a variant added later have to face the question.
 #[test]
 fn no_tap_outcome_can_ever_stop_a_meeting() {
     let outcomes = [
@@ -281,6 +320,7 @@ fn no_tap_outcome_can_ever_stop_a_meeting() {
         match action {
             TapWatchdogAction::Continue
             | TapWatchdogAction::RebuildFull { .. }
+            | TapWatchdogAction::RebuildSettled { .. }
             | TapWatchdogAction::DegradeTrackLost { .. } => {}
         }
     }

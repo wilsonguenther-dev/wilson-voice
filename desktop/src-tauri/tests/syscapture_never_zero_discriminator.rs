@@ -20,6 +20,15 @@
 //! `CaptureAnchor` and the drained blocks already carry — no new anchor field,
 //! no private API, no probe that can fail.
 //!
+//! **What the bit does not do, added after review round 2.** `ever_nonzero`
+//! separates a denial from OS-4's ghost, which is what OS-4 claims for it. It
+//! does not separate a denial from a granted tap that had nothing to record, so
+//! both sessions below are replayed with the machine **audibly producing
+//! output** (`system_output_active: Some(true)`) — the only reading under which
+//! "this tap heard nothing" is evidence of anything at all. The same denial
+//! session replayed with nothing playing is not a denial and is asserted to
+//! come out as `NoSystemAudioObserved` instead.
+//!
 //! No audio hardware, and no ASR: the two sessions are made of `f32` blocks.
 
 use std::time::Duration;
@@ -52,6 +61,23 @@ fn anchor(sample_index: u64) -> CaptureAnchor {
 fn replay(
     good_seconds: u64,
     total_seconds: u64,
+) -> (TapLiveness, Vec<TapWatchdogAction>, GhostWatchdog) {
+    replay_in(good_seconds, total_seconds, audibly_playing())
+}
+
+/// Something is producing output on this machine for the whole session, so a
+/// tap that hears nothing is hearing nothing *about something*.
+fn audibly_playing() -> TapEnvironment {
+    TapEnvironment {
+        system_output_active: Some(true),
+        ..TapEnvironment::default()
+    }
+}
+
+fn replay_in(
+    good_seconds: u64,
+    total_seconds: u64,
+    env: TapEnvironment,
 ) -> (TapLiveness, Vec<TapWatchdogAction>, GhostWatchdog) {
     let mut live = TapLiveness::started();
     let mut last_nonzero = Duration::ZERO;
@@ -90,12 +116,7 @@ fn replay(
         // The watchdog ticks once a minute, on the same liveness the drain folded.
         if second % 60 == 0 {
             let elapsed = Duration::from_secs(second);
-            let action = dog.tick(
-                elapsed,
-                live,
-                TapEnvironment::default(),
-                live_host_ns(&live),
-            );
+            let action = dog.tick(elapsed, live, env, live_host_ns(&live));
             actions.push(action);
             if action.is_rebuild() {
                 // A rebuild does NOT reset the discriminator. That is the whole
@@ -170,6 +191,47 @@ fn a_tap_that_delivered_audio_and_one_that_never_did_end_in_different_actions() 
     );
 }
 
+/// **The third session the first cut of this module could not see.** Identical
+/// to the denied one — silent from sample zero, all-zero buffers, IOProc firing
+/// on cadence — except that nothing was ever playing into it. That is not a
+/// denial, it is an in-person meeting, and it is the common case rather than an
+/// edge case.
+///
+/// It must never produce a permission verdict, and it must never spend a
+/// rebuild: three teardown/recreate cycles of a healthy tap in the first four
+/// minutes is what the first cut did here.
+#[test]
+fn a_silent_tap_with_nothing_playing_is_not_a_denial_and_is_not_rebuilt() {
+    let (live, actions, dog) = replay_in(
+        0,
+        900,
+        TapEnvironment {
+            system_output_active: Some(false),
+            ..TapEnvironment::default()
+        },
+    );
+    assert!(!live.ever_nonzero, "the bit reads the same as the denial");
+    assert!(
+        actions.iter().all(|a| *a == TapWatchdogAction::Continue),
+        "a granted tap with nothing to record must not be torn down: {actions:?}"
+    );
+    assert_eq!(dog.log().count(), 0);
+    assert_eq!(dog.log().verdict(), None);
+    assert!(!dog.is_degraded());
+
+    // And when the probe cannot be read at all, the silence IS acted on — an
+    // unreadable probe is not an explanation — but the verdict at the end says
+    // only what was seen.
+    let (_, unknown_actions, _) = replay_in(0, 900, TapEnvironment::default());
+    let degrade = unknown_actions
+        .iter()
+        .rev()
+        .find(|a| a.is_degrade())
+        .expect("an unexplained silent tap still degrades");
+    assert_eq!(degrade.verdict(), Some(TapVerdict::NoSystemAudioObserved));
+    assert!(!TapVerdict::NoSystemAudioObserved.blames_permission());
+}
+
 /// Rule (a) survives rule (c): the two sessions are **indistinguishable** until
 /// the budget is spent. The discriminator changes the verdict at the end, never
 /// the response at the start.
@@ -235,7 +297,10 @@ fn a_rebuild_cannot_erase_the_memory_that_audio_once_arrived() {
     assert!(live.ever_nonzero);
     assert_eq!(dog.log().count(), MAX_TAP_REBUILDS_PER_MEETING);
     assert_eq!(dog.log().verdict(), Some(TapVerdict::GhostTapUnrecovered));
-    assert_eq!(live.verdict(), TapVerdict::GhostTapUnrecovered);
+    // Whatever the output probe said: one real sample rules permission out for
+    // the rest of the meeting, and no environment reading can put it back.
+    assert_eq!(live.verdict(true), TapVerdict::GhostTapUnrecovered);
+    assert_eq!(live.verdict(false), TapVerdict::GhostTapUnrecovered);
 }
 
 /// The discriminator is a fold over data YV100's ring already ships. This test

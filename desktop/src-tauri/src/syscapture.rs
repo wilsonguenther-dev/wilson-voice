@@ -58,6 +58,19 @@
 //! rule (a)); it changes only the verdict carried out the far end, once the
 //! budget is spent, which is what YV102's denied-state UI reads.
 //!
+//! **What that bit does NOT do, and the review round that made the distinction
+//! load-bearing:** `ever_nonzero == false` separates a denial from OS-4's
+//! ghost. It does **not** separate a denial from a tap that was granted and
+//! simply had nothing to record — an in-person meeting, a call where the remote
+//! side is quiet, a lecture before the lecturer starts. Reading it as if it did
+//! is this module's own headline failure arriving from the opposite direction:
+//! a healthy, permission-GRANTED tap badged "permission is off", after three
+//! real CoreAudio teardown/recreate cycles it never needed. So a permission
+//! verdict now requires *positive* evidence that something was playing while
+//! the tap was quiet ([`TapEnvironment::system_output_active`] observed
+//! `Some(true)` during the silence). With no such evidence the verdict is
+//! [`TapVerdict::NoSystemAudioObserved`], which says what was actually seen.
+//!
 //! **(d) Silence is overloaded, so enumerate the other causes.** OS-4's own
 //! list, as [`SilenceCause`]: the tapped process rendering to a different
 //! output device than the aggregate's main sub-device (routine with AirPods —
@@ -67,6 +80,16 @@
 //! `AudioDeviceCreateIOProcIDWithBlock`. These are carried on the action and
 //! into the log so the line a human reads afterwards says which of five things
 //! it might have been, rather than asserting one of them.
+//!
+//! One of those five is not merely named, it is **acted on**: when the machine
+//! is observably producing no output at all (`system_output_active ==
+//! Some(false)`) and the IOProc is still firing on cadence, the tap's zeros are
+//! *explained* — there is nothing to capture — and [`is_unexplained_silence`]
+//! returns false, so the silence clock never starts the budget. Enumerating a
+//! cause and then rebuilding anyway would be decoration; this is the cause
+//! being used. Note the second half of that condition: a dead IOProc is not
+//! explained by a quiet room, so `IoProcSilent` still rebuilds even with
+//! nothing playing.
 //!
 //! Once the budget is exhausted and the tap is still all-zero, the meeting
 //! degrades to **matrix row #2's** stated behaviour — a `track_lost` marker,
@@ -159,7 +182,18 @@ pub const TAP_REBUILD_GRACE: Duration = Duration::from_secs(15);
 /// failure YV103's guard release exists to prevent, arriving by another route,
 /// so the expiry lives here where the budget already does. An expired rebuild
 /// counts against the budget: it was an attempt, it just did not report.
-pub const TAP_REBUILD_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
+///
+/// **Derived from [`crate::meeting::WATCHDOG_INTERVAL`], not written down as a
+/// number**, and the review round that forced that is worth recording: at a
+/// hard-coded 20 s the timeout was shorter than the 60 s tick that reads it, so
+/// an in-flight rebuild was *always* already expired by the next tick and the
+/// "wait for it" branch below was unreachable in the shipping configuration —
+/// a wait that only existed in tests that ticked faster than the product does.
+/// Two intervals is the smallest multiple that leaves at least one whole tick
+/// of genuine waiting; a caller that has not reported back after two full
+/// watchdog periods is not slow, it is gone.
+pub const TAP_REBUILD_IN_FLIGHT_TIMEOUT: Duration =
+    Duration::from_secs(crate::meeting::WATCHDOG_INTERVAL.as_secs() * 2);
 
 /// The name of the `meetings` column YV106's migration 3 adds, carrying
 /// [`TapRebuildLog::to_json`].
@@ -309,14 +343,27 @@ impl TapLiveness {
 
     /// The verdict this liveness supports once every rebuild has been spent.
     ///
-    /// This is rule (c), and it is the ONLY place the two are told apart. Note
-    /// what it is not: it is not consulted before the budget is spent, so it
-    /// can never turn a first silence into a permission badge.
-    pub fn verdict(&self) -> TapVerdict {
-        if self.ever_nonzero {
-            TapVerdict::GhostTapUnrecovered
-        } else {
-            TapVerdict::PermissionLikelyDenied
+    /// This is rule (c), and it is the ONLY place the three are told apart.
+    /// Note what it is not: it is not consulted before the budget is spent, so
+    /// it can never turn a first silence into a permission badge.
+    ///
+    /// `output_was_active_during_silence` is the second bit the verdict needs
+    /// and the one the first round of this module was missing: whether
+    /// `kAudioProcessPropertyIsRunningOutput` was ever observed **true** while
+    /// this tap was quiet ([`GhostState::output_active_observed`]). Without it,
+    /// `!ever_nonzero` alone reads "nothing was playing" and "permission is
+    /// off" as the same sentence, and one of those two is an accusation.
+    ///
+    /// | `ever_nonzero` | something was playing | verdict |
+    /// |---|---|---|
+    /// | true  | — | [`TapVerdict::GhostTapUnrecovered`] |
+    /// | false | yes | [`TapVerdict::PermissionLikelyDenied`] |
+    /// | false | no / unknown | [`TapVerdict::NoSystemAudioObserved`] |
+    pub fn verdict(&self, output_was_active_during_silence: bool) -> TapVerdict {
+        match (self.ever_nonzero, output_was_active_during_silence) {
+            (true, _) => TapVerdict::GhostTapUnrecovered,
+            (false, true) => TapVerdict::PermissionLikelyDenied,
+            (false, false) => TapVerdict::NoSystemAudioObserved,
         }
     }
 }
@@ -532,6 +579,42 @@ pub fn plausible_silence_causes(live: &TapLiveness, env: &TapEnvironment) -> Sil
     causes
 }
 
+/// Is this silence **explained** — is there a reading on the table that accounts
+/// for the zeros without anything being wrong with the tap?
+///
+/// Exactly one of the five causes can do that, and it is the ordinary case
+/// rather than an edge case: nothing on the machine is producing output
+/// ([`SilenceCause::EveryoneMuted`]). An in-person meeting, a call where the
+/// remote side is quiet, a lecture that has not started — thirty seconds of
+/// digital silence there is not a symptom, it is the truth, and tearing down a
+/// working tap and its aggregate device over it costs a real gap in Track B and
+/// emits the device-change notifications YV103's guard exists to absorb.
+///
+/// The second half of the condition is the part that keeps this honest: a
+/// **dead IOProc** is not explained by a quiet room. A process tap's IOProc
+/// keeps firing on the device clock whether or not anything is playing into it,
+/// so callbacks that have stopped altogether are a fault no matter how quiet
+/// the machine is, and that silence stays actionable.
+///
+/// The other four causes deliberately do NOT suppress: a tap pointed at the
+/// wrong output device, an inverted `exclusive` flag and a nil dispatch queue
+/// are all things the rebuild might actually fix, so they are named on the
+/// action and acted on anyway.
+pub fn silence_is_explained(live: &TapLiveness, env: &TapEnvironment) -> bool {
+    env.system_output_active == Some(false) && live.since_last_block < TAP_SILENCE_REBUILD_AFTER
+}
+
+/// Is the tap silent **in a way the watchdog is allowed to act on** — long
+/// enough, and with no innocent explanation on the table?
+///
+/// This is the predicate the whole tick runs on. [`TapLiveness::is_ghost_silent`]
+/// answers "has it been quiet for [`TAP_SILENCE_REBUILD_AFTER`]", which is a
+/// clock reading; this answers "and is that worth a teardown", which is the
+/// decision.
+pub fn is_unexplained_silence(live: &TapLiveness, env: &TapEnvironment) -> bool {
+    live.is_ghost_silent() && !silence_is_explained(live, env)
+}
+
 // ── The watchdog's answer ───────────────────────────────────────────────────
 
 /// Why a rebuild fired.
@@ -562,10 +645,22 @@ impl TapSilenceKind {
 /// The verdict carried on the degrade, once every rebuild has been spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TapVerdict {
-    /// The tap never delivered a non-zero sample, from sample zero to the end
-    /// of the budget. That is what a TCC denial looks like, and nothing else
-    /// this module can see looks like it.
+    /// The tap never delivered a non-zero sample **and something was observably
+    /// playing while it stayed quiet**. That conjunction is what a TCC denial
+    /// looks like, and nothing else this module can see looks like it.
+    ///
+    /// The second half is not decoration. Without it this variant also covers
+    /// every granted tap that had nothing to record, which is the ordinary
+    /// in-person meeting.
     PermissionLikelyDenied,
+    /// The tap never delivered a non-zero sample and nothing was ever seen
+    /// playing while it was quiet — either the probe read "nothing is producing
+    /// output" or it could not be read at all.
+    ///
+    /// This says what was observed and stops there. It is **not** a permission
+    /// accusation, and the banner must not imply one: the most likely reading
+    /// by far is a meeting with no system audio in it.
+    NoSystemAudioObserved,
     /// The tap delivered real audio and then went to zeros and stayed there
     /// through three full rebuilds. OS-4's bug, unrecovered. **Not** a
     /// permission problem, and the UI must not say it is.
@@ -576,18 +671,31 @@ impl TapVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
             TapVerdict::PermissionLikelyDenied => "permission_likely_denied",
+            TapVerdict::NoSystemAudioObserved => "no_system_audio_observed",
             TapVerdict::GhostTapUnrecovered => "ghost_tap_unrecovered",
         }
     }
 
-    /// The sentence the pill's banner shows. Honest in both directions: the
-    /// ghost's line never mentions permission, and the denial's line says
+    /// Does this verdict accuse the user's privacy settings of anything? The
+    /// one place that question is answered, so the UI never has to guess and a
+    /// test can assert the other two stay quiet about permission.
+    pub fn blames_permission(self) -> bool {
+        matches!(self, TapVerdict::PermissionLikelyDenied)
+    }
+
+    /// The sentence the pill's banner shows. Honest in all three directions:
+    /// the ghost's line never mentions permission, the "nothing was playing"
+    /// line never mentions permission either, and the denial's line says
     /// "looks like" because that is the strength of the evidence.
     pub fn banner(self) -> &'static str {
         match self {
             TapVerdict::PermissionLikelyDenied => {
                 "System audio was never captured — it looks like permission is off. \
                  Your microphone track is still recording."
+            }
+            TapVerdict::NoSystemAudioObserved => {
+                "No system audio was playing during this meeting, so there was nothing \
+                 to capture. Your microphone track is still recording."
             }
             TapVerdict::GhostTapUnrecovered => {
                 "System audio stopped coming through and could not be restarted. \
@@ -615,6 +723,19 @@ pub enum TapWatchdogAction {
         kind: TapSilenceKind,
         causes: SilenceCauses,
     },
+    /// **Nothing to tear down.** A rebuild is flagged as in flight, and the
+    /// watchdog has decided to stop waiting for its caller to report back —
+    /// because the tap is delivering audio again (`Succeeded`), or because the
+    /// silence turned out to be explained and its fate is unknowable
+    /// (`Unknown`). Close the open attempt in the log and carry on.
+    ///
+    /// This exists because the alternative is the failure the second review
+    /// round found: the in-flight timeout fired on a tap that was *actively
+    /// delivering*, rebuilt it twice more and then degraded it with "system
+    /// audio stopped coming through" while it was recording fine. A recovered
+    /// tap must never be torn down by a stale flag, and "close the flag" needed
+    /// to be something the pure tick could say out loud.
+    RebuildSettled { outcome: TapRebuildOutcome },
     /// The budget is spent and the tap is still silent: write matrix row #2's
     /// `track_lost` marker, banner the pill, keep recording Track A.
     DegradeTrackLost {
@@ -667,6 +788,38 @@ pub struct GhostState {
     /// Elapsed time until which a freshly rebuilt tap is given the benefit of
     /// the doubt.
     pub grace_until: Option<Duration>,
+    /// Was the machine ever observed **producing output** while this tap was
+    /// quiet — `system_output_active == Some(true)` on a tick where the tap was
+    /// already past [`TAP_SILENCE_REBUILD_AFTER`]?
+    ///
+    /// This is the second bit [`TapLiveness::verdict`] needs, and it is watchdog
+    /// state rather than liveness state because it is a fold over *observations
+    /// across ticks*, not over samples: one probe reading is a sample, and the
+    /// question is whether the conjunction "audio playing, tap silent" was ever
+    /// true at all during this stretch of silence.
+    ///
+    /// It resets the moment the tap delivers again, because the evidence
+    /// belongs to the stretch of silence it was collected in, not to the next
+    /// one. A tap that never delivers anything never resets it, which is
+    /// exactly the denial case.
+    pub output_active_observed: bool,
+}
+
+/// Fold this tick's observation into the watchdog's silence bookkeeping.
+///
+/// Pure and **idempotent** — `observe(observe(s)) == observe(s)` for the same
+/// tick — which is what lets both [`ghost_tick`] (deciding) and
+/// [`GhostWatchdog::apply`] (recording) run it on the same inputs without the
+/// two disagreeing about what was seen. The alternative, latching it only in
+/// `apply`, would have the decision run one whole 60 s tick behind the
+/// observation it depends on.
+pub fn observe(mut state: GhostState, live: &TapLiveness, env: &TapEnvironment) -> GhostState {
+    if !live.is_ghost_silent() {
+        state.output_active_observed = false;
+    } else if env.system_output_active == Some(true) {
+        state.output_active_observed = true;
+    }
+    state
 }
 
 /// One tick's view of the tap, mirroring `meeting::WatchdogInputs` in shape.
@@ -684,17 +837,25 @@ pub struct TapWatchdogInputs {
 /// Read it in order, because the order IS the policy:
 ///
 /// 1. A meeting that already degraded stays degraded. No re-badging.
-/// 2. A rebuild in flight is waited for — until it times out, at which point it
-///    is treated as a spent attempt rather than as a reason to wait forever.
-/// 3. A tap inside its post-rebuild grace window is left alone.
-/// 4. A tap that is delivering is left alone.
-/// 5. Sustained silence with budget left ⇒ **[`TapWatchdogAction::RebuildFull`],
-///    unconditionally** — this is rule (a), and note that
-///    [`TapLiveness::verdict`] is not called anywhere above this line, which is
-///    what makes "never a permission verdict on the first silence" structural
-///    rather than aspirational.
-/// 6. Sustained silence with the budget spent ⇒ degrade, carrying the verdict
-///    the discriminator supports.
+/// 2. **A tap that is delivering again closes any in-flight rebuild instead of
+///    being torn down by it.** Liveness is read *before* the timeout, never
+///    after: a stale in-flight flag on a working tap is not a reason to rebuild
+///    anything, and reading the clock first is exactly how the second review
+///    round's "rebuilt twice more, then degraded, while recording fine" bug
+///    happened.
+/// 3. A rebuild in flight is otherwise waited for — until it times out, at
+///    which point it is treated as a spent attempt rather than as a reason to
+///    wait forever.
+/// 4. A tap inside its post-rebuild grace window is left alone.
+/// 5. A tap that is delivering, or whose silence is explained
+///    ([`is_unexplained_silence`]), is left alone.
+/// 6. Sustained *unexplained* silence with budget left ⇒
+///    **[`TapWatchdogAction::RebuildFull`], unconditionally** — this is rule
+///    (a), and note that [`TapLiveness::verdict`] is not called anywhere above
+///    this line, which is what makes "never a permission verdict on the first
+///    silence" structural rather than aspirational.
+/// 7. Sustained unexplained silence with the budget spent ⇒ degrade, carrying
+///    the verdict the discriminator supports.
 pub fn ghost_tick(inputs: &TapWatchdogInputs) -> TapWatchdogAction {
     let TapWatchdogInputs {
         elapsed,
@@ -702,14 +863,38 @@ pub fn ghost_tick(inputs: &TapWatchdogInputs) -> TapWatchdogAction {
         env,
         state,
     } = inputs;
+    let state = observe(*state, liveness, env);
 
     if state.degraded {
         return TapWatchdogAction::Continue;
     }
 
-    // A rebuild we asked for is still running. Wait for it — but not forever.
+    let actionable = is_unexplained_silence(liveness, env);
+
+    // A rebuild we asked for is still running. Wait for it — but not forever,
+    // and not at all if the thing it was meant to fix has fixed itself.
     if let Some(issued_at) = state.rebuild_issued_at {
-        if elapsed.saturating_sub(issued_at) < TAP_REBUILD_IN_FLIGHT_TIMEOUT {
+        if !liveness.is_ghost_silent() {
+            // Audio is arriving. Whatever the caller did or did not report, the
+            // tap works: close the attempt and touch nothing.
+            return TapWatchdogAction::RebuildSettled {
+                outcome: TapRebuildOutcome::Succeeded,
+            };
+        }
+        let expired = elapsed.saturating_sub(issued_at) >= TAP_REBUILD_IN_FLIGHT_TIMEOUT;
+        if !actionable {
+            // Still quiet, but the quiet is explained. Nothing to conclude and
+            // nothing to spend — release the flag once it is stale so the next
+            // real silence is not blocked behind it.
+            return if expired {
+                TapWatchdogAction::RebuildSettled {
+                    outcome: TapRebuildOutcome::Unknown,
+                }
+            } else {
+                TapWatchdogAction::Continue
+            };
+        }
+        if !expired {
             return TapWatchdogAction::Continue;
         }
         let causes = plausible_silence_causes(liveness, env);
@@ -721,7 +906,7 @@ pub fn ghost_tick(inputs: &TapWatchdogInputs) -> TapWatchdogAction {
             }
         } else {
             TapWatchdogAction::DegradeTrackLost {
-                verdict: liveness.verdict(),
+                verdict: liveness.verdict(state.output_active_observed),
                 after_rebuilds: state.rebuilds_issued,
                 causes,
             }
@@ -735,7 +920,7 @@ pub fn ghost_tick(inputs: &TapWatchdogInputs) -> TapWatchdogAction {
         }
     }
 
-    if !liveness.is_ghost_silent() {
+    if !actionable {
         return TapWatchdogAction::Continue;
     }
 
@@ -754,7 +939,7 @@ pub fn ghost_tick(inputs: &TapWatchdogInputs) -> TapWatchdogAction {
     }
 
     TapWatchdogAction::DegradeTrackLost {
-        verdict: liveness.verdict(),
+        verdict: liveness.verdict(state.output_active_observed),
         after_rebuilds: state.rebuilds_issued,
         causes,
     }
@@ -773,6 +958,15 @@ pub enum TapRebuildOutcome {
     Failed { at: TapStep, status: i32 },
     /// The caller never reported back inside [`TAP_REBUILD_IN_FLIGHT_TIMEOUT`].
     TimedOut,
+    /// The attempt was closed without ever learning how it ended: the caller
+    /// never reported, and by the time the watchdog stopped waiting the tap's
+    /// silence had an innocent explanation (nothing was playing), so neither
+    /// "it worked" nor "it timed out" is a fact anyone here has.
+    ///
+    /// Distinct from [`TapRebuildOutcome::TimedOut`] on purpose — the log is
+    /// read months later to answer "did rebuilding help", and an honest "we do
+    /// not know" is a different answer from "it failed to report".
+    Unknown,
 }
 
 impl TapRebuildOutcome {
@@ -781,6 +975,7 @@ impl TapRebuildOutcome {
             TapRebuildOutcome::Succeeded => "succeeded",
             TapRebuildOutcome::Failed { .. } => "failed",
             TapRebuildOutcome::TimedOut => "timed_out",
+            TapRebuildOutcome::Unknown => "unknown",
         }
     }
 }
@@ -931,22 +1126,36 @@ impl GhostWatchdog {
             env,
             state: self.state,
         });
-        self.apply(action, elapsed, liveness, host_ns);
+        self.apply(action, elapsed, liveness, env, host_ns);
         action
     }
 
     /// Fold an action back into the state. Public because a caller that gets
     /// its action from the meeting watchdog's own tick (rather than from
     /// [`GhostWatchdog::tick`]) still has to record it.
+    ///
+    /// `env` is taken here and not only in [`GhostWatchdog::tick`] because the
+    /// tick's own bookkeeping — [`observe`] — is a function of it, and a caller
+    /// that decides through `meeting::watchdog_tick` must record exactly the
+    /// observation the decision was made on.
     pub fn apply(
         &mut self,
         action: TapWatchdogAction,
         elapsed: Duration,
         liveness: TapLiveness,
+        env: TapEnvironment,
         host_ns: u64,
     ) {
+        self.state = observe(self.state, &liveness, &env);
         match action {
             TapWatchdogAction::Continue => {}
+            TapWatchdogAction::RebuildSettled { outcome } => {
+                if self.state.rebuild_issued_at.is_some() {
+                    self.close_open_attempt(outcome);
+                    self.state.rebuild_issued_at = None;
+                    self.state.grace_until = Some(elapsed + TAP_REBUILD_GRACE);
+                }
+            }
             TapWatchdogAction::RebuildFull {
                 attempt,
                 kind,
@@ -1072,6 +1281,88 @@ mod tests {
     }
 
     #[test]
+    fn nothing_playing_explains_the_zeros_so_the_watchdog_does_not_act_on_them() {
+        let env = TapEnvironment {
+            system_output_active: Some(false),
+            ..TapEnvironment::default()
+        };
+        assert!(silence_is_explained(&ghost_tap(), &env));
+        assert!(!is_unexplained_silence(&ghost_tap(), &env));
+        let action = ghost_tick(&TapWatchdogInputs {
+            elapsed: Duration::from_secs(600),
+            liveness: ghost_tap(),
+            env,
+            state: GhostState::default(),
+        });
+        assert_eq!(action, TapWatchdogAction::Continue);
+    }
+
+    #[test]
+    fn a_quiet_room_does_not_explain_an_ioproc_that_stopped_firing() {
+        let dead = TapLiveness {
+            since_last_block: Duration::from_secs(120),
+            ..ghost_tap()
+        };
+        let env = TapEnvironment {
+            system_output_active: Some(false),
+            ..TapEnvironment::default()
+        };
+        assert!(!silence_is_explained(&dead, &env));
+        let action = ghost_tick(&TapWatchdogInputs {
+            elapsed: Duration::from_secs(600),
+            liveness: dead,
+            env,
+            state: GhostState::default(),
+        });
+        assert!(action.is_rebuild(), "got {action:?}");
+    }
+
+    #[test]
+    fn observing_the_same_tick_twice_says_the_same_thing() {
+        let env = TapEnvironment {
+            system_output_active: Some(true),
+            ..TapEnvironment::default()
+        };
+        let once = observe(GhostState::default(), &ghost_tap(), &env);
+        assert!(once.output_active_observed);
+        assert_eq!(observe(once, &ghost_tap(), &env), once);
+        // …and a tap that starts delivering again drops the evidence with the
+        // silence it belonged to.
+        let recovered = observe(once, &healthy_tap(), &env);
+        assert!(!recovered.output_active_observed);
+    }
+
+    #[test]
+    fn a_delivering_tap_closes_an_in_flight_rebuild_instead_of_being_rebuilt() {
+        let state = GhostState {
+            rebuilds_issued: 1,
+            rebuild_issued_at: Some(Duration::from_secs(60)),
+            ..GhostState::default()
+        };
+        // Two whole in-flight timeouts later, with audio arriving every tick.
+        let action = ghost_tick(&TapWatchdogInputs {
+            elapsed: Duration::from_secs(60) + TAP_REBUILD_IN_FLIGHT_TIMEOUT * 2,
+            liveness: healthy_tap(),
+            env: TapEnvironment::default(),
+            state,
+        });
+        assert_eq!(
+            action,
+            TapWatchdogAction::RebuildSettled {
+                outcome: TapRebuildOutcome::Succeeded
+            }
+        );
+    }
+
+    #[test]
+    fn the_in_flight_wait_is_reachable_at_the_interval_the_product_ticks_at() {
+        assert!(
+            TAP_REBUILD_IN_FLIGHT_TIMEOUT >= crate::meeting::WATCHDOG_INTERVAL * 2,
+            "a timeout shorter than two ticks makes the wait branch dead code"
+        );
+    }
+
+    #[test]
     fn a_muted_call_is_named_as_a_cause_rather_than_asserted_against() {
         let env = TapEnvironment {
             system_output_active: Some(false),
@@ -1143,7 +1434,10 @@ mod tests {
         assert!(!live.ever_nonzero);
         assert_eq!(live.frames_delivered, 512);
         assert_eq!(live.since_nonzero, Duration::from_secs(40));
-        assert_eq!(live.verdict(), TapVerdict::PermissionLikelyDenied);
+        // …and the bit alone is not enough to say "denied". It says denied only
+        // when something was observed playing into the silence.
+        assert_eq!(live.verdict(true), TapVerdict::PermissionLikelyDenied);
+        assert_eq!(live.verdict(false), TapVerdict::NoSystemAudioObserved);
     }
 
     #[test]
@@ -1160,7 +1454,10 @@ mod tests {
             &mut last_nonzero,
         );
         assert!(live.ever_nonzero);
-        assert_eq!(live.verdict(), TapVerdict::GhostTapUnrecovered);
+        // Ghost either way: one real sample rules permission out whatever the
+        // output probe says.
+        assert_eq!(live.verdict(true), TapVerdict::GhostTapUnrecovered);
+        assert_eq!(live.verdict(false), TapVerdict::GhostTapUnrecovered);
         // …and it stays ruled out through an hour of zeros afterwards.
         fold_block(
             &mut live,

@@ -2285,12 +2285,24 @@ impl MeetingSession {
                             // proved by `tests/syscapture_*.rs`; the seven
                             // CoreAudio calls are not this item's to make.
                             WatchdogAction::Tap(action) => {
-                                let (liveness, _, host_ns) =
+                                let (liveness, tap_env, host_ns) =
                                     tap.expect("a tap action requires tap inputs");
-                                ghost.apply(action, elapsed, liveness, host_ns);
+                                ghost.apply(action, elapsed, liveness, tap_env, host_ns);
                                 *tap_rebuilds.lock() = ghost.log().clone();
                                 match action {
                                     syscapture::TapWatchdogAction::Continue => {}
+                                    // The tap came back (or its silence turned
+                                    // out to be explained) while a rebuild was
+                                    // still flagged in flight. Nothing to run:
+                                    // the attempt is closed in the log and the
+                                    // tap is left exactly as it is.
+                                    syscapture::TapWatchdogAction::RebuildSettled { outcome } => {
+                                        log::info!(
+                                        "meeting system-audio tap rebuild closed ({}) — the tap \
+                                         is delivering again, nothing was torn down",
+                                        outcome.as_str()
+                                    )
+                                    }
                                     syscapture::TapWatchdogAction::RebuildFull {
                                         attempt,
                                         kind,
