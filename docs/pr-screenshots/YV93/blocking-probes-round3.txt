@@ -1,21 +1,106 @@
-==============================================================================
-PROBE 1 — the resume plan re-seeds kinds[0] = Edge (the shipped defect)
-  src/meeting_asr.rs: plan_windows_fixed + plan_windows, 'vec![from.boundary]'
-  reverted to 'vec![BoundaryKind::Edge]'
-==============================================================================
-test a_corrupt_ledger_starts_over_instead_of_failing ... ok
-test the_ledger_is_written_after_every_chunk_not_at_the_end ... ok
-test a_meeting_with_no_timestamps_merges_on_text_and_still_resumes ... ok
-test the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure ... ok
-test transcription_resumes_from_the_last_completed_chunk ... ok
-test an_uninterrupted_run_transcribes_every_word_exactly_once ... ok
-test quitting_mid_decode_leaves_the_unfinished_chunk_for_the_next_launch ... ok
-test a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once ... ok
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
---- unit ---
+YV93 — round-3 BLOCKING findings: each fix reverted in place, each guard shown RED
+=================================================================================
+Run on the REBASED branch (main = YV90 #107 + YV91 #108 + YV92 #109 + YV94 #111 +
+YV96 #113). Each probe reverts exactly one line or block to the behaviour the
+review found, runs the suite, and is then reverted with `git checkout --`.
+
+
+PROBE 1 — finding (2): the resume plan re-seeds kinds[0] = Edge
+--------------------------------------------------------------
+src/meeting_asr.rs, BOTH planners:
+    -    let mut kinds = vec![from.boundary];
+    +    let mut kinds = vec![BoundaryKind::Edge];
+
+$ cargo test --test meeting_transcription_resume
+test a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once ... FAILED
+  panicked at tests/meeting_transcription_resume.rs:447:
+  assertion `left == right` failed: the resume seam duplicated (or ate) the word
+  the cut went through
+   left: "… w0088 w0089 w0090 w0090 w0091 w0092 …"      <- the resumed run
+  right: "… w0088 w0089 w0090 w0091 w0092 …"            <- an uninterrupted one
+test result: FAILED. 7 passed; 1 failed.
+
+  This is the review's `[the, meeting, meeting, starts]`, reproduced end to end
+  through the driver, the ledger and the shipped merge.
+
+$ cargo test --lib -- a_resumed_plan_carries
 test meeting_asr::tests::a_resumed_plan_carries_the_kind_of_the_boundary_it_resumes_at ... FAILED
-thread 'meeting_asr::tests::a_resumed_plan_carries_the_kind_of_the_boundary_it_resumes_at' (8849894) panicked at src-tauri/src/meeting_asr.rs:2011:13:
-assertion `left == right` failed: fixed-clock planner
-  left: Edge
- right: FixedClock
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 454 filtered out; finished in 0.00s
+  assertion `left == right` failed: fixed-clock planner
+   left: Edge
+  right: FixedClock
+test result: FAILED. 0 passed; 1 failed.
+
+
+PROBE 2 — finding (1a): the exit drain cancels but marks nothing
+----------------------------------------------------------------
+src/transcription.rs, `abandon_in_flight`:
+    -    if f.preemptible && f.cancel.is_some() {
+    -        f.discard = Some(Discard::ForExit);
+    -    }
+    -    f.cancel.clone()
+    +    f.cancel.clone()      // the shipped behaviour: cancel, mark nothing
+
+$ cargo test --test meeting_transcription_resume
+test the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure ... FAILED
+  assertion `left == right` failed: a chunk the exit drain cancelled must be told
+  apart from one that FAILED — the driver writes `asr_failed` for a failure and
+  never retries it
+   left: Some("cancelled")
+  right: Some("meeting chunk abandoned — the app is exiting")
+test result: FAILED. 7 passed; 1 failed.
+
+  Run against the REAL TranscriptionManager and the REAL drain_and_unload, with
+  an engine that blocks until its cancel hook fires — what a Metal decode does.
+
+
+PROBE 3 — finding (1b): the driver has no arm for an abandoned chunk
+--------------------------------------------------------------------
+src/meeting_asr.rs, the chunk loop:
+    -    Err(ref e) if e == ABANDONED_FOR_EXIT => {
+    +    Err(ref e) if false && e == ABANDONED_FOR_EXIT => {   // falls to Err(e) => failed
+
+$ cargo test --test meeting_transcription_resume -- quitting_mid_decode
+test quitting_mid_decode_leaves_the_unfinished_chunk_for_the_next_launch ... FAILED
+  panicked at tests/meeting_transcription_resume.rs:551: the run stood down
+test result: FAILED. 0 passed; 1 failed.
+
+  The cancelled chunk is recorded as `asr_failed`, the run does NOT report itself
+  interrupted, processed_through advances past a window that was never decoded,
+  and — because a failed chunk is deliberately never retried — the relaunch
+  resumes after the hole. That is the permanent hole, exactly as reported.
+
+
+PROBE 4 — the ledger stops carrying the boundary it ends at
+------------------------------------------------------------
+src/meeting_asr.rs, `windows_from_boundaries`:
+    -    end_boundary: kinds.get(k + 1).copied().unwrap_or(BoundaryKind::Edge),
+    +    end_boundary: BoundaryKind::Edge,
+
+$ cargo test --lib -- a_window_records_the_boundary
+test meeting_asr::tests::a_window_records_the_boundary_it_ends_at_and_it_is_the_next_windows_start ... FAILED
+  assertion `left == right` failed: one boundary, two windows — they cannot
+  disagree about its kind
+   left: Edge     right: FixedClock
+
+$ cargo test --test meeting_transcription_resume -- a_word_straddling
+test a_word_straddling_the_resume_seam_survives_the_relaunch_exactly_once ... FAILED
+  assertion `left == right` failed: a no-VAD plan cuts on the clock, and the
+  ledger must say so — an `Edge` here is the bug: it routes the resume seam
+  through the intersection rule
+
+
+PROBE 5 — the fixture proving itself (why probes 1 and 4 are not vacuous)
+-------------------------------------------------------------------------
+The first cut of `StraddleDecoder` looked correct and was inert: window bounds
+are read back off an `f32` ramp, so a window that really does stop at 90.000000 s
+reconstructs as 90.000002 s, and against the 1e-6 tolerance it took the "I saw the
+whole word" branch instead of emitting the truncated fragment. With no fragment
+there is no truncated word at the seam, nothing to duplicate, and PROBE 1 passed
+GREEN on a build carrying the bug.
+
+`BOUNDARY_EPS = 1e-3` fixes it, and the test no longer takes the fixture on
+trust: it asserts, before relying on any of it, that the outgoing copy ENDS at
+the cut, that the incoming copy STARTS there, and that the two are DISJOINT —
+disjointness being precisely what the intersection rule cannot see through and
+the truncation rule can. It also asserts the ledger really carries a word ending
+at the resume point.
