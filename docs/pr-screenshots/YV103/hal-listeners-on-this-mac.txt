@@ -1,0 +1,15 @@
+Host: macOS 26.5.2 (25F84), arm64
+Default output device at the time of the run:
+
+          Default Output Device: Yes
+
+$ cargo test --test input_format_change_handler -- --ignored --nocapture
+running 2 tests
+AudioObjectAddPropertyListener on the system object (dOut + dev#): armed=true
+output listeners removed cleanly
+test output_format_listeners_install_on_this_mac ... ok
+AudioObjectAddPropertyListener on the default input device: armed=true
+listeners removed cleanly
+test input_format_listeners_install_on_this_mac ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.27s

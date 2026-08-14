@@ -1,0 +1,22 @@
+$ grep -n "RebuildAggregate" desktop/src-tauri/src/input_format.rs
+86://! ([`FormatChangeAction::RebuildAggregate`]) — 22-B's `syscapture` runs the
+408:    RebuildAggregate {
+418:            | FormatChangeAction::RebuildAggregate { marker, .. } => Some(marker),
+428:        matches!(self, FormatChangeAction::RebuildAggregate { .. })
+433:            FormatChangeAction::RebuildAggregate { reason, .. } => Some(*reason),
+664:    /// times it is re-entered. [`FormatChangeAction::RebuildAggregate`] takes
+698:    /// [`FormatChangeAction::RebuildAggregate`] only when a burst has both
+804:        FormatChangeAction::RebuildAggregate { marker, reason }
+
+# The variant lives in the SAME enum YV92 shipped — the enum declaration and
+# its members, in file order, showing RebuildAggregate as a sibling of
+# Unchanged / Ignored / Reconfigure and NOT a parallel type:
+$ grep -n "pub enum FormatChangeAction" -A 40 desktop/src-tauri/src/input_format.rs | grep -nE "pub enum|^[0-9]+-    (Unchanged|Ignored|Reconfigure|RebuildAggregate)"
+381:pub enum FormatChangeAction {
+385-    Unchanged,
+389-    Ignored(&'static str),
+392-    Reconfigure {
+408-    RebuildAggregate {
+
+$ grep -c "enum FormatChangeAction" desktop/src-tauri/src/input_format.rs   # exactly one such enum in the tree
+desktop/src-tauri/src/input_format.rs:1
