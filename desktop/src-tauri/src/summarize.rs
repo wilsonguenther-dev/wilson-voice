@@ -127,6 +127,17 @@ pub enum SummaryError {
     Unavailable,
     /// The sidecar answered something unusable, or not in time.
     Protocol,
+    /// Every pass ran and answered, and what came back carried nothing: no
+    /// narrative, no actions, no decisions, no questions.
+    ///
+    /// Deliberately its own variant rather than an empty `Ok`. A summary with no
+    /// content in it is not a thin summary, it is the absence of one, and the
+    /// only thing a caller can do with it is overwrite a summary the user
+    /// already had — data loss, in an app with no undo, reported as success.
+    /// Kept distinct from [`SummaryError::Protocol`] because the two say
+    /// different things to whoever is reading the log: `protocol` means the
+    /// sidecar is broken, `empty` means it answered and had nothing to say.
+    Empty,
 }
 
 impl SummaryError {
@@ -135,6 +146,7 @@ impl SummaryError {
             Self::NoSegments => "no_segments",
             Self::Unavailable => "unavailable",
             Self::Protocol => "protocol",
+            Self::Empty => "empty",
         }
     }
 }
@@ -779,6 +791,23 @@ pub struct MeetingSummary {
     pub model: String,
 }
 
+impl MeetingSummary {
+    /// Does this summary carry anything a reader could use?
+    ///
+    /// Content, deliberately — not `markdown.is_empty()`. `render_summary` adds
+    /// a truncation note whenever a pass was cut, so a summary with nothing in
+    /// it can still render as non-empty Markdown; storing THAT over a good
+    /// summary loses exactly as much as storing the "_No summary could be
+    /// produced_" placeholder did. One item and no narrative, on the other hand,
+    /// is a real (if thin) summary and is worth keeping.
+    pub fn is_empty(&self) -> bool {
+        self.narrative.trim().is_empty()
+            && self.actions.is_empty()
+            && self.decisions.is_empty()
+            && self.questions.is_empty()
+    }
+}
+
 /// An item with its citation resolved back to a wall-clock offset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryItem {
@@ -793,10 +822,21 @@ pub struct SummaryItem {
 /// MAP pass fails contributes nothing and does not stop the others, and a REDUCE
 /// that fails or is rejected falls back to the chunk narratives it was given.
 ///
-/// The floor under "less output" is `Err`, not an empty `Ok`: if EVERY chunk's
-/// MAP pass failed there is nothing to summarize from, and returning a
-/// placeholder as success would let the caller overwrite a summary the user
-/// already had. See the `extracts.is_empty()` guard below.
+/// The floor under "less output" is `Err`, not an empty `Ok`, and it is checked
+/// TWICE — once on the calls and once on what they produced, because those are
+/// two different ways to end up with nothing:
+///
+/// * every chunk's MAP pass FAILED — the sidecar is down or wedged, and there is
+///   nothing to summarize from (`extracts.is_empty()` below → [`SummaryError::Protocol`]);
+/// * every chunk ANSWERED and the answers carried nothing — a grammar-legal
+///   `{"narrative":"","actions":[],…}` from every pass, which is what a wedged
+///   model or an overflowed context looks like from the outside
+///   ([`MeetingSummary::is_empty`] below → [`SummaryError::Empty`]).
+///
+/// Both are `Err` for one reason: a caller handed an empty summary as `Ok`
+/// writes it over the summary the user already had, in an app with no undo and
+/// no version history, and reports success while doing it. The second check is
+/// the one that matters most, because the first only catches the loud version.
 pub fn summarize_segments(
     segments: &[MeetingSegment],
     client: &dyn SummaryClient,
@@ -897,7 +937,7 @@ pub fn summarize_segments(
         chunks.len(),
         truncated,
     );
-    Ok(MeetingSummary {
+    let summary = MeetingSummary {
         markdown,
         narrative,
         actions,
@@ -908,7 +948,23 @@ pub fn summarize_segments(
         truncated,
         dropped_items: merged.dropped,
         model: client.model_id(),
-    })
+    };
+    // The other half of the floor. Every pass answered, and between them they
+    // said nothing: no narrative, no action, no decision, no question. What
+    // `render_summary` produced from that is either the "_No summary could be
+    // produced_" placeholder or a bare truncation note, and neither is a summary
+    // — handing either back as `Ok` is how a good stored summary got overwritten
+    // by a bad model run. A meeting that was genuinely quiet lands here too, and
+    // that is the right answer for it as well: there is nothing to store, so the
+    // row keeps whatever it had and the user is told nothing came back.
+    if summary.is_empty() {
+        log::warn!(
+            "summary: {} MAP pass(es) answered with no content — refusing to store an empty summary",
+            chunks.len()
+        );
+        return Err(SummaryError::Empty);
+    }
+    Ok(summary)
 }
 
 /// Pack `narratives` into fold groups that each fit `budget` measured tokens.

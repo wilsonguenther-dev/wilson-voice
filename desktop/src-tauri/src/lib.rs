@@ -2871,6 +2871,12 @@ fn acknowledge_meeting_consent(
 /// The meeting's state is moved to `summarizing` for the duration and back to
 /// what it was on the way out, so a crash mid-summary leaves a row that says
 /// what was happening rather than one that lies about being complete.
+///
+/// A summarize that produces nothing WRITES nothing. Re-summarizing a meeting
+/// whose model run came back empty — a dead sidecar, a wedged model, a
+/// grammar-legal but contentless answer — returns an error and leaves the
+/// existing `meetings.summary` exactly as it was; see the `is_empty` refusal
+/// below and `tests/summarize_empty_is_never_stored.rs`.
 #[tauri::command]
 async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<String, String> {
     // The managed handle is cloned OUT of the borrow before the hop: the
@@ -2904,7 +2910,30 @@ fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, St
     let summary = summarize::summarize_segments(&segments, &client);
     let _ = state.db.set_meeting_state(&id, previous, None);
 
-    let summary = summary.map_err(|e| format!("summary failed: {}", e.tag()))?;
+    let summary = summary.map_err(|e| match e {
+        // Said in the user's words rather than as a tag, because this is the one
+        // failure whose whole point is that NOTHING changed — a toast that only
+        // said "summary failed" would leave the reader wondering what happened to
+        // the summary they already had.
+        summarize::SummaryError::Empty => {
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string()
+        }
+        other => format!("summary failed: {}", other.tag()),
+    })?;
+    // Belt and braces on the ONE write of `meetings.summary`. `summarize_segments`
+    // already refuses to return an empty summary, but the refusal that protects
+    // the user's data belongs next to the destructive act as well: a later caller
+    // that builds a `MeetingSummary` some other way (a resumed job, a partial
+    // re-summarize) must not be able to overwrite a good summary with nothing
+    // just by skipping the pipeline's guard.
+    if summary.is_empty() {
+        log::warn!("summary: refusing to overwrite meetings.summary with an empty result");
+        return Err(
+            "the model had nothing to say about this meeting — the existing summary was kept"
+                .to_string(),
+        );
+    }
     state
         .db
         .set_meeting_summary(&id, &summary.markdown, Some(&summary.model))?;

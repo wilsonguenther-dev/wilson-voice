@@ -163,9 +163,18 @@ fn summarize_e2e_over_the_yv90_lecture_fixture() {
 /// the command then writes over whatever summary the user already had. Local
 /// app, no undo, no version history: that is data loss reported as success.
 ///
-/// The distinction that matters is "every call failed" vs "the meeting was
-/// genuinely quiet" — a chunk that succeeds with nothing in it still pushes an
-/// empty extract, so the quiet meeting keeps its `Ok` (asserted below).
+/// The distinction that matters is "every call failed" vs "every call answered
+/// and said nothing" — both are `Err`, and they report DIFFERENT tags, because
+/// one means the sidecar is broken and the other means the model had nothing.
+///
+/// The second half of this test used to assert the opposite: a chunk that
+/// succeeded with nothing in it pushed an empty extract, so a "quiet" meeting
+/// kept its `Ok`. Review reproduced what that `Ok` carried —
+/// "_No summary could be produced for this meeting._" — and where it went:
+/// straight over `meetings.summary`. Same data loss as the failure case,
+/// arriving through a legal answer. The guard is now on the CONTENT of the
+/// result, so both roads end at `Err`; the full case is
+/// `tests/summarize_empty_is_never_stored.rs`.
 #[test]
 fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
     let segments = support::segments();
@@ -179,8 +188,8 @@ fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
         "a dead sidecar reports a protocol failure, not a summary"
     );
 
-    // The other half of the guarantee: a meeting the model had nothing to say
-    // about is still a successful summary, and must not be swept up by the guard.
+    // Every pass answers, every answer is empty: still nothing to store, and
+    // still reported as itself rather than as a broken sidecar.
     let quiet = StubModel::new(|req| {
         if req.mode == "reduce" {
             Ok(String::new())
@@ -188,10 +197,13 @@ fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
             Ok(map_answer("", &[], &[], &[]))
         }
     });
-    let summary =
-        summarize_segments(&segments, &quiet).expect("a quiet meeting is still a real summary");
-    assert!(summary.actions.is_empty());
-    assert_eq!(summary.chunks, 1);
+    assert_eq!(
+        summarize_segments(&segments, &quiet)
+            .expect_err("a summary carrying nothing is not a summary")
+            .tag(),
+        "empty",
+        "an answered-but-empty run is its own outcome, not a protocol failure"
+    );
 }
 
 /// The same path against the REAL sidecar and a real GGUF — the one YV99's
