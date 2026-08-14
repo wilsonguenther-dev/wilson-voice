@@ -26,9 +26,14 @@
 //! from the NEW nominal rate rather than the one the stream happened to open
 //! at.
 
+//! YV103 extends this file rather than forking it (OS-3 + OS-9's own
+//! instruction, "build one, not two"): the last test below drives the OUTPUT
+//! half of the same `InputFormatWatch` with the notifications our own aggregate
+//! create/destroy emits, and asserts they produce zero further rebuilds.
+
 use wilson_voice_lib::input_format::{
     selectors, take_event, FormatChangeAction, FormatEventSource, InputFormat, InputFormatWatch,
-    InputObservation, DEFAULT_TARGET_RATE,
+    InputObservation, MarkerKind, OutputObservation, RebuildReason, DEFAULT_TARGET_RATE,
 };
 
 /// A MacBook's built-in mic: 48 kHz, mono after cpal's default config.
@@ -262,6 +267,31 @@ fn input_format_listeners_install_on_this_mac() {
     eprintln!("listeners removed cleanly");
 }
 
+/// YV103's FFI half, on real hardware: the OUTPUT-side listeners. Unlike the
+/// input side this one CAN run on a machine with no microphone (both addresses
+/// are on the system object, not on a device), but it still touches the HAL, so
+/// it stays `#[ignore]`d alongside its twin and is run by hand:
+///
+/// ```text
+/// cargo test --test input_format_change_handler -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "touches the CoreAudio HAL: run by hand on a Mac"]
+fn output_format_listeners_install_on_this_mac() {
+    let armed = wilson_voice_lib::input_format::arm_output_listeners();
+    eprintln!("AudioObjectAddPropertyListener on the system object (dOut + dev#): armed={armed}");
+    assert!(
+        armed,
+        "the system object always exists, so these must install"
+    );
+    // Idempotent: arming twice must not double-register or fail.
+    assert!(wilson_voice_lib::input_format::arm_output_listeners());
+    wilson_voice_lib::input_format::disarm_output_listeners();
+    // …and disarming twice is a no-op rather than a crash.
+    wilson_voice_lib::input_format::disarm_output_listeners();
+    eprintln!("output listeners removed cleanly");
+}
+
 #[test]
 fn the_listener_edge_is_taken_once_and_names_its_selector() {
     // The HAL callback's whole job: record which selector fired. The capture
@@ -276,4 +306,203 @@ fn the_listener_edge_is_taken_once_and_names_its_selector() {
         "the most recent selector is what the watchdog sees"
     );
     assert_eq!(take_event(), None, "the edge is consumed by the read");
+}
+
+// ── YV103 / OS-3 — the output half of this same watch ───────────────────────
+
+/// The system's built-in output, as the aggregate's main sub-device.
+fn speakers() -> InputFormat {
+    InputFormat::new(48_000, 2)
+}
+
+fn output_event(uid: &str, format: InputFormat, at_ms: u64, selector: u32) -> OutputObservation {
+    OutputObservation {
+        device_uid: uid.to_string(),
+        format,
+        host_time: 7_310_000_000_000 + at_ms * 1_000_000,
+        output_sample_index: at_ms * 16,
+        source: FormatEventSource::from_selector(selector),
+        at_ms,
+    }
+}
+
+#[test]
+fn the_watchs_own_aggregate_notifications_never_issue_another_rebuild() {
+    // The OS-3 defect, verbatim: creating and destroying an aggregate device
+    // emits device-list and default-device notifications of its OWN, so a naive
+    // listener answers its own rebuild with another rebuild, forever. Hyprnote
+    // shipped that and had to fix it (PR #1654, macOS 15.7.2): "creating an
+    // infinite cycle that prevents audio capture."
+    //
+    // This test is the standing proof that the cycle cannot close here. It
+    // drives one real AirPods connect through the watch and then replays every
+    // notification the resulting 7-step rebuild emits — and asserts the rebuild
+    // count never moves past one.
+    let mut watch = watching();
+    watch.watch_output("BuiltInSpeakerDevice", speakers());
+    assert_eq!(watch.rebuilds_issued(), 0);
+
+    // A genuine, user-initiated output change: AirPods connect.
+    for (n, selector) in [
+        selectors::DEFAULT_OUTPUT_DEVICE,
+        selectors::DEVICES,
+        selectors::DEFAULT_OUTPUT_DEVICE,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let action = watch.observe_output(output_event(
+            "AirPodsPro-1a2b",
+            speakers(),
+            n as u64 * 40,
+            selector,
+        ));
+        assert_eq!(
+            action,
+            FormatChangeAction::Ignored(InputFormatWatch::COALESCING),
+            "inside the debounce window nothing is issued yet"
+        );
+    }
+    let action = watch.tick_output(500);
+    let FormatChangeAction::RebuildAggregate { marker, reason } = action else {
+        panic!("a settled output change must rebuild the aggregate, got {action:?}");
+    };
+    assert_eq!(reason, RebuildReason::DefaultOutputDeviceChanged);
+    assert_eq!(marker.kind, MarkerKind::AggregateRebuild);
+    assert_eq!(marker.from_device, "BuiltInSpeakerDevice");
+    assert_eq!(marker.to_device, "AirPodsPro-1a2b");
+    assert_eq!(marker.segment_index, 1, "the tap track opens segment 1");
+    assert_eq!(marker.to_json()["kind"], "aggregate_rebuild");
+    assert_eq!(watch.rebuilds_issued(), 1);
+    assert!(
+        watch.is_aggregate_work_in_flight(),
+        "issuing the rebuild takes the guard — the action IS the token"
+    );
+
+    // Now OUR OWN rebuild runs. Every one of these is a notification the
+    // 7-step sequence emits: destroying the aggregate churns the device list,
+    // the transient private aggregate appears and disappears as a device, and
+    // the default-output selection is re-announced when the new one is
+    // installed. Before the guard, each of these was another rebuild.
+    let self_inflicted = [
+        ("AirPodsPro-1a2b", selectors::DEVICES),
+        ("com.wilsonguenther.yap.tap-agg", selectors::DEVICES),
+        (
+            "com.wilsonguenther.yap.tap-agg",
+            selectors::DEFAULT_OUTPUT_DEVICE,
+        ),
+        ("AirPodsPro-1a2b", selectors::DEVICES),
+        ("AirPodsPro-1a2b", selectors::DEFAULT_OUTPUT_DEVICE),
+        ("BuiltInSpeakerDevice", selectors::DEVICES),
+    ];
+    for (n, (uid, selector)) in self_inflicted.into_iter().enumerate() {
+        let action =
+            watch.observe_output(output_event(uid, speakers(), 510 + n as u64 * 7, selector));
+        assert_eq!(
+            action,
+            FormatChangeAction::Ignored(InputFormatWatch::GUARDED),
+            "a notification our own rebuild emitted is not a reason to rebuild"
+        );
+    }
+    // The watchdog ticking mid-rebuild must not sneak one past the guard either.
+    assert_eq!(
+        watch.tick_output(9_999),
+        FormatChangeAction::Ignored(InputFormatWatch::GUARDED),
+    );
+    assert_eq!(
+        watch.rebuilds_issued(),
+        1,
+        "ZERO additional rebuilds for {} self-generated events",
+        self_inflicted.len()
+    );
+
+    // The rebuild lands. The guard opens, and the settling notifications that
+    // arrive AFTER it are still not rebuilds, because the second, independent
+    // check — "is this actually a different device?" — says no. Two guards,
+    // because the in-flight window closes before the HAL finishes talking.
+    watch.finish_aggregate_work("AirPodsPro-1a2b", speakers());
+    assert!(!watch.is_aggregate_work_in_flight());
+    for (n, selector) in [selectors::DEVICES, selectors::DEFAULT_OUTPUT_DEVICE]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            watch.observe_output(output_event(
+                "AirPodsPro-1a2b",
+                speakers(),
+                700 + n as u64,
+                selector
+            )),
+            FormatChangeAction::Unchanged,
+            "the device we are already pointed at is never a rebuild"
+        );
+    }
+    assert_eq!(
+        watch.rebuilds_issued(),
+        1,
+        "one connect, one rebuild, total"
+    );
+
+    // …and the watch is not deaf afterwards: the NEXT genuine change still works.
+    assert_eq!(
+        watch.observe_output(output_event(
+            "BuiltInSpeakerDevice",
+            speakers(),
+            5_000,
+            selectors::DEFAULT_OUTPUT_DEVICE
+        )),
+        FormatChangeAction::Ignored(InputFormatWatch::COALESCING),
+    );
+    assert!(watch.tick_output(5_500).is_rebuild_aggregate());
+    assert_eq!(watch.rebuilds_issued(), 2);
+}
+
+#[test]
+fn the_mic_half_of_the_watch_is_untouched_by_the_output_half() {
+    // The whole argument for extending this state machine instead of building a
+    // second one is that they share the guard and the debounce, not that they
+    // share their counters. A mic swap orders track 0's segments; an aggregate
+    // rebuild orders track 1's. One counter serving both would mis-order
+    // whichever it lost.
+    let mut watch = watching();
+    watch.watch_output("BuiltInSpeakerDevice", speakers());
+
+    assert!(watch
+        .observe(event(
+            "AirPods Pro",
+            airpods(),
+            10,
+            16_000,
+            selectors::STREAM_FORMAT
+        ))
+        .is_reconfigure());
+    assert_eq!(watch.segment_index(), 1);
+    assert_eq!(watch.output_segment_index(), 0, "no rebuild has happened");
+
+    watch.observe_output(output_event(
+        "AirPodsPro-1a2b",
+        speakers(),
+        20,
+        selectors::DEFAULT_OUTPUT_DEVICE,
+    ));
+    let action = watch.tick_output(600);
+    assert_eq!(
+        action.marker().unwrap().segment_index,
+        1,
+        "TAP track segment 1"
+    );
+    assert_eq!(watch.segment_index(), 1, "the mic counter did not move");
+    assert_eq!(action.marker().unwrap().kind, MarkerKind::AggregateRebuild);
+
+    // A mic-side marker still reads `device_change` — the sidecar's existing
+    // line is unchanged by this item.
+    let mic = watch.observe(event(
+        "MacBook Pro Microphone",
+        built_in(),
+        30,
+        32_000,
+        selectors::DEFAULT_INPUT_DEVICE,
+    ));
+    assert_eq!(mic.marker().unwrap().to_json()["kind"], "device_change");
+    assert_eq!(mic.marker().unwrap().segment_index, 2);
 }

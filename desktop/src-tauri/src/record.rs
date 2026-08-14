@@ -1736,6 +1736,21 @@ fn watchdog_poll(
             live.mark_device_change(&marker);
             reopen_after_change(live, cache, Some(marker.to));
         }
+        // YV103 — the output half of the same watch. The mic path never calls
+        // `watch_output`, so its watch's output half is inert and this arm is
+        // unreachable from `observe_input`; the aggregate rebuild belongs to
+        // 22-B's tap session, which drives `observe_output`/`tick_output` on its
+        // own watch. Logged rather than asserted so a future wiring mistake
+        // shows up in the support bundle instead of panicking a user's capture.
+        FormatChangeAction::RebuildAggregate { marker, reason } => {
+            log::warn!(
+                "YV92 watchdog: ignoring an aggregate-rebuild action on the mic path \
+                 ({} → {}, reason={}) — the mic stream has no aggregate device",
+                marker.from_device,
+                marker.to_device,
+                reason.as_str(),
+            );
+        }
     }
 }
 

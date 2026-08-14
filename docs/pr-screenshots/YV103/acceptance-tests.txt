@@ -1,0 +1,39 @@
+$ cargo test --test input_format_change_handler
+running 10 tests
+test a_burst_of_selectors_for_one_renegotiation_is_a_single_segment ... ok
+test a_ratio_never_survives_a_format_change ... ok
+test input_format_listeners_install_on_this_mac ... ignored, needs a real input device: run by hand on a Mac with a microphone
+test output_format_listeners_install_on_this_mac ... ignored, touches the CoreAudio HAL: run by hand on a Mac
+test a_same_named_device_at_a_new_rate_is_still_a_format_change ... ok
+test an_unreadable_format_is_ignored_rather_than_installed ... ok
+test the_listener_edge_is_taken_once_and_names_its_selector ... ok
+test a_stream_format_event_opens_a_segment_writes_a_marker_and_retunes_the_ratio ... ok
+test the_mic_half_of_the_watch_is_untouched_by_the_output_half ... ok
+test the_watchs_own_aggregate_notifications_never_issue_another_rebuild ... ok
+
+test result: ok. 8 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test aggregate_rebuild_debounce
+running 8 tests
+test a_burst_that_settles_back_where_it_started_is_no_rebuild_at_all ... ok
+test a_sample_rate_renegotiation_on_the_same_device_is_still_a_rebuild ... ok
+test an_event_arriving_after_the_window_flushes_the_burst_without_waiting_for_a_tick ... ok
+test a_six_event_airpods_burst_inside_the_window_is_exactly_one_rebuild ... ok
+test the_debounce_window_is_at_least_the_500ms_os3_requires ... ok
+test the_output_half_is_inert_until_a_tap_session_points_it_somewhere ... ok
+test an_unreadable_format_on_the_current_device_is_never_a_rebuild ... ok
+test the_window_opens_at_the_first_event_and_is_never_restarted_by_later_ones ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test aggregate_rebuild_idempotent_teardown
+running 6 tests
+test events_during_the_initial_aggregate_create_are_dropped_not_replayed ... ok
+test a_failed_device_read_on_release_keeps_the_last_known_good_device_not_a_blank_one ... ok
+test releasing_the_guard_twice_is_safe_and_the_watch_still_works_afterwards ... ok
+test a_user_switch_that_lands_inside_the_guard_window_is_recovered_by_the_watchdog ... ok
+test a_rebuild_issued_while_a_rebuild_is_in_flight_is_a_no_op ... ok
+test the_guard_survives_a_hundred_interleaved_rebuild_and_notification_rounds ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
