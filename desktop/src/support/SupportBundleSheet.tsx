@@ -84,8 +84,9 @@ export default function SupportBundleSheet({
               {formatBytes(preview.totalBytes)} in total. No recordings, no
               database, no transcripts. Every log line went through a redaction
               pass first: paths, your account name, email addresses, tokens and
-              long numbers were replaced, and every word left is one Yap ships
-              inside itself — yours are not. Open any row to read it.
+              long numbers were replaced, and every line left is one Yap ships
+              inside itself, with only values in the gaps — anything else is a
+              marker and a count. Open any row to read it.
             </p>
 
             <ul className="support-list">

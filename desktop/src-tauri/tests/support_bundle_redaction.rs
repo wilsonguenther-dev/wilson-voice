@@ -35,7 +35,6 @@
 
 use chrono::{DateTime, Utc};
 use wilson_voice_lib::support::{self, BundleEntry, BundleInputs};
-use wilson_voice_lib::vocab;
 
 const DIRTY: &str = include_str!("fixtures/support/dirty-yap.log");
 const USERNAME: &str = "wilsonguenther";
@@ -92,6 +91,38 @@ const TRANSCRIPT_SHAPED: &[(&str, &str)] = &[
         "a fake header inside a backtrace",
         "she asked me not to put it in the notes",
     ),
+    // Review round 3. The word allowlist let all of these out, and each is a
+    // different way of making the same point: a rule about WORDS says nothing
+    // about a LINE.
+    //
+    // A sentence broken into one-word runs by non-word tokens, where each lone
+    // word is a word Yap ships somewhere:
+    (
+        "a sentence split into single words",
+        "her HIV+ result came back positive",
+    ),
+    // A sentence made only of words that are ordinary enough to be common:
+    ("an ordinary short sentence", "she said the thing"),
+    // A sentence that happens to be a phrase Yap also ships — the fallback
+    // message in this very module says "The file is on your Desktop". Under a
+    // phrase allowlist that made it Yap's sentence. It is not; it is the
+    // user's, and only whole-message matching can tell the difference.
+    (
+        "a sentence that collides with one of Yap's own",
+        "the file is on your Desktop",
+    ),
+];
+
+/// Finding #3's class, spelled out: PII that is not word-shaped, so a rule that
+/// only governs words never saw it. Every one of these shipped.
+const NOT_WORD_SHAPED: &[(&str, &str)] = &[
+    ("a card number as spoken", "4111 1111 1111 1111"),
+    ("a phone number as spoken", "512 738 7951"),
+    ("a dose", "20mg"),
+    ("a lab value", "9.4"),
+    ("a test name", "A1C"),
+    ("a diagnosis", "COVID-19"),
+    ("an address fragment", "P.O."),
 ];
 
 const FILESYSTEM_PATHS: &[(&str, &str)] = &[
@@ -151,6 +182,7 @@ fn packed_logs() -> Vec<BundleEntry> {
 fn the_fixture_really_is_a_leak() {
     for (label, needle) in TRANSCRIPT_SHAPED
         .iter()
+        .chain(NOT_WORD_SHAPED)
         .chain(FILESYSTEM_PATHS)
         .chain(HOME_USERNAME)
     {
@@ -212,30 +244,83 @@ fn the_home_directory_username_does_not_survive_the_bundle() {
     }
 }
 
-/// The general form of the transcript guarantee, and the whole point of the
-/// rewrite: it does not depend on knowing which log call leaked the sentence,
-/// on the sentence being long, or on it being free of digits. Every word that
-/// survives the packer is a word Yap compiled into itself.
+/// Finding #3, as its own test: the leaks that are not words.
+///
+/// A card number, a phone number, a dose, a lab value, a test name, a diagnosis
+/// and an address fragment are not word-shaped, so the word allowlist had no
+/// opinion about any of them and all seven shipped. `redact_opaque` needed
+/// seven digits inside ONE token, and a person says a card number in blocks of
+/// four.
 #[test]
-fn every_word_that_survives_is_one_yap_compiled_in() {
+fn pii_that_is_not_word_shaped_does_not_survive_the_bundle() {
+    for entry in packed_logs() {
+        for (label, needle) in NOT_WORD_SHAPED {
+            assert!(
+                !entry.text.contains(needle),
+                "{label} survived into {}:\n{}",
+                entry.name,
+                entry.text
+            );
+        }
+    }
+}
+
+/// The general form of the guarantee, and the whole point of the rewrite: it
+/// does not depend on knowing which log call leaked the sentence, on the
+/// sentence being long, on it being free of digits, or on the leak being made
+/// of words at all.
+///
+/// The previous version of this test walked WORD RUNS, which is the same blind
+/// spot the redactor had — it could not see a token that is not a word, so it
+/// was green while `4111 1111 1111 1111` shipped. This one walks every token of
+/// every line of the packed bundle and asks the shipped rule to account for it.
+///
+/// It restates the implementation's own predicate, which on its own would be a
+/// tautology, so it is deliberately paired with two independent checks: the
+/// sentinel lists above (concrete strings, asserted present in the fixture by
+/// `the_fixture_really_is_a_leak` and absent from the output here), and
+/// `the_general_rule_is_not_vacuous` below, which proves the predicate can say
+/// no.
+#[test]
+fn every_line_that_survives_is_a_message_yap_compiled_in() {
     for entry in packed_logs() {
         for line in entry.text.lines() {
             // The `[timestamp LEVEL module::path]` header is kept verbatim and
             // is not user-writable, so it is not part of the claim — but only
-            // a REAL header is exempt. Splitting on the first `]` here (which
-            // is what this test used to do) would have excused exactly the
-            // hole the redactor had: a spoken line beginning with a bracket
-            // would have had its opening words treated as a header and never
-            // examined. So the split is the shipped rule itself.
+            // a REAL header is exempt, and the split is the shipped rule
+            // itself, not a looser restatement of it.
             let (_, body) = support::split_header(line);
-            for run in word_runs(body) {
-                assert!(
-                    accounted_for(&run),
-                    "an unaccounted-for word run survived into {}: {run:?}\n{line}",
-                    entry.name
-                );
-            }
+            let left = support::unexplained_tokens(body);
+            assert!(
+                left.is_empty(),
+                "unaccounted-for tokens survived into {}: {left:?}\n{line}",
+                entry.name
+            );
         }
+    }
+}
+
+/// The predicate the test above leans on has to be able to say NO, or that test
+/// is an elaborate way of asserting `true`.
+#[test]
+fn the_general_rule_is_not_vacuous() {
+    for (label, needle) in TRANSCRIPT_SHAPED.iter().chain(NOT_WORD_SHAPED) {
+        assert!(
+            !support::unexplained_tokens(needle).is_empty(),
+            "{label}: the rule accounts for {needle:?}, which is user content"
+        );
+    }
+    // And it says yes to the app's own messages, or the bundle would be empty.
+    for msg in [
+        "polish sidecar starting",
+        "wal_checkpoint failed: database is locked",
+        "0: wilson_voice_lib::dictation::finish_utterance",
+        "at src/dictation.rs:88:17",
+    ] {
+        assert!(
+            support::unexplained_tokens(msg).is_empty(),
+            "over-redacted: {msg:?}"
+        );
     }
 }
 
@@ -397,36 +482,6 @@ fn the_bundle_is_still_worth_sending() {
         );
     }
     assert_eq!(packed.len(), 2, "both rotations are packed");
-}
-
-/// Maximal runs of word tokens on a line, lowercased — a redaction marker, a
-/// number, a path or an identifier ends a run, which is how the redactor reads
-/// a line too.
-fn word_runs(body: &str) -> Vec<Vec<String>> {
-    let mut runs = Vec::new();
-    let mut cur: Vec<String> = Vec::new();
-    for token in body.split_whitespace() {
-        if vocab::is_wordlike(token) {
-            cur.push(vocab::word_core(token).to_lowercase());
-        } else if !cur.is_empty() {
-            runs.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        runs.push(cur);
-    }
-    runs
-}
-
-/// Is this run one Yap could have written? A log line is usually a compiled-in
-/// message with a runtime value spliced into it, so a surviving run is either
-/// one of Yap's phrases or two of them either side of the value that was
-/// dropped — the redactor's own two-segment rule, spelled out here rather than
-/// borrowed, so this asserts the OUTPUT rather than restating the code.
-fn accounted_for(run: &[String]) -> bool {
-    let v = vocab::vocabulary();
-    let prefix = v.accounted_prefix(run);
-    prefix == run.len() || (prefix > 0 && v.accounts_for_all(&run[prefix..]))
 }
 
 /// Not an assertion — a way to SEE the redacted log in a PR review.

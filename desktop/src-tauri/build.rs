@@ -8,6 +8,11 @@
 // Ed25519 licensing implementation, the trial and revocation logic, and every
 // internal note in the codebase.
 //
+// The corpus is also LITERALS THAT SHIP: `#[cfg(test)]` items are skipped, so
+// the ~6,000 words of English prose this crate's test fixtures carry — an
+// allowlist entry every one of them, and none of them in a release build — do
+// not decide what may leave a user's machine in a support bundle.
+//
 // The corpus only ever needed the string literals. So the same extractor runs
 // at build time (`src/vocab_extract.rs` is `include!`d below and compiled a
 // second time as part of the crate), and only its output — deduplicated, one
@@ -56,12 +61,13 @@ fn build_vocab_corpus() {
         let text = std::fs::read_to_string(src.join(name))
             .unwrap_or_else(|e| panic!("read src/{name}: {e}"));
         for lit in string_literals(&text) {
-            let line = corpus_line(&lit);
-            if !carries_a_word(&line) || !seen.insert(line.clone()) {
-                continue;
+            for line in corpus_lines(&lit) {
+                if !carries_a_word(&line) || !seen.insert(line.clone()) {
+                    continue;
+                }
+                corpus.push_str(&line);
+                corpus.push('\n');
             }
-            corpus.push_str(&line);
-            corpus.push('\n');
         }
     }
 

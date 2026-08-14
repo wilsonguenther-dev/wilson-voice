@@ -18,13 +18,16 @@
 //!   had an allowlist since YV64; `yap.log` never did — PRIVACY.md's claim that
 //!   diagnostic logs contain no transcript text was an assertion, not a tested
 //!   guarantee (finding #36). [`redact`] is that guarantee, and
-//!   `support_bundle_redaction` is its test. It is an ALLOWLIST, not a filter:
-//!   after the structural rules below strip paths, quotes, panic payloads,
-//!   emails, tokens and digit runs, every word still standing has to be one Yap
-//!   compiled into itself ([`crate::vocab`]) or it is replaced. What the user
-//!   said is never in the binary, so it can never be in the output — the
-//!   guarantee does not depend on the sentence being long, or on it being free
-//!   of the times and amounts real dictation is full of.
+//!   `support_bundle_redaction` is its test. It is an ALLOWLIST, not a filter,
+//!   and it is an allowlist of MESSAGES rather than of words: after the
+//!   structural rules below strip paths, quotes, panic payloads, emails, tokens
+//!   and digit runs, the line that is left has to be, in full, a message this
+//!   crate compiled in ([`crate::vocab`]), with only checked values in its
+//!   holes — or it collapses to a marker and a count. Two earlier cuts of this
+//!   rule were falsified in review, both because they were rules about WORDS: a
+//!   length threshold that one digit could split, then a word allowlist that
+//!   let single words, spoken numbers and doses through the gaps between the
+//!   per-token rules. A rule about the whole line has no gaps to fall between.
 //! * **The user sees exactly what is inside, first.** [`prepare`] builds the
 //!   bundle in memory and hands back a preview of the REAL redacted bytes; the
 //!   send step writes those same cached bytes. A preview that re-derives its
@@ -75,7 +78,11 @@ const LONG_DIGIT_RUN: usize = 7;
 /// What a redacted span is replaced with. Visible on purpose: a user reading
 /// the preview should be able to SEE that redaction happened, rather than
 /// wonder whether the log was simply empty.
-const R_PROSE: &str = "‹redacted prose›";
+/// The prose marker is written `‹redacted-prose:12›` — the count lives
+/// INSIDE the guillemets so the whole thing is one token. A marker containing a
+/// space tokenises into two pieces, and the second piece is a token no later
+/// rule recognises as a marker at all.
+const R_PROSE: &str = "redacted-prose";
 const R_PATH: &str = "‹path›";
 const R_USER: &str = "‹user›";
 const R_EMAIL: &str = "‹email›";
@@ -98,8 +105,9 @@ const R_TOKEN: &str = "‹token›";
 /// 5. the home-directory username goes, catching bare mentions the path rule
 ///    could not reach;
 /// 6. opaque tokens and long digit runs go;
-/// 7. every word still standing has to be one Yap compiled in — its own log
-///    messages, plus a fixed list of foreign diagnostic strings — or it goes.
+/// 7. the line that is left has to BE a message Yap compiled in — one of its
+///    own log messages, or a foreign diagnostic from a fixed list — with only
+///    checked values in the holes, or it collapses to a marker and a count.
 ///
 /// The `[timestamp LEVEL module::path]` header `env_logger` writes is kept
 /// verbatim — it is a timestamp, a level, and a Rust module path, none of which
@@ -117,7 +125,7 @@ pub fn redact_line(line: &str, username: &str) -> String {
     body = redact_paths(&body);
     body = redact_username(&body, username);
     body = redact_opaque(&body);
-    body = redact_prose(&body);
+    body = enforce_vocabulary(&body);
 
     format!("{head}{body}")
 }
@@ -188,6 +196,12 @@ fn is_module_path(s: &str) -> bool {
 }
 
 /// The panic hook writes `PANIC at <loc>: <payload>`. Keep the location.
+///
+/// The `: ` separator is kept as well as the location, because what the hook
+/// writes is `log::error!("PANIC at {location}: {message}…")` and the line has
+/// to still BE that message afterwards — [`enforce_vocabulary`] matches whole
+/// compiled-in messages, and a line the redactor itself reshaped into something
+/// Yap never writes would be redacted a second time, by its own hand.
 fn drop_panic_payload(body: &str) -> String {
     let Some(at) = body.find("PANIC at ") else {
         return body.to_string();
@@ -198,7 +212,7 @@ fn drop_panic_payload(body: &str) -> String {
     // after that separator is the payload, and the payload is the half
     // `crash::parse_panic_line` already refuses to store.
     let loc_end = rest.find(": ").unwrap_or(rest.len());
-    format!("{}PANIC at {} {R_QUOTED}", &body[..at], &rest[..loc_end])
+    format!("{}PANIC at {}: {R_QUOTED}", &body[..at], &rest[..loc_end])
 }
 
 /// `"…"`, `` `…` `` and `“…”` spans. Single quotes are deliberately NOT a
@@ -322,9 +336,9 @@ fn redact_username(body: &str, username: &str) -> String {
     })
 }
 
-/// Secret-shaped blobs and long digit runs.
+/// Secrets that are not prose: an opaque blob, or a long number.
 fn redact_opaque(body: &str) -> String {
-    map_tokens(body, |tok| {
+    let per_token = map_tokens(body, |tok| {
         let (core, lead, trail) = trim_punct(tok);
         if already_redacted(core) {
             return None;
@@ -342,136 +356,164 @@ fn redact_opaque(body: &str) -> String {
             return Some(format!("{lead}{R_DIGITS}{trail}"));
         }
         None
-    })
+    });
+    collapse_digit_runs(&per_token)
 }
 
-/// Every remaining word must be one Yap compiled in. This is the rule that
-/// catches a transcript, and it is why the redactor is a guarantee rather than
-/// a hope: it does not need to know which log call leaked the sentence, how
-/// long the sentence is, or how many digits are sitting in the middle of it.
-///
-/// The first version of this function counted words instead: nine word-like
-/// tokens in a row were assumed to be prose. It did not hold. `is_wordlike`
-/// rejects any token carrying a digit or a symbol, so a single number — a time,
-/// an amount, an invoice number, the things dictation is *made of* — split a
-/// sentence into two short runs and shipped the whole thing verbatim. The rule
-/// is inverted now: see [`crate::vocab`] for why an allowlist of Yap's own
-/// compiled-in words is structural where a length threshold was statistical.
-///
-/// Runs are matched against the vocabulary in at most two segments — the
-/// longest prefix it accounts for (a compiled-in message), then the remainder
-/// (the literal that followed a spliced-in value, if it is one). A run the
-/// vocabulary explains that way survives; anything else collapses into one
-/// marker carrying its length.
-///
-/// Two rules keep single words from trickling through the gaps, because "no
-/// transcript text" has to mean no fragments either:
-/// * a partial match must be worth something. One word of overlap between a
-///   sentence somebody spoke and a message Yap ships is a coincidence, not an
-///   explanation, so a prefix under [`MIN_ACCOUNTED_PREFIX`] keeps nothing.
-/// * a line carrying text Yap cannot explain is not a line Yap can vouch for,
-///   so on *that* line the lone words it could explain go too — `at 8 tonight`
-///   does not become `‹redacted› 8 tonight`. A line whose every word is
-///   accounted for is left completely alone; that is most of the log.
-fn redact_prose(body: &str) -> String {
-    let mut units: Vec<Unit> = Vec::new();
-    let mut run: Vec<&str> = Vec::new();
-    for tok in body.split_whitespace() {
-        if is_wordlike(tok) {
-            run.push(tok);
-        } else {
-            if !run.is_empty() {
-                units.push(Unit::Run(std::mem::take(&mut run)));
-            }
-            units.push(Unit::Sep(tok));
-        }
-    }
-    if !run.is_empty() {
-        units.push(Unit::Run(run));
-    }
-
-    // First pass: ask the vocabulary about every run. Second pass: emit, now
-    // that the line as a whole is known to be explained or not.
-    let resolved: Vec<Resolution> = units
-        .iter()
-        .filter_map(|u| match u {
-            Unit::Run(words) => Some(resolve_run(words)),
-            Unit::Sep(_) => None,
-        })
-        .collect();
-    let tainted = resolved.iter().any(|r| !r.explained);
-
-    let mut out: Vec<String> = Vec::with_capacity(units.len());
-    let mut next = 0usize;
-    for unit in &units {
-        match unit {
-            Unit::Sep(tok) => out.push((*tok).to_string()),
-            Unit::Run(words) => {
-                let r = &resolved[next];
-                next += 1;
-                emit_run(words, r, tainted, &mut out);
-            }
-        }
-    }
-
-    let joined = out.join(" ");
-    // Preserve leading indentation, which is how the backtrace block reads.
+/// A phone number, a card number or an account number does not arrive as one
+/// token when somebody SAID it: ASR writes `512 738 7951` and
+/// `4111 1111 1111 1111`, which is three or four tokens of three or four digits
+/// each, and a per-token threshold of seven that never fires. Both of those
+/// shipped out of a support bundle verbatim. The digits are counted across a
+/// run of adjacent bare numbers instead, which is the unit a person speaks them
+/// in.
+fn collapse_digit_runs(body: &str) -> String {
     let indent: String = body.chars().take_while(|c| *c == ' ').collect();
-    format!("{indent}{joined}")
-}
-
-/// A body is a sequence of word runs and the tokens between them.
-enum Unit<'a> {
-    Sep(&'a str),
-    Run(Vec<&'a str>),
-}
-
-/// What the vocabulary had to say about one run.
-struct Resolution {
-    /// How many words from the front it accounts for as one phrase.
-    prefix: usize,
-    /// The whole run is Yap's own — either one phrase, or a phrase followed by
-    /// a second one, which is the shape of a message with a value spliced in.
-    explained: bool,
-}
-
-/// One word of overlap is a coincidence. Two is a message.
-const MIN_ACCOUNTED_PREFIX: usize = 2;
-
-fn resolve_run(run: &[&str]) -> Resolution {
-    let words: Vec<String> = run
-        .iter()
-        .map(|t| crate::vocab::word_core(t).to_lowercase())
-        .collect();
-    let vocab = crate::vocab::vocabulary();
-    let prefix = vocab.accounted_prefix(&words);
-    let explained =
-        prefix == words.len() || (prefix > 0 && vocab.accounts_for_all(&words[prefix..]));
-    Resolution { prefix, explained }
-}
-
-fn emit_run(run: &[&str], r: &Resolution, tainted: bool, out: &mut Vec<String>) {
-    if r.explained {
-        if tainted && run.len() == 1 {
-            out.push(format!("{R_PROSE}(1 word)"));
-        } else {
-            out.extend(run.iter().map(|t| (*t).to_string()));
+    let toks: Vec<&str> = body.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(toks.len());
+    let mut i = 0usize;
+    while i < toks.len() {
+        let mut j = i;
+        let mut digits = 0usize;
+        while j < toks.len() && is_bare_number(toks[j]) {
+            digits += toks[j].chars().filter(|c| c.is_ascii_digit()).count();
+            j += 1;
         }
-        return;
+        if j == i {
+            out.push(toks[i].to_string());
+            i += 1;
+        } else if digits >= LONG_DIGIT_RUN {
+            out.push(R_DIGITS.to_string());
+            i = j;
+        } else {
+            out.extend(toks[i..j].iter().map(|t| (*t).to_string()));
+            i = j;
+        }
     }
-    let kept = if r.prefix >= MIN_ACCOUNTED_PREFIX {
-        r.prefix
-    } else {
-        0
-    };
-    out.extend(run[..kept].iter().map(|t| (*t).to_string()));
-    out.push(format!("{R_PROSE}({} words)", run.len() - kept));
+    format!("{indent}{}", out.join(" "))
 }
 
-/// A token is "word-like" if it is a word a person could have said. Shared with
-/// the vocabulary so both sides of a comparison tokenise identically.
-fn is_wordlike(tok: &str) -> bool {
-    crate::vocab::is_wordlike(tok)
+/// A token that is a number and nothing else — `7951`, `(512)`, `1,024`,
+/// `0.8.0`. A source location (`212:9`) is not one: it carries a colon, and it
+/// is the half of a crash log worth keeping.
+fn is_bare_number(tok: &str) -> bool {
+    let (core, _, _) = trim_punct(tok);
+    !core.is_empty()
+        && core.chars().any(|c| c.is_ascii_digit())
+        && core
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.' | ','))
+}
+
+/// The line has to BE a message Yap compiled in. This is the rule that catches
+/// a transcript, and the third attempt at it.
+///
+/// Version one counted words: nine word-like tokens in a row were assumed to be
+/// prose. One digit in a dictated sentence split the run and shipped the whole
+/// utterance.
+///
+/// Version two inverted that into an allowlist of Yap's own words, matched as
+/// contiguous phrases. It was falsified three ways at once, and all three were
+/// the same mistake — *a rule about words says nothing about a line*. Single
+/// words are their own phrases, so `her HIV+ result` walked out between two
+/// non-word tokens with both of its words individually accounted for. Tokens
+/// that are not words were governed by nothing, so `4111 1111 1111 1111`,
+/// `20mg`, `A1C`, `9.4`, `COVID-19` and `P.O.` shipped. And the corpus itself
+/// held ~6,000 words of `#[cfg(test)]` English written to look like dictation.
+///
+/// The rule now is about the whole line: the body survives only if it is, in
+/// full, one message this crate compiled in, with every interpolated value
+/// checked (see [`crate::vocab`]). There is no seam between rules for a token
+/// class to fall through, because there are no per-token survival rules left to
+/// fall between — either the line is a message Yap wrote, or it is not.
+///
+/// A line that is not gets a marker and a count. It keeps only the tokens that
+/// stand on their own with nothing to explain them: a marker an earlier rule
+/// left, a Rust path, a source location. Numbers are not on that list, on
+/// purpose.
+fn enforce_vocabulary(body: &str) -> String {
+    let indent: String = body.chars().take_while(|c| *c == ' ').collect();
+    let norm = crate::vocab::normalize(body);
+    if norm.is_empty() {
+        return body.to_string();
+    }
+    // `std::backtrace`'s two shapes — the most useful lines in a crash report,
+    // and neither of them reachable from speech.
+    if crate::vocab::is_backtrace_frame(&norm) {
+        return body.to_string();
+    }
+    if crate::vocab::templates().explains(&norm) {
+        return body.to_string();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut dropped = 0usize;
+    for tok in norm.split_whitespace() {
+        if crate::vocab::token_is_structural(tok) {
+            flush_dropped(&mut dropped, &mut out);
+            out.push(tok.to_string());
+        } else {
+            dropped += 1;
+        }
+    }
+    flush_dropped(&mut dropped, &mut out);
+    format!("{indent}{}", out.join(" "))
+}
+
+/// The tokens on this line that nothing accounts for.
+///
+/// Empty when the line is, in full, a message this crate compiled in (or one of
+/// `std::backtrace`'s two shapes), and empty when every token left standing is
+/// structural on its own. Public because the guarantee is asserted from OUTSIDE
+/// this module, over every token of the packed bundle rather than over the word
+/// runs in it — the previous coverage test iterated word runs, which is exactly
+/// why it could not see the class of leak that shipped (`4111 1111 1111 1111`,
+/// `20mg`, `A1C`, `P.O.`).
+pub fn unexplained_tokens(body: &str) -> Vec<String> {
+    let norm = crate::vocab::normalize(body);
+    // A long number is never something the compiler put in the binary — it can
+    // only ever have arrived through a hole — so it is checked BEFORE the
+    // message match rather than inside it. Without this the coverage test would
+    // be blind to exactly the class that shipped: `{}`-leading messages exist,
+    // a run of bare numbers is value-shaped, and so a spoken card number would
+    // be "explained" by a message it was merely interpolated into.
+    let toks: Vec<&str> = norm.split_whitespace().collect();
+    let mut i = 0usize;
+    while i < toks.len() {
+        let mut j = i;
+        let mut digits = 0usize;
+        while j < toks.len() && is_bare_number(toks[j]) {
+            digits += toks[j].chars().filter(|c| c.is_ascii_digit()).count();
+            j += 1;
+        }
+        if j > i {
+            if digits >= LONG_DIGIT_RUN {
+                return toks[i..j].iter().map(|t| (*t).to_string()).collect();
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    if norm.is_empty()
+        || crate::vocab::is_backtrace_frame(&norm)
+        || crate::vocab::templates().explains(&norm)
+    {
+        return Vec::new();
+    }
+    norm.split_whitespace()
+        .filter(|t| !crate::vocab::token_is_structural(t))
+        .map(str::to_string)
+        .collect()
+}
+
+fn flush_dropped(dropped: &mut usize, out: &mut Vec<String>) {
+    if *dropped > 0 {
+        // One token, no spaces inside it: a marker that tokenises into two
+        // pieces is a marker that half of every later rule cannot recognise.
+        out.push(format!("\u{2039}{R_PROSE}:{dropped}\u{203A}"));
+        *dropped = 0;
+    }
 }
 
 /// Apply `f` to each whitespace-separated token, keeping the token when `f`
@@ -594,11 +636,14 @@ fn readme_text(at: DateTime<Utc>) -> String {
          What is NOT in it: any recording, any database, any transcript. Every\n\
          log line was run through a redaction pass before it was packed —\n\
          filesystem paths, your account name, email addresses, URL paths, long\n\
-         opaque tokens and long numbers are replaced with a marker, and every\n\
-         word left has to be one Yap ships inside itself (its own log messages,\n\
-         plus a fixed list of system error strings) or it is replaced too. Your\n\
-         words are not in the app, so they cannot be in this file. You can read\n\
-         every byte of the zip; Yap showed it to you before writing it.\n\
+         opaque tokens and long numbers are replaced with a marker, and then the\n\
+         line itself has to be, in full, a message Yap ships inside itself (one\n\
+         of its own log messages, or a system error string from a fixed list),\n\
+         with only values — numbers, file names, markers — in the gaps. Anything\n\
+         else becomes a marker and a count. A sentence you spoke is never one of\n\
+         Yap's own messages, and a number you spoke is not a value Yap put\n\
+         there. You can read every byte of the zip; Yap showed it to you before\n\
+         writing it.\n\
          \n\
          Nothing here was uploaded. Yap has no network path for this: the file\n\
          was written to your Desktop and handed to your mail client, and you are\n\
@@ -1224,9 +1269,14 @@ mod edge_tests {
             let out = redact_line(line, "wilsonguenther");
             assert!(out.len() < 4000, "runaway output for {line:?}");
         }
-        // A username that is empty must not turn every token into ‹user›.
+        // A username that is empty must not turn every token into ‹user›. (The
+        // words themselves do not survive — `[x] hello world` is not a header
+        // and not a message Yap compiled in — but they must be redacted as
+        // prose, by the rule that owns them, and not misfiled as the account
+        // name.)
         let out = redact_line("[x] hello world", "");
-        assert!(out.contains("hello world"), "{out}");
+        assert!(!out.contains(R_USER), "{out}");
+        assert!(out.contains(R_PROSE), "{out}");
     }
 
     /// A log whose header is missing (a raw backtrace line, say) is still

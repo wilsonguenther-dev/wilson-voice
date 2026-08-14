@@ -24,3 +24,8 @@ backtrace:
              at src/dictation.rs:88:17
    1: [she asked me not to put it in the notes] so leave it out of the summary
 [2026-08-12T09:15:11Z INFO  wilson_voice_lib] recording cancelled
+[2026-08-12T09:16:01Z INFO  wilson_voice_lib::dictation] transcript stored: her HIV+ result came back positive and her A1C was 9.4
+[2026-08-12T09:16:02Z INFO  wilson_voice_lib::dictation] polished text = my card is 4111 1111 1111 1111 and my number is 512 738 7951
+[2026-08-12T09:16:03Z INFO  wilson_voice_lib::dictation] polished text = take 20mg after the COVID-19 shot and mail it to the P.O. box
+[2026-08-12T09:16:04Z INFO  wilson_voice_lib::dictation] transcript stored: she said the thing
+[2026-08-12T09:16:05Z INFO  wilson_voice_lib::dictation] transcript stored: the file is on your Desktop

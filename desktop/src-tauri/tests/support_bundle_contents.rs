@@ -63,7 +63,7 @@ fn write_bundle(dir: &Path) -> (PathBuf, String) {
                 ),
                 (
                     "yap.log.1".into(),
-                    "[2026-08-11T09:13:02Z WARN  wilson_voice_lib::db] wal_checkpoint failed\n"
+                    "[2026-08-11T09:13:02Z WARN  wilson_voice_lib::db] wal_checkpoint failed: database is locked\n"
                         .into(),
                 ),
                 (
@@ -224,7 +224,11 @@ fn the_preview_is_the_bytes_that_get_written() {
         "0.8.0",
         support::BundleInputs {
             crash_summary: summary,
-            logs: vec![("yap.log".into(), "[x] polish sidecar starting\n".into())],
+            logs: vec![(
+                "yap.log".into(),
+                "[2026-08-12T09:13:02Z INFO  wilson_voice_lib::polish] polish sidecar starting\n"
+                    .into(),
+            )],
             environment: support::environment_block("macOS 26.5.2 (25F84)", "aarch64"),
             permissions: "accessibility: true\n".into(),
             models: "selected_asr_model: small.en\n".into(),

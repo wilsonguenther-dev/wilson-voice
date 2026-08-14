@@ -147,3 +147,79 @@ fn the_corpus_is_a_fraction_of_the_source_it_came_from() {
          source itself is still being embedded"
     );
 }
+
+/// Review round 3, and the reason the second cut's allowlist did not hold.
+///
+/// The corpus is an ALLOWLIST: every message in it is a message the redactor
+/// will let out of a support bundle. `build.rs` extracted literals from whole
+/// files, so this crate's `#[cfg(test)]` fixtures — ~6,000 words of ordinary
+/// English written *specifically to look like dictation*, including the
+/// 1,070-token prose paragraph in `dictation.rs` — were 37% of it. They are
+/// also not in a release build at all, so embedding them broke the other half
+/// of the claim: that what ships in the corpus is text the compiler was going
+/// to put in the binary anyway.
+///
+/// This is also the seam where the rest of the phase meets this item. The
+/// extractor GLOBS `src/*.rs`, so every module YV90–YV97 added (`summarize.rs`,
+/// `rtring.rs`, `meeting*.rs`, `vad.rs`, `shortcuts.rs`…) feeds this corpus and
+/// brings its own test fixtures with it. A guard that named one paragraph in
+/// one file would rot on the next merge, so the assertion is over every test
+/// module in the tree.
+#[test]
+fn no_cfg_test_fixture_text_is_in_the_shipped_corpus() {
+    let corpus = vocab::corpus_text();
+    let files = source_files();
+    // What the build script put in the corpus, from the whole tree — a test
+    // module often asserts on a message some OTHER module ships, and that
+    // message is in the corpus on its own merits.
+    let shipped: std::collections::HashSet<String> = files
+        .iter()
+        .flat_map(|(_, text)| vocab::string_literals(text))
+        .flat_map(|l| vocab::corpus_lines(&l))
+        .collect();
+    let mut test_only_lines = 0usize;
+    for (name, text) in &files {
+        // Everything the file's literals say, test items included. The
+        // difference is text that exists ONLY inside a `#[cfg(test)]` item.
+        for lit in vocab::string_literals_including_test_items(text) {
+            for line in vocab::corpus_lines(&lit) {
+                if shipped.contains(&line) {
+                    continue;
+                }
+                // Only prose is interesting: a short literal is as likely to be
+                // punctuation or an identifier as a sentence.
+                if line.split_whitespace().count() < 6 {
+                    continue;
+                }
+                test_only_lines += 1;
+                assert!(
+                    !corpus.contains(&line),
+                    "a #[cfg(test)] fixture is in the redaction allowlist \
+                     (src/{name}): {line:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        test_only_lines > 200,
+        "only {test_only_lines} test-only prose literals were found — the scan \
+         is not seeing the fixtures it exists to exclude"
+    );
+}
+
+/// The other direction, so the test above cannot pass by the extractor having
+/// been broken into returning nothing: the fixture prose really is still there
+/// in the source it was excluded from.
+#[test]
+fn the_test_fixture_prose_still_exists_to_be_excluded() {
+    let dictation = std::fs::read_to_string(src_dir().join("dictation.rs")).expect("read source");
+    let sentinel = "okay so the thing I keep running into when I dictate for a long stretch";
+    assert!(
+        dictation.contains(sentinel),
+        "the fixture this test is about has moved; re-point it"
+    );
+    assert!(
+        !vocab::corpus_text().contains(sentinel),
+        "the dictation test paragraph is in the shipped corpus"
+    );
+}
