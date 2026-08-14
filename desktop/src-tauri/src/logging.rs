@@ -14,7 +14,9 @@ use std::sync::Mutex;
 /// Rotate the active log once it grows past ~2 MB.
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// Keep `yap.log` plus this many rotated backups (`yap.log.1..=yap.log.N`).
-const MAX_BACKUPS: usize = 4;
+/// Public since YV98: the support bundle packs exactly the set this rotation
+/// writes, and two hand-kept lists of the same file names would drift.
+pub const MAX_BACKUPS: usize = 4;
 
 /// The logs directory (`<data_dir>/logs`), created if missing.
 pub fn logs_dir(data_dir: &Path) -> PathBuf {

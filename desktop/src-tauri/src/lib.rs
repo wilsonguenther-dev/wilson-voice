@@ -13,7 +13,7 @@ mod cli;
 mod command_mode;
 // YV64: reads macOS' own crash reports + the panic hook's log lines back into
 // `crash_events`. Local only — see the module docs for the privacy rules.
-mod crash;
+pub mod crash;
 // YV94: public because the schema is now the thing under test. The migration
 // ladder, the FTS5 sync triggers and the delete-cascade are claims about a real
 // SQLite file, so `tests/db_migration_idempotent.rs`, `meeting_fts_search.rs`,
@@ -71,7 +71,7 @@ mod mic_auth;
 pub mod models;
 mod paste;
 mod paste_tx;
-mod permissions;
+pub mod permissions;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
 // the golden formatting corpus runs the real stage from an integration test.
 pub mod polish;
@@ -106,6 +106,9 @@ mod snippets;
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
 pub mod summarize;
+// YV98 — the support bundle: build, redact, preview, compose. Deliberately NOT
+// in `crash.rs`, whose no-network test must stay green (see the module docs).
+pub mod support;
 // YV91 made this public: finding #9's rule (a meeting NEVER mutes the Mac) is
 // enforced by `sysaudio::mute_for_take`, and that gate is asserted from
 // `tests/meeting_no_automute.rs` against a fake output device.
@@ -118,6 +121,14 @@ pub mod transcription;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.
 pub mod vad;
+/// The words a packed log line is allowed to keep — Yap's own, and nothing
+/// else. Public so `support_bundle_redaction` can assert the guarantee from
+/// outside the module that relies on it.
+pub mod vocab;
+/// The Rust string-literal extractor `vocab`'s corpus is built from. Its own
+/// file, because `build.rs` `include!`s it to run the extraction at build time
+/// — one implementation, compiled on both sides of the wall.
+pub mod vocab_extract;
 
 // YV91 finding #27: the two counters `tests/meeting_no_model_resident.rs` reads
 // to prove a meeting capture never brings an ASR model resident and never
@@ -481,6 +492,11 @@ struct AppState {
     /// and its idle-unload watcher; backs the model-management commands. Since
     /// YV34 it is the app's ONLY transcriber (see `stop_and_transcribe`).
     transcription: transcription::TranscriptionManager,
+    /// YV98 — the diagnostics bundle the user last previewed, held between the
+    /// preview and the send. The preview shows the REAL redacted bytes, so the
+    /// send has to write those same bytes; rebuilding at send time would make
+    /// the preview a preview of a different file.
+    support_bundle: PLMutex<Option<support::PreparedBundle>>,
 }
 
 fn data_dir() -> PathBuf {
@@ -2766,6 +2782,142 @@ fn clear_crash_events(state: State<'_, Arc<AppState>>) -> Result<usize, String> 
     state.db.clear_crash_events()
 }
 
+// --- YV98: the crash-report button ---------------------------------------
+//
+// Two commands, in a deliberate order. `preview_support_bundle` BUILDS the
+// bundle (redacting as it goes), caches it, and returns the real contents for
+// the sheet. `send_support_bundle` writes those cached bytes and tries the
+// compose window, falling back to reveal + clipboard. Nothing here opens a
+// socket — see `support.rs`'s module docs and the test that enforces it.
+
+/// Build the bundle and hand back exactly what is inside it.
+///
+/// Async on purpose: it must NOT run on the main thread, because the compose
+/// probe below (`canPerformWithItems:`) is AppKit and has to be dispatched TO
+/// the main thread with a result coming back. A sync command would already be
+/// there and would deadlock on its own answer.
+#[tauri::command]
+async fn preview_support_bundle(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<support::BundlePreview, String> {
+    let version = env!("CARGO_PKG_VERSION");
+    let home = home_dir();
+    let os = support::os_version();
+
+    let crash_summary = match state.db.list_crash_events(db::CRASH_EVENT_LIMIT) {
+        Ok(rows) => crash::summary_text(&rows),
+        // A DB that will not read is itself a fact worth shipping.
+        Err(e) => format!("crash summary unavailable: {e}\n"),
+    };
+    let native = state.settings.lock().native_model.clone();
+    let permissions = support::permissions_block(&permissions::report(
+        false,
+        native_model_ready(&native).is_some(),
+    ));
+
+    let prepared = support::prepare(
+        version,
+        support::BundleInputs {
+            crash_summary,
+            logs: support::read_logs(&logging::logs_dir(&data_dir())),
+            environment: support::environment_block(&os, std::env::consts::ARCH),
+            permissions,
+            models: support::models_block(&native),
+            username: support::username_from_home(&home),
+            generated_at: chrono::Utc::now(),
+        },
+    );
+
+    // Ask AppKit whether a compose window is even achievable, so the sheet can
+    // say which of the two paths the button will take BEFORE it is pressed.
+    let mail_available = on_main_thread(&app, {
+        let subject = support::subject_line(version, "");
+        move || support::compose_email(None, &subject, "", true)
+    })
+    .unwrap_or(false);
+
+    let preview = prepared.preview(mail_available);
+    *state.support_bundle.lock() = Some(prepared);
+    Ok(preview)
+}
+
+/// Write the previewed bundle to the Desktop, then compose — or reveal.
+#[tauri::command]
+async fn send_support_bundle(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<support::SendOutcome, String> {
+    let prepared = state
+        .support_bundle
+        .lock()
+        .clone()
+        .ok_or_else(|| "Nothing to send — preview the report first.".to_string())?;
+
+    let path = support::desktop_dir(&home_dir()).join(&prepared.file_name);
+    support::write_zip(&path, &prepared.entries, prepared.generated_at)
+        .map_err(|e| format!("Could not write the diagnostics file: {e}"))?;
+    log::info!("support bundle written ({} entries)", prepared.entries.len());
+
+    let version = env!("CARGO_PKG_VERSION");
+    let headline = state
+        .db
+        .list_crash_events(db::CRASH_EVENT_LIMIT)
+        .ok()
+        .and_then(|rows| rows.first().map(|r| r.signature.clone()))
+        .unwrap_or_default();
+    let subject = support::subject_line(version, &headline);
+    let body = support::body_text(version, &support::os_version(), &headline);
+
+    // Compose AND the clipboard half of the fallback are AppKit, so the whole
+    // decision happens on the main thread and only the answer comes back.
+    let composed = on_main_thread(&app, {
+        let path = path.clone();
+        move || support::compose_email(Some(&path), &subject, &body, false)
+    })
+    .unwrap_or(false);
+
+    if composed {
+        return Ok(support::compose_outcome(&path));
+    }
+    let path_for_fallback = path.clone();
+    Ok(
+        on_main_thread(&app, move || {
+            support::fallback_outcome(&path_for_fallback)
+        })
+        .unwrap_or_else(|| support::SendOutcome {
+            method: "reveal".into(),
+            path: path.to_string_lossy().into_owned(),
+            recipient: support::SUPPORT_EMAIL.into(),
+            message: format!(
+                "The file is on your Desktop. Attach it to an email to {}.",
+                support::SUPPORT_EMAIL
+            ),
+        }),
+    )
+}
+
+/// Run `f` on the main thread and wait for its answer.
+///
+/// Returns `None` if the event loop never got to it — a main thread that is
+/// wedged must not hang a support request forever, and the caller's fallback is
+/// the same fallback a missing mail client gets.
+fn on_main_thread<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if app
+        .run_on_main_thread(move || {
+            let _ = tx.send(f());
+        })
+        .is_err()
+    {
+        return None;
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(10)).ok()
+}
+
 // --- YV94: Meetings ------------------------------------------------------
 //
 // Read/list/export/delete only. Nothing here STARTS a meeting: capture is
@@ -3719,6 +3871,7 @@ pub fn run() {
         paste_generation: AtomicU64::new(0),
         license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
+        support_bundle: PLMutex::new(None),
     });
 
     // YV73: memory + disk hygiene, entirely off the dictation path — its own
@@ -3926,6 +4079,8 @@ pub fn run() {
             list_crash_events,
             acknowledge_crash_events,
             clear_crash_events,
+            preview_support_bundle,
+            send_support_bundle,
             // YV94 — Meetings. Read, export and delete only; starting one is
             // YV95's surface.
             list_meetings,
@@ -5526,6 +5681,7 @@ mod tests {
             paste_generation: std::sync::atomic::AtomicU64::new(0),
             license,
             transcription,
+            support_bundle: super::PLMutex::new(None),
         })
     }
 

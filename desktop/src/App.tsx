@@ -24,6 +24,11 @@ import PurchasePrompt from "./license/PurchasePrompt";
 // the preview page, rather than being inline strings in this file.
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import { acknowledgedLabel, type MeetingConsent } from "./meetings/consent";
+import SupportBundleSheet from "./support/SupportBundleSheet";
+import type {
+  SupportBundlePreview,
+  SupportSendOutcome,
+} from "./support/bundle";
 import { watchMeetingConsent } from "./meetings/consentWatch";
 import {
   chipFor,
@@ -709,6 +714,13 @@ export default function App() {
   // re-subscribing whenever the consent state changes would drop ticks. Synced
   // in an effect rather than written during render, which React reserves for
   // itself.
+  // YV98 — the crash-report sheet. `null` means closed; an open sheet with a
+  // `null` preview is the second or two the backend spends building the bundle.
+  // The preview is REAL redacted content, so it is never fabricated here.
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [supportPreview, setSupportPreview] =
+    useState<SupportBundlePreview | null>(null);
+  const [supportBusy, setSupportBusy] = useState(false);
   const consentRef = useRef<MeetingConsent | null>(null);
   useEffect(() => {
     consentRef.current = consent;
@@ -1209,6 +1221,49 @@ export default function App() {
       setConsent(await invoke<MeetingConsent>("acknowledge_meeting_consent"));
     } catch {
       /* shown again next time, which is the safe direction to fail in */
+    }
+  }
+
+  /**
+   * YV98 — open the crash report, which means BUILD it first.
+   *
+   * The sheet opens immediately with a null preview rather than after the
+   * build, so a slow log read reads as "building" instead of a dead button.
+   * Nothing is on disk yet either way: `preview_support_bundle` works in
+   * memory, and the bytes it returns are the bytes `send_support_bundle` will
+   * write — that is the only reason showing them means anything.
+   */
+  async function openSupportBundle() {
+    setSupportOpen(true);
+    setSupportPreview(null);
+    try {
+      setSupportPreview(
+        await invoke<SupportBundlePreview>("preview_support_bundle"),
+      );
+    } catch (e) {
+      setSupportOpen(false);
+      toast(String(e));
+    }
+  }
+
+  /**
+   * Write it, then hand it to the user's mail client — or, when AppKit says it
+   * cannot drive one, to Finder and the clipboard. Both outcomes report what
+   * actually happened, because "sent" would be a lie in both: the compose path
+   * opens a window the user still has to send, and the reveal path never opened
+   * a message at all.
+   */
+  async function sendSupportBundle() {
+    setSupportBusy(true);
+    try {
+      const outcome = await invoke<SupportSendOutcome>("send_support_bundle");
+      setSupportOpen(false);
+      setSupportPreview(null);
+      toast(outcome.message);
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setSupportBusy(false);
     }
   }
 
@@ -4237,6 +4292,26 @@ export default function App() {
                       </div>
                     </>
                   )}
+
+                  {/* ── YV98 · one button, and it is never a dead end ──
+                      It builds a diagnostics zip, shows exactly what is inside
+                      it, and then either opens a pre-filled message with the
+                      file attached or drops the file on the Desktop with the
+                      address on the clipboard. Which one you get depends on
+                      whether macOS can drive your mail app, and the sheet says
+                      so before you press anything. Nothing is uploaded on
+                      either path — Yap still makes no outbound connection. */}
+                  <div className="actions wrap">
+                    <button className="primary" onClick={openSupportBundle}>
+                      Send crash report to Wilson
+                    </button>
+                  </div>
+                  <p className="tiny">
+                    Packs the logs, the crash summary, your permission states and
+                    which models are downloaded. Transcripts, recordings and your
+                    database are never in it, and the logs are redacted before
+                    they are packed — you read the whole thing first.
+                  </p>
                 </section>
               )}
 
@@ -4277,6 +4352,23 @@ export default function App() {
         <MeetingConsentNotice
           recording={consentOpen === "recording"}
           onClose={closeConsentNotice}
+        />
+      )}
+
+      {/* ── YV98 · the crash report, shown before it exists ──
+          Nothing has been written to disk at this point: the bundle is built in
+          memory, and this sheet is the user reading it. The zip only lands on
+          the Desktop when they press the action. */}
+      {supportOpen && (
+        <SupportBundleSheet
+          preview={supportPreview}
+          busy={supportBusy}
+          onSend={sendSupportBundle}
+          onClose={() => {
+            if (supportBusy) return;
+            setSupportOpen(false);
+            setSupportPreview(null);
+          }}
         />
       )}
     </div>

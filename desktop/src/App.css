@@ -2634,3 +2634,101 @@ button.primary.big {
   margin-left: auto;
   margin-right: auto;
 }
+
+/* ── YV98 · crash-report bundle preview ─────────────────────────────────────
+   The sheet is the whole privacy story of the send button, so it has to be
+   readable rather than reassuring: a scrollable list of the real entries, each
+   one openable to the real redacted bytes. It borrows the consent sheet's card
+   and actions wholesale; only the list is new. */
+.support-card {
+  width: min(680px, 100%);
+  max-height: min(82vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+
+.support-list {
+  list-style: none;
+  margin: 4px 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.support-entry {
+  /* Never shrink inside the scrolling column: without this the closed rows
+     compress under an open one and their size labels get clipped. */
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.support-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.support-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.support-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.support-name {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.support-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.support-badge {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* The actual bytes. Monospace and scrollable, because a redaction you cannot
+   read is a redaction you are being asked to take on faith. */
+.support-excerpt {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}

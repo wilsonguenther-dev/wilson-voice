@@ -1,0 +1,26 @@
+[2026-08-12T09:00:01Z INFO  wilson_voice_lib::logging] file logging → /Users/wilsonguenther/Library/Application Support/WilsonVoice/logs/yap.log
+[2026-08-12T09:00:01Z INFO  wilson_voice_lib] installing Yap 0.8.0 (user-approved)
+[2026-08-12T09:00:02Z INFO  wilson_voice_lib::models] model on disk: /Users/wilsonguenther/Library/Application Support/WilsonVoice/models/ggml-small.en.bin
+[2026-08-12T09:00:02Z WARN  wilson_voice_lib::models] model download attempt failed (https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin?token=hf_ZzQq11223344556677889900aabbccdd): timed out
+[2026-08-12T09:00:03Z INFO  wilson_voice_lib::license] license activated for wilsonguenther@gmail.com key YAPL-7f3a9d1c4b8e2a60f5d7c93b81e4a2f6
+[2026-08-12T09:00:04Z INFO  wilson_voice_lib::db] opened db for account wilsonguenther
+[2026-08-12T09:12:44Z INFO  wilson_voice_lib::dictation] transcript stored: "so the plan for thursday is that we tell the board about the fundraise and then i call the lawyer about the term sheet"
+[2026-08-12T09:12:44Z INFO  wilson_voice_lib::dictation] polished text = please call me back once you have read the memo about the acquisition and the wire that went out on friday
+[2026-08-12T09:12:45Z INFO  wilson_voice_lib::dictation] polished text = remind me to take the lithium at 8 tonight and again tomorrow when i wake up
+[2026-08-12T09:12:46Z INFO  wilson_voice_lib::dictation] transcript stored: my social is on file at Baker & Sons please shred the copy you have
+[2026-08-12T09:12:47Z INFO  wilson_voice_lib::dictation] transcript stored: call mom at 5
+[2026-08-12T09:12:48Z INFO  wilson_voice_lib::dictation] dictionary hit on 5127387951
+[2026-08-12T09:12:49Z INFO  wilson_voice_lib::paste_tx] reliable-paste: read confirmed — prior clipboard restored
+[2026-08-12T09:13:01Z WARN  wilson_voice_lib::db] wal_checkpoint failed: database is locked
+[2026-08-12T09:13:02Z INFO  wilson_voice_lib::polish] polish sidecar starting
+[2026-08-12T09:13:03Z INFO  wilson_voice_lib::polish] polish skipped: sidecar is still loading its model
+[2026-08-12T09:14:00Z ERROR wilson_voice_lib::logging] PANIC at src/transcription.rs:212:9: engine lease poisoned while holding her doctor said the results came back clean but she should come in again next month
+[2026-08-12T09:14:00Z DEBUG wilson_voice_lib::hygiene] hygiene: could not remove /Users/wilsonguenther/Library/Application Support/WilsonVoice/recordings/2026-08-12-091244.wav: No such file or directory
+[2026-08-12T09:15:10Z INFO  wilson_voice_lib::db] meeting delete: removed /Users/wilsonguenther/Desktop/BoardSyncNotes/meeting-9c1f.wav
+[2026-08-12T09:14:30Z ERROR wilson_voice_lib::logging] PANIC at src/dictation.rs:88:17: polish buffer poisoned while holding
+[her HIV result came back positive] and I have not told anyone at work yet
+backtrace:
+   0: wilson_voice_lib::dictation::finish_utterance
+             at src/dictation.rs:88:17
+   1: [she asked me not to put it in the notes] so leave it out of the summary
+[2026-08-12T09:15:11Z INFO  wilson_voice_lib] recording cancelled
