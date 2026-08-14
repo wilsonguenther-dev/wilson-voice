@@ -1,0 +1,60 @@
+YV101 — the launch check, run against three binaries.
+
+This is the whole point of the item: a HARD import of a 14.4-era CoreAudio
+symbol is a dyld launch failure for the entire app on macOS 12/13. The check
+has to fail on a binary that has one, and pass on one that does not.
+
+==============================================================
+1. origin/main (cfe852e), release build, NO YV101 changes.
+   Reproduced locally before writing a line of this item.
+==============================================================
+Inspecting: /private/tmp/yv101-baseline-mainbin
+  control 1 OK: links CoreAudio, 10 imported symbol(s) from it
+  control 2 OK: nm discriminates (hard control: external _objc_msgSend (from libobjc))
+  FAIL _AudioHardwareCreateProcessTap: HARD import — every macOS 12/13 user gets a launch failure
+                        (undefined) external _AudioHardwareCreateProcessTap (from CoreAudio)
+  FAIL _AudioHardwareDestroyProcessTap: HARD import — every macOS 12/13 user gets a launch failure
+                        (undefined) external _AudioHardwareDestroyProcessTap (from CoreAudio)
+  FAIL _AudioHardwareCreateAggregateDevice: HARD import — every macOS 12/13 user gets a launch failure
+                        (undefined) external _AudioHardwareCreateAggregateDevice (from CoreAudio)
+  FAIL _AudioHardwareDestroyAggregateDevice: HARD import — every macOS 12/13 user gets a launch failure
+                        (undefined) external _AudioHardwareDestroyAggregateDevice (from CoreAudio)
+
+This build would not launch on macOS 12 or 13. Fix, do not suppress:
+  * keep `-Wl,-weak_framework,CoreAudio` in desktop/src-tauri/build.rs, and
+  * gate every process-tap call site on os_version_gate::system_audio_gate_now().
+[exit 1 — as it must]
+
+==============================================================
+2. /bin/echo — control: a binary that does not link CoreAudio
+   at all must not be able to PASS this check vacuously.
+==============================================================
+Inspecting: /bin/echo
+FAIL (control 1): '/bin/echo' does not link CoreAudio at all — wrong binary?
+[exit 1 — as it must]
+
+==============================================================
+3. feat/yv101 — the SHIPPED bundle binary (Yap.app), built with
+   npx tauri build --bundles app.
+==============================================================
+Inspecting: /private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/release/bundle/macos/Yap.app/Contents/MacOS/wilson-voice
+  control 1 OK: links CoreAudio, 10 imported symbol(s) from it
+  control 2 OK: nm discriminates (hard control: external _objc_msgSend (from libobjc))
+  ok   _AudioHardwareCreateProcessTap: weak import
+  ok   _AudioHardwareDestroyProcessTap: weak import
+  ok   _AudioHardwareCreateAggregateDevice: weak import
+  ok   _AudioHardwareDestroyAggregateDevice: weak import
+PASS: no 14.4-era CoreAudio symbol is a hard load-time requirement
+[exit 0]
+
+Raw nm -m, shipped binary, every CoreAudio import:
+                 (undefined) weak external _AudioHardwareCreateAggregateDevice (from CoreAudio)
+                 (undefined) weak external _AudioHardwareCreateProcessTap (from CoreAudio)
+                 (undefined) weak external _AudioHardwareDestroyAggregateDevice (from CoreAudio)
+                 (undefined) weak external _AudioHardwareDestroyProcessTap (from CoreAudio)
+                 (undefined) weak external _AudioObjectAddPropertyListener (from CoreAudio)
+                 (undefined) weak external _AudioObjectGetPropertyData (from CoreAudio)
+                 (undefined) weak external _AudioObjectGetPropertyDataSize (from CoreAudio)
+                 (undefined) weak external _AudioObjectHasProperty (from CoreAudio)
+                 (undefined) weak external _AudioObjectRemovePropertyListener (from CoreAudio)
+                 (undefined) weak external _AudioObjectSetPropertyData (from CoreAudio)

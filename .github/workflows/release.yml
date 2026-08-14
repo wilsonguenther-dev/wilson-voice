@@ -60,6 +60,15 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo build --release --features custom-protocol
 
+      # YV101 (plan finding OS-11) — the same launch check CI runs, on the path
+      # where a bad build actually reaches users. A hard import of a 14.4-era
+      # CoreAudio symbol makes the published DMG refuse to launch on every
+      # macOS 12/13 Mac; this fails the release before anything is signed,
+      # notarized or uploaded.
+      - name: "ci: assert weak-linked 14.4 CoreAudio symbols"
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+
       # Notarization only runs when all three Apple credentials are configured as
       # repo secrets. When any is absent the DMG is still built + published, just
       # un-notarized — the release does not fail.

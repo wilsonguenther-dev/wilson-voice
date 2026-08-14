@@ -32,7 +32,44 @@ include!("src/vocab_extract.rs");
 
 fn main() {
     build_vocab_corpus();
+    weak_link_coreaudio();
     tauri_build::build()
+}
+
+/// YV101 (plan finding OS-11) — CoreAudio is **weak**-linked, and it has to be.
+///
+/// `tauri.conf.json` sets `minimumSystemVersion: "12.0"` and §2.1 refuses to
+/// raise it. But this binary's dependency graph already imports CoreAudio
+/// symbols that do not exist that far back — `cpal 0.18`'s macOS loopback
+/// module names `AudioHardwareCreateProcessTap` / `AudioHardwareDestroyProcessTap`
+/// (macOS 14.2+) and `AudioHardwareCreateAggregateDevice` /
+/// `AudioHardwareDestroyAggregateDevice` (macOS 13+), from an object that is
+/// reachable from the microphone path and therefore not dead-strippable.
+///
+/// A **hard** import of a symbol the running OS does not have is not a disabled
+/// feature: dyld fails the load and the ENTIRE app refuses to launch, on every
+/// macOS 12/13 machine at once, with no in-app error because there is no
+/// in-app. `-weak_framework CoreAudio` makes every symbol resolved from that
+/// framework a weak import, so a missing one binds to NULL and the process
+/// starts normally.
+///
+/// NULL-bound is not the same as safe: *calling* one would crash. That is what
+/// `src/os_version_gate.rs` is for — no process-tap entry point runs without
+/// passing the runtime 14.4 check first. This flag stops the launch failure;
+/// the gate stops the call.
+///
+/// Weak-linking the whole framework rather than the four symbols is a
+/// deliberate blunt instrument: there is no stable-Rust way to mark an
+/// individual `extern` import weak, and the flag is scoped to one framework.
+/// Symbols that DO exist on the running OS still bind normally, so the
+/// microphone path is unaffected on every OS Yap supports, and a genuinely
+/// misspelled symbol still fails at LINK time because ld must still find it in
+/// the SDK. `scripts/assert-weak-linked-14_4-symbols.sh` is the standing proof
+/// that this flag is still doing its job, run in CI against the release binary.
+fn weak_link_coreaudio() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreAudio");
+    }
 }
 
 fn build_vocab_corpus() {

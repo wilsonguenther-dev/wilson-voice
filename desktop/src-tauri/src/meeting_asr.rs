@@ -58,6 +58,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 use crate::models;
+use crate::os_version_gate;
 use crate::transcription::{
     TranscriptionManager, ABANDONED_FOR_EXIT, MAX_SANCTIONED_CHUNK_DECODE_SECONDS,
     NO_ENGINE_LOADED, PREEMPTED_FOR_DICTATION, TRANSCRIBE_TIMEOUT, WORST_CASE_RTF_BUDGET,
@@ -1691,6 +1692,13 @@ pub enum MeetingUnavailable {
     },
     /// The model does English, but the user's "Language I speak" is not.
     SpokenLanguageNotEnglish { language: String },
+    /// YV101 (plan finding OS-11) — this Mac is older than the macOS 14.4 the
+    /// CoreAudio process tap needs, so the *system-audio* track cannot run.
+    ///
+    /// Only ever returned for [`MeetingCapture::MicPlusSystemAudio`]. Mic-only
+    /// recording keeps Yap's macOS 12 floor and is never refused for this
+    /// reason — see [`meeting_availability_for`].
+    RequiresMacOS14_4 { found: os_version_gate::OsVersion },
 }
 
 impl MeetingUnavailable {
@@ -1714,6 +1722,21 @@ impl MeetingUnavailable {
             MeetingUnavailable::SpokenLanguageNotEnglish { language } => format!(
                 "Meeting notes are English-only for now. Your 'Language I speak' is set to {language} — set it to English to record a meeting."
             ),
+            // The only refusal in this enum with no next step on the machine —
+            // so the sentence spends its second half saying what still works,
+            // rather than sending the user to a Settings pane that cannot fix
+            // their OS version. The requirement text itself lives in exactly
+            // one place (`os_version_gate::SYSTEM_AUDIO_REQUIREMENT`).
+            MeetingUnavailable::RequiresMacOS14_4 { found } => {
+                let requirement = os_version_gate::SYSTEM_AUDIO_REQUIREMENT;
+                if found.is_known() {
+                    format!(
+                        "{requirement}, and this Mac is on macOS {found}. Meeting notes still record your microphone."
+                    )
+                } else {
+                    format!("{requirement}. Meeting notes still record your microphone.")
+                }
+            }
         }
     }
 }
@@ -1725,15 +1748,71 @@ fn is_english(code: &str) -> bool {
     c == "en" || c.starts_with("en-") || c.starts_with("en_")
 }
 
+/// Which audio a meeting would record — the axis the macOS 14.4 gate splits on.
+///
+/// 22-A's mic-only recording is the app's floor-level capability and runs on
+/// macOS 12. 22-B adds a second track captured through a CoreAudio process tap,
+/// which does not exist below macOS 14.4. They are the same feature to the
+/// user and two different capability questions to the app, so they are two
+/// values here rather than two functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeetingCapture {
+    /// 22-A: the microphone only. Never gated on the OS version.
+    MicOnly,
+    /// 22-B: the microphone plus the other end of the call, captured through a
+    /// CoreAudio process tap. Needs macOS 14.4.
+    MicPlusSystemAudio,
+}
+
 /// Is the Notetaker available with this model + spoken-language setting?
 ///
 /// `spoken_language` is the app's "Language I speak" setting; `None` (or an
 /// empty string) means autodetect, which an English-only model resolves to
 /// English anyway.
+///
+/// This is the **mic-only** door (22-A) and it stays that way: it can never
+/// return [`MeetingUnavailable::RequiresMacOS14_4`], on any OS. YV101 must not
+/// regress the macOS 12 floor mic-only recording already ships on.
 pub fn meeting_availability(
     model_id: Option<&str>,
     spoken_language: Option<&str>,
 ) -> Result<(), MeetingUnavailable> {
+    meeting_availability_for(
+        MeetingCapture::MicOnly,
+        model_id,
+        spoken_language,
+        os_version_gate::OsVersion::current(),
+    )
+}
+
+/// [`meeting_availability`], asked about a specific capture mode on a specific
+/// macOS version (YV101, plan finding OS-11).
+///
+/// `os` is a parameter rather than a read so the gate is pure and the table in
+/// `tests/meeting_availability_144_gate.rs` can drive every version this app
+/// will meet; production callers pass
+/// [`os_version_gate::OsVersion::current`].
+///
+/// **Check order is deliberate.** The OS gate runs *before* the model and
+/// language gates, and only for [`MeetingCapture::MicPlusSystemAudio`]. On a
+/// macOS 13 machine the system-audio affordance is disabled no matter what is
+/// in Settings — downloading a model or switching a language cannot make a
+/// missing CoreAudio API appear — so that is the sentence the disabled control
+/// has to show. The model/language refusals are shared with mic-only recording
+/// and the Notetaker's own empty state already carries them.
+pub fn meeting_availability_for(
+    capture: MeetingCapture,
+    model_id: Option<&str>,
+    spoken_language: Option<&str>,
+    os: os_version_gate::OsVersion,
+) -> Result<(), MeetingUnavailable> {
+    if capture == MeetingCapture::MicPlusSystemAudio {
+        if let os_version_gate::SystemAudioGate::RequiresMacOS14_4 { found } =
+            os_version_gate::system_audio_gate(os)
+        {
+            return Err(MeetingUnavailable::RequiresMacOS14_4 { found });
+        }
+    }
     let Some(model_id) = model_id.map(str::trim).filter(|m| !m.is_empty()) else {
         return Err(MeetingUnavailable::NoModel);
     };
