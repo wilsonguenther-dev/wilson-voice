@@ -198,6 +198,25 @@ struct Inner {
     transcribe_timeout: Duration,
 }
 
+/// YV91 (finding #27): how many times a model load has been ASKED for, and how
+/// many times the idle sweeper's clock has been pushed out. Process-global
+/// counters rather than per-manager state, because the property under test is
+/// "the meeting capture path never does either of these", and the capture path
+/// does not hold a manager at all.
+static MODEL_LOAD_CALLS: AtomicU64 = AtomicU64::new(0);
+static ENGINE_TOUCHES: AtomicU64 = AtomicU64::new(0);
+
+/// Times `TranscriptionManager::load` has been called in this process.
+pub fn model_load_calls() -> u64 {
+    MODEL_LOAD_CALLS.load(Ordering::Relaxed)
+}
+
+/// Times the ASR idle sweeper's deadline has been pushed out
+/// (`TranscriptionManager::touch`).
+pub fn engine_touches() -> u64 {
+    ENGINE_TOUCHES.load(Ordering::Relaxed)
+}
+
 /// Owns the warm engine. Cheap to clone (all handles share one `Inner`).
 #[derive(Clone)]
 pub struct TranscriptionManager {
@@ -286,6 +305,7 @@ impl TranscriptionManager {
 
     /// Reset the idle timer to now.
     pub fn touch(&self) {
+        ENGINE_TOUCHES.fetch_add(1, Ordering::Relaxed);
         self.inner
             .last_activity_ms
             .store(now_ms(), Ordering::Relaxed);
@@ -406,6 +426,11 @@ impl TranscriptionManager {
     /// produce exactly ONE load — the losers block on `load_gate` and return
     /// once the winner's engine is in the slot.
     pub fn load(&self, model_id: &str, model_path: &Path) -> Result<(), String> {
+        // YV91 finding #27: nothing in a meeting CAPTURE may bring an inference
+        // model resident on a fanless 8 GB M1 Air, and nothing in it may push
+        // the idle sweeper's deadline out. Counting the two entry points is how
+        // `tests/meeting_no_model_resident.rs` proves that from outside.
+        MODEL_LOAD_CALLS.fetch_add(1, Ordering::Relaxed);
         // YV70: never make a new Metal device after the exit drain has run —
         // that would put back exactly what the drain freed.
         if self.inner.exiting.load(Ordering::Acquire) {

@@ -6325,6 +6325,7 @@ dependencies = [
  "ed25519-dalek",
  "env_logger",
  "hound",
+ "libc",
  "log",
  "nnnoiseless",
  "objc2",

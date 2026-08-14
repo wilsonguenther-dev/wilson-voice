@@ -1,0 +1,374 @@
+YV91 — acceptance run (local gate), 2026-08-11T17:48:00Z
+machine: Darwin 25.5.0 arm64, rustc rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+=== $ grep -n "IOPMAssertionCreateWithName" desktop/src-tauri/src/*.rs
+desktop/src-tauri/src/power.rs:63:        fn IOPMAssertionCreateWithName(
+desktop/src-tauri/src/power.rs:88:                IOPMAssertionCreateWithName(
+
+=== $ cargo test --test meeting_capture_memory -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/meeting_capture_memory.rs (target/debug/deps/meeting_capture_memory-17ba6a7d56be348f)
+
+running 2 tests
+[yv91] 48k: 0.33h at 48000 Hz x2 in 5.7s wall, captured 1200s of audio, peak RSS 13 MB, ring overruns 0
+[yv91] 48k: finalized 1 track(s), 1200s, state Complete, spliced 0 sample(s)
+test a_forty_eight_kilohertz_source_does_not_retain_its_resampler_state ... ok
+[yv91] 3h: 3.00h at 16000 Hz x1 in 9.1s wall, captured 10800s of audio, peak RSS 15 MB, ring overruns 0
+[yv91] 3h: finalized 1 track(s), 10800s, state Complete, spliced 0 sample(s)
+test three_hours_of_capture_stays_under_the_memory_budget ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.76s
+
+
+=== $ cargo test --test meeting_capture_rt_safety -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/meeting_capture_rt_safety.rs (target/debug/deps/meeting_capture_rt_safety-12a8a82d7e547305)
+
+running 4 tests
+test the_allocator_hook_actually_sees_allocations ... ok
+test the_callback_allocates_nothing_for_i16_or_u16_devices_either ... ok
+test a_full_ring_returns_immediately_instead_of_waiting_for_the_consumer ... ok
+test the_capture_callback_body_allocates_nothing ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+=== $ cargo test --test meeting_dictation_fanout -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/meeting_dictation_fanout.rs (target/debug/deps/meeting_dictation_fanout-9e63822368436770)
+
+running 3 tests
+test a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap ... ok
+test a_dictation_with_no_meeting_running_is_an_ordinary_dictation ... ok
+test the_take_receives_only_the_frames_inside_its_arm_window ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+=== $ cargo test --test meeting_no_automute -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/meeting_no_automute.rs (target/debug/deps/meeting_no_automute-f88bb0a98681b2c6)
+
+running 3 tests
+test the_policy_itself_is_explicit ... ok
+test a_dictation_during_a_meeting_does_not_mute_the_call_the_user_is_listening_to ... ok
+test starting_and_stopping_a_meeting_leaves_the_output_untouched ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+=== $ cargo test --test capture_journal_recovery -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/capture_journal_recovery.rs (target/debug/deps/capture_journal_recovery-f25ab4947556bcb3)
+
+running 6 tests
+test a_synthetic_low_disk_value_refuses_with_the_exact_free_space_number ... ok
+test the_gap_planner_is_pure_and_ignores_sub_millisecond_resampler_phase ... ok
+test two_tracks_round_trip_because_22b_reuses_this_journal ... ok
+test one_track_round_trips_from_spill_to_wav ... ok
+test a_dropped_chunk_is_spliced_as_silence_not_swallowed ... ok
+test an_app_that_dies_mid_meeting_is_recovered_as_partial ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+
+=== $ cargo test --test meeting_no_model_resident -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/meeting_no_model_resident.rs (target/debug/deps/meeting_no_model_resident-5d0a24c16244a44b)
+
+running 4 tests
+test the_idle_sweepers_are_still_the_ones_the_finding_names ... ok
+test the_meeting_queue_is_deeper_than_a_dictation_s_but_still_bounded ... ok
+test the_capture_path_does_not_reference_the_inference_stack_at_all ... ok
+test a_whole_meeting_lifecycle_never_asks_for_a_model ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+=== $ cargo test --test matrix_row4_disk_preflight -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/matrix_row4_disk_preflight.rs (target/debug/deps/matrix_row4_disk_preflight-743746cafa50b9b7)
+
+running 6 tests
+test a_start_that_fits_is_allowed ... ok
+test the_preflight_formula_is_the_one_the_row_specifies ... ok
+test the_watchdog_rule_is_one_gigabyte_and_it_is_pure ... ok
+test a_start_that_would_not_fit_is_refused_before_a_single_byte_is_written ... ok
+test a_meeting_the_watchdog_never_stops_is_complete_not_partial ... ok
+test the_watchdog_stops_a_running_meeting_cleanly_and_marks_it_partial ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+=== $ cargo test --test matrix_row6_orphan_recovery -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/matrix_row6_orphan_recovery.rs (target/debug/deps/matrix_row6_orphan_recovery-5e9164e37f126bf2)
+
+running 5 tests
+test a_marker_with_no_audio_is_cleaned_up_rather_than_becoming_a_row ... ok
+test a_crashed_two_track_meeting_recovers_both_tracks ... ok
+test a_truncated_index_line_does_not_cost_the_recording ... ok
+test an_orphan_marker_and_spill_become_a_playable_wav_marked_partial ... ok
+test several_orphans_are_all_recovered_and_a_dictation_journal_is_left_alone ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+
+
+
+----------------------------------------------------------------------
+YV91 — acceptance RE-RUN after the three blocking fixes, 2026-08-11T18:49:26Z
+machine: Darwin 25.5.0 arm64, rustc rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+=== $ grep -n "IOPMAssertionCreateWithName" desktop/src-tauri/src/*.rs
+src/power.rs:63:        fn IOPMAssertionCreateWithName(
+src/power.rs:88:                IOPMAssertionCreateWithName(
+
+=== $ cargo test --features custom-protocol --test meeting_capture_memory
+test a_forty_eight_kilohertz_source_does_not_retain_its_resampler_state ... ok
+test three_hours_of_capture_stays_under_the_memory_budget ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.66s
+
+=== $ cargo test --features custom-protocol --test meeting_capture_rt_safety
+test the_allocator_hook_actually_sees_allocations ... ok
+test the_callback_allocates_nothing_for_i16_or_u16_devices_either ... ok
+test a_full_ring_returns_immediately_instead_of_waiting_for_the_consumer ... ok
+test the_capture_callback_body_allocates_nothing ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+=== $ cargo test --features custom-protocol --test capture_journal_recovery
+test a_synthetic_low_disk_value_refuses_with_the_exact_free_space_number ... ok
+test the_gap_planner_is_pure_and_ignores_sub_millisecond_resampler_phase ... ok
+test two_tracks_round_trip_because_22b_reuses_this_journal ... ok
+test one_track_round_trips_from_spill_to_wav ... ok
+test a_ring_overrun_is_spliced_as_silence_too ... ok
+test a_dropped_chunk_is_spliced_as_silence_not_swallowed ... ok
+test an_app_that_dies_mid_meeting_is_recovered_as_partial ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+=== $ cargo test --features custom-protocol --test meeting_dictation_fanout
+test a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap ... ok
+test a_dictation_with_no_meeting_running_is_an_ordinary_dictation ... ok
+test the_take_receives_only_the_frames_inside_its_arm_window ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+=== $ cargo test --features custom-protocol --test meeting_no_automute
+test the_policy_itself_is_explicit ... ok
+test a_dictation_during_a_meeting_does_not_mute_the_call_the_user_is_listening_to ... ok
+test starting_and_stopping_a_meeting_leaves_the_output_untouched ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+=== $ cargo test --features custom-protocol --test meeting_no_model_resident
+test the_idle_sweepers_are_still_the_ones_the_finding_names ... ok
+test the_meeting_queue_is_deeper_than_a_dictation_s_but_still_bounded ... ok
+test the_capture_path_does_not_reference_the_inference_stack_at_all ... ok
+test a_whole_meeting_lifecycle_never_asks_for_a_model ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+=== $ cargo test --features custom-protocol --test matrix_row4_disk_preflight
+test a_start_that_fits_is_allowed ... ok
+test the_preflight_formula_is_the_one_the_row_specifies ... ok
+test the_watchdog_rule_is_one_gigabyte_and_it_is_pure ... ok
+test a_start_that_would_not_fit_is_refused_before_a_single_byte_is_written ... ok
+test a_meeting_the_watchdog_never_stops_is_complete_not_partial ... ok
+test the_watchdog_stops_a_running_meeting_cleanly_and_marks_it_partial ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+=== $ cargo test --features custom-protocol --test matrix_row6_orphan_recovery
+test a_marker_with_no_audio_is_cleaned_up_rather_than_becoming_a_row ... ok
+test a_truncated_index_line_does_not_cost_the_recording ... ok
+test a_crashed_two_track_meeting_recovers_both_tracks ... ok
+test an_orphan_marker_and_spill_become_a_playable_wav_marked_partial ... ok
+test several_orphans_are_all_recovered_and_a_dictation_journal_is_left_alone ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+=== $ cargo test --features custom-protocol (lib)
+test result: ok. 379 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+=== $ cargo build --release --features custom-protocol
+    Finished `release` profile [optimized] target(s) in 0.19s
+
+
+----------------------------------------------------------------------
+YV91 — acceptance RE-RUN after the gap-detector blocking fix, 2026-08-11T19:30:05Z
+machine: Darwin 25.5.0 arm64, rustc rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+=== $ grep -n "IOPMAssertionCreateWithName" desktop/src-tauri/src/*.rs
+src/power.rs:63:        fn IOPMAssertionCreateWithName(
+src/power.rs:88:                IOPMAssertionCreateWithName(
+
+=== $ cargo test --features custom-protocol --test capture_journal_recovery
+test the_gap_planner_is_pure_and_ignores_sub_millisecond_resampler_phase ... ok
+test a_synthetic_low_disk_value_refuses_with_the_exact_free_space_number ... ok
+test two_tracks_round_trip_because_22b_reuses_this_journal ... ok
+test one_track_round_trips_from_spill_to_wav ... ok
+test a_ring_overrun_is_spliced_as_silence_too ... ok
+test a_device_that_stalls_mid_meeting_is_spliced_not_shifted ... ok
+test a_dropped_chunk_is_spliced_as_silence_not_swallowed ... ok
+test an_app_that_dies_mid_meeting_is_recovered_as_partial ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+=== $ cargo test --features custom-protocol --lib meeting::tests
+test meeting::tests::a_dead_device_outranks_the_cap ... ok
+test meeting::tests::a_device_that_stops_delivering_is_spliced_even_though_the_counters_agree ... ok
+test meeting::tests::a_dropped_chunk_becomes_a_splice_instead_of_a_silent_offset ... ok
+test meeting::tests::a_healthy_recording_plans_no_splices ... ok
+test meeting::tests::a_flat_battery_on_ac_power_is_not_a_problem ... ok
+test meeting::tests::a_manually_started_meeting_budgets_against_the_three_hour_cap ... ok
+test meeting::tests::a_low_disk_refusal_carries_the_exact_free_space_number ... ok
+test meeting::tests::a_long_meeting_is_refused_on_a_nearly_flat_battery_but_a_short_one_warns ... ok
+test meeting::tests::a_rebased_host_clock_never_invents_a_gap ... ok
+test meeting::tests::a_stall_and_a_drop_in_one_interval_splice_once ... ok
+test meeting::tests::a_stalled_capture_outranks_everything_but_a_dead_device ... ok
+test meeting::tests::an_impossible_host_gap_is_capped_rather_than_believed ... ok
+test meeting::tests::only_a_plain_dictation_may_mute_the_mac ... ok
+test meeting::tests::ordinary_callback_jitter_is_not_a_stall ... ok
+test meeting::tests::pmset_output_parses_to_a_snapshot ... ok
+test meeting::tests::splicing_puts_the_silence_where_the_gap_was ... ok
+test meeting::tests::the_watchdog_leaves_a_healthy_meeting_alone ... ok
+test meeting::tests::the_callback_records_one_anchor_per_invocation_with_the_host_time ... ok
+test meeting::tests::the_watchdog_stops_below_the_one_gigabyte_floor_with_the_number ... ok
+test meeting::tests::the_watchdog_warns_once_then_stops_at_the_cap ... ok
+test meeting::tests::the_streaming_finalize_agrees_with_the_pure_splice_spec ... ok
+test meeting::tests::a_meeting_journal_round_trips_one_track_to_a_wav ... ok
+test meeting::tests::two_tracks_round_trip_so_22b_needs_no_new_journal ... ok
+test meeting::tests::a_full_ring_is_counted_not_dropped_silently ... ok
+test meeting::tests::a_dictation_take_mid_meeting_costs_the_meeting_nothing ... ok
+test meeting::tests::a_meeting_registers_and_deregisters_the_active_capture ... ok
+test meeting::tests::a_meeting_session_holds_its_own_audio_stream_for_its_whole_length ... ok
+test meeting::tests::a_meeting_whose_stream_refuses_never_starts ... ok
+test meeting::tests::an_abandoned_meeting_is_recovered_as_partial ... ok
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 356 filtered out; finished in 0.41s
+
+=== $ cargo test --features custom-protocol --test meeting_capture_memory -- --nocapture
+[yv91] 48k: 0.33h at 48000 Hz x2 in 5.7s wall, captured 1200s of audio, peak RSS 13 MB, ring overruns 0
+[yv91] 48k: finalized 1 track(s), 1200s, state Complete, spliced 0 sample(s)
+test a_forty_eight_kilohertz_source_does_not_retain_its_resampler_state ... ok
+[yv91] 3h: 3.00h at 16000 Hz x1 in 9.1s wall, captured 10800s of audio, peak RSS 15 MB, ring overruns 0
+[yv91] 3h: finalized 1 track(s), 10800s, state Complete, spliced 0 sample(s)
+test three_hours_of_capture_stays_under_the_memory_budget ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.89s
+
+=== $ cargo test --features custom-protocol --test meeting_capture_rt_safety
+test the_allocator_hook_actually_sees_allocations ... ok
+test the_callback_allocates_nothing_for_i16_or_u16_devices_either ... ok
+test a_full_ring_returns_immediately_instead_of_waiting_for_the_consumer ... ok
+test the_capture_callback_body_allocates_nothing ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+=== $ cargo test --features custom-protocol --test meeting_dictation_fanout
+test a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap ... ok
+test a_dictation_with_no_meeting_running_is_an_ordinary_dictation ... ok
+test the_take_receives_only_the_frames_inside_its_arm_window ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+=== $ cargo test --features custom-protocol --test meeting_no_automute
+test the_policy_itself_is_explicit ... ok
+test a_dictation_during_a_meeting_does_not_mute_the_call_the_user_is_listening_to ... ok
+test starting_and_stopping_a_meeting_leaves_the_output_untouched ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+=== $ cargo test --features custom-protocol --test meeting_no_model_resident
+test the_idle_sweepers_are_still_the_ones_the_finding_names ... ok
+test the_meeting_queue_is_deeper_than_a_dictation_s_but_still_bounded ... ok
+test the_capture_path_does_not_reference_the_inference_stack_at_all ... ok
+test a_whole_meeting_lifecycle_never_asks_for_a_model ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+=== $ cargo test --features custom-protocol --test matrix_row4_disk_preflight
+test a_start_that_fits_is_allowed ... ok
+test the_watchdog_rule_is_one_gigabyte_and_it_is_pure ... ok
+test the_preflight_formula_is_the_one_the_row_specifies ... ok
+test a_start_that_would_not_fit_is_refused_before_a_single_byte_is_written ... ok
+test a_meeting_the_watchdog_never_stops_is_complete_not_partial ... ok
+test the_watchdog_stops_a_running_meeting_cleanly_and_marks_it_partial ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+=== $ cargo test --features custom-protocol --test matrix_row6_orphan_recovery
+test a_marker_with_no_audio_is_cleaned_up_rather_than_becoming_a_row ... ok
+test a_truncated_index_line_does_not_cost_the_recording ... ok
+test a_crashed_two_track_meeting_recovers_both_tracks ... ok
+test an_orphan_marker_and_spill_become_a_playable_wav_marked_partial ... ok
+test several_orphans_are_all_recovered_and_a_dictation_journal_is_left_alone ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+=== $ cargo build --release --features custom-protocol && cargo test --features custom-protocol (whole gate)
+    Finished `release` profile [optimized] target(s) in 1m 09s
+    all 14 test binaries green — 385 lib + 100 integration, 0 failed
+
+The falsification, run deliberately: with the wall-clock rule disabled in
+plan_silence_splices, a_device_that_stalls_mid_meeting_is_spliced_not_shifted
+fails with "0 sample(s) were spliced" (want 80000) — the finalized track is
+6.00s of an 11-second meeting, state complete. That is the state this branch
+was in before this fix, and it is what step 4 of manual-repro-60min-idle.md
+used to call proof.
+
+================================================================================
+ROUND 3 — rebase onto main (YV90/#107, YV92/#109, YV94/#111, YV96/#113 merged)
++ the remaining BLOCKING finding (second MeetingSession::start orphans the first)
+================================================================================
+
+$ cd desktop && npx tsc --noEmit
+(clean)
+
+$ npm test
+ Test Files  5 passed (5)
+      Tests  67 passed (67)
+
+$ cd src-tauri && cargo build --release
+    Finished `release` profile [optimized] target(s)
+
+$ cargo test --no-fail-fast
+lib .......................................... 418 passed
+biquad_lowpass_response ......................   6 passed   (YV92, on main)
+capture_journal_recovery .....................   8 passed
+consent_sheet_shown_once .....................   3 passed   (YV96, on main)
+db_migration_idempotent ......................   4 passed
+formatting_fixtures ..........................   8 passed (1 ignored)
+gate_corpus ..................................   5 passed (2 ignored)
+input_format_change_handler ..................   6 passed (1 ignored)  (YV92)
+license_gate .................................   4 passed
+matrix_row4_disk_preflight ...................   6 passed
+matrix_row6_orphan_recovery ..................   5 passed
+meeting_audio_retention ......................   2 passed   (YV94, on main)
+meeting_capture_memory .......................   2 passed
+meeting_capture_rt_safety ....................   4 passed
+meeting_delete_cascade .......................   4 passed   (YV94, on main)
+meeting_dictation_fanout .....................   3 passed
+meeting_eval ................................. 15 passed, 2 FAILED (see below)
+meeting_event_contract .......................   3 passed
+meeting_fts_search ...........................   3 passed
+meeting_markdown_export ......................   3 passed
+meeting_no_automute ..........................   3 passed
+meeting_no_model_resident ....................   4 passed
+meeting_power_assertion ......................   3 passed (1 ignored)
+meeting_stats_rollup .........................   3 passed
+supply_chain .................................   4 passed
+
+meeting_eval: `meeting_eval_corpus_matches_committed_sha256s` and
+`meeting_eval_seam_dedupe_and_ordering_hold` fail on this machine. NOT caused by
+this branch — reproduced identically on a pristine clone of origin/main
+(seam-stress/audio.wav: size changed, left 5440044 / right 5184044; and
+"declared boundary 58s is not a chunk seam"). The corpus lives outside the repo
+and this machine's copy has drifted from the committed manifest.
+
+$ cargo test --test meeting_capture_memory -- --nocapture
+[yv91] 48k: 0.33h at 48000 Hz x2 in 6.9s wall, captured 1200s of audio, peak RSS 14 MB, ring overruns 0
+[yv91] 3h:  3.00h at 16000 Hz x1 in 9.4s wall, captured 10800s of audio, peak RSS 16 MB, ring overruns 0
+(budget: 400 MB)
+
+Flake runs — the nine acceptance suites, 3x back to back: all green, all three.
+The lib suite, 3x: 418 passed, all three.
+
+Mutation probes (each turns exactly one test red, and nothing else):
+ 1. `MeetingClaim::acquire` accepts a second start
+    -> meeting::tests::a_second_meeting_is_refused_not_silently_swapped_in FAILED
+ 2. `deregister_capture` clears the slot unconditionally (the old `finish`)
+    -> meeting::tests::a_session_that_lost_the_slot_finalizes_partial_and_leaves_it_alone FAILED
+ 3. `retune` does not rebuild the meeting's `StreamResampler`
+    -> meeting::tests::a_format_change_mid_meeting_rebuilds_the_meetings_ratio FAILED
+ 4. `reopen_with` does not re-open the arm window at the new ring's origin
+    -> record::tests::a_reopen_mid_take_rearms_the_window_in_the_new_rings_frame_space FAILED
+       record::tests::a_transient_reopen_failure_still_resumes_the_take FAILED
+ 5. `retune` resets the epoch counters without banking them
+    -> meeting::tests::a_reopen_under_a_meeting_never_moves_the_captured_clock_backwards FAILED
