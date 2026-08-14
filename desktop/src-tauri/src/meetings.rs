@@ -39,6 +39,23 @@ use serde::{Deserialize, Serialize};
 /// `db::run_migrations`; never edit a shipped step.
 pub const SCHEMA_VERSION: i64 = 2;
 
+/// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
+/// tap's rebuild log, named here rather than invented there.
+///
+/// It holds [`crate::syscapture::TapRebuildLog::to_json`] verbatim: the count,
+/// the budget, each attempt's meeting-relative millisecond stamp and host time,
+/// why it fired, the innocent causes that were also plausible at the time, and
+/// the verdict if the meeting ran out of rebuilds. `NULL` for every meeting
+/// that never needed one, which is almost all of them.
+///
+/// **This item writes the structure; it does not add the column.** Bundling an
+/// unrelated `ALTER TABLE` into the watchdog's item is how a migration ladder
+/// gets a step nobody can attribute — YV106 adds `sys_wav_path`, the
+/// `meeting_segments.track` column and this one together, as one honest step 3.
+/// The name is fixed here so the producer and the destination cannot be written
+/// down differently in two places.
+pub const TAP_REBUILDS_COLUMN: &str = crate::syscapture::TAP_REBUILDS_COLUMN;
+
 /// How long a meeting's audio is kept before the startup/hygiene sweep purges
 /// it. The transcript is kept forever — only the WAV goes (finding #28).
 pub const AUDIO_RETENTION_DAYS: i64 = 7;

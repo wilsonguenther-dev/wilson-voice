@@ -1,0 +1,66 @@
+$ cargo test --test syscapture_ghost_watchdog_rebuild_first --test syscapture_ghost_watchdog_rebuild_budget --test syscapture_never_zero_discriminator -- --nocapture
+     Running tests/syscapture_ghost_watchdog_rebuild_budget.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_rebuild_budget-7c343cd0cef02f9b)
+
+running 8 tests
+test a_healthy_meeting_records_no_rebuilds_at_all ... ok
+test a_tap_that_recovers_spends_one_attempt_and_keeps_the_rest ... ok
+test a_failed_rebuild_costs_an_attempt_and_records_where_it_broke ... ok
+test the_degrade_carries_the_other_plausible_causes_too ... ok
+test the_three_rebuilds_are_spread_out_rather_than_burned_in_one_minute ... ok
+test a_rebuild_that_never_reports_back_times_out_instead_of_hanging_the_budget ... ok
+test every_attempt_is_recorded_with_its_count_and_its_timestamp ... ok
+test exactly_three_rebuilds_then_a_degrade_and_then_silence_from_the_watchdog ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/syscapture_ghost_watchdog_rebuild_first.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_rebuild_first-061382df0d062116)
+
+running 8 tests
+test a_dead_ioproc_rebuilds_too_and_says_so ... ok
+test a_tap_that_is_delivering_audio_is_never_rebuilt ... ok
+test even_a_tap_that_never_delivered_anything_gets_its_rebuilds_before_any_verdict ... ok
+test silence_while_the_system_is_audibly_playing_is_still_a_rebuild_not_a_denial ... ok
+test the_rebuild_is_the_full_seven_step_sequence_in_apples_order ... ok
+test the_other_silence_causes_are_carried_on_the_rebuild ... ok
+test no_tap_outcome_can_ever_stop_a_meeting ... ok
+test the_first_action_is_always_a_full_rebuild_however_long_the_silence_has_run ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/syscapture_never_zero_discriminator.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_never_zero_discriminator-25d1aa0c49af84f1)
+
+running 5 tests
+test an_idle_tick_advances_the_silence_clock_rather_than_freezing_it ... ok
+test the_discriminator_needs_no_new_anchor_field ... ok
+test a_rebuild_cannot_erase_the_memory_that_audio_once_arrived ... ok
+test a_tap_that_delivered_audio_and_one_that_never_did_end_in_different_actions ... ok
+test the_two_sessions_are_indistinguishable_until_every_rebuild_is_spent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+
+$ cargo test --lib syscapture
+     Running unittests src/lib.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/wilson_voice_lib-fcf4d57ead7b1132)
+
+running 8 tests
+test syscapture::tests::a_delivering_tap_is_left_alone ... ok
+test syscapture::tests::the_first_answer_to_silence_is_always_a_rebuild ... ok
+test syscapture::tests::one_nonzero_sample_is_enough_to_rule_permission_out_forever ... ok
+test syscapture::tests::folding_a_block_of_pure_zeros_never_sets_the_discriminator ... ok
+test syscapture::tests::the_rebuild_sequence_tears_down_before_it_creates ... ok
+test syscapture::tests::an_unreadable_output_probe_is_not_evidence ... ok
+test syscapture::tests::an_unreported_rebuild_times_out_instead_of_hanging_the_watchdog ... ok
+test syscapture::tests::a_muted_call_is_named_as_a_cause_rather_than_asserted_against ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 507 filtered out; finished in 0.00s
+
+
+$ cargo test --test matrix_phase_offline   # the meeting path grew a module and stayed offline
+     Running tests/matrix_phase_offline.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_phase_offline-85405d4b4bd42e9d)
+
+running 2 tests
+test every_module_on_the_list_still_exists ... ok
+test the_whole_meeting_path_has_no_network_surface ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

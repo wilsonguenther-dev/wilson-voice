@@ -48,6 +48,7 @@ fn healthy_at(elapsed: Duration, cap_warned: bool) -> WatchdogInputs {
         since_last_block: Duration::from_millis(100),
         thermal: ThermalState::Nominal,
         cap_warned,
+        tap: None,
     }
 }
 

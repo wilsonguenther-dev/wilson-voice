@@ -47,6 +47,7 @@ const MEETING_PATH: &[&str] = &[
     "record.rs",          // capture + the crash-safe journal
     "rtring.rs",          // the RT-safe capture ring
     "input_format.rs",    // the AirPods / format-change state machine
+    "syscapture.rs",      // YV104's system-audio tap ghost watchdog
     "resample.rs",        // anti-alias decimation to 16 kHz
     "asr_engine.rs",      // the local Parakeet/whisper.cpp engine wrapper
     "transcription.rs",   // the engine lease and the timeout ladder
@@ -92,7 +93,7 @@ fn the_whole_meeting_path_has_no_network_surface() {
 #[test]
 fn every_module_on_the_list_still_exists() {
     assert!(
-        MEETING_PATH.len() >= 14,
+        MEETING_PATH.len() >= 15,
         "the meeting path lost modules — shrinking this list makes the offline claim cheaper \
          to satisfy, which is the one direction it must never move in silence"
     );

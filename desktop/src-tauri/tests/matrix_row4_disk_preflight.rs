@@ -135,6 +135,7 @@ fn the_watchdog_rule_is_one_gigabyte_and_it_is_pure() {
             since_last_block: Duration::from_millis(20),
             thermal: ThermalState::Nominal,
             cap_warned: false,
+            tap: None,
         }),
         WatchdogAction::Continue,
         "exactly at the floor is still fine"
@@ -147,6 +148,7 @@ fn the_watchdog_rule_is_one_gigabyte_and_it_is_pure() {
             since_last_block: Duration::from_millis(20),
             thermal: ThermalState::Nominal,
             cap_warned: false,
+            tap: None,
         }),
         WatchdogAction::Stop(StopReason::LowDisk {
             free_bytes: DISK_FLOOR_BYTES - 1

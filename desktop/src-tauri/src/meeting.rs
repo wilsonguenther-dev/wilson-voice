@@ -95,6 +95,10 @@ pub use crate::record::TARGET_RATE;
 // triangle kernel.
 use crate::resample::{Biquad, StreamResampler};
 use crate::rtring::{CaptureAnchor, SpscRing};
+/// YV104 / OS-4 — the tap's ghost watchdog. Imported as a module rather than by
+/// item so every use site below reads `syscapture::…` and stays visibly about
+/// Track B, not about the mic path this file is otherwise entirely made of.
+use crate::syscapture;
 
 // ── Budgets and caps ────────────────────────────────────────────────────────
 
@@ -427,6 +431,14 @@ pub enum WatchdogAction {
     /// Matrix row #17's 2 h 45 m warning — fires once.
     WarnApproachingCap,
     Stop(StopReason),
+    /// YV104 / OS-4 — something is wrong with the system-audio tap (Track B).
+    ///
+    /// Deliberately NOT a [`StopReason`]: matrix row #2's rule is that a lost
+    /// system-audio track degrades the meeting and never ends it, because
+    /// Track A is still recording the person holding the Mac.
+    /// [`syscapture::TapWatchdogAction`] has no stop variant at all, so that
+    /// rule survives translation into this enum by construction.
+    Tap(syscapture::TapWatchdogAction),
 }
 
 /// One tick's view of the world.
@@ -438,10 +450,22 @@ pub struct WatchdogInputs {
     /// OS-1 liveness: wall time since the meeting last consumed a block of
     /// audio. A device that stalls raises no error and sets no flag — it simply
     /// stops calling back — so this is the ONLY input that can see it.
+    ///
+    /// **Track A only.** The mic's stall is a stop; the tap's is not, and the
+    /// two must never share a field — a tap that goes quiet on a mic-only-safe
+    /// meeting would otherwise end it. The tap's liveness rides in [`Self::tap`].
     pub since_last_block: Duration,
     pub thermal: ThermalState,
     /// Has the approaching-cap warning already been delivered?
     pub cap_warned: bool,
+    /// YV104 — the system-audio tap's liveness, its environment and the ghost
+    /// watchdog's own state, or `None` for a meeting with no tap.
+    ///
+    /// `None` is the entire 22-A path: a mic-only meeting on macOS 12 has no
+    /// tap to watch, and every existing watchdog behaviour is unchanged when
+    /// this is `None` — which is the property `meeting_manual_start_stop.rs`
+    /// and the pre-existing watchdog unit tests keep honest.
+    pub tap: Option<syscapture::TapWatchdogInputs>,
 }
 
 /// The 60 s watchdog rule. Pure: the ordering below IS the policy, and it is
@@ -473,6 +497,23 @@ pub fn watchdog_tick(inputs: &WatchdogInputs) -> WatchdogAction {
     }
     if inputs.elapsed >= MEETING_CAP_WARN_AT && !inputs.cap_warned {
         return WatchdogAction::WarnApproachingCap;
+    }
+    // YV104 / OS-4, ranked LAST on purpose, and the ordering is the argument:
+    //
+    //  * Below every `Stop`, because a tap problem is never worth a second of
+    //    delay on a full disk or a dying mic — and because the tap outcome is a
+    //    degrade, which can always wait one 60 s tick.
+    //  * Below `WarnApproachingCap`, because that warning fires exactly once
+    //    and `cap_warned` is only set by the caller that receives it. Ranking
+    //    the tap above it would let a tap that asks for something on every tick
+    //    starve the 2 h 45 m warning for the rest of the meeting. The cost is
+    //    the mirror image and it is bounded: on the ONE tick where the cap
+    //    warning fires, a tap action waits 60 s. That trade is one-way.
+    if let Some(tap) = inputs.tap.as_ref() {
+        let action = syscapture::ghost_tick(tap);
+        if action != syscapture::TapWatchdogAction::Continue {
+            return WatchdogAction::Tap(action);
+        }
     }
     WatchdogAction::Continue
 }
@@ -1946,6 +1987,19 @@ pub trait CaptureEnv: Send + Sync + 'static {
     fn device_failed(&self) -> bool {
         false
     }
+
+    /// YV104 / OS-4 — the system-audio tap's liveness, the environment readings
+    /// that explain an innocent silence, and the host time of its most recent
+    /// capture anchor (0 when it has none).
+    ///
+    /// `None` — the default, and every 22-A meeting — means "there is no tap",
+    /// and the ghost watchdog is then never consulted at all. YV100's tap
+    /// session overrides this with the fold its ring drain already computes;
+    /// until then no shipping `CaptureEnv` returns `Some`, which is stated
+    /// plainly here rather than hidden behind a stub that pretends otherwise.
+    fn tap_liveness(&self) -> Option<(syscapture::TapLiveness, syscapture::TapEnvironment, u64)> {
+        None
+    }
 }
 
 /// The real machine.
@@ -2126,6 +2180,10 @@ pub struct MeetingSession {
     /// The input stream this meeting holds open, released on every path out.
     stream: Option<Arc<dyn CaptureStream>>,
     plan: PreflightPlan,
+    /// YV104 — every system-audio tap rebuild this meeting needed, and the
+    /// verdict if it ran out of them. Empty for every mic-only meeting. Read at
+    /// finalize; YV106's migration is what gives it a column to land in.
+    tap_rebuilds: Arc<Mutex<syscapture::TapRebuildLog>>,
 }
 
 impl MeetingSession {
@@ -2176,15 +2234,21 @@ impl MeetingSession {
         let power = PowerAssertion::prevent_idle_sleep("a meeting");
         let stop = Arc::new(AtomicBool::new(false));
         let stopped_by = Arc::new(Mutex::new(None));
+        // YV104 — the tap's rebuild log lives on the session, not on the
+        // watchdog thread, because the thread ends before finalize runs and the
+        // log is what YV106's migration writes onto the meeting row.
+        let tap_rebuilds = Arc::new(Mutex::new(syscapture::TapRebuildLog::new()));
         let watchdog = {
             let stop = Arc::clone(&stop);
             let stopped_by = Arc::clone(&stopped_by);
             let capture = Arc::clone(&capture);
+            let tap_rebuilds = Arc::clone(&tap_rebuilds);
             let interval = config.watchdog_interval;
             thread::Builder::new()
                 .name("wv-meeting-watchdog".into())
                 .spawn(move || {
                     let mut cap_warned = false;
+                    let mut ghost = syscapture::GhostWatchdog::new();
                     while !stop.load(Ordering::Relaxed) {
                         // Sleep in slices, never for the whole interval: a user
                         // who stops a meeting must not wait out a 60-second
@@ -2192,16 +2256,65 @@ impl MeetingSession {
                         if !sleep_unless_stopped(interval, &stop) {
                             break;
                         }
+                        let elapsed = capture.elapsed();
+                        let tap = env.tap_liveness();
                         let inputs = WatchdogInputs {
-                            elapsed: capture.elapsed(),
+                            elapsed,
                             free_bytes: env.free_bytes(),
                             device_failed: env.device_failed(),
                             since_last_block: capture.since_last_block(),
                             thermal: env.thermal(),
                             cap_warned,
+                            tap: tap.map(|(liveness, tap_env, _)| syscapture::TapWatchdogInputs {
+                                elapsed,
+                                liveness,
+                                env: tap_env,
+                                state: ghost.state(),
+                            }),
                         };
                         match watchdog_tick(&inputs) {
                             WatchdogAction::Continue => {}
+                            // YV104. Reachable only when `CaptureEnv::tap_liveness`
+                            // answers `Some`, which no shipping env does at this
+                            // commit — YV100's tap session is what will, and it
+                            // is also what actually runs
+                            // `syscapture::full_rebuild_sequence()` on a
+                            // `RebuildFull` and reports back through
+                            // `GhostWatchdog::finish_rebuild`. Stated rather than
+                            // stubbed: the decision, the budget and the log are
+                            // proved by `tests/syscapture_*.rs`; the seven
+                            // CoreAudio calls are not this item's to make.
+                            WatchdogAction::Tap(action) => {
+                                let (liveness, _, host_ns) =
+                                    tap.expect("a tap action requires tap inputs");
+                                ghost.apply(action, elapsed, liveness, host_ns);
+                                *tap_rebuilds.lock() = ghost.log().clone();
+                                match action {
+                                    syscapture::TapWatchdogAction::Continue => {}
+                                    syscapture::TapWatchdogAction::RebuildFull {
+                                        attempt,
+                                        kind,
+                                        causes,
+                                    } => log::warn!(
+                                        "meeting system-audio tap silent ({}) — full rebuild \
+                                         {attempt}/{} (other possible causes: {})",
+                                        kind.as_str(),
+                                        syscapture::MAX_TAP_REBUILDS_PER_MEETING,
+                                        causes.as_log_string()
+                                    ),
+                                    syscapture::TapWatchdogAction::DegradeTrackLost {
+                                        verdict,
+                                        after_rebuilds,
+                                        causes,
+                                    } => log::warn!(
+                                        "meeting system-audio track lost after {after_rebuilds} \
+                                         rebuilds ({}) — the mic track keeps recording (other \
+                                         possible causes: {})",
+                                        verdict.as_str(),
+                                        causes.as_log_string()
+                                    ),
+                                }
+                            }
                             WatchdogAction::WarnApproachingCap => {
                                 cap_warned = true;
                                 log::warn!(
@@ -2228,7 +2341,16 @@ impl MeetingSession {
             power,
             stream: Some(stream),
             plan,
+            tap_rebuilds,
         })
+    }
+
+    /// YV104 — the tap rebuild log, as it stands. Cheap to call and safe at any
+    /// time: the watchdog thread republishes it after every action, so a caller
+    /// that reads it at finalize sees every attempt including one that was
+    /// still in flight when the meeting ended.
+    pub fn tap_rebuild_log(&self) -> syscapture::TapRebuildLog {
+        self.tap_rebuilds.lock().clone()
     }
 
     pub fn plan(&self) -> &PreflightPlan {
@@ -2466,6 +2588,9 @@ mod tests {
             since_last_block: Duration::from_millis(20),
             thermal: ThermalState::Nominal,
             cap_warned: false,
+            // YV104: no tap. Every assertion below is about the 22-A mic path,
+            // and `None` is what keeps it that way.
+            tap: None,
         }
     }
 
