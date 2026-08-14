@@ -266,6 +266,49 @@ mod imp {
 
 pub use imp::{mute_and_save, restore};
 
+/// The output device, behind a trait (YV91). YV28's `mute_and_save`/`restore`
+/// are free functions that talk straight to CoreAudio, which makes "does a
+/// meeting mute the Mac?" a question you can only answer by muting a real Mac.
+/// This is the same two functions with a seam in front of them.
+pub trait OutputControl {
+    fn mute_and_save(&self) -> Option<OutputAudioState>;
+    fn restore(&self, saved: OutputAudioState);
+}
+
+/// The real default output device.
+pub struct SystemOutput;
+
+impl OutputControl for SystemOutput {
+    fn mute_and_save(&self) -> Option<OutputAudioState> {
+        imp::mute_and_save()
+    }
+
+    fn restore(&self, saved: OutputAudioState) {
+        imp::restore(saved)
+    }
+}
+
+/// THE gate in front of every auto-mute (YV91, plan finding #9).
+///
+/// YV28 mutes the Mac's whole output while a take records. That is right for a
+/// five-second dictation and wrong — user-visibly, damagingly wrong — for a
+/// meeting: it silences the call the user is recording, and a dictation taken
+/// mid-meeting silences the call they are LISTENING to, with no indication of
+/// why. So auto-mute became a property of the take's context, and this function
+/// is the only place that property is consulted.
+///
+/// Returns `None` (and touches nothing at all) whenever the context forbids it.
+pub fn mute_for_take<C: OutputControl + ?Sized>(
+    context: crate::meeting::TakeContext,
+    control: &C,
+) -> Option<OutputAudioState> {
+    if !crate::meeting::auto_mute_allowed(context) {
+        log::info!("auto-mute suppressed for {context:?} — a meeting never mutes the Mac");
+        return None;
+    }
+    control.mute_and_save()
+}
+
 #[cfg(test)]
 mod tests {
     use super::OutputAudioState;

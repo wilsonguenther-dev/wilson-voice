@@ -1,0 +1,65 @@
+YV91 — power assertion, observed by the OS, 2026-08-11T17:49:27Z
+$ cargo test --test meeting_power_assertion -- --include-ignored --nocapture
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+     Running tests/meeting_power_assertion.rs (target/debug/deps/meeting_power_assertion-a10e34d6d5320c71)
+
+running 4 tests
+test a_meeting_prevents_system_idle_sleep_and_never_display_sleep ... ok
+test the_reason_the_user_sees_names_the_app_and_the_activity ... ok
+test taking_and_releasing_the_assertion_is_panic_free ... ok
+--- pmset -g assertions WHILE held (pid 82987) ---
+2026-08-11 12:49:28 -0500 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    0
+   SoftwareUpdateTask             0
+   PreventSystemSleep             0
+   ExternalMedia                  0
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            0
+Listed by owning process:
+   pid 82190(caffeinate): [0x0002295c000190f1] 00:01:21 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 218 secs Action=TimeoutActionRelease
+   pid 352(powerd): [0x000203dc00018ef5] 02:41:21 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 352(powerd): [0x00000b17000995d3] 02:41:21 UserIsActive named: "com.apple.powermanagement.lidopen"  
+   pid 352(powerd): [0x0000021b0009800c] 65:29:43 UserIsActive named: "com.apple.powerd.ws.initialize"  
+   pid 82987(meeting_power_assertion-a10e34d): [0x000229ad00019146] 00:00:00 PreventUserIdleSystemSleep named: "Yap is recording a meeting"  
+   pid 411(WindowServer): [0x0000021d0009805e] 01:33:34 UserIsActive named: "com.apple.iohideventsystem.queue.tickle serviceID:100000cbc service:AppleMultitouchDevice product:Apple Internal Keyboard / Trackpad eventType:11"  
+   pid 14534(rcd): [0x00005b3100099fe2] 01:51:42 UserIsActive named: "com.apple.rcdevent"  
+Kernel Assertions: 0x100=MAGICWAKE
+   id=556  level=255 0x100=MAGICWAKE creat=  mod= description=en0 owner=IOSkywalkNetworkBSDClient
+
+--- pmset -g assertions AFTER release ---
+2026-08-11 12:49:28 -0500 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    0
+   SoftwareUpdateTask             0
+   PreventSystemSleep             0
+   ExternalMedia                  0
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            0
+Listed by owning process:
+   pid 82190(caffeinate): [0x0002295c000190f1] 00:01:21 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 218 secs Action=TimeoutActionRelease
+   pid 352(powerd): [0x000203dc00018ef5] 02:41:21 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 352(powerd): [0x00000b17000995d3] 02:41:21 UserIsActive named: "com.apple.powermanagement.lidopen"  
+   pid 352(powerd): [0x0000021b0009800c] 65:29:43 UserIsActive named: "com.apple.powerd.ws.initialize"  
+   pid 411(WindowServer): [0x0000021d0009805e] 01:33:34 UserIsActive named: "com.apple.iohideventsystem.queue.tickle serviceID:100000cbc service:AppleMultitouchDevice product:Apple Internal Keyboard / Trackpad eventType:11"  
+   pid 14534(rcd): [0x00005b3100099fe2] 01:51:42 UserIsActive named: "com.apple.rcdevent"  
+Kernel Assertions: 0x100=MAGICWAKE
+   id=556  level=255 0x100=MAGICWAKE creat=  mod= description=en0 owner=IOSkywalkNetworkBSDClient
+
+test the_assertion_is_visible_to_the_system_while_it_is_held ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

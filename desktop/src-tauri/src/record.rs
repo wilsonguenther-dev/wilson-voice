@@ -26,7 +26,7 @@ use crate::vad;
 pub type LevelHandle = Arc<AtomicU32>;
 
 /// Every clip is written — and every ASR engine is fed — at 16 kHz mono.
-const TARGET_RATE: u32 = 16_000;
+pub const TARGET_RATE: u32 = 16_000;
 /// Shortest take worth transcribing: 30 ms at the target rate. Below this it was
 /// a stray tap, not speech (this used to be a "wav smaller than 1 kB" check —
 /// same threshold, measured on the in-memory buffer now).
@@ -991,6 +991,8 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 /// the very next tick, and this interval is what covers a machine where the
 /// listener could not be installed at all.
 const WATCHDOG_TICK: Duration = Duration::from_secs(60);
+/// How long `end` waits for the consumer to finish the take's tail (YV91).
+const CONSUMER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 const NO_MIC_ERR: &str = "No microphone found. Click Dictate once so macOS prompts, then enable Yap under System Settings → Privacy → Microphone.";
 const NO_SAMPLES_ERR: &str = "No samples captured. Enable Microphone for Yap in System Settings.";
@@ -1050,6 +1052,21 @@ enum CaptureCmd {
     Disarm {
         reply: mpsc::SyncSender<Result<CapturedAudio, String>>,
     },
+    /// YV91: open the stream (if it is not already) and HOLD it open for a
+    /// meeting, which has no Arm of its own.
+    ///
+    /// Without this a meeting is a passenger on whatever stream a dictation
+    /// happened to leave open — and the idle closer drops that stream after
+    /// [`IDLE_CLOSE`], so a meeting with no concurrent dictation captures
+    /// exactly 60 seconds and then finalizes a 60-second wav as `complete`.
+    /// A meeting must own its own audio source.
+    Hold {
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+    /// The meeting ended: the stream may go idle again (and the idle clock
+    /// starts now, so the mic indicator goes out a minute after the MEETING,
+    /// not a minute after the last dictation).
+    Release,
 }
 
 /// The HUD level meter, shared by every take: only one capture is ever in
@@ -1180,27 +1197,37 @@ struct LiveStream {
     /// mandatory so the DSP buffers — the take's audio — outlive the device the
     /// take started on (OS-9: the recovery must not cost the recording).
     stream: Option<cpal::Stream>,
-    /// Streaming DSP + buffers, written by the audio callback (YV37).
+    /// Streaming DSP + buffers. Written by the CONSUMER thread since YV91 —
+    /// the audio callback no longer takes this lock (OS-7).
     dsp: Arc<Mutex<StreamDsp>>,
-    /// The momentary GATE the audio callback reads: push this buffer, or drop
-    /// it. Shared with the callback, so a reopen closes and reopens it.
-    capturing: Arc<AtomicBool>,
+    /// Which frame indices belong to the take that is armed (YV91).
+    ///
+    /// This replaced YV92's momentary `capturing` gate: the callback no longer
+    /// decides anything (a meeting has no Arm at all), so the take's slice of
+    /// each drained block is an index range, resolved by the consumer.
+    window: Arc<ArmWindow>,
     /// The take's ARMED INTENT — "a take is in flight and wants audio" — as
-    /// opposed to `capturing`, which is only whether the gate is open right
-    /// now (YV92 review).
+    /// opposed to [`ArmWindow::is_open`], which is only whether the CURRENT
+    /// stream's frames are being routed to it right now (YV92 review).
     ///
     /// The two differ for exactly as long as a reopen takes, and conflating
-    /// them re-created OS-9's failure mode from the inside: `reopen_after_change`
-    /// read the momentary gate, closed it, and on a failed reopen never restored
-    /// it — so the self-healing retry on the next watchdog tick read the gate as
-    /// already-closed and faithfully restored *false*. One transient AirPods/HFP
-    /// reopen error and the stream came back live, the DSP intact, and every
-    /// remaining frame of a three-hour take dropped at the gate with nothing
-    /// logged. Armed intent is set by [`LiveStream::begin`] and cleared by
-    /// [`LiveStream::end`] — by the take, never by the device — so a reopen has
-    /// something durable to restore the gate *to*.
+    /// them re-created OS-9's failure mode from the inside: a reopen builds a
+    /// NEW ring whose frame counter restarts at zero, so the old window's
+    /// `from` — a frame index in the CLOSED stream's space — can never be
+    /// reached again and every remaining frame of a three-hour take is routed
+    /// to nobody, with nothing logged. Armed intent is set by
+    /// [`LiveStream::begin`] and cleared by [`LiveStream::end`] — by the take,
+    /// never by the device — so a reopen has something durable to re-open the
+    /// window *from* (see [`reopen_with`]).
     armed: AtomicBool,
     failed: Arc<AtomicBool>,
+    /// The preallocated rings the callback writes into (YV91). Rebuilt by a
+    /// reopen, because its geometry is the device's.
+    rt: Arc<crate::meeting::RtCapture>,
+    /// Stop flag + join handle for the thread draining [`Self::rt`] (YV91).
+    /// Dropping it (including by ASSIGNING a new one over it, which is what a
+    /// reopen does) stops and joins the old consumer.
+    consumer: ConsumerHandle,
     /// What the stream is ACTUALLY running on, as opposed to what a cache
     /// believes. The format-change watchdog compares against these.
     device_name: String,
@@ -1216,12 +1243,41 @@ struct LiveStream {
     watch: InputFormatWatch,
 }
 
+/// The consumer thread's stop flag and join handle, as ONE owned value.
+///
+/// YV91 put this `Drop` on `LiveStream` itself. That stopped compiling the
+/// moment YV92's reopen needed to move a freshly-opened stream's parts onto the
+/// live one (you cannot move out of a type that implements `Drop`), and the
+/// obvious workaround — copying the handle out and letting the shell drop —
+/// would have signalled stop on the Arc the NEW consumer is reading. Owning the
+/// pair here makes "replace the consumer" a plain assignment whose semantics
+/// are exactly right: the old thread is told to stop and joined, the new one is
+/// left alone.
+struct ConsumerHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for ConsumerHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
 impl LiveStream {
     /// Begin a take: drop anything the callback saw while idle (and every bit of
     /// the previous take's DSP state), arm this take's crash journal, zero the
     /// meter, then open the gate. The journal is installed AFTER the reset — the
     /// reset is what retires a previous take's journal, and the segment
     /// numbering restarts with it because the marker sidecar is per-take.
+    ///
+    /// YV91 (finding #2a): `reset()` is still destructive, and that is now
+    /// SAFE, because a meeting's audio does not live in `StreamDsp` — it is a
+    /// separate consumer of the same fanned-out block. Wiping the take state
+    /// here can no longer wipe a meeting that is recording.
     fn begin(&mut self, journal: Option<CaptureJournal>) {
         if let Ok(mut dsp) = self.dsp.lock() {
             dsp.reset();
@@ -1229,19 +1285,25 @@ impl LiveStream {
         }
         self.watch.restart_segments();
         capture_level().store(0, Ordering::Relaxed);
-        // Intent first, gate second: a watchdog tick that lands between the two
-        // must never see an open gate with nothing armed behind it.
+        // Intent first, window second: a watchdog tick that lands between the
+        // two must never see an open window with nothing armed behind it.
         self.armed.store(true, Ordering::SeqCst);
-        self.capturing.store(true, Ordering::SeqCst);
+        // Everything the device delivers from this frame on belongs to the take.
+        self.window.open(self.rt.frames_accepted());
     }
 
     /// End a take: close the gate and take the streamed 16 kHz buffer (plus its
     /// raw fallback and AGC stats) off the DSP state.
     fn end(&self) -> CapturedAudio {
-        // Disarm before closing the gate — the take is over, so a reopen racing
-        // this must not resurrect it.
+        // Disarm before closing the window — the take is over, so a reopen
+        // racing this must not resurrect it.
         self.armed.store(false, Ordering::SeqCst);
-        self.capturing.store(false, Ordering::SeqCst);
+        // Close the window at the frame the device is at, then WAIT for the
+        // consumer to work through it: those frames are the tail of the take
+        // (the ones still in the ring at key-up) and dropping them would
+        // truncate every dictation by a few milliseconds.
+        self.window.close(self.rt.frames_accepted());
+        self.drain_consumer(CONSUMER_DRAIN_TIMEOUT);
         capture_level().store(0, Ordering::Relaxed);
         self.dsp
             .lock()
@@ -1256,8 +1318,21 @@ impl LiveStream {
             })
     }
 
+    /// Wait (bounded) until the consumer has drained everything the callback
+    /// has produced.
+    fn drain_consumer(&self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while self.rt.samples.consumed() < self.rt.samples.written() {
+            if Instant::now() >= deadline {
+                log::warn!("capture consumer did not drain within {timeout:?}");
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn is_capturing(&self) -> bool {
-        self.capturing.load(Ordering::SeqCst)
+        self.window.is_open()
     }
 
     /// Whether a take is in flight — what a reopen restores the gate to.
@@ -1353,6 +1428,54 @@ fn dispatch(cmd: CaptureCmd) -> Result<(), String> {
     Ok(())
 }
 
+/// YV91 — hold the persistent input stream open for a meeting.
+///
+/// [`crate::meeting::MeetingSession::start`] calls this so a meeting owns its
+/// audio source outright. Blocking (bounded by [`ARM_TIMEOUT`]) because a
+/// meeting that cannot open the microphone must fail at start, loudly, rather
+/// than record silence for an hour.
+pub fn hold_stream_for_meeting() -> Result<(), String> {
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    dispatch(CaptureCmd::Hold { reply: reply_tx })?;
+    reply_rx
+        .recv_timeout(ARM_TIMEOUT)
+        .map_err(|_| NO_MIC_ERR.to_string())?
+}
+
+/// Release the meeting's hold. The stream stays open until the ordinary idle
+/// close, so a dictation right after a meeting still pays nothing.
+pub fn release_stream_for_meeting() {
+    let _ = dispatch(CaptureCmd::Release);
+}
+
+/// Everything the idle-close decision depends on.
+struct IdleInputs {
+    stream_open: bool,
+    /// Is a dictation take armed right now?
+    capturing: bool,
+    /// Has a meeting explicitly asked for the stream (YV91's `Hold`)?
+    held_for_meeting: bool,
+    /// Is a meeting registered at all? Belt and braces with `held_for_meeting`:
+    /// the hold is the mechanism, this is the fact, and if they ever disagree
+    /// the stream stays OPEN — losing a meeting's audio is unrecoverable and
+    /// leaving the mic indicator lit for an extra minute is not.
+    meeting_active: bool,
+    idle_for: Duration,
+}
+
+/// Should the worker drop the persistent stream on this tick?
+///
+/// Pure, because this one boolean decides whether a three-hour meeting is a
+/// three-hour recording or a sixty-second one, and the only other way to
+/// exercise it is to sit in front of a microphone for a minute.
+fn should_close_idle_stream(inputs: &IdleInputs) -> bool {
+    inputs.stream_open
+        && !inputs.capturing
+        && !inputs.held_for_meeting
+        && !inputs.meeting_active
+        && inputs.idle_for >= IDLE_CLOSE
+}
+
 /// The worker thread: owns the persistent stream + the device/config cache and
 /// answers every arm/stop with an explicit signal (never a poll).
 fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
@@ -1361,6 +1484,8 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
     let mut live: Option<LiveStream> = None;
     let mut idle_since = Instant::now();
     let mut last_watchdog = Instant::now();
+    // Is a meeting holding the stream open? (YV91.)
+    let mut held_for_meeting = false;
 
     loop {
         // YV81 — the tick exists ONLY to close an open stream that has gone
@@ -1413,12 +1538,36 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                 };
                 let _ = reply.send(captured);
             }
+            Ok(CaptureCmd::Hold { reply }) => {
+                if live.as_ref().is_some_and(LiveStream::has_failed) {
+                    log::warn!("capture stream reported a device error — reopening cold");
+                    live = None;
+                    cache.invalidate();
+                }
+                if live.is_none() {
+                    match open_stream(&mut cache) {
+                        Ok(stream) => live = Some(stream),
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+                held_for_meeting = true;
+                let _ = reply.send(Ok(()));
+            }
+            Ok(CaptureCmd::Release) => {
+                held_for_meeting = false;
+                idle_since = Instant::now();
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // YV92 — the health watchdog. A dictation always has an Arm
                 // coming to re-check the device; a long capture does not, so
                 // this is the only thing standing between a mid-session format
                 // change and three hours of half-speed audio nobody looks at
-                // until stop.
+                // until stop. YV91 made the second half of that sentence
+                // literal: a MEETING is the long capture, and it runs on this
+                // same stream.
                 let event = input_format::take_event();
                 match live.as_mut() {
                     Some(stream) => {
@@ -1433,8 +1582,13 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     None if event.is_some() => cache.invalidate(),
                     None => {}
                 }
-                let idle = live.as_ref().is_some_and(|s| !s.is_capturing());
-                if idle && idle_since.elapsed() >= IDLE_CLOSE {
+                if should_close_idle_stream(&IdleInputs {
+                    stream_open: live.is_some(),
+                    capturing: live.as_ref().is_some_and(LiveStream::is_capturing),
+                    held_for_meeting,
+                    meeting_active: crate::meeting::meeting_capture_active(),
+                    idle_for: idle_since.elapsed(),
+                }) {
                     live = None;
                     close_idle_capture(&mut cache);
                     log::info!(
@@ -1603,32 +1757,64 @@ fn reopen_after_change(
 /// the half a microphone is not needed for — see
 /// `a_transient_reopen_failure_still_resumes_the_take`.
 ///
-/// The gate is restored from the take's ARMED INTENT, never from the momentary
-/// `is_capturing()` this function just closed. Reading the gate to decide what
-/// to restore the gate to is only correct while every reopen succeeds: after a
-/// failed attempt the gate is already false, so the self-healing retry on the
-/// next watchdog tick would "restore" false onto a perfectly live stream and
-/// silently drop the rest of the take (YV92 review).
+/// The take is resumed from its ARMED INTENT, never from the momentary
+/// `is_capturing()` this function just closed. Reading the window to decide
+/// what to restore the window to is only correct while every reopen succeeds:
+/// after a failed attempt it is already closed, so the self-healing retry on
+/// the next watchdog tick would "restore" closed onto a perfectly live stream
+/// and silently drop the rest of the take (YV92 review).
+///
+/// **The YV91 rebase changed what "restore" means, and this is the seam.**
+/// YV92's gate was one `AtomicBool` shared with the callback, so a reopen
+/// restored a boolean. YV91 replaced it with an arm WINDOW over cumulative
+/// frame indices, and those indices belong to the RING — which a reopen
+/// rebuilds, restarting the count at zero. Copying the old window across (or
+/// simply leaving it in place) leaves `from` at a frame index the new stream
+/// will not reach for another N hours, so `armed_range` returns `None` for
+/// every block and the rest of a three-hour take is routed to nobody with
+/// nothing logged: OS-9's exact failure mode, re-created by the composition of
+/// two fixes that are each correct alone. The window is therefore re-OPENED at
+/// the new ring's origin, and
+/// `a_reopen_mid_take_rearms_the_window_in_the_new_rings_frame_space` is the
+/// regression guard.
 fn reopen_with(
     live: &mut LiveStream,
     to: Option<InputFormat>,
     open: impl FnOnce(TakeInFlight) -> Result<LiveStream, String>,
 ) {
-    live.capturing.store(false, Ordering::SeqCst);
+    // Close the window at the last frame this device delivered and let the
+    // consumer work through what is still in the ring: those frames are audio
+    // the take already paid for, and the device going away is no reason to
+    // drop them.
+    live.window.close(live.rt.frames_accepted());
+    live.drain_consumer(CONSUMER_DRAIN_TIMEOUT);
     live.stream = None;
-    let reuse = (
-        live.dsp.clone(),
-        live.capturing.clone(),
-        live.failed.clone(),
-    );
+    let reuse = (live.dsp.clone(), live.failed.clone());
     match open(reuse) {
         Ok(reopened) => {
             live.stream = reopened.stream;
+            // The rings, the window and the thread draining them all belong to
+            // the DEVICE, so they are adopted wholesale. Assigning the consumer
+            // handle stops and joins the old thread (see [`ConsumerHandle`]).
+            live.rt = reopened.rt;
+            live.window = reopened.window;
+            live.consumer = reopened.consumer;
             // `reopened.watch` is discarded on purpose — the take's segment
             // numbering lives on `live`, and the reopen only tells it what
             // actually opened.
             live.adopt_reopened(reopened.device_name, reopened.format);
-            live.capturing.store(live.is_armed(), Ordering::SeqCst);
+            if live.is_armed() {
+                // Frame zero OF THE NEW RING: every frame this device delivers
+                // from now on belongs to the take that is still running.
+                live.window.open(0);
+            }
+            // A meeting is a SECOND consumer of this device, with its own
+            // resampler, and YV92's rule — a ratio must never survive a format
+            // change — applies to it too. It also has its own cumulative frame
+            // accounting, which the new ring just reset; telling it about the
+            // reopen is what keeps its gap detector from reading that reset as
+            // an hour of lost audio.
+            crate::meeting::retune_active_capture(live.format.sample_rate_hz, live.format.channels);
             log::info!(
                 "YV92 watchdog: capture continues on {} at {}Hz/{}ch (armed={})",
                 live.device_name,
@@ -1703,7 +1889,7 @@ fn default_input_device() -> Result<(cpal::Device, String), String> {
 /// running: the DSP (which owns the buffered audio, the AGC statistics and the
 /// crash journal), the capture gate, and the error flag. Named so the reopen
 /// signature reads as "carry the take across", not as a tuple of Arcs.
-type TakeInFlight = (Arc<Mutex<StreamDsp>>, Arc<AtomicBool>, Arc<AtomicBool>);
+type TakeInFlight = (Arc<Mutex<StreamDsp>>, Arc<AtomicBool>);
 
 /// Open the input stream, optionally HANDING IT AN EXISTING TAKE.
 ///
@@ -1737,8 +1923,8 @@ fn open_stream_into(
     let conf: cpal::StreamConfig = supported.into();
 
     let format = InputFormat::new(sample_rate, channels);
-    let (dsp, capturing, failed) = match reuse {
-        Some((dsp, capturing, failed)) => {
+    let (dsp, failed) = match reuse {
+        Some((dsp, failed)) => {
             // The take survives the device: only the rate-dependent state is
             // rebuilt, and the error flag is cleared because it belonged to the
             // stream we just closed.
@@ -1746,25 +1932,24 @@ fn open_stream_into(
                 dsp.reconfigure(sample_rate, channels);
             }
             failed.store(false, Ordering::SeqCst);
-            (dsp, capturing, failed)
+            (dsp, failed)
         }
         None => (
             Arc::new(Mutex::new(StreamDsp::new(sample_rate, channels))),
             Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
         ),
     };
+    // YV91/OS-7: everything the callback touches is allocated HERE, on this
+    // (non-real-time) thread, and never grows again. It is NEVER reused across
+    // a reopen — the ring's geometry is the device's, and its frame counters
+    // restart with the stream (which is what `reopen_with` re-opens the arm
+    // window against).
+    let rt = Arc::new(crate::meeting::RtCapture::new(sample_rate, channels));
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => {
-            build_capture_stream::<f32>(&device, conf, &dsp, &capturing, &failed)
-        }
-        cpal::SampleFormat::I16 => {
-            build_capture_stream::<i16>(&device, conf, &dsp, &capturing, &failed)
-        }
-        cpal::SampleFormat::U16 => {
-            build_capture_stream::<u16>(&device, conf, &dsp, &capturing, &failed)
-        }
+        cpal::SampleFormat::F32 => build_capture_stream::<f32>(&device, conf, &rt, &failed),
+        cpal::SampleFormat::I16 => build_capture_stream::<i16>(&device, conf, &rt, &failed),
+        cpal::SampleFormat::U16 => build_capture_stream::<u16>(&device, conf, &rt, &failed),
         other => Err(format!(
             "Unsupported sample format {other:?}. Try a different input device."
         )),
@@ -1798,57 +1983,91 @@ fn open_stream_into(
         );
     }
 
+    let window = Arc::new(ArmWindow::idle());
+    let consumer_stop = Arc::new(AtomicBool::new(false));
+    let consumer = {
+        let (rt, dsp, window, stop, level) = (
+            rt.clone(),
+            dsp.clone(),
+            window.clone(),
+            consumer_stop.clone(),
+            capture_level().clone(),
+        );
+        thread::Builder::new()
+            .name("wv-capture-consumer".into())
+            .spawn(move || capture_consumer_loop(rt, dsp, window, stop, level))
+            .ok()
+    };
+
     Ok(LiveStream {
         stream: Some(stream),
         dsp,
-        capturing,
+        window,
         // A freshly opened stream is not itself a take. On the reuse path the
-        // caller (`reopen_with`) owns the armed intent and restores the gate
+        // caller (`reopen_with`) owns the armed intent and re-opens the window
         // from ITS copy — this one is discarded with the rest of the shell.
         armed: AtomicBool::new(false),
         failed,
+        rt,
+        consumer: ConsumerHandle {
+            stop: consumer_stop,
+            join: consumer,
+        },
         watch: InputFormatWatch::new(dev_name.clone(), format, TARGET_RATE),
         device_name: dev_name,
         format,
     })
 }
 
-/// Build the input stream for one sample format. The callback converts to f32,
-/// feeds the HUD meter and pushes the frame through the streaming DSP (YV37:
-/// downmix → high-pass → AGC accumulation → 16 kHz resample, all incremental)
-/// — but ONLY while a take is armed, so the persistent stream costs nothing
-/// (and retains nothing) between dictations. A stream error flips `failed`,
-/// which makes the next arm reopen.
+/// Build the input stream for one sample format.
+///
+/// YV91 (plan finding OS-7) rewrote this callback. It used to `extend` a
+/// `Vec`, take a `std::sync::Mutex` and run the whole DSP chain — allocation,
+/// a blocking lock and two unbounded buffers — on the audio thread. A
+/// five-second dictation never exposed that; three continuous hours does, and
+/// 22-B runs the same body on a CoreAudio tap's IOProc where a missed deadline
+/// is an audible glitch in the call the user is listening to.
+///
+/// So the callback now does exactly three things and returns: one host-time
+/// anchor into the anchor ring, the frames into the sample ring, one counter
+/// bump — see [`crate::meeting::rt_capture_callback`], which is where the body
+/// lives so it can be driven directly by a test with a counting allocator
+/// installed. Every bit of DSP moved to [`capture_consumer_loop`].
+///
+/// The frames enter the ring UNCONDITIONALLY now, not only while a take is
+/// armed: a meeting recording has no Arm at all, and the consumer decides who
+/// each block belongs to (see the arm window in [`LiveStream::begin`]).
+///
+/// A stream error flips `failed`, which makes the next arm reopen — and, per
+/// OS-9, is what YV92 polls on the meeting watchdog rather than only at Arm.
 fn build_capture_stream<T>(
     device: &cpal::Device,
     conf: cpal::StreamConfig,
-    dsp: &Arc<Mutex<StreamDsp>>,
-    capturing: &Arc<AtomicBool>,
+    rt: &Arc<crate::meeting::RtCapture>,
     failed: &Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + Send + 'static,
     f32: cpal::FromSample<T>,
 {
-    let dsp = dsp.clone();
-    let capturing = capturing.clone();
+    let rt = rt.clone();
     let failed_cb = failed.clone();
-    let level = capture_level().clone();
-    let mut scratch: Vec<f32> = Vec::new();
+    let mut epoch: Option<cpal::StreamInstant> = None;
 
     device
         .build_input_stream(
             conf,
-            move |data: &[T], _: &cpal::InputCallbackInfo| {
-                if !capturing.load(Ordering::SeqCst) {
-                    return;
-                }
-                scratch.clear();
-                scratch.extend(data.iter().map(|&s| s.to_sample::<f32>()));
-                push_level(&level, &scratch);
-                if let Ok(mut dsp) = dsp.lock() {
-                    dsp.push(&scratch);
-                }
+            move |data: &[T], info: &cpal::InputCallbackInfo| {
+                // The parameter this callback used to bind to `_`. It is the
+                // instant the ADC captured these frames, and it is the anchor
+                // OS-2 (cross-track alignment), finding #12 (gap detection) and
+                // finding #3 (resume) all need. Rebased to the first callback
+                // so the number is a stream-relative nanosecond clock rather
+                // than an absolute mach tick nobody downstream can interpret.
+                let captured_at = info.timestamp().capture;
+                let base = *epoch.get_or_insert(captured_at);
+                let host_ns = captured_at.duration_since(base).as_nanos() as u64;
+                crate::meeting::rt_capture_callback(&rt, data, |s| s.to_sample::<f32>(), host_ns);
             },
             move |e| {
                 log::error!("cpal stream error: {e}");
@@ -1858,6 +2077,152 @@ where
         )
         .map_err(|e| format!("mic stream: {e}"))
 }
+
+/// The normal-priority consumer that drains the capture rings (YV91 / OS-7).
+///
+/// Everything the audio callback used to do lives here: the HUD meter, the
+/// streaming DSP, and — new — the meeting fan-out. One drained block is served
+/// to BOTH consumers ([`crate::meeting::fan_out_block`]), which is finding
+/// #2a's fix: a dictation take started mid-meeting can neither reset nor gap
+/// the meeting, because the meeting was never in `StreamDsp` to begin with.
+///
+/// Which frames belong to the dictation take is decided by the arm WINDOW
+/// (frame indices), not by a flag read at drain time. A flag would lose the
+/// tail of every take — the frames still sitting in the ring when the user
+/// releases the key.
+fn capture_consumer_loop(
+    rt: Arc<crate::meeting::RtCapture>,
+    dsp: Arc<Mutex<StreamDsp>>,
+    window: Arc<ArmWindow>,
+    stop: Arc<AtomicBool>,
+    level: LevelHandle,
+) {
+    let channels = rt.channels().max(1) as usize;
+    let mut block: Vec<f32> = Vec::with_capacity(crate::meeting::RING_FRAMES);
+    let mut anchors: Vec<crate::rtring::CaptureAnchor> =
+        Vec::with_capacity(crate::meeting::ANCHOR_RING_LEN);
+    // Frames (per-channel) this consumer has already taken.
+    let mut pos: u64 = 0;
+    loop {
+        block.clear();
+        anchors.clear();
+        rt.anchors.drain_into(&mut anchors);
+        let taken = rt.samples.drain_into(&mut block);
+        if taken == 0 {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            thread::sleep(CONSUMER_IDLE_SLEEP);
+            continue;
+        }
+        let frames = (taken / channels) as u64;
+        // The dictation take's slice of this block, if any.
+        let (from, to) = window.bounds();
+        let armed_slice = armed_range(pos, frames, channels, from, to);
+
+        let mut guard = armed_slice
+            .as_ref()
+            .and_then(|_| dsp.lock().ok())
+            .map(DictationDsp);
+        crate::meeting::fan_out_block(
+            &block,
+            &anchors,
+            guard.as_mut().map(|g| {
+                let sink: &mut dyn crate::meeting::DictationSink = g;
+                sink
+            }),
+            armed_slice.clone(),
+        );
+        drop(guard);
+
+        if let Some(range) = armed_slice {
+            push_level(&level, &block[range]);
+        } else if crate::meeting::meeting_capture_active() {
+            push_level(&level, &block);
+        }
+        pos += frames;
+    }
+}
+
+/// Which part of a drained block belongs to the armed take — the intersection
+/// of the block's frames `[pos, pos + frames)` with the arm window
+/// `[from, to)`, expressed as an index range into the INTERLEAVED block.
+///
+/// Pure, because this is the one piece of arithmetic in the new capture path
+/// that can silently truncate or over-copy a dictation, and the only way to
+/// exercise it otherwise is with a live microphone.
+///
+/// `u64::MAX` for either bound means "not armed" / "still open", which the
+/// saturating comparisons below handle without a special case.
+fn armed_range(
+    pos: u64,
+    frames: u64,
+    channels: usize,
+    from: u64,
+    to: u64,
+) -> Option<std::ops::Range<usize>> {
+    let lo = from.max(pos);
+    let hi = to.min(pos + frames);
+    if lo >= hi {
+        return None;
+    }
+    let a = ((lo - pos) as usize) * channels;
+    let b = ((hi - pos) as usize) * channels;
+    Some(a..b)
+}
+
+/// Adapter: the dictation DSP as a fan-out sink. The lock is taken by the
+/// consumer, off the audio thread, which is the whole point of OS-7's fix.
+struct DictationDsp<'a>(std::sync::MutexGuard<'a, StreamDsp>);
+
+impl crate::meeting::DictationSink for DictationDsp<'_> {
+    fn push_native(&mut self, interleaved: &[f32]) {
+        self.0.push(interleaved);
+    }
+}
+
+/// Which frames belong to the take that is currently armed, as a half-open
+/// window of cumulative per-channel frame indices. `to == u64::MAX` means the
+/// take is still open.
+struct ArmWindow {
+    from: AtomicU64,
+    to: AtomicU64,
+}
+
+impl ArmWindow {
+    fn idle() -> Self {
+        Self {
+            from: AtomicU64::new(u64::MAX),
+            to: AtomicU64::new(u64::MAX),
+        }
+    }
+
+    fn bounds(&self) -> (u64, u64) {
+        (
+            self.from.load(Ordering::Acquire),
+            self.to.load(Ordering::Acquire),
+        )
+    }
+
+    fn open(&self, at: u64) {
+        self.to.store(u64::MAX, Ordering::Release);
+        self.from.store(at, Ordering::Release);
+    }
+
+    fn close(&self, at: u64) {
+        self.to.store(at, Ordering::Release);
+    }
+
+    fn is_open(&self) -> bool {
+        let (from, to) = self.bounds();
+        from != u64::MAX && to == u64::MAX
+    }
+}
+
+/// How long the consumer naps when the ring is empty. Short enough that the HUD
+/// meter and the release→ASR gap are unchanged; long enough that an idle-but-
+/// open stream costs nothing measurable.
+const CONSUMER_IDLE_SLEEP: Duration = Duration::from_millis(2);
 
 // ── Streaming DSP (YV37) ────────────────────────────────────────────────────
 // Everything that can run per-frame now does, INSIDE the capture path, so the
@@ -2121,7 +2486,7 @@ fn apply_gain(samples: &[f32], gain: f32) -> Vec<f32> {
 /// High-pass corner — Whisper needs nothing below ~80 Hz for speech, and this
 /// kills AC hum, HVAC rumble, and desk/handling thumps before they smear the
 /// low bands.
-const HIGH_PASS_HZ: f32 = 80.0;
+pub(crate) const HIGH_PASS_HZ: f32 = 80.0;
 /// RMS-normalize / soft-AGC target level. −20 dBFS is a comfortable speech level
 /// that leaves headroom below full-scale so a boosted quiet voice never clips.
 const NORMALIZE_TARGET_DBFS: f32 = -20.0;
@@ -2342,6 +2707,149 @@ mod tests {
     use std::f32::consts::PI;
 
     const SR: u32 = 16_000;
+
+    // ── YV91: the arm window ───────────────────────────────────────────────
+    // The capture callback no longer gates on a `capturing` flag — the frames
+    // enter the ring unconditionally (a meeting has no Arm at all) and the
+    // CONSUMER decides which of them belong to the dictation take, by frame
+    // index. That arithmetic is the one place in the new path that can
+    // silently truncate a take, and a live microphone is the only other way to
+    // exercise it, so it is pure and tested here.
+
+    #[test]
+    fn nothing_is_armed_before_the_first_take() {
+        let window = ArmWindow::idle();
+        assert!(!window.is_open());
+        let (from, to) = window.bounds();
+        assert_eq!(armed_range(0, 1024, 1, from, to), None);
+    }
+
+    #[test]
+    fn a_take_that_arms_mid_block_starts_at_the_frame_the_key_went_down() {
+        // 512 stereo frames in the block; the key went down at frame 200 of it.
+        assert_eq!(
+            armed_range(1_000, 512, 2, 1_200, u64::MAX),
+            Some(400..1_024),
+            "the take must not be given the audio from before the keypress"
+        );
+    }
+
+    #[test]
+    fn a_take_that_ends_mid_block_keeps_its_tail_and_nothing_after_it() {
+        // This is the case a `capturing` flag read at drain time gets wrong:
+        // the frames between the last callback and key-up are still in the
+        // ring, and they are the end of the utterance.
+        assert_eq!(
+            armed_range(1_000, 512, 1, 0, 1_300),
+            Some(0..300),
+            "the tail of the take is kept, and the frames after key-up are not"
+        );
+    }
+
+    #[test]
+    fn a_whole_block_inside_the_window_is_taken_whole() {
+        assert_eq!(armed_range(1_000, 512, 1, 500, 5_000), Some(0..512));
+        assert_eq!(armed_range(1_000, 512, 2, 500, 5_000), Some(0..1_024));
+    }
+
+    #[test]
+    fn blocks_wholly_outside_the_window_are_the_meetings_alone() {
+        // Before the take…
+        assert_eq!(armed_range(0, 512, 1, 1_000, u64::MAX), None);
+        // …and after it. Both still reach the meeting fan-out; neither reaches
+        // the dictation DSP.
+        assert_eq!(armed_range(2_000, 512, 1, 100, 1_500), None);
+        // A window that closed exactly at this block's first frame is empty,
+        // not a one-frame slice.
+        assert_eq!(armed_range(1_000, 512, 1, 0, 1_000), None);
+    }
+
+    #[test]
+    fn opening_a_window_clears_the_previous_takes_close() {
+        // `begin` must reopen, not extend: a second take that inherited the
+        // first take's `to` would be silently empty.
+        let window = ArmWindow::idle();
+        window.open(100);
+        window.close(200);
+        assert!(!window.is_open());
+        window.open(300);
+        assert!(window.is_open());
+        let (from, to) = window.bounds();
+        assert_eq!(from, 300);
+        assert_eq!(to, u64::MAX);
+        assert_eq!(armed_range(300, 64, 1, from, to), Some(0..64));
+    }
+
+    // ── The idle closer vs. a meeting (YV91) ────────────────────────────────
+
+    fn idle(idle_for: Duration) -> IdleInputs {
+        IdleInputs {
+            stream_open: true,
+            capturing: false,
+            held_for_meeting: false,
+            meeting_active: false,
+            idle_for,
+        }
+    }
+
+    #[test]
+    fn an_idle_stream_with_no_meeting_still_closes_after_a_minute() {
+        // The behaviour that must not regress: the mic indicator goes out when
+        // nothing is recording.
+        assert!(should_close_idle_stream(&idle(IDLE_CLOSE)));
+        assert!(!should_close_idle_stream(&idle(
+            IDLE_CLOSE - Duration::from_secs(1)
+        )));
+    }
+
+    #[test]
+    fn the_worker_never_closes_a_stream_while_a_meeting_is_registered() {
+        // A meeting has no Arm, so `is_capturing()` — the dictation arm window
+        // — is false for its entire length. Closing on that alone gave a
+        // meeting with no concurrent dictation exactly 60 seconds of audio and
+        // then three hours of a session that thought it was still recording.
+        let held = IdleInputs {
+            held_for_meeting: true,
+            ..idle(Duration::from_secs(3 * 60 * 60))
+        };
+        assert!(
+            !should_close_idle_stream(&held),
+            "a three-hour meeting is 180 idle-close windows long"
+        );
+        // And the fact alone is enough, even if the hold were ever missed.
+        let registered = IdleInputs {
+            meeting_active: true,
+            ..idle(Duration::from_secs(3 * 60 * 60))
+        };
+        assert!(!should_close_idle_stream(&registered));
+    }
+
+    #[test]
+    fn releasing_the_hold_lets_the_stream_close_again() {
+        // Otherwise a meeting would pin the microphone (and the indicator) for
+        // the rest of the session.
+        let after = IdleInputs {
+            held_for_meeting: false,
+            meeting_active: false,
+            ..idle(IDLE_CLOSE)
+        };
+        assert!(should_close_idle_stream(&after));
+    }
+
+    #[test]
+    fn an_armed_dictation_is_never_closed_out_from_under() {
+        let armed = IdleInputs {
+            capturing: true,
+            ..idle(IDLE_CLOSE * 10)
+        };
+        assert!(!should_close_idle_stream(&armed));
+        // Nothing to close.
+        let shut = IdleInputs {
+            stream_open: false,
+            ..idle(IDLE_CLOSE * 10)
+        };
+        assert!(!should_close_idle_stream(&shut));
+    }
 
     fn silence(secs: f64) -> Vec<f32> {
         vec![0.0; (secs * SR as f64) as usize]
@@ -3247,9 +3755,19 @@ mod tests {
                 format.sample_rate_hz,
                 format.channels,
             ))),
-            capturing: Arc::new(AtomicBool::new(false)),
+            window: Arc::new(ArmWindow::idle()),
             armed: AtomicBool::new(false),
             failed: Arc::new(AtomicBool::new(false)),
+            rt: Arc::new(crate::meeting::RtCapture::new(
+                format.sample_rate_hz,
+                format.channels,
+            )),
+            // No thread: these tests drive `drain_once` themselves, so the
+            // consumer's work happens inline and deterministically.
+            consumer: ConsumerHandle {
+                stop: Arc::new(AtomicBool::new(false)),
+                join: None,
+            },
             watch: InputFormatWatch::new(device, format, TARGET_RATE),
             device_name: device.to_string(),
             format,
@@ -3279,15 +3797,49 @@ mod tests {
         }
     }
 
-    /// Exactly the gate the cpal input callback applies before it touches the
-    /// DSP (see `build_capture_stream`): closed gate, dropped buffer.
+    /// Exactly what the cpal input callback does (see `build_capture_stream`),
+    /// followed by exactly what the consumer does with it.
+    ///
+    /// YV91 moved the decision: the callback is now unconditional — a meeting
+    /// has no Arm, so refusing frames at the callback would refuse the
+    /// meeting's audio too — and the arm WINDOW decides, on the consumer side,
+    /// which frames belong to the dictation take. These tests therefore have to
+    /// go through both halves, because the half that a reopen can break is the
+    /// second one.
     fn feed_one_callback(live: &LiveStream, frames: &[f32]) {
-        if !live.capturing.load(Ordering::SeqCst) {
+        crate::meeting::rt_capture_callback(&live.rt, frames, |s: f32| s, 0);
+        drain_once(live);
+    }
+
+    /// One iteration of [`capture_consumer_loop`]'s body, inline. The `pos` the
+    /// real loop keeps on its stack is recovered from the ring's own consumed
+    /// count, which is the same number by construction.
+    fn drain_once(live: &LiveStream) {
+        let ch = live.rt.channels().max(1) as usize;
+        let pos = live.rt.samples.consumed() / ch as u64;
+        let mut block: Vec<f32> = Vec::new();
+        let mut anchors: Vec<crate::rtring::CaptureAnchor> = Vec::new();
+        live.rt.anchors.drain_into(&mut anchors);
+        let taken = live.rt.samples.drain_into(&mut block);
+        if taken == 0 {
             return;
         }
-        if let Ok(mut dsp) = live.dsp.lock() {
-            dsp.push(frames);
-        }
+        let frames = (taken / ch) as u64;
+        let (from, to) = live.window.bounds();
+        let armed_slice = armed_range(pos, frames, ch, from, to);
+        let mut guard = armed_slice
+            .as_ref()
+            .and_then(|_| live.dsp.lock().ok())
+            .map(DictationDsp);
+        crate::meeting::fan_out_block(
+            &block,
+            &anchors,
+            guard.as_mut().map(|g| {
+                let sink: &mut dyn crate::meeting::DictationSink = g;
+                sink
+            }),
+            armed_slice,
+        );
     }
 
     /// The whole point of the segment counter: it has to ORDER the markers of
@@ -3425,22 +3977,93 @@ mod tests {
         device: &'static str,
         format: InputFormat,
     ) -> impl FnOnce(TakeInFlight) -> Result<LiveStream, String> {
-        move |(dsp, capturing, failed)| {
+        move |(dsp, failed)| {
             if let Ok(mut dsp) = dsp.lock() {
                 dsp.reconfigure(format.sample_rate_hz, format.channels);
             }
             failed.store(false, Ordering::SeqCst);
-            Ok(LiveStream {
-                stream: None,
-                dsp,
-                capturing,
-                armed: AtomicBool::new(false),
-                failed,
-                watch: InputFormatWatch::new(device, format, TARGET_RATE),
-                device_name: device.to_string(),
-                format,
-            })
+            let mut reopened = hardware_free_stream(device, format);
+            reopened.dsp = dsp;
+            reopened.failed = failed;
+            Ok(reopened)
         }
+    }
+
+    /// THE REBASE SEAM (YV91 × YV92), guarded explicitly.
+    ///
+    /// YV92's reopen restored a boolean gate. YV91 replaced that gate with an
+    /// arm WINDOW over cumulative frame indices — and those indices belong to
+    /// the ring, which a reopen rebuilds from zero. Carrying the old window
+    /// across a reopen therefore leaves `from` at a frame index the new stream
+    /// reaches hours later (or never), so `armed_range` returns `None` for
+    /// every block and the rest of the take is routed to nobody: OS-9's failure
+    /// mode, re-created by composing two fixes that are each correct alone.
+    ///
+    /// This asserts the frame SPACE, not just "audio kept arriving", because
+    /// that is the part a future refactor can silently get wrong.
+    #[test]
+    fn a_reopen_mid_take_rearms_the_window_in_the_new_rings_frame_space() {
+        let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
+        live.begin(None);
+        // Enough frames that the old window's `from` is far from zero AND the
+        // ring has advanced well past where the new one will start.
+        for _ in 0..8 {
+            feed_one_callback(&live, &tone_at(48_000, 0.2, 220.0, 0.3));
+        }
+        let frames_before = live.rt.frames_accepted();
+        assert!(
+            frames_before > 0,
+            "the old ring is deep into its own frame space"
+        );
+        let before = live.output_samples();
+
+        reopen_with(
+            &mut live,
+            Some(fmt(24_000)),
+            hardware_free_reopen("AirPods Pro", fmt(24_000)),
+        );
+
+        assert_eq!(
+            live.rt.frames_accepted(),
+            0,
+            "a reopen builds a NEW ring — its frame counter starts at zero"
+        );
+        let (from, to) = live.window.bounds();
+        assert_eq!(
+            (from, to),
+            (0, u64::MAX),
+            "so the take's window has to be re-opened at THIS ring's origin, \
+             not left pointing into the closed stream's frame space"
+        );
+        assert!(live.is_capturing() && live.is_armed());
+
+        feed_one_callback(&live, &tone_at(24_000, 0.2, 220.0, 0.3));
+        assert!(
+            live.output_samples() > before,
+            "and the frames the new device delivers land in the take"
+        );
+    }
+
+    /// A reopen while NOTHING is armed must not adopt a take that does not
+    /// exist — the symmetric error, and the one that would hand the next
+    /// dictation the seconds of room tone that preceded it.
+    #[test]
+    fn a_reopen_with_no_take_in_flight_leaves_the_window_shut() {
+        let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
+        assert!(!live.is_armed());
+        reopen_with(
+            &mut live,
+            Some(fmt(24_000)),
+            hardware_free_reopen("AirPods Pro", fmt(24_000)),
+        );
+        assert!(!live.is_capturing(), "no take, no window");
+        let before = live.output_samples();
+        feed_one_callback(&live, &tone_at(24_000, 0.2, 220.0, 0.3));
+        assert_eq!(
+            live.output_samples(),
+            before,
+            "and idle frames belong to nobody"
+        );
     }
 
     /// YV92 review — the failure mode this whole item exists to remove, put back

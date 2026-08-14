@@ -38,6 +38,9 @@ parking_lot = "0.12"
 log = "0.4"
 env_logger = "0.11"
 dirs = "6"
+# YV91 — `statvfs` for the meeting disk preflight + the 60s watchdog (matrix
+# row #4). Already in the graph through cpal; declared because we call it.
+libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 core-foundation = "0.10"
 cpal = "0.18.1"

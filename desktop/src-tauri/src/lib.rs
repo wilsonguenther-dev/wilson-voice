@@ -33,6 +33,11 @@ mod latency;
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
 mod logging;
+// YV91 — the meeting capture session: bounded memory, an RT-safe capture
+// callback, host-time anchors, the idle-sleep power assertion and the
+// dictation fan-out. Public so the acceptance tests
+// (`tests/meeting_capture_*.rs`) drive the REAL session, not a copy of it.
+pub mod meeting;
 // YV94 — the Notetaker's row types, its migration-1 SQL, and the pure Markdown
 // renderer. Public so the export's "round-trips readably" claim is a test
 // (`tests/meeting_markdown_export.rs`) rather than an eyeball.
@@ -45,6 +50,9 @@ mod permissions;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
 // the golden formatting corpus runs the real stage from an integration test.
 pub mod polish;
+// YV91 — the IOKit idle-sleep assertion. Public so the "never the display
+// variant" rule is assertable from an integration test.
+pub mod power;
 // The JSONL contract with the `yap-polish` sidecar. Compiled into BOTH binaries
 // from this one file (see the module docs) so the two ends cannot drift.
 mod polish_protocol;
@@ -56,11 +64,23 @@ mod record;
 // belongs in a test that can measure it (`tests/biquad_lowpass_response.rs`),
 // and the eval harness compares the two decimators end to end.
 pub mod resample;
+// YV91 — the preallocated lock-free SPSC ring the capture callback writes into
+// (OS-7). Public so the zero-allocation claim is a test rather than a comment.
+pub mod rtring;
 mod secure_input;
 mod snippets;
-mod sysaudio;
+// YV91 made this public: finding #9's rule (a meeting NEVER mutes the Mac) is
+// enforced by `sysaudio::mute_for_take`, and that gate is asserted from
+// `tests/meeting_no_automute.rs` against a fake output device.
+pub mod sysaudio;
 mod transcription;
 mod vad;
+
+// YV91 finding #27: the two counters `tests/meeting_no_model_resident.rs` reads
+// to prove a meeting capture never brings an ASR model resident and never
+// defeats the idle sweepers. Re-exported (rather than making the whole module
+// public) so the test surface is exactly these two numbers.
+pub use transcription::{engine_touches, model_load_calls, IDLE_UNLOAD_AFTER};
 
 use db::{
     CrashEvent, Database, DayCount, DictCandidate, DictEntry, FailedDictation, Insights,
@@ -606,7 +626,11 @@ fn mute_system_output(state: &AppState) {
     if !state.settings.lock().mute_while_dictating {
         return;
     }
-    if let Some(saved) = sysaudio::mute_and_save() {
+    // YV91 finding #9: a dictation taken WHILE a meeting is recording must not
+    // mute the call the user is listening to. The context decides, not the
+    // caller — see `meeting::auto_mute_allowed`.
+    let context = meeting::take_context();
+    if let Some(saved) = sysaudio::mute_for_take(context, &sysaudio::SystemOutput) {
         *state.saved_audio.lock() = Some(saved);
         log::info!("system output muted for dictation");
     }
