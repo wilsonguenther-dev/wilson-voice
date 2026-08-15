@@ -19,6 +19,9 @@ const CARGO_TOML: &str = include_str!("../Cargo.toml");
 /// own `ggml` through `llama-cpp-sys-2` — but it ships inside the same signed
 /// bundle, so its dependency pins are this app's supply chain too.
 const POLISH_CARGO_TOML: &str = include_str!("../../yap-polish/Cargo.toml");
+/// The diarization sidecar's manifest (YV121). Same argument as above: a
+/// separate link unit, inside the same signed bundle.
+const DIARIZE_CARGO_TOML: &str = include_str!("../../yap-diarize/Cargo.toml");
 /// The workspace lockfile — the file that decides which code actually links,
 /// as opposed to which ranges the manifests would accept (YV100).
 const CARGO_LOCK: &str = include_str!("../../Cargo.lock");
@@ -156,6 +159,64 @@ fn polish_sidecar_pins_llama_cpp_exactly() {
     assert!(
         external.contains(&"binaries/yap-polish"),
         "yap-polish must be bundled as a sidecar, got {external:?}"
+    );
+}
+
+/// YV121: `yap-diarize` is bundled, and it carries **no inference crate yet**.
+///
+/// Both halves are the item. The bundling half is the same failure `yap-polish`
+/// would have had: an app that ships a diarization path it can never spawn.
+///
+/// The dependency half is the point of landing this sidecar before YV122. The
+/// app already links onnxruntime statically through `vad-rs`/`ort`;
+/// `sherpa-onnx` statically links its own vendored copy, and its build script
+/// DOWNLOADS a prebuilt archive when `SHERPA_ONNX_LIB_DIR` is unset — a
+/// build-time fetch, which is a category this file did not previously cover
+/// (plan §2.4's own supply-chain note). So the scaffold ships with `serde` and
+/// `serde_json` and nothing else, and this test is what makes YV122 adding the
+/// crate a deliberate edit to two files rather than a silent one to a manifest.
+#[test]
+fn diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let external: Vec<&str> = config["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin lists the sidecars")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    for sidecar in ["binaries/yap-polish", "binaries/yap-diarize"] {
+        assert!(
+            external.contains(&sidecar),
+            "{sidecar} must be bundled as a sidecar, got {external:?}"
+        );
+    }
+
+    // The dependency list, read as a list rather than searched for a name — a
+    // grep for "sherpa" would pass a manifest that grew `ort` instead.
+    let deps: Vec<String> = DIARIZE_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .skip_while(|l| *l != "[dependencies]")
+        .skip(1)
+        .take_while(|l| !l.starts_with('['))
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split(['=', ' ']).next())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        deps,
+        vec!["serde".to_string(), "serde_json".to_string()],
+        "YV121's sidecar is the SHAPE, proven with zero model bytes and zero \
+         onnxruntime. Adding an inference crate is YV122's job, and YV122 \
+         updates this assertion in the same commit."
+    );
+
+    // And no build-time fetch has crept in through a build script.
+    assert!(
+        !DIARIZE_CARGO_TOML.contains("[build-dependencies]"),
+        "the diarization sidecar has no build script, and therefore nothing that \
+         downloads at build time"
     );
 }
 

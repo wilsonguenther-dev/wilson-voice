@@ -40,20 +40,21 @@ jobs:
         with:
           workspaces: desktop
 
-      # YV60: the polish sidecar. `bundle.externalBin` resolves
-      # `binaries/yap-polish` to `binaries/yap-polish-<target-triple>`, and
-      # tauri-build checks for that file on EVERY `cargo build` of the app — not
-      # just at bundle time — so this has to run before the compile gate below.
-      # It is signed and notarized with the app because it lives inside the
-      # bundle.
-      - name: Build + stage the yap-polish sidecar
+      # YV60/YV121: the two sidecars. `bundle.externalBin` resolves
+      # `binaries/yap-polish` to `binaries/yap-polish-<target-triple>` (and the
+      # same for `yap-diarize`), and tauri-build checks for those files on
+      # EVERY `cargo build` of the app — not just at bundle time — so this has
+      # to run before the compile gate below. Both are signed and notarized with
+      # the app because they live inside the bundle.
+      - name: Build + stage the sidecars (yap-polish, yap-diarize)
         working-directory: desktop
         run: |
-          cargo build -p yap-polish --release
+          cargo build -p yap-polish -p yap-diarize --release
           TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
           mkdir -p src-tauri/binaries
           cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
-          ls -l "src-tauri/binaries/yap-polish-${TRIPLE}"
+          cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
+          ls -l "src-tauri/binaries/yap-polish-${TRIPLE}" "src-tauri/binaries/yap-diarize-${TRIPLE}"
 
       # Fast-fail compile gate before the heavier bundling/signing step.
       - name: Compile Rust (release)

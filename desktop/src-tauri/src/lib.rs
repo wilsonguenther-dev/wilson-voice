@@ -31,6 +31,17 @@ pub mod dictation;
 // score against these same functions. Pure — no sidecar, no model bytes, no
 // audio — which is why it can land before any diarization code exists.
 pub mod diarize_metrics;
+// YV121 — the parent side of the `yap-diarize` sidecar: `SidecarPool`'s four
+// policies (handshake, bounded lateness, one restart, idle unload) ported to a
+// child that takes its models by request rather than on argv. Public because
+// `tests/diarize_sidecar_pool.rs` drives the real state machine against a stub
+// PROCESS, and because its clustering API is where `CosineDistance` stops being
+// a convention and becomes a signature.
+pub mod diarize;
+// The JSONL contract with the `yap-diarize` sidecar. Compiled into BOTH
+// binaries from this one file so the two ends cannot drift — and its own unit
+// tests therefore run inside each of them.
+pub mod diarize_protocol;
 // YV95: public because OS-12's energy rule is now a function with a test.
 // `hover_tick_ms` is the whole of fix (2) — a visible-but-untouched pill during
 // a three-hour meeting polls at 1 Hz, not 13 Hz — and

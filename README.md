@@ -85,7 +85,7 @@ npm run tauri build
 workflow (which also sets `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` for
 notarization) signs with the Developer ID cert without any config change.
 
-## One app, one sidecar
+## One app, two sidecars
 
 Wilson Voice is a single Tauri app (`desktop/`): a menu-bar–resident window
 (Home / Insights / Dictionary / Settings) plus an always-on-top Dictate pill.
@@ -95,23 +95,32 @@ no interpreter and no virtual environment: audio is decoded in-process (no
 `ffmpeg` binary) and the speech model is downloaded once from the in-app model
 manager.
 
-The one helper process is **`yap-polish`** (`desktop/yap-polish/`, YV60): the
-optional local-LLM cleanup stage, bundled as a Tauri sidecar and spoken to over
-newline-delimited JSON on stdio — no port, no listener, no network. It is a
-separate binary for a concrete reason: the app already statically links
-`transcribe-cpp`'s vendored `ggml`, and `llama-cpp-2` vendors its own, so the
-two cannot share a link line. The split also makes the polish deadline *hard* —
-a late answer is dropped and the child killed. Its model is **not** bundled;
-with none installed the sidecar is never spawned and dictation behaves exactly
-as it does without it.
+There are two helper processes, both bundled as Tauri sidecars and both spoken
+to over newline-delimited JSON on stdio — no port, no listener, no network.
 
-`desktop/` is a Cargo workspace (`src-tauri` + `yap-polish`), and
-`bundle.externalBin` makes the staged sidecar a precondition of building the
-app, so build it first:
+**`yap-polish`** (`desktop/yap-polish/`, YV60) is the optional local-LLM cleanup
+stage. It is a separate binary for a concrete reason: the app already statically
+links `transcribe-cpp`'s vendored `ggml`, and `llama-cpp-2` vendors its own, so
+the two cannot share a link line. The split also makes the polish deadline
+*hard* — a late answer is dropped and the child killed. Its model is **not**
+bundled; with none installed the sidecar is never spawned and dictation behaves
+exactly as it does without it.
+
+**`yap-diarize`** (`desktop/yap-diarize/`, YV121) is the speaker-diarization
+stage, out of process for the identical reason one level down: the app already
+links onnxruntime statically through `vad-rs`/`ort`, and `sherpa-onnx` links its
+own vendored copy. It takes no model on argv — models arrive as a `load_models`
+request — so its readiness handshake announces a *process*, not a model. As of
+YV121 it ships with no inference dependency at all: the sidecar shape is proven
+with zero model bytes before the risky crate lands.
+
+`desktop/` is a Cargo workspace (`src-tauri` + `yap-polish` + `yap-diarize`),
+and `bundle.externalBin` makes the staged sidecars a precondition of building
+the app, so build them first:
 
 ```bash
 cd ~/Desktop/wilson-voice/desktop
-npm run sidecar     # cargo build -p yap-polish --release, staged under its triple
+npm run sidecar     # builds both sidecars --release, staged under the host triple
 ```
 
 `npm run desktop:dev` and `npm run desktop:build` already run it for you.

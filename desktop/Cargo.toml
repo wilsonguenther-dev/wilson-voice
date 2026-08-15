@@ -7,9 +7,17 @@
 # whisper.cpp #1887). Two binaries in one workspace share a lockfile and a
 # target dir without ever sharing a link line.
 #
-# The Tauri app talks to `yap-polish` over newline-delimited JSON on stdio
-# (`polish_protocol.rs`); it is bundled as a Tauri sidecar via
-# `bundle.externalBin`.
+# YV121 adds a THIRD member for the same reason: `vad-rs` already links
+# onnxruntime statically into `src-tauri` through `ort`, and `sherpa-onnx` (the
+# diarization crate, landing in `yap-diarize` at YV122) statically links its own
+# vendored copy. Same duplicate-symbol failure class, same fix — a separate link
+# unit. `yap-diarize` ships with NO inference dependency in YV121 on purpose, so
+# the sidecar shape is proven with zero model bytes before the risky crate
+# arrives.
+#
+# The Tauri app talks to both sidecars over newline-delimited JSON on stdio
+# (`polish_protocol.rs`, `diarize_protocol.rs`); each is bundled as a Tauri
+# sidecar via `bundle.externalBin`.
 [workspace]
 resolver = "2"
-members = ["src-tauri", "yap-polish"]
+members = ["src-tauri", "yap-polish", "yap-diarize"]

@@ -1,0 +1,150 @@
+YV121 acceptance — every criterion in the backlog section, run in a fresh clone of feat/yv121.
+Host: macOS 26.5.2 arm64; rustc 1.94.0 (4a4ef493e 2026-03-02)
+CARGO_TARGET_DIR is a scratch dir; the repo tree is untouched by it.
+
+==============================================================================
+AC1  `cargo build -p yap-diarize` succeeds with ZERO new runtime dependencies
+     beyond serde/serde_json — no sherpa-onnx in this item's Cargo.toml.
+==============================================================================
+$ cd desktop && cargo build -p yap-diarize
+   Compiling yap-diarize v0.1.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv121/desktop/yap-diarize)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.48s
+
+$ cd desktop && cargo tree -p yap-diarize -e normal
+yap-diarize v0.1.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv121/desktop/yap-diarize)
+├── serde v1.0.228
+│   ├── serde_core v1.0.228
+│   └── serde_derive v1.0.228 (proc-macro)
+│       ├── proc-macro2 v1.0.106
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.46
+│       │   └── proc-macro2 v1.0.106 (*)
+│       └── syn v2.0.119
+│           ├── proc-macro2 v1.0.106 (*)
+│           ├── quote v1.0.46 (*)
+│           └── unicode-ident v1.0.24
+└── serde_json v1.0.150
+    ├── itoa v1.0.18
+    ├── memchr v2.8.3
+    ├── serde_core v1.0.228
+    └── zmij v1.0.23
+
+$ sed -n '/\[dependencies\]/,$p' desktop/yap-diarize/Cargo.toml | grep -v '^#' | grep -v '^$'
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+$ grep -vn '^#' desktop/yap-diarize/Cargo.toml | grep 'sherpa\|onnx\|ort ' ; echo "exit=$?"  (1 = no match)
+exit=1
+     (the only 'sherpa-onnx' strings in that manifest are the two COMMENT lines
+      explaining why it is deliberately absent until YV122.)
+
+     …and the constraint is a TEST, not a claim:
+$ cd desktop/src-tauri && cargo test --features custom-protocol --test supply_chain
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/supply_chain.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/supply_chain-dc9a2e6fa25b1b6b)
+
+running 7 tests
+test git_dependencies_are_pinned_to_a_rev ... ok
+test the_weak_link_ci_script_and_the_dlsym_list_are_the_same_four_symbols ... ok
+test diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet ... ok
+test csp_is_a_real_policy_not_null ... ok
+test no_personal_signing_identity_is_committed ... ok
+test polish_sidecar_pins_llama_cpp_exactly ... ok
+test syscapture_pins_objc2_core_audio_exactly_and_asserts_its_feature_set ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+==============================================================================
+AC2  `cargo test --test diarize_sidecar_handshake` — stub-process test, zero
+     model bytes: the {"type":"ready",…} line inside a short deadline, and a
+     load_models against a nonexistent path answering a clean {"ok":false,…}
+     rather than crashing.
+==============================================================================
+$ cd desktop/src-tauri && cargo test --features custom-protocol --test diarize_sidecar_handshake -- --nocapture
+     Running tests/diarize_sidecar_handshake.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_sidecar_handshake-9c3c84861c8c3739)
+
+running 4 tests
+yap-diarize ready: v0.1.0
+yap-diarize ready: v0.1.0
+yap-diarize ready: v0.1.0
+yap-diarize v0.1.0: spawn → ready in 223.988208ms
+test an_argument_is_refused_rather_than_guessed_at ... ok
+test the_sidecar_announces_itself_before_any_model_is_loaded ... ok
+test a_missing_model_is_refused_cleanly_and_the_child_survives_it ... ok
+test a_malformed_line_is_answered_rather_than_swallowed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+
+==============================================================================
+AC3  `cargo test --test diarize_sidecar_pool` — SidecarPool's restart-budget-1
+     and idle-unload against the stub binary.
+==============================================================================
+$ cd desktop/src-tauri && cargo test --features custom-protocol --test diarize_sidecar_pool
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/diarize_sidecar_pool.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_sidecar_pool-71fe6059b2e375e4)
+
+running 7 tests
+test the_embedding_dimension_comes_from_the_child_never_from_the_parent ... ok
+test a_dead_child_respawns_once_then_stays_failed ... ok
+test the_clustering_threshold_crosses_the_wire_as_a_distance ... ok
+test an_idle_child_is_torn_down_and_the_next_job_brings_it_back ... ok
+test a_refusal_is_not_a_death ... ok
+test a_silent_child_is_killed_at_the_readiness_budget ... ok
+test a_response_for_another_id_is_never_returned_to_this_caller ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+
+==============================================================================
+AC4  externalBin lists BOTH sidecars.
+     (The backlog writes the path as desktop/tauri.conf.json; the file has
+      lived at desktop/src-tauri/tauri.conf.json since the workspace split,
+      and that is the path the item's own file list names.)
+==============================================================================
+$ grep -n 'externalBin' -A 4 desktop/src-tauri/tauri.conf.json
+43:    "externalBin": [
+44-      "binaries/yap-polish",
+45-      "binaries/yap-diarize"
+46-    ],
+47-    "category": "Productivity",
+
+==============================================================================
+AC5  The shared-file compile trick, not a second hand-copied protocol.
+==============================================================================
+$ grep -n '#\[path = "../../src-tauri/src/diarize_protocol.rs"\]' desktop/yap-diarize/src/main.rs
+45:#[path = "../../src-tauri/src/diarize_protocol.rs"]
+
+     One definition, two compilers. The protocol's own unit tests therefore
+     run inside the SIDECAR as well as inside the app:
+$ cd desktop && cargo test -p yap-diarize
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+     Running unittests src/main.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/yap_diarize-9182e934ac374690)
+
+running 9 tests
+test tests::every_malformed_request_still_gets_an_answer ... ok
+test tests::a_backendless_build_never_reports_a_dimension_it_did_not_measure ... ok
+test tests::a_missing_model_is_a_clean_refusal_that_names_no_path ... ok
+test diarize_protocol::tests::diarize_protocol_responses_carry_one_kind_of_payload ... ok
+test diarize_protocol::tests::diarize_protocol_discards_a_response_for_another_id ... ok
+test diarize_protocol::tests::diarize_protocol_requests_round_trip_with_only_their_own_fields ... ok
+test diarize_protocol::tests::diarize_protocol_ready_line_is_distinct_from_a_response ... ok
+test tests::stdout_carries_the_protocol_and_nothing_else ... ok
+test diarize_protocol::tests::diarize_protocol_names_no_overlap_flag_and_no_embedding_width ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+==============================================================================
+FULL LOCAL GATE
+==============================================================================
+$ cd desktop && npx tsc --noEmit ; echo exit=$?
+exit=0
+$ cd desktop && npm test
+[2m Test Files [22m [1m[32m10 passed[39m[22m[90m (10)[39m
+[2m      Tests [22m [1m[32m121 passed[39m[22m[90m (121)[39m
+[2m   Start at [22m 09:27:23
+[2m   Duration [22m 318ms[2m (transform 193ms, setup 0ms, collect 404ms, tests 182ms, environment 14ms, prepare 388ms)[22m
+
