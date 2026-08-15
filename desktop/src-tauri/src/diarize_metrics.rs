@@ -285,17 +285,13 @@ fn union_duration(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
     total_a + total_b - overlap(a, b)
 }
 
-/// The one-to-one reference→hypothesis speaker mapping that maximises total
-/// overlapped speech — what `md-eval.pl` calls the optimal mapping, and the
-/// reason a hypothesis that got every boundary right but named the speakers
-/// `spk_0`/`spk_1` scores 0 % error rather than 100 %.
+/// How many speakers a side may have before [`optimal_speaker_mapping`] stops
+/// searching exhaustively and falls back to a greedy pass.
 ///
-/// Exact by dynamic programming over subsets while both sides are small
-/// ([`EXACT_MAPPING_LIMIT`] speakers), which covers every fixture this epic has
-/// or plans; beyond that it falls back to a greedy pass and says so in its own
-/// doc rather than silently reporting a worse-than-optimal error rate. A
-/// six-person classroom is the largest thing yap23 targets, so the fallback is
-/// a guard, not a code path anything here exercises.
+/// A six-person classroom (fixture (f)) is the largest thing yap23 targets, so
+/// twelve is a guard rather than a limit anything here reaches — and the
+/// fallback reports itself in [`SpeakerMapping::exact`] instead of silently
+/// returning a worse-than-optimal error rate.
 pub const EXACT_MAPPING_LIMIT: usize = 12;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -319,7 +315,14 @@ impl SpeakerMapping {
     }
 }
 
-/// The optimal speaker mapping between two RTTM sets.
+/// The one-to-one reference→hypothesis speaker mapping that maximises total
+/// overlapped speech — what `md-eval.pl` calls the optimal mapping, and the
+/// reason a hypothesis that got every boundary right but named the speakers
+/// `spk_0`/`spk_1` scores 0 % error rather than 100 %.
+///
+/// Exact by dynamic programming over subsets of hypothesis speakers while both
+/// sides are small ([`EXACT_MAPPING_LIMIT`]); greedy beyond that, which
+/// [`SpeakerMapping::exact`] reports.
 pub fn optimal_speaker_mapping(reference: &[RttmTurn], hypothesis: &[RttmTurn]) -> SpeakerMapping {
     let refs = speakers_of(reference);
     let hyps = speakers_of(hypothesis);
