@@ -508,10 +508,19 @@ pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
 // The shape is ONE interleaved list, not two columns. Finding #10's whole
 // point is a legible conversation ("now it can tell the Thems apart"), and two
 // parallel dumps leave the reader doing the interleave by eye — which is the
-// work the merge was for. The same function feeds the Meetings UI and the
-// Markdown export, so the two can never disagree about who said what or in
-// which order; a UI-only fix would leave every exported file still labelling
+// work the merge was for. The rules live here and the Markdown export calls
+// them directly; a UI-only fix would leave every exported file still labelling
 // the room as "Me".
+//
+// The Meetings UI cannot call this function — it is React, rendering rows it
+// already holds — so it runs a hand-written mirror, `src/meetings/transcript.ts`.
+// A mirror agrees only where something checks that it does, which is why every
+// rule here (order, tie-break, labels, whitespace collapsing, dropped blank
+// spans, what counts as a second track) has the SAME fixture asserted on both
+// sides. The first review of YV108 found this exact seam open — Rust dropped
+// whitespace-only spans and the mirror did not, so a blank tap segment drew a
+// labelled empty "Them" row on a screen whose export had no such line. Adding a
+// rule below without adding its fixture to `transcript.test.ts` reopens it.
 
 /// The speaker label for a stored segment's track.
 ///
@@ -534,8 +543,17 @@ pub fn speaker_label(track: i64) -> &'static str {
 /// Drives the UI's decision to show a speaker column at all: a 22-A (mic-only)
 /// meeting must render exactly as it always did, with no phantom "Them" and no
 /// layout that implies a second speaker who was never recorded.
+///
+/// Asked of the segments that RENDER, not of the raw rows. A tap track whose
+/// spans all collapse to nothing produces no lines out of [`render_transcript`],
+/// so treating it as a second speaker would reserve gutter width for someone
+/// who appears neither on the screen nor in the exported file — which is the
+/// same "the two surfaces disagree" failure the shared rendering exists to
+/// prevent, just moved into the layout.
 pub fn is_two_track(segments: &[MeetingSegment]) -> bool {
-    segments.iter().any(|s| s.track != MIC_TRACK)
+    segments
+        .iter()
+        .any(|s| s.track != MIC_TRACK && !one_line(&s.text).is_empty())
 }
 
 /// One rendered transcript line — the unit both surfaces draw.

@@ -13,7 +13,6 @@
  * screenshot of it would otherwise mean holding a live call.
  */
 import {
-  formatOffset,
   isTwoTrack,
   orderedTranscript,
   MIC_TRACK,
@@ -26,16 +25,21 @@ export default function TranscriptList<S extends TranscriptSegment>({
   segments: readonly S[];
 }) {
   return (
+    // Both the class and the rows come from the same rendering rules the export
+    // uses: a track that contributes no lines is not a second speaker, so it
+    // does not widen the gutter either.
     <ol className={isTwoTrack(segments) ? "transcript two-track" : "transcript"}>
-      {orderedTranscript(segments).map(({ segment, track, speaker }) => (
+      {orderedTranscript(segments).map(({ segment, track, speaker, offset, text }) => (
         <li key={segment.id}>
           {/* Timestamp and speaker are DATA, so they wear the pixel voice the
               rest of the app gives numbers. */}
-          <span className="seg-time">{formatOffset(segment.startSeconds)}</span>
+          <span className="seg-time">{offset}</span>
           <span className={track === MIC_TRACK ? "seg-who" : "seg-who them"}>
             {speaker}
           </span>
-          <span className="seg-text">{segment.text}</span>
+          {/* The line's collapsed text, never `segment.text` — the export
+              renders the collapsed form and the screen must not differ. */}
+          <span className="seg-text">{text}</span>
         </li>
       ))}
     </ol>

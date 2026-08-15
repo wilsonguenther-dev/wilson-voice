@@ -3,10 +3,16 @@
 //!
 //! The input here is what YV107's merge hands over: segments already carrying a
 //! `track` and already rebased onto one common host-time origin. Everything
-//! under test is `meetings::render_transcript` — the single function both the
-//! Meetings UI and the Markdown export read, which is why "the screen and the
-//! exported file disagree about who said what" is not a state this codebase can
-//! reach.
+//! under test is `meetings::render_transcript`, which the Markdown export calls
+//! directly and which `desktop/src/meetings/transcript.ts` mirrors for the
+//! Meetings UI.
+//!
+//! "The screen and the exported file disagree about who said what" is therefore
+//! prevented by FIXTURES, not by construction — the UI runs the mirror, not this
+//! function. Every case in this file has a twin in `transcript.test.ts` asserting
+//! the same expected output; the review of this item found the one rule that had
+//! no twin (`empty_spans_never_become_blank_turns`, below) and the mirror had
+//! duly drifted. A case added here without its twin is the next such gap.
 //!
 //! No audio, no database, no hardware: rendering is pure, and the ordering rule
 //! is the part with a way to be wrong.
@@ -170,6 +176,59 @@ fn two_track_detection_is_about_the_segments_not_the_meeting_row() {
     assert!(!meetings::is_two_track(&[]));
 }
 
+/// A tap track that renders NOTHING is not a second speaker.
+///
+/// Silence on the far side is routine — the far end is muted, or nobody has
+/// spoken yet — and the ASR still emits spans for it, with no words in them.
+/// `render_transcript` drops those, so a UI that widened its speaker gutter on
+/// the raw rows would reserve room for a "Them" who is on neither the screen
+/// nor in the exported file. `transcript.test.ts`'s "does not widen the gutter
+/// for a tap track that renders nothing" is the twin of this case.
+#[test]
+fn a_tap_track_that_renders_nothing_is_not_a_second_speaker() {
+    let blank_tap = [seg(0.0, MIC_TRACK, "real words"), seg(1.0, SYSTEM_TRACK, "   ")];
+    assert!(!meetings::is_two_track(&blank_tap));
+    let lines = meetings::render_transcript(&blank_tap);
+    assert_eq!(lines.len(), 1);
+    assert!(lines.iter().all(|l| l.track == MIC_TRACK));
+
+    // One real word from the far side and it is a two-track meeting again.
+    let spoken = [
+        seg(0.0, MIC_TRACK, "real words"),
+        seg(1.0, SYSTEM_TRACK, "   "),
+        seg(2.0, SYSTEM_TRACK, "hello"),
+    ];
+    assert!(meetings::is_two_track(&spoken));
+}
+
+/// Whitespace is not one set. Rust's `char::is_whitespace` is the Unicode
+/// `White_Space` property — which includes U+0085 (NEL) — while JavaScript's
+/// `\s`, the obvious thing to reach for in the mirror, excludes U+0085 and
+/// *includes* U+FEFF (ZWNBSP, which Rust treats as an ordinary character).
+///
+/// So this pins both characters here, and `transcript.test.ts`'s "agrees with
+/// Rust on the two characters JS and Rust disagree about" pins the identical
+/// expectations there — the mirror spells the character class out rather than
+/// using `\s` precisely because of this test.
+#[test]
+fn a_span_of_exotic_whitespace_is_collapsed_the_same_way_rust_collapses_it() {
+    // NEL alone is whitespace: the span renders nothing and is dropped.
+    assert!(meetings::render_transcript(&[seg(0.0, SYSTEM_TRACK, "\u{0085}")]).is_empty());
+    assert_eq!(
+        meetings::render_transcript(&[seg(0.0, MIC_TRACK, "a\u{0085}b")])[0].text,
+        "a b"
+    );
+    // ZWNBSP is NOT whitespace: the span survives, unchanged.
+    let bom = meetings::render_transcript(&[seg(0.0, SYSTEM_TRACK, "\u{feff}")]);
+    assert_eq!(bom.len(), 1);
+    assert_eq!(bom[0].text, "\u{feff}");
+    // And the ordinary case both languages already agree on.
+    assert_eq!(
+        meetings::render_transcript(&[seg(0.0, MIC_TRACK, "  so   we\nare\tagreed  ")])[0].text,
+        "so we are agreed"
+    );
+}
+
 /// An empty span is dropped rather than rendered as a timestamped blank line —
 /// the behaviour 22-A's renderer already had, preserved now that both surfaces
 /// share this function.
@@ -197,4 +256,8 @@ fn a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order() {
     assert_eq!(lines[0].text, "first, clamped");
     assert_eq!(lines[0].offset, "00:00:00");
     assert_eq!(lines[1].text, "second");
+    // The raw number is carried through rather than healed into a 0 — the clamp
+    // belongs to the comparator and to `format_offset`, and the mirror keeps
+    // the same distinction (`transcript.test.ts` asserts `Number.isNaN` on it).
+    assert!(lines[0].start_seconds.is_nan());
 }
