@@ -1,0 +1,124 @@
+YV121 — non-vacuity: twelve defects restored one at a time, each caught.
+
+A green suite over a sidecar that carries no model is exactly the shape of test
+that can be vacuous, so every assertion this item ships was checked by putting
+the defect it exists to catch back into the tree, running the named test, and
+watching it fail. Each mutation was applied alone, on top of commit b95c6c3,
+and reverted with `git checkout -- .` before the next one.
+
+The whole point of YV121 is that the risky crate has not landed yet. That makes
+"the tests pass" nearly free — so this file is the part of the item that is not
+free.
+
+------------------------------------------------------------------------------
+M1  The handshake carries a model claim again (`model_loaded: bool`), which is
+    the polish-shaped handshake this protocol deliberately does not use.
+    → src/diarize_protocol.rs
+    GUARD  cargo test --lib diarize_protocol_ready_line_is_distinct_from_a_response
+    RESULT FAILED — "readiness is the PROCESS here, not the model:
+           {"type":"ready","version":"0.1.0","model_loaded":false}"
+    ALSO   the SAME test fails inside the sidecar
+           (`cargo test -p yap-diarize diarize_protocol_ready` → FAILED),
+           which is the `#[path]` shared-file compile proving itself: one
+           definition, two binaries, one contract.
+
+------------------------------------------------------------------------------
+M2  The scaffold claims a capability it does not have — `load_backend` returns
+    `Ok(Backend { embedding_dim: 192 })` for any file that exists, instead of
+    `no_backend`.  This is THE failure mode of a scaffold, and it is the one
+    that would silently make YV122's first real assertion
+    (`embedding_dim == 192`) pass against nothing at all.
+    → yap-diarize/src/main.rs
+    GUARD  cargo test -p yap-diarize a_backendless_build_never_reports_a_dimension_it_did_not_measure
+    RESULT FAILED — main.rs:229 ("this build cannot load a model")
+
+------------------------------------------------------------------------------
+M3  The PARENT decides the embedding width: `load_models` discards the child's
+    answer and returns 192 (finding #19's exact shape — the plan assumed 512,
+    the shipped CAM++ is 192, and a parent with an opinion is how that survives).
+    → src/diarize.rs
+    GUARD  cargo test --test diarize_sidecar_pool the_embedding_dimension_comes_from_the_child_never_from_the_parent
+    RESULT FAILED — the stub reports 7, the parent reported 192.
+    NOTE   the stub's 7 is deliberate: a constant of ANY value fails this, not
+           only a wrong one.
+
+------------------------------------------------------------------------------
+M4  A refusal counts as a death — `ok:false` kills the child and spends a
+    restart.  The distinction a naive `SidecarPool` port loses, because the
+    polish path has only one thing a rewrite can fail at.
+    → src/diarize.rs
+    GUARD  cargo test --test diarize_sidecar_pool a_refusal_is_not_a_death
+    RESULT FAILED — pool.rs:153 (the child was killed by `model_not_found`)
+
+------------------------------------------------------------------------------
+M5  The restart budget is unbounded (`MAX_RESTARTS = u64::MAX`), so a child
+    that keeps dying is relaunched forever.
+    → src/diarize.rs
+    GUARD  cargo test --test diarize_sidecar_pool a_dead_child_respawns_once_then_stays_failed
+    RESULT FAILED after 10.00s — the bounded loop expired without the pool ever
+           reaching `failed(died)`, which is the hang this test is written not
+           to have.
+
+------------------------------------------------------------------------------
+M6  `parse_response_for` accepts any id, so a stale line answers the next
+    request — one meeting's turns attributed to another meeting's audio.
+    → src/diarize_protocol.rs
+    GUARD  cargo test --test diarize_sidecar_pool a_response_for_another_id_is_never_returned_to_this_caller
+    RESULT FAILED — pool.rs:255 (an answer for id 999999 came back as this
+           caller's result instead of a deadline)
+
+------------------------------------------------------------------------------
+M7  The idle sweep never fires (window × 1000), so a child sits resident for
+    the rest of the session.
+    → src/diarize.rs
+    GUARD  cargo test --test diarize_sidecar_pool an_idle_child_is_torn_down_and_the_next_job_brings_it_back
+    RESULT FAILED — pool.rs:295 ("an idle sidecar is terminated")
+
+------------------------------------------------------------------------------
+M8  `sherpa-onnx = "=1.13.4"` arrives quietly in the sidecar's manifest, ahead
+    of YV122 — the second statically-linked onnxruntime, plus a build script
+    that downloads a prebuilt archive, entering the tree with no reviewable
+    decision.
+    → yap-diarize/Cargo.toml
+    GUARD  cargo test --test supply_chain diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet
+    RESULT FAILED — supply_chain.rs:207 (the dependency LIST changed; note the
+           test reads the list rather than grepping for "sherpa", so `ort`
+           would have failed it too)
+
+------------------------------------------------------------------------------
+M9  `binaries/yap-diarize` is dropped from `bundle.externalBin`: the sidecar is
+    built, tested and never shipped — an app with a diarization path it can
+    never spawn.
+    → src-tauri/tauri.conf.json
+    GUARD  cargo test --test supply_chain diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet
+    RESULT FAILED — supply_chain.rs:189 ("binaries/yap-diarize must be bundled
+           as a sidecar, got ["binaries/yap-polish"]")
+
+------------------------------------------------------------------------------
+M10 A malformed line takes the process down (`panic!`) instead of being
+    answered — so one bad line spends the parent's restart budget and leaves a
+    caller on a ten-minute deadline.
+    → yap-diarize/src/main.rs
+    GUARD  cargo test --test diarize_sidecar_handshake a_malformed_line_is_answered_rather_than_swallowed
+    RESULT FAILED — the child panicked at main.rs:133 and the test's next read
+           found a closed stdout (handshake.rs:109)
+
+------------------------------------------------------------------------------
+M11 A helpful `println!("serving")` lands on the protocol stream.
+    → yap-diarize/src/main.rs
+    GUARD  cargo test -p yap-diarize stdout_carries_the_protocol_and_nothing_else
+    RESULT FAILED — main.rs:209 ("stdout carries JSON only — diagnostics go to
+           stderr")
+
+------------------------------------------------------------------------------
+M12 The tag sanitizer FILTERS instead of rejecting, so a path arrives in the
+    log as its own recognisable pieces (the account name survives with the
+    slashes removed).
+    → src/diarize.rs
+    GUARD  cargo test --lib a_child_error_tag_is_bounded_and_carries_no_prose
+    RESULT FAILED — diarize.rs:630
+
+------------------------------------------------------------------------------
+12 mutations, 12 caught, 0 survivors. Tree restored to b95c6c3 and re-verified
+green afterwards (`git status --short` empty; full `cargo test
+--features custom-protocol` green).
