@@ -4,18 +4,21 @@
 //! "system audio unavailable", never aborted, with one deep link to the right
 //! Settings pane.
 //!
-//! Published as `PolicyOnly` with **#125 (YV102)** named as the owner of its
-//! wiring, and this file is what makes that publication checkable from both
-//! ends:
+//! Published as `PolicyOnly` with **no owning PR** — #125 (YV102) was named
+//! here until it merged, and what merged was the pre-warm, not this row — and
+//! this file is what makes that publication checkable from three ends:
 //!
 //!   * the **decision** — can this app tell a denied tap from a granted one
 //!     that had nothing to record? — is driven here against the shipping
 //!     discriminator YV104 merged, including the case where getting it wrong
 //!     means accusing a user's privacy settings of something that never
 //!     happened;
-//!   * the **absence** — `syscapture::prewarm_tap`, the thing that would ask
-//!     the question at start, does not exist in `src/` — is asserted here too,
-//!     so the row cannot keep saying "not wired" after YV102 merges.
+//!   * the **absence** — `syscapture::start_system_tap`, the thing that would
+//!     open the tap a denial could be observed on, has no caller in `src/` — is
+//!     asserted here too, so the row cannot keep saying "not wired" after
+//!     somebody starts a tap inside a meeting;
+//!   * the **half that did ship** — the deep link, and the fact that its anchor
+//!     is the one verified on the target OS rather than the plan's candidate.
 //!
 //! **Why there is no tap in this file.** A real `AudioHardwareCreateProcessTap`
 //! needs the TCC grant and a 14.4 Mac, and CI has neither. That is not a
@@ -220,34 +223,102 @@ fn nothing_this_row_can_produce_ends_the_meeting() {
     // adds one, this file stops compiling and its author has to come here.
 }
 
-/// **The absence half.** Row 1's wiring is `syscapture::prewarm_tap`, which
-/// lands with #125 (YV102) and is in no file in `src/` today — which is why the
-/// app cannot ask this question at start, and why the row is not `Test`.
+/// **The absence half, re-aimed by YV102 at the thing that is actually
+/// missing.**
+///
+/// This test used to assert `syscapture::prewarm_tap` was absent, and #125
+/// shipped it: the Settings step calls it, so that assertion went red exactly
+/// as designed. The instruction it printed — *promote the row* — is the wrong
+/// move here, and writing down why is the point of this comment.
+///
+/// Row 1 is a denial **at start**. The pre-warm asks the same question minutes
+/// earlier, from Settings, with no meeting running; it cannot badge a meeting
+/// that has not begun, and a user who never opens that step is exactly the user
+/// row 1 describes. The call that would put this row in effect is
+/// `syscapture::start_system_tap` — a tap inside a real meeting — and it has no
+/// caller anywhere in `src/`. Same missing wiring row 2 names, and no item in
+/// the 22-B backlog owns it, which is why the cell below is unowned.
+///
+/// The tripwire is therefore not deleted, it is pointed at the truth: the day
+/// something opens a tap in a meeting, this goes red and row 1 becomes a `Test`
+/// row with a real surface to drive.
 #[test]
-fn prewarm_tap_is_still_absent_so_row_1_is_not_wired() {
-    let found = callsite::call_sites("prewarm_tap", &[]);
+fn nothing_opens_a_tap_in_a_meeting_so_row_1_is_still_not_wired() {
+    // `syscapture.rs` DEFINES `start_system_tap`; a definition is not a call
+    // site (the rule `callsite.rs` and `matrix_coverage.rs` both state).
+    let found = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
     assert!(
         found.is_empty(),
         "{}",
-        callsite::promote_the_row("1", "prewarm_tap", &found)
+        callsite::promote_the_row("1", "start_system_tap", &found)
     );
 }
 
-/// …and the published cell says so, naming the PR that owns it, so a reader of
-/// the rendered table gets the same answer this test does.
+/// The half of row 1 that DID ship with #125, asserted so the row's cell is not
+/// read as "none of this exists".
+///
+/// Row 1's required behaviour ends with *"one deep link to the right Settings
+/// pane"*, and OS-10 is explicit that a wrong anchor is worse than no link at
+/// all: TCC never re-asks, so this link is the entire recovery, and landing a
+/// denied user at the top of System Settings is a dead end. The anchor is
+/// declared once, in `permissions::SYSTEM_AUDIO_PANE`, and resolves to the
+/// enumerated-and-verified `Privacy_AudioCapture` — never the plan's candidate
+/// `Privacy_SystemAudio`, which does not exist on the target OS.
 #[test]
-fn the_published_cell_names_the_owner_of_the_missing_wiring() {
+fn the_deep_link_half_of_the_row_ships_and_points_at_the_verified_anchor() {
+    let permissions = std::fs::read_to_string(callsite::src_dir().join("permissions.rs"))
+        .expect("read src/permissions.rs");
+    // Comments do not count, in either direction — this module's docs quote the
+    // candidate anchor precisely to record that it does not exist, and a scan
+    // that read comments would call that evidence of shipping it. Same rule
+    // `callsite.rs` states for call sites.
+    let code: String = permissions
+        .lines()
+        .map(|line| {
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+                String::new()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert!(
+        code.contains("Privacy_AudioCapture"),
+        "the deep link must use the anchor verified on the target OS"
+    );
+    assert!(
+        !code.contains("Privacy_SystemAudio"),
+        "`Privacy_SystemAudio` is the plan's candidate anchor and it does not exist — an \
+         unrecognised anchor opens the top of System Settings, which OS-10 calls a worse dead end \
+         than shipping no link"
+    );
+    assert_eq!(
+        wilson_voice_lib::permissions::SYSTEM_AUDIO_PANE,
+        "SystemAudio",
+        "the pane key the UI passes to `open_privacy_settings` is declared here and nowhere else"
+    );
+}
+
+/// …and the published cell says so: no owner, and the call site it is waiting
+/// for is the one this file just proved absent.
+#[test]
+fn the_published_cell_admits_that_nobody_owns_the_missing_wiring() {
     let row = ROWS.iter().find(|r| r.id == "1").expect("row 1");
     assert_eq!(
         row.coverage,
         Coverage::PolicyOnly {
             test: "matrix_row1_tap_permission_denied.rs",
-            wiring_pr: Some("#125 (YV102)"),
-            absent_call_site: "prewarm_tap",
+            wiring_pr: None,
+            absent_call_site: "start_system_tap",
         }
     );
     let cell = row.coverage.cell();
-    assert!(cell.contains("Policy only"), "{cell}");
-    assert!(cell.contains("#125 (YV102)"), "{cell}");
-    assert!(cell.contains("prewarm_tap"), "{cell}");
+    assert!(cell.contains("NOT WIRED"), "{cell}");
+    assert!(cell.contains("start_system_tap"), "{cell}");
+    assert!(
+        !cell.contains("#125"),
+        "#125 merged; a cell still naming it as the pending owner reads as progress and \
+         describes none: {cell}"
+    );
 }

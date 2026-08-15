@@ -276,6 +276,135 @@ pub struct MeetingStats {
 /// old acknowledgement as covering new words.
 pub const CONSENT_NOTICE_KEY: &str = "meeting_consent_notice_ack_v1";
 
+// ── YV102 · the system-audio setup step ─────────────────────────────────────
+//
+// A SECOND key, deliberately, sitting beside [`CONSENT_NOTICE_KEY`] rather than
+// reusing it. "The user read the notice about recording other people" and "the
+// user ran the tap pre-warm so macOS has shown its permission alert" are
+// different facts about different mechanisms, and collapsing them would mean
+// one of two bugs: a user who acknowledged the notice never gets the pre-warm
+// (so the alert ambushes them mid-Zoom, which is the entire thing YV102 exists
+// to prevent), or a user who ran the pre-warm never sees the notice. Neither is
+// recoverable from a single boolean, so there are two.
+
+/// The `settings_kv` key that records the system-audio setup step's last run.
+///
+/// Versioned like the consent key, and for the same reason: if what the step
+/// does materially changes, a `_v2` key re-runs it rather than treating an old
+/// run as covering new behaviour.
+pub const SYSTEM_AUDIO_SETUP_ACK_KEY: &str = "meeting_system_audio_setup_ack_v1";
+
+/// What the last run of the setup step concluded.
+///
+/// Note what is NOT here: `Denied`. Yap cannot read TCC — there is no public API
+/// — so the strongest thing it is allowed to say is [`SetupVerdict::LooksDenied`],
+/// and only after `syscapture::permission_verdict` has watched a tap run for
+/// [`crate::syscapture::DENIAL_GRACE`] without a single non-zero sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupVerdict {
+    /// The step has never run on this Mac.
+    NotRun,
+    /// The tap opened and was torn down. The alert has been shown (or was
+    /// already answered). Says nothing about the answer — that is the point:
+    /// 200 ms of silence is not evidence of a refusal.
+    Ran,
+    /// A non-zero sample actually arrived. The only positive proof available.
+    Granted,
+    /// A tap ran past the grace window and never delivered anything, ever.
+    LooksDenied,
+    /// This Mac is below macOS 14.4, so there is no process-tap API to ask
+    /// with. Mic-only meeting recording is unaffected (YV101).
+    Unavailable,
+    /// A CoreAudio call failed. Distinct from `LooksDenied` on purpose: a
+    /// failure is a bug report, a denial is a Settings trip.
+    Failed,
+}
+
+impl SetupVerdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupVerdict::NotRun => "not_run",
+            SetupVerdict::Ran => "ran",
+            SetupVerdict::Granted => "granted",
+            SetupVerdict::LooksDenied => "looks_denied",
+            SetupVerdict::Unavailable => "unavailable",
+            SetupVerdict::Failed => "failed",
+        }
+    }
+
+    fn parse(text: &str) -> SetupVerdict {
+        match text {
+            "ran" => SetupVerdict::Ran,
+            "granted" => SetupVerdict::Granted,
+            "looks_denied" => SetupVerdict::LooksDenied,
+            "unavailable" => SetupVerdict::Unavailable,
+            "failed" => SetupVerdict::Failed,
+            // Anything unrecognised — including a value written by a future
+            // build and read by an older one — degrades to "it ran", never to a
+            // denial. A wrong "looks denied" sends the user to System Settings
+            // to fix something that is not broken.
+            _ => SetupVerdict::Ran,
+        }
+    }
+}
+
+/// The state the setup step's UI renders from the raw `settings_kv` value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemAudioSetup {
+    /// False until the step has run once. Drives the "Set up meeting
+    /// recording" call to action.
+    pub has_run: bool,
+    /// When it last ran. Unlike the consent notice — where the FIRST close wins
+    /// because the question is "when did you first see this text" — the LAST run
+    /// wins here, because the question is "what does Yap currently believe about
+    /// this Mac's permission", and that changes.
+    pub last_run_at: Option<String>,
+    pub verdict: SetupVerdict,
+    /// Always `false`, and asserted by `tests/settings_kv.rs`.
+    ///
+    /// Mic-only recording (22-A) runs on the macOS 12 floor and is never gated
+    /// on a system-audio permission. A surface that puts this step in front of
+    /// `toggle_meeting_recording` has to actively ignore this field to break it.
+    pub blocks_recording: bool,
+}
+
+impl SystemAudioSetup {
+    /// The stored row: `"<verdict> <rfc3339>"`. One row, self-describing, and
+    /// parseable by an older build (which reads the verdict it does not know as
+    /// [`SetupVerdict::Ran`]).
+    pub fn encode(verdict: SetupVerdict, at: &str) -> String {
+        format!("{} {at}", verdict.as_str())
+    }
+
+    /// Build the state from whatever is in the row — including nothing, and
+    /// including something malformed. Never fails: a permission surface that
+    /// errors is a surface that either nags forever or hides a real denial.
+    pub fn from_row(row: Option<String>) -> Self {
+        let Some(row) = row else {
+            return Self {
+                has_run: false,
+                last_run_at: None,
+                verdict: SetupVerdict::NotRun,
+                blocks_recording: false,
+            };
+        };
+        let (verdict, at) = row.split_once(' ').unwrap_or((row.as_str(), ""));
+        Self {
+            has_run: true,
+            last_run_at: (!at.is_empty()).then(|| at.to_string()),
+            verdict: SetupVerdict::parse(verdict),
+            blocks_recording: false,
+        }
+    }
+
+    /// Should the UI show the honest denied state and the Settings deep link?
+    pub fn looks_denied(&self) -> bool {
+        self.verdict == SetupVerdict::LooksDenied
+    }
+}
+
 /// The Tauri event name the meeting status is broadcast under — the ONE place
 /// it is written on the Rust side.
 ///

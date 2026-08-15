@@ -21,8 +21,10 @@ note that would tell the user what the dropped writes cost has no caller
 anywhere — so the failure is published as `5` and `5b`. Row 17 is the same shape:
 the 3 h cap runs, and the continuation meeting it should hand off to does not, so
 `17` and `17b`. Row 12 is the third, added by YV105: the 14.4 gate runs, and the
-sentence it produces reaches no surface, so `12` and `12b`. One averaged cell
-would have to pick a truth value and lie about the other half.
+sentence it produces reached no surface, so `12` and `12b`. YV102 gave `12b` its
+surface and both halves are `Test` now — the split stays, because they remain
+two claims and a future redesign can drop one without touching the other. One
+averaged cell would have to pick a truth value and lie about the other half.
 
 **A `Test` cell names the code it drives.** That is not decoration either. Row 5
 was once published as a green `cargo test` cell whose test read `record.rs` — the
@@ -50,11 +52,11 @@ itself.
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
 | 3b | An ASR chunk exceeds `TRANSCRIBE_TIMEOUT` (finding #3) | That chunk gets `text=''` + `asr_failed`; its neighbours and the rest of the meeting are unaffected | `cargo test --test matrix_new_asr_chunk_timeout` — drives `TranscriptionManager` in `transcription.rs` |
-| 1 | System-audio (tap) permission denied at start | The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted | **Policy only** — the enforcement (`prewarm_tap`) lands with #125 (YV102); `cargo test --test matrix_row1_tap_permission_denied` covers only the part this branch owns |
+| 1 | System-audio (tap) permission denied at start | The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted | **Policy only, NOT WIRED** — `cargo test --test matrix_row1_tap_permission_denied` covers the decision; **nothing calls `start_system_tap`**, so the app does not do this yet |
 | 2 | Tap permission revoked, or the tap dies mid-meeting | A `track_lost` marker into the meeting, Track A keeps recording, a banner in the pill — the meeting is NEVER stopped | **Policy only, NOT WIRED** — `cargo test --test matrix_row2_tap_revoked_mid_meeting` covers the decision; **nothing calls `start_system_tap`**, so the app does not do this yet |
 | 3 | Mic permission denied | The meeting still starts, system-audio only — a webinar or a lecture stream is a real meeting — and says which track it is missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row3_mic_denied_system_only` covers the decision; **nothing calls `meeting_start_plan`**, so the app does not do this yet |
 | 12 | macOS older than 14.4 | The system-audio track is refused with one plain sentence naming the requirement, and mic-only meeting recording keeps working all the way down to Yap's macOS 12 floor | `cargo test --test matrix_row12_macos_144_gate` — drives `meeting_availability_for` in `meeting_asr.rs` |
-| 12b | …and the sentence the gate produces reaches no Notetaker surface | The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12 | **Policy only** — the enforcement (`system_audio_setup`) lands with #125 (YV102); `cargo test --test matrix_row12_macos_144_gate` covers only the part this branch owns |
+| 12b | …and the sentence the gate produces has to reach a Notetaker surface | The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12 | `cargo test --test matrix_row12_macos_144_gate` — drives `NotetakerStatus` in `lib.rs` |
 | 14 | Output device changes mid-meeting (AirPods connect) | Tear down and rebuild the aggregate around the new output device, splice the spill, log a `device_change` marker — this happens constantly in real use and is not an edge case | **Policy only** — the enforcement (`watch_output`) lands with #123 (YV100); `cargo test --test matrix_row14_output_device_change` covers only the part this branch owns |
 
 ## Why these thirteen failures and not the other four
@@ -83,10 +85,10 @@ failure.** Read this section before quoting a row as done.
 
 | Cell | What it means | Rows |
 |---|---|---|
-| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 4, 5, 6, 12, 17, `3a`, `3b` |
+| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 4, 5, 6, 12, `12b`, 17, `3a`, `3b` |
 | **Manual repro** | No in-process test can produce the failure. A human follows the script and records the result. | 15 |
-| **Policy only** (an owning PR named) | The decision ships and is tested; the thing that would *produce* the event it decides about is in an open PR. | 1, 2, `12b`, 14 |
-| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, 16, `17b` |
+| **Policy only** (an owning PR named) | The decision ships and is tested; the thing that would *produce* the event it decides about is in an open PR. | 14 |
+| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 1, 2, 3, `5b`, 16, `17b` |
 
 ### Manual — row 15, and why its three green tests are not its coverage
 
@@ -137,7 +139,10 @@ there would turn "system audio needs a newer Mac" into "meetings do not work on
 your Mac" for every pre-14.4 user, with a green build and no error anywhere,
 which is why that is the half `matrix_row12_macos_144_gate` spends most of its
 assertions on. The half of the plan's row-12 sentence that is about a *visible,
-disabled control* is not true yet and is published separately as `12b`.
+disabled control* is published separately as `12b`, and YV102 made it true: the
+Settings step invokes `notetaker_status` on mount and renders
+`systemAudioMessage` under a disabled "Set up meeting recording" control, so a
+pre-14.4 Mac sees the affordance and the reason instead of nothing at all.
 
 ### Policy only — rows 3, `5b`, 16 and `17b`, and why they are not `Test`
 
@@ -196,31 +201,37 @@ That device is the same one `tests/meeting_event_contract.rs` uses for YV95's
 emitter, and it exists for the same reason: a comment saying "somebody should
 wire this" is a thing a merge queue reads zero times.
 
-### Policy only, with an owner — rows 1, 2, `12b` and 14
+### 22-B's tap rows — 1, 2, 14, and what merging #123 and #125 actually moved
 
-These four are 22-B's, and they are a different shape from the rows above: their
-decisions have merged (YV101's gate, YV103's device-change state machine,
-YV104's ghost watchdog), and what is missing is the thing that *produces* the
-events those decisions consume — the CoreAudio tap itself, which is in **#123
-(YV100)**, and the pre-warm and Settings step, which are in **#125 (YV102)**.
+These rows are a different shape from the ones above: their decisions have
+merged (YV101's gate, YV103's device-change state machine, YV104's ghost
+watchdog), and what was missing is the thing that *produces* the events those
+decisions consume — the CoreAudio tap itself (#123, YV100) and the pre-warm and
+Settings step (#125, YV102). Both have now landed, and the honest result is that
+one row was promoted and two were not.
 
-Concretely, on `main` today:
+* **Row `12b` → `Test`.** The 14.4 sentence has a surface: `App.tsx` invokes
+  `notetaker_status` and renders `systemAudioMessage` beneath a disabled setup
+  step. This is the row that merging #125 genuinely delivered.
+* **Rows 1 and 2 → `Policy only, NOT WIRED`, owner removed.** `syscapture.rs`
+  ships and `prewarm_tap` is called from Settings, but **nothing calls
+  `start_system_tap`**: no meeting opens a tap, so `CaptureEnv::tap_liveness`
+  still returns `None` for every environment and `meeting::watchdog_tick`'s tap
+  branch is still unreachable. **A tap that cannot exist cannot die.** Row 1's
+  denial is a denial *at the start of a meeting*; answering the same question in
+  Settings, minutes earlier, is a different row. No item in the 22-B backlog
+  owns starting the tap inside a meeting — that is a genuine planning gap, and
+  publishing a merged PR as the pending owner would read as progress and
+  describe none.
+* **Row 14** keeps `#123 (YV100)` as its owner: nothing calls
+  `InputFormatWatch::watch_output`, so the output half of that watch is inert —
+  `record.rs` handles a `RebuildAggregate` action by logging that one arrived on
+  the mic path, where it means nothing — and #123 merging is what makes wiring
+  it possible.
 
-* `CaptureEnv::tap_liveness` returns `None` for every environment in the tree,
-  so `meeting::watchdog_tick`'s tap branch is unreachable in the app: **a tap
-  that cannot exist cannot die** (rows 1 and 2);
-* nothing calls `InputFormatWatch::watch_output`, so the output half of that
-  watch is inert — `record.rs` handles a `RebuildAggregate` action by logging
-  that one arrived on the mic path, where it means nothing, and a handler for an
-  action nobody emits is not the behaviour row 14 publishes;
-* no frontend file invokes `notetaker_status`, so the 14.4 sentence is computed
-  and rendered nowhere (row `12b`).
-
-Each of these rows asserts its own named call site is still absent, in its own
-test, because `matrix_coverage`'s absence tripwire deliberately runs over the
-rows with *no* owner — those are the ones that can rot for months unnoticed. So
-the day #123 or #125 merges, the row's test goes red with instructions to
-promote it, exactly as the unowned rows already do.
+Each unpromoted row asserts its own named call site is still absent, in its own
+test, so the day something opens a tap in a meeting the row goes red with
+instructions to promote it, exactly as the unowned rows already do.
 
 ## Every tripwire in this matrix is a CI gate
 

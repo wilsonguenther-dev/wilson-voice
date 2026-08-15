@@ -25,6 +25,16 @@ import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import { acknowledgedLabel, type MeetingConsent } from "./meetings/consent";
 import TranscriptList from "./meetings/TranscriptList";
+// YV102 — the "Set up meeting recording" step. Its copy and the rule that turns
+// a verdict into a sentence live in `meetings/systemAudio.ts` so the one thing
+// that must never drift — silence is not evidence of a denial — is unit-tested
+// rather than spread through this file.
+import {
+  setupState,
+  SYSTEM_AUDIO_PANE,
+  SYSTEM_AUDIO_SETUP,
+  type SystemAudioSetup,
+} from "./meetings/systemAudio";
 import SupportBundleSheet from "./support/SupportBundleSheet";
 import type {
   SupportBundlePreview,
@@ -694,6 +704,21 @@ export default function App() {
   // YV96 — the one-time capture notice. `null` until the backend answers, which
   // is why `shouldOpenNotice` treats `null` as "do not open".
   const [consent, setConsent] = useState<MeetingConsent | null>(null);
+  // YV102 — what Yap currently believes about system-audio permission, and
+  // whether this Mac can hold that permission at all (YV101's 14.4 gate,
+  // answered by `notetaker_status`). Both `null` until the backend replies;
+  // `setupState` treats that as "not run", never as "denied".
+  const [sysAudio, setSysAudio] = useState<SystemAudioSetup | null>(null);
+  const [sysAudioGate, setSysAudioGate] = useState<{
+    available: boolean;
+    message: string;
+  }>({
+    available: true,
+    message: "System audio capture requires macOS 14.4 or later",
+  });
+  // The pre-warm is a real 200 ms CoreAudio tap. The button disables while it
+  // runs so a double-press cannot open two.
+  const [sysAudioBusy, setSysAudioBusy] = useState(false);
   // Why the sheet is open, not just whether: `recording` is the first-capture
   // showing (a meeting is running behind it), `review` is a deliberate re-read
   // from Settings → Privacy. The sheet says the true thing in each case, and
@@ -942,6 +967,67 @@ export default function App() {
       }),
     [],
   );
+
+  // YV102 — the system-audio setup state, read once on mount alongside YV101's
+  // 14.4 gate.
+  //
+  // Two reads, not one, because they answer different questions: `notetaker_status`
+  // says whether this Mac COULD hold the permission (macOS 14.4+), and
+  // `system_audio_setup` says what Yap currently believes about whether it DOES.
+  // A macOS 13 Mac is "cannot" forever and must never be offered the step; a
+  // macOS 15 Mac that has not run it yet is a call to action.
+  //
+  // Both failures are swallowed to their safe direction: an unanswered gate
+  // stays `available` (the affordance shows and the backend refuses if it must
+  // — `run_system_audio_setup` re-checks the gate itself), and an unanswered
+  // setup read stays `null`, which `setupState` renders as "not run", never as
+  // a denial.
+  const refreshSystemAudio = useCallback(async () => {
+    try {
+      setSysAudio(await invoke<SystemAudioSetup>("system_audio_setup"));
+    } catch {
+      /* stays null → "not run", the safe direction */
+    }
+  }, []);
+
+  useEffect(() => {
+    let dead = false;
+    invoke<{
+      systemAudioAvailable: boolean;
+      systemAudioMessage: string | null;
+    }>("notetaker_status")
+      .then((s) => {
+        if (dead) return;
+        setSysAudioGate((prev) => ({
+          available: s.systemAudioAvailable,
+          message: s.systemAudioMessage ?? prev.message,
+        }));
+      })
+      .catch(() => {});
+    refreshSystemAudio();
+    return () => {
+      dead = true;
+    };
+  }, [refreshSystemAudio]);
+
+  /**
+   * YV102 — run the pre-warm. **This is the permission request**; there is no
+   * other one (finding OS-10).
+   *
+   * The contextual copy is already on screen when this fires, which is the
+   * entire deliverable: macOS's alert steals focus the moment the tap starts,
+   * and it only ever appears once per install.
+   */
+  const runSystemAudioSetup = useCallback(async () => {
+    setSysAudioBusy(true);
+    try {
+      setSysAudio(await invoke<SystemAudioSetup>("run_system_audio_setup"));
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setSysAudioBusy(false);
+    }
+  }, []);
 
   // YV95 — the meeting status subscription. One `invoke` on mount plus the
   // backend's 1 Hz `meeting` event; when a meeting ENDS, the Meetings list is
@@ -2268,6 +2354,56 @@ export default function App() {
                     </p>
                   </div>
                 </li>
+                {/* YV102 — the system-audio row. It sits in the SAME list as
+                    Microphone and Accessibility rather than in a Notetaker-only
+                    corner, because from the user's side it is one more macOS
+                    permission for one more Yap feature. What it must never do is
+                    read like the others: mic permission is knowable, this one is
+                    not, so the row shows what Yap has observed rather than a
+                    status it cannot query. */}
+                {(() => {
+                  const step = setupState(
+                    sysAudio,
+                    sysAudioGate.available,
+                    sysAudioGate.message,
+                  );
+                  return (
+                    <li
+                      className={
+                        step.tone === "ok"
+                          ? "ok"
+                          : step.tone === "bad"
+                            ? "bad"
+                            : ""
+                      }
+                    >
+                      <StatusDot ok={step.tone === "ok"} />
+                      <div>
+                        <strong>System audio (meetings)</strong>
+                        <p>{step.label}</p>
+                        <div className="actions wrap">
+                          <button
+                            disabled={!step.canRun || sysAudioBusy}
+                            onClick={runSystemAudioSetup}
+                          >
+                            {sysAudioBusy ? "Asking macOS…" : step.actionLabel}
+                          </button>
+                          {step.showDeepLink && (
+                            <button
+                              onClick={() =>
+                                invoke("open_privacy_settings", {
+                                  pane: SYSTEM_AUDIO_PANE,
+                                }).catch((e) => toast(String(e)))
+                              }
+                            >
+                              {SYSTEM_AUDIO_SETUP.openSettings}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })()}
                 <li className={perms?.asrOk ? "ok" : "bad"}>
                   <StatusDot ok={!!perms?.asrOk} />
                   <div>
@@ -4179,6 +4315,73 @@ export default function App() {
                       Read the recording notice
                     </button>
                   </div>
+
+                  {/* ── YV102 Set up meeting recording — the TCC pre-warm ──
+                      There is NO permission-request API for system audio: the
+                      macOS alert is a side effect of starting a process tap,
+                      and if it is dismissed it never appears again (OS-10). So
+                      the tap is started here, on purpose, from a quiet screen
+                      where the explanation is already visible — instead of at
+                      T-0 of the user's first Zoom join, where a reflex
+                      dismissal is permanent for the install.
+
+                      Order matters in the markup as much as in the code: every
+                      paragraph below is above the button, because the alert
+                      steals focus the instant the button is pressed. */}
+                  {(() => {
+                    const step = setupState(
+                      sysAudio,
+                      sysAudioGate.available,
+                      sysAudioGate.message,
+                    );
+                    return (
+                      <>
+                        <h2 className="settings-section">
+                          {SYSTEM_AUDIO_SETUP.title}
+                          <span className="sub">{SYSTEM_AUDIO_SETUP.sub}</span>
+                        </h2>
+                        {SYSTEM_AUDIO_SETUP.paragraphs.map((p) => (
+                          <p className="tiny" key={p.slice(0, 24)}>
+                            {p}
+                          </p>
+                        ))}
+                        <p className="tiny muted">{SYSTEM_AUDIO_SETUP.fine}</p>
+                        <p
+                          className={
+                            step.tone === "bad" ? "tiny warn" : "tiny muted"
+                          }
+                        >
+                          {step.label}
+                        </p>
+                        <div className="actions wrap">
+                          <button
+                            className={step.tone === "bad" ? "" : "primary"}
+                            disabled={!step.canRun || sysAudioBusy}
+                            onClick={runSystemAudioSetup}
+                          >
+                            {sysAudioBusy ? "Asking macOS…" : step.actionLabel}
+                          </button>
+                          {/* The ONLY recovery after a denial: TCC will not ask
+                              a second time, so a working deep link is the whole
+                              path back. The anchor is verified on the target OS
+                              (see permissions::SYSTEM_AUDIO_PANE) rather than
+                              guessed — a wrong one lands on the top of System
+                              Settings, which is a worse dead end than no link. */}
+                          {step.showDeepLink && (
+                            <button
+                              onClick={() =>
+                                invoke("open_privacy_settings", {
+                                  pane: SYSTEM_AUDIO_PANE,
+                                }).catch((e) => toast(String(e)))
+                              }
+                            >
+                              {SYSTEM_AUDIO_SETUP.openSettings}
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
 
                   {/* ── YV75 Engine — what is actually running right now ──
                       High cleanup hands the take to a second process

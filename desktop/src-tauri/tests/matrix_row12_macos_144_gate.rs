@@ -12,24 +12,24 @@
 //!     modes, it refuses system audio below 14.4 with one sentence naming the
 //!     requirement, and — the load-bearing half — it can never refuse mic-only
 //!     recording, on any OS, which is what keeps 22-A's macOS 12 floor.
-//!   * **`12b` — `PolicyOnly`.** No frontend file invokes that command, so the
-//!     sentence reaches no surface: on a macOS 13 Mac the app today shows
-//!     nothing rather than a disabled control with a reason. YV102 (#125)
-//!     brings the Settings step that renders it.
+//!   * **`12b` — `Test` as of YV102 (#125).** The Settings step invokes
+//!     `notetaker_status` on mount and renders `systemAudioMessage` under a
+//!     disabled "Set up meeting recording" control, which is the plan's own
+//!     wording for row 12 — visible, disabled, carrying the reason. It was
+//!     `PolicyOnly` until that PR: the sentence was computed on every call and
+//!     rendered by nothing, so a macOS 13 Mac showed nothing at all.
 //!
 //! This file is the matrix's own row, not a second copy of
 //! `meeting_availability_144_gate.rs`: that file is YV101's exhaustive version
 //! table, and this one asserts the two things the *matrix row* publishes — the
-//! floor is intact, and the sentence has no home yet.
+//! floor is intact, and the sentence reaches the surface that has to carry it.
 
 use wilson_voice_lib::meeting_asr::{
     meeting_availability, meeting_availability_for, MeetingCapture, MeetingUnavailable,
 };
 use wilson_voice_lib::meeting_matrix::{Coverage, ROWS};
 use wilson_voice_lib::os_version_gate::{self, OsVersion};
-
-#[path = "support/callsite.rs"]
-mod callsite;
+use wilson_voice_lib::NotetakerStatus;
 
 /// The English model the shipped catalog carries, so the OS is the only axis
 /// varying below.
@@ -157,27 +157,13 @@ fn the_requirement_is_declared_in_exactly_one_place() {
     );
 }
 
-/// **Row `12b`'s absence half.** The gate's verdict is computed on every
-/// `notetaker_status` call and rendered by nothing: no frontend file invokes
-/// that command, and `system_audio_setup` — YV102's Settings step, the surface
-/// that would carry the sentence — does not exist in `src/`.
-#[test]
-fn the_sentence_reaches_no_surface_yet_so_row_12b_is_not_wired() {
-    let found = callsite::call_sites("system_audio_setup", &[]);
-    assert!(
-        found.is_empty(),
-        "{}",
-        callsite::promote_the_row("12b", "system_audio_setup", &found)
-    );
-
-    // The frontend half, checked directly rather than inferred: if some `.ts`
-    // or `.tsx` starts invoking `notetaker_status`, the sentence has a surface
-    // and row `12b` is a `Test` row.
+/// Every `.ts`/`.tsx`/`.js` under `desktop/src` whose text contains `needle`.
+fn frontend_files_containing(needle: &str) -> Vec<String> {
     let web = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("desktop/")
         .join("src");
-    let mut callers = Vec::new();
+    let mut hits = Vec::new();
     let mut stack = vec![web];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).expect("read desktop/src").flatten() {
@@ -188,23 +174,232 @@ fn the_sentence_reaches_no_surface_yet_so_row_12b_is_not_wired() {
                 .extension()
                 .is_some_and(|e| e == "ts" || e == "tsx" || e == "js")
                 && std::fs::read_to_string(&path)
-                    .map(|b| b.contains("notetaker_status"))
+                    .map(|b| b.contains(needle))
                     .unwrap_or(false)
             {
-                callers.push(path.display().to_string());
+                hits.push(path.display().to_string());
             }
         }
     }
+    hits
+}
+
+/// **Row `12b`, the half YV102 closed: the sentence has a surface.**
+///
+/// This test was the absence tripwire — "`system_audio_setup` does not exist in
+/// `src/`, no frontend file invokes `notetaker_status`, so on a macOS 13 Mac
+/// the app shows nothing at all rather than a disabled control with a reason".
+/// #125 wired both, the tripwire fired, and this is the promotion it demanded:
+/// the row now asserts the shipping surface performs the behaviour.
+///
+/// The behaviour, in the plan's own words for row 12: *the Notetaker surface is
+/// visible but disabled with a plain sentence explaining the requirement*.
+#[test]
+fn the_sentence_reaches_the_settings_step_on_every_pre_14_4_mac() {
+    // 1. The payload the surface reads. `NotetakerStatus::for_os` is what the
+    //    shipping `notetaker_status` command returns — the command is a
+    //    settings read plus this call, so this is the decision itself and not a
+    //    restatement of it.
+    for text in ["12.0", "13.0", "13.6", "14.3"] {
+        let status = NotetakerStatus::for_os(ENGLISH_MODEL, "en", os(text));
+        assert!(
+            !status.system_audio_available,
+            "macOS {text} cannot hold the system-audio permission at all"
+        );
+        let sentence = status
+            .system_audio_message
+            .as_deref()
+            .expect("a refusal owes the surface its sentence");
+        assert!(
+            sentence.contains(os_version_gate::SYSTEM_AUDIO_REQUIREMENT),
+            "{sentence}"
+        );
+        // …and the OTHER field says meetings still record, which is the half a
+        // collapsed boolean would destroy.
+        assert!(
+            status.available,
+            "mic-only recording is not gated on macOS {text}"
+        );
+        assert_eq!(status.message, None);
+    }
+    let modern = NotetakerStatus::for_os(ENGLISH_MODEL, "en", os("14.4"));
+    assert!(modern.system_audio_available);
+    assert_eq!(modern.system_audio_message, None);
+
+    // 2. The wire. The surface reads camelCase names off this payload, and a
+    //    rename on either side is silent — the frontend would just see
+    //    `undefined`, fall back to "available", and offer a permission that
+    //    cannot exist. So the serialized keys are asserted, not assumed.
+    let json = serde_json::to_value(NotetakerStatus::for_os(ENGLISH_MODEL, "en", os("13.6")))
+        .expect("NotetakerStatus serializes");
+    assert_eq!(json["systemAudioAvailable"], serde_json::json!(false));
+    assert!(json["systemAudioMessage"]
+        .as_str()
+        .is_some_and(|s| s.contains(os_version_gate::SYSTEM_AUDIO_REQUIREMENT)));
+    assert_eq!(json["available"], serde_json::json!(true));
+
+    // 3. The surface. Something in the frontend has to actually ask for it and
+    //    render it, or the two assertions above are a payload nobody reads —
+    //    which is precisely the state this row was published as until now.
+    //
+    //    The needles are the QUOTED command name and the quoted state key, not
+    //    the bare words: a bare-word scan is satisfied by a comment about the
+    //    command and by a renamed invoke — `invoke("notetaker_status_v2")` still
+    //    contains `notetaker_status` while the frontend asks the backend for a
+    //    command that does not exist and silently keeps its default. That
+    //    mutation was run against the bare-word version of this assertion and
+    //    it stayed green, which is the only reason this comment exists.
+    let callers = frontend_files_containing("\"notetaker_status\"");
     assert!(
-        callers.is_empty(),
-        "TRIPWIRE — matrix row 12b: `notetaker_status` is now invoked from {callers:?}, so the \
-         14.4 sentence finally has a surface. Promote row 12b to `Coverage::Test` and assert what \
-         that surface renders."
+        !callers.is_empty(),
+        "no frontend file invokes `notetaker_status`, so the 14.4 sentence reaches no surface \
+         again and row 12b is `PolicyOnly` once more"
+    );
+    let renderers = frontend_files_containing("systemAudioMessage");
+    assert!(
+        !renderers.is_empty(),
+        "`notetaker_status` is invoked but its sentence is dropped on the floor: {callers:?}"
+    );
+    // The invoke and the render have to be reachable from the app's own tree,
+    // not only from the dev preview page (which fakes its inputs by design).
+    assert!(
+        callers.iter().any(|f| f.ends_with("App.tsx")),
+        "only {callers:?} asks for the gate — the shipping window does not, so a real macOS 13 \
+         Mac still sees nothing"
+    );
+
+    // …and the step that carries it is DISABLED rather than merely present. The
+    // rule lives in `meetings/systemAudio.ts` (`setupState`), whose unavailable
+    // arm is the one thing this row is about: no button to press, and the
+    // sentence plus what still works underneath it.
+    let rule = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("desktop/")
+            .join("src/meetings/systemAudio.ts"),
+    )
+    .expect("read src/meetings/systemAudio.ts");
+    //
+    // The slice is THAT arm, not the whole file. `setupState` has a second
+    // `canRun: false` (the `unavailable` verdict), so a whole-file scan stays
+    // green while the pre-14.4 gate becomes a pressable button that asks macOS
+    // for a permission the OS has no concept of. That mutation was run, it
+    // passed the file-wide version of this assertion, and this is the fix.
+    let gate_arm = rule
+        .split_once("if (!available) {")
+        .expect("`setupState` must still branch on the 14.4 gate first")
+        .1;
+    let gate_arm = gate_arm
+        .split_once("\n  }")
+        .map(|(arm, _)| arm)
+        .unwrap_or(gate_arm);
+    assert!(
+        gate_arm.contains("canRun: false"),
+        "the pre-14.4 arm of `setupState` must leave the control visible and UNPRESSABLE — an \
+         enabled button offers a permission this Mac cannot hold:\n{gate_arm}"
+    );
+    assert!(
+        gate_arm.contains("requirement"),
+        "…and it must render the sentence the backend sent rather than wording of its own:\n\
+         {gate_arm}"
+    );
+    assert!(
+        gate_arm.contains("Meeting notes still record your microphone"),
+        "row 12's sentence has to say what still works, because it is the refusal with no next \
+         step on the machine:\n{gate_arm}"
+    );
+}
+
+/// The requirement sentence is declared in `os_version_gate` and quoted
+/// everywhere else — including the frontend, which now has a surface that can
+/// carry its own copy.
+///
+/// `App.tsx` holds one literal as the fallback for a `notetaker_status` that
+/// never answers. A fallback is defensible; a fallback that drifts from the
+/// constant is the two-copies failure this matrix exists to catch (the 3 h cap,
+/// which shipped as `MEETING_HARD_CAP` twice). So every *user-visible string*
+/// in the frontend that talks about the requirement must be the exact shipping
+/// sentence.
+///
+/// Strings only, never comments: prose explaining the gate is documentation,
+/// and a scan that read it would demand the constant be pasted into a comment
+/// to stay green. Same exclusion `callsite.rs` and `matrix_coverage.rs` apply
+/// in the other direction.
+#[test]
+fn the_frontend_never_carries_its_own_wording_of_the_requirement() {
+    /// The double- and single-quoted string literals on one line.
+    fn literals(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut current: Option<(char, String)> = None;
+        let mut escaped = false;
+        for c in line.chars() {
+            match &mut current {
+                Some((quote, buf)) => {
+                    if escaped {
+                        escaped = false;
+                        buf.push(c);
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == *quote {
+                        out.push(std::mem::take(buf));
+                        current = None;
+                    } else {
+                        buf.push(c);
+                    }
+                }
+                None => {
+                    if c == '"' || c == '\'' || c == '`' {
+                        current = Some((c, String::new()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    let mut checked = 0;
+    for file in frontend_files_containing("macOS 14.4") {
+        // A `*.test.ts` describes the rule ("the macOS 14.4 gate outranks
+        // everything"); it does not render to a user, and forcing the shipping
+        // sentence into a test name would make the assertion meaningless.
+        if file.contains(".test.") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&file).expect("read frontend file");
+        for (n, line) in body.lines().enumerate() {
+            for literal in literals(line) {
+                if !literal.contains("macOS 14.4") {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    literal.contains(os_version_gate::SYSTEM_AUDIO_REQUIREMENT),
+                    "{file}:{} ships its own wording of the 14.4 requirement: {literal:?}\n\
+                     The shipping sentence is `os_version_gate::SYSTEM_AUDIO_REQUIREMENT` \
+                     (\"{}\"), and a second copy here goes stale in silence — which is the row \
+                     publishing one sentence while the app renders another.",
+                    n + 1,
+                    os_version_gate::SYSTEM_AUDIO_REQUIREMENT
+                );
+            }
+        }
+    }
+    // Two today — `App.tsx`'s fallback for a `notetaker_status` that never
+    // answers, and the dev preview page that renders all six states for the
+    // screenshots. Both quote the constant, which is the rule; the count is not
+    // pinned because a third legitimate surface is a normal thing to add and a
+    // brittle number would only teach the next author to edit this line. Zero
+    // is the failure worth catching: it means the check above swept nothing.
+    assert!(
+        checked > 0,
+        "no frontend string mentions the 14.4 requirement at all, so this check proved nothing — \
+         either the fallback was deleted (an unanswered gate now renders an empty sentence) or \
+         the wording moved somewhere this scan cannot see"
     );
 }
 
 #[test]
-fn the_published_cells_split_the_gate_from_its_missing_surface() {
+fn the_published_cells_split_the_gate_from_the_surface_that_now_carries_it() {
     let gate = ROWS.iter().find(|r| r.id == "12").expect("row 12");
     assert_eq!(
         gate.coverage,
@@ -215,16 +410,25 @@ fn the_published_cells_split_the_gate_from_its_missing_surface() {
         }
     );
 
+    // Still two cells, not one. The split was never about the surface being
+    // missing — it is that the gate and the thing rendering it are different
+    // claims, and rows 5 and 17 keep their splits for the same reason.
     let surface = ROWS.iter().find(|r| r.id == "12b").expect("row 12b");
     assert_eq!(
         surface.coverage,
-        Coverage::PolicyOnly {
+        Coverage::Test {
             test: "matrix_row12_macos_144_gate.rs",
-            wiring_pr: Some("#125 (YV102)"),
-            absent_call_site: "system_audio_setup",
+            subject: "NotetakerStatus",
+            subject_module: "lib.rs",
         }
     );
     let cell = surface.coverage.cell();
-    assert!(cell.contains("Policy only"), "{cell}");
-    assert!(cell.contains("#125 (YV102)"), "{cell}");
+    assert!(
+        cell.contains("cargo test --test matrix_row12_macos_144_gate"),
+        "{cell}"
+    );
+    assert!(
+        !cell.contains("Policy only") && !cell.contains("NOT WIRED"),
+        "{cell}"
+    );
 }

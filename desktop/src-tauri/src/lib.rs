@@ -3026,6 +3026,79 @@ fn acknowledge_meeting_consent(
     state.db.acknowledge_meeting_consent()
 }
 
+/// YV102 — what Yap currently believes about system-audio permission.
+///
+/// Read on mount and after the setup step runs. Separate key, separate command,
+/// separate answer from [`meeting_consent`]: one is a legal notice, the other is
+/// a macOS permission, and the only thing they have in common is the table they
+/// live in.
+#[tauri::command]
+fn system_audio_setup(state: State<'_, Arc<AppState>>) -> meetings::SystemAudioSetup {
+    state.db.system_audio_setup()
+}
+
+/// YV102 — **the "Set up meeting recording" step.** Provokes the TCC alert on
+/// purpose, from Settings, with the explanation already on screen.
+///
+/// There is no permission-request API for system audio: creating and starting a
+/// process tap IS the request (OS-10, quoting AudioCap's README). So this runs a
+/// real 200 ms tap and throws the audio away. What it buys is the *timing* — the
+/// alert arrives while the user is reading a sentence about why, instead of at
+/// T-0 of their first Zoom join, where a dismissal is terminal because TCC never
+/// asks twice.
+///
+/// `async` + `spawn_blocking` for the same reason every other blocking command
+/// in this file is: the 200 ms dwell is a real sleep on a real CoreAudio device,
+/// and the webview's invoke must not be what waits on it.
+///
+/// **Never returns `LooksDenied`.** 200 ms is far below
+/// `syscapture::DENIAL_GRACE`, so a quiet Mac cannot be turned into a denial
+/// verdict by this path — that verdict is only ever earned by a real session.
+#[tauri::command]
+async fn run_system_audio_setup(
+    state: State<'_, Arc<AppState>>,
+) -> Result<meetings::SystemAudioSetup, String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        let verdict = prewarm_system_audio();
+        db.record_system_audio_setup(verdict)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The platform half of [`run_system_audio_setup`], split out so the command is
+/// one shape on every target.
+///
+/// The macOS 14.4 gate is checked HERE rather than trusted from the UI: the
+/// affordance is disabled below 14.4 (YV101), and a disabled affordance is a
+/// courtesy, not an enforcement.
+#[cfg(target_os = "macos")]
+fn prewarm_system_audio() -> meetings::SetupVerdict {
+    use os_version_gate::{system_audio_gate_now, SystemAudioGate};
+    if !matches!(system_audio_gate_now(), SystemAudioGate::Available) {
+        return meetings::SetupVerdict::Unavailable;
+    }
+    let report = syscapture::imp::prewarm_system_audio_permission();
+    match (report.opened, report.verdict) {
+        (false, _) => {
+            if let Some(error) = &report.error {
+                log::warn!("system-audio pre-warm failed: {error}");
+            }
+            meetings::SetupVerdict::Failed
+        }
+        (true, syscapture::SystemAudioPermission::Granted) => meetings::SetupVerdict::Granted,
+        // Opened, nothing audible in 200 ms. The alert has been shown; the
+        // answer is genuinely not knowable yet, and saying so is the item.
+        (true, _) => meetings::SetupVerdict::Ran,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prewarm_system_audio() -> meetings::SetupVerdict {
+    meetings::SetupVerdict::Unavailable
+}
+
 /// YV97 — summarize one recorded meeting, locally.
 ///
 /// MUST be `async` + `spawn_blocking`, same as [`paste_entry`]. A *sync*
@@ -3605,31 +3678,55 @@ pub struct NotetakerStatus {
     pub system_audio_message: Option<String>,
 }
 
+impl NotetakerStatus {
+    /// The payload, computed from an OS version rather than from *this* Mac's.
+    ///
+    /// The command below is a `State` read plus this call, so the decision the
+    /// Notetaker's Settings step renders is reachable from a test on any
+    /// machine — which is what lets matrix row `12b` be published as `Test`
+    /// rather than as a policy nothing checks. It is one declaration, not a
+    /// second copy: `notetaker_status` has no arithmetic of its own left.
+    ///
+    /// The two questions stay separate on purpose. `available`/`message` answer
+    /// "can the Notetaker record at all?" (mic-only, the macOS 12 floor);
+    /// `system_audio_*` answer "can it also record the other end of the call?"
+    /// (macOS 14.4, plan finding OS-11). On a macOS 13 Mac the honest state is
+    /// both at once — meetings record, the system-audio control is visible and
+    /// disabled with a sentence — and collapsing them is how "system audio
+    /// needs 14.4" becomes "meetings do not work on your Mac".
+    pub fn for_os(model_id: &str, language: &str, os: os_version_gate::OsVersion) -> Self {
+        let mic_only = meeting_asr::meeting_availability_for(
+            meeting_asr::MeetingCapture::MicOnly,
+            Some(model_id),
+            Some(language),
+            os,
+        );
+        let system_audio = meeting_asr::meeting_availability_for(
+            meeting_asr::MeetingCapture::MicPlusSystemAudio,
+            Some(model_id),
+            Some(language),
+            os,
+        );
+        Self {
+            available: mic_only.is_ok(),
+            message: mic_only.err().map(|blocked| blocked.message()),
+            system_audio_available: system_audio.is_ok(),
+            system_audio_message: system_audio.err().map(|blocked| blocked.message()),
+        }
+    }
+}
+
 #[tauri::command]
 async fn notetaker_status(state: State<'_, Arc<AppState>>) -> Result<NotetakerStatus, String> {
     let (model_id, language) = {
         let settings = state.settings.lock();
         (settings.native_model.clone(), settings.language.clone())
     };
-    let os = os_version_gate::OsVersion::current();
-    let mic_only = meeting_asr::meeting_availability_for(
-        meeting_asr::MeetingCapture::MicOnly,
-        Some(&model_id),
-        Some(&language),
-        os,
-    );
-    let system_audio = meeting_asr::meeting_availability_for(
-        meeting_asr::MeetingCapture::MicPlusSystemAudio,
-        Some(&model_id),
-        Some(&language),
-        os,
-    );
-    Ok(NotetakerStatus {
-        available: mic_only.is_ok(),
-        message: mic_only.err().map(|blocked| blocked.message()),
-        system_audio_available: system_audio.is_ok(),
-        system_audio_message: system_audio.err().map(|blocked| blocked.message()),
-    })
+    Ok(NotetakerStatus::for_os(
+        &model_id,
+        &language,
+        os_version_gate::OsVersion::current(),
+    ))
 }
 
 /// Warm-engine lifecycle snapshot: what is resident, whether a load or a
@@ -4134,6 +4231,8 @@ pub fn run() {
             // single `settings_kv` row; nothing here can block a recording.
             meeting_consent,
             acknowledge_meeting_consent,
+            system_audio_setup,
+            run_system_audio_setup,
             // YV95 — the entry point finding #6 says the phase cannot merge
             // without.
             meeting_status,

@@ -2105,6 +2105,238 @@ pub fn virtual_meeting_config(dir: impl Into<PathBuf>, format: TapFormat) -> Ses
     config
 }
 
+// ── YV102 · the TCC pre-warm ───────────────────────────────────────────────
+//
+// OS-10's finding, in one line from AudioCap's own README: *"There's no public
+// API to request audio recording permission or to check if the app has that
+// permission."* The system alert is a SIDE EFFECT of creating and starting a
+// process tap. There is no `requestAccess`, no `authorizationStatus`, and — the
+// part that makes this an item rather than a footnote — **if the user dismisses
+// or denies it, TCC does not ask again**.
+//
+// Left where the plan originally had it, that prompt lands at T-0 of the user's
+// first real meeting: mid-Zoom-join, focus stolen (a system alert ignores the
+// pill's `.nonactivatingPanel` politeness entirely), zero context for what is
+// being asked, and a denial there is terminal for that install. So Yap provokes
+// it on purpose, from an explicit Settings step, where the sentence explaining
+// what is about to happen is already on screen.
+//
+// The pre-warm is the smallest thing that is still a real tap: YV100's exact
+// setup sequence, a 200 ms dwell, every sample discarded, then YV100's exact
+// teardown. Not a second implementation of either — [`open_tap`] and
+// [`teardown`] are called, so a change to the ordering contract cannot drift
+// away from the surface that exercises it most often.
+
+/// How long the pre-warm holds the tap open.
+///
+/// Long enough that `AudioDeviceStart` has actually started and the IOProc has
+/// had a chance to fire; short enough that the Settings step feels like a
+/// button, not a wait. Nothing is kept: the ring the callback writes into is
+/// read once for the discriminator below and dropped with the function.
+pub const PREWARM_DWELL: Duration = Duration::from_millis(200);
+
+/// What one pre-warm run did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prewarm {
+    /// The tap was created, wired, and started.
+    pub opened: bool,
+    /// Why it was not, when it was not.
+    pub error: Option<TapError>,
+    /// The teardown steps THIS function issued, in the order it issued them.
+    ///
+    /// Empty on the failure path, and that is not a gap: [`open_tap`] runs the
+    /// same [`teardown`] over whatever existed at the moment it gave up, before
+    /// it returns the error. The platform's own call log is what proves that
+    /// half — see `tests/syscapture_prewarm_tap.rs`, which asserts against the
+    /// fake's recorded calls rather than against this field.
+    ///
+    /// The element type is [`TapStep`] — the module's ONE step vocabulary,
+    /// sliced by [`TEARDOWN_ORDER`] out of [`full_rebuild_sequence`]. It was
+    /// `TeardownStep` while this item and YV104 were apart, which is precisely
+    /// the drift the module docs record: a rebase that resolves textually and
+    /// leaves two orders behind. There is one.
+    pub teardown_steps: Vec<TapStep>,
+}
+
+impl Prewarm {
+    /// Did the full four-call teardown fire from this function?
+    pub fn tore_down_completely(&self) -> bool {
+        self.teardown_steps == TEARDOWN_ORDER
+    }
+}
+
+/// Create a tap, start it, hold it for `dwell`, throw away everything it heard,
+/// and tear it down. **This is the permission request** — there is no other.
+///
+/// `dwell` is injected rather than hardcoded so the state machine is testable
+/// without sleeping: production passes a `sleep(PREWARM_DWELL)`, the test passes
+/// a closure that records a sample or records nothing. It runs inside
+/// `catch_unwind` for the same reason [`open_tap`] does: a panic between "the
+/// tap is running" and "the tap is destroyed" leaves a private aggregate device
+/// holding the user's output device until they log out.
+pub fn prewarm_tap<P: TapPlatform>(
+    platform: &mut P,
+    self_process_object: Option<u32>,
+    aggregate_uid: &str,
+    aggregate_name: &str,
+    dwell: impl FnOnce(),
+) -> Prewarm {
+    match open_tap(platform, self_process_object, aggregate_uid, aggregate_name) {
+        Ok(open) => {
+            let mut resources = open.resources;
+            // Deliberately ignored: a panic in the dwell is not a reason to
+            // leak a process tap, and there is nothing to report — the caller
+            // already knows the tap opened.
+            let _ = catch_unwind(AssertUnwindSafe(dwell));
+            let teardown_steps = teardown(platform, &mut resources);
+            debug_assert!(resources.is_empty(), "pre-warm left a resource behind");
+            Prewarm {
+                opened: true,
+                error: None,
+                teardown_steps,
+            }
+        }
+        Err(error) => Prewarm {
+            opened: false,
+            error: Some(error),
+            teardown_steps: Vec::new(),
+        },
+    }
+}
+
+// ── YV102 · the denial discriminator ───────────────────────────────────────
+//
+// A denied tap is SILENT. So is OS-4's ghost tap — a healthy tap that starts
+// delivering all-zero buffers after minutes of good audio, for as long as 16
+// minutes at a stretch ([Apple Developer Forums 825780]). So is a call where
+// everybody is muted, and so is a tap whose aggregate is pointed at a different
+// output device than the app is rendering to (routine with AirPods; YV103).
+// §2.1's original heuristic — "silence for N seconds ⇒ permission looks denied"
+// — cannot tell any of those apart, and badging a healthy meeting "permission
+// revoked" is worse than saying nothing.
+//
+// The one bit that DOES separate them needs no private API and no new data:
+//
+//     did this tap EVER deliver a non-zero sample?
+//
+// A TCC denial is silent from sample zero, forever. Every other cause of
+// silence has audio before it or after it. That single boolean is a fold over
+// [`CaptureAnchor`]s and sample blocks YV100 already ships, and it is the only
+// thing this item's denied-state UI is allowed to read.
+//
+// The private-TCC-framework path AudioCap documents is NOT shipped, not even
+// behind a flag: a Developer-ID-signed, notarized, Accessibility-trusted,
+// keystroke-synthesizing app calling private TCC symbols is the exact pattern
+// that gets a notarization ticket pulled (OS-10), and this bit answers the same
+// question legitimately.
+
+/// How long a tap must have been running before "never delivered anything" is
+/// allowed to mean anything at all.
+///
+/// Below this, the honest answer is [`SystemAudioPermission::Unknown`]: a tap
+/// that has been open for 200 ms and heard nothing has told you that nothing
+/// was playing, not that you were refused.
+pub const DENIAL_GRACE: Duration = Duration::from_secs(3);
+
+/// The running evidence the verdict is a pure function of.
+///
+/// Consumer-side: fed from the drained ring, never from the IOProc. Nothing
+/// here runs on the real-time thread, so `observe` is free to be ordinary code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TapDelivery {
+    /// Callbacks observed. Zero is itself a signal — a denied tap on some
+    /// systems never fires at all rather than firing silence.
+    pub callbacks: u64,
+    /// Per-channel frames the tap handed over.
+    pub frames: u64,
+    /// **The bit.** Set by the first sample that is not exactly zero, and never
+    /// cleared. Once true, this session can never be reported as denied.
+    pub ever_nonzero: bool,
+}
+
+impl TapDelivery {
+    /// Fold one callback's worth of the tap into the evidence.
+    pub fn observe(&mut self, anchor: &CaptureAnchor, samples: &[f32]) {
+        self.callbacks += 1;
+        self.frames += u64::from(anchor.frames);
+        if !self.ever_nonzero {
+            self.ever_nonzero = samples.iter().any(|s| *s != 0.0);
+        }
+    }
+
+    /// Has this tap ever produced audio? The whole discriminator.
+    pub fn ever_delivered(&self) -> bool {
+        self.ever_nonzero
+    }
+}
+
+/// What Yap is willing to SAY about system-audio permission.
+///
+/// Three values on purpose. Two would force silence to mean denial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemAudioPermission {
+    /// Not enough has happened to say anything. The resting state, and the one
+    /// a 200 ms pre-warm almost always lands in — the prompt has been shown,
+    /// which is what the pre-warm was for.
+    Unknown,
+    /// At least one non-zero sample arrived. Permission is granted, and this
+    /// verdict is **sticky for the session**: silence after this point is
+    /// YV104's ghost-tap territory and must never be re-badged as a denial.
+    Granted,
+    /// The tap ran for at least [`DENIAL_GRACE`] and has never, once, delivered
+    /// a non-zero sample. "Looks denied" — never "denied", because Yap cannot
+    /// read TCC and will not claim it can.
+    LooksDenied,
+}
+
+impl SystemAudioPermission {
+    /// The sentence the UI shows. One place, so the copy cannot drift between
+    /// the Settings step, the permissions list and the meeting banner.
+    pub fn message(self) -> &'static str {
+        match self {
+            SystemAudioPermission::Unknown => {
+                "Yap has not heard any system audio yet. macOS shows a purple \
+                 dot in the menu bar whenever it is capturing."
+            }
+            SystemAudioPermission::Granted => {
+                "System audio is being captured. macOS shows a purple dot in \
+                 the menu bar the whole time."
+            }
+            SystemAudioPermission::LooksDenied => LOOKS_DENIED_MESSAGE,
+        }
+    }
+
+    pub fn looks_denied(self) -> bool {
+        matches!(self, SystemAudioPermission::LooksDenied)
+    }
+}
+
+/// The denied-state sentence, and the only place it is written.
+///
+/// It says "has not granted", not "you denied": the user may have dismissed the
+/// alert, or never seen it. It names the exact pane
+/// ([`crate::permissions::SYSTEM_AUDIO_PANE`] opens it) because after a denial a
+/// deep link is the ONLY recovery — TCC will not ask a second time.
+pub const LOOKS_DENIED_MESSAGE: &str =
+    "Yap has not received any system audio. macOS has not granted System Audio \
+     Recording to Yap, and it will not ask again — allow it in System Settings, \
+     then start a new meeting.";
+
+/// The verdict: pure, total, and the only place the comparison is made.
+///
+/// Note the order of the arms. `ever_delivered` wins over everything, including
+/// a long run of silence, because that is precisely the case §2.1's heuristic
+/// got wrong.
+pub fn permission_verdict(delivery: &TapDelivery, ran_for: Duration) -> SystemAudioPermission {
+    if delivery.ever_delivered() {
+        SystemAudioPermission::Granted
+    } else if ran_for >= DENIAL_GRACE {
+        SystemAudioPermission::LooksDenied
+    } else {
+        SystemAudioPermission::Unknown
+    }
+}
+
 // ── The real CoreAudio implementation ──────────────────────────────────────
 
 #[cfg(target_os = "macos")]
@@ -2177,10 +2409,11 @@ pub mod imp {
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString};
 
     use super::{
-        keys, teardown, DictValue, IoProcToken, OpenTap, TapClock, TapError, TapFormat,
-        TapPlatform, TapResources,
+        keys, permission_verdict, teardown, DictValue, IoProcToken, OpenTap, SystemAudioPermission,
+        TapClock, TapDelivery, TapError, TapFormat, TapPlatform, TapResources, PREWARM_DWELL,
     };
     use crate::meeting::{rt_capture_callback, RtCapture};
+    use crate::rtring::CaptureAnchor;
 
     // ── The availability-gated symbols, resolved at runtime ────────────────
 
@@ -2849,6 +3082,87 @@ pub mod imp {
             format: open.format,
             capture,
         })
+    }
+
+    /// YV102 — provoke the TCC alert, on purpose, from Settings.
+    ///
+    /// The whole function is 200 ms of real process tap whose audio is thrown
+    /// away. It exists because there is no `requestAccess` for this permission:
+    /// creating and starting a tap IS the request, so the only choice available
+    /// is *when* the alert fires, and the answer is "while the user is reading a
+    /// sentence about it", not "as they join a call".
+    ///
+    /// The caller must have passed [`crate::os_version_gate::system_audio_gate`]
+    /// first. This checks anyway — [`CoreAudioPlatform::new`] refuses on an OS
+    /// with no process-tap API — because a gate a caller can forget is not a
+    /// gate.
+    pub fn prewarm_system_audio_permission() -> PrewarmReport {
+        // The ring is NOT built here. `CoreAudioPlatform` binds its own during
+        // setup, from the format read off the tap — the format is undiscoverable
+        // before the tap exists, so a ring passed in from out here is a guessed
+        // sample axis with no symptom (see `capture_matches_format`). The
+        // pre-warm reads whatever the platform bound, after the fact.
+        let mut platform = match CoreAudioPlatform::new() {
+            Ok(platform) => platform,
+            Err(error) => {
+                return PrewarmReport {
+                    opened: false,
+                    error: Some(error),
+                    verdict: SystemAudioPermission::Unknown,
+                }
+            }
+        };
+        let uid = format!("consulting.drivia.yap.prewarm.{}", uuid::Uuid::new_v4());
+        let run = super::prewarm_tap(
+            &mut platform,
+            self_process_object(),
+            &uid,
+            "Yap permission check",
+            || std::thread::sleep(PREWARM_DWELL),
+        );
+
+        // Fold whatever the 200 ms produced through the SAME discriminator a
+        // real meeting uses. It will nearly always say `Unknown`, and that is
+        // the honest answer: 200 ms of silence means nothing was playing.
+        //
+        // `capture()` is `None` when setup failed before `bind_capture` — no
+        // ring, no callbacks, nothing observed. That folds to an empty
+        // `TapDelivery`, which below the grace window is `Unknown`, which is
+        // the same honest answer by a different route. It is never a denial.
+        let mut delivery = TapDelivery::default();
+        if let Some(capture) = platform.capture() {
+            let mut anchors: Vec<CaptureAnchor> = Vec::new();
+            let mut samples: Vec<f32> = Vec::new();
+            capture.anchors.drain_into(&mut anchors);
+            capture.samples.drain_into(&mut samples);
+            let channels = usize::from(capture.channels()).max(1);
+            let mut offset = 0usize;
+            for anchor in &anchors {
+                let start = offset.min(samples.len());
+                let end = (start + anchor.frames as usize * channels).min(samples.len());
+                delivery.observe(anchor, &samples[start..end]);
+                offset = end;
+            }
+        }
+
+        PrewarmReport {
+            opened: run.opened,
+            error: run.error,
+            verdict: permission_verdict(&delivery, PREWARM_DWELL),
+        }
+    }
+
+    /// What [`prewarm_system_audio_permission`] found out.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct PrewarmReport {
+        /// The tap was created and started — which means the alert either fired
+        /// or had already been answered. Both are "the step did its job".
+        pub opened: bool,
+        pub error: Option<TapError>,
+        /// Almost always [`SystemAudioPermission::Unknown`]: 200 ms is far below
+        /// [`DENIAL_GRACE`] on purpose, so this step can never manufacture a
+        /// denial verdict out of a quiet Mac.
+        pub verdict: SystemAudioPermission,
     }
 }
 

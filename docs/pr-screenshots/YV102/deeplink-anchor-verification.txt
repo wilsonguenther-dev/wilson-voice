@@ -1,0 +1,123 @@
+YV102 — Settings deep-link anchor, VERIFIED ON THE TARGET OS
+============================================================
+
+The backlog is explicit that this must be verified rather than assumed, because
+a wrong anchor opens the top of System Settings, "which is a worse dead end than
+no link at all" (plan finding OS-10). After a TCC denial the deep link is the
+ONLY recovery there is — macOS never shows the alert a second time — so a link
+that lands on General is the difference between a fixable install and a dead
+one.
+
+RESULT: the plan's candidate anchor DOES NOT EXIST. The correct one is
+`Privacy_AudioCapture`.
+
+  plan's candidate (§2.1):  x-apple.systempreferences:com.apple.preference.security?Privacy_SystemAudio
+  shipped:                  x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture
+
+Verified on
+  ProductName:    macOS
+  ProductVersion: 26.5.2
+  BuildVersion:   25F84
+
+
+1. THE ANCHOR TABLE — every anchor System Settings actually recognises
+----------------------------------------------------------------------
+
+$ strings -a /System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex/Contents/MacOS/SecurityPrivacyExtension \
+    | grep -oE 'Privacy_[A-Za-z0-9]+' | sort -u
+Privacy_Accessibility
+Privacy_Advertising
+Privacy_Analytics
+Privacy_AppleIntelligenceReport
+Privacy_AudioCapture          <-- the one this item needs
+Privacy_Automation
+Privacy_Blocklist
+Privacy_Calendars
+Privacy_Camera
+Privacy_DesktopFolder
+Privacy_DevTools
+Privacy_DocumentsFolder
+Privacy_DownloadsFolder
+Privacy_FilesAndFolders
+Privacy_iCloudSearchReport
+Privacy_Location
+Privacy_LocationServices
+Privacy_Microphone
+Privacy_NetworkVolume
+Privacy_NudityDetection
+Privacy_Pasteboard
+Privacy_Photos
+Privacy_RemovableVolume
+Privacy_ScreenCapture
+Privacy_SystemServices
+
+`Privacy_SystemAudio` is absent. An unrecognised anchor does not error — System
+Settings opens on its default pane — which is exactly why guessing here fails
+silently and only in the hands of a user who has already been denied.
+
+
+2. THE ANCHOR ACTUALLY NAVIGATES — the pane extension loads
+------------------------------------------------------------
+
+$ pkill -x "System Settings"
+$ open "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+$ pgrep -lf SecurityPrivacyExtension
+87650 /System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex/Contents/MacOS/SecurityPrivacyExtension \
+      -LaunchArguments {"type":2,"serviceName":"com.apple.settings.PrivacySecurity.extension","enhancedSecurity":false}
+
+(Control: with no anchor at all, `GeneralSettings.appex` is what loads instead.)
+
+
+3. IT LANDS ON THE RIGHT PANE — window title, read from the window server
+--------------------------------------------------------------------------
+
+$ python3 -c "import Quartz; [print(w.get('kCGWindowOwnerName'),'|',w.get('kCGWindowName')) \
+    for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll \
+    | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID) \
+    if 'Settings' in (w.get('kCGWindowOwnerName') or '')]"
+Privacy & Security | (none)
+System Settings    | Screen & System Audio Recording
+
+The pane is titled "Screen & System Audio Recording" on macOS 15+/26, and it
+carries the **System Audio Recording Only** list Yap must appear in — see
+`deeplink-lands-on-audio-capture-pane.png`, cropped to the two section headings
+(the app rows themselves are this machine's installed software and are not
+published here).
+
+On macOS 14.4–14.x the same anchor reaches the pane Apple titled "System Audio
+Recording Only", which is the name the backlog's acceptance criterion uses.
+
+
+4. WHAT IS SHIPPED
+------------------
+
+`permissions::open_privacy_pane("SystemAudio")` tries, in order:
+
+  x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture
+  x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension
+
+The fallback is Privacy & Security, one scroll from the answer — never a bare
+System Settings launch, which is the dead end OS-10 names.
+
+
+5. WHAT WAS **NOT** VERIFIED HERE, AND WHY
+-------------------------------------------
+
+The TCC prompt itself. TCC is keyed to the code-signing identity (YV101's
+caveat, from DGR Labs: "the first time we tested an unsigned build, we wasted
+half an hour wondering why no permission dialog appeared"), so
+`tccutil reset ... com.wilsonguenther.wilson-voice` + a fresh launch + pressing
+the step is only meaningful against a **signed, notarized** build. No such build
+was produced in this run, and a `cargo run` result would have been unfalsifiable
+rather than reassuring — so it is not claimed.
+
+The gate for this item is therefore the pure tests, which need no hardware, no
+macOS 14.4 and no TCC grant:
+
+  cargo test --test syscapture_prewarm_tap                    (7 tests)
+  cargo test --test settings_kv                               (7 tests)
+  cargo test --test syscapture_never_delivered_denied_state   (8 tests)
+  npx vitest run src/meetings/systemAudio.test.ts            (15 tests)
+
+The anchor above is the half that COULD be verified on real hardware without a
+signature, and it was — including the finding that the planned string was wrong.

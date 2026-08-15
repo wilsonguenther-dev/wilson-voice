@@ -72,6 +72,14 @@ export default defineConfig(async () => ({
                 __dirname,
                 "dev/meeting-transcript-preview.html",
               ),
+              // YV102 — the system-audio setup step in all six of its states.
+              // Four of them need hardware or a permission you cannot un-deny
+              // (macOS asks once), so this is the only way to review them at
+              // all, let alone screenshot them.
+              systemAudioPreview: resolve(
+                __dirname,
+                "dev/system-audio-preview.html",
+              ),
             }
           : {}),
       },
