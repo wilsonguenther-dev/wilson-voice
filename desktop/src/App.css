@@ -2411,6 +2411,23 @@ button.star.on {
 .seg-who {
   color: var(--accent-data-ink);
 }
+
+/* YV108 · two tracks in ONE list.
+   "Them" is a character wider than "Me", so the speaker gutter widens only for
+   a meeting that actually has a second track — a mic-only transcript keeps the
+   exact column it has always had rather than reserving space for a speaker who
+   was never recorded. The two speakers differ in colour, not in indent: the
+   left edge of the text stays a single vertical line, so a long meeting still
+   scans as one column of prose instead of a zig-zag. */
+.transcript.two-track li {
+  grid-template-columns: 4.6rem 3.4rem 1fr;
+}
+.transcript.two-track .seg-who {
+  font-weight: 600;
+}
+.seg-who.them {
+  color: var(--accent-ink);
+}
 .seg-text {
   line-height: 1.55;
   word-break: break-word;

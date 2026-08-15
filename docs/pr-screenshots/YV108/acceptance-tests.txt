@@ -1,0 +1,55 @@
+YV108 acceptance — every command from the backlog section, run on this branch.
+macOS 15.5 (Darwin 25.5.0), aarch64-apple-darwin, cargo test (debug).
+
+$ cd desktop && npx tsc --noEmit
+(exit 0 — no output)
+
+$ npm test   # vitest, incl. src/meetings/transcript.test.ts (YV108)
+ [32m✓[39m src/support/bundle.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m src/pill/meeting.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m src/errors.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 1[2mms[22m[39m
+ [32m✓[39m src/meetings/transcript.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m src/meetings/consent.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/license/status.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m src/meetings/consentWatch.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 58[2mms[22m[39m
+ [32m✓[39m src/pill/live.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 64[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m      Tests [22m [1m[32m94 passed[39m[22m[90m (94)[39m
+[2m   Start at [22m 23:52:57
+[2m   Duration [22m 262ms[2m (transform 152ms, setup 0ms, collect 256ms, tests 143ms, environment 1ms, prepare 262ms)[22m
+
+
+$ cargo test --test meeting_transcript_render_two_track
+running 8 tests
+test labels_come_from_the_track_and_an_unknown_track_is_not_you ... ok
+test two_track_detection_is_about_the_segments_not_the_meeting_row ... ok
+test a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order ... ok
+test empty_spans_never_become_blank_turns ... ok
+test the_output_is_a_conversation_not_two_stacked_columns ... ok
+test mixed_tracks_render_as_one_interleaved_me_them_list ... ok
+test an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in ... ok
+test ordering_is_by_host_time_across_both_tracks ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test meeting_transcript_render_single_track_unchanged
+running 4 tests
+test an_empty_mic_only_meeting_still_exports_the_honest_line ... ok
+test every_line_of_a_mic_only_transcript_is_still_me_in_input_order ... ok
+test a_mic_only_export_is_byte_identical_to_the_pre_yv108_renderer ... ok
+test the_comparison_is_not_vacuous ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test meeting_markdown_export_two_track
+running 3 tests
+test a_mic_only_export_is_unchanged_from_22a ... ok
+test the_order_comes_from_the_clock_not_from_the_insert_order ... ok
+test a_two_track_export_reads_as_one_labelled_conversation ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --test meeting_markdown_export
+running 3 tests
+test exporting_a_deleted_meeting_is_an_error_not_a_panic ... ok
+test an_empty_meeting_exports_something_honest ... ok
+test a_three_segment_meeting_round_trips_readably ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s

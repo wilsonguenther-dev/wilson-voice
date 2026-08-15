@@ -56,6 +56,64 @@ pub fn seed_meeting(db: &Database, dir: &std::path::Path, title: &str, texts: &[
     meeting.id
 }
 
+/// YV108 — a finished TWO-track meeting: the mic's turns and the tap's turns,
+/// each `(start_seconds, track, text)`, appended in **two separate batches** the
+/// way the real pipeline does it (one transcription pass per recorded wav).
+///
+/// The batching is the point, not an implementation detail: appending them
+/// interleaved in one call would give every row the same `created_at` and hide
+/// the ordering question this item exists to answer. Here the tap's rows are
+/// written second and therefore carry a LATER `created_at` than mic rows that
+/// were spoken after them — so a transcript that comes back in the right order
+/// came back that way because of `start_seconds`, not by accident of insert
+/// order.
+pub fn seed_two_track_meeting(
+    db: &Database,
+    dir: &std::path::Path,
+    title: &str,
+    turns: &[(f64, i64, &str)],
+) -> String {
+    let meeting = db.create_meeting(title, "manual").expect("create meeting");
+    let batch = |track: i64| -> Vec<NewMeetingSegment> {
+        turns
+            .iter()
+            .filter(|(_, t, _)| *t == track)
+            .map(|(start, t, text)| {
+                NewMeetingSegment::new(*start, *start + 3.5, *text).on_track(*t)
+            })
+            .collect()
+    };
+    for track in [
+        wilson_voice_lib::meetings::MIC_TRACK,
+        wilson_voice_lib::meetings::SYSTEM_TRACK,
+    ] {
+        let segments = batch(track);
+        if !segments.is_empty() {
+            db.append_meeting_segments(&meeting.id, &segments)
+                .expect("append segments");
+        }
+    }
+    let mic_wav = dir.join(format!("{}.t0.wav", meeting.id));
+    let sys_wav = dir.join(format!("{}.t1.wav", meeting.id));
+    std::fs::write(&mic_wav, b"RIFF....WAVEfake").expect("write mic wav");
+    std::fs::write(&sys_wav, b"RIFF....WAVEfake").expect("write sys wav");
+    let seconds = turns
+        .iter()
+        .map(|(start, _, _)| *start + 4.0)
+        .fold(0.0f64, f64::max);
+    db.finish_meeting(&meeting.id, seconds, Some(&mic_wav))
+        .expect("finish meeting");
+    db.set_meeting_sys_wav_path(&meeting.id, Some(&sys_wav))
+        .expect("set sys wav path");
+    db.set_meeting_state(
+        &meeting.id,
+        wilson_voice_lib::meetings::MeetingState::Complete,
+        None,
+    )
+    .expect("set state");
+    meeting.id
+}
+
 /// Count rows in one of FTS5's shadow tables. `_docsize` holds exactly one row
 /// per indexed document, which makes it the honest answer to "is this phrase
 /// still in the index" — a MATCH returning nothing could also mean the query
