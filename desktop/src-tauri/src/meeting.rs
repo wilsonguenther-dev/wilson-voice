@@ -3151,6 +3151,18 @@ impl MeetingSession {
         self.tap_rebuilds.lock().clone()
     }
 
+    /// YV110 — the same log as a shared handle, for a surface that reads it on
+    /// a clock of its own.
+    ///
+    /// The control plane's 1 Hz status emit is that surface: it renders row 2's
+    /// banner, so it needs the verdict the moment the watchdog reaches it, and
+    /// it runs on a thread that deliberately holds no reference to the session.
+    /// A snapshot taken at start would say "the tap is fine" for the rest of a
+    /// meeting that lost it.
+    pub fn tap_rebuilds(&self) -> Arc<Mutex<syscapture::TapRebuildLog>> {
+        Arc::clone(&self.tap_rebuilds)
+    }
+
     pub fn plan(&self) -> &PreflightPlan {
         &self.plan
     }

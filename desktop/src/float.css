@@ -475,6 +475,22 @@ body,
   color: #f5f5f7;
 }
 
+/* YV110 — the system-audio banner rows 1 and 2 require. Deliberately two words
+   in the pill (space is measured in pixels there) with the whole sentence on
+   the tooltip and on the accessible label; the main window's recording bar
+   carries it in full. */
+.rec-sysaudio {
+  font: 600 10px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: #f5f5f7;
+  background: hsl(38 92% 50% / 0.22);
+  border: 1px solid hsl(38 92% 50% / 0.45);
+  white-space: nowrap;
+}
+
 .rec-stop {
   display: grid;
   place-items: center;

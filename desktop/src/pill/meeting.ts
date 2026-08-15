@@ -46,6 +46,19 @@ export interface MeetingStatus {
   elapsedLabel?: string;
   captureAvailable: boolean;
   unavailableReason?: string | null;
+  /**
+   * YV110 — the running meeting's honest system-audio sentence, or absent when
+   * both tracks are recording and there is nothing to say.
+   *
+   * Two sentences reach this field, and they are matrix rows 1 and 2: why this
+   * meeting is recording the microphone only (macOS too old, the setup step
+   * never run, permission looks denied), and — for a meeting that DID attach
+   * the call's audio and then lost it — that the track is gone and the mic is
+   * still recording. Rendered rather than logged, because a recording that
+   * quietly captured half of what the user expected is the failure this whole
+   * phase is about.
+   */
+  systemAudio?: string | null;
 }
 
 export const IDLE_MEETING: MeetingStatus = {
@@ -87,6 +100,21 @@ export function elapsedLabel(status: MeetingStatus | null | undefined): string {
 export function recordLabel(status: MeetingStatus): string {
   if (status.recording) return "Stop meeting";
   return "Record this meeting";
+}
+
+/**
+ * The system-audio sentence to show beside a running meeting, or `null`.
+ *
+ * A function rather than a raw field read for the same reason `elapsedLabel` is
+ * one: it is rendered by three surfaces (the pill badge, the main window's
+ * recording bar, and any future meeting detail), and "show it only while
+ * recording" is a rule those three must not each decide for themselves. A
+ * stale badge on an idle app would describe a meeting that is over.
+ */
+export function systemAudioBadge(status: MeetingStatus | null | undefined): string | null {
+  if (!status || !status.recording) return null;
+  const note = status.systemAudio;
+  return note && note.trim().length > 0 ? note : null;
 }
 
 /** Why the control is disabled, or `null` when it is not. */

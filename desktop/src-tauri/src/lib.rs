@@ -4288,7 +4288,12 @@ pub fn run() {
             // someone to do it later: `meeting::MeetingSession` exists and the
             // Record button is wired to it. `tests/capture_engine_is_installed.rs`
             // is what keeps this line here.
-            meeting_control::install_capture_engine(Arc::new(meeting_control::SessionEngine));
+            meeting_control::install_capture_engine(Arc::new(
+                // YV110 — the engine holds the database because a meeting asks
+                // it at T-0 whether this Mac attaches the system-audio track,
+                // and writes back what the meeting actually heard on the way out.
+                meeting_control::SessionEngine::new(state.db.clone()),
+            ));
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),
                 meeting_status_sink(app.handle().clone()),

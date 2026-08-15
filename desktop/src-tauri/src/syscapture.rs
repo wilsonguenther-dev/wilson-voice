@@ -271,11 +271,15 @@
 use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use crate::meeting::{ExternalStream, RtCapture, SessionConfig};
+use crate::meetings::{SetupVerdict, SystemAudioSetup};
+use crate::os_version_gate::SystemAudioGate;
 use crate::rtring::CaptureAnchor;
 
 // ── Budgets and thresholds, each declared exactly once ──────────────────────
@@ -2334,6 +2338,439 @@ pub fn permission_verdict(delivery: &TapDelivery, ran_for: Duration) -> SystemAu
         SystemAudioPermission::LooksDenied
     } else {
         SystemAudioPermission::Unknown
+    }
+}
+
+// ── YV110 · the tap inside a LIVE meeting ──────────────────────────────────
+//
+// Everything above this line was reachable only from a test or from the
+// Settings pre-warm: `start_system_tap` had no caller, `CaptureEnv::tap_liveness`
+// answered `None` for every environment in the tree, and matrix rows 1 and 2
+// were published as `PolicyOnly` naming exactly that gap. This section is the
+// wiring that closes it, and it adds no new seam — it is three small pieces
+// bolted onto ones that already shipped:
+//
+//   1. [`track_b_plan`] — the pure decision a meeting makes at T-0: attach
+//      Track B, or record mic-only and say why. Reads YV101's OS gate and
+//      YV102's setup row and nothing else.
+//   2. [`MeetingTap`] — the consumer half of a running tap: drain the YV100
+//      ring, fold YV104's liveness, hand the block to YV106's
+//      [`crate::meeting::fan_out_tap_block`], and tear down exactly once
+//      through [`teardown`].
+//   3. [`TappedEnv`] — a [`CaptureEnv`] that finally answers `Some` to
+//      `tap_liveness`, which is what makes the ghost watchdog's whole ladder
+//      reachable inside a real meeting instead of only inside its own tests.
+//
+// **What this deliberately does NOT do: run the 7-step rebuild mid-meeting.**
+// The watchdog still decides `RebuildFull`, still logs it, and still degrades
+// to `track_lost` when the budget is spent — row 2's behaviour is honest and
+// reachable. Executing the rebuild is not: a rebuilt tap gets a fresh
+// [`TapClock`] and rebases `host_ns` to zero (that type's own doc comment says
+// so), and YV107's cross-track merge reads exactly that field, so a mid-meeting
+// rebuild would move every post-rebuild span of Track B back to the start of
+// the meeting. Wiring the executor is a real item with a real clock-continuity
+// question in it, not a line this one can slip in, so it is named here rather
+// than half-done: the attempts a meeting logs are attempts the watchdog issued
+// and nothing reported back on, which is what `TapRebuildOutcome::TimedOut`
+// means and what the log will say.
+
+/// The sentence a mic-only meeting carries when the setup step has never run.
+///
+/// Not an error and not a nag: mic-only meeting recording is 22-A and works on
+/// the macOS 12 floor. It names the one step that would add the other half.
+pub const SETUP_REQUIRED_MESSAGE: &str =
+    "Recording your microphone only. Run “Set up meeting recording” in Settings \
+     once to include the other people on the call.";
+
+/// …and when the last setup run hit a CoreAudio failure rather than a denial.
+/// Distinct from [`LOOKS_DENIED_MESSAGE`] for the reason `SetupVerdict` keeps
+/// the two apart: a failure is a bug report, a denial is a Settings trip.
+pub const SETUP_FAILED_MESSAGE: &str =
+    "Recording your microphone only — Yap could not open a system-audio tap the \
+     last time it tried. Run “Set up meeting recording” in Settings again.";
+
+/// How often the consumer drains the tap's RT ring.
+///
+/// The mic's ring holds [`crate::meeting::RING_FRAMES`] (4 s at 48 kHz stereo)
+/// and the tap's is built the same way, so this is two orders of magnitude
+/// inside the overrun budget — chosen for latency of the liveness fold rather
+/// than for capacity. It is a plain sleep loop and not the 1 Hz control-plane
+/// ticker because those two cadences are unrelated: one drives a clock a human
+/// reads, this one drives a ring an IOProc is filling.
+pub const TAP_PUMP_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Does this meeting attach Track B, and if not, what does it say?
+///
+/// Two variants and no third: there is no "attach and hope" state, and no
+/// silent mic-only. A meeting that records one track always carries the
+/// sentence explaining why it recorded one track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackBPlan {
+    /// Two tracks: the OS gate passed and YV102's setup row says macOS has been
+    /// asked about system audio.
+    Attach,
+    /// One track, and the honest badge the matrix rows 1/12 require.
+    MicOnly { badge: &'static str },
+}
+
+impl TrackBPlan {
+    pub fn attaches(self) -> bool {
+        matches!(self, TrackBPlan::Attach)
+    }
+
+    /// The sentence to show, or `None` when both tracks are recording.
+    pub fn badge(self) -> Option<&'static str> {
+        match self {
+            TrackBPlan::Attach => None,
+            TrackBPlan::MicOnly { badge } => Some(badge),
+        }
+    }
+
+    /// What `SessionConfig::tracks` this plan opens the journal with.
+    pub fn tracks(self) -> usize {
+        if self.attaches() {
+            2
+        } else {
+            1
+        }
+    }
+}
+
+/// **The T-0 decision, pure.** OS gate first, then what the setup step learned.
+///
+/// The gate comes first because it is the only one of the two that no setting
+/// on the machine can change: on macOS 13 there is no process-tap API to ask
+/// with, and saying "run the setup step" there would send a user to a button
+/// that cannot help them.
+///
+/// ## Why `Ran` attaches
+///
+/// [`SetupVerdict::Granted`] is *positive proof* — a non-zero sample actually
+/// arrived — and it is rare on purpose: YV102's pre-warm holds the tap for
+/// 200 ms, and 200 ms of a quiet Mac produces no proof of anything. Requiring
+/// `Granted` here would mean the second track never turns on for anybody whose
+/// Mac happened to be silent while they read the Settings step, which is nearly
+/// everybody. `Ran` says macOS has been asked, and attaching is how the answer
+/// is discovered: a tap that opens under a denial delivers zeros forever, which
+/// is exactly matrix row 1 — the meeting keeps recording the mic, the
+/// discriminator says "looks denied" at the end, and the setup row is rewritten
+/// so the NEXT meeting is mic-only with the denied badge from the start.
+///
+/// [`SetupVerdict::LooksDenied`] is the one verdict that refuses to attach:
+/// TCC never re-asks, so opening a tap that is known to deliver nothing costs a
+/// real CoreAudio aggregate device and buys a second wav of digital silence.
+pub fn track_b_plan(gate: SystemAudioGate, setup: &SystemAudioSetup) -> TrackBPlan {
+    if !gate.is_available() {
+        // Row 12's sentence, from the one place it is written.
+        return TrackBPlan::MicOnly {
+            badge: crate::os_version_gate::SYSTEM_AUDIO_REQUIREMENT,
+        };
+    }
+    match setup.verdict {
+        SetupVerdict::Granted | SetupVerdict::Ran => TrackBPlan::Attach,
+        SetupVerdict::LooksDenied => TrackBPlan::MicOnly {
+            badge: LOOKS_DENIED_MESSAGE,
+        },
+        SetupVerdict::Failed => TrackBPlan::MicOnly {
+            badge: SETUP_FAILED_MESSAGE,
+        },
+        // `Unavailable` was written by a run on an OS below 14.4. The gate above
+        // is the live answer to that question — a user who upgraded macOS must
+        // not be stuck behind a stale row — so this is treated as "never run".
+        SetupVerdict::NotRun | SetupVerdict::Unavailable => TrackBPlan::MicOnly {
+            badge: SETUP_REQUIRED_MESSAGE,
+        },
+    }
+}
+
+/// Everything the pump mutates, behind one lock.
+struct TapPumpState {
+    live: TapLiveness,
+    last_nonzero: Duration,
+    last_pump: Duration,
+    delivery: TapDelivery,
+    env: TapEnvironment,
+    /// The most recent anchor's host time — the third element of
+    /// `CaptureEnv::tap_liveness`, and what the rebuild log stamps attempts with.
+    host_ns: u64,
+    /// Reused every tick. The drain path allocates nothing in steady state, for
+    /// the same reason `MeetingCapture`'s does: it runs 50 times a second for
+    /// three hours.
+    samples: Vec<f32>,
+    anchors: Vec<CaptureAnchor>,
+}
+
+/// A system-audio tap that a MEETING is holding open.
+///
+/// Owns two things and no more: the ring the IOProc is stamping into, and the
+/// teardown that must run exactly once. The CoreAudio object graph itself stays
+/// inside [`imp::SystemTap`] — this type never sees it, which is what lets a
+/// test drive the entire wiring over [`FakePlatform`-shaped](TapPlatform)
+/// plumbing on a Linux CI box.
+pub struct MeetingTap {
+    ring: Arc<RtCapture>,
+    format: TapFormat,
+    state: Mutex<TapPumpState>,
+    /// `None` once the teardown has run. Taking it is what makes [`MeetingTap::stop`]
+    /// idempotent, so the ordinary stop path and the `Drop` backstop cannot both
+    /// destroy the same aggregate device.
+    teardown: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl MeetingTap {
+    /// Wrap an already-running tap. `teardown` is the four calls of
+    /// [`TEARDOWN_ORDER`] — in production, `imp::SystemTap::stop`.
+    pub fn new(
+        ring: Arc<RtCapture>,
+        format: TapFormat,
+        teardown: impl FnOnce() + Send + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            ring,
+            format,
+            state: Mutex::new(TapPumpState {
+                live: TapLiveness::started(),
+                last_nonzero: Duration::ZERO,
+                last_pump: Duration::ZERO,
+                delivery: TapDelivery::default(),
+                env: TapEnvironment::default(),
+                host_ns: 0,
+                samples: Vec::new(),
+                anchors: Vec::new(),
+            }),
+            teardown: Mutex::new(Some(Box::new(teardown))),
+        })
+    }
+
+    pub fn format(&self) -> TapFormat {
+        self.format
+    }
+
+    /// The ring the IOProc stamps into. Public so the wiring can assert it is
+    /// the one the tap's own format built (see [`capture_matches_format`]).
+    pub fn ring(&self) -> &Arc<RtCapture> {
+        &self.ring
+    }
+
+    /// **The drain.** Everything the IOProc has left in the ring since the last
+    /// call goes to track 1 of whatever meeting is recording, and the same
+    /// block is folded into YV104's liveness on the way past.
+    ///
+    /// Returns the number of native frames handed over — 0 on an idle tick,
+    /// which is a fact the liveness clocks need rather than a no-op.
+    pub fn pump(&self, elapsed: Duration) -> usize {
+        let mut guard = self.state.lock();
+        let state = &mut *guard;
+        let tick = elapsed.saturating_sub(state.last_pump);
+        state.last_pump = elapsed;
+        state.samples.clear();
+        state.anchors.clear();
+        // Anchors FIRST, for the reason `rt_capture_callback` publishes them
+        // last: an anchor is only ever pushed after the samples it describes,
+        // so draining anchors first can never claim frames the sample ring has
+        // not published yet.
+        self.ring.anchors.drain_into(&mut state.anchors);
+        self.ring.samples.drain_into(&mut state.samples);
+        if state.samples.is_empty() && state.anchors.is_empty() {
+            fold_idle(&mut state.live, elapsed, state.last_nonzero, tick);
+            return 0;
+        }
+
+        let TapPumpState {
+            live,
+            last_nonzero,
+            delivery,
+            host_ns,
+            samples,
+            anchors,
+            ..
+        } = state;
+
+        // The permission discriminator wants per-callback evidence, so the
+        // block is walked by anchor exactly the way the pre-warm walks it.
+        let channels = usize::from(self.ring.channels()).max(1);
+        let mut offset = 0usize;
+        for anchor in anchors.iter() {
+            let start = offset.min(samples.len());
+            let end = (start + anchor.frames as usize * channels).min(samples.len());
+            delivery.observe(anchor, &samples[start..end]);
+            offset = end;
+            *host_ns = anchor.host_ns;
+        }
+        fold_block(live, samples, anchors, elapsed, last_nonzero);
+
+        // Track 1 of the recording meeting, or nowhere at all: `fan_out_tap_block`
+        // is a no-op when no meeting is registered and drops the block when the
+        // meeting is mic-only. Neither case can reach track 0.
+        crate::meeting::fan_out_tap_block(samples, anchors);
+        samples.len() / channels
+    }
+
+    /// What the ghost watchdog reads once a minute. Exactly the tuple
+    /// `CaptureEnv::tap_liveness` is declared to return.
+    pub fn liveness(&self) -> (TapLiveness, TapEnvironment, u64) {
+        let state = self.state.lock();
+        (state.live, state.env, state.host_ns)
+    }
+
+    /// YV103's observation, handed in from outside: does the aggregate still
+    /// point at the device the machine is playing through, and is anything
+    /// playing at all? Left at [`TapEnvironment::default`] until something
+    /// knows better — an unread probe must never become evidence.
+    pub fn observe_environment(&self, env: TapEnvironment) {
+        self.state.lock().env = env;
+    }
+
+    /// The running permission evidence, folded over everything this tap has
+    /// delivered. `ran_for` is how long it has been open.
+    pub fn permission(&self, ran_for: Duration) -> SystemAudioPermission {
+        let state = self.state.lock();
+        permission_verdict(&state.delivery, ran_for)
+    }
+
+    pub fn delivery(&self) -> TapDelivery {
+        self.state.lock().delivery
+    }
+
+    /// Run the teardown, once. Idempotent, and safe to call from any thread.
+    pub fn stop(&self) {
+        let teardown = self.teardown.lock().take();
+        if let Some(teardown) = teardown {
+            teardown();
+        }
+    }
+}
+
+impl Drop for MeetingTap {
+    /// The backstop, not the plan — the same posture `imp::SystemTap` takes and
+    /// for the same reason: a panic anywhere in the meeting stack must not
+    /// leave a private aggregate device holding the user's output device.
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// The pump's thread, and the only thing that owns it.
+///
+/// Separate from [`MeetingSession`](crate::meeting::MeetingSession)'s watchdog
+/// thread because the two cadences are three orders of magnitude apart: the
+/// watchdog thinks once a minute, this drains a ring 50 times a second.
+pub struct TapPumpThread {
+    tap: Arc<MeetingTap>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    started: Instant,
+}
+
+impl TapPumpThread {
+    /// Start draining. The clock starts here, which is within a millisecond of
+    /// the session's own — the liveness durations are all differences inside
+    /// this domain, so the two never have to agree on an origin.
+    pub fn spawn(tap: Arc<MeetingTap>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let started = Instant::now();
+        let handle = {
+            let tap = Arc::clone(&tap);
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("wv-meeting-tap-pump".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        tap.pump(started.elapsed());
+                        std::thread::sleep(TAP_PUMP_INTERVAL);
+                    }
+                })
+                .ok()
+        };
+        Self {
+            tap,
+            stop,
+            handle,
+            started,
+        }
+    }
+
+    pub fn tap(&self) -> &Arc<MeetingTap> {
+        &self.tap
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Stop the tap and hand the last of its audio to the meeting, in the one
+    /// order that loses nothing:
+    ///
+    /// 1. park the pump thread (so nothing races the next two steps),
+    /// 2. **tear the tap down** — [`TEARDOWN_ORDER`], through the same
+    ///    `teardown()` YV104's rebuild sequence begins with — so the IOProc has
+    ///    stopped and the ring's contents are final,
+    /// 3. drain what is left into the journal, which is still open because the
+    ///    session has not been stopped yet.
+    ///
+    /// Draining before the teardown would leave whatever arrived in between on
+    /// the floor; stopping the session first would drop it, because
+    /// `fan_out_tap_block` has nowhere to put a block once the capture is
+    /// deregistered.
+    pub fn finish(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        self.tap.stop();
+        self.tap.pump(self.started.elapsed());
+    }
+}
+
+impl Drop for TapPumpThread {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.finish();
+        }
+    }
+}
+
+/// The shipping [`CaptureEnv`] for a two-track meeting: the machine's readings,
+/// plus the tap's liveness.
+///
+/// This is the type whose existence flips matrix row 2. Everything YV104 built
+/// — the rebuild ladder, the budget, the `track_lost` degrade, the verdict that
+/// refuses to blame permission without evidence — has been reachable only from
+/// its own tests, because `CaptureEnv::tap_liveness`'s default is `None` and
+/// nothing overrode it. A tap that cannot exist cannot die.
+pub struct TappedEnv {
+    inner: crate::meeting::SystemEnv,
+    tap: Arc<MeetingTap>,
+}
+
+impl TappedEnv {
+    pub fn new(path: PathBuf, tap: Arc<MeetingTap>) -> Self {
+        Self {
+            inner: crate::meeting::SystemEnv { path },
+            tap,
+        }
+    }
+}
+
+impl crate::meeting::CaptureEnv for TappedEnv {
+    fn free_bytes(&self) -> u64 {
+        self.inner.free_bytes()
+    }
+
+    fn battery(&self) -> crate::meeting::BatterySnapshot {
+        self.inner.battery()
+    }
+
+    fn thermal(&self) -> crate::meeting::ThermalState {
+        self.inner.thermal()
+    }
+
+    fn device_failed(&self) -> bool {
+        self.inner.device_failed()
+    }
+
+    fn tap_liveness(&self) -> Option<(TapLiveness, TapEnvironment, u64)> {
+        Some(self.tap.liveness())
     }
 }
 

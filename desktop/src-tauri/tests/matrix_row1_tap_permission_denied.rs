@@ -4,21 +4,26 @@
 //! "system audio unavailable", never aborted, with one deep link to the right
 //! Settings pane.
 //!
-//! Published as `PolicyOnly` with **no owning PR** — #125 (YV102) was named
-//! here until it merged, and what merged was the pre-warm, not this row — and
-//! this file is what makes that publication checkable from three ends:
+//! **Published as `Test` since YV110, and the promotion was forced rather than
+//! chosen.** This file used to assert that `syscapture::start_system_tap` had
+//! no caller — the row's own tripwire, aimed at the one thing that was missing.
+//! YV110 gave it one (`meeting_control::open_meeting_tap`, from
+//! `SessionEngine::start`), the assertion went red with its own
+//! promote-the-row instruction, and the row was promoted. So the file now
+//! drives four things instead of three:
 //!
-//!   * the **decision** — can this app tell a denied tap from a granted one
-//!     that had nothing to record? — is driven here against the shipping
-//!     discriminator YV104 merged, including the case where getting it wrong
-//!     means accusing a user's privacy settings of something that never
-//!     happened;
-//!   * the **absence** — `syscapture::start_system_tap`, the thing that would
-//!     open the tap a denial could be observed on, has no caller in `src/` — is
-//!     asserted here too, so the row cannot keep saying "not wired" after
-//!     somebody starts a tap inside a meeting;
-//!   * the **half that did ship** — the deep link, and the fact that its anchor
-//!     is the one verified on the target OS rather than the plan's candidate.
+//!   * the **decision at T-0** — `syscapture::track_b_plan`, the shipping
+//!     function a meeting asks whether it may attach Track B, and the sentence
+//!     it hands back when the answer is no. This is the row's subject: what row
+//!     1 requires is that a denial costs the second track and nothing else;
+//!   * the **discriminator** — can this app tell a denied tap from a granted
+//!     one that had nothing to record? — driven against the shipping fold YV104
+//!     merged, including the case where getting it wrong means accusing a
+//!     user's privacy settings of something that never happened;
+//!   * the **caller**, now asserted present rather than absent, in the same
+//!     scan that used to assert the opposite;
+//!   * the **deep link**, and the fact that its anchor is the one verified on
+//!     the target OS rather than the plan's candidate.
 //!
 //! **Why there is no tap in this file.** A real `AudioHardwareCreateProcessTap`
 //! needs the TCC grant and a 14.4 Mac, and CI has neither. That is not a
@@ -27,16 +32,21 @@
 //! denial is replayed here as what it actually looks like — an IOProc that
 //! fires on cadence and delivers buffers of exact zeros, forever, while
 //! something is audibly playing — through the same `fold_block` the drain path
-//! uses, so the numbers under test are the numbers the app would compute.
+//! uses, so the numbers under test are the numbers the app would compute. The
+//! end-to-end wiring over a fake CoreAudio platform is
+//! `tests/meeting_track_b_wiring.rs`; the real-Zoom demo is manual and lives in
+//! `docs/MEETING-DEMO.md`.
 
 use std::time::Duration;
 
 use wilson_voice_lib::meeting::WATCHDOG_INTERVAL;
 use wilson_voice_lib::meeting_matrix::{Coverage, ROWS};
+use wilson_voice_lib::meetings::{SetupVerdict, SystemAudioSetup};
+use wilson_voice_lib::os_version_gate::{system_audio_gate, OsVersion, SystemAudioGate};
 use wilson_voice_lib::rtring::CaptureAnchor;
 use wilson_voice_lib::syscapture::{
-    fold_block, GhostWatchdog, TapEnvironment, TapLiveness, TapVerdict, TapWatchdogAction,
-    MAX_TAP_REBUILDS_PER_MEETING,
+    fold_block, track_b_plan, GhostWatchdog, TapEnvironment, TapLiveness, TapVerdict,
+    TapWatchdogAction, TrackBPlan, LOOKS_DENIED_MESSAGE, MAX_TAP_REBUILDS_PER_MEETING,
 };
 
 #[path = "support/callsite.rs"]
@@ -223,34 +233,66 @@ fn nothing_this_row_can_produce_ends_the_meeting() {
     // adds one, this file stops compiling and its author has to come here.
 }
 
-/// **The absence half, re-aimed by YV102 at the thing that is actually
-/// missing.**
+/// **The row's behaviour, as the shipping app now performs it.**
 ///
-/// This test used to assert `syscapture::prewarm_tap` was absent, and #125
-/// shipped it: the Settings step calls it, so that assertion went red exactly
-/// as designed. The instruction it printed — *promote the row* — is the wrong
-/// move here, and writing down why is the point of this comment.
-///
-/// Row 1 is a denial **at start**. The pre-warm asks the same question minutes
-/// earlier, from Settings, with no meeting running; it cannot badge a meeting
-/// that has not begun, and a user who never opens that step is exactly the user
-/// row 1 describes. The call that would put this row in effect is
-/// `syscapture::start_system_tap` — a tap inside a real meeting — and it has no
-/// caller anywhere in `src/`. Same missing wiring row 2 names, and no item in
-/// the 22-B backlog owns it, which is why the cell below is unowned.
-///
-/// The tripwire is therefore not deleted, it is pointed at the truth: the day
-/// something opens a tap in a meeting, this goes red and row 1 becomes a `Test`
-/// row with a real surface to drive.
+/// A meeting asks exactly one question about system audio before it starts, and
+/// this is it. A denial answers `MicOnly` with a sentence — never an error,
+/// never a refusal, never silence — and that is the whole of row 1: the meeting
+/// goes ahead with the microphone and says what it is missing.
 #[test]
-fn nothing_opens_a_tap_in_a_meeting_so_row_1_is_still_not_wired() {
-    // `syscapture.rs` DEFINES `start_system_tap`; a definition is not a call
-    // site (the rule `callsite.rs` and `matrix_coverage.rs` both state).
-    let found = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
+fn a_denied_tap_costs_the_second_track_and_nothing_else() {
+    let denied = SystemAudioSetup::from_row(Some(SystemAudioSetup::encode(
+        SetupVerdict::LooksDenied,
+        "2026-08-15T00:00:00Z",
+    )));
+    let plan = track_b_plan(SystemAudioGate::Available, &denied);
+    assert_eq!(
+        plan,
+        TrackBPlan::MicOnly {
+            badge: LOOKS_DENIED_MESSAGE
+        },
+        "row 1 is a mic-only MEETING, not a refused one"
+    );
+    assert_eq!(plan.tracks(), 1, "one track, and the meeting still runs");
+    let badge = plan.badge().expect("a mic-only meeting must say why");
     assert!(
-        found.is_empty(),
-        "{}",
-        callsite::promote_the_row("1", "start_system_tap", &found)
+        badge.contains("System Settings"),
+        "row 1 ends with `one deep link to the right Settings pane`, so the sentence has to name \
+         the recovery: {badge}"
+    );
+    assert!(
+        !badge.contains("cannot record") && !badge.contains("unavailable."),
+        "the meeting is NOT unavailable — it is recording: {badge}"
+    );
+
+    // And the same row on a Mac too old for the API says the OTHER sentence:
+    // no setting on that machine can change it, so sending the user to Settings
+    // would be a dead end (that half is row 12's, and the split is deliberate).
+    assert_eq!(
+        track_b_plan(system_audio_gate(OsVersion::new(13, 6, 0)), &denied),
+        TrackBPlan::MicOnly {
+            badge: wilson_voice_lib::os_version_gate::SYSTEM_AUDIO_REQUIREMENT
+        }
+    );
+}
+
+/// **The tripwire, inverted.** It used to assert `start_system_tap` had no
+/// caller; the day it got one is the day this row became real, so it now
+/// asserts the caller is still there.
+///
+/// Deleting the check when it fired would have been the failure mode
+/// `matrix_coverage.rs` warns about in as many words. Keeping it pointed the
+/// other way costs nothing and catches the regression that matters now: a
+/// refactor that quietly drops the call would leave this row published as
+/// `Test` describing a meeting that opens no tap.
+#[test]
+fn a_meeting_really_does_open_a_tap_now() {
+    let callers = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
+    assert!(
+        !callers.is_empty(),
+        "nothing in `src/` calls `start_system_tap` any more. Row 1 is published as `Test`, which \
+         claims a meeting opens a tap that a denial can be observed on — if the caller is really \
+         gone, this row goes back to `Coverage::PolicyOnly` rather than staying green."
     );
 }
 
@@ -300,25 +342,19 @@ fn the_deep_link_half_of_the_row_ships_and_points_at_the_verified_anchor() {
     );
 }
 
-/// …and the published cell says so: no owner, and the call site it is waiting
-/// for is the one this file just proved absent.
+/// …and the published cell says what the app now does, naming the decision this
+/// file drives.
 #[test]
-fn the_published_cell_admits_that_nobody_owns_the_missing_wiring() {
+fn the_published_cell_names_the_decision_the_app_now_makes() {
     let row = ROWS.iter().find(|r| r.id == "1").expect("row 1");
     assert_eq!(
         row.coverage,
-        Coverage::PolicyOnly {
+        Coverage::Test {
             test: "matrix_row1_tap_permission_denied.rs",
-            wiring_pr: None,
-            absent_call_site: "start_system_tap",
+            subject: "track_b_plan",
+            subject_module: "syscapture.rs",
         }
     );
     let cell = row.coverage.cell();
-    assert!(cell.contains("NOT WIRED"), "{cell}");
-    assert!(cell.contains("start_system_tap"), "{cell}");
-    assert!(
-        !cell.contains("#125"),
-        "#125 merged; a cell still naming it as the pending owner reads as progress and \
-         describes none: {cell}"
-    );
+    assert!(!cell.contains("NOT WIRED"), "{cell}");
 }

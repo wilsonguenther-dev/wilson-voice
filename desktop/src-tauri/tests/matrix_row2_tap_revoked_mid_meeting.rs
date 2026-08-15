@@ -3,8 +3,8 @@
 //! Required behaviour (plan §6): log a `track_lost` marker into the meeting,
 //! keep Track A, banner in the pill. **Do not stop the meeting.**
 //!
-//! This row is the far end of YV104's ghost watchdog, and the two things it has
-//! to prove are opposite in shape:
+//! This row is the far end of YV104's ghost watchdog, and the three things it
+//! has to prove are:
 //!
 //!   1. the degrade **happens** — a tap that delivered real audio and then went
 //!      to zeros gets its whole rebuild budget and then a `track_lost` verdict
@@ -12,28 +12,44 @@
 //!   2. the degrade **stays a degrade** — nothing on this path can end the
 //!      meeting, and that is driven through `meeting::watchdog_tick` itself,
 //!      the 60 s rule the session actually runs, with the mic track healthy
-//!      throughout.
+//!      throughout;
+//!   3. the ladder is **reachable in the app** — which is what this row spent
+//!      four merges waiting for.
 //!
-//! Published as `PolicyOnly` with **#123 (YV100)** owning the wiring, because
-//! the branch is unreachable in the shipping app: `WatchdogInputs::tap` comes
-//! from `CaptureEnv::tap_liveness`, whose default is `None` and which no
-//! environment in the tree overrides. A tap that cannot exist cannot die. The
-//! last test here is what keeps that publication honest as the tree changes.
+//! **Published as `Test` since YV110, and (3) is the whole of what changed.**
+//! `WatchdogInputs::tap` comes from `CaptureEnv::tap_liveness`, whose default is
+//! `None`; until YV110 no environment in the tree overrode it, so the branch was
+//! unreachable and a tap that cannot exist cannot die. `syscapture::TappedEnv`
+//! — this row's published subject — is the first shipping `CaptureEnv` that
+//! answers `Some`, and it answers with the fold the meeting's own drain
+//! computes. The last two tests here drive that env directly, so the row's
+//! promotion rests on the same kind of evidence its demotion used to.
+//!
+//! One thing this file does NOT claim, and YV110 says so in its own module
+//! docs: the seven CoreAudio calls of a mid-meeting rebuild are decided and
+//! logged, not executed. The behaviour row 2 publishes — marker, mic keeps
+//! recording, banner, never stopped — is what ships.
 
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use wilson_voice_lib::meeting::{
-    watchdog_tick, ThermalState, WatchdogAction, WatchdogInputs, WATCHDOG_INTERVAL,
+    watchdog_tick, CaptureEnv, RtCapture, ThermalState, WatchdogAction, WatchdogInputs,
+    WATCHDOG_INTERVAL,
 };
 use wilson_voice_lib::meeting_matrix::{Coverage, ROWS};
 use wilson_voice_lib::rtring::CaptureAnchor;
 use wilson_voice_lib::syscapture::{
-    fold_block, GhostWatchdog, TapEnvironment, TapLiveness, TapVerdict, TapWatchdogAction,
-    TapWatchdogInputs, MAX_TAP_REBUILDS_PER_MEETING,
+    fold_block, open_tap, teardown, GhostWatchdog, MeetingTap, TapEnvironment, TapLiveness,
+    TapResources, TapVerdict, TapWatchdogAction, TapWatchdogInputs, TappedEnv,
+    MAX_TAP_REBUILDS_PER_MEETING,
 };
 
 #[path = "support/callsite.rs"]
 mod callsite;
+#[path = "support/tap.rs"]
+mod fake;
 
 const RATE: u32 = 48_000;
 const BLOCK_FRAMES: usize = 480;
@@ -269,85 +285,153 @@ fn the_shipping_watchdog_never_stops_a_meeting_over_a_dead_tap() {
     );
 }
 
-/// **The absence half.** Row 2's behaviour needs a tap to lose, and nothing in
-/// `src/` starts one.
+/// **The presence half**, which is this file's old absence half pointed the
+/// other way the day the wiring landed.
 ///
-/// `start_system_tap` itself now exists — YV100 (#123) merged the tap module —
-/// so the exclusion this check has always been entitled to is finally load
-/// bearing: `syscapture.rs` is where the symbol is *defined*, and
-/// `callsite::call_sites`'s own doc comment is that *"a symbol's own definition
-/// is not a call site"*. Rows 3 and 14 have passed their defining module here
-/// since YV105 wrote them; row 2 passed `&[]` only because at that commit there
-/// was nothing to exclude.
-///
-/// What this asserts is therefore unchanged and is the thing that matters: no
-/// file in the shipping tree **calls** it. The day one does, this goes red with
-/// the promote-the-row instruction, exactly as designed.
+/// `start_system_tap` is called from `src/` now (`meeting_control`'s
+/// `open_meeting_tap`, from `SessionEngine::start`), so a meeting really does
+/// have a tap to lose. Deleting the check when it fired would have been the
+/// failure mode `matrix_coverage.rs` warns about; keeping it inverted catches
+/// the regression that matters now — a refactor that drops the call would leave
+/// this row published as `Test` about a meeting with no second track.
 #[test]
-fn start_system_tap_is_still_absent_so_row_2_is_not_wired() {
-    let found = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
+fn a_meeting_really_does_open_a_tap_now() {
+    let callers = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
     assert!(
-        found.is_empty(),
-        "{}",
-        callsite::promote_the_row("2", "start_system_tap", &found)
+        !callers.is_empty(),
+        "nothing in `src/` calls `start_system_tap` any more, so no meeting has a system-audio \
+         track to lose. Row 2 must go back to `Coverage::PolicyOnly` rather than stay green."
     );
 
-    // And the exclusion is not a blanket amnesty for that file: the definition
-    // is skipped, a call from anywhere else is not. Proved rather than trusted,
-    // because "we excluded the module the tap lives in" would otherwise be
-    // indistinguishable from "we stopped checking".
+    // The exclusion is not a blanket amnesty for that file: the definition is
+    // skipped, a call from anywhere else is not.
     let syscapture = std::fs::read_to_string(callsite::src_dir().join("syscapture.rs"))
         .expect("read syscapture.rs");
     assert!(
         callsite::mentions_as_code(&syscapture, "start_system_tap"),
-        "the symbol must really be defined there, or this exclusion is hiding nothing          and the assertion above is vacuous"
+        "the symbol must really be defined there, or this exclusion is hiding nothing"
     );
 }
 
-/// The same fact from the other side, and the more important one, because it is
-/// the reason the branch above is dead code in the app: no `CaptureEnv` in the
-/// shipping tree ever returns a tap liveness, so `WatchdogInputs::tap` is
-/// `None` on every real tick.
+/// A tap the meeting can lose, with no CoreAudio: YV100's real setup state
+/// machine over its fake platform, wrapped in the shipping `MeetingTap`.
+fn attached_tap() -> (Arc<MeetingTap>, Arc<RtCapture>) {
+    let mut platform = fake::FakePlatform {
+        format: wilson_voice_lib::syscapture::TapFormat {
+            sample_rate: RATE,
+            channels: 1,
+        },
+        ..fake::FakePlatform::default()
+    };
+    let open = open_tap(&mut platform, Some(7), "row2-uid", "Yap meeting capture").expect("opens");
+    let ring = platform.bound_capture.clone().expect("bound ring");
+    let platform = std::sync::Mutex::new(platform);
+    let mut resources: TapResources = open.resources;
+    let tap = MeetingTap::new(Arc::clone(&ring), open.format, move || {
+        teardown(
+            &mut *platform.lock().expect("fake platform"),
+            &mut resources,
+        );
+    });
+    (tap, ring)
+}
+
+/// **The row's reachability, which is what YV110 changed.**
+///
+/// The liveness the ladder runs on is no longer assembled by a test: it comes
+/// out of the shipping `CaptureEnv` a two-track meeting is configured with,
+/// folded from the blocks that meeting's own drain handed over. A tap that
+/// delivered a minute of real audio and then went quiet reaches
+/// `meeting::watchdog_tick` as a `Tap` action — never a `Stop`.
 #[test]
-fn no_shipping_capture_env_supplies_a_tap_liveness_yet() {
-    let meeting = std::fs::read_to_string(callsite::src_dir().join("meeting.rs")).expect("read");
-    let overrides: Vec<&str> = meeting
-        .lines()
-        .filter(|l| callsite::code_only(l).contains("fn tap_liveness"))
-        .collect();
-    assert_eq!(
-        overrides.len(),
-        1,
-        "`tap_liveness` is declared more than once in meeting.rs — if that is an impl on a real \
-         environment rather than the trait's own default, row 2 has a producer and must be \
-         promoted: {overrides:?}"
-    );
-    let others = callsite::call_sites("tap_liveness", &["meeting.rs"]);
+fn the_shipping_environment_supplies_the_liveness_this_row_runs_on() {
+    let (tap, ring) = attached_tap();
+    let env = TappedEnv::new(std::path::PathBuf::from("."), Arc::clone(&tap));
+
+    // A minute of the call, captured properly.
+    for i in 0..100u64 {
+        let block: Vec<f32> = (0..BLOCK_FRAMES)
+            .map(|n| (n as f32 / BLOCK_FRAMES as f32) - 0.5)
+            .collect();
+        wilson_voice_lib::meeting::rt_capture_callback(&ring, &block, |s| s, i * 10_000_000);
+    }
+    tap.pump(WATCHDOG_INTERVAL);
+    let (live, _, host_ns) = env.tap_liveness().expect("a two-track meeting has a tap");
     assert!(
-        others.is_empty(),
-        "{}",
-        callsite::promote_the_row("2", "tap_liveness", &others)
+        live.ever_nonzero,
+        "the discriminator that separates this row from row 1 has to be fed by the real drain"
     );
+    assert!(
+        host_ns > 0,
+        "the anchor's host time reaches the rebuild log"
+    );
+
+    // …and then it dies. Every subsequent drain finds an empty ring, which is
+    // what a dead IOProc looks like from the consumer side.
+    let mut ghost = GhostWatchdog::new();
+    let mut saw_degrade = false;
+    for minute in 2..=20 {
+        let elapsed = WATCHDOG_INTERVAL * minute;
+        tap.pump(elapsed);
+        let (liveness, tap_env, host_ns) = env.tap_liveness().expect("still attached");
+        let action = watchdog_tick(&WatchdogInputs {
+            elapsed,
+            free_bytes: ROOMY_DISK,
+            device_failed: false,
+            // Track A is delivering perfectly throughout — the mic is fine, only
+            // the call's audio is gone.
+            since_last_block: Duration::ZERO,
+            thermal: ThermalState::Nominal,
+            cap_warned: true,
+            tap: Some(TapWatchdogInputs {
+                elapsed,
+                liveness,
+                env: tap_env,
+                state: ghost.state(),
+            }),
+        });
+        match action {
+            WatchdogAction::Stop(reason) => panic!(
+                "matrix row 2: the meeting was STOPPED over a system-audio tap at {elapsed:?} \
+                 ({reason}) — with liveness read from the SHIPPING environment"
+            ),
+            WatchdogAction::Tap(tap_action) => {
+                ghost.apply(tap_action, elapsed, liveness, tap_env, host_ns);
+                saw_degrade |= tap_action.is_degrade();
+            }
+            WatchdogAction::Continue | WatchdogAction::WarnApproachingCap => {}
+        }
+    }
+    assert!(
+        saw_degrade,
+        "a tap that stopped delivering must reach `track_lost` through the shipping env, or this \
+         row is published as covered by a path the app cannot walk"
+    );
+    assert_eq!(
+        ghost.log().verdict(),
+        Some(TapVerdict::GhostTapUnrecovered),
+        "it delivered real audio first, so this is OS-4's ghost and NOT a permission problem"
+    );
+    assert!(!ghost.log().verdict().unwrap().blames_permission());
+    assert!(ghost
+        .log()
+        .verdict()
+        .unwrap()
+        .banner()
+        .contains("microphone"));
 }
 
 #[test]
-fn the_published_cell_names_the_owner_of_the_missing_wiring() {
+fn the_published_cell_names_the_environment_that_made_this_row_reachable() {
     let row = ROWS.iter().find(|r| r.id == "2").expect("row 2");
     assert_eq!(
         row.coverage,
-        Coverage::PolicyOnly {
+        Coverage::Test {
             test: "matrix_row2_tap_revoked_mid_meeting.rs",
-            // No PR owns this any more: #123 landed the tap module and nothing
-            // in the 22-B backlog calls it. `None` is the honest owner, and it
-            // is also the value that puts this row under `matrix_coverage`'s
-            // standing unowned-row tripwire.
-            wiring_pr: None,
-            absent_call_site: "start_system_tap",
+            subject: "TappedEnv",
+            subject_module: "syscapture.rs",
         }
     );
     let cell = row.coverage.cell();
-    assert!(cell.contains("NOT WIRED"), "{cell}");
-    assert!(cell.contains("start_system_tap"), "{cell}");
-    // The cell must not go on naming a merged PR as the thing still to come.
-    assert!(!cell.contains("#123"), "{cell}");
+    assert!(!cell.contains("NOT WIRED"), "{cell}");
 }

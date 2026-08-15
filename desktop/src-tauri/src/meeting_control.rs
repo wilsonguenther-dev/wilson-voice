@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::meeting_energy::{self, BatteryReading, MeetingDiagnostics, ThermalState};
 use crate::meetings::{self, MeetingState};
+use crate::syscapture;
 
 /// OS-12 fix (1): one elapsed emit per second, with the canvas parked.
 pub const TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -108,8 +109,34 @@ pub trait ActiveCapture: Send {
     /// Seconds captured so far. Used for the honest duration when the wall
     /// clock and the audio clock disagree.
     fn seconds(&self) -> f64;
+
+    /// YV110 — a reader for what this meeting has to say about its
+    /// SYSTEM-AUDIO track, callable on any thread at any time.
+    ///
+    /// A *probe* and not a plain `Option<String>` because the sentence changes
+    /// while the meeting runs (a tap that was attached at T-0 and died at
+    /// minute nine is matrix row 2) and because the surface that renders it is
+    /// the control plane's 1 Hz ticker thread, which deliberately holds no
+    /// reference to the controller — reaching back through it would deadlock
+    /// against the `stop` that joins the ticker.
+    ///
+    /// Two sentences reach it: the T-0 reason a meeting is mic-only (matrix
+    /// rows 1 and 12), and YV104's degrade banner when an attached tap is lost
+    /// (matrix row 2). `None` means both tracks are recording and there is
+    /// nothing to say.
+    ///
+    /// Defaulted, so a capture engine with no tap (every test's fake, and every
+    /// 22-A meeting) says nothing rather than inventing a state.
+    fn system_audio_probe(&self) -> Option<SystemAudioProbe> {
+        None
+    }
+
     fn stop(self: Box<Self>) -> Result<CaptureOutcome, String>;
 }
+
+/// A cheap, thread-safe read of the meeting's system-audio badge. See
+/// [`ActiveCapture::system_audio_probe`].
+pub type SystemAudioProbe = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// Whoever owns audio capture implements this and installs it once.
 pub trait CaptureEngine: Send + Sync + 'static {
@@ -183,6 +210,12 @@ pub struct MeetingStatus {
     pub capture_available: bool,
     /// Why the entry points are disabled, when they are.
     pub unavailable_reason: Option<String>,
+    /// YV110 — the honest system-audio badge for the meeting that is running:
+    /// why it is mic-only, or that its second track was lost. `None` while both
+    /// tracks are recording, and `None` when nothing is recording at all.
+    ///
+    /// See [`ActiveCapture::system_audio`] for why it rides this payload.
+    pub system_audio: Option<String>,
 }
 
 impl MeetingStatus {
@@ -200,6 +233,7 @@ impl MeetingStatus {
             } else {
                 Some(NO_ENGINE_MESSAGE.to_string())
             },
+            system_audio: None,
         }
     }
 }
@@ -234,6 +268,10 @@ struct Active {
     started_at: DateTime<Utc>,
     started: Instant,
     capture: Box<dyn ActiveCapture>,
+    /// YV110 — the capture's system-audio badge reader, lifted out of the
+    /// capture so the ticker thread can read it without reaching back through
+    /// the controller (which would deadlock against the `stop` that joins it).
+    system_audio: Option<SystemAudioProbe>,
     diagnostics: Arc<Mutex<MeetingDiagnostics>>,
     stop: Arc<TickerStop>,
     ticker: Option<JoinHandle<()>>,
@@ -357,6 +395,7 @@ impl MeetingController {
                     elapsed_label: meetings::format_offset(elapsed as f64),
                     capture_available: true,
                     unavailable_reason: None,
+                    system_audio: a.system_audio.as_ref().and_then(|probe| probe()),
                 }
             }
         }
@@ -427,12 +466,14 @@ impl MeetingController {
         );
 
         let stop = Arc::new(TickerStop::default());
+        let system_audio = capture.system_audio_probe();
         let ticker = self.spawn_ticker(
             meeting.id.clone(),
             meeting.title.clone(),
             Instant::now(),
             Arc::clone(&diagnostics),
             Arc::clone(&stop),
+            system_audio.clone(),
         );
 
         *guard = Some(Active {
@@ -441,6 +482,7 @@ impl MeetingController {
             started_at: meeting.started_at,
             started: Instant::now(),
             capture,
+            system_audio,
             diagnostics,
             stop,
             ticker: Some(ticker),
@@ -460,6 +502,7 @@ impl MeetingController {
         started: Instant,
         diagnostics: Arc<Mutex<MeetingDiagnostics>>,
         stop: Arc<TickerStop>,
+        system_audio: Option<SystemAudioProbe>,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         let probe = Arc::clone(&self.probe);
@@ -492,6 +535,10 @@ impl MeetingController {
                         elapsed_label: meetings::format_offset(secs as f64),
                         capture_available: true,
                         unavailable_reason: None,
+                        // YV110 — re-read every tick, not snapshotted at start:
+                        // a tap lost at minute nine has to reach the pill on the
+                        // next second, not at the end of the meeting.
+                        system_audio: system_audio.as_ref().and_then(|probe| probe()),
                     });
                 }
             })
@@ -643,8 +690,193 @@ impl MeetingController {
 // `tests/capture_engine_is_installed.rs` fails the build if `lib.rs::setup`
 // does not install this.
 
-/// The shipping [`CaptureEngine`]: YV91's `MeetingSession` behind YV95's seam.
-pub struct SessionEngine;
+/// The shipping [`CaptureEngine`]: YV91's `MeetingSession` behind YV95's seam,
+/// and — since YV110 — YV100's system-audio tap alongside it.
+///
+/// It holds the database because the T-0 question "does this meeting attach
+/// Track B?" is answered from YV102's `settings_kv` row, and that row is also
+/// what the meeting rewrites on the way out when its own discriminator learns
+/// something the 200 ms pre-warm could not.
+pub struct SessionEngine {
+    db: Arc<Database>,
+}
+
+impl SessionEngine {
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+
+    /// The T-0 decision this machine makes right now: YV101's runtime OS gate
+    /// and YV102's setup row, through the one pure function that reads them.
+    fn track_b_plan(&self) -> syscapture::TrackBPlan {
+        syscapture::track_b_plan(
+            crate::os_version_gate::system_audio_gate_now(),
+            &self.db.system_audio_setup(),
+        )
+    }
+}
+
+/// Open the real CoreAudio tap and wrap it as the consumer half a meeting
+/// drives. **This is `start_system_tap`'s first caller** — the wiring matrix
+/// rows 1 and 2 have been published as missing since YV100 merged.
+///
+/// The 14.4 gate is the caller's (`SessionEngine::track_b_plan` above); this
+/// checks nothing about the OS itself, because `CoreAudioPlatform::new` already
+/// refuses on a machine with no process-tap API and a second copy of that check
+/// would be a second thing to keep in step.
+/// ## Why the tap is opened on a thread of its own
+///
+/// `imp::SystemTap` is **not `Send`**, and that is correct rather than
+/// inconvenient: it owns the `RcBlock` registered with
+/// `AudioDeviceCreateIOProcIDWithBlock` and the `DispatchQueue` behind it, both
+/// of which are reference-counted by non-atomic ObjC machinery. A meeting's tap
+/// has to be torn down from the stop path, which runs on the macOS main thread,
+/// while the ring is drained from the pump thread — so *something* has to cross
+/// a thread boundary.
+///
+/// What crosses is the ring (`Arc<RtCapture>`, `Send` by construction) and a
+/// stop signal, never the CoreAudio graph: this thread creates the tap, hands
+/// back the ring, parks, and performs the four teardown calls itself. The tap
+/// object is created and destroyed on one thread and is never touched from
+/// another, which is exactly the guarantee `!Send` is asking for — and it needs
+/// no `unsafe impl`, of which this codebase has none and should keep having
+/// none.
+#[cfg(target_os = "macos")]
+fn open_meeting_tap() -> Result<Arc<syscapture::MeetingTap>, syscapture::TapError> {
+    use std::sync::mpsc;
+
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let handle = thread::Builder::new()
+        .name("wv-meeting-system-tap".into())
+        .spawn(move || match syscapture::imp::start_system_tap() {
+            Ok(tap) => {
+                let handed = opened_tx.send(Ok((Arc::clone(tap.capture()), tap.format())));
+                if handed.is_ok() {
+                    // Park until the meeting is over. A disconnected channel
+                    // (the wiring panicked, the `MeetingTap` was dropped without
+                    // a stop) is also a stop — the tap must not outlive its
+                    // owner under any exit.
+                    let _ = stop_rx.recv();
+                }
+                // The tap's OWN four calls, in `TEARDOWN_ORDER`, on the thread
+                // that created it.
+                tap.stop();
+            }
+            Err(error) => {
+                let _ = opened_tx.send(Err(error));
+            }
+        })
+        .map_err(|_| syscapture::TapError::ProcessTapApiUnavailable {
+            symbol: "AudioHardwareCreateProcessTap",
+        })?;
+
+    let (ring, format) = match opened_rx.recv() {
+        Ok(Ok(opened)) => opened,
+        Ok(Err(error)) => {
+            let _ = handle.join();
+            return Err(error);
+        }
+        // The thread died without answering. Nothing was handed back, so there
+        // is nothing to tear down here.
+        Err(_) => {
+            let _ = handle.join();
+            return Err(syscapture::TapError::PanicDuringSetup {
+                stage: syscapture::TapStage::CreateTap,
+            });
+        }
+    };
+    Ok(syscapture::MeetingTap::new(ring, format, move || {
+        let _ = stop_tx.send(());
+        // Joining is what makes `MeetingTap::stop` mean "the tap is down", not
+        // "the tap has been asked" — the drain that follows it in
+        // `TapPumpThread::finish` depends on the IOProc having actually stopped.
+        let _ = handle.join();
+    }))
+}
+
+/// Off macOS there is no process tap at all — the gate above never returns
+/// `Attach`, and this exists so the wiring compiles on a Linux CI box.
+#[cfg(not(target_os = "macos"))]
+fn open_meeting_tap() -> Result<Arc<syscapture::MeetingTap>, syscapture::TapError> {
+    Err(syscapture::TapError::ProcessTapApiUnavailable {
+        symbol: "AudioHardwareCreateProcessTap",
+    })
+}
+
+/// **The wiring, with the tap passed in.**
+///
+/// Split out of [`SessionEngine::start`] so the whole of it — two-track config,
+/// the tap's own format announced to track 1, the pump thread, the teardown
+/// order on the way out, the setup row rewritten from what the meeting actually
+/// heard — is drivable from a test with a fake tap over the existing
+/// `TapPlatform` seam. Everything above this line needs a 14.4 Mac and a TCC
+/// grant; nothing below it does.
+///
+/// `plan` and `tap` are passed together rather than derived from each other
+/// because they disagree in one real case: the plan said `Attach` and the tap
+/// failed to open. That meeting is mic-only with an honest badge, which is
+/// [`SessionEngine::start`]'s job to say and this function's job to record.
+/// `stream` is the input this meeting holds open for its whole duration:
+/// `MicStream` in production, and `ExternalStream` for a test that feeds blocks
+/// by hand — the same split `meeting.rs`'s own lifecycle tests use, and the
+/// reason a two-track test needs no microphone.
+// Seven parameters, and each one is a thing the caller genuinely decides: where
+// the audio goes, the mic's format, whether Track B attaches, the tap itself,
+// where the permission verdict is written back, and which stream the meeting
+// holds. Collapsing them into a struct would move the same list one line up.
+#[allow(clippy::too_many_arguments)]
+pub fn start_capture_session(
+    dir: &Path,
+    native_rate: u32,
+    channels: u16,
+    plan: syscapture::TrackBPlan,
+    tap: Option<Arc<syscapture::MeetingTap>>,
+    db: Option<Arc<Database>>,
+    stream: Arc<dyn crate::meeting::CaptureStream>,
+) -> Result<Box<dyn ActiveCapture>, String> {
+    // `SessionConfig::virtual_meeting` and NOT `syscapture::virtual_meeting_config`:
+    // that one swaps the held stream for `ExternalStream`, which is right for a
+    // tap-only session and wrong here. A mic+tap meeting must keep holding the
+    // microphone for its whole duration or `record.rs`'s worker closes an idle
+    // stream after a minute and track 0 ends sixty seconds in —
+    // `SessionConfig::virtual_meeting`'s own doc comment says so in as many
+    // words, and it is the seam built for exactly this pair of producers.
+    let mut config = if tap.is_some() {
+        crate::meeting::SessionConfig::virtual_meeting(dir, native_rate, channels)
+    } else {
+        crate::meeting::SessionConfig::new(dir, native_rate, channels)
+    };
+    config.stream = stream;
+    if let Some(tap) = tap.as_ref() {
+        // The environment that finally answers `Some` to `tap_liveness`, which
+        // is what puts YV104's ghost watchdog in effect inside a real meeting.
+        config.env = Arc::new(syscapture::TappedEnv::new(
+            dir.to_path_buf(),
+            Arc::clone(tap),
+        ));
+    }
+    let session = crate::meeting::MeetingSession::start(config).map_err(|e| e.to_string())?;
+    let pump = tap.map(|tap| {
+        // Every track starts on the MIC's format because that is the only one
+        // known at `start`; the tap's own (`kAudioTapPropertyFormat`) is
+        // announced here, before its first block, through the same epoch-banking
+        // retune YV92 built for an AirPods swap.
+        let format = tap.format();
+        session.capture().retune_track(
+            crate::meeting::SYSTEM_TRACK,
+            format.sample_rate,
+            format.channels,
+        );
+        syscapture::TapPumpThread::spawn(tap)
+    });
+    Ok(Box::new(SessionCapture {
+        session: Some(session),
+        pump,
+        badge: plan.badge().map(str::to_string),
+        db,
+    }))
+}
 
 impl CaptureEngine for SessionEngine {
     fn start(&self, dir: &Path) -> Result<Box<dyn ActiveCapture>, String> {
@@ -658,18 +890,47 @@ impl CaptureEngine for SessionEngine {
         // releases it on every path out, so this extra hold is balanced by the
         // session's own release rather than leaked.
         let format = crate::record::hold_stream_for_meeting()?;
-        let config = crate::meeting::SessionConfig::new(
+        // The tap is opened BEFORE the session, so a tap that cannot open costs
+        // a badge rather than a half-built meeting — and so the journal is
+        // opened with the track count the meeting will actually record.
+        let (plan, tap) = match self.track_b_plan() {
+            syscapture::TrackBPlan::Attach => match open_meeting_tap() {
+                Ok(tap) => (syscapture::TrackBPlan::Attach, Some(tap)),
+                Err(error) => {
+                    // Not a reason to refuse the meeting: 22-A recording is the
+                    // product, the tap is the second half of it. The failure is
+                    // recorded where the user can see it and where the next
+                    // meeting will read it.
+                    log::warn!("meeting system-audio tap could not open ({error}) — mic only");
+                    if let Err(e) = self
+                        .db
+                        .record_system_audio_setup(crate::meetings::SetupVerdict::Failed)
+                    {
+                        log::warn!("could not record the system-audio setup verdict: {e}");
+                    }
+                    (
+                        syscapture::TrackBPlan::MicOnly {
+                            badge: syscapture::SETUP_FAILED_MESSAGE,
+                        },
+                        None,
+                    )
+                }
+            },
+            mic_only => (mic_only, None),
+        };
+        match start_capture_session(
             dir,
             format.sample_rate_hz.max(1),
             format.channels.max(1),
-        );
-        match crate::meeting::MeetingSession::start(config) {
-            Ok(session) => Ok(Box::new(SessionCapture {
-                session: Some(session),
-            })),
+            plan,
+            tap,
+            Some(Arc::clone(&self.db)),
+            Arc::new(crate::meeting::MicStream),
+        ) {
+            Ok(capture) => Ok(capture),
             Err(e) => {
                 crate::record::release_stream_for_meeting();
-                Err(e.to_string())
+                Err(e)
             }
         }
     }
@@ -679,6 +940,12 @@ impl CaptureEngine for SessionEngine {
 struct SessionCapture {
     /// `Option` only so `stop` can move the session out of a `Box<Self>`.
     session: Option<crate::meeting::MeetingSession>,
+    /// YV110 — the tap's drain thread, when this meeting has a Track B.
+    pump: Option<syscapture::TapPumpThread>,
+    /// The T-0 reason this meeting is mic-only, if it is.
+    badge: Option<String>,
+    /// Where the meeting's own permission discriminator is written back to.
+    db: Option<Arc<Database>>,
 }
 
 impl ActiveCapture for SessionCapture {
@@ -689,7 +956,60 @@ impl ActiveCapture for SessionCapture {
             .unwrap_or(0.0)
     }
 
+    fn system_audio_probe(&self) -> Option<SystemAudioProbe> {
+        let badge = self.badge.clone();
+        // The session's own handle, not a snapshot: the watchdog thread
+        // republishes this log after every action, so a probe built once at
+        // start still reads the verdict a degrade at minute nine produced.
+        let log = self.session.as_ref()?.tap_rebuilds();
+        Some(Arc::new(move || {
+            // The watchdog's verdict wins over the T-0 badge: a meeting that
+            // attached Track B and then lost it has nothing left to say about
+            // setup, and "your microphone track is still recording" is the
+            // sentence row 2 requires.
+            if let Some(verdict) = log.lock().verdict() {
+                return Some(verdict.banner().to_string());
+            }
+            badge.clone()
+        }))
+    }
+
     fn stop(mut self: Box<Self>) -> Result<CaptureOutcome, String> {
+        // The tap goes first, and its own `finish` is what gets the order right:
+        // park the pump, tear the tap down through `TEARDOWN_ORDER`, then drain
+        // the last of the ring into the journal — which is still open, because
+        // the session below has not been stopped yet.
+        let mut tap_notes: Vec<String> = Vec::new();
+        if let Some(mut pump) = self.pump.take() {
+            pump.finish();
+            let ran_for = pump.elapsed();
+            let permission = pump.tap().permission(ran_for);
+            if let Some(db) = self.db.as_ref() {
+                // What the meeting HEARD, written back over what the 200 ms
+                // pre-warm could only guess at. `Unknown` writes nothing: a
+                // short meeting with a quiet room is not evidence of anything,
+                // and overwriting a good row with it would lose a real grant.
+                let verdict = match permission {
+                    syscapture::SystemAudioPermission::Granted => {
+                        Some(crate::meetings::SetupVerdict::Granted)
+                    }
+                    syscapture::SystemAudioPermission::LooksDenied => {
+                        Some(crate::meetings::SetupVerdict::LooksDenied)
+                    }
+                    syscapture::SystemAudioPermission::Unknown => None,
+                };
+                if let Some(verdict) = verdict {
+                    if let Err(e) = db.record_system_audio_setup(verdict) {
+                        log::warn!("could not record the system-audio setup verdict: {e}");
+                    }
+                }
+            }
+            if permission.looks_denied() {
+                tap_notes.push(syscapture::LOOKS_DENIED_MESSAGE.to_string());
+            }
+        } else if let Some(badge) = self.badge.clone() {
+            tap_notes.push(badge);
+        }
         let session = self
             .session
             .take()
@@ -700,6 +1020,14 @@ impl ActiveCapture for SessionCapture {
         // YV104's log, for the same reason and at the same moment: the session
         // owns it and `stop()` consumes the session.
         let rebuilds = session.tap_rebuild_log();
+        // Row 2's banner, persisted onto the meeting rather than only shown in
+        // the pill for as long as the pill was open. It wins over the T-0 badge
+        // for the same reason it does live: a meeting that lost the track has
+        // nothing left to say about setup.
+        if let Some(verdict) = rebuilds.verdict() {
+            tap_notes.clear();
+            tap_notes.push(verdict.banner().to_string());
+        }
         let tap_rebuilds = if rebuilds.is_empty() {
             None
         } else {
@@ -708,7 +1036,7 @@ impl ActiveCapture for SessionCapture {
         match session.stop() {
             Some(finalized) => {
                 let partial = finalized.state != crate::meeting::MeetingState::Complete;
-                let mut notes: Vec<String> = Vec::new();
+                let mut notes: Vec<String> = tap_notes;
                 if let Some(reason) = watchdog {
                     notes.push(format!("stopped early: {reason}"));
                 } else if partial {

@@ -12,18 +12,24 @@ inventing a different bar.
 
 ## Status
 
-**Still not runnable, and this document says exactly what is missing** — the
-same posture YV105 took for the matrix rows whose call sites had not landed.
-Publishing a script for a capability the app cannot reach would be four
-paragraphs that read like a feature and describe nothing.
+**Runnable as of YV110.** This document spent four merges saying the opposite,
+and the sentence it kept repeating was precise: every piece had landed and
+nothing in a shipped build started a two-track meeting, so the tap never opened
+outside the test suite and there was nothing to point a camera at.
 
-Every PR this document was waiting on has now landed. What is missing is no
-longer a pull request: it is a **production caller**. Nothing in a shipped build
-starts a two-track meeting — `syscapture::virtual_meeting_config` and
-`meeting::fan_out_tap_block` are reachable only from tests — so the tap never
-opens outside the test suite and there is nothing yet to point a camera at.
-Whoever wires that up is the one who can finally run this, and the "Results"
-table below stays empty until they do.
+YV110 is the production caller. `meeting_control::SessionEngine::start` asks
+`syscapture::track_b_plan` whether this Mac and this install attach Track B —
+the macOS 14.4 gate, then YV102's setup row — calls `start_system_tap` when the
+answer is yes, and drains the tap into track 1 of the same journal the mic
+writes track 0 to. When the answer is no the meeting records mic-only and says
+why. So the script below can now be run, and the Results table filled in.
+
+The one thing to read before running it: this is a **signed, notarized build**
+requirement, not a preference. TCC is keyed to the code-signing identity, and an
+unsigned build may never show the permission alert at all. `docs/MEETING-DEMO.md`
+is the step-by-step version of that, including the degraded takes (permission
+denied, and permission revoked mid-meeting); this document is the phase-closing
+take, with Wi-Fi off.
 
 | PR | Item | What the demo needs from it |
 |---|---|---|
@@ -58,9 +64,10 @@ cargo test --test meeting_eval meeting_eval_two_track_ordering -- --nocapture
 
 ## Before you start
 
-* An installed build (a DMG, not `npm run tauri dev`) that actually STARTS a
-  two-track meeting — see the note at the top; every merged piece is present in
-  a build from `main`, and nothing calls them.
+* An installed, **signed and notarized** build (a DMG, not `npm run tauri dev`).
+  A build from `main` starts a two-track meeting by itself since YV110 — there
+  is no flag and no extra step — but an unsigned one may never be offered the
+  TCC grant, which makes the whole take unfalsifiable.
 * macOS 14.4 or later. Below that the system-audio track is refused by design
   and this demo is not runnable — the mic-only meeting still is, which is 22-A's
   demo, not this one.

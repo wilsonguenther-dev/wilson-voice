@@ -1,7 +1,8 @@
 # yap22 — error-handling matrix, and where each row is checked
 
 **Items:** YV99 · closed the yap22-A phase. **YV105** · added 22-B's five
-tap-scoped rows to this same table.
+tap-scoped rows to this same table. **YV110** · wired the tap into a live
+meeting, which promoted rows 1 and 2.
 **Source:** the Notetaker epic plan's §6 matrix, plus the two rows finding #3 added.
 
 The plan's §6 is seventeen rows of prose. Prose does not fail a build, so the
@@ -52,8 +53,8 @@ itself.
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
 | 3b | An ASR chunk exceeds `TRANSCRIBE_TIMEOUT` (finding #3) | That chunk gets `text=''` + `asr_failed`; its neighbours and the rest of the meeting are unaffected | `cargo test --test matrix_new_asr_chunk_timeout` — drives `TranscriptionManager` in `transcription.rs` |
-| 1 | System-audio (tap) permission denied at start | The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted | **Policy only, NOT WIRED** — `cargo test --test matrix_row1_tap_permission_denied` covers the decision; **nothing calls `start_system_tap`**, so the app does not do this yet |
-| 2 | Tap permission revoked, or the tap dies mid-meeting | A `track_lost` marker into the meeting, Track A keeps recording, a banner in the pill — the meeting is NEVER stopped | **Policy only, NOT WIRED** — `cargo test --test matrix_row2_tap_revoked_mid_meeting` covers the decision; **nothing calls `start_system_tap`**, so the app does not do this yet |
+| 1 | System-audio (tap) permission denied at start | The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted | `cargo test --test matrix_row1_tap_permission_denied` — drives `track_b_plan` in `syscapture.rs` |
+| 2 | Tap permission revoked, or the tap dies mid-meeting | A `track_lost` marker into the meeting, Track A keeps recording, a banner in the pill — the meeting is NEVER stopped | `cargo test --test matrix_row2_tap_revoked_mid_meeting` — drives `TappedEnv` in `syscapture.rs` |
 | 3 | Mic permission denied | The meeting still starts, system-audio only — a webinar or a lecture stream is a real meeting — and says which track it is missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row3_mic_denied_system_only` covers the decision; **nothing calls `meeting_start_plan`**, so the app does not do this yet |
 | 12 | macOS older than 14.4 | The system-audio track is refused with one plain sentence naming the requirement, and mic-only meeting recording keeps working all the way down to Yap's macOS 12 floor | `cargo test --test matrix_row12_macos_144_gate` — drives `meeting_availability_for` in `meeting_asr.rs` |
 | 12b | …and the sentence the gate produces has to reach a Notetaker surface | The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12 | `cargo test --test matrix_row12_macos_144_gate` — drives `NotetakerStatus` in `lib.rs` |
@@ -80,15 +81,15 @@ is explained below.
 
 ## Which rows the app actually performs today
 
-**Seven of the sixteen cells are a claim that the shipped app handles the
+**Ten of the sixteen cells are a claim that the shipped app handles the
 failure.** Read this section before quoting a row as done.
 
 | Cell | What it means | Rows |
 |---|---|---|
-| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 4, 5, 6, 12, `12b`, 17, `3a`, `3b` |
+| `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 1, 2, 4, 5, 6, 12, `12b`, 17, `3a`, `3b` |
 | **Manual repro** | No in-process test can produce the failure. A human follows the script and records the result. | 15 |
 | **Policy only** (an owning PR named) | The decision ships and is tested; the thing that would *produce* the event it decides about is in an open PR. | 14 |
-| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 1, 2, 3, `5b`, 16, `17b` |
+| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, 16, `17b` |
 
 ### Manual — row 15, and why its three green tests are not its coverage
 
@@ -201,37 +202,55 @@ That device is the same one `tests/meeting_event_contract.rs` uses for YV95's
 emitter, and it exists for the same reason: a comment saying "somebody should
 wire this" is a thing a merge queue reads zero times.
 
-### 22-B's tap rows — 1, 2, 14, and what merging #123 and #125 actually moved
+### 22-B's tap rows — 1, 2, 14, and what YV110 actually moved
 
-These rows are a different shape from the ones above: their decisions have
-merged (YV101's gate, YV103's device-change state machine, YV104's ghost
-watchdog), and what was missing is the thing that *produces* the events those
-decisions consume — the CoreAudio tap itself (#123, YV100) and the pre-warm and
-Settings step (#125, YV102). Both have now landed, and the honest result is that
-one row was promoted and two were not.
+These rows are a different shape from the ones above: their decisions merged
+first (YV101's gate, YV103's device-change state machine, YV104's ghost
+watchdog), and what was missing was the thing that *produces* the events those
+decisions consume — a tap inside a real meeting. #123 (YV100) shipped the tap
+module deliberately unwired and #125 (YV102) shipped the Settings pre-warm, so
+for two merges the honest cell was still `Policy only, NOT WIRED`: **a tap that
+cannot exist cannot die.**
 
-* **Row `12b` → `Test`.** The 14.4 sentence has a surface: `App.tsx` invokes
-  `notetaker_status` and renders `systemAudioMessage` beneath a disabled setup
-  step. This is the row that merging #125 genuinely delivered.
-* **Rows 1 and 2 → `Policy only, NOT WIRED`, owner removed.** `syscapture.rs`
-  ships and `prewarm_tap` is called from Settings, but **nothing calls
-  `start_system_tap`**: no meeting opens a tap, so `CaptureEnv::tap_liveness`
-  still returns `None` for every environment and `meeting::watchdog_tick`'s tap
-  branch is still unreachable. **A tap that cannot exist cannot die.** Row 1's
-  denial is a denial *at the start of a meeting*; answering the same question in
-  Settings, minutes earlier, is a different row. No item in the 22-B backlog
-  owns starting the tap inside a meeting — that is a genuine planning gap, and
-  publishing a merged PR as the pending owner would read as progress and
-  describe none.
+**YV110 is the wiring, and it promoted rows 1 and 2.** A meeting now asks
+`syscapture::track_b_plan` at T-0 whether this Mac and this install attach Track
+B — YV101's runtime OS gate, then YV102's setup row — and `SessionEngine::start`
+calls `start_system_tap` when the answer is yes. When the answer is no the
+meeting records mic-only and carries the sentence saying why, on the same 1 Hz
+status payload the pill and the main window already render. That is row 1.
+`syscapture::TappedEnv` is the first shipping `CaptureEnv` to answer `Some` to
+`tap_liveness`, folded from the drain that feeds track 1, so
+`meeting::watchdog_tick`'s tap branch runs in a real session and the `track_lost`
+degrade is reachable. That is row 2.
+
+Both promotions were forced by the tripwires, not chosen: each row's absence
+test and `matrix_coverage`'s unowned-policy sweep went red on the commit that
+added the caller, and the fix was to promote the rows and rewrite their tests
+against the shipping surface.
+
+**What row 2 still does not claim.** The seven CoreAudio calls of a mid-meeting
+rebuild are *decided and logged, not executed*. A rebuilt tap gets a fresh
+`TapClock` and rebases its `host_ns` epoch, and YV107's cross-track merge reads
+exactly that field, so running the rebuild without solving clock continuity
+would move every post-rebuild span of Track B to the start of the meeting. The
+behaviour row 2 publishes — marker, mic keeps recording, banner, meeting never
+stopped — is what ships; the executor is a separate item.
+
+**What no test in this repository proves.** That a real Zoom / Meet / Teams call
+lands on Track B. That needs a signed, notarized build, a TCC grant and a human,
+and it is written down as a manual script in
+[`MEETING-DEMO.md`](MEETING-DEMO.md).
+
 * **Row 14** keeps `#123 (YV100)` as its owner: nothing calls
   `InputFormatWatch::watch_output`, so the output half of that watch is inert —
   `record.rs` handles a `RebuildAggregate` action by logging that one arrived on
   the mic path, where it means nothing — and #123 merging is what makes wiring
   it possible.
 
-Each unpromoted row asserts its own named call site is still absent, in its own
-test, so the day something opens a tap in a meeting the row goes red with
-instructions to promote it, exactly as the unowned rows already do.
+Rows 1 and 2 assert the inverse of what they used to: their tripwires now check
+that `start_system_tap` is still CALLED from `src/`, so a refactor that drops the
+call turns both rows red instead of leaving them published as `Test` about a
+meeting with no second track. Row 14 still asserts its own call site is absent.
 
 ## Every tripwire in this matrix is a CI gate
 

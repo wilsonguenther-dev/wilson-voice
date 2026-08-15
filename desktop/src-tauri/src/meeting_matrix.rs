@@ -106,6 +106,29 @@
 //!     row because its tripwire fired would have published "your meeting keeps
 //!     recording when the tap is denied" about a meeting that opens no tap.
 //!
+//! ## YV110 — the two rows that were waiting for a caller
+//!
+//! Rows 1 and 2 are `Test` rows now, and the thing that changed is the one
+//! thing both cells had been naming for four merges: **a meeting opens a tap.**
+//! `meeting_control::SessionEngine::start` asks `syscapture::track_b_plan`
+//! whether this Mac and this install attach Track B, calls `start_system_tap`
+//! when the answer is yes, and hands the honest sentence to the 1 Hz status
+//! emit when the answer is no. `syscapture::TappedEnv` is the first
+//! `CaptureEnv` in the tree to answer `Some` to `tap_liveness`, so YV104's
+//! ghost ladder runs inside a real session rather than only inside its own
+//! tests.
+//!
+//! Both promotions were *forced* rather than chosen: `matrix_coverage`'s
+//! unowned-policy tripwire and each row's own absence test went red on the
+//! commit that added the caller, which is exactly what those assertions exist
+//! to do. The rows' tests were rewritten to drive the shipping surface, and the
+//! unowned inventory dropped from six rows to four.
+//!
+//! One thing the promoted row 2 deliberately does not claim: the seven
+//! CoreAudio calls of a mid-meeting rebuild are decided and logged, not
+//! executed — see that row's cell for why, and `syscapture`'s YV110 section for
+//! the clock-continuity reason it is a separate item.
+//!
 //! **And it does not re-declare a threshold that ships somewhere else.** The
 //! 3 h cap and its 2 h 45 m warning are `meeting::MEETING_HARD_CAP` /
 //! `meeting::MEETING_CAP_WARN_AT`, enforced by `meeting::watchdog_tick` — the
@@ -385,58 +408,50 @@ pub const ROWS: &[MatrixRow] = &[
         id: "1",
         failure: "System-audio (tap) permission denied at start",
         behavior: "The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted",
-        // STILL NOT `Test`, and YV102 merging is what forced this cell to be
-        // re-argued rather than left alone. Two of the row's three halves have
-        // now shipped: the discriminator that can say "denied" honestly
-        // (`syscapture::TapLiveness::verdict` — never a non-zero sample AND
-        // something observably playing), and the deep link to the pane the
-        // sentence sends people to, whose anchor YV102 verified on the target
-        // OS. `prewarm_tap` ships too and the Settings step calls it, so the
-        // old `absent_call_site` is gone.
+        // `Test` at last, and YV110 is what earned it: a meeting now MAKES this
+        // decision at T-0. `syscapture::track_b_plan` reads YV101's runtime OS
+        // gate and YV102's setup row and answers `Attach` or `MicOnly { badge }`;
+        // `meeting_control::SessionEngine::start` calls it, opens the tap only on
+        // `Attach`, and hands the badge to the 1 Hz status emit the pill and the
+        // main window already render. A tap that is denied *at start* now has a
+        // meeting to be denied in, which is the one thing every earlier revision
+        // of this cell was missing.
         //
-        // What is still missing is the only thing that would make this row's
-        // BEHAVIOUR true: a tap inside a meeting. `start_system_tap` has no
-        // caller, so at T-0 of a real meeting nothing opens a tap, nothing can
-        // be denied, and no badge has a producer. The pre-warm answers the
-        // question in Settings, minutes earlier, which is this row's neighbour
-        // and not this row. So the cell moves to the same unowned shape row 2
-        // carries, naming the same missing caller — no item in the 22-B backlog
-        // owns starting the tap inside a meeting, and naming a merged PR as the
-        // pending owner is the stale `Some` that reads as progress.
-        coverage: Coverage::PolicyOnly {
+        // The subject is deliberately the DECISION and not the tap: what row 1
+        // requires is that the meeting proceeds mic-only and says why, and the
+        // failure mode this cell has to keep out is a meeting that refuses to
+        // start (or records silently) because system audio was unavailable.
+        coverage: Coverage::Test {
             test: "matrix_row1_tap_permission_denied.rs",
-            wiring_pr: None,
-            absent_call_site: "start_system_tap",
+            subject: "track_b_plan",
+            subject_module: "syscapture.rs",
         },
     },
     MatrixRow {
         id: "2",
         failure: "Tap permission revoked, or the tap dies mid-meeting",
         behavior: "A `track_lost` marker into the meeting, Track A keeps recording, a banner in the pill — the meeting is NEVER stopped",
-        // NOT `Test`, and this is the row the honesty rule was hardest on.
-        // YV104's degrade ships and `meeting::watchdog_tick` really does consult
-        // it: `syscapture::TapWatchdogAction` has no stop variant, so "degrade,
-        // never end the meeting" is enforced by the type rather than by a
-        // reviewer. But `WatchdogInputs::tap` is `None` for every environment in
-        // the shipping tree — `CaptureEnv::tap_liveness`'s default is `None` and
-        // nothing overrides it until YV100's tap session lands — so the branch
-        // is unreachable in the app. A tap that cannot exist cannot die, and a
-        // `Test` cell here would be read as "Yap survives losing the call's
-        // audio", which is a sentence about a track Yap does not yet capture.
+        // `Test`, and the subject is the thing whose ABSENCE kept this row
+        // policy-only through four merges: a shipping `CaptureEnv` that answers
+        // `Some` to `tap_liveness`. YV110's `syscapture::TappedEnv` is it. The
+        // decision half never needed help — `meeting::watchdog_tick` has
+        // consulted `syscapture::ghost_tick` since YV104, and
+        // `TapWatchdogAction` has no stop variant, so "degrade, never end the
+        // meeting" is enforced by the type. What was missing was a producer:
+        // `WatchdogInputs::tap` was `None` on every real tick, so the branch was
+        // unreachable in the app. A tap that cannot exist cannot die.
         //
-        // YV100 update: `start_system_tap` now EXISTS (#123 merged) and still has
-        // no caller — the tap module ships deliberately unwired, which is its own
-        // spec's wording. So this row moves from "a named PR brings the wiring"
-        // to "nothing calls it", which is the stronger of the two cells: an
-        // unowned `PolicyOnly` row is the one `matrix_coverage`'s standing
-        // tripwire re-checks on every commit. No item in the 22-B backlog owns
-        // starting the tap inside a real meeting, and publishing a merged PR as
-        // the pending owner would have been a cell that reads as progress and
-        // describes none.
-        coverage: Coverage::PolicyOnly {
+        // What this cell still does NOT claim, and YV110 says so in its own
+        // module docs: the seven CoreAudio calls of a mid-meeting rebuild are
+        // not executed. The watchdog issues the attempts, logs them, and
+        // degrades on schedule; a rebuilt tap rebases its `host_ns` epoch and
+        // YV107's merge reads that field, so executing one is a real item with a
+        // clock-continuity question in it. The behaviour this row publishes —
+        // marker, mic keeps recording, banner, never stopped — is what ships.
+        coverage: Coverage::Test {
             test: "matrix_row2_tap_revoked_mid_meeting.rs",
-            wiring_pr: None,
-            absent_call_site: "start_system_tap",
+            subject: "TappedEnv",
+            subject_module: "syscapture.rs",
         },
     },
     MatrixRow {
@@ -1102,7 +1117,7 @@ mod tests {
             .collect();
         assert_eq!(
             unwired,
-            vec!["5b", "16", "17b", "1", "2", "3", "14"],
+            vec!["5b", "16", "17b", "3", "14"],
             "22-A's three unwired policies, plus the four YV105 rows whose \
              mechanism has merged and whose producer has not. `12b` left this \
              list with YV102: the 14.4 sentence reaches the Settings step, \
@@ -1116,7 +1131,7 @@ mod tests {
     /// merges without promoting its rows shows up as a stale `Some` a reader
     /// can act on rather than a claim nobody re-checks.
     #[test]
-    fn the_rows_nobody_owns_are_5b_16_17b_1_2_and_3() {
+    fn the_rows_nobody_owns_are_5b_16_17b_and_3() {
         let unowned: Vec<&str> = ROWS
             .iter()
             .filter(|r| {
@@ -1130,18 +1145,17 @@ mod tests {
             })
             .map(|r| r.id)
             .collect();
-        // Row 2 joined this set when YV100 (#123) merged: the tap module ships,
-        // nothing calls `start_system_tap`, and no item in the 22-B backlog owns
-        // starting it inside a real meeting. Naming a merged PR as the thing
-        // still to come would be the stale `Some` this test's own doc comment
-        // describes — visible, but read by a hurrying reader as progress.
-        // Row 1 joined the set when YV102 (#125) merged, for the same reason
-        // row 2 did when YV100 did: the PR that was named as the owner of its
-        // wiring landed, and the wiring the ROW is about did not come with it.
-        // `prewarm_tap` asks the permission question in Settings; row 1 is the
-        // question asked at T-0 of a meeting, which needs `start_system_tap` to
-        // have a caller. It does not, and no backlog item owns giving it one.
-        assert_eq!(unowned, vec!["5b", "16", "17b", "1", "2", "3"]);
+        // Rows 1 and 2 LEFT this set with YV110. Both joined it the same way —
+        // the PR named as the owner of their wiring merged and the wiring did
+        // not come with it — and both left it the same way too: something now
+        // calls `start_system_tap` inside a meeting (`meeting_control::open_meeting_tap`)
+        // and something now answers `Some` to `tap_liveness`
+        // (`syscapture::TappedEnv`), so the tripwire that guarded their absence
+        // fired and the rows were promoted rather than the assertion relaxed.
+        // Row 3 stays: a meeting whose MIC is denied still cannot start on the
+        // tap alone, because `MeetingSession::start` holds one `CaptureStream`
+        // and a `hold()` that fails is the end of the meeting.
+        assert_eq!(unowned, vec!["5b", "16", "17b", "3"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1178,13 +1192,16 @@ mod tests {
     /// cells are `Test`, one is a manual repro, and the remaining seven are
     /// decisions nothing in the app can reach.
     ///
-    /// Row 12 is the only one of YV105's five that made it into this list on
-    /// its own, and it is worth saying why it did while rows 1, 2 and 14 did
-    /// not: the 14.4 gate needs no tap to be in effect. It is a refusal,
-    /// `notetaker_status` computes it on every call, and its load-bearing half
-    /// — mic-only recording is never gated — is a property of the app today.
-    /// `12b` joined it with YV102, which gave that refusal a surface; rows 1, 2
-    /// and 14 all still wait on the same missing thing, a tap inside a meeting.
+    /// Row 12 was the only one of YV105's five that made it into this list on
+    /// its own, because the 14.4 gate needs no tap to be in effect: it is a
+    /// refusal, `notetaker_status` computes it on every call, and its
+    /// load-bearing half — mic-only recording is never gated — is a property of
+    /// the app today. `12b` joined it with YV102, which gave that refusal a
+    /// surface, and rows **1 and 2 joined it with YV110**, which gave the tap a
+    /// caller inside a meeting and the watchdog a producer for its liveness.
+    /// Row 14 still waits on the other half of that: nothing calls
+    /// `InputFormatWatch::watch_output`, so an output-device change mid-meeting
+    /// still reaches no aggregate rebuild.
     #[test]
     fn the_wired_rows_are_the_ones_whose_mechanism_shipped() {
         let wired: Vec<&str> = ROWS
@@ -1192,7 +1209,10 @@ mod tests {
             .filter(|r| matches!(r.coverage, Coverage::Test { .. }))
             .map(|r| r.id)
             .collect();
-        assert_eq!(wired, vec!["4", "5", "6", "17", "3a", "3b", "12", "12b"]);
+        assert_eq!(
+            wired,
+            vec!["4", "5", "6", "17", "3a", "3b", "1", "2", "12", "12b"]
+        );
 
         let manual: Vec<&str> = ROWS
             .iter()
