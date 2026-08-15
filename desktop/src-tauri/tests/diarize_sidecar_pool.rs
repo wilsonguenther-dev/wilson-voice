@@ -62,6 +62,36 @@ const READY_STUB: &str = concat!(
     "\ndone\n"
 );
 
+/// Ready, then an ECHO of the clustering threshold it was SENT.
+///
+/// This is the only stub that reads a field other than `id` off the request
+/// line, and it exists because the distance/similarity unit is the one thing
+/// the newtypes cannot protect past `.get()`. It `sed`s
+/// `"clustering_distance_threshold":<n>` off the line and hands `<n>` back as
+/// the segment's `start` **and** as the single element of its `embedding`, so
+/// the number that physically crossed the child's stdin is observable from the
+/// parent's return value. A `load_models` line carries no threshold, so the
+/// `sed` finds nothing and the stub answers `embedding_dim` instead — the same
+/// 7 as `READY_STUB`, for the same reason.
+const THRESHOLD_ECHO_STUB: &str = concat!(
+    r#"printf '{"type":"ready","version":"stub"}\n'"#,
+    "\n",
+    "while read -r line; do\n",
+    r#"  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"#,
+    "\n",
+    r#"  t=$(printf '%s' "$line" | sed -n 's/.*"clustering_distance_threshold":\([0-9.]*\).*/\1/p')"#,
+    "\n",
+    r#"  if [ -n "$t" ]; then"#,
+    "\n",
+    r#"    printf '{"id":%s,"ok":true,"segments":[{"start":%s,"end":9.0,"cluster":0,"embedding":[%s]}]}\n' "$id" "$t" "$t""#,
+    "\n",
+    "  else\n",
+    r#"    printf '{"id":%s,"ok":true,"embedding_dim":7}\n' "$id""#,
+    "\n",
+    "  fi\n",
+    "done\n"
+);
+
 /// Ready, then a REFUSAL to everything. The protocol working, not a death.
 const REFUSING_STUB: &str = concat!(
     r#"printf '{"type":"ready","version":"stub"}\n'"#,
@@ -311,17 +341,66 @@ fn an_idle_child_is_torn_down_and_the_next_job_brings_it_back() {
     pool.shutdown();
 }
 
-/// The clustering API takes a `CosineDistance`, and that is the only number
-/// that reaches the wire. A similarity written here does not compile — which is
-/// the whole point of merged finding #20's newtypes.
+/// The clustering API takes a `CosineDistance`, and the number that physically
+/// reaches the CHILD is that distance — not the similarity that pairs with it.
+///
+/// The newtypes make every Rust-side call site a compile-time-enforced single
+/// unit, but `DiarizePool::diarize` is where the type is spent (`.get()`, into
+/// wire JSON) and a type cannot guard what happens after that: writing
+/// `CosineSimilarity::from_distance(clustering).get()` on that line still
+/// compiles, still type-checks, and sends `0.65` where sherpa's clustering
+/// expects `0.35` — clustering three times looser than the identity decision it
+/// feeds. So this test does not inspect a request the test built itself; it
+/// reads the value back **off the child's stdin**, echoed by the stub, and
+/// names the wrong number explicitly. Merged finding #20, closed by an
+/// observation rather than by a signature.
 #[test]
 fn the_clustering_threshold_crosses_the_wire_as_a_distance() {
+    let pool = ready_pool(THRESHOLD_ECHO_STUB);
+    let (segmentation, embedding) = model_pair();
+    assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
+
+    let segments = pool
+        .diarize(Path::new("/a.wav"), CosineDistance::new(0.35))
+        .expect("the echo stub answers every diarize");
+    assert_eq!(segments.len(), 1, "one echoed turn");
+    // The child was SENT 0.35. Both the `start` and the embedding element are
+    // the same echoed field, so an inversion moves both.
+    let sent = segments[0].start;
+    assert!(
+        (sent - 0.35).abs() < 1e-6,
+        "the child's stdin carried {sent}, not the 0.35 cosine DISTANCE the \
+         caller passed"
+    );
+    assert!(
+        (sent - 0.65).abs() > 1e-6,
+        "0.65 is 1 − 0.35: a cosine SIMILARITY crossed the wire where sherpa's \
+         clustering reads a distance, and every cluster would merge three \
+         times too eagerly"
+    );
+    assert_eq!(segments[0].embedding, vec![0.35_f32]);
+
+    // …and a second, different threshold, so a stub (or a parent) that answers
+    // with a constant 0.35 cannot pass this test either.
+    let segments = pool
+        .diarize(Path::new("/b.wav"), CosineDistance::new(0.20))
+        .expect("the echo stub answers every diarize");
+    let sent = segments[0].start;
+    assert!(
+        (sent - 0.20).abs() < 1e-6,
+        "the child's stdin carried {sent}, not 0.20"
+    );
+    pool.shutdown();
+}
+
+/// A successful-looking line that carries no `segments` key at all is a
+/// PROTOCOL failure, not "the meeting was silent" — silence is `Some(vec![])`,
+/// and the two must never collapse into an empty transcript nobody questions.
+#[test]
+fn a_success_carrying_no_segments_is_a_protocol_failure_not_a_silent_meeting() {
     let pool = ready_pool(READY_STUB);
     let (segmentation, embedding) = model_pair();
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
-    // The stub answers with no `segments` key at all, so a successful-looking
-    // line that carries no turns is a protocol failure rather than "the meeting
-    // was silent" — an empty list would have been `Some(vec![])`.
     assert_eq!(
         pool.diarize(Path::new("/a.wav"), CosineDistance::new(0.35)),
         Err(DiarizeError::Protocol)

@@ -639,6 +639,16 @@ mod tests {
     /// The clustering threshold crosses into JSON exactly once, and it crosses
     /// as the number the newtype holds — not as its similarity twin, which is
     /// the mixed-unit bug finding #20 describes.
+    ///
+    /// The assertion that matters here is the SECOND one. Building a request by
+    /// hand and reading its field back proves only that `DiarizeRequest` stores
+    /// what it was handed; the defect lives on the line where
+    /// [`DiarizePool::diarize`] spends the newtype, and that line still compiles
+    /// with `CosineSimilarity::from_distance(clustering).get()` written on it.
+    /// So this test also drives the pool against a stub that echoes the
+    /// threshold it was SENT, and checks the number that actually reached the
+    /// child's stdin. (`tests/diarize_sidecar_pool.rs` holds the same line from
+    /// outside the crate; both fail on an inversion, deliberately.)
     #[test]
     fn the_clustering_threshold_reaches_the_wire_as_a_distance() {
         let distance = CosineDistance::new(0.35);
@@ -650,6 +660,42 @@ mod tests {
         let similarity = crate::diarize_metrics::CosineSimilarity::from_distance(distance);
         assert!((similarity.get() - 0.65).abs() < 1e-6);
         assert_ne!(Some(similarity.get()), req.clustering_distance_threshold);
+
+        // …and the value the CHILD received is that same distance. The stub
+        // hands back whatever `clustering_distance_threshold` the request line
+        // carried, as the segment's `start`.
+        const ECHO: &str = concat!(
+            r#"printf '{"type":"ready","version":"stub"}\n'"#,
+            "\n",
+            "while read -r line; do\n",
+            r#"  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"#,
+            "\n",
+            r#"  t=$(printf '%s' "$line" | sed -n 's/.*"clustering_distance_threshold":\([0-9.]*\).*/\1/p')"#,
+            "\n",
+            r#"  printf '{"id":%s,"ok":true,"segments":[{"start":%s,"end":9.0,"cluster":0}]}\n' "$id" "${t:-0}""#,
+            "\ndone\n"
+        );
+        let pool = DiarizePool::new(
+            Box::new(|| {
+                let mut command = Command::new("/bin/sh");
+                command.arg("-c").arg(ECHO);
+                Ok(command)
+            }),
+            Duration::from_secs(10),
+        );
+        let segments = pool
+            .diarize(Path::new("/a.wav"), distance)
+            .expect("the echo stub answers");
+        let sent = segments[0].start;
+        assert!(
+            (sent - 0.35).abs() < 1e-6,
+            "the child's stdin carried {sent}, not the 0.35 DISTANCE"
+        );
+        assert!(
+            (sent - f64::from(similarity.get())).abs() > 1e-6,
+            "a cosine SIMILARITY reached the child where a distance belongs"
+        );
+        pool.shutdown();
     }
 
     /// Request ids are monotonic per process, which is what makes a stale
