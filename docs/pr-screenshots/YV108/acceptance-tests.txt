@@ -99,3 +99,75 @@ test the_output_is_a_conversation_not_two_stacked_columns ... ok
 test mixed_tracks_render_as_one_interleaved_me_them_list ... ok
 test ordering_is_by_host_time_across_both_tracks ... ok
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+================================================================================
+ROUND 3 — the changelog BLOCKING (documentation only; zero code files touched)
+================================================================================
+
+$ git diff --name-only
+docs/CHANGELOG-YAP.md
+
+The whole gate was re-run anyway, because "it is only a doc" is exactly the
+assumption that lets a doc build break a release job.
+
+$ npm run build            # tsc + vite
+   built in 653ms, exit 0
+$ npm test                 # vitest
+   Test Files  9 passed (9)
+   Tests       103 passed (103)
+
+$ cargo build -p yap-polish --release && cargo test -p yap-polish --release
+   exit 0
+$ cargo build --release --features custom-protocol
+   exit 0
+$ ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+   ok   _AudioHardwareCreateProcessTap: weak import
+   ok   _AudioHardwareDestroyProcessTap: weak import
+   ok   _AudioHardwareCreateAggregateDevice: weak import
+   ok   _AudioHardwareDestroyAggregateDevice: weak import
+   PASS: no 14.4-era CoreAudio symbol is a hard load-time requirement
+
+$ cargo test --features custom-protocol
+   71 "test result: ok" binaries, 916 passed, 0 failed, 0 FAILED
+   (identical to round 2 — no Rust source changed)
+
+The four named acceptance suites, run individually:
+   meeting_transcript_render_two_track ................. 10 passed; 0 failed
+   meeting_transcript_render_single_track_unchanged ....  4 passed; 0 failed
+   meeting_markdown_export_two_track ...................  3 passed; 0 failed
+   meeting_markdown_export (22-A's, untouched) .........  3 passed; 0 failed
+   total 20 passed / 0 failed
+
+rustfmt / clippy: no Rust file changed this round, so both are unchanged from
+round 2 by construction (rustfmt --check's repo-wide diff count and clippy's
+warning set are the base's; nothing in this diff is compiled).
+
+--------------------------------------------------------------------------------
+Why the fix is a sentence and not a test
+--------------------------------------------------------------------------------
+The BLOCKING was a false capability claim in the published changelog, so the
+falsifiable part is the claim about the repo, not about this branch's code.
+Verified by reading callers on this branch:
+
+$ git log --oneline -1 origin/main
+740430a feat(yap): YV106 two-track meeting session ...     # YV107 = PR #130, OPEN
+
+$ grep -rn "fan_out_tap_block" desktop/src-tauri/src desktop/src-tauri/tests
+  src/meeting.rs:1617:  pub fn fan_out_tap_block(...)            <- definition
+  tests/two_track_capture_consumer.rs:209                        <- only caller
+
+$ grep -rn "virtual_meeting" desktop/src-tauri/src desktop/src-tauri/tests
+  src/meeting.rs:2499:  pub fn virtual_meeting(...)               <- definition
+  tests/two_track_capture_consumer.rs:194                         <- only caller
+
+$ grep -rn "append_meeting_segments" desktop/src-tauri/src desktop/src-tauri/tests
+  src/db.rs:1508  (definition), tests/support/mod.rs:44, :92,
+  tests/db_migration_idempotent.rs:372                            <- tests only
+
+The two entry points that would WRITE a track = 1 row have no production caller,
+so no shipped build can produce the two-track transcript the changelog described
+as already working. (Note for precision: the review's phrasing that
+".on_track(SYSTEM_TRACK) appears nowhere under src-tauri/src" is not literally
+true — meetings.rs:833 has it, inside the #[cfg(test)] module that opens at
+line 699, and meeting_control.rs:719 READS wav_for_track(SYSTEM_TRACK) in
+production. The conclusion holds; that particular grep does not.)
