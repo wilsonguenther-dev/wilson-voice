@@ -12,16 +12,24 @@ inventing a different bar.
 
 ## Status
 
-**Not runnable yet, and this document says which pull requests it is waiting
-on** — the same posture YV105 took for the matrix rows whose call sites had not
-landed. Publishing a script for a capability the app cannot reach would be four
+**Still not runnable, and this document says exactly what is missing** — the
+same posture YV105 took for the matrix rows whose call sites had not landed.
+Publishing a script for a capability the app cannot reach would be four
 paragraphs that read like a feature and describe nothing.
+
+Every PR this document was waiting on has now landed. What is missing is no
+longer a pull request: it is a **production caller**. Nothing in a shipped build
+starts a two-track meeting — `syscapture::virtual_meeting_config` and
+`meeting::fan_out_tap_block` are reachable only from tests — so the tap never
+opens outside the test suite and there is nothing yet to point a camera at.
+Whoever wires that up is the one who can finally run this, and the "Results"
+table below stays empty until they do.
 
 | PR | Item | What the demo needs from it |
 |---|---|---|
-| #123 | YV100 | `syscapture.rs` — the process tap itself, feeding track 1 of the journal |
-| #125 | YV102 | The TCC pre-warm step in Settings, so the grant can be given before a call starts |
-| #130 | YV107 | The host-time cross-track merge — without it the two tracks have no common clock and "interleaved" has no meaning |
+| merged | YV100 (#123) | `syscapture.rs` — the process tap itself, feeding track 1 of the journal |
+| merged | YV102 (#125) | The TCC pre-warm step in Settings, so the grant can be given before a call starts |
+| merged | YV107 (#130) | The host-time cross-track merge — without it the two tracks have no common clock and "interleaved" has no meaning |
 | merged | YV101 | The macOS 14.4 runtime gate |
 | merged | YV106 | The two-track session and schema migration 3 |
 | merged | YV108 | The Me/Them render and the Markdown export |
@@ -50,8 +58,9 @@ cargo test --test meeting_eval meeting_eval_two_track_ordering -- --nocapture
 
 ## Before you start
 
-* An installed build (a DMG, not `npm run tauri dev`) containing #123, #125 and
-  #130.
+* An installed build (a DMG, not `npm run tauri dev`) that actually STARTS a
+  two-track meeting — see the note at the top; every merged piece is present in
+  a build from `main`, and nothing calls them.
 * macOS 14.4 or later. Below that the system-audio track is refused by design
   and this demo is not runnable — the mic-only meeting still is, which is 22-A's
   demo, not this one.
@@ -116,4 +125,4 @@ Fill this in when the demo is run; link the recording.
 
 | Date | Build | App tapped | Duration | Output device change | Overlaps in order | Recording |
 |---|---|---|---|---|---|---|
-| _not yet run — waiting on #123, #125, #130_ | | | | | | |
+| _not yet run — every PR has landed; waiting on a production caller that starts the tap for a meeting_ | | | | | | |

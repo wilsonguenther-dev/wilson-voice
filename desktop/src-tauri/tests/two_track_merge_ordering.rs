@@ -171,7 +171,7 @@ fn misaligned_seams_still_interleave_strictly_by_host_time() {
     for span in &merged {
         assert_eq!(
             span.speaker,
-            wilson_voice_lib::meetings::speaker_label(span.track)
+            wilson_voice_lib::meetings::speaker_label(span.track as i64)
         );
     }
     assert!(merged.iter().any(|s| s.track == 0));
@@ -541,4 +541,85 @@ fn a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else() {
         "the reopen's cost must not GROW with the meeting: {just_after:.4} s \
          twenty seconds in against {an_hour_later:.4} s an hour later"
     );
+}
+
+/// REGRESSION GUARD for the rebase onto `main` (YV108 landed while this was in
+/// review).
+///
+/// The conflict was semantic, not textual: this branch shipped its own
+/// `meetings::speaker_label(track: usize)` and `main` had meanwhile shipped
+/// `meetings::speaker_label(track: i64)` — the same rule, written against the
+/// SQLite `INTEGER` numbering, with the Meetings screen's TypeScript mirror
+/// (`src/meetings/transcript.ts`) held to it by YV108's own fixtures. Resolving
+/// it by keeping this branch's copy would have compiled, passed every test in
+/// this file, and left two "Me"/"Them" rules in the tree — the exact split
+/// YV108's review already had to close once between the export and the screen.
+///
+/// So the resolution deletes this branch's copy, casts at the seam between the
+/// two numberings (`usize` indexes the journal's per-track vectors, `i64` is the
+/// column), and this test is what makes the deletion stick: the merge's label
+/// and the shipped renderer's label are asserted to be the SAME STRING for the
+/// same track, derived through the same function. Re-introduce a private
+/// labelling rule in `meeting_asr.rs`, or flip the numbering on either side,
+/// and this goes red.
+#[test]
+fn the_merge_labels_through_the_shipped_render_rule() {
+    use wilson_voice_lib::meetings::{
+        render_transcript, MeetingSegment, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL,
+    };
+
+    let merged = merge_two_tracks_by_host_time(
+        &[chunk(
+            0,
+            0.0,
+            30.0,
+            BoundaryKind::Edge,
+            vec![word(0.0, 1.0, 0.5, "mine")],
+        )],
+        &[chunk(
+            0,
+            0.0,
+            30.0,
+            BoundaryKind::Edge,
+            vec![word(0.0, 2.0, 0.5, "theirs")],
+        )],
+        &index_records(0.0, 60),
+        &index_records(0.0, 60),
+        TrackEpochs::SHARED,
+    );
+
+    // The same two tracks, as the DB stores them for the renderer.
+    let segments: Vec<MeetingSegment> = merged
+        .iter()
+        .map(|s| MeetingSegment {
+            id: s.text.clone(),
+            meeting_id: "m".into(),
+            start_seconds: s.start_seconds,
+            end_seconds: s.end_seconds,
+            text: s.text.clone(),
+            confidence: None,
+            created_at: chrono::Utc::now(),
+            track: s.track as i64,
+        })
+        .collect();
+    let rendered = render_transcript(&segments);
+
+    assert_eq!(merged.len(), 2);
+    assert_eq!(rendered.len(), 2);
+    for (span, line) in merged.iter().zip(rendered.iter()) {
+        assert_eq!(
+            span.text, line.text,
+            "the two orderings must line up before the labels are compared"
+        );
+        assert_eq!(
+            span.speaker, line.speaker,
+            "the merge labelled track {} {:?} and the shipped renderer labelled \
+             the same track {:?} — two rules again",
+            span.track, span.speaker, line.speaker
+        );
+    }
+    // And they are the published constants, not two strings that happen to
+    // match because both were typed wrong the same way.
+    assert_eq!(merged[0].speaker, MIC_SPEAKER_LABEL);
+    assert_eq!(merged[1].speaker, SYSTEM_SPEAKER_LABEL);
 }

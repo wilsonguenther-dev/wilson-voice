@@ -831,6 +831,51 @@ pub const TRUE_RATE_PPM_LIMIT: f64 = 50.0;
 /// measurement is worse than reporting nothing.
 pub const TRUE_RATE_MIN_SPAN_SECONDS: f64 = 10.0;
 
+/// How far ONE index interval's delivered audio may sit from what its elapsed
+/// host time accounts for and still be evidence about a crystal.
+///
+/// Deliberately the same number as [`STALL_MIN_SAMPLES`] (250 ms), because the
+/// two answer the same physical question — *was the device delivering across
+/// this interval?* — and two thresholds for one question is how they end up
+/// disagreeing. The rules themselves are different and must be: the planner's
+/// asks about `spilled_samples`, because its job is to repair the wav that
+/// reached the disk; this one asks about `captured_samples`, because its job is
+/// to describe the DEVICE. A journal that dropped audio from a healthy device
+/// is a splice and is not a rate defect
+/// (`the_rate_is_what_the_device_delivered_not_what_reached_disk`).
+///
+/// 250 ms inside a ~1 s interval is 250,000 ppm — 5,000× [`TRUE_RATE_PPM_LIMIT`]
+/// and 30× the 8.8% gap between 44.1 and 48 kHz, which is the coarsest
+/// "misreported rate" this measurement is supposed to catch. So nothing this
+/// discards could have been a crystal, and a device genuinely running far off
+/// its nominal rate is still measured rather than thrown away.
+///
+/// It is two-sided. The shortfall side is the stall — a device that stopped
+/// delivering, which is the ORDINARY state of a process tap whenever nobody on
+/// the far side is talking. The excess side is the backlog flush that can follow
+/// one: no crystal delivers a quarter-second of extra audio inside a second, so
+/// an interval that does is a buffer draining, not a clock running fast.
+pub const TRUE_RATE_INTERVAL_TOLERANCE_SAMPLES: u64 = STALL_MIN_SAMPLES;
+
+/// How far one index record's `host_ns` may sit from its own
+/// `captured_samples`, in nanoseconds — the resolution limit of any rate
+/// measured off these records.
+///
+/// `MeetingCapture::accept` writes both from the same drained block, but they
+/// are not stamped at the same instant: `host_ns` is the LAST anchor's capture
+/// time while `captured_samples` counts every frame in the block, so the pair
+/// carries up to about one callback period of slack (the same "±10 ms of
+/// phantom divergence per record" that method's own comment names and takes
+/// care to keep out of the counter rule).
+///
+/// A sum over CONSECUTIVE intervals telescopes and the slack cancels, which is
+/// why a clean track's measurement is exact. It survives only at the edges of
+/// each stretch of kept intervals, so it is bounded by the number of stretches
+/// rather than by the number of intervals — [`TrackRate::ppm_uncertainty`] is
+/// that bound, and it exists so a choppy track cannot be FLAGGED for noise the
+/// geometry of its own index sequence cannot resolve.
+pub const TRUE_RATE_PAIRING_JITTER_NS: u64 = 10_000_000;
+
 /// OS-2's free continuous measurement, as a value: what one track's clock
 /// ACTUALLY ran at, against the host clock, over the whole recording.
 ///
@@ -846,16 +891,44 @@ pub struct TrackRate {
     /// because `captured_samples` is already scaled onto it.
     pub nominal_rate: u32,
     /// `Δcaptured_samples ÷ Δhost_seconds`, OS-2's own suggested computation,
-    /// over the full monotonic span of this track's index records.
+    /// summed over the intervals BETWEEN CONSECUTIVE index records in which the
+    /// device was delivering — never across the endpoints of a run that
+    /// contains one where it was not. See [`measure_true_rate`].
     pub measured_rate: f64,
     /// `(measured − nominal) ÷ nominal × 1e6`. Positive means the device ran
     /// FAST — more audio arrived than the nominal rate accounts for.
     pub ppm: f64,
-    /// How many index intervals the measurement spans. One record measures
-    /// nothing; this is `records − 1` over the MEASURED run.
+    /// How many index intervals are INSIDE the measurement.
     pub intervals: usize,
-    /// Host seconds between the first and last record of the MEASURED run.
+    /// How many intervals of the measured run were left out because the device
+    /// was not delivering across them ([`TRUE_RATE_INTERVAL_TOLERANCE_SAMPLES`]).
+    ///
+    /// Never a silent omission: a track whose far side was quiet for half the
+    /// meeting has a real rate and a large number here, and the two together are
+    /// what say "this is a good measurement of a device that spent half the
+    /// meeting idle" rather than "this device is broken". Defaults to 0 so a
+    /// blob written before this field existed reads as the whole-run
+    /// measurement it was.
+    #[serde(default)]
+    pub intervals_skipped: usize,
+    /// Host seconds summed over the intervals inside the measurement — NOT the
+    /// wall time from the run's first record to its last, which would put the
+    /// skipped intervals back in the denominator.
     pub span_seconds: f64,
+    /// How much of `ppm` this measurement cannot resolve, given how many
+    /// separate stretches of kept intervals it had to be summed over
+    /// ([`TRUE_RATE_PAIRING_JITTER_NS`] at each stretch's two edges, over
+    /// `span_seconds`).
+    ///
+    /// A clean track measured in one stretch over an hour cannot resolve about
+    /// 5.6 ppm, an order inside the ±50 ppm band it is judged against; a track
+    /// chopped into hundreds of stretches
+    /// by an idle far side cannot resolve tens of ppm, and reporting THAT as a
+    /// flagged crystal defect is the failure this field exists to prevent —
+    /// [`measure_true_rate`] will not flag a number smaller than its own
+    /// uncertainty. Defaults to 0.0 for a blob written before it existed.
+    #[serde(default)]
+    pub ppm_uncertainty: f64,
     /// How many monotonic runs this track's index sequence broke into — one on
     /// a track whose stream was never reopened, and one more per reopen.
     ///
@@ -870,27 +943,15 @@ pub struct TrackRate {
     /// number OS-2 quotes (≈216 ms at 20 ppm, ≈430 ms at 40 ppm, ≈1.08 s at the
     /// ±50/±50 worst case) and the one an escalation decision reads.
     pub drift_at_cap_ms: f64,
-    /// `|ppm| > `[`TRUE_RATE_PPM_LIMIT`]. A flagged track has also been logged
-    /// at warn level — it is never silently accepted.
+    /// `|ppm| > `[`TRUE_RATE_PPM_LIMIT`] AND `|ppm| > `[`Self::ppm_uncertainty`].
+    /// A flagged track has also been logged at warn level — it is never silently
+    /// accepted, and it is never flagged on a number its own index sequence
+    /// cannot resolve.
     pub flagged: bool,
 }
 
 fn one_segment() -> usize {
     1
-}
-
-/// One stretch of a track's index sequence over which the clock never
-/// restarted — the only thing a rate can honestly be divided over.
-struct MonotonicRun<'a> {
-    first: &'a IndexRecord,
-    last: &'a IndexRecord,
-    intervals: usize,
-}
-
-impl MonotonicRun<'_> {
-    fn span_seconds(&self) -> f64 {
-        (self.last.host_ns - self.first.host_ns) as f64 / 1e9
-    }
 }
 
 /// Split a track's index records into the runs its clock actually ran in.
@@ -900,33 +961,89 @@ impl MonotonicRun<'_> {
 /// first callback while `captured_samples` keeps running, so the sequence is
 /// several runs rather than one. A record that runs backwards on either axis
 /// opens the next run instead of extending this one.
-fn monotonic_runs(records: &[IndexRecord]) -> Vec<MonotonicRun<'_>> {
-    let mut runs: Vec<MonotonicRun<'_>> = Vec::new();
-    let mut previous: Option<&IndexRecord> = None;
-    for record in records {
-        let reopened = previous.is_some_and(|prev| {
-            record.host_ns <= prev.host_ns || record.captured_samples < prev.captured_samples
-        });
-        previous = Some(record);
-        match runs.last_mut() {
-            Some(run) if !reopened => {
-                // Strictly forward on BOTH axes or it is not an interval this
-                // can divide by.
-                if record.host_ns > run.last.host_ns
-                    && record.captured_samples > run.last.captured_samples
-                {
-                    run.last = record;
-                    run.intervals += 1;
-                }
-            }
-            _ => runs.push(MonotonicRun {
-                first: record,
-                last: record,
-                intervals: 0,
-            }),
+///
+/// Runs are returned as SLICES rather than as (first, last) endpoints, because
+/// a rate is not the endpoints' business: [`measure_run`] has to look at every
+/// interval inside a run to find the ones the device slept through, and an
+/// endpoint pair is exactly the shape that hides them.
+fn monotonic_runs(records: &[IndexRecord]) -> Vec<&[IndexRecord]> {
+    let mut runs: Vec<&[IndexRecord]> = Vec::new();
+    let mut start = 0usize;
+    for (index, record) in records.iter().enumerate() {
+        let Some(prev) = index.checked_sub(1).map(|i| &records[i]) else {
+            continue;
+        };
+        if record.host_ns <= prev.host_ns || record.captured_samples < prev.captured_samples {
+            runs.push(&records[start..index]);
+            start = index;
         }
     }
+    if start < records.len() {
+        runs.push(&records[start..]);
+    }
     runs
+}
+
+/// What one monotonic run says about its device's clock.
+#[derive(Debug, Clone, Copy, Default)]
+struct RunEvidence {
+    /// Samples delivered across the kept intervals.
+    samples: u64,
+    /// Host nanoseconds elapsed across the kept intervals — the denominator,
+    /// which is why the skipped ones must not be in it.
+    host_ns: u64,
+    intervals: usize,
+    skipped: usize,
+    /// How many separate stretches the kept intervals fall into. One on a clean
+    /// track; one per gap otherwise. The measurement telescopes inside a stretch
+    /// and only carries pairing slack at its edges, so this is what bounds the
+    /// uncertainty.
+    stretches: usize,
+}
+
+impl RunEvidence {
+    fn span_seconds(&self) -> f64 {
+        self.host_ns as f64 / 1e9
+    }
+}
+
+/// Measure one monotonic run, interval by interval — the spec's own
+/// computation, "`Δsamples ÷ Δhost_seconds` between consecutive index records".
+///
+/// An interval is evidence about the crystal only if the device was DELIVERING
+/// across it, within [`TRUE_RATE_INTERVAL_TOLERANCE_SAMPLES`]. The ones it was
+/// not are dropped from BOTH sides of the ratio — leaving them in the
+/// denominator is the whole defect, and leaving them in the numerator would be
+/// inventing audio that does not exist.
+fn measure_run(run: &[IndexRecord]) -> RunEvidence {
+    let mut evidence = RunEvidence::default();
+    let mut in_stretch = false;
+    for pair in run.windows(2) {
+        let (prev, record) = (&pair[0], &pair[1]);
+        // Guaranteed by `monotonic_runs`, restated because this arithmetic is
+        // unsigned and a wrap here would be a silent 1e19.
+        if record.host_ns <= prev.host_ns || record.captured_samples < prev.captured_samples {
+            evidence.skipped += 1;
+            in_stretch = false;
+            continue;
+        }
+        let elapsed_ns = record.host_ns - prev.host_ns;
+        let delivered = record.captured_samples - prev.captured_samples;
+        let accounted = (elapsed_ns as u128 * TARGET_RATE as u128 / 1_000_000_000) as u64;
+        if delivered.abs_diff(accounted) >= TRUE_RATE_INTERVAL_TOLERANCE_SAMPLES {
+            evidence.skipped += 1;
+            in_stretch = false;
+            continue;
+        }
+        if !in_stretch {
+            evidence.stretches += 1;
+            in_stretch = true;
+        }
+        evidence.samples += delivered;
+        evidence.host_ns += elapsed_ns;
+        evidence.intervals += 1;
+    }
+    evidence
 }
 
 /// Measure one track's true rate from its index records (OS-2).
@@ -947,30 +1064,52 @@ fn monotonic_runs(records: &[IndexRecord]) -> Vec<MonotonicRun<'_>> {
 /// escalation gets decided on, so a fabricated value here is worse than no value
 /// at all. [`TrackRate::segments`] carries the run COUNT beside the rate so a
 /// reader can see the meeting was reopened rather than having to infer it.
+///
+/// **And inside that run the measurement is per INTERVAL — the spec's own
+/// "`Δsamples ÷ Δhost_seconds` between consecutive index records" — never
+/// between the run's endpoints.** An endpoint span puts every interval the
+/// device slept through into the denominator while none of its audio is in the
+/// numerator, so one 10-second stall in a two-hour meeting reports a PERFECT
+/// crystal at −1,389 ppm and flags it, and a far side that is silent five
+/// seconds in every fifteen — the ordinary shape of a process tap, as this
+/// item's own documentation says — reports −333,241 ppm. That is not a small
+/// error in a diagnostic: it is the exact datum OS-2 defers the
+/// single-drift-compensated-aggregate escalation on, so a fabricated value here
+/// buys a fork of the capture path that nothing needed.
+/// [`measure_run`] keeps the intervals in which the device was delivering and
+/// [`TrackRate::intervals_skipped`] says how many it did not, so a quiet
+/// meeting reads as a good measurement of an idle device rather than as a
+/// broken one.
 pub fn measure_true_rate(track: usize, records: &[IndexRecord]) -> Option<TrackRate> {
     let runs = monotonic_runs(records);
     let segments = runs.len();
     // The longest run is the one with the most evidence behind it, and it is
-    // the one whose ppm figure is worth projecting to the cap.
-    let run = runs
+    // the one whose ppm figure is worth projecting to the cap. "Longest" is
+    // measured in KEPT intervals, not in wall time: a run that is mostly the
+    // device asleep is mostly not evidence.
+    let evidence = runs
         .into_iter()
-        .filter(|run| run.intervals > 0)
+        .map(measure_run)
         .max_by(|a, b| a.span_seconds().total_cmp(&b.span_seconds()))?;
-    let MonotonicRun {
-        first,
-        last,
-        intervals,
-    } = run;
-    let span_seconds = (last.host_ns - first.host_ns) as f64 / 1e9;
+    // A run with no kept intervals has a zero span and is caught here rather
+    // than by a separate filter — one gate for "not enough to stand behind",
+    // not two that could disagree.
+    let span_seconds = evidence.span_seconds();
     if span_seconds < TRUE_RATE_MIN_SPAN_SECONDS {
         return None;
     }
-    let samples = (last.captured_samples - first.captured_samples) as f64;
-    let measured_rate = samples / span_seconds;
+    let measured_rate = evidence.samples as f64 / span_seconds;
     let nominal_rate = TARGET_RATE;
     let ppm = (measured_rate - nominal_rate as f64) / nominal_rate as f64 * 1e6;
     let drift_at_cap_ms = ppm.abs() / 1e6 * MEETING_HARD_CAP.as_secs_f64() * 1000.0;
-    let flagged = ppm.abs() > TRUE_RATE_PPM_LIMIT;
+    // Two edges per stretch of kept intervals, each carrying up to one
+    // record's worth of pairing slack.
+    let ppm_uncertainty = (2 * evidence.stretches) as f64 * TRUE_RATE_PAIRING_JITTER_NS as f64
+        / evidence.host_ns as f64
+        * 1e6;
+    let flagged = ppm.abs() > TRUE_RATE_PPM_LIMIT && ppm.abs() > ppm_uncertainty;
+    let intervals = evidence.intervals;
+    let intervals_skipped = evidence.skipped;
     if flagged {
         // Not silently accepted (the acceptance criterion's own words). The
         // recording is still good — the host-time merge is what makes it good —
@@ -978,16 +1117,19 @@ pub fn measure_true_rate(track: usize, records: &[IndexRecord]) -> Option<TrackR
         // justify OS-2's stronger, deferred fix.
         log::warn!(
             "YV107/OS-2: track {track} measured {measured_rate:.3} Hz against a nominal \
-             {nominal_rate} Hz ({ppm:+.1} ppm over {span_seconds:.1} s of {segments} clock \
-             segment(s)) — that projects to {drift_at_cap_ms:.0} ms of drift at the 3-hour cap; \
-             the merge is on host time so the transcript is still ordered correctly, but this is \
-             the measurement that would justify a single drift-compensated aggregate device"
+             {nominal_rate} Hz ({ppm:+.1} ppm ±{ppm_uncertainty:.1} over {span_seconds:.1} s of \
+             delivering audio in {intervals} interval(s) of {segments} clock segment(s), \
+             {intervals_skipped} interval(s) skipped as not delivering) — that projects to \
+             {drift_at_cap_ms:.0} ms of drift at the 3-hour cap; the merge is on host time so the \
+             transcript is still ordered correctly, but this is the measurement that would \
+             justify a single drift-compensated aggregate device"
         );
     } else {
         log::info!(
-            "YV107/OS-2: track {track} measured {measured_rate:.3} Hz ({ppm:+.1} ppm over \
-             {span_seconds:.1} s of {segments} clock segment(s), {drift_at_cap_ms:.0} ms \
-             projected at the cap)"
+            "YV107/OS-2: track {track} measured {measured_rate:.3} Hz ({ppm:+.1} ppm \
+             ±{ppm_uncertainty:.1} over {span_seconds:.1} s of delivering audio in {intervals} \
+             interval(s) of {segments} clock segment(s), {intervals_skipped} interval(s) skipped \
+             as not delivering, {drift_at_cap_ms:.0} ms projected at the cap)"
         );
     }
     Some(TrackRate {
@@ -996,7 +1138,9 @@ pub fn measure_true_rate(track: usize, records: &[IndexRecord]) -> Option<TrackR
         measured_rate,
         ppm,
         intervals,
+        intervals_skipped,
         span_seconds,
+        ppm_uncertainty,
         drift_at_cap_ms,
         flagged,
         segments,

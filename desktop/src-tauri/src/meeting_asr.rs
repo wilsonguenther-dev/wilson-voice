@@ -1155,10 +1155,22 @@ pub fn merge_two_tracks_by_host_time(
     out
 }
 
+/// The one place a track number becomes a speaker name in the merge.
+///
+/// The cast is the seam between two shipped numberings that are both correct
+/// and are NOT the same type: [`crate::meeting::MIC_TRACK`] is a `usize`
+/// because it indexes the journal's per-track vectors, and
+/// [`crate::meetings::MIC_TRACK`] is an `i64` because it is a SQLite `INTEGER`
+/// column. YV108 shipped `meetings::speaker_label` against the DB numbering and
+/// the UI's TypeScript mirror is held to it; calling it here — rather than
+/// re-deriving "Me"/"Them" against the journal numbering, which would compile
+/// and would be a third copy of the rule — is what keeps the merge, the
+/// Markdown export and the screen from ever disagreeing about who spoke.
+/// `the_merge_labels_through_the_shipped_render_rule` is the guard.
 fn label(track: usize, start_seconds: f64, end_seconds: f64, text: String) -> MergedSpan {
     MergedSpan {
         track,
-        speaker: crate::meetings::speaker_label(track).to_string(),
+        speaker: crate::meetings::speaker_label(track as i64).to_string(),
         start_seconds,
         end_seconds,
         text,

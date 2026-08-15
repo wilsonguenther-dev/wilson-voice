@@ -182,3 +182,123 @@ Every number below is reproducible from this commit with the commands in
   through on this commit (finalize → `FinalizedMeeting::track_rates` →
   `CaptureOutcome` → `MeetingDiagnostics` → the `diagnostics` column), and
   `a_finished_meetings_row_carries_the_measured_rates` drives that whole path.
+
+---
+
+## Round 4 — the true rate is measured PER INTERVAL, and the rebase onto `main`
+
+### What was wrong, and the number that made it blocking
+
+Round 2's revision volunteered this, in this PR's own body:
+
+> *"Not changed, deliberately: `measure_true_rate` still divides
+> `Δcaptured_samples` by `Δhost_seconds`. […] A stall does drag the measured
+> rate down for the meeting it happens in; that is a property of the metric
+> worth naming, not a defect this fix should have quietly folded in."*
+
+**That disclosure was four orders of magnitude short of the effect, and it is
+retracted.** Measured on the shipped code, on devices whose crystals are
+*exactly* nominal:
+
+| Fixture (0 ppm crystal throughout) | Reported before | Reported now |
+|---|---|---|
+| one 10 s device stall in a 2 h meeting | −1,388.9 ppm, **flagged**, `drift_at_cap_ms` 15,000 | **+0.0 ppm**, not flagged |
+| far side silent 5 s in every 15 s, 2 h | −333,240.7 ppm, **flagged**, `drift_at_cap_ms` 3,599,000 | **+0.0 ppm**, not flagged |
+
+The second row is not an edge case: a process tap receives no callbacks at all
+while the tapped app is quiet, which this PR's own round-2 text calls "the
+routine shape of the far side rather than a hardware fault". Track 1 was
+therefore garbage-and-flagged on essentially every real two-track meeting — and
+this is the exact datum OS-2 defers the single-drift-compensated-aggregate
+escalation on, so the body's "a decision on evidence rather than a hunch" was
+false in the field. It was also an SSOT deviation: the backlog specifies
+"`Δsamples ÷ Δhost_seconds` **between consecutive index records**".
+
+### The fix
+
+`measure_run` walks the intervals of one monotonic run and keeps the ones in
+which the device was DELIVERING, within `TRUE_RATE_INTERVAL_TOLERANCE_SAMPLES`
+(250 ms — deliberately the same number as `STALL_MIN_SAMPLES`, because the two
+answer the same physical question). A skipped interval leaves **both** sides of
+the ratio: leaving it in the denominator is the defect, and leaving it in the
+numerator would be inventing audio. `TrackRate::intervals_skipped` reports how
+many, so a quiet meeting reads as a good measurement of an idle device rather
+than a broken one.
+
+The tolerance is two-sided, and that side is not decoration: a stalled consumer
+that catches up lands the whole backlog in one interval, and a one-sided rule
+(the splice planner's shape, which is one-sided because a wav cannot be repaired
+by deleting audio) would drop the stall and swallow its mirror image — the
+meeting would come back reading fast instead of slow.
+
+`TrackRate::ppm_uncertainty` is the second half. Each stretch of kept intervals
+carries up to one record's worth of pairing slack at each of its two edges (a
+record's `host_ns` is its LAST anchor's stamp; its `captured_samples` counts the
+whole block), so a track chopped into hundreds of stretches by an idle far side
+cannot resolve the ±50 ppm band it is judged against. Such a track is REPORTED
+with its resolution beside it and is never FLAGGED on noise —
+`a_perfect_crystal_measured_past_the_band_by_its_own_slack_is_not_flagged`
+measures −122.3 ppm on a device that never drifted and does not flag it.
+
+| Claim | How it was verified | Result |
+|---|---|---|
+| One stall does not poison a perfect crystal | `index_records_stalled(0 ppm, 7200 s, stall 10 s)` | **+0.0 ppm**, not flagged, 10 intervals skipped, span excludes them |
+| An idle far side is measured, not condemned | `index_records_bursty(0 ppm, 7200 s, 15 s period, 5 s silent)` | **+0.0 ppm**, not flagged, 2,400 skipped / 4,800 kept |
+| The exclusion does not delete the diagnostic | the same stall on a genuinely 100 ppm device | **+100 ppm**, still flagged |
+| The endpoint computation this replaces fails the same fixture | computed in-test beside the new one | endpoint span is absurd; per-interval is 0 ppm |
+| The backlog flush is not a fast crystal | 10 s stall answered by one flush interval | +0.0 ppm, all 10 intervals skipped |
+| Noise is never flagged as drift | `with_pairing_slack` over 40 short stretches | −122.3 ppm reported, uncertainty larger, **not flagged** |
+
+### The rebase, and the one semantic conflict
+
+`main` moved under this branch while it was in review: YV108 (#131), YV109
+(#132), YV100 (#123) and YV102 (#125) all landed. Two textual conflicts and one
+semantic one:
+
+* `tests/support/two_track.rs` — YV109 shipped a module at the same path. The two
+  are **merged into one file**, not forked: YV109's independent host-time
+  reference above, this item's fixture generator below, and this item's
+  `THREE_HOURS` / `RESIDUAL_BUDGET_SECONDS` aliased onto YV109's
+  `RESIDUAL_HORIZON_SECONDS` / `RESIDUAL_BUDGET_MS` rather than spelled a second
+  time. YV109's own header said that when this PR merged, its gates would become
+  "a cross-check of `HostTimeline` against an independent implementation instead
+  of the only implementation" — that is now true, and the header says so.
+* `meetings.rs` — **the semantic one.** This branch had written its own
+  `speaker_label(track: usize)`; `main` had meanwhile shipped
+  `speaker_label(track: i64)` (the SQLite numbering), with the Meetings screen's
+  TypeScript mirror held to it by YV108's fixtures. Keeping this branch's copy
+  would have compiled and left two "Me"/"Them" rules in the tree — the split
+  YV108's own review had already had to close once. The branch's copy is deleted,
+  the merge calls the shipped rule with a cast at the seam, and
+  `the_merge_labels_through_the_shipped_render_rule` drives merged spans through
+  `render_transcript` and asserts label equality span by span. Mutations 23 and 24
+  are the proof it is not vacuous.
+
+### What round 4 does NOT change
+
+* The mic-only fast path still keys on `spans_b.is_empty()` rather than
+  `track_b.is_empty()`, and still drops `epochs.a_ns` on that path. Carried
+  forward from round 3 as ADVISORY; a BLOCKING revision is not the place to
+  re-litigate it.
+* **A shortfall SMALLER than the tolerance is still inside the measurement, and
+  that is a bound rather than a bug — but it is a bound, so here it is.** An
+  interval in which the device delivered up to 250 ms less audio than its
+  elapsed host time accounts for is kept, because at this granularity nothing
+  distinguishes it from a crystal that is simply slow, and excluding every short
+  interval would clamp the metric to non-negative ppm and make a genuinely slow
+  device unreportable. A device chronically short by, say, 200 ms in every
+  1 s interval would therefore be measured at −200,000 ppm and flagged. That
+  reading is not wrong — that device really did deliver a fifth less audio than
+  the wall clock, every second, for the whole meeting — but it is worth knowing
+  that the number would then be describing a dropping device rather than a
+  crystal. It is also the regime in which the SHIPPED splice planner is blind
+  for the same reason (`STALL_MIN_SAMPLES` is its threshold too), so the
+  finalized wav would be short by the same amount and the two are consistent
+  about it. Making that case visible needs a per-interval shortfall histogram in
+  the diagnostics blob, which is a new datum and not this revision's scope.
+* Acceptance criterion #5 (a real AirPods two-track recording) is still NOT
+  DONE, and it is now less excusable than it was: YV100's tap is on `main`.
+  What is still missing is a production caller — nothing in a shipped build
+  starts a two-track meeting (`virtual_meeting_config` and `fan_out_tap_block`
+  are referenced only from tests), so there is still nothing to point a camera
+  at. `docs/yap22b-phase-demo.md` is where that closes.

@@ -26,7 +26,10 @@ mod two_track;
 use std::sync::Arc;
 
 use support::{open_db, temp_dir};
-use two_track::{index_records, index_records_lossy, index_records_rebased};
+use two_track::{
+    index_records, index_records_bursty, index_records_lossy, index_records_rebased,
+    index_records_stalled, with_pairing_slack,
+};
 use wilson_voice_lib::meeting::{
     measure_true_rate, MIC_TRACK, SYSTEM_TRACK, TARGET_RATE, TRUE_RATE_MIN_SPAN_SECONDS,
     TRUE_RATE_PPM_LIMIT,
@@ -255,6 +258,260 @@ fn the_rate_is_what_the_device_delivered_not_what_reached_disk() {
         !rate.flagged,
         "a journal gap is not a clock problem and must not be reported as one"
     );
+}
+
+// ── the measurement is PER INTERVAL (review round 4's BLOCKING) ─────────────
+
+/// One 10-second stall in a two-hour meeting must not move a perfect crystal's
+/// measured rate.
+///
+/// The defect this pins: dividing the run's END-TO-END `Δcaptured` by its
+/// end-to-end `Δhost` puts every second the device slept through into the
+/// DENOMINATOR while none of its audio is in the numerator. Measured on this
+/// exact fixture before the fix: **−1,388.9 ppm, flagged = true,
+/// `drift_at_cap_ms` 15,000** — on a device whose crystal is exactly nominal.
+/// The backlog specifies the computation "between consecutive index records",
+/// and this is what that clause is worth.
+#[test]
+fn a_single_stall_does_not_poison_a_perfect_crystals_rate() {
+    let records = index_records_stalled(0.0, 7200, 3600, 10);
+    let rate = measure_true_rate(MIC_TRACK, &records).expect("measurable");
+
+    assert!(
+        rate.ppm.abs() < 1.0,
+        "a 0 ppm crystal with one stall in it is still a 0 ppm crystal; got {:+.1} ppm",
+        rate.ppm
+    );
+    assert!(
+        !rate.flagged,
+        "flagging this track is flagging the stall, and the stall is not a clock defect"
+    );
+    assert!(
+        rate.intervals_skipped > 0,
+        "the stall's intervals must be reported as skipped, not silently absorbed"
+    );
+    assert!(
+        rate.span_seconds < 7200.0,
+        "the skipped seconds must leave the denominator too; span {:.1}",
+        rate.span_seconds
+    );
+    assert_eq!(rate.segments, 1, "a stall is not a reopen");
+}
+
+/// A far side that is silent five seconds in every fifteen — a process tap's
+/// ordinary shape, not a fault — is MEASURED, not condemned.
+///
+/// Before the fix this fixture reported **−333,241 ppm, flagged = true,
+/// `drift_at_cap_ms` 3,599,000**: a made-up number, presented as the
+/// measurement OS-2 defers the single-drift-compensated-aggregate escalation
+/// on. Two thirds of a real meeting's intervals are skipped here and the rate
+/// that comes back is still the crystal's own.
+#[test]
+fn a_far_side_that_is_silent_in_bursts_is_measured_not_condemned() {
+    let records = index_records_bursty(0.0, 7200, 15, 5);
+    let rate = measure_true_rate(SYSTEM_TRACK, &records).expect("measurable");
+
+    assert!(
+        rate.ppm.abs() < 1.0,
+        "an idle far side is not a drifting one; got {:+.1} ppm",
+        rate.ppm
+    );
+    assert!(!rate.flagged, "a quiet call is not an escalation");
+    assert!(
+        rate.intervals_skipped > 2000,
+        "a third of two hours is silent; only {} intervals were skipped",
+        rate.intervals_skipped
+    );
+    assert!(
+        rate.intervals > 4000,
+        "and the other two thirds are real evidence; got {} intervals",
+        rate.intervals
+    );
+}
+
+/// The exclusion must not clamp REAL drift to zero — otherwise it would close
+/// the finding by deleting the diagnostic.
+///
+/// Same stall, on a device genuinely running 100 ppm fast: the stall's
+/// intervals go, the drift stays, and the track is still flagged.
+#[test]
+fn a_stall_removes_the_stall_and_leaves_the_drift() {
+    let records = index_records_stalled(100.0, 7200, 3600, 10);
+    let rate = measure_true_rate(SYSTEM_TRACK, &records).expect("measurable");
+
+    assert!(
+        (rate.ppm - 100.0).abs() < 0.5,
+        "the device really did run 100 ppm fast; got {:+.2} ppm",
+        rate.ppm
+    );
+    assert!(
+        rate.flagged,
+        "100 ppm is past the crystal band and is the point of measuring"
+    );
+    assert!(rate.drift_at_cap_ms > 1000.0);
+}
+
+/// The two computations are asserted against EACH OTHER on the same fixture, so
+/// this file cannot pass by measuring the same thing twice.
+#[test]
+fn the_endpoint_computation_this_replaces_fails_the_same_fixture() {
+    let records = index_records_stalled(0.0, 7200, 3600, 10);
+
+    // The pre-fix computation, written out: the run's two ends.
+    let first = records.first().unwrap();
+    let last = records.last().unwrap();
+    let endpoint_rate = (last.captured_samples - first.captured_samples) as f64
+        / ((last.host_ns - first.host_ns) as f64 / 1e9);
+    let endpoint_ppm = (endpoint_rate - TARGET_RATE as f64) / TARGET_RATE as f64 * 1e6;
+    assert!(
+        endpoint_ppm < -1000.0 && endpoint_ppm.abs() > TRUE_RATE_PPM_LIMIT,
+        "the endpoint span must be absurd on this fixture ({endpoint_ppm:+.1} ppm) or \
+         the per-interval measurement beside it proves nothing"
+    );
+
+    let measured = measure_true_rate(MIC_TRACK, &records)
+        .expect("measurable")
+        .ppm;
+    assert!(
+        measured.abs() < 1.0,
+        "per interval: {measured:+.2} ppm; between the ends: {endpoint_ppm:+.1} ppm"
+    );
+}
+
+/// The BACKLOG FLUSH after a stall is not a fast crystal either.
+///
+/// The tolerance is two-sided on purpose. When a stalled consumer catches up,
+/// the anchors' cumulative `lost_frames` lands in one block and
+/// `captured_samples` jumps by more audio than that interval's host time can
+/// account for. A one-sided rule — shortfall only, mirroring the splice
+/// planner's, which is one-sided because a wav cannot be repaired by deleting
+/// audio — would drop the stall and then swallow its mirror image, and the
+/// meeting would come back reading fast instead of slow. No crystal delivers a
+/// quarter-second of extra audio inside a second; that is a buffer draining.
+#[test]
+fn a_backlog_flush_after_a_stall_is_not_a_fast_crystal() {
+    // A perfect crystal, 2 h. Ten seconds of stall at the hour, and then the
+    // whole ten seconds arrive in the next single interval.
+    let mut records = Vec::new();
+    for k in 0..=7200u64 {
+        let delivered = if (3600..3610).contains(&k) { 3600 } else { k };
+        records.push(wilson_voice_lib::meeting::IndexRecord {
+            host_ns: k * 1_000_000_000,
+            captured_samples: delivered * TARGET_RATE as u64,
+            spilled_samples: delivered * TARGET_RATE as u64,
+        });
+    }
+    let rate = measure_true_rate(MIC_TRACK, &records).expect("measurable");
+    assert!(
+        rate.ppm.abs() < 1.0,
+        "the crystal is exact; the stall and the flush are the same ten seconds \
+         seen twice. Got {:+.1} ppm",
+        rate.ppm
+    );
+    assert!(!rate.flagged);
+    // Nine frozen intervals inside the stall, plus the one that flushed it.
+    assert_eq!(
+        rate.intervals_skipped, 10,
+        "the stalled intervals AND the flush that answered them must both be \
+         skipped; {} were",
+        rate.intervals_skipped
+    );
+}
+
+/// A track is never FLAGGED on a number its own index sequence cannot resolve.
+///
+/// Each stretch of kept intervals carries up to one record's worth of pairing
+/// slack at each of its two edges, and a track chopped into hundreds of
+/// stretches by an idle far side has hundreds of those. Reporting the resulting
+/// noise as a flagged crystal defect would be round 4's defect again in a new
+/// costume: a fabricated escalation datum. The number is still REPORTED — with
+/// its uncertainty beside it — because "cannot resolve 30 ppm" is not "measured
+/// nothing".
+#[test]
+fn a_track_is_never_flagged_on_noise_its_own_index_sequence_cannot_resolve() {
+    // Two minutes, silent 5 s in every 15: 8 stretches over ~80 s of audio.
+    let choppy = measure_true_rate(SYSTEM_TRACK, &index_records_bursty(0.0, 120, 15, 5))
+        .expect("measurable");
+    assert!(
+        choppy.ppm_uncertainty > 0.0,
+        "a track measured in stretches has a resolution limit and must say so"
+    );
+    assert!(!choppy.flagged);
+
+    // A clean hour resolves far better than the 50 ppm band it is judged
+    // against, so the guard never gets in the way of a real flag.
+    let clean = measure_true_rate(MIC_TRACK, &index_records(0.0, 3600)).unwrap();
+    assert!(
+        clean.ppm_uncertainty < TRUE_RATE_PPM_LIMIT / 5.0,
+        "one stretch over an hour must resolve an order inside the crystal band          it is judged against; got {:.3} ppm",
+        clean.ppm_uncertainty
+    );
+    assert!(
+        choppy.ppm_uncertainty > 10.0 * clean.ppm_uncertainty,
+        "and a track measured in eight short stretches must resolve far worse          ({:.1} vs {:.3} ppm) or this guard is measuring nothing",
+        choppy.ppm_uncertainty,
+        clean.ppm_uncertainty
+    );
+    let drifting = measure_true_rate(SYSTEM_TRACK, &index_records(100.0, 3600)).unwrap();
+    assert!(
+        drifting.flagged,
+        "a real 100 ppm over a clean hour is still flagged"
+    );
+}
+
+/// The guard, doing its job on a fixture that actually needs it: a PERFECT
+/// crystal whose measured rate is past the crystal band purely because of the
+/// slack in its own records, reported and NOT flagged.
+///
+/// Ten minutes of a far side silent five seconds in every fifteen gives forty
+/// short stretches; with up to ±10 ms of pairing slack at each stretch's two
+/// edges — the real shape of these records, per `with_pairing_slack` — the
+/// measurement lands at −122.3 ppm on a device that never drifted at all. That
+/// is more than twice the ±50 ppm band, and flagging it would be round 4's
+/// defect wearing a different hat: an escalation datum that describes the index
+/// cadence rather than the hardware. The number is still REPORTED, with its
+/// resolution beside it.
+#[test]
+fn a_perfect_crystal_measured_past_the_band_by_its_own_slack_is_not_flagged() {
+    let records = with_pairing_slack(&index_records_bursty(0.0, 600, 15, 5));
+    let rate = measure_true_rate(SYSTEM_TRACK, &records).expect("measurable");
+
+    assert!(
+        rate.ppm.abs() > TRUE_RATE_PPM_LIMIT,
+        "this fixture is pointless unless the noise really does clear the band; \
+         got {:+.1} ppm",
+        rate.ppm
+    );
+    assert!(
+        rate.ppm_uncertainty > rate.ppm.abs(),
+        "the measurement ({:+.1} ppm) is inside its own resolution ({:.1} ppm)",
+        rate.ppm,
+        rate.ppm_uncertainty
+    );
+    assert!(
+        !rate.flagged,
+        "a device that never drifted must not be flagged for the shape of its \
+         index sequence"
+    );
+    // Reported, not suppressed: an escalation reader still gets the number and
+    // gets to see why it means nothing yet.
+    assert!(rate.drift_at_cap_ms > 0.0);
+    assert_eq!(rate.intervals, 400);
+    assert_eq!(rate.intervals_skipped, 200);
+}
+
+/// A blob written before this round reads as the whole-run measurement it was —
+/// no skipped intervals, no uncertainty — rather than as absent fields.
+#[test]
+fn a_blob_written_before_round_four_still_parses() {
+    let old = r#"{"track":1,"nominalRate":16000,"measuredRate":16001.6,"ppm":100.0,
+        "intervals":600,"spanSeconds":600.0,"segments":1,"driftAtCapMs":1080.0,
+        "flagged":true}"#;
+    let parsed: wilson_voice_lib::meeting::TrackRate = serde_json::from_str(old).unwrap();
+    assert_eq!(parsed.intervals_skipped, 0);
+    assert_eq!(parsed.ppm_uncertainty, 0.0);
+    assert_eq!(parsed.segments, 1);
+    assert!(parsed.flagged);
 }
 
 // ── the write ───────────────────────────────────────────────────────────────

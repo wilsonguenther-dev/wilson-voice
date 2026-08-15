@@ -694,3 +694,70 @@ pub fn worst_residual_ms(merged: &[MergedSpan], truth: &[(&str, f64)]) -> f64 {
     }
     worst
 }
+
+/// A track whose device delivers in BURSTS: `silent_for` seconds of nothing in
+/// every `period` seconds, on an otherwise perfect `ppm` crystal.
+///
+/// This is not a fault fixture. It is the ORDINARY shape of the far side of a
+/// call — a process tap gets no callbacks at all while the tapped app is silent,
+/// which this PR's own documentation calls "the routine shape of the far side
+/// rather than a hardware fault" — and it is the shape that made
+/// `measure_true_rate` report −333,241 ppm on a crystal that never drifted, by
+/// leaving every silent second in the denominator and none of its audio in the
+/// numerator.
+///
+/// `host_ns` runs whatever the device does; `captured_samples` only advances in
+/// the seconds it delivered, which is exactly what a frozen counter looks like.
+pub fn index_records_bursty(
+    ppm: f64,
+    seconds: u64,
+    period: u64,
+    silent_for: u64,
+) -> Vec<IndexRecord> {
+    let mut delivered = 0.0f64;
+    (0..=seconds)
+        .map(|k| {
+            // Second `k` produced audio unless it fell inside the silent window
+            // of its period. Second 0 is the origin record and delivers nothing.
+            if k > 0 && (k - 1) % period.max(1) >= silent_for {
+                delivered += 1.0;
+            }
+            let captured = captured_at(ppm, delivered).round() as u64;
+            IndexRecord {
+                host_ns: k * 1_000_000_000,
+                captured_samples: captured,
+                spilled_samples: captured,
+            }
+        })
+        .collect()
+}
+
+/// Stamp a deterministic PAIRING SLACK onto a record sequence: up to ±10 ms
+/// between a record's `host_ns` and its `captured_samples`.
+///
+/// Every other fixture in this module is exact, which is what makes them good
+/// tests of arithmetic and useless as tests of RESOLUTION. Real records are not
+/// exact: `MeetingCapture::accept` stamps `host_ns` from the LAST anchor it
+/// drained and counts `captured_samples` over the whole block, so the pair
+/// carries up to about one callback period of slack. Inside one stretch of kept
+/// intervals that slack telescopes away; across many short stretches it does
+/// not, and it is the reason a chopped-up track cannot resolve a 50 ppm crystal
+/// band. The generator is an LCG rather than a real RNG so a failure is
+/// reproducible from the test name alone.
+pub fn with_pairing_slack(records: &[IndexRecord]) -> Vec<IndexRecord> {
+    records
+        .iter()
+        .enumerate()
+        .map(|(k, record)| {
+            let mut x = (k as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x ^= x >> 33;
+            let slack_ns = (x % 20_000_001) as i64 - 10_000_000;
+            IndexRecord {
+                host_ns: (record.host_ns as i64 + slack_ns).max(0) as u64,
+                ..*record
+            }
+        })
+        .collect()
+}
