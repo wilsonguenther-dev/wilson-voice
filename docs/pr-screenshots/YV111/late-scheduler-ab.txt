@@ -1,0 +1,36 @@
+YV111 — the old shape vs the new one, against the SAME simulated starvation
+
+The flake this item removes is a loaded CI runner failing to schedule the
+controller's ticker thread often enough inside a 600 ms wall-clock window. A
+12-core M-series laptop will not reproduce that by being loaded: the runs under
+`load average 28` and `43` (ten-runs-under-load.txt) all passed with BOTH the old
+and the new test, which is exactly why the flake only ever showed on macos-14 CI.
+
+So the starvation was simulated instead — one temporary line in
+`spawn_ticker`'s loop, `std::thread::sleep(tick * 2)`, i.e. "the scheduler ran
+this thread three times later than it asked". Same patch, both tests, reverted
+after.
+
+
+OLD TEST (`the_elapsed_clock_ticks_once_per_interval_and_not_more`,
+`sleep(TEST_TICK * 10)` then `(5..=16).contains(&ticks)`):
+
+  thread 'the_elapsed_clock_ticks_once_per_interval_and_not_more' panicked at
+  src-tauri/tests/meeting_manual_start_stop.rs:154:5:
+  expected ~11 recording statuses over 10 intervals, got 4
+  test result: FAILED. 12 passed; 1 failed; 0 ignored; finished in 1.30s
+
+That is, verbatim, the CI failure this item was filed for — reproduced with the
+controller behaving perfectly and only the SCHEDULER changed.
+
+
+RESHAPED TEST, same patched ticker, three consecutive runs:
+
+  ### RESHAPED TEST vs the SAME 3x-late ticker:
+  run 1: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.58s
+  run 2: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+  run 3: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.58s
+
+A thread that wakes late makes the reshaped test SLOWER (3.58 s vs 3.44 s) and
+never makes it fail — while the three real defects in falsification.txt still
+fail it by name.

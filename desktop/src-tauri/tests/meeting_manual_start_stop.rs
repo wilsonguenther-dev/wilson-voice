@@ -11,9 +11,8 @@
 
 mod support;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use support::{open_db, temp_dir};
 use wilson_voice_lib::meeting_control::{
@@ -25,22 +24,74 @@ use wilson_voice_lib::meetings::MeetingState;
 /// production value is asserted separately, below.
 const TEST_TICK: Duration = Duration::from_millis(60);
 
+/// How long anything here waits on the controller's ticker thread before calling
+/// it stuck. A HANG guard, never a measurement: it is an order of magnitude
+/// longer than the work it waits for, so reaching it means the ticker died — not
+/// that the runner was busy. See [`support::wait_until`].
+const TICK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// One status as it reached the UI, stamped when the sink received it.
+///
+/// The receipt time is what makes the clock checkable against something: an
+/// `elapsed_seconds` of 2 is only correct if roughly two seconds of real time
+/// had passed when it arrived, and only the sink can say when that was.
+#[derive(Clone)]
+struct Emit {
+    at: Instant,
+    status: MeetingStatus,
+}
+
 /// Collects every status the controller emits — the same sink `lib.rs` fills
 /// with "emit to both windows and flip the pill's energy flag".
 #[derive(Default)]
 struct Sink {
-    seen: Mutex<Vec<MeetingStatus>>,
-    ticks: AtomicUsize,
+    seen: Mutex<Vec<Emit>>,
+}
+
+impl Sink {
+    fn statuses(&self) -> Vec<MeetingStatus> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.status.clone())
+            .collect()
+    }
+
+    /// Every emit that said "recording", in arrival order.
+    fn recording_emits(&self) -> Vec<Emit> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.status.recording)
+            .cloned()
+            .collect()
+    }
+
+    /// The highest elapsed value the payload has carried so far — the ONLY
+    /// progress signal a cadence test should wait on, because it is the thing
+    /// under test rather than a proxy for how often the scheduler ran.
+    fn payload_seconds(&self) -> u64 {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.status.recording)
+            .map(|e| e.status.elapsed_seconds)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 fn sink() -> (Arc<Sink>, StatusSink) {
     let collected = Arc::new(Sink::default());
     let c = Arc::clone(&collected);
     let f: StatusSink = Arc::new(move |s: &MeetingStatus| {
-        if s.recording {
-            c.ticks.fetch_add(1, Ordering::SeqCst);
-        }
-        c.seen.lock().unwrap().push(s.clone());
+        c.seen.lock().unwrap().push(Emit {
+            at: Instant::now(),
+            status: s.clone(),
+        });
     });
     (collected, f)
 }
@@ -91,8 +142,13 @@ fn a_meeting_starts_and_stops_from_one_toggle() {
         "OS-12: the preflight readings are written before the first sample"
     );
 
-    // Let the 1 Hz clock run.
-    std::thread::sleep(TEST_TICK * 5);
+    // Let the clock run — waiting on the ticker's own output rather than on a
+    // sleep, so this is "the meeting was live long enough to tick" on any box.
+    support::wait_until(
+        "the ticker to emit while the meeting is live",
+        TICK_DEADLINE,
+        || seen.recording_emits().len() >= 2,
+    );
 
     // Press again.
     let stopped = c.toggle(&dir, None).expect("stop");
@@ -125,16 +181,58 @@ fn a_meeting_starts_and_stops_from_one_toggle() {
 
     // The status stream ended on an idle status, so a UI that only listens to
     // the event (and never polls) still lands on the right state.
-    let last = seen.seen.lock().unwrap().last().cloned().unwrap();
+    let last = seen.statuses().last().cloned().unwrap();
     assert!(!last.recording);
     assert_eq!(last.elapsed_label, "00:00:00");
 }
 
 /// OS-12 fix (1): elapsed time is a 1 Hz emit from Rust, not a timer in the
-/// webview. Asserted as a RATE so the test does not depend on the scheduler
-/// delivering exactly n ticks.
+/// webview.
+///
+/// **Why this is not `sleep(10 * TEST_TICK)` + "5 to 16 notifications arrived"
+/// (YV111).** It was, and that shape asserts on the SCHEDULER: how many times a
+/// background thread got to run inside a 600 ms wall-clock window is a property
+/// of how busy the box is, and a loaded runner falls out of any window narrow
+/// enough to still catch the defect. It failed three separate CI runs across the
+/// yap22a/yap22b reviews (`expected ~11 recording statuses over 10 intervals,
+/// got 4`) without the controller ever being wrong. Widening the window trades a
+/// flake for a test that no longer fails when the clock breaks.
+///
+/// What OS-12 actually claims is about the PAYLOAD, and the payload can be
+/// checked directly:
+///
+/// * **The clock never runs fast.** `elapsed_seconds` is `floor` of a monotonic
+///   `Instant`, so it can never exceed the real time observed at the sink. This
+///   direction is arithmetic — no amount of load can break it — and it is the
+///   half that a webview `setInterval`/rAF clock (which counts frames, not
+///   seconds) gets wrong.
+/// * **The clock never stalls.** By the time the payload says `n`, no more than
+///   `n + 1 s + slack` of real time has passed, so a clock counting at half rate
+///   or wedged behind a stuck ticker fails.
+/// * **It advances monotonically, in whole seconds**, starting from a zeroed
+///   clock, with the label the UI renders derived from that same number. (Not
+///   "every second appears": a thread that wakes late may skip one, and that is
+///   the scheduler's business, not the clock's.)
+/// * **Emits are spaced by the interval** — the "and not more" half. Asserted as
+///   a per-emit MINIMUM gap, which load can only ever lengthen; a 60 Hz webview
+///   clock lands at ~16 ms and fails by name.
+///
+/// The run is driven by the payload's own progress ([`Sink::payload_seconds`])
+/// with a generous hang deadline, so a slow box makes this test slower and never
+/// makes it fail.
 #[test]
-fn the_elapsed_clock_ticks_once_per_interval_and_not_more() {
+fn the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval() {
+    /// Whole seconds of payload clock to watch. Three is enough for a half-rate
+    /// clock to fall outside [`LAG_CEILING`] and short enough to keep the file's
+    /// exclusive lock brief.
+    const WATCH_SECONDS: u64 = 3;
+    /// How far the payload may lag real time: one second of `floor` truncation
+    /// plus a second of scheduling slack. A ticker starved for a full second
+    /// between emits still passes; a clock counting at half rate passes 2 s of
+    /// lag just after the third second and cannot — which is what fixes
+    /// [`WATCH_SECONDS`] at three.
+    const LAG_CEILING: f64 = 1.0 + 1.0;
+
     let _guard = support::exclusive();
     support::install_fake_engine();
     support::set_fake_mode(support::FAKE_OK);
@@ -143,28 +241,87 @@ fn the_elapsed_clock_ticks_once_per_interval_and_not_more() {
     let (seen, f) = sink();
     let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(TEST_TICK);
 
+    // Taken BEFORE `start`, so this reference is never later than the
+    // controller's own — which is what makes "the clock never runs fast"
+    // unfalsifiable by scheduling.
+    let before_start = Instant::now();
     c.start(&dir, Some("Ticker".into())).expect("start");
-    std::thread::sleep(TEST_TICK * 10);
+    support::wait_until(
+        &format!("the elapsed payload to reach {WATCH_SECONDS} s"),
+        TICK_DEADLINE,
+        || seen.payload_seconds() >= WATCH_SECONDS,
+    );
     c.stop("test").expect("stop");
 
-    let ticks = seen.ticks.load(Ordering::SeqCst);
-    // One `Started` status plus roughly ten ticks. The window is wide because a
-    // loaded CI box schedules late; the point is the ORDER of magnitude — a
-    // rAF-driven clock would be in the hundreds.
+    let emits = seen.recording_emits();
     assert!(
-        (5..=16).contains(&ticks),
-        "expected ~11 recording statuses over 10 intervals, got {ticks}"
+        emits.len() >= 2,
+        "a recording meeting emitted {} statuses — there is no cadence to check",
+        emits.len()
     );
 
-    // And every one of them carried a rendered clock, so the pill and the window
-    // cannot format it differently.
-    for s in seen.seen.lock().unwrap().iter().filter(|s| s.recording) {
-        assert_eq!(s.elapsed_label.len(), 8, "hh:mm:ss");
-        assert_eq!(
-            s.elapsed_label,
-            wilson_voice_lib::meetings::format_offset(s.elapsed_seconds as f64)
+    for (i, e) in emits.iter().enumerate() {
+        let observed = e.at.duration_since(before_start).as_secs_f64();
+        let payload = e.status.elapsed_seconds as f64;
+
+        assert!(
+            payload <= observed,
+            "the clock reported {payload}s at {observed:.3}s of real time — a clock \
+             that runs FAST is a rendered timer, not the meeting's elapsed time"
         );
+        assert!(
+            observed - payload <= LAG_CEILING,
+            "the clock reported {payload}s at {observed:.3}s of real time — it is \
+             stalled or counting slow (lag ceiling {LAG_CEILING}s)"
+        );
+        assert_eq!(
+            e.status.elapsed_label,
+            wilson_voice_lib::meetings::format_offset(payload),
+            "the pill and the window render one number, formatted once in Rust"
+        );
+        assert_eq!(e.status.elapsed_label.len(), 8, "hh:mm:ss");
+
+        let Some(p) = i.checked_sub(1).map(|j| &emits[j]) else {
+            continue;
+        };
+        assert!(
+            e.status.elapsed_seconds >= p.status.elapsed_seconds,
+            "the clock went backwards: {}s after {}s",
+            e.status.elapsed_seconds,
+            p.status.elapsed_seconds
+        );
+        // The cadence itself. `emits[0]` is the synchronous status `start()`
+        // returns with, not a tick, so the interval between it and the first
+        // tick is not a sample of the ticker's cadence — every pair after it is.
+        if i >= 2 {
+            let gap = e.at.duration_since(p.at);
+            assert!(
+                gap >= TEST_TICK / 2,
+                "two statuses {gap:?} apart on a {TEST_TICK:?} tick — the emit is \
+                 free-running rather than interval-driven, which is the webview \
+                 timer OS-12 removed"
+            );
+        }
     }
+
+    // Non-vacuous: the UI's first sight of the clock is zero, and the clock
+    // really did advance from there. (The values BETWEEN the ends are not
+    // asserted — a late-scheduled ticker is allowed to skip a second, which is
+    // the whole reason this test no longer counts anything.)
+    let path: Vec<u64> = {
+        let mut v: Vec<u64> = emits.iter().map(|e| e.status.elapsed_seconds).collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(
+        path.first().copied(),
+        Some(0),
+        "the first thing the UI hears is a zeroed clock: {path:?}"
+    );
+    assert!(
+        path.last().copied().unwrap_or(0) >= WATCH_SECONDS,
+        "the payload never reached {WATCH_SECONDS}s: {path:?}"
+    );
 }
 
 /// The production cadence is one second. Named so a future "make the pill

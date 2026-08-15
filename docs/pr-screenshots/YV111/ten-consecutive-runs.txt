@@ -1,0 +1,206 @@
+YV111 acceptance — the reshaped tests, 10 consecutive runs on the final tree
+
+$ cd desktop/src-tauri
+$ for i in $(seq 1 10); do cargo test --features custom-protocol \
+      --test meeting_manual_start_stop --test meeting_diagnostics_row; done
+
+===== run 1/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+===== run 2/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+===== run 3/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s
+===== run 4/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+===== run 5/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.44s
+===== run 6/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.43s
+===== run 7/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+===== run 8/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+===== run 9/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+===== run 10/10 =====
+test the_real_probes_answer_on_this_machine ... ok
+test meetings_from_before_this_build_have_no_diagnostics_and_that_is_fine ... ok
+test a_completed_meeting_carries_its_thermal_and_battery_readings ... ok
+test the_preflight_is_on_the_row_while_the_meeting_is_still_recording ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+test the_shipped_tick_is_one_hertz ... ok
+test the_unavailable_message_says_what_is_missing ... ok
+test a_capture_that_fails_on_stop_still_closes_its_row ... ok
+test a_meeting_cannot_be_started_twice ... ok
+test a_refused_start_leaves_no_row_behind ... ok
+test a_meeting_starts_and_stops_from_one_toggle ... ok
+test a_short_recording_that_still_wrote_a_wav_is_partial ... ok
+test capture_that_lands_no_audio_is_partial_and_says_why ... ok
+test quitting_finalizes_a_live_meeting ... ok
+test stopping_a_meeting_does_not_wait_out_a_tick ... ok
+test stopping_immediately_after_starting_is_not_a_race ... ok
+test stopping_nothing_is_not_a_meeting ... ok
+test the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.43s

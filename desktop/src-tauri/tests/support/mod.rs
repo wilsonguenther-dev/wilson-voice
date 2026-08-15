@@ -304,6 +304,36 @@ pub fn exclusive() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Block until `cond` holds, or fail with `what` after `deadline`.
+///
+/// **The one idiom in this suite for "the other thread has got far enough".**
+/// Anything the controller's ticker thread produces — a thermal sample, an
+/// elapsed-clock emit — arrives when the SCHEDULER runs that thread, so
+/// `sleep(n * TICK)` followed by an assertion about `n` things having happened
+/// is a bet on the runner's load, not a statement about the code. Those bets
+/// lose: `meeting_diagnostics_row` observed 2 ramp samples where 6 were needed,
+/// and `meeting_manual_start_stop`'s tick-count window (YV95/#112) failed three
+/// separate CI runs before YV111 reshaped it.
+///
+/// Widening the sleep does not fix a starvable thread — it only makes the same
+/// bet with worse odds and a slower suite. Waiting on the thread's own progress
+/// does, and turns a wall-clock race into a timeout that names what never
+/// happened.
+///
+/// `deadline` is a HANG guard, never a measurement: it should be far longer than
+/// any plausible scheduling delay, so that reaching it means the work genuinely
+/// stopped rather than that the box was busy.
+pub fn wait_until(what: &str, deadline: std::time::Duration, mut cond: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !cond() {
+        assert!(
+            start.elapsed() < deadline,
+            "timed out after {deadline:?} waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 // ── YV97 · the summary stubs ────────────────────────────────────────────────
 //
 // The summarizer's five acceptance criteria are all properties of its PURE

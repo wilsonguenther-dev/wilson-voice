@@ -1,0 +1,48 @@
+YV111 — falsification runs for
+`the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval`
+
+A reshaped test is worth nothing unless it still fails when the thing it names
+breaks. Each run below temporarily injected ONE defect into
+`desktop/src-tauri/src/meeting_control.rs` (reverted immediately after; no
+production change ships with YV111) and ran the reshaped test against it.
+
+Commands, in order:
+  cd desktop/src-tauri
+  CARGO_TARGET_DIR=…/yap-target cargo test --test meeting_manual_start_stop the_elapsed_clock
+
+
+1. THE EMIT GOES FREE-RUNNING  (`while stop.wait(tick)` → `stop.wait(tick / 8)`)
+   — the "and not more" half: a webview rAF/`setInterval` clock instead of the
+   Rust interval.
+
+   thread '…advances_one_second_per_second_and_emits_on_the_interval' panicked at
+   src-tauri/tests/meeting_manual_start_stop.rs:295:13:
+   two statuses 11.274667ms apart on a 60ms tick — the emit is free-running
+   rather than interval-driven, which is the webview timer OS-12 removed
+   test result: FAILED. 0 passed; 1 failed
+
+
+2. THE CLOCK RUNS FAST  (`elapsed.as_secs()` → `elapsed.as_millis() / 250`)
+   — a counter dressed up as a clock. Caught by arithmetic, not by timing: the
+   payload can never exceed the real time observed at the sink.
+
+   thread '…' panicked at src-tauri/tests/meeting_manual_start_stop.rs:264:9:
+   the clock reported 1s at 0.260s of real time — a clock that runs FAST is a
+   rendered timer, not the meeting's elapsed time
+   test result: FAILED. 0 passed; 1 failed
+
+
+3. THE CLOCK COUNTS SLOW  (`elapsed.as_secs()` → `elapsed.as_secs() / 2`)
+   — a stalled or half-rate clock, the failure a "wait until it reaches n"
+   driver would otherwise wait out forever.
+
+   the clock reported 1s at 3.029s of real time — it is stalled or counting slow
+   (lag ceiling 2s)
+   test result: FAILED. 0 passed; 1 failed
+
+
+Production file restored and verified clean after each run:
+  git status --porcelain →
+   M desktop/src-tauri/tests/meeting_diagnostics_row.rs
+   M desktop/src-tauri/tests/meeting_manual_start_stop.rs
+   M desktop/src-tauri/tests/support/mod.rs

@@ -1,0 +1,38 @@
+YV111 — grep evidence: no assert-on-notification-count-in-a-wall-clock-window
+pattern is left in the meeting test suites.
+
+Run from the repo root, on this branch.
+
+$ grep -rn "contains(&ticks\|\.\.=[0-9]\+)\.contains" desktop/src-tauri/tests/
+(no matches — the range-bounded tick count is gone)
+
+$ grep -rn "ticks" desktop/src-tauri/tests/meeting_manual_start_stop.rs
+desktop/src-tauri/tests/meeting_manual_start_stop.rs:7://! can check: pressing the thing produces a meeting row, the elapsed clock ticks
+
+Every sleep left in the meeting suites, with the assertion that follows it —
+the shape being hunted is 'sleep a window, then assert how many events arrived'.
+
+$ grep -rn -A6 "thread::sleep" desktop/src-tauri/tests/meeting*.rs desktop/src-tauri/tests/matrix*.rs desktop/src-tauri/tests/two_track*.rs desktop/src-tauri/tests/capture_journal_recovery.rs | grep -E "assert.*(\.len\(\)|load\(Ordering|ticks|count)"
+desktop/src-tauri/tests/meeting_dictation_preempts_transcription.rs-248-    assert_eq!(chunks.load(Ordering::Acquire), 1);
+desktop/src-tauri/tests/two_track_journal_round_trip.rs-350-    assert_eq!(recovered.len(), 1);
+desktop/src-tauri/tests/capture_journal_recovery.rs-123-    assert_eq!(recovered.len(), 1);
+desktop/src-tauri/tests/matrix_row6_orphan_recovery.rs-168-    assert_eq!(entries(&dir, "meeting.in_progress.json").len(), 1);
+
+Four hits remain, and none of them counts EVENTS in a WINDOW:
+
+  meeting_dictation_preempts_transcription.rs:248  assert_eq!(chunks.load(..), 1)
+      Preceded by `decoding.join()` — the decode thread has finished, so the
+      count is deterministic. The sleep above it is a poll inside a negative
+      invariant ("the claim must never come up"), which load can only test harder.
+
+  capture_journal_recovery.rs:123                  assert_eq!(recovered.len(), 1)
+  matrix_row6_orphan_recovery.rs:168               assert_eq!(entries(..).len(), 1)
+  two_track_journal_round_trip.rs:350              assert_eq!(recovered.len(), 1)
+      Counts of DURABLE ARTIFACTS on disk (one crash marker, one recovered
+      meeting), not of notifications. The sleep is waiting out the writer's
+      250 ms flush timer before simulating a crash; sleeping longer never
+      changes the count, and a starved runner cannot make a second marker appear.
+
+The one wall-clock window that was a bet on the scheduler — YV95's
+`sleep(TEST_TICK * 10)` + `(5..=16).contains(&ticks)` — is what this item
+replaced.

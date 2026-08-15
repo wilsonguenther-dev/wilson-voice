@@ -1,0 +1,17 @@
+YV111 — the reshaped test, ten runs while the box is deliberately hammered
+(36 CPU hogs on a 12-core M-series; `uptime` reported load averages 28.05 after
+the run). A loaded box makes the reshaped test slower, never red.
+
+$ for i in $(seq 1 $((`sysctl -n hw.ncpu` * 3))); do (yes > /dev/null &); done
+$ for i in $(seq 1 10); do cargo test --test meeting_manual_start_stop; done
+
+loaded run 1/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+loaded run 2/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+loaded run 3/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+loaded run 4/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s
+loaded run 5/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s
+loaded run 6/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.35s
+loaded run 7/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s
+loaded run 8/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.40s
+loaded run 9/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+loaded run 10/10: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.37s
