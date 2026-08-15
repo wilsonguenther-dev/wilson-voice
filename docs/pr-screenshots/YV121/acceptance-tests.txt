@@ -148,3 +148,65 @@ $ cd desktop && npm test
 [2m   Start at [22m 09:27:23
 [2m   Duration [22m 318ms[2m (transform 193ms, setup 0ms, collect 404ms, tests 182ms, environment 14ms, prepare 388ms)[22m
 
+
+
+==============================================================================
+REVISION (review fix, e101d23 + 69ed207) — AC3 re-run
+==============================================================================
+The AC3 transcript above is the ORIGINAL run (7 tests). The review's blocking
+finding — the distance/similarity inversion at diarize.rs:380 was invisible to
+the whole suite — is closed by THRESHOLD_ECHO_STUB, which echoes the
+`clustering_distance_threshold` the child was SENT back as a segment `start`,
+so the value that crossed the child's stdin is a value the parent returns and
+the test can assert (0.35, and explicitly NOT 0.65). AC3's binary is now 8
+tests: `the_clustering_threshold_crosses_the_wire_as_a_distance` measures the
+number, and the old missing-`segments` assertion keeps its own named test.
+
+$ cd desktop/src-tauri && cargo test --features custom-protocol --test diarize_sidecar_pool
+
+running 8 tests
+test a_dead_child_respawns_once_then_stays_failed ... ok
+test the_embedding_dimension_comes_from_the_child_never_from_the_parent ... ok
+test a_success_carrying_no_segments_is_a_protocol_failure_not_a_silent_meeting ... ok
+test an_idle_child_is_torn_down_and_the_next_job_brings_it_back ... ok
+test the_clustering_threshold_crosses_the_wire_as_a_distance ... ok
+test a_refusal_is_not_a_death ... ok
+test a_silent_child_is_killed_at_the_readiness_budget ... ok
+test a_response_for_another_id_is_never_returned_to_this_caller ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+$ cd desktop/src-tauri && cargo test --lib diarize
+
+running 8 tests
+test diarize::tests::request_ids_never_repeat ... ok
+test diarize::tests::a_child_error_tag_is_bounded_and_carries_no_prose ... ok
+test diarize_protocol::tests::diarize_protocol_requests_round_trip_with_only_their_own_fields ... ok
+test diarize_protocol::tests::diarize_protocol_discards_a_response_for_another_id ... ok
+test diarize_protocol::tests::diarize_protocol_ready_line_is_distinct_from_a_response ... ok
+test diarize_protocol::tests::diarize_protocol_responses_carry_one_kind_of_payload ... ok
+test diarize_protocol::tests::diarize_protocol_names_no_overlap_flag_and_no_embedding_width ... ok
+test diarize::tests::the_clustering_threshold_reaches_the_wire_as_a_distance ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     3× consecutive clean runs of the three process-spawning binaries:
+       diarize_sidecar_handshake 4 / diarize_sidecar_pool 8 / supply_chain 7,
+       identical all three times.
+
+$ cd desktop/src-tauri && cargo test --features custom-protocol   (89 binaries)
+     1067 passed / 0 failed   (1066 -> 1067: one new named test)
+
+$ cd desktop && cargo test -p yap-diarize --release
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out.
+
+$ cd desktop && npx tsc --noEmit ; echo exit=$?
+exit=0
+$ cd desktop && npm test
+ Test Files  10 passed (10)
+      Tests  121 passed (121)
+
+     rustfmt: `cargo fmt --check` reports the SAME 7 diff hunks over
+     src/diarize.rs + tests/diarize_sidecar_pool.rs before and after this
+     revision — it introduces none. (The repo's 160 pre-existing hunks are
+     base-tree state; CI's only gate is `Tauri build (Rust + frontend)`.)
