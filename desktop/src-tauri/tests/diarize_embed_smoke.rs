@@ -49,6 +49,29 @@
 //! Scores are computed with YV120's own `cosine_similarity` and scored with its
 //! `enrollment_eer`, so the harness that will judge YV129 is the harness that
 //! judged its substrate first.
+//!
+//! # The roster is checked, not assumed
+//!
+//! Every number above is a claim about six speakers, and `say` will silently
+//! give you fewer: `say -v <not-installed>` exits **0** and renders with a
+//! fallback voice (two different nonsense names produce byte-identical audio —
+//! transcript in `support/diarize_models.rs`). `Fred` and `Ralph` are legacy
+//! MacinTalk voices Apple has been moving to download-on-demand, so this is the
+//! roster's live failure mode, not a hypothetical one.
+//!
+//! A collapse would be invisible to the obvious guard and is therefore checked
+//! twice, on both sides of the measurement:
+//!
+//! * **before** — `assert_voices_are_distinct` requires each voice to be listed
+//!   AND to render a probe line to bytes no other voice in the roster produces;
+//! * **after** — no cross-voice pair may reach `DEGENERATE_SIMILARITY` (0.99);
+//!   every voice speaks the same three texts, so two collapsed voices produce
+//!   an identical same-text rendering and a cosine of exactly 1.0.
+//!
+//! Both exist because the overlap tripwire at the end of the sweep cannot do
+//! this job: `impostor_max > genuine_min` becomes *more* true when an impostor
+//! pair is secretly a genuine pair. A guard that a defect strengthens is not a
+//! guard against that defect.
 
 #[path = "support/diarize_models.rs"]
 mod models;
@@ -80,6 +103,11 @@ fn camplus_embeddings_track_the_speaker_across_utterances() {
         return;
     };
     let dir = models::scratch("embed-smoke");
+    // Before a single number exists: prove the six voices are six voices.
+    // `say` exits 0 on a name it does not have and renders a fallback, and a
+    // collapsed roster makes the tripwire at the bottom of this test EASIER,
+    // not harder — see `assert_voices_are_distinct`.
+    models::assert_voices_are_distinct(&dir, &VOICES);
     let mut sidecar = models::Spawned::start();
 
     let dim = sidecar
@@ -199,7 +227,29 @@ fn camplus_embeddings_track_the_speaker_across_utterances() {
          substrate (genuine min {genuine_min:.4}, impostor max {impostor_max:.4}) \
          — re-derive this file's header before tuning anything on it"
     );
+    // The second net under the roster, at the measurement layer this time.
+    //
+    // The tripwire above is satisfied MORE easily when two voices collapse into
+    // one, so it cannot be the thing that catches a collapse. This can: every
+    // voice renders the SAME three utterance texts, so if two of them are one
+    // synthesizer, their same-text cross pair is byte-identical audio and
+    // embeds to cosine 1.0 exactly. Measured max on a healthy roster is 0.9362
+    // (Fred~Ralph, the worst legitimate pair on this substrate) — comfortably
+    // clear of the bar, and the bar is degeneracy, not quality.
+    assert!(
+        impostor_max < DEGENERATE_SIMILARITY,
+        "a cross-voice pair scored {impostor_max:.4} — at or past {DEGENERATE_SIMILARITY} \
+         two of {VOICES:?} are the same voice, which `say` will not tell you \
+         (it exits 0 on an absent voice and renders a fallback). Every number \
+         above is then measured on fewer speakers than it names"
+    );
 }
+
+/// The cosine similarity at which a cross-voice pair is not a hard pair but the
+/// same audio twice. Set well above the 0.9362 worst legitimate impostor pair
+/// measured on this substrate and well below the 1.0 an identical rendering
+/// produces — this is a degeneracy detector, not a separability bar.
+const DEGENERATE_SIMILARITY: f64 = 0.99;
 
 /// A two-voice track segments into turns that carry embeddings, and the
 /// clustering value on the wire is a DISTANCE the whole way down.
@@ -219,6 +269,8 @@ fn a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more() {
         return;
     };
     let dir = models::scratch("diarize-smoke");
+    // This track is only a two-voice track if the two voices are two voices.
+    models::assert_voices_are_distinct(&dir, &VOICES[..2]);
     let mut sidecar = models::Spawned::start();
     let dim = sidecar
         .ask(&DiarizeRequest::load_models(
@@ -320,8 +372,8 @@ fn read_wav_i16(path: &std::path::Path, expect_rate: u32) -> Vec<i16> {
     let mut offset = 12;
     while offset + 8 <= bytes.len() {
         let id = &bytes[offset..offset + 4];
-        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().expect("size"))
-            as usize;
+        let size =
+            u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().expect("size")) as usize;
         let body = offset + 8;
         if id == b"data" {
             return bytes[body..(body + size).min(bytes.len())]

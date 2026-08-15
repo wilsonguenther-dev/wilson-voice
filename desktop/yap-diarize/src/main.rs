@@ -90,11 +90,10 @@ use sherpa_onnx::{
 };
 
 use diarize_protocol::{
-    recover_id, DiarizeReady, DiarizeRequest, DiarizeResponse, DiarizeSegment,
-    ERR_AUDIO_NOT_FOUND, ERR_AUDIO_TOO_SHORT, ERR_AUDIO_UNREADABLE, ERR_BACKEND_FAILED,
-    ERR_BAD_REQUEST, ERR_MISSING_FIELD, ERR_MODEL_LOAD_FAILED, ERR_MODEL_NOT_FOUND,
-    ERR_NO_MODELS, ERR_SAMPLE_RATE, ERR_UNSUPPORTED_KIND, KIND_DIARIZE, KIND_EMBED,
-    KIND_LOAD_MODELS,
+    recover_id, DiarizeReady, DiarizeRequest, DiarizeResponse, DiarizeSegment, ERR_AUDIO_NOT_FOUND,
+    ERR_AUDIO_TOO_SHORT, ERR_AUDIO_UNREADABLE, ERR_BACKEND_FAILED, ERR_BAD_REQUEST,
+    ERR_MISSING_FIELD, ERR_MODEL_LOAD_FAILED, ERR_MODEL_NOT_FOUND, ERR_NO_MODELS, ERR_SAMPLE_RATE,
+    ERR_UNSUPPORTED_KIND, KIND_DIARIZE, KIND_EMBED, KIND_LOAD_MODELS,
 };
 
 /// `FastClusteringConfig.num_clusters`' "I do not know how many people are in
@@ -285,12 +284,12 @@ fn load_backend(segmentation: &Path, embedding: &Path) -> Result<Backend, &'stat
 /// parameter named for a threshold is exactly what the unit discipline forbids
 /// outside [`clustering_from`], and passing the request means the wire value
 /// reaches sherpa without a stop in between where a sign could flip.
-fn diarize_wav(backend: &Backend, req: &DiarizeRequest) -> Result<Vec<DiarizeSegment>, &'static str> {
+fn diarize_wav(
+    backend: &Backend,
+    req: &DiarizeRequest,
+) -> Result<Vec<DiarizeSegment>, &'static str> {
     let wav = req.wav_path.as_deref().ok_or(ERR_MISSING_FIELD)?;
-    let clustering = clustering_from(
-        req.clustering_distance_threshold
-            .ok_or(ERR_MISSING_FIELD)?,
-    );
+    let clustering = clustering_from(req.clustering_distance_threshold.ok_or(ERR_MISSING_FIELD)?);
     let wave = Wave::read(wav).ok_or(ERR_AUDIO_UNREADABLE)?;
 
     let diarization = build_diarizer(
@@ -311,9 +310,7 @@ fn diarize_wav(backend: &Backend, req: &DiarizeRequest) -> Result<Vec<DiarizeSeg
     }
 
     let samples = wave.samples();
-    let result = diarization
-        .process(samples)
-        .ok_or(ERR_BACKEND_FAILED)?;
+    let result = diarization.process(samples).ok_or(ERR_BACKEND_FAILED)?;
 
     Ok(result
         .sort_by_start_time()
@@ -380,10 +377,7 @@ fn compute_embedding(
     if !backend.extractor.is_ready(&stream) {
         return Err(ERR_AUDIO_TOO_SHORT);
     }
-    backend
-        .extractor
-        .compute(&stream)
-        .ok_or(ERR_BACKEND_FAILED)
+    backend.extractor.compute(&stream).ok_or(ERR_BACKEND_FAILED)
 }
 
 /// Embed one whole enrollment utterance — no segmentation, no clustering: the
@@ -459,9 +453,10 @@ fn handle(backend: &mut Option<Backend>, req: &DiarizeRequest) -> DiarizeRespons
     let started = Instant::now();
     match req.kind.as_str() {
         KIND_LOAD_MODELS => {
-            let (Some(segmentation), Some(embedding)) =
-                (req.segmentation_path.as_deref(), req.embedding_path.as_deref())
-            else {
+            let (Some(segmentation), Some(embedding)) = (
+                req.segmentation_path.as_deref(),
+                req.embedding_path.as_deref(),
+            ) else {
                 return DiarizeResponse::err(req.id, ERR_MISSING_FIELD);
             };
             match load_backend(Path::new(segmentation), Path::new(embedding)) {
@@ -691,22 +686,35 @@ mod tests {
             wav_path: None,
             clustering_distance_threshold: None,
         };
-        assert_eq!(handle(&mut backend, &skewed).err_tag(), Some(ERR_UNSUPPORTED_KIND));
+        assert_eq!(
+            handle(&mut backend, &skewed).err_tag(),
+            Some(ERR_UNSUPPORTED_KIND)
+        );
 
         // The right kind, missing the field that kind needs.
         let mut headless = DiarizeRequest::load_models(6, Path::new("/a"), Path::new("/b"));
         headless.embedding_path = None;
-        assert_eq!(handle(&mut backend, &headless).err_tag(), Some(ERR_MISSING_FIELD));
+        assert_eq!(
+            handle(&mut backend, &headless).err_tag(),
+            Some(ERR_MISSING_FIELD)
+        );
 
         let mut silent = DiarizeRequest::embed(7, Path::new("/a.wav"));
         silent.wav_path = None;
-        assert_eq!(handle(&mut backend, &silent).err_tag(), Some(ERR_MISSING_FIELD));
+        assert_eq!(
+            handle(&mut backend, &silent).err_tag(),
+            Some(ERR_MISSING_FIELD)
+        );
 
         // Audio requests before any load: `no_models`, and it is checked BEFORE
         // the file — a caller with neither problem fixed should hear about the
         // one it has to fix first.
         assert_eq!(
-            handle(&mut backend, &DiarizeRequest::embed(8, Path::new("/nope.wav"))).err_tag(),
+            handle(
+                &mut backend,
+                &DiarizeRequest::embed(8, Path::new("/nope.wav"))
+            )
+            .err_tag(),
             Some(ERR_NO_MODELS)
         );
         assert_eq!(

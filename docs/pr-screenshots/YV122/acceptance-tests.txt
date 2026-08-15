@@ -322,3 +322,64 @@ Forward findings for YV123 (its acceptance criteria are affected TODAY)
    `looks_like_onnx` turns that into `model_load_failed`. It cannot catch a
    truncated-but-valid-headed file; the sha256 YV123 verifies before the path
    is ever sent is the layer that does.
+
+════════════════════════════════════════════════════════════════════════════
+RE-GATE after the second review fix (roster guard + rustfmt)
+════════════════════════════════════════════════════════════════════════════
+
+$ cargo test --features custom-protocol
+  92 binaries / 1075 passed / 0 failed / 17 ignored
+
+$ cargo test -p yap-diarize
+  13 passed / 0 failed
+
+$ cargo test --test diarize_embed_smoke -- --nocapture     (models present, NOT skipped)
+  genuine  n= 18  mean 0.7837  min 0.5295
+  impostor n=135  mean 0.5789  max 0.9362
+  EER 0.272 at similarity 0.6422 (FAR 0.267 / FRR 0.278)
+  2 passed / 0 failed
+
+  → the published EER reproduces to the digit WITH the new guards in place:
+    they check the substrate, they do not move the measurement.
+
+$ cargo test --test sherpa_load_smoke -- --nocapture
+  MEASURED embedding_dim = 512 (wespeaker_en_voxceleb_CAM++)
+  MEASURED embedding_dim = 256 (wespeaker_en_voxceleb_resnet34, control)
+  2 passed / 0 failed
+
+  sherpa_load_smoke 2/2 · diarize_wire_unit_discipline 3/3
+  diarize_sidecar_pool 8/8 · diarize_sidecar_handshake 4/4 · supply_chain 7/7
+
+$ npx tsc --noEmit          → 0 errors
+$ npm test                  → 10 files / 121 passed
+
+CLIPPY (informational in CI): 66 warnings before this change, 66 after —
+no new warning introduced.
+
+RUSTFMT — the claim the previous PR body got WRONG, restated as measured.
+The earlier body said "rustfmt adds 0 diffs across all eight touched/new
+files". Measured with rustfmt 1.8.0-stable, that was false. Per file, hunks:
+
+                                                  base(ba198da)  PR head   now
+  desktop/yap-diarize/src/main.rs                        0          9       0   ← ADDED BY THIS PR
+  desktop/src-tauri/tests/diarize_embed_smoke.rs       (new)        2       0   ← new file, no inheritance defence
+  desktop/src-tauri/tests/diarize_wire_unit_discipline.rs (new)     2       0   ← new file
+  desktop/src-tauri/tests/support/diarize_models.rs    (new)        1       0   ← new file
+  desktop/src-tauri/tests/sherpa_load_smoke.rs         (new)        1       0   ← new file
+  desktop/src-tauri/src/diarize_protocol.rs              9          9       0   (inherited from YV121)
+  desktop/src-tauri/tests/diarize_sidecar_pool.rs        6          6       0   (inherited from YV121)
+  desktop/src-tauri/src/diarize.rs                       1          1       0   (inherited from YV121)
+  desktop/src-tauri/src/diarize_metrics.rs               0          0       0
+  desktop/src-tauri/tests/supply_chain.rs              (new)        0       0
+  desktop/src-tauri/tests/meeting_eval.rs                0          0       0
+
+$ cargo fmt --all -- --check      (working-directory desktop/src-tauri, exactly as ci.yml runs it)
+  reports ZERO diffs in every file this PR touches.
+  20 files this PR does NOT touch remain dirty (db.rs 40 hunks, dictation.rs 38,
+  formatting_fixtures.rs 14, meeting_asr.rs 10, diarize_sidecar_handshake.rs 7,
+  lib.rs 6, focus.rs 5, models.rs 4, …). Pre-existing, deliberately NOT
+  reformatted here — a tree-wide fmt is not this item's diff to make.
+
+  The precise claim, and the command that checks it:
+    for f in <the 11 files above>; do rustfmt --edition 2021 --check "$f"; done
+  → no output.

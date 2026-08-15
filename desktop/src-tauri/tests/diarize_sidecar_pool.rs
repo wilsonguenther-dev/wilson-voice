@@ -157,7 +157,10 @@ fn the_embedding_dimension_comes_from_the_child_never_from_the_parent() {
     assert!(pool.is_warm());
     pool.shutdown();
     assert!(!pool.is_warm());
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::NotStarted, None));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::NotStarted, None)
+    );
 }
 
 /// A refusal is the protocol WORKING: the caller is told which "no" it got, the
@@ -219,7 +222,10 @@ fn a_dead_child_respawns_once_then_stays_failed() {
         let _ = pool.load_models(&segmentation, &embedding);
         status = pool.status();
     }
-    assert_eq!(status, DiarizeStatus::new(DiarizeState::Failed, Some("died")));
+    assert_eq!(
+        status,
+        DiarizeStatus::new(DiarizeState::Failed, Some("died"))
+    );
     assert_eq!(
         launches.load(Ordering::Relaxed),
         2,
@@ -239,7 +245,10 @@ fn a_dead_child_respawns_once_then_stays_failed() {
     // And `shutdown` is a teardown, not a reset — a failed session that quietly
     // came back would spawn a dying child once per job forever.
     pool.shutdown();
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::Failed, Some("died")));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::Failed, Some("died"))
+    );
     assert_eq!(launches.load(Ordering::Relaxed), 2);
 }
 
@@ -267,7 +276,10 @@ fn a_silent_child_is_killed_at_the_readiness_budget() {
         pool.status(),
         DiarizeStatus::new(DiarizeState::Failed, Some("ready_timeout"))
     );
-    assert!(!pool.is_warm(), "the silent child was killed, not left running");
+    assert!(
+        !pool.is_warm(),
+        "the silent child was killed, not left running"
+    );
     // `ready_timeout` is a failure, not a death: it did not spend the restart
     // budget, and the stage stays failed rather than launching again.
     let _ = pool.load_models(&segmentation, &embedding);
@@ -326,14 +338,21 @@ fn an_idle_child_is_torn_down_and_the_next_job_brings_it_back() {
     assert!(pool.sweep_idle(), "an idle sidecar is terminated");
     assert!(!pool.is_warm(), "no child is left resident");
     // NOT a failure: `NotStarted` is the state a fresh session begins in.
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::NotStarted, None));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::NotStarted, None)
+    );
     // Sweeping again is a no-op — nothing to kill, nothing to log.
     assert!(!pool.sweep_idle());
 
     // The next job walks the ordinary path…
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
     assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::Ready, None));
-    assert_eq!(launches.load(Ordering::Relaxed), 2, "one spawn per job, no more");
+    assert_eq!(
+        launches.load(Ordering::Relaxed),
+        2,
+        "one spawn per job, no more"
+    );
 
     // …and the restart budget is untouched by the unload, so a child that dies
     // AFTER an idle sweep still gets its one restart. Proven by the state

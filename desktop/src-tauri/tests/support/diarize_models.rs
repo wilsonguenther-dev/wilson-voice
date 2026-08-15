@@ -31,8 +31,7 @@ pub const MODELS_ENV: &str = "YAP_DIARIZE_MODELS";
 pub const MODELS_HOME_RELATIVE: &str = "yap-diarize-models";
 /// The one line a model-gated test prints when there is nothing to load.
 /// Asserted verbatim by the acceptance criteria, so it is a constant.
-pub const MODELS_ABSENT: &str =
-    "diarization models not found at ~/yap-diarize-models, skipping";
+pub const MODELS_ABSENT: &str = "diarization models not found at ~/yap-diarize-models, skipping";
 
 /// pyannote-segmentation-3.0, as it lands out of the upstream `.tar.bz2`
 /// (YV123 is what extracts it from the vendored archive).
@@ -206,10 +205,13 @@ pub const WORDS_PER_MINUTE: u32 = 170;
 /// Render `text` in the named `say` voice to a mono 16-bit WAV at `rate_hz`.
 ///
 /// The same two macOS built-ins `meeting_eval.rs::synthesize_with` uses, and
-/// for the same reason: nothing leaves the machine, no third-party asset is
-/// involved, and `say -v` fails loudly on a voice this Mac does not have rather
-/// than silently substituting the default one — which for a test about WHO is
-/// speaking would be the whole experiment collapsing to one speaker.
+/// for the same reason: nothing leaves the machine and no third-party asset is
+/// involved.
+///
+/// **The `status().success()` check below does NOT verify the voice.**
+/// `say` exits 0 on a voice this Mac does not have and renders with a fallback
+/// instead — see [`assert_voices_are_distinct`], which is the check that does,
+/// and which any test whose claim is about WHO is speaking has to run first.
 pub fn synthesize(dir: &Path, voice: &str, tag: &str, text: &str, rate_hz: u32) -> PathBuf {
     std::fs::create_dir_all(dir).expect("scratch dir");
     let aiff = dir.join(format!("{voice}-{tag}.aiff"));
@@ -221,6 +223,8 @@ pub fn synthesize(dir: &Path, voice: &str, tag: &str, text: &str, rate_hz: u32) 
         .args(["-v", voice, "-r", &WORDS_PER_MINUTE.to_string(), "-o"])
         .arg(&aiff)
         .arg(text)
+        // A non-zero exit still means something real went wrong (no disk, bad
+        // path). It just never means "no such voice".
         .status()
         .expect("`say` is a macOS built-in");
     assert!(say.success(), "say -v {voice} failed");
@@ -234,6 +238,116 @@ pub fn synthesize(dir: &Path, voice: &str, tag: &str, text: &str, rate_hz: u32) 
     assert!(convert.success(), "afconvert failed for {voice}");
     wav
 }
+
+/// Every voice `say -v '?'` lists on this machine, in its exact spelling.
+///
+/// The listing's columns are `name`, `locale`, then `# a sample sentence`, and
+/// a name may itself contain spaces (`Eddy (English (US))`), so the locale is
+/// taken as the last whitespace-separated token before the comment and
+/// everything to its left is the name.
+pub fn installed_voices() -> Vec<String> {
+    let listed = Command::new("say")
+        .args(["-v", "?"])
+        .output()
+        .expect("`say` is a macOS built-in");
+    assert!(listed.status.success(), "say -v '?' failed");
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| {
+            let columns = line.split('#').next()?.trim_end();
+            let (name, _locale) = columns.rsplit_once(char::is_whitespace)?;
+            let name = name.trim();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// The precondition every test whose measured quantity is WHO is speaking has
+/// to establish before it renders a single utterance.
+///
+/// # Why the exit code is not this check
+///
+/// `say` does **not** fail on a voice this Mac does not have. Measured on the
+/// machine this item was developed on:
+///
+/// ```text
+/// $ say -v Bogus  -o /tmp/b1.aiff "hello there" ; echo $?   → 0, empty stderr, 34 KB of audio
+/// $ say -v ZzzQqq -o /tmp/b2.aiff "hello there" ; echo $?   → 0, empty stderr, 34 KB of audio
+/// $ md5 -q /tmp/b1.aiff /tmp/b2.aiff
+/// 01bc7b9486b8dcaa66f203af103e3603
+/// 01bc7b9486b8dcaa66f203af103e3603
+/// ```
+///
+/// Two unrelated nonsense names render **byte-identically**: every unknown
+/// voice collapses silently onto one fallback. `Fred` and `Ralph` — the pair
+/// [`diarize_embed_smoke`] deliberately includes because CAM++ confuses them
+/// worst — are legacy MacinTalk voices Apple has been moving to
+/// download-on-demand, so "absent on this machine" is a live possibility and
+/// not a hypothetical.
+///
+/// # Why it has to be a precondition and cannot be a property of the numbers
+///
+/// If two of a six-voice roster collapse into one, their 9 cross-voice pairs
+/// stop being impostor pairs and become same-speaker pairs — the EER and the
+/// per-voice table are then measured on a roster that does not exist. The
+/// dangerous part is the direction: the sweep's overlap tripwire
+/// (`impostor_max > genuine_min`) gets *easier* under exactly that collapse,
+/// because a collapsed cross pair scores like a genuine one. The assertion
+/// written to catch "the substrate changed" is an assertion a substrate change
+/// **strengthens**. So the roster is checked before any number exists, rather
+/// than inferred from the numbers afterwards.
+///
+/// # Two checks, because the first one trusts the listing
+///
+/// 1. every requested voice appears verbatim in `say -v '?'`;
+/// 2. one short probe rendered per voice yields pairwise-**distinct** bytes —
+///    direct evidence that the name reached the synthesizer, which still holds
+///    for a voice that is listed but not actually downloaded.
+///
+/// `say` is deterministic for a given voice/rate/text (verified: three renders
+/// of the same input hash identically), which is what makes (2) a clean
+/// equality test rather than an audio comparison.
+pub fn assert_voices_are_distinct(dir: &Path, voices: &[&str]) {
+    let installed = installed_voices();
+    for voice in voices {
+        assert!(
+            installed.iter().any(|listed| listed == voice),
+            "`say` does not have the voice {voice:?} on this machine ({} voices \
+             listed), and it will NOT say so: it exits 0 and renders with a \
+             fallback. Install it (System Settings › Accessibility › Spoken \
+             Content › System Voice › Manage Voices…) or change the roster. Do \
+             not let a speaker-identity number be published from a roster that \
+             silently collapsed.",
+            installed.len()
+        );
+    }
+
+    let mut rendered: Vec<(&str, Vec<u8>)> = Vec::new();
+    for voice in voices {
+        let wav = synthesize(dir, voice, "voice-probe", VOICE_PROBE, 16_000);
+        let bytes = std::fs::read(&wav).expect("read the probe rendering");
+        assert!(!bytes.is_empty(), "{voice}'s probe rendered to nothing");
+        rendered.push((voice, bytes));
+    }
+    for (i, (voice_a, a)) in rendered.iter().enumerate() {
+        for (voice_b, b) in rendered.iter().skip(i + 1) {
+            // NOT `assert_ne!`: these are ~100 KB vectors and a failure should
+            // name the two voices, not print the audio.
+            assert!(
+                a != b,
+                "{voice_a} and {voice_b} render the same probe line to \
+                 byte-identical audio — they are ONE voice on this machine. \
+                 Every pair between them is a same-speaker pair wearing an \
+                 impostor label, so every number measured on this roster is \
+                 measured on fewer speakers than it names."
+            );
+        }
+    }
+}
+
+/// The line [`assert_voices_are_distinct`] renders to prove a voice is real.
+/// Short, because it is rendered once per voice purely for its bytes.
+const VOICE_PROBE: &str = "This line exists only to prove which voice rendered it.";
 
 /// A fresh scratch directory under Cargo's per-target temp dir.
 pub fn scratch(tag: &str) -> PathBuf {

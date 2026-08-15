@@ -224,7 +224,11 @@ impl DiarizeRequest {
     /// process cannot express as UTF-8 is a path the child could not open
     /// anyway, and a panic here would take the app's diarization down for a
     /// filename.
-    pub fn load_models(id: u64, segmentation: &std::path::Path, embedding: &std::path::Path) -> Self {
+    pub fn load_models(
+        id: u64,
+        segmentation: &std::path::Path,
+        embedding: &std::path::Path,
+    ) -> Self {
         Self {
             id,
             kind: KIND_LOAD_MODELS.to_string(),
@@ -421,8 +425,14 @@ mod tests {
         let response = serde_json::to_string(&DiarizeResponse::loaded(1, 192, 4)).expect("encode");
 
         assert!(parse_ready(&ready).is_some());
-        assert!(parse_ready(&response).is_none(), "a response is not a ready");
-        assert!(parse_response_for(&ready, 1).is_none(), "a ready is not a response");
+        assert!(
+            parse_ready(&response).is_none(),
+            "a response is not a ready"
+        );
+        assert!(
+            parse_response_for(&ready, 1).is_none(),
+            "a ready is not a response"
+        );
         assert!(parse_response_for(&response, 1).is_some());
         // …and a ready line carries no model claim at all: this sidecar's model
         // state is the answer to `load_models`, never the handshake.
@@ -456,7 +466,10 @@ mod tests {
             encoded,
             r#"{"id":1,"kind":"load_models","segmentation_path":"/seg.onnx","embedding_path":"/emb.onnx"}"#
         );
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), load);
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            load
+        );
 
         let diarize = DiarizeRequest::diarize(2, Path::new("/a.wav"), 0.35);
         let encoded = serde_json::to_string(&diarize).expect("encode");
@@ -464,21 +477,33 @@ mod tests {
             encoded,
             r#"{"id":2,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35}"#
         );
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), diarize);
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            diarize
+        );
 
         let embed = DiarizeRequest::embed(3, Path::new("/b.wav"));
         let encoded = serde_json::to_string(&embed).expect("encode");
         assert_eq!(encoded, r#"{"id":3,"kind":"embed","wav_path":"/b.wav"}"#);
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), embed);
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            embed
+        );
     }
 
     /// Successes carry their kind's payload and nothing else; a refusal carries
     /// a tag and no payload at all.
     #[test]
     fn diarize_protocol_responses_carry_one_kind_of_payload() {
-        assert_eq!(DiarizeResponse::loaded(1, 192, 3).into_embedding_dim(), Some(192));
+        assert_eq!(
+            DiarizeResponse::loaded(1, 192, 3).into_embedding_dim(),
+            Some(192)
+        );
         assert_eq!(DiarizeResponse::loaded(1, 192, 3).into_segments(), None);
-        assert_eq!(DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).into_embedding_dim(), None);
+        assert_eq!(
+            DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).into_embedding_dim(),
+            None
+        );
         assert_eq!(
             DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).err_tag(),
             Some(ERR_MODEL_NOT_FOUND)
@@ -498,7 +523,9 @@ mod tests {
             r#"{"id":2,"ok":true,"segments":[{"start":0.0,"end":4.2,"cluster":0,"embedding":[0.1,0.2]}],"ms":7}"#
         );
         assert_eq!(
-            parse_response_for(&encoded, 2).expect("decode").into_segments(),
+            parse_response_for(&encoded, 2)
+                .expect("decode")
+                .into_segments(),
             Some(segments)
         );
         // Silence really did diarize into nothing — distinct from a failure.
@@ -507,7 +534,10 @@ mod tests {
             Some(Vec::new())
         );
         // An "embedding" of no numbers is not an embedding.
-        assert_eq!(DiarizeResponse::embedded(4, Vec::new(), 1).into_embedding(), None);
+        assert_eq!(
+            DiarizeResponse::embedded(4, Vec::new(), 1).into_embedding(),
+            None
+        );
         assert_eq!(
             DiarizeResponse::embedded(4, vec![1.0], 1).into_embedding(),
             Some(vec![1.0])
@@ -567,7 +597,10 @@ mod tests {
             embedding: vec![0.0; 192],
         })
         .expect("encode");
-        assert!(!encoded.contains("overlap"), "YV127: no overlap column in v1");
+        assert!(
+            !encoded.contains("overlap"),
+            "YV127: no overlap column in v1"
+        );
         // No CONSTANT in this file names an embedding width. `embedding_dim` is
         // a wire field the child fills in; the moment somebody writes
         // `const EMBEDDING_DIM: u32 = 192;` here, the parent has an opinion

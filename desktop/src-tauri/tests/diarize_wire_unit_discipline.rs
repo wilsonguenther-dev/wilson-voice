@@ -68,7 +68,10 @@ const _SIMILARITY_FROM_DISTANCE: fn(CosineDistance) -> CosineSimilarity =
 /// the two that cannot.
 const SURFACE: [(&str, &str); 4] = [
     ("diarize.rs", include_str!("../src/diarize.rs")),
-    ("diarize_metrics.rs", include_str!("../src/diarize_metrics.rs")),
+    (
+        "diarize_metrics.rs",
+        include_str!("../src/diarize_metrics.rs"),
+    ),
     (
         "diarize_protocol.rs",
         include_str!("../src/diarize_protocol.rs"),
@@ -100,7 +103,11 @@ const SANCTIONED: [(&str, &str, &str); 2] = [
         "diarize",
         "clustering_distance_threshold",
     ),
-    ("main.rs", "clustering_from", "clustering_distance_threshold"),
+    (
+        "main.rs",
+        "clustering_from",
+        "clustering_distance_threshold",
+    ),
 ];
 
 /// A parameter name that claims to be on one side of the distance/similarity

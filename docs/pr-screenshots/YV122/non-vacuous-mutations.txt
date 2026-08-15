@@ -93,3 +93,55 @@ Notes on coverage this record does NOT claim:
   that case aborts the process, and no assertion inside the process can
   observe it. The three layers that do are YV123's sha256, the sniff, and the
   process boundary itself.
+
+════════════════════════════════════════════════════════════════════════════
+REVISION (review fix, BLOCKING #2 of 2) — the roster guard
+════════════════════════════════════════════════════════════════════════════
+
+The substrate fact this rests on, measured on this machine BEFORE any code
+was written:
+
+    $ say -v Bogus  -o /tmp/b1.aiff "hello there" ; echo $?   → 0  (empty stderr, 34 KB)
+    $ say -v ZzzQqq -o /tmp/b2.aiff "hello there" ; echo $?   → 0  (empty stderr, 34 KB)
+    $ md5 -q /tmp/b1.aiff /tmp/b2.aiff
+    01bc7b9486b8dcaa66f203af103e3603
+    01bc7b9486b8dcaa66f203af103e3603
+
+Two unrelated nonsense names render BYTE-IDENTICALLY. `say` does not fail on
+an absent voice; it renders one fallback for all of them. `assert!(say.success())`
+was therefore never checking the voice.
+
+Three mutations, each run to completion:
+
+M15 roster names a voice this Mac does not have ("Ralph" → "Bogus")
+    CAUGHT  support/diarize_models.rs:314 — listing check, in 0.44 s, before
+            a model is loaded or an embedding computed.
+
+M16 listing check disabled; roster uses "Bogus1"/"Bogus2"
+    — isolates check (2). A listed-but-not-downloaded voice would reach here.
+    CAUGHT  support/diarize_models.rs:337
+            "Samantha and Bogus1 render the same probe line to byte-identical
+             audio" — note WHICH voice: the fallback is Samantha, already in
+            the roster, so an absent voice does not merely vanish, it doubles
+            an existing speaker.
+
+M17 BOTH preconditions disabled; roster uses "Bogus1"/"Bogus2"
+    — isolates the post-hoc degeneracy guard at the measurement layer.
+    Run with the two population asserts neutralised, so that the guard under
+    test is the only one left standing.
+    CAUGHT  diarize_embed_smoke.rs:239 at impostor max 1.0000.
+
+    The finding's central claim, reproduced rather than restated: in this same
+    run the overlap tripwire `impostor_max > genuine_min` PASSED (1.0000 >
+    0.5864) — it is satisfied MORE easily by the collapse it was the only
+    thing watching for. And the published number moved silently: EER 0.272 at
+    similarity 0.6422 became EER 0.291 at 0.8418. A collapsed roster does not
+    fail loudly; it publishes a different number.
+
+Honest note on M17 as first run: with the preconditions disabled but the
+population asserts left in place, the failure came from the PRE-EXISTING
+per-voice assert (Rishi's genuine mean 0.6950 fell under an impostor mean
+inflated to 0.7154 by three identical voices), NOT from the new guard. That
+is substrate luck — it depends on the fallback voice being in the roster and
+on Rishi being weak — and it is not evidence for the new assertion. Hence
+M17 above, which removes that luck and shows the new guard firing alone.

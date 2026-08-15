@@ -357,11 +357,7 @@ impl DiarizePool {
     /// measures 512 (ResNet34, 256) — a parent that held an opinion about a
     /// model it has not opened is how that stays invisible, whichever number
     /// the opinion happens to be.
-    pub fn load_models(
-        &self,
-        segmentation: &Path,
-        embedding: &Path,
-    ) -> Result<u32, DiarizeError> {
+    pub fn load_models(&self, segmentation: &Path, embedding: &Path) -> Result<u32, DiarizeError> {
         let req = DiarizeRequest::load_models(next_id(), segmentation, embedding);
         self.request(&req)?
             .into_embedding_dim()
