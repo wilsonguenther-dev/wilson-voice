@@ -344,14 +344,16 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         checked += 1;
     }
     assert_eq!(
-        checked, 6,
-        "rows 5b, 16, 17b, 1, 2 and 3 are the policies NOBODY owns; if that set changed, the \
+        checked, 4,
+        "rows 5b, 16, 17b and 3 are the policies NOBODY owns; if that set changed, the \
          change is a claim about what the app now does and belongs in the table's tests too. \
          (Row 14 is policy-only as well, but it names an open PR as the owner of its wiring and \
          asserts its own call site's absence in its own test — this tripwire is for the rows with \
-         no owner, which are the ones that can rot unnoticed.) Row 2 joined this set with YV100 \
-         and row 1 joined it with YV102, both the same way: the PR named as the owner merged, and \
-         the wiring the row is about — a caller for `start_system_tap` — did not come with it."
+         no owner, which are the ones that can rot unnoticed.) Rows 1 and 2 LEFT this set with \
+         YV110, and they left it the way this tripwire is designed to make them leave: something \
+         finally called `start_system_tap` inside a meeting, both rows' absence tests went red, \
+         and the fix was to promote the rows and rewrite their tests to drive the shipping \
+         surface — never to relax the assertion."
     );
 }
 

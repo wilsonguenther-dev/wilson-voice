@@ -13,7 +13,13 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { elapsedLabel, IDLE_MEETING, MEETING_EVENT, type MeetingStatus } from "./meeting";
+import {
+  elapsedLabel,
+  IDLE_MEETING,
+  MEETING_EVENT,
+  systemAudioBadge,
+  type MeetingStatus,
+} from "./meeting";
 
 /**
  * Subscribe to the backend's meeting status: the current value on mount (so a
@@ -39,10 +45,19 @@ export function useMeetingStatus(): MeetingStatus {
 
 export default function MeetingBadge({ status }: { status: MeetingStatus }) {
   if (!status.recording) return null;
+  // YV110 — matrix rows 1 and 2 both end in "banner in the pill". This is that
+  // banner: one dot of colour and one short sentence, never a dialog, because
+  // the meeting is still recording and nothing here needs an answer.
+  const systemAudio = systemAudioBadge(status);
   return (
     <div className="meeting-badge" role="status" aria-live="off">
       <span className="rec-dot" aria-hidden />
       <span className="rec-time">{elapsedLabel(status)}</span>
+      {systemAudio && (
+        <span className="rec-sysaudio" title={systemAudio} aria-label={systemAudio}>
+          mic only
+        </span>
+      )}
       <button
         type="button"
         className="rec-stop"

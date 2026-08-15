@@ -11,6 +11,7 @@ import {
   formatElapsed,
   IDLE_MEETING,
   recordLabel,
+  systemAudioBadge,
   type MeetingStatus,
 } from "./meeting";
 
@@ -87,5 +88,35 @@ describe("the record control's copy", () => {
 
   it("never disables the STOP control — a running meeting can always be stopped", () => {
     expect(disabledReason(recording({ captureAvailable: false }))).toBeNull();
+  });
+});
+
+/**
+ * YV110 — the sentence matrix rows 1 and 2 both end in ("badged", "banner in
+ * the pill"). The rule under test is not the wording, which Rust owns: it is
+ * that a mic-only meeting is never SILENT about it, and that the badge does not
+ * outlive the meeting it describes.
+ */
+describe("the system-audio badge", () => {
+  it("shows the backend's sentence while a meeting is recording", () => {
+    const denied =
+      "Yap has not received any system audio. macOS has not granted System Audio Recording to Yap";
+    expect(systemAudioBadge(recording({ systemAudio: denied }))).toBe(denied);
+  });
+
+  it("says nothing when both tracks are recording", () => {
+    expect(systemAudioBadge(recording())).toBeNull();
+    expect(systemAudioBadge(recording({ systemAudio: null }))).toBeNull();
+    expect(systemAudioBadge(recording({ systemAudio: "   " }))).toBeNull();
+  });
+
+  it("never describes a meeting that is over", () => {
+    // The pill can hold the last payload it received after a stop; a badge that
+    // survived it would be a sentence about a recording that no longer exists.
+    expect(
+      systemAudioBadge({ ...IDLE_MEETING, systemAudio: "Recording your microphone only." }),
+    ).toBeNull();
+    expect(systemAudioBadge(null)).toBeNull();
+    expect(systemAudioBadge(undefined)).toBeNull();
   });
 });

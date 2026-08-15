@@ -2589,6 +2589,11 @@ button.star.on {
 
 /* The clock. Monospace + tabular so it does not jitter on every tick, and large
    enough to read from across a desk while a meeting runs. */
+/* YV110 — the recording bar's system-audio sentence (matrix rows 1 and 2). */
+.rec-sysaudio-note {
+  color: hsl(38 92% 62%);
+}
+
 .rec-clock {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;

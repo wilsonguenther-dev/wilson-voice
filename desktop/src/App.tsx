@@ -14,6 +14,7 @@ import {
   MEETING_EVENT,
   disabledReason,
   elapsedLabel,
+  systemAudioBadge,
   recordLabel,
   type MeetingStatus,
 } from "./pill/meeting";
@@ -2643,6 +2644,15 @@ export default function App() {
                       Recording for {elapsedLabel(meetingStatus)} · stop from here, the
                       menu bar, ⌃⌘M, or the pill.
                     </span>
+                    {/* YV110 — matrix rows 1 and 2. A meeting that is recording
+                        the microphone only, or that lost the call's audio
+                        mid-way, says so here in full while it is still
+                        recording — never afterwards, and never as a dialog. */}
+                    {systemAudioBadge(meetingStatus) && (
+                      <span className="tiny rec-sysaudio-note">
+                        {systemAudioBadge(meetingStatus)}
+                      </span>
+                    )}
                   </div>
                   <span className="rec-clock">{elapsedLabel(meetingStatus)}</span>
                   <button
