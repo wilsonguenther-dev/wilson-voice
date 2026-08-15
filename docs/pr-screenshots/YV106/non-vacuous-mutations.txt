@@ -1,6 +1,6 @@
 YV106 — the new tests fail when the behaviour they claim is removed.
 
-Four mutations, each applied alone to the branch, run, then reverted. Every one
+Five mutations, each applied alone to the branch, run, then reverted. Every one
 is a plausible "simpler" version of this item, not a syntax break.
 
 
@@ -69,7 +69,23 @@ MUTATION 4 — the delete path forgets the system track (the one-line version of
   meeting" is the failure, and it is a privacy failure, not a bookkeeping one.
 
 
-After reverting all four:
+MUTATION 5 — the finalize stops falling back to the marker's top-level `index`
+key and only ever looks for a per-track sidecar (the "just rename them all"
+version, which upgrades cleanly and loses every journal a shipped build left
+behind):
+
+    .unwrap_or_else(|| marker.with_file_name(format!("{id}.t{i}.{MEETING_INDEX_EXT}")));
+
+    $ cargo test --test two_track_journal_round_trip
+    test a_journal_abandoned_by_the_shipped_22a_build_still_recovers ... FAILED
+    (5 more) ... ok
+    test result: FAILED. 5 passed; 1 failed
+
+  The recovered meeting comes back half a second short, with every timestamp
+  after the hole shifted — a v0.8.0 crash recovered by this build.
+
+
+After reverting all five:
 
     $ cargo test --test db_migration_idempotent
     test result: ok. 8 passed; 0 failed

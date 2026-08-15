@@ -19,6 +19,11 @@
 //!   directions. The test drives a real, live drop on one track only.
 //! * **A recovered crash recovers both tracks**, because the marker names both
 //!   spills and both index sidecars.
+//! * **A journal the SHIPPED build left behind still recovers.** Track 0's
+//!   sidecar keeps its 22-A filename and the marker keeps its top-level `index`
+//!   key precisely so a v0.8.0 crash finalizes correctly on this build; the
+//!   marker in that test is hand-written, because one produced by the current
+//!   writer would prove nothing about the one the shipped build writes.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -366,6 +371,76 @@ fn a_crash_mid_two_track_meeting_recovers_both_tracks() {
     assert!(
         recover_orphaned_meetings(&dir).is_empty(),
         "recovery is not repeatable — the marker is gone"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_journal_abandoned_by_the_shipped_22a_build_still_recovers() {
+    // The upgrade path, and the reason track 0's sidecar keeps its old name.
+    //
+    // A user crashes on v0.8.0 and relaunches on the build this PR produces.
+    // What is on disk is a 22-A marker: ONE track entry, no per-track `index`
+    // key, and the index sidecar under the top-level `index` key. This test
+    // writes that shape BY HAND — a marker produced by the current writer would
+    // prove nothing about the one the shipped build left — and asserts the
+    // finalize still splices it correctly.
+    let dir = tmpdir("legacy-marker");
+    let id = "22a-marker-fixture";
+    let spill = dir.join(format!("{id}.t0.spill.pcm"));
+    let index = dir.join(format!("{id}.index.jsonl"));
+    let marker = dir.join(format!("{id}.meeting.in_progress.json"));
+
+    // One second of tone as raw little-endian i16, exactly as the writer spills.
+    let mut pcm: Vec<u8> = Vec::new();
+    for i in 0..TARGET_RATE as usize {
+        let s = (((i as f32) * 0.05).sin() * 0.6 * i16::MAX as f32) as i16;
+        pcm.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(&spill, &pcm).unwrap();
+    // Two records saying half a second of audio never reached the disk.
+    std::fs::write(
+        &index,
+        format!(
+            "{{\"host_ns\":1000000000,\"captured_samples\":8000,\"spilled_samples\":8000}}\n\
+             {{\"host_ns\":2000000000,\"captured_samples\":24000,\"spilled_samples\":16000}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &marker,
+        serde_json::json!({
+            "version": 1,
+            "kind": "meeting",
+            "started_at": "2026-08-11T16:03:00+00:00",
+            "sample_rate": TARGET_RATE,
+            "state": "recording",
+            "index": index.to_string_lossy(),
+            "tracks": [{ "track": 0, "spill": spill.to_string_lossy() }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let recovered = recover_orphaned_meetings(&dir);
+    assert_eq!(
+        recovered.len(),
+        1,
+        "the 22-A marker was not recovered at all"
+    );
+    let meeting = &recovered[0];
+    assert_eq!(meeting.state, MeetingState::Partial);
+    assert_eq!(meeting.track_numbers, vec![MIC_TRACK]);
+    assert_eq!(
+        meeting.spliced_silence_samples, 8_000,
+        "the top-level `index` key is still where track 0's records are read \
+         from — a build that only looked for `{{id}}.t0.index.jsonl` would \
+         recover this meeting half a second short and shift every timestamp \
+         after it"
+    );
+    assert_eq!(
+        wav_samples(meeting.wav_for_track(MIC_TRACK).unwrap()).len(),
+        TARGET_RATE as usize + 8_000
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

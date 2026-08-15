@@ -35,7 +35,10 @@ and a real SQLite file:
   index sequences exist for (`a_loss_on_one_track_splices_that_track_only`,
   `a_journal_queue_drop_on_one_track_is_spliced_into_that_track`);
 * a crash mid two-track meeting recovers both tracks
-  (`a_crash_mid_two_track_meeting_recovers_both_tracks`);
+  (`a_crash_mid_two_track_meeting_recovers_both_tracks`), and a journal left
+  behind by the **shipped v0.8.0 build** — a hand-written 22-A marker, one track,
+  no per-track index key — still recovers with its splice intact
+  (`a_journal_abandoned_by_the_shipped_22a_build_still_recovers`);
 * migration 3 upgrades a database full of 22-A meetings without a backfill, and
   a fresh install lands on `user_version = 3` in one pass
   (`docs/pr-screenshots/YV106/schema-after-migration-3.txt`).

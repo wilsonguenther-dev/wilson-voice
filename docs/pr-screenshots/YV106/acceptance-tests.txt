@@ -15,14 +15,15 @@ test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 $ cargo test --test two_track_journal_round_trip
-running 5 tests
+running 6 tests
+test a_journal_abandoned_by_the_shipped_22a_build_still_recovers ... ok
 test a_mic_only_meeting_is_byte_for_byte_what_22a_produced ... ok
 test two_tracks_round_trip_through_the_consumer_into_two_playable_wavs ... ok
 test a_loss_on_one_track_splices_that_track_only ... ok
 test a_journal_queue_drop_on_one_track_is_spliced_into_that_track ... ok
 test a_crash_mid_two_track_meeting_recovers_both_tracks ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
 
 $ cargo test --test two_track_capture_consumer
 running 4 tests
