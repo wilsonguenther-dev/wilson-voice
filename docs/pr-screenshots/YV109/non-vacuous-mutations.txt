@@ -1,0 +1,105 @@
+YV109 — non-vacuous mutations. Each patch was APPLIED, the named tests RUN, and
+the patch REVERTED (`git diff desktop/src-tauri/src/` is empty on the branch).
+Six mutations, six reds. Run 2026-08-15.
+
+Why these six: the item's whole claim is that a two-track transcript comes out in
+the order it was spoken, and there are exactly four ways that claim can be true
+by accident — the renderer never had to sort, the clock rate never had to be
+measured, the origin never had to be rebased, or the fixture was too easy to tell
+the difference. One mutation each, plus one for the labels and one for a stale
+corpus.
+
+────────────────────────────────────────────────────────────────────────────────
+M1 — the renderer stops sorting
+    src/meetings.rs :: render_transcript — `lines.sort_by(...)` deleted
+
+    cargo test --test two_track_phase_e2e
+      a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript FAILED
+      without_the_rebase_four_pairs_render_in_the_wrong_order                  FAILED
+      test result: FAILED. 2 passed; 2 failed
+    cargo test --test meeting_eval meeting_eval_two_track_ordering
+      meeting_eval_two_track_ordering_survives_the_clock_mismatch              FAILED
+      test result: FAILED. 0 passed; 1 failed
+
+    NOTE — this one found a real hole while it was being run. The first cut of
+    the E2E rendered only `db.list_meeting_segments`'s output, which SQLite
+    already returns `ORDER BY start_seconds, track, created_at` — so M1 left the
+    main E2E green and only the control went red. The E2E now renders the SAME
+    rows twice, once in insert order (one whole track after the other, which is
+    the shape the renderer has to fix itself) and once from SQL, and asserts the
+    two agree. That is what makes the line above read "2 failed".
+
+────────────────────────────────────────────────────────────────────────────────
+M2 — the timeline stops measuring the rate and assumes the nominal 16 kHz
+    tests/support/two_track.rs :: TrackTimeline::fit — seconds_per_sample := 1/16000
+
+    cargo test --test two_track_phase_e2e
+      a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript FAILED
+        (the residual assertion: Me and Them slide 3121 ms apart by three hours)
+      test result: FAILED. 3 passed; 1 failed
+    cargo test --test meeting_eval meeting_eval_two_track_ordering
+      meeting_eval_two_track_ordering_survives_the_clock_mismatch              FAILED
+        (fails earlier, at "track 0's measured rate misses the declared one")
+      test result: FAILED. 0 passed; 1 failed
+
+────────────────────────────────────────────────────────────────────────────────
+M3 — the timeline stops rebasing the origin (both tracks start at host zero)
+    tests/support/two_track.rs :: TrackTimeline::fit — origin_seconds := 0.0
+
+    cargo test --test two_track_phase_e2e
+      a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript FAILED
+      test result: FAILED. 3 passed; 1 failed
+    cargo test --test meeting_eval meeting_eval_two_track_ordering
+      meeting_eval_two_track_ordering_survives_the_clock_mismatch              FAILED
+      test result: FAILED. 0 passed; 1 failed
+
+    M2 and M3 are separate mutations because they are separate errors: a rate
+    error and an origin error are corrected by different terms, and a gate that
+    only caught one of them would ship the other.
+
+────────────────────────────────────────────────────────────────────────────────
+M4 — every line is labelled "Me"
+    src/meetings.rs :: speaker_label — `if true || track == MIC_TRACK`
+
+    cargo test --test two_track_phase_e2e
+      a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript FAILED
+      without_the_rebase_four_pairs_render_in_the_wrong_order                  FAILED
+      test result: FAILED. 2 passed; 2 failed
+    cargo test --test meeting_eval meeting_eval_two_track_ordering
+      meeting_eval_two_track_ordering_survives_the_clock_mismatch              FAILED
+      test result: FAILED. 0 passed; 1 failed
+
+    The ordering gates score `Me:word` / `Them:word`, not bare words, so a merge
+    that got the order right and the speaker wrong cannot pass them.
+
+────────────────────────────────────────────────────────────────────────────────
+M5 — the harness's declared clock drifts away from the committed corpus
+    tests/meeting_eval.rs :: TWO_TRACK_ORIGIN_OFFSET_SECONDS 0.750 -> 0.500
+    (corpus NOT regenerated — i.e. exactly the stale-corpus situation)
+
+    cargo test --test meeting_eval meeting_eval_two_track_ordering
+      meeting_eval_two_track_ordering_survives_the_clock_mismatch              FAILED
+        "the committed fixture's start offset is not this harness's — regrow it
+         with `cargo test meeting_eval_generate_two_track_ordering -- --ignored`"
+      test result: FAILED. 0 passed; 1 failed
+
+    A corpus grown before a change to the clock constants would otherwise be
+    scored against the wrong ground truth in silence.
+
+────────────────────────────────────────────────────────────────────────────────
+M6 — the fixture layout stops being hard
+    tests/meeting_eval.rs :: the four close SYSTEM markers moved 1 s later
+    (12.4->13.4, 36.5->37.5, 50.3->51.3, 68.6->69.6), so no Me/Them pair is
+    closer together than the 750 ms start offset any more
+
+    cargo test --test meeting_eval two_track_ordering_fixture_is_hard
+      two_track_ordering_fixture_is_hard_by_construction                       FAILED
+        "the fixture must contain pairs the un-rebased render gets WRONG; it
+         contains 0"
+      test result: FAILED. 0 passed; 1 failed
+
+    This is the mutation that keeps the other five honest: with the pairs spread
+    out, the un-rebased render produces the RIGHT order by luck, and every
+    ordering assertion above would pass while proving nothing. The gate refuses
+    a fixture that easy, and it runs with no corpus and no model, so CI holds the
+    line too.

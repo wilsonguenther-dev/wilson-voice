@@ -65,6 +65,8 @@
 //!    <repo>/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256)
 //! ```
 
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,6 +88,20 @@ use wilson_voice_lib::meeting_asr::{
 };
 use wilson_voice_lib::vad::WarmVad;
 
+// YV109: fixture (d) is a two-track fixture, so the harness needs the same
+// host-time vocabulary the phase-closing E2E uses — one reference, scored in
+// two places, rather than two references that can disagree.
+use support::two_track::{
+    cross_track_residual_ms, marker_sequence, out_of_order, read_index_array_json,
+    segments_from_host_spans, HostSpan, TrackTimeline, RESIDUAL_BUDGET_MS,
+    RESIDUAL_HORIZON_SECONDS,
+};
+use wilson_voice_lib::meeting::{
+    MeetingCapture, MeetingJournal, MeetingState, MIC_TRACK, SYSTEM_TRACK,
+};
+use wilson_voice_lib::meetings::{render_transcript, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL};
+use wilson_voice_lib::rtring::CaptureAnchor;
+
 // ---------------------------------------------------------------------------
 // Where things are
 // ---------------------------------------------------------------------------
@@ -103,9 +119,13 @@ const CORPUS_ABSENT: &str = "meeting eval corpus not found at ~/yap-eval-corpus/
 const LECTURE: &str = "lecture-15min";
 const SEAM_STRESS: &str = "seam-stress";
 const DEVICE_CHANGE: &str = "device-change";
+/// YV109's fixture (d): two synthetic sources on two deliberately mismatched
+/// clocks, with known words placed at known times on a clock BOTH of them can
+/// be put back onto.
+const TWO_TRACK: &str = "two-track-ordering";
 /// Every fixture the manifest must name. Fixture (c) is generated here but
 /// consumed by YV92 (anti-alias + input format change), not by this file's gates.
-const FIXTURE_IDS: [&str; 3] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE];
+const FIXTURE_IDS: [&str; 4] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE, TWO_TRACK];
 
 /// MEASURED (YV93, Parakeet Unified EN 0.6B on Metal, no meeting tuning, clean
 /// synthesized speech). The placeholder this replaces was 0.15 — a number from
@@ -186,6 +206,129 @@ fn the_harness_geometry_is_the_shipped_geometry() {
 /// Everything downstream of the mic runs at 16 kHz mono.
 const TARGET_RATE: u32 = 16_000;
 
+// ---------------------------------------------------------------------------
+// YV109 — fixture (d): two tracks, two clocks, one conversation
+// ---------------------------------------------------------------------------
+//
+// Fixture (b) made the seam merge falsifiable by putting a known word inside
+// every region two windows share. Fixture (d) is the same idea one axis over:
+// known words on two SOURCES at known times on a clock neither source's wav
+// records, with the two clocks deliberately mismatched so a merge that ignores
+// the mismatch is caught by construction rather than by luck. Real desk-test
+// hardware drifts by so little over a two-minute recording that a fixture built
+// from it would pass under a merge that did nothing at all — which is the
+// "unfalsifiable acceptance criteria" failure finding #16 named, arriving in a
+// new place.
+//
+// Two independent errors are built in, and each has its own negative control:
+//
+//   1. a START OFFSET — the tap's aggregate device comes up 750 ms after the
+//      mic's stream, so the two tracks' local second zero are different
+//      moments. Control: `two_track_ordering_without_the_rebase_reorders_the_
+//      conversation`, which asserts the un-rebased render swaps exactly the
+//      pairs the layout was built to swap.
+//   2. a RATE mismatch — the two devices' crystals differ by 290 ppm, which is
+//      3.1 seconds by the three-hour cap. Control:
+//      `two_track_nominal_rate_assumption_misses_the_budget`.
+
+/// How late the tap's track starts, in host seconds.
+const TWO_TRACK_ORIGIN_OFFSET_SECONDS: f64 = 0.750;
+
+/// Each device's true rate, as a fraction off nominal, mic first. Opposite
+/// signs because two crystals are two crystals; the SUM is what the merge has
+/// to take out.
+const TWO_TRACK_PPM: [f64; 2] = [-40e-6, 250e-6];
+
+/// Each device's callback size in frames at [`TARGET_RATE`] — 10 ms for the
+/// mic, 20 ms for the tap.
+const TWO_TRACK_CALLBACK_FRAMES: [usize; 2] = [160, 320];
+
+/// `(host_seconds, track, marker word)` — the conversation as it was spoken.
+///
+/// FOUR Me/Them pairs sit closer together than
+/// [`TWO_TRACK_ORIGIN_OFFSET_SECONDS`] with **Me** first (12.0/12.4,
+/// 36.0/36.5, 50.0/50.3, 68.0/68.6). That is the whole design: dropping the
+/// rebase slides every "Them" 750 ms early and swaps exactly those four, so a
+/// gate that would pass without the rebase cannot exist. Same-track markers are
+/// never closer than five seconds, and none sits within four seconds of a chunk
+/// boundary (30 s, 60 s) — the seam merge is fixture (b)'s subject, not this
+/// one's, and a marker cut in half by a window boundary would confuse the two.
+const TWO_TRACK_CONVERSATION: [(f64, usize, &str); 13] = [
+    (3.0, MIC_TRACK, "avocado"),
+    (7.0, SYSTEM_TRACK, "bramble"),
+    (12.0, MIC_TRACK, "kettle"),
+    (12.4, SYSTEM_TRACK, "custard"),
+    (18.0, SYSTEM_TRACK, "harpoon"),
+    (23.0, MIC_TRACK, "marigold"),
+    (36.0, MIC_TRACK, "penguin"),
+    (36.5, SYSTEM_TRACK, "meadow"),
+    (44.0, SYSTEM_TRACK, "walrus"),
+    (50.0, MIC_TRACK, "sandal"),
+    (50.3, SYSTEM_TRACK, "turnip"),
+    (68.0, MIC_TRACK, "violin"),
+    (68.6, SYSTEM_TRACK, "tundra"),
+];
+
+/// The fixture's length in host seconds, with a tail past the last marker so
+/// the final window is not mostly the end of the file.
+const TWO_TRACK_SECONDS: f64 = 76.0;
+
+/// Fixture (d)'s carrier, in two pieces so the marker WORD can be placed to the
+/// sample — fixture (b)'s technique, with a shorter carrier because two of
+/// these overlap in host time whenever a pair does.
+const TWO_TRACK_PREFIX: &str = "The next word is";
+const TWO_TRACK_SUFFIX: &str = "spoken once.";
+
+/// The speaker label for a track, straight from the shipped renderer's own
+/// constants so the fixture and the UI cannot disagree about who "Them" is.
+fn two_track_speaker(track: usize) -> &'static str {
+    if track == MIC_TRACK {
+        MIC_SPEAKER_LABEL
+    } else {
+        SYSTEM_SPEAKER_LABEL
+    }
+}
+
+/// A host second as one track's own finalized-wav second — the inverse of the
+/// map the merge has to find. Used to BUILD the fixture, never to score it.
+fn two_track_local_seconds(track: usize, host_seconds: f64) -> f64 {
+    let origin = if track == MIC_TRACK {
+        0.0
+    } else {
+        TWO_TRACK_ORIGIN_OFFSET_SECONDS
+    };
+    (host_seconds - origin) * (1.0 + TWO_TRACK_PPM[track])
+}
+
+/// The declared ground truth for one track, as a timeline a measurement can be
+/// scored against.
+fn two_track_truth(track: usize) -> TrackTimeline {
+    let origin = if track == MIC_TRACK {
+        0.0
+    } else {
+        TWO_TRACK_ORIGIN_OFFSET_SECONDS
+    };
+    TrackTimeline::exact(origin, TARGET_RATE as f64 * (1.0 + TWO_TRACK_PPM[track]))
+}
+
+/// The markers in the order they were spoken, as `Me:word` / `Them:word`.
+/// Derived by sorting [`TWO_TRACK_CONVERSATION`] on the shared clock — the
+/// ground truth is never typed twice.
+fn two_track_expected_sequence() -> Vec<String> {
+    let mut rows: Vec<(f64, usize, &str)> = TWO_TRACK_CONVERSATION.to_vec();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows.iter()
+        .map(|(_, track, word)| format!("{}:{}", two_track_speaker(*track), word))
+        .collect()
+}
+
+fn two_track_words() -> Vec<String> {
+    TWO_TRACK_CONVERSATION
+        .iter()
+        .map(|(_, _, w)| (*w).to_string())
+        .collect()
+}
+
 fn manifest_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meeting_eval_manifest.json")
 }
@@ -222,7 +365,7 @@ fn corpus() -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FileEntry {
     /// Relative to the corpus root. Never absolute, never contains `..` —
-    /// `meeting_eval_manifest_is_committed_and_names_three_fixtures` enforces it.
+    /// `meeting_eval_manifest_is_committed_and_names_every_fixture` enforces it.
     path: String,
     bytes: u64,
     sha256: String,
@@ -302,6 +445,57 @@ struct FixtureMeta {
     /// what a built-in mic reports; 24000 is what AirPods report (OS-9).
     #[serde(default)]
     source_rates_hz: Vec<u32>,
+    /// YV109 fixture (d): everything the two-track ordering gate needs that a
+    /// single-track fixture has no place for.
+    #[serde(default)]
+    two_track: Option<TwoTrackMeta>,
+}
+
+/// One marker word in fixture (d): which track said it, when on the SHARED host
+/// clock, and where that lands in that track's own finalized wav.
+///
+/// Both numbers are committed because they are not the same number and the
+/// difference IS the fixture: `local_seconds` is what a decoder reports and
+/// `host_seconds` is what the transcript has to be ordered by.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TwoTrackMarker {
+    word: String,
+    track: i64,
+    speaker: String,
+    host_seconds: f64,
+    local_seconds: f64,
+}
+
+/// Fixture (d)'s ground truth.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TwoTrackMeta {
+    /// One finalized wav per track, in track order — produced by the SHIPPED
+    /// capture path (`MeetingCapture` → `MeetingJournal` → `finalize`), not by
+    /// writing a buffer straight to disk.
+    wavs: Vec<String>,
+    /// One index-record sidecar per track, in track order: the journal's own
+    /// persisted `host_ns` / `captured_samples` / `spilled_samples` lines,
+    /// copied out of the journal before finalize removed them.
+    anchors: Vec<String>,
+    /// Where each track's local sample 0 sat on the shared host clock. Track 1
+    /// starts later because a tap has to build a process tap and an aggregate
+    /// device before it can deliver anything (YV100's call sequence).
+    origin_seconds: Vec<f64>,
+    /// Each device's true rate as parts-per-million off the nominal 16 kHz.
+    /// Deliberately non-zero and of OPPOSITE sign, so a fixture that happened
+    /// to be recorded on two well-behaved crystals cannot pass this gate by
+    /// being lucky — the mismatch is declared, and the gate checks it is there.
+    clock_ppm: Vec<f64>,
+    true_rate_hz: Vec<f64>,
+    /// Each device's callback size in frames. Different per track on purpose:
+    /// it is what makes the residual DIFFERENTIAL rather than common-mode.
+    callback_frames: Vec<usize>,
+    markers: Vec<TwoTrackMarker>,
+    /// The markers as `Me:word` / `Them:word`, in the order they were spoken on
+    /// the shared clock. What the rendered transcript must equal.
+    expected_sequence: Vec<String>,
+    residual_horizon_seconds: f64,
+    residual_budget_ms: f64,
 }
 
 fn read_meta(root: &Path, id: &str) -> FixtureMeta {
@@ -769,7 +963,7 @@ fn sha256_file(path: &Path) -> (u64, String) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn meeting_eval_manifest_is_committed_and_names_three_fixtures() {
+fn meeting_eval_manifest_is_committed_and_names_every_fixture() {
     let m = read_manifest();
     assert_eq!(
         m.fixtures.len(),
@@ -2048,6 +2242,266 @@ fn meeting_eval_device_change_fixture_is_ready_for_yv92() {
 /// The two decimators are compared on the ONE signal that can tell them apart:
 /// native-rate speech with broadband energy above the 8 kHz Nyquist, i.e. the
 /// far-field room noise a three-hour lecture recording is full of and a
+// ---------------------------------------------------------------------------
+// YV109 — fixture (d): the two-track ordering gate, and its negative controls
+// ---------------------------------------------------------------------------
+
+/// **The fixture is hard on purpose, and this is the proof — no corpus, no
+/// model, no audio.**
+///
+/// Two independent errors are built into fixture (d), and a gate that would
+/// pass without correcting either of them is not a gate. Both controls run here
+/// so that a machine with no corpus still fails the day somebody flattens the
+/// clock constants into "both tracks are 16 kHz starting at zero" — which would
+/// leave the corpus gate below green and meaningless.
+#[test]
+fn two_track_ordering_fixture_is_hard_by_construction() {
+    // (1) THE START OFFSET. Count the Me/Them pairs that a 750 ms slide would
+    // swap: consecutive in spoken order, mic first, closer together than the
+    // offset. Four of them, by construction.
+    let mut rows: Vec<(f64, usize, &str)> = TWO_TRACK_CONVERSATION.to_vec();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let swappable = rows
+        .windows(2)
+        .filter(|w| {
+            w[0].1 == MIC_TRACK
+                && w[1].1 == SYSTEM_TRACK
+                && w[1].0 - w[0].0 < TWO_TRACK_ORIGIN_OFFSET_SECONDS
+        })
+        .count();
+    assert_eq!(
+        swappable, 4,
+        "the fixture must contain pairs the un-rebased render gets WRONG; it \
+         contains {swappable}"
+    );
+
+    // …and that is what the render actually does with them. Local seconds taken
+    // at face value — every "Them" 750 ms early — against the spoken order.
+    let naive = TrackTimeline::exact(0.0, TARGET_RATE as f64);
+    let spans: Vec<HostSpan> = TWO_TRACK_CONVERSATION
+        .iter()
+        .map(|(host, track, word)| {
+            let local = two_track_local_seconds(*track, *host);
+            HostSpan {
+                track: *track as i64,
+                host_start_seconds: naive.host_seconds(local),
+                host_end_seconds: naive.host_seconds(local + 0.4),
+                text: (*word).to_string(),
+            }
+        })
+        .collect();
+    let lines = render_transcript(&segments_from_host_spans("no-rebase", &spans));
+    let got = marker_sequence(&lines, &two_track_words());
+    let want = two_track_expected_sequence();
+    let displaced = got.iter().zip(want.iter()).filter(|(a, b)| a != b).count();
+    assert_eq!(
+        displaced,
+        2 * swappable,
+        "four swapped pairs is eight displaced rows\n  un-rebased: {got:?}\n  \
+         spoken:     {want:?}"
+    );
+
+    // (2) THE RATE MISMATCH, which no amount of origin correction touches. The
+    // two crystals differ by 290 ppm, which is seconds by the three-hour cap.
+    let relative_ppm = (TWO_TRACK_PPM[SYSTEM_TRACK] - TWO_TRACK_PPM[MIC_TRACK]).abs();
+    let drift_ms = relative_ppm * RESIDUAL_HORIZON_SECONDS * 1000.0;
+    assert!(
+        drift_ms > 20.0 * RESIDUAL_BUDGET_MS,
+        "the declared clock mismatch drifts only {drift_ms:.1} ms by three \
+         hours — too little to make a {RESIDUAL_BUDGET_MS:.0} ms gate mean \
+         anything"
+    );
+    eprintln!(
+        "two-track fixture: {swappable} swappable pairs, {:.0} ppm relative \
+         clock error = {drift_ms:.0} ms at the 3 h cap",
+        relative_ppm * 1e6
+    );
+}
+
+/// **The phase-closing gate, on the corpus: one conversation, two clocks, real
+/// speech through the real decoder.**
+///
+/// The chain scored here is the one the harness owns end to end — decode each
+/// track with the SHIPPED windowed chunker and the SHIPPED timed seam merge,
+/// put both tracks on the shared host clock using each track's OWN persisted
+/// index records, and render with the SHIPPED renderer. What comes out must be
+/// the conversation that was spoken, word for word in order, with the right
+/// speaker on every line.
+///
+/// It is deliberately not the same test as the unit-level merge gates: those
+/// score a hand-built span sequence, and a merge can be correct on hand-built
+/// input while being wired to the wrong number in the real pipeline. Here the
+/// input is a wav the shipped capture path produced and the times come from
+/// records the shipped journal wrote.
+#[test]
+fn meeting_eval_two_track_ordering_survives_the_clock_mismatch() {
+    let Some(root) = corpus() else { return };
+    let dir = root.join(TWO_TRACK);
+    let meta = read_meta(&root, TWO_TRACK);
+    let tt = meta
+        .two_track
+        .as_ref()
+        .expect("fixture (d) carries its two-track ground truth");
+
+    // A corpus grown before a change to the clock constants would score the
+    // wrong thing silently, so it is refused loudly instead.
+    assert_eq!(
+        tt.origin_seconds,
+        vec![0.0, TWO_TRACK_ORIGIN_OFFSET_SECONDS],
+        "the committed fixture's start offset is not this harness's — regrow it \
+         with `cargo test meeting_eval_generate_two_track_ordering -- --ignored`"
+    );
+    assert_eq!(
+        tt.clock_ppm,
+        TWO_TRACK_PPM.iter().map(|p| p * 1e6).collect::<Vec<_>>(),
+        "the committed fixture's clock mismatch is not this harness's"
+    );
+    assert_eq!(tt.callback_frames, TWO_TRACK_CALLBACK_FRAMES.to_vec());
+    assert_eq!(tt.expected_sequence, two_track_expected_sequence());
+    assert_eq!(tt.residual_budget_ms, RESIDUAL_BUDGET_MS);
+
+    // ── the merge's own input: the journal's persisted records ───────────────
+    let timelines: Vec<TrackTimeline> = tt
+        .anchors
+        .iter()
+        .map(|name| TrackTimeline::from_records(&read_index_array_json(&dir.join(name))))
+        .collect();
+    for (track, timeline) in timelines.iter().enumerate() {
+        let measured_ppm = (timeline.measured_rate() / TARGET_RATE as f64 - 1.0) * 1e6;
+        eprintln!(
+            "{TWO_TRACK} track {track}: measured rate {:.4} Hz ({measured_ppm:+.1} \
+             ppm, declared {:+.1}), origin {:+.4} s (declared {:+.3})",
+            timeline.measured_rate(),
+            tt.clock_ppm[track],
+            timeline.origin_seconds(),
+            tt.origin_seconds[track],
+        );
+        // The measurement has to find the mismatch that is really there. A
+        // rate estimate that came back "16 000.0000 Hz" would be the nominal
+        // assumption wearing a measurement's clothes.
+        assert!(
+            (measured_ppm - tt.clock_ppm[track]).abs() < 1.0,
+            "track {track}'s measured rate misses the declared one by \
+             {:.2} ppm",
+            measured_ppm - tt.clock_ppm[track]
+        );
+    }
+
+    let residual_cross = cross_track_residual_ms(
+        (&timelines[MIC_TRACK], &two_track_truth(MIC_TRACK)),
+        (&timelines[SYSTEM_TRACK], &two_track_truth(SYSTEM_TRACK)),
+        RESIDUAL_HORIZON_SECONDS,
+    );
+    let residual_mic =
+        timelines[MIC_TRACK].residual_ms_at(&two_track_truth(MIC_TRACK), RESIDUAL_HORIZON_SECONDS);
+    let residual_sys = timelines[SYSTEM_TRACK]
+        .residual_ms_at(&two_track_truth(SYSTEM_TRACK), RESIDUAL_HORIZON_SECONDS);
+    println!(
+        "meeting_eval {TWO_TRACK} residual_ms_at_3h mic={residual_mic:.1} \
+         system={residual_sys:.1} cross_track={residual_cross:.1}"
+    );
+    eprintln!(
+        "{TWO_TRACK}: residual at the simulated {:.0} h mark — mic \
+         {residual_mic:.1} ms, system {residual_sys:.1} ms, CROSS-TRACK \
+         {residual_cross:.1} ms (budget {RESIDUAL_BUDGET_MS:.0} ms)",
+        RESIDUAL_HORIZON_SECONDS / 3600.0
+    );
+    assert!(
+        residual_cross <= RESIDUAL_BUDGET_MS,
+        "Me and Them slide {residual_cross:.1} ms apart by three hours, past the \
+         {RESIDUAL_BUDGET_MS:.0} ms budget"
+    );
+
+    // …and the control, on the SAME records: the pre-22-B assumption that both
+    // devices ran at exactly 16 kHz misses that budget by two orders of
+    // magnitude, which is what makes the number above worth printing.
+    let nominal: Vec<TrackTimeline> = tt
+        .anchors
+        .iter()
+        .map(|name| TrackTimeline::nominal_rate(&read_index_array_json(&dir.join(name))))
+        .collect();
+    let nominal_residual = cross_track_residual_ms(
+        (&nominal[MIC_TRACK], &two_track_truth(MIC_TRACK)),
+        (&nominal[SYSTEM_TRACK], &two_track_truth(SYSTEM_TRACK)),
+        RESIDUAL_HORIZON_SECONDS,
+    );
+    eprintln!("{TWO_TRACK}: nominal-rate control drifts {nominal_residual:.0} ms");
+    assert!(
+        nominal_residual > 20.0 * RESIDUAL_BUDGET_MS,
+        "the nominal-rate control drifted only {nominal_residual:.1} ms"
+    );
+
+    // ── decode both tracks through the shipped chunker + timed merge ─────────
+    let decoder = Decoder::new();
+    let mut spans: Vec<HostSpan> = Vec::new();
+    for track in [MIC_TRACK, SYSTEM_TRACK] {
+        let (rate, samples) = read_wav_i16(&dir.join(&tt.wavs[track]));
+        assert_eq!(rate, TARGET_RATE);
+        let decoded = decoder.decode_chunked(&samples, &format!("{TWO_TRACK}-t{track}"));
+        assert!(
+            decoded.timestamps_are_real,
+            "track {track} decoded without usable alignment — an ordering gate \
+             needs word times, and the chunk-granularity fallback cannot answer \
+             who spoke first"
+        );
+        // Every marker this track was given must come back exactly once. A
+        // marker the decoder lost would make the sequence below shorter and the
+        // comparison vacuous in the direction that hides a merge bug.
+        let tokens = decoded.timed_tokens();
+        for (_, on_track, word) in TWO_TRACK_CONVERSATION {
+            if on_track != track {
+                continue;
+            }
+            let seen = tokens.iter().filter(|t| *t == word).count();
+            assert_eq!(
+                seen, 1,
+                "track {track} decoded the marker {word} {seen} time(s): \
+                 {tokens:?}"
+            );
+        }
+        spans.extend(decoded.timed_spans.iter().map(|s| HostSpan {
+            track: track as i64,
+            host_start_seconds: timelines[track].host_seconds(s.start_seconds),
+            host_end_seconds: timelines[track].host_seconds(s.end_seconds),
+            text: s.text.clone(),
+        }));
+    }
+
+    // ── render, and score the order ──────────────────────────────────────────
+    // Appended track by track, exactly as the pipeline stores them (one
+    // transcription pass per recorded wav), so an ordered transcript is ordered
+    // because of the host clock and not because of insert order.
+    let lines = render_transcript(&segments_from_host_spans(TWO_TRACK, &spans));
+    let starts: Vec<f64> = lines.iter().map(|l| l.start_seconds).collect();
+    assert!(
+        out_of_order(&starts).is_empty(),
+        "the rendered transcript goes backwards in time: {:?}",
+        out_of_order(&starts)
+    );
+    let got = marker_sequence(&lines, &two_track_words());
+    assert_eq!(
+        got,
+        two_track_expected_sequence(),
+        "the merged two-track transcript is not the conversation that was spoken"
+    );
+    eprintln!("{TWO_TRACK}: {} markers, in spoken order", got.len());
+    // The conversation as a person reads it. Printed rather than asserted — the
+    // assertion above is the gate; this is what makes a failure diagnosable and
+    // what the PR quotes as the human-facing artifact of a UI-less item.
+    let words = two_track_words();
+    for line in &lines {
+        if line.text.split_whitespace().any(|w| {
+            words.iter().any(|m| {
+                *m == w
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                    .to_ascii_lowercase()
+            })
+        }) {
+            eprintln!("    [{}] {}: {}", line.offset, line.speaker, line.text);
+        }
+    }
+}
+
 /// five-second close-mic dictation is not. Under pure linear interpolation that
 /// band folds into 0–8 kHz with single-digit-dB rejection and the WER that comes
 /// back gets blamed on the model; under the anti-aliased decimator it is gone
@@ -2392,6 +2846,7 @@ fn meeting_eval_generate_corpus() {
     generate_lecture(&root);
     generate_seam_stress(&root);
     generate_device_change(&root);
+    generate_two_track_ordering(&root);
 
     write_manifest_from(&root);
 }
@@ -2433,6 +2888,7 @@ fn generate_lecture(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        two_track: None,
     };
     write_fixture(root, &meta, &audio);
 }
@@ -2556,6 +3012,7 @@ fn generate_seam_stress(root: &Path) {
         chunk_overlap_seconds: Some(CHUNK_OVERLAP_SECONDS),
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
+        two_track: None,
     };
     write_fixture(root, &meta, &audio);
 }
@@ -2606,8 +3063,273 @@ fn generate_device_change(root: &Path) {
         chunk_overlap_seconds: None,
         device_change_seconds: Some(change_at),
         source_rates_hz: vec![48_000, 24_000],
+        two_track: None,
     };
     write_fixture(root, &meta, &audio);
+}
+
+/// Fixture (d): a synthetic TWO-SOURCE capture, deliberately clock-offset.
+///
+/// Three things make it worth the disk it takes.
+///
+/// **The wavs come out of the shipped capture path**, not out of a buffer
+/// written straight to a file. Each track's local audio is fed to a real
+/// `MeetingCapture` in real callback-sized blocks, with the anchors a real
+/// callback would have stamped, into a real `MeetingJournal`; the fixture's
+/// `trackN.wav` is what `finalize` produced. So the audio the gate decodes has
+/// been through the same high-pass, the same resampler and the same spill the
+/// app puts a meeting through.
+///
+/// **The anchors come out of the same run.** The index sidecars the journal
+/// wrote are copied into the fixture before `finalize` removes them, which is
+/// what lets the gate rebuild each track's timeline from records the shipped
+/// consumer produced rather than from arithmetic this file did.
+///
+/// **The clocks disagree on purpose.** Both devices are told they are 16 kHz;
+/// one really runs 40 ppm slow and the other 250 ppm fast, and the second one
+/// starts 750 ms late. A fixture recorded on two well-behaved crystals over two
+/// minutes drifts by microseconds and would pass under a merge that did
+/// nothing — the same "unfalsifiable by construction" failure fixture (b) was
+/// rebuilt to escape.
+fn generate_two_track_ordering(root: &Path) {
+    let dir = root.join(TWO_TRACK);
+    fs::create_dir_all(&dir).expect("fixture dir");
+
+    let join = (MARKER_JOIN_SECONDS * TARGET_RATE as f64) as usize;
+    let prefix = trim_silence(&synthesize(TWO_TRACK_PREFIX, TARGET_RATE)).to_vec();
+    let suffix = trim_silence(&synthesize(TWO_TRACK_SUFFIX, TARGET_RATE)).to_vec();
+
+    // Each track's own local length: the mic covers the whole meeting, the tap
+    // covers it from the moment its aggregate device came up.
+    let local_len = |track: usize| -> usize {
+        let from = if track == MIC_TRACK {
+            0.0
+        } else {
+            TWO_TRACK_ORIGIN_OFFSET_SECONDS
+        };
+        ((TWO_TRACK_SECONDS - from) * (1.0 + TWO_TRACK_PPM[track]) * TARGET_RATE as f64) as usize
+    };
+    let mut audio: Vec<Vec<i16>> = (0..2).map(|t| vec![0i16; local_len(t)]).collect();
+    let mut occupied: Vec<Vec<(usize, usize)>> = vec![Vec::new(), Vec::new()];
+    let mut markers: Vec<TwoTrackMarker> = Vec::new();
+    let mut utterances: Vec<Utterance> = Vec::new();
+
+    for (host_seconds, track, word) in TWO_TRACK_CONVERSATION {
+        let spoken = synthesize(word, TARGET_RATE);
+        let spoken = trim_silence(&spoken);
+        let local = two_track_local_seconds(track, host_seconds);
+        let word_start = (local * TARGET_RATE as f64) as usize;
+        let word_end = word_start + spoken.len();
+        let start = word_start
+            .checked_sub(join + prefix.len())
+            .unwrap_or_else(|| panic!("marker {word} starts before its own track does"));
+        let end = word_end + join + suffix.len();
+        assert!(
+            end < audio[track].len(),
+            "marker {word} runs off the end of track {track}"
+        );
+        audio[track][start..start + prefix.len()].copy_from_slice(&prefix);
+        audio[track][word_start..word_end].copy_from_slice(spoken);
+        audio[track][word_end + join..end].copy_from_slice(&suffix);
+        occupied[track].push((start, end));
+        markers.push(TwoTrackMarker {
+            word: word.to_string(),
+            track: track as i64,
+            speaker: two_track_speaker(track).to_string(),
+            host_seconds,
+            local_seconds: seconds(word_start),
+        });
+        utterances.push(Utterance {
+            text: format!(
+                "{two_track_speaker}: {TWO_TRACK_PREFIX} {word}, {TWO_TRACK_SUFFIX}",
+                two_track_speaker = two_track_speaker(track)
+            ),
+            start_seconds: host_seconds,
+            end_seconds: host_seconds + seconds(spoken.len()),
+        });
+    }
+
+    // Ordinary prose in the gaps so no window is mostly silence — and every
+    // sentence DISTINCT, across both tracks, so a merge that attributed one
+    // track's speech to the other could not look right by repeating itself.
+    let gap = (SENTENCE_GAP * TARGET_RATE as f64) as usize;
+    let mut filler = 0usize;
+    for track in [MIC_TRACK, SYSTEM_TRACK] {
+        occupied[track].sort();
+        let mut cursor = 0usize;
+        let track_len = audio[track].len();
+        for (marker_start, marker_end) in occupied[track]
+            .clone()
+            .into_iter()
+            .chain([(track_len, track_len)])
+        {
+            loop {
+                let text = lecture_sentence(filler);
+                let spoken = synthesize(&text, TARGET_RATE);
+                if cursor + spoken.len() + gap >= marker_start {
+                    break;
+                }
+                audio[track][cursor..cursor + spoken.len()].copy_from_slice(&spoken);
+                cursor += spoken.len() + gap;
+                filler += 1;
+            }
+            cursor = marker_end + gap;
+        }
+    }
+
+    // ── the shipped capture path, driven with the anchors a real callback
+    //    would have stamped ────────────────────────────────────────────────
+    let cap_dir = std::env::temp_dir().join(format!(
+        "yap-eval-two-track-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&cap_dir).expect("capture dir");
+    // A deep queue, for the same reason `two_track_phase_e2e` opens one: this
+    // loop feeds 76 seconds of audio as fast as the CPU will take it, and the
+    // shipped bound (`MEETING_QUEUE_DEPTH` = 512) is sized for a real-time
+    // producer. At the shipped depth the writer is outrun on a loaded machine
+    // and the generator's own `spliced_silence_samples == 0` assertion fires —
+    // which is the assertion doing its job, but it makes growing the corpus a
+    // question of how busy the Mac is. Backpressure has its own test.
+    let journal = MeetingJournal::start_with_depth(&cap_dir, 2, 32_768).expect("journal");
+    let journal_id = journal.id().to_string();
+    let capture = MeetingCapture::with_tracks(TARGET_RATE, 1, 2, Some(journal));
+    for track in [MIC_TRACK, SYSTEM_TRACK] {
+        let frames = TWO_TRACK_CALLBACK_FRAMES[track];
+        let origin = if track == MIC_TRACK {
+            0.0
+        } else {
+            TWO_TRACK_ORIGIN_OFFSET_SECONDS
+        };
+        let blocks = audio[track].len() / frames;
+        for k in 0..blocks {
+            let at = k * frames;
+            let block: Vec<f32> = audio[track][at..at + frames]
+                .iter()
+                .map(|s| *s as f32 / 32_768.0)
+                .collect();
+            let host = origin + at as f64 / (TARGET_RATE as f64 * (1.0 + TWO_TRACK_PPM[track]));
+            capture.accept_track(
+                track,
+                &block,
+                &[CaptureAnchor {
+                    host_ns: (host * 1_000_000_000.0) as u64,
+                    sample_index: at as u64,
+                    frames: frames as u32,
+                    sample_rate: TARGET_RATE,
+                    lost_frames: 0,
+                }],
+            );
+        }
+    }
+    let records = support::two_track::wait_for_index_records(
+        &cap_dir,
+        &journal_id,
+        2,
+        TWO_TRACK_SECONDS as usize - 3,
+    );
+    let journal = capture.close().expect("the journal comes back");
+    let finalized = journal
+        .finalize(MeetingState::Complete)
+        .expect("the synthetic capture finalizes");
+    assert_eq!(
+        finalized.spliced_silence_samples, 0,
+        "the generator's own capture lost audio — the fixture's local sample \
+         positions would no longer be the ones the markers were placed at"
+    );
+
+    for track in [MIC_TRACK, SYSTEM_TRACK] {
+        let wav = finalized
+            .wav_for_track(track)
+            .unwrap_or_else(|| panic!("track {track} finalized into a wav"));
+        let (rate, samples) = read_wav_i16(wav);
+        assert_eq!(rate, TARGET_RATE);
+        let fed = audio[track].len() / TWO_TRACK_CALLBACK_FRAMES[track]
+            * TWO_TRACK_CALLBACK_FRAMES[track];
+        assert!(
+            samples.len().abs_diff(fed) < TARGET_RATE as usize / 100,
+            "track {track} finalized {} samples for {fed} fed — a shifted track \
+             would put every marker somewhere other than where it was placed",
+            samples.len()
+        );
+        write_wav_16k_mono(&dir.join(format!("track{track}.wav")), &samples);
+        // A JSON ARRAY rather than the journal's own JSON-lines: the corpus
+        // holds wav/txt/json only (`meeting_eval_manifest_is_committed_and_
+        // names_every_fixture` enforces it), and a `.jsonl` sidecar copied in
+        // verbatim would be the one file in the corpus nothing could parse.
+        // The records themselves are copied field for field.
+        let body: Vec<String> = records[track]
+            .iter()
+            .map(|r| {
+                format!(
+                    "  {{ \"host_ns\": {}, \"captured_samples\": {}, \"spilled_samples\": {} }}",
+                    r.host_ns, r.captured_samples, r.spilled_samples
+                )
+            })
+            .collect();
+        fs::write(
+            dir.join(format!("track{track}-anchors.json")),
+            format!("[\n{}\n]\n", body.join(",\n")),
+        )
+        .expect("anchors");
+    }
+    let _ = fs::remove_dir_all(&cap_dir);
+
+    utterances.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+    let reference: String = utterances
+        .iter()
+        .map(|u| u.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(dir.join("reference.txt"), format!("{reference}\n")).expect("reference");
+
+    let meta = FixtureMeta {
+        id: TWO_TRACK.to_string(),
+        kind: "two_track_ordering".to_string(),
+        sample_rate: TARGET_RATE,
+        duration_seconds: TWO_TRACK_SECONDS,
+        utterances,
+        boundary_seconds: Vec::new(),
+        seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: Some(CHUNK_SECONDS),
+        chunk_overlap_seconds: Some(CHUNK_OVERLAP_SECONDS),
+        device_change_seconds: None,
+        source_rates_hz: vec![TARGET_RATE, TARGET_RATE],
+        two_track: Some(TwoTrackMeta {
+            wavs: vec!["track0.wav".into(), "track1.wav".into()],
+            anchors: vec!["track0-anchors.json".into(), "track1-anchors.json".into()],
+            origin_seconds: vec![0.0, TWO_TRACK_ORIGIN_OFFSET_SECONDS],
+            clock_ppm: TWO_TRACK_PPM.iter().map(|p| p * 1e6).collect(),
+            true_rate_hz: TWO_TRACK_PPM
+                .iter()
+                .map(|p| TARGET_RATE as f64 * (1.0 + p))
+                .collect(),
+            callback_frames: TWO_TRACK_CALLBACK_FRAMES.to_vec(),
+            markers,
+            expected_sequence: two_track_expected_sequence(),
+            residual_horizon_seconds: RESIDUAL_HORIZON_SECONDS,
+            residual_budget_ms: RESIDUAL_BUDGET_MS,
+        }),
+    };
+    fs::write(
+        dir.join("meta.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&meta).expect("meta serialises")
+        ),
+    )
+    .expect("meta");
+    eprintln!(
+        "wrote {} — two tracks, {:.1}s, {} markers",
+        dir.display(),
+        TWO_TRACK_SECONDS,
+        TWO_TRACK_CONVERSATION.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2712,6 +3434,19 @@ fn meeting_eval_generate_seam_stress() {
     let root = corpus_root();
     fs::create_dir_all(&root).expect("corpus root");
     generate_seam_stress(&root);
+    write_manifest_from(&root);
+}
+
+/// Regrow ONLY the two-track fixture, then re-hash. Its geometry is tied to the
+/// clock constants above and to the shipped capture path, so it is the one to
+/// rebuild when either moves — rebuilding the 15-minute lecture beside it would
+/// change its hashes and invalidate a measured WER for no reason.
+#[test]
+#[ignore = "writer, not a check: renders the two-track fixture with `say`"]
+fn meeting_eval_generate_two_track_ordering() {
+    let root = corpus_root();
+    fs::create_dir_all(&root).expect("corpus root");
+    generate_two_track_ordering(&root);
     write_manifest_from(&root);
 }
 

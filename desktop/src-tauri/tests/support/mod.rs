@@ -9,6 +9,13 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
+/// YV109 — the two-track host-time reference the eval fixture and the
+/// phase-closing E2E both score against. Its own module because it is the one
+/// piece of scaffolding here that is a MEASUREMENT rather than a fixture: see
+/// its header for why an eval harness computes the answer independently of the
+/// code it is scoring.
+pub mod two_track;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
