@@ -2149,7 +2149,13 @@ pub struct Prewarm {
     /// it returns the error. The platform's own call log is what proves that
     /// half — see `tests/syscapture_prewarm_tap.rs`, which asserts against the
     /// fake's recorded calls rather than against this field.
-    pub teardown_steps: Vec<TeardownStep>,
+    ///
+    /// The element type is [`TapStep`] — the module's ONE step vocabulary,
+    /// sliced by [`TEARDOWN_ORDER`] out of [`full_rebuild_sequence`]. It was
+    /// `TeardownStep` while this item and YV104 were apart, which is precisely
+    /// the drift the module docs record: a rebase that resolves textually and
+    /// leaves two orders behind. There is one.
+    pub teardown_steps: Vec<TapStep>,
 }
 
 impl Prewarm {
@@ -3091,10 +3097,12 @@ pub mod imp {
     /// with no process-tap API — because a gate a caller can forget is not a
     /// gate.
     pub fn prewarm_system_audio_permission() -> PrewarmReport {
-        // 48 kHz mono is a throwaway: the tap's real format is read from the
-        // tap itself during setup, and nothing here keeps a frame.
-        let capture = Arc::new(RtCapture::new(48_000, 1));
-        let mut platform = match CoreAudioPlatform::new(Arc::clone(&capture)) {
+        // The ring is NOT built here. `CoreAudioPlatform` binds its own during
+        // setup, from the format read off the tap — the format is undiscoverable
+        // before the tap exists, so a ring passed in from out here is a guessed
+        // sample axis with no symptom (see `capture_matches_format`). The
+        // pre-warm reads whatever the platform bound, after the fact.
+        let mut platform = match CoreAudioPlatform::new() {
             Ok(platform) => platform,
             Err(error) => {
                 return PrewarmReport {
@@ -3116,18 +3124,25 @@ pub mod imp {
         // Fold whatever the 200 ms produced through the SAME discriminator a
         // real meeting uses. It will nearly always say `Unknown`, and that is
         // the honest answer: 200 ms of silence means nothing was playing.
+        //
+        // `capture()` is `None` when setup failed before `bind_capture` — no
+        // ring, no callbacks, nothing observed. That folds to an empty
+        // `TapDelivery`, which below the grace window is `Unknown`, which is
+        // the same honest answer by a different route. It is never a denial.
         let mut delivery = TapDelivery::default();
-        let mut anchors: Vec<CaptureAnchor> = Vec::new();
-        let mut samples: Vec<f32> = Vec::new();
-        capture.anchors.drain_into(&mut anchors);
-        capture.samples.drain_into(&mut samples);
-        let channels = usize::from(capture.channels()).max(1);
-        let mut offset = 0usize;
-        for anchor in &anchors {
-            let start = offset.min(samples.len());
-            let end = (start + anchor.frames as usize * channels).min(samples.len());
-            delivery.observe(anchor, &samples[start..end]);
-            offset = end;
+        if let Some(capture) = platform.capture() {
+            let mut anchors: Vec<CaptureAnchor> = Vec::new();
+            let mut samples: Vec<f32> = Vec::new();
+            capture.anchors.drain_into(&mut anchors);
+            capture.samples.drain_into(&mut samples);
+            let channels = usize::from(capture.channels()).max(1);
+            let mut offset = 0usize;
+            for anchor in &anchors {
+                let start = offset.min(samples.len());
+                let end = (start + anchor.frames as usize * channels).min(samples.len());
+                delivery.observe(anchor, &samples[start..end]);
+                offset = end;
+            }
         }
 
         PrewarmReport {

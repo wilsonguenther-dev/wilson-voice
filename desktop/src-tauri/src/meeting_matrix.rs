@@ -88,6 +88,24 @@
 //! produces reaches no surface, because no frontend calls that command yet. Two
 //! truth values, two cells.
 //!
+//! ## YV102 (#125) — what merging the pre-warm actually moved
+//!
+//! Both of the tripwires YV105 armed for this PR fired, and they resolved in
+//! opposite directions. That is the point of arming them per-row rather than
+//! promoting a whole phase at once.
+//!
+//!   * **Row `12b` becomes `Test`.** `App.tsx` now invokes `notetaker_status`
+//!     and renders `systemAudioMessage` under a disabled "Set up meeting
+//!     recording" step, which is the plan's own wording for row 12 — visible,
+//!     disabled, carrying the reason — so the split closes.
+//!   * **Row 1 stays `PolicyOnly` and loses its owner.** `prewarm_tap` shipped
+//!     and is called, so the old `absent_call_site` is gone; the row's
+//!     behaviour did not ship with it. A denial "at start" needs a tap at
+//!     start, and `start_system_tap` still has no caller — the same missing
+//!     wiring row 2 names, owned by no item in the 22-B backlog. Promoting the
+//!     row because its tripwire fired would have published "your meeting keeps
+//!     recording when the tap is denied" about a meeting that opens no tap.
+//!
 //! **And it does not re-declare a threshold that ships somewhere else.** The
 //! 3 h cap and its 2 h 45 m warning are `meeting::MEETING_HARD_CAP` /
 //! `meeting::MEETING_CAP_WARN_AT`, enforced by `meeting::watchdog_tick` — the
@@ -367,18 +385,28 @@ pub const ROWS: &[MatrixRow] = &[
         id: "1",
         failure: "System-audio (tap) permission denied at start",
         behavior: "The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted",
-        // NOT `Test`. The discriminator that can say "denied" honestly ships
-        // (`syscapture::TapLiveness::verdict`, and its evidence rule: never
-        // delivered a non-zero sample AND something was observably playing).
-        // What does not ship is the thing that asks the question at START —
-        // YV102's `prewarm_tap` — so nothing in the app can reach this verdict
-        // before a meeting begins, and the badge has no producer. The mic-only
-        // half of the required behaviour is 22-A's ordinary meeting and is not
-        // this row's contribution.
+        // STILL NOT `Test`, and YV102 merging is what forced this cell to be
+        // re-argued rather than left alone. Two of the row's three halves have
+        // now shipped: the discriminator that can say "denied" honestly
+        // (`syscapture::TapLiveness::verdict` — never a non-zero sample AND
+        // something observably playing), and the deep link to the pane the
+        // sentence sends people to, whose anchor YV102 verified on the target
+        // OS. `prewarm_tap` ships too and the Settings step calls it, so the
+        // old `absent_call_site` is gone.
+        //
+        // What is still missing is the only thing that would make this row's
+        // BEHAVIOUR true: a tap inside a meeting. `start_system_tap` has no
+        // caller, so at T-0 of a real meeting nothing opens a tap, nothing can
+        // be denied, and no badge has a producer. The pre-warm answers the
+        // question in Settings, minutes earlier, which is this row's neighbour
+        // and not this row. So the cell moves to the same unowned shape row 2
+        // carries, naming the same missing caller — no item in the 22-B backlog
+        // owns starting the tap inside a meeting, and naming a merged PR as the
+        // pending owner is the stale `Some` that reads as progress.
         coverage: Coverage::PolicyOnly {
             test: "matrix_row1_tap_permission_denied.rs",
-            wiring_pr: Some("#125 (YV102)"),
-            absent_call_site: "prewarm_tap",
+            wiring_pr: None,
+            absent_call_site: "start_system_tap",
         },
     },
     MatrixRow {
@@ -448,18 +476,24 @@ pub const ROWS: &[MatrixRow] = &[
     },
     MatrixRow {
         id: "12b",
-        failure: "…and the sentence the gate produces reaches no Notetaker surface",
+        failure: "…and the sentence the gate produces has to reach a Notetaker surface",
         behavior: "The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12",
-        // NOT `Test`, the row 5/17 split applied to row 12. `notetaker_status`
-        // is registered and returns `systemAudioAvailable`/`systemAudioMessage`;
-        // no frontend file invokes it, so on a macOS 13 Mac the app today shows
-        // nothing at all rather than a disabled control with a reason. YV102's
-        // Settings step (`system_audio_setup`) is what gives the sentence a
-        // surface.
-        coverage: Coverage::PolicyOnly {
+        // `Test` as of YV102 (#125) — the split closes. The sentence now has
+        // exactly the surface the plan's own wording for row 12 asks for:
+        // `App.tsx` invokes `notetaker_status` on mount, feeds
+        // `systemAudioMessage` into `setupState`, and renders the
+        // "Set up meeting recording" step with its button DISABLED and that
+        // sentence underneath — visible and disabled, carrying the reason, on
+        // every pre-14.4 Mac.
+        //
+        // The subject is the payload rather than the command, because the
+        // command is a settings read plus `NotetakerStatus::for_os` and the
+        // payload is the whole contract: the two answers are separate fields,
+        // and their camelCase names are what the surface reads.
+        coverage: Coverage::Test {
             test: "matrix_row12_macos_144_gate.rs",
-            wiring_pr: Some("#125 (YV102)"),
-            absent_call_site: "system_audio_setup",
+            subject: "NotetakerStatus",
+            subject_module: "lib.rs",
         },
     },
     MatrixRow {
@@ -1068,9 +1102,11 @@ mod tests {
             .collect();
         assert_eq!(
             unwired,
-            vec!["5b", "16", "17b", "1", "2", "3", "12b", "14"],
-            "22-A's three unwired policies, plus the five YV105 rows whose \
-             mechanism has merged and whose producer has not"
+            vec!["5b", "16", "17b", "1", "2", "3", "14"],
+            "22-A's three unwired policies, plus the four YV105 rows whose \
+             mechanism has merged and whose producer has not. `12b` left this \
+             list with YV102: the 14.4 sentence reaches the Settings step, \
+             which is the one thing that row was waiting for."
         );
     }
 
@@ -1080,7 +1116,7 @@ mod tests {
     /// merges without promoting its rows shows up as a stale `Some` a reader
     /// can act on rather than a claim nobody re-checks.
     #[test]
-    fn the_rows_nobody_owns_are_5b_16_17b_3_and_2() {
+    fn the_rows_nobody_owns_are_5b_16_17b_1_2_and_3() {
         let unowned: Vec<&str> = ROWS
             .iter()
             .filter(|r| {
@@ -1099,7 +1135,13 @@ mod tests {
         // starting it inside a real meeting. Naming a merged PR as the thing
         // still to come would be the stale `Some` this test's own doc comment
         // describes — visible, but read by a hurrying reader as progress.
-        assert_eq!(unowned, vec!["5b", "16", "17b", "2", "3"]);
+        // Row 1 joined the set when YV102 (#125) merged, for the same reason
+        // row 2 did when YV100 did: the PR that was named as the owner of its
+        // wiring landed, and the wiring the ROW is about did not come with it.
+        // `prewarm_tap` asks the permission question in Settings; row 1 is the
+        // question asked at T-0 of a meeting, which needs `start_system_tap` to
+        // have a caller. It does not, and no backlog item owns giving it one.
+        assert_eq!(unowned, vec!["5b", "16", "17b", "1", "2", "3"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1122,26 +1164,27 @@ mod tests {
         // here: its cell asserts that the *enforcement* arrives with the PR,
         // and `start_system_tap` did arrive — it just has no caller, which is
         // what `wiring_pr: None` says and this cell does not.
-        assert_eq!(
-            owned,
-            vec![
-                ("1", "#125 (YV102)"),
-                ("12b", "#125 (YV102)"),
-                ("14", "#123 (YV100)"),
-            ]
-        );
+        //
+        // YV102 (#125) then emptied this list of everything but row 14: row
+        // `12b`'s wiring genuinely arrived (it is a `Test` row now) and row 1's
+        // did not (it is unowned, above). Row 14 is the last stale `Some`, and
+        // it is the honest kind: `watch_output` ships, #123 merged, and giving
+        // it a caller was never in that PR's scope.
+        assert_eq!(owned, vec![("14", "#123 (YV100)")]);
     }
 
     /// The rows the shipping app actually performs, spelled out, because this
-    /// is the number every reader of the table is really asking for. Seven
-    /// cells are `Test`, one is a manual repro, and the remaining eight are
+    /// is the number every reader of the table is really asking for. Eight
+    /// cells are `Test`, one is a manual repro, and the remaining seven are
     /// decisions nothing in the app can reach.
     ///
-    /// Row 12 is the only one of YV105's five that made it into this list, and
-    /// it is worth saying why it did while rows 1, 2 and 14 did not: the 14.4
-    /// gate needs no tap to be in effect. It is a refusal, `notetaker_status`
-    /// computes it on every call, and its load-bearing half — mic-only
-    /// recording is never gated — is a property of the app today.
+    /// Row 12 is the only one of YV105's five that made it into this list on
+    /// its own, and it is worth saying why it did while rows 1, 2 and 14 did
+    /// not: the 14.4 gate needs no tap to be in effect. It is a refusal,
+    /// `notetaker_status` computes it on every call, and its load-bearing half
+    /// — mic-only recording is never gated — is a property of the app today.
+    /// `12b` joined it with YV102, which gave that refusal a surface; rows 1, 2
+    /// and 14 all still wait on the same missing thing, a tap inside a meeting.
     #[test]
     fn the_wired_rows_are_the_ones_whose_mechanism_shipped() {
         let wired: Vec<&str> = ROWS
@@ -1149,7 +1192,7 @@ mod tests {
             .filter(|r| matches!(r.coverage, Coverage::Test { .. }))
             .map(|r| r.id)
             .collect();
-        assert_eq!(wired, vec!["4", "5", "6", "17", "3a", "3b", "12"]);
+        assert_eq!(wired, vec!["4", "5", "6", "17", "3a", "3b", "12", "12b"]);
 
         let manual: Vec<&str> = ROWS
             .iter()

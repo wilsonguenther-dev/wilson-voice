@@ -29,7 +29,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wilson_voice_lib::syscapture::{
-    prewarm_tap, TapError, TapStage, TeardownStep, PREWARM_DWELL, TEARDOWN_ORDER,
+    prewarm_tap, TapError, TapStage, TapStep, PREWARM_DWELL, TEARDOWN_ORDER,
 };
 
 #[path = "support/tap.rs"]
@@ -38,9 +38,17 @@ use tap::{Call, FakePlatform};
 
 const SELF_OBJECT: Option<u32> = Some(4242);
 
-fn prewarm(platform: &mut FakePlatform, dwell: impl FnOnce()) -> wilson_voice_lib::syscapture::Prewarm
-{
-    prewarm_tap(platform, SELF_OBJECT, "yap.prewarm.test", "Yap pre-warm", dwell)
+fn prewarm(
+    platform: &mut FakePlatform,
+    dwell: impl FnOnce(),
+) -> wilson_voice_lib::syscapture::Prewarm {
+    prewarm_tap(
+        platform,
+        SELF_OBJECT,
+        "yap.prewarm.test",
+        "Yap pre-warm",
+        dwell,
+    )
 }
 
 /// The headline: a tap that heard NOTHING is torn down exactly as completely as
@@ -90,10 +98,10 @@ fn the_teardown_order_is_yv100s_canonical_order() {
     assert_eq!(
         run.teardown_steps,
         vec![
-            TeardownStep::AudioDeviceStop,
-            TeardownStep::AudioDeviceDestroyIOProcID,
-            TeardownStep::AudioHardwareDestroyAggregateDevice,
-            TeardownStep::AudioHardwareDestroyProcessTap,
+            TapStep::AudioDeviceStop,
+            TapStep::AudioDeviceDestroyIOProcID,
+            TapStep::AudioHardwareDestroyAggregateDevice,
+            TapStep::AudioHardwareDestroyProcessTap,
         ]
     );
     assert_eq!(run.teardown_steps, TEARDOWN_ORDER.to_vec());

@@ -3678,31 +3678,55 @@ pub struct NotetakerStatus {
     pub system_audio_message: Option<String>,
 }
 
+impl NotetakerStatus {
+    /// The payload, computed from an OS version rather than from *this* Mac's.
+    ///
+    /// The command below is a `State` read plus this call, so the decision the
+    /// Notetaker's Settings step renders is reachable from a test on any
+    /// machine — which is what lets matrix row `12b` be published as `Test`
+    /// rather than as a policy nothing checks. It is one declaration, not a
+    /// second copy: `notetaker_status` has no arithmetic of its own left.
+    ///
+    /// The two questions stay separate on purpose. `available`/`message` answer
+    /// "can the Notetaker record at all?" (mic-only, the macOS 12 floor);
+    /// `system_audio_*` answer "can it also record the other end of the call?"
+    /// (macOS 14.4, plan finding OS-11). On a macOS 13 Mac the honest state is
+    /// both at once — meetings record, the system-audio control is visible and
+    /// disabled with a sentence — and collapsing them is how "system audio
+    /// needs 14.4" becomes "meetings do not work on your Mac".
+    pub fn for_os(model_id: &str, language: &str, os: os_version_gate::OsVersion) -> Self {
+        let mic_only = meeting_asr::meeting_availability_for(
+            meeting_asr::MeetingCapture::MicOnly,
+            Some(model_id),
+            Some(language),
+            os,
+        );
+        let system_audio = meeting_asr::meeting_availability_for(
+            meeting_asr::MeetingCapture::MicPlusSystemAudio,
+            Some(model_id),
+            Some(language),
+            os,
+        );
+        Self {
+            available: mic_only.is_ok(),
+            message: mic_only.err().map(|blocked| blocked.message()),
+            system_audio_available: system_audio.is_ok(),
+            system_audio_message: system_audio.err().map(|blocked| blocked.message()),
+        }
+    }
+}
+
 #[tauri::command]
 async fn notetaker_status(state: State<'_, Arc<AppState>>) -> Result<NotetakerStatus, String> {
     let (model_id, language) = {
         let settings = state.settings.lock();
         (settings.native_model.clone(), settings.language.clone())
     };
-    let os = os_version_gate::OsVersion::current();
-    let mic_only = meeting_asr::meeting_availability_for(
-        meeting_asr::MeetingCapture::MicOnly,
-        Some(&model_id),
-        Some(&language),
-        os,
-    );
-    let system_audio = meeting_asr::meeting_availability_for(
-        meeting_asr::MeetingCapture::MicPlusSystemAudio,
-        Some(&model_id),
-        Some(&language),
-        os,
-    );
-    Ok(NotetakerStatus {
-        available: mic_only.is_ok(),
-        message: mic_only.err().map(|blocked| blocked.message()),
-        system_audio_available: system_audio.is_ok(),
-        system_audio_message: system_audio.err().map(|blocked| blocked.message()),
-    })
+    Ok(NotetakerStatus::for_os(
+        &model_id,
+        &language,
+        os_version_gate::OsVersion::current(),
+    ))
 }
 
 /// Warm-engine lifecycle snapshot: what is resident, whether a load or a
