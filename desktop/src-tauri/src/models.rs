@@ -482,7 +482,12 @@ const MAX_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
 ///   classic escape, and nothing in a model archive needs one);
 /// * files are written 0o644 — the upstream archive ships executable `.py`
 ///   helpers, and Yap has no reason to make anything it unpacks runnable;
-/// * total output is capped at [`MAX_EXTRACTED_BYTES`].
+/// * total output is capped at [`MAX_EXTRACTED_BYTES`], metered on
+///   [`tar::Entry::size`] — the size the READER acts on, which a PAX `size=`
+///   record can raise above the number in the entry's own ustar header. Metering
+///   the header field instead is how this cap was bypassable when it shipped
+///   (a 384-byte archive extracted 314,572,800 bytes); see the comment at the
+///   metering site.
 ///
 /// When several `.onnx` files are present (the upstream segmentation archive
 /// carries `model.onnx` alongside a quantized `model.int8.onnx`), the LARGEST
@@ -531,8 +536,26 @@ pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, 
                 path.display()
             ));
         }
-        let size = entry.header().size().unwrap_or(0);
-        written = written.saturating_add(size);
+        // `Entry::size()`, NOT `entry.header().size()`. A tar entry can state
+        // its size in two places, and tar-rs acts on the second one: a
+        // preceding PAX `x` header's `size=` record OVERRIDES the ustar header
+        // field (tar-0.4.46 `src/archive.rs:353`, whose own comment names
+        // parser disagreement as a malicious-archive construction vector), and
+        // the reader then hands over `Entry::size()` bytes. Metering the cap on
+        // the header field meant metering a number nothing else in the pipeline
+        // used: measured against this function, a 384-byte `.tar.bz2` declaring
+        // 512 in its ustar header and 300 MiB in a PAX record extracted
+        // 314,572,800 bytes to disk and returned `Ok` — the cap counter had
+        // reached 512. `Entry::size()` is the claim the reader acts on, so it
+        // is the claim the cap has to read.
+        //
+        // No `unwrap_or(0)` fallback either, and none is needed: `Entry::size()`
+        // is infallible because a size field too corrupt to parse already
+        // failed at `header.entry_size()?` inside the iterator above, which the
+        // `entry.map_err(…)` on the line before turns into a hard error. An
+        // unparseable size is never a free pass past the cap.
+        let claimed = entry.size();
+        written = written.saturating_add(claimed);
         if written > MAX_EXTRACTED_BYTES {
             return Err(format!(
                 "archive expands past the {MAX_EXTRACTED_BYTES}-byte extraction cap"
@@ -546,6 +569,21 @@ pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, 
             std::fs::File::create(&safe).map_err(|e| format!("create {}: {e}", safe.display()))?;
         let copied = std::io::copy(&mut entry, &mut out)
             .map_err(|e| format!("extract {}: {e}", safe.display()))?;
+        // The tripwire for the whole class the PAX bug belonged to: the cap is
+        // metered on a number the entry CLAIMS, which is only a cap at all so
+        // long as the reader cannot then hand over more than it claimed. It
+        // cannot today — tar-rs bounds an entry's data at `take(size)` with the
+        // same `size` `Entry::size()` reports — so this branch is unreachable
+        // under the exactly-pinned `tar = "=0.4.46"`, and it is deliberately
+        // unreachable rather than tested: what it guards is a future version
+        // metering against a third number. Declared as an unfalsifiable guard,
+        // not counted as tested coverage.
+        if copied > claimed {
+            return Err(format!(
+                "archive entry '{}' wrote {copied} bytes against a claimed {claimed} — refusing to extract",
+                path.display()
+            ));
+        }
         out.sync_all()
             .map_err(|e| format!("sync {}: {e}", safe.display()))?;
         set_non_executable(&safe)?;

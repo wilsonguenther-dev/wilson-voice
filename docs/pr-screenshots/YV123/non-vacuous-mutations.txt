@@ -66,6 +66,42 @@ M6  The decompression-bomb cap is effectively removed (`u64::MAX`).
              rejects_an_archive_that_claims_to_expand_past_the_cap
     RESULT CAUGHT
 
+M15 The cap is metered on `entry.header().size()` again instead of
+    `Entry::size()` — i.e. the defect the adversarial review found, restored.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2
+    RESULT CAUGHT, in BOTH directions and by two different tests:
+             rejects_a_pax_size_record_that_claims_to_expand_past_the_cap FAILED
+             honours_a_pax_size_record_that_is_within_the_cap             FAILED
+           And the finding's other half is visible in the same run: M6's guard,
+           `rejects_an_archive_that_claims_to_expand_past_the_cap`, PASSES under
+           this mutation. It only ever rewrote the ustar header field, so it was
+           vacuous on the path an attacker would actually use — M6 was catching
+           a defect one field over from the one that shipped.
+
+M16 The PAX record's self-referential length is written one byte too long, so
+    the record is malformed. This attacks the FIXTURE, not the extractor: a
+    silently-ignored PAX record would leave the bomb test passing for some
+    unrelated reason and prove nothing about the cap.
+    → tests/extract_tar_bz2.rs (fixture writer)
+    GUARD  cargo test --test extract_tar_bz2 \
+             the_system_tar_also_reads_the_pax_size_not_the_ustar_header
+    RESULT CAUGHT — bsdtar stops honouring the record and reports the ustar
+           size, which is exactly the "this fixture proves nothing" state the
+           cross-check exists to detect.
+
+M17 The `copied > claimed` tripwire after the copy is deleted.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2
+    RESULT *** SURVIVOR — BY CONSTRUCTION, DECLARED, NOT COUNTED ***
+           13/13 still pass. That branch is unreachable under the exactly-pinned
+           `tar = "=0.4.46"`, where an entry's data is bounded by `take(size)`
+           with the same `size` that `Entry::size()` reports, so nothing can
+           write more than it claimed. It is a guard against a FUTURE tar-rs
+           metering against a third number — the class this whole finding
+           belonged to — and it is recorded here as unfalsifiable rather than
+           quietly folded into the caught count.
+
 M13 An archive containing no `.onnx` succeeds, returning the destination
     directory instead of an error — the shape of failure that would hand the
     sidecar a directory path and let "model load failed" be the first symptom.
@@ -143,8 +179,18 @@ M14 The pure-Rust decoder is defeated: `bzip2 = "=0.4.4"` (the libbz2 binding)
 ==============================================================================
 SCORE
 ==============================================================================
-14 mutations, 14 caught, 0 survivors — after two tests were rewritten because
-their first version was vacuous (M5 and the lockfile check).
+17 mutations, 16 caught, 1 declared survivor (M17, unreachable by construction)
+— after two tests were rewritten because their first version was vacuous (M5 and
+the lockfile check) and one more, M6's, was found VACUOUS BY REVIEW rather than
+by this file.
+
+That last point is the honest headline of the second pass. M6 was run, it was
+caught, and it was still not a cap test: it mutated the constant, which any
+assertion mentioning the constant would catch, and its fixture only ever set the
+ustar header field — so the ONE mutation this file never ran, "meter the cap on
+the other size field", was the one that shipped broken. Mutating the guard's
+constant proves the guard is wired up; it does not prove the guard reads the
+right input. M15 is the mutation that would have caught it, and it exists now.
 
 Supporting non-vacuity tests that ship WITH the item, so the guards above stay
 falsifiable without a human re-running this file:
@@ -157,3 +203,8 @@ falsifiable without a human re-running this file:
   * `the_fixture_writer_emits_an_archive_the_system_tar_agrees_with` — the
     hand-written ustar fixtures are listed by `/usr/bin/tar -tjf`, so a bug in
     the fixture writer fails here instead of quietly validating itself.
+  * `the_system_tar_also_reads_the_pax_size_not_the_ustar_header` — the same
+    guard for the PAX half, and load-bearing in a way the ustar one is not: it
+    is what stops the bomb fixture from demonstrating a tar-rs quirk instead of
+    a property of the archive. Two implementations, one answer, and it is not
+    the number in the ustar header.

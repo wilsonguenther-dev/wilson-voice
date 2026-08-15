@@ -53,19 +53,39 @@ AC1  cargo test --test extract_tar_bz2 — pure; a synthetic .tar.bz2 built IN
      the test extracts correctly; a `../escape` entry is rejected with an
      explicit error, not silently written outside dest_dir.
 ==============================================================================
-$ cargo test --test extract_tar_bz2
-running 10 tests
+$ cargo test --test extract_tar_bz2      # review fix #1 — 13 tests, was 10
+running 13 tests
 test rejects_a_missing_archive ... ok
 test rejects_bytes_that_are_not_bzip2 ... ok
 test rejects_a_parent_dir_escape_entry ... ok
 test rejects_an_absolute_path_entry ... ok
 test rejects_an_archive_that_claims_to_expand_past_the_cap ... ok
+test rejects_a_pax_size_record_that_claims_to_expand_past_the_cap ... ok
+test honours_a_pax_size_record_that_is_within_the_cap ... ok
 test the_fixture_writer_emits_an_archive_the_system_tar_agrees_with ... ok
+test the_system_tar_also_reads_the_pax_size_not_the_ustar_header ... ok
 test rejects_a_symlink_entry ... ok
 test rejects_an_archive_with_no_onnx ... ok
 test nothing_extracted_is_executable ... ok
 test returns_the_full_precision_onnx_not_the_quantized_sibling ... ok
-test result: ok. 10 passed; 0 failed; 0 ignored
+test result: ok. 13 passed; 0 failed; 0 ignored
+
+The three new ones close the review's BLOCKING finding, and the bomb they
+describe was built and measured against the SHIPPED function first:
+
+  $ ls -l bomb.tar.bz2                     384 bytes
+  $ tar -tvjf bomb.tar.bz2                 pkg/model.onnx   314,572,800 B
+  # against feat/yv123 @ 314c576, before the fix:
+  RESULT: Ok("/tmp/yv123-bomb-out/pkg/model.onnx")
+  BYTES ON DISK: 314572800
+  # after the fix, same archive:
+  RESULT: Err("archive expands past the 268435456-byte extraction cap")
+  BYTES ON DISK: 0
+
+384 bytes in, 300 MB out, and the function returned Ok — the cap did not fire
+late, it did not fire at all. The counter had reached 512, because the entry
+states its size TWICE (a PAX `size=` record ahead of the ustar header) and the
+cap was reading the field tar-rs ignores while tar-rs streamed the other one.
 
 The fixtures are hand-written ustar streams piped through /usr/bin/bzip2 — no
 binary blob is committed. `tar::Builder` refuses to emit a `../escape` entry, so
