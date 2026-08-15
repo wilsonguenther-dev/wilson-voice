@@ -119,6 +119,42 @@ M12 The tag sanitizer FILTERS instead of rejecting, so a path arrives in the
     RESULT FAILED — diarize.rs:630
 
 ------------------------------------------------------------------------------
-12 mutations, 12 caught, 0 survivors. Tree restored to b95c6c3 and re-verified
-green afterwards (`git status --short` empty; full `cargo test
---features custom-protocol` green).
+M13 The distance/similarity INVERSION at the one place the newtypes cannot
+    reach: `DiarizePool::diarize`'s single `.get()` — the site where the type
+    is spent and the wire's bare `f32` is produced. A 0.35 cosine DISTANCE
+    leaves the parent as 0.65, so sherpa's clustering runs three times looser
+    than the identity decision it feeds (merged finding #20's exact defect).
+    → src/diarize.rs:380
+       -  DiarizeRequest::diarize(next_id(), wav, clustering.get())
+       +  DiarizeRequest::diarize(
+       +      next_id(), wav,
+       +      crate::diarize_metrics::CosineSimilarity::from_distance(clustering).get())
+    GUARD  cargo test --test diarize_sidecar_pool the_clustering_threshold_crosses_the_wire_as_a_distance
+    RESULT FAILED — diarize_sidecar_pool.rs:370 ("the child's stdin carried
+           0.65, not the 0.35 cosine DISTANCE the caller passed"); 7 passed /
+           1 failed
+    GUARD  cargo test --lib the_clustering_threshold_reaches_the_wire_as_a_distance
+    RESULT FAILED — diarize.rs:690 ("the child's stdin carried 0.65, not the
+           0.35 DISTANCE"); 7 passed / 1 failed
+
+    Recorded against the FIRST review of this PR, where this mutation was the
+    one survivor: both tests of that name were green under it. They were
+    vacuous for this purpose — the pool test only asserted that a stub
+    answering with no `segments` key yields `DiarizeError::Protocol` (that
+    assertion now lives in its own test,
+    `a_success_carrying_no_segments_is_a_protocol_failure_not_a_silent_meeting`),
+    and the lib test built the request itself with
+    `DiarizeRequest::diarize(1, path, distance.get())` rather than going
+    through the pool. Neither observed the number that reached the CHILD.
+    The fix is `THRESHOLD_ECHO_STUB`: the stub `sed`s
+    `"clustering_distance_threshold":<n>` off the request line it was sent and
+    hands `<n>` back as the segment's `start` and its `embedding`, so the value
+    that physically crossed the child's stdin is a value the parent returns.
+    Both tests now assert 0.35 and explicitly NOT 0.65, and the pool test does
+    it at two different thresholds so a stub answering a constant fails too.
+
+------------------------------------------------------------------------------
+13 mutations, 13 caught, 0 survivors. M1–M12 run against b95c6c3; M13 against
+e101d23 (the review fix). Tree restored and re-verified green afterwards
+(`git status --short` empty; full `cargo test --features custom-protocol`
+green).
