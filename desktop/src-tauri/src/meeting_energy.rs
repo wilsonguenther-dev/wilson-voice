@@ -34,6 +34,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::meeting::TrackRate;
+#[cfg(doc)]
+use crate::meeting::TRUE_RATE_PPM_LIMIT;
+
 /// `ProcessInfo.thermalState`, as a value that can be stored and compared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -179,6 +183,23 @@ pub struct MeetingDiagnostics {
     pub pill_visible: bool,
     /// How the meeting ended, in the controller's words.
     pub stop_reason: Option<String>,
+    /// YV107 / OS-2 — what each recorded track's clock ACTUALLY ran at,
+    /// measured against the host clock (`Δcaptured_samples ÷ Δhost_seconds`
+    /// over the track's index records).
+    ///
+    /// Spelled `track_rates` rather than the blob's usual camelCase on purpose:
+    /// it is the key the backlog names, the key the escalation decision reads,
+    /// and a diagnostic nobody can find is a diagnostic nobody logged. Empty for
+    /// every meeting too short to measure and for every meeting recorded before
+    /// this item, which is why it is `#[serde(default)]` — an older blob still
+    /// parses, it just has nothing to say here.
+    ///
+    /// This is the number OS-2 says the deferred single-drift-compensated-
+    /// aggregate-device fix should be decided on, so it is recorded whether or
+    /// not anything is wrong: "never measured" and "measured and fine" are
+    /// different answers, and only one of them is evidence.
+    #[serde(default, rename = "track_rates")]
+    pub track_rates: Vec<TrackRate>,
 }
 
 impl MeetingDiagnostics {
@@ -196,7 +217,27 @@ impl MeetingDiagnostics {
             battery_at_end: None,
             pill_visible,
             stop_reason: None,
+            track_rates: Vec::new(),
         }
+    }
+
+    /// YV107 / OS-2 — bank the finalize's per-track true-rate measurements.
+    ///
+    /// Called once, from the stop path, with whatever the finalize could
+    /// measure. Replaces rather than appends: a second call is a second
+    /// measurement of the same tracks, not a second set of tracks, and
+    /// accumulating them would turn a diagnostic into a duplicate log.
+    pub fn record_track_rates(&mut self, rates: &[TrackRate]) {
+        self.track_rates = rates.to_vec();
+    }
+
+    /// The tracks whose measured rate sits outside [`TRUE_RATE_PPM_LIMIT`].
+    ///
+    /// Convenience for a reader of the blob (and for the acceptance test): a
+    /// flagged track is the evidence OS-2 says the stronger, deferred fix should
+    /// be decided on.
+    pub fn flagged_track_rates(&self) -> Vec<&TrackRate> {
+        self.track_rates.iter().filter(|r| r.flagged).collect()
     }
 
     /// Feed a fresh thermal sample. Records a transition only when the value

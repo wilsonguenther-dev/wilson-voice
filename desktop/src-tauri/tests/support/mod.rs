@@ -167,6 +167,40 @@ pub const FAKE_STOP_FAILS: u8 = 3;
 /// stop, or a session that stopped being the registered capture). The control
 /// plane must file this as `partial`, NOT as `transcribing`.
 pub const FAKE_PARTIAL: u8 = 4;
+/// YV107 / OS-2 — a two-track meeting whose finalize measured both tracks'
+/// true rates, with the SYSTEM track running far enough off its nominal rate to
+/// be flagged. Proves the measurement survives the whole stop path into the
+/// `diagnostics` column, which is the only place a later escalation decision
+/// could read it from.
+pub const FAKE_TWO_TRACK_DRIFT: u8 = 5;
+
+/// The rates [`FAKE_TWO_TRACK_DRIFT`] reports, as the finalize would have
+/// measured them: a mic sitting inside its crystal tolerance and a tap 100 ppm
+/// fast — the fixture offset OS-2's acceptance criterion names.
+pub fn fake_track_rates() -> Vec<wilson_voice_lib::meeting::TrackRate> {
+    vec![
+        fake_track_rate(wilson_voice_lib::meeting::MIC_TRACK, 12.0),
+        fake_track_rate(wilson_voice_lib::meeting::SYSTEM_TRACK, 100.0),
+    ]
+}
+
+fn fake_track_rate(track: usize, ppm: f64) -> wilson_voice_lib::meeting::TrackRate {
+    let nominal_rate = wilson_voice_lib::meeting::TARGET_RATE;
+    let span_seconds = 7200.0;
+    wilson_voice_lib::meeting::TrackRate {
+        track,
+        nominal_rate,
+        measured_rate: nominal_rate as f64 * (1.0 + ppm / 1e6),
+        ppm,
+        intervals: span_seconds as usize,
+        intervals_skipped: 0,
+        span_seconds,
+        ppm_uncertainty: 0.0,
+        drift_at_cap_ms: ppm.abs() / 1e6 * 3.0 * 3600.0 * 1000.0,
+        flagged: ppm.abs() > wilson_voice_lib::meeting::TRUE_RATE_PPM_LIMIT,
+        segments: 1,
+    }
+}
 
 static FAKE_MODE: AtomicU8 = AtomicU8::new(FAKE_OK);
 static FAKE_STARTS: AtomicUsize = AtomicUsize::new(0);
@@ -219,19 +253,25 @@ impl ActiveCapture for FakeCapture {
                 wav_path: None,
                 sys_wav_path: None,
                 tap_rebuilds: None,
+                track_rates: Vec::new(),
                 seconds,
                 note: Some("no audio reached the disk".into()),
                 partial: true,
             }),
-            _ => {
+            mode => {
                 // A real file, because `finish_meeting` stores a path the
                 // retention sweep later has to find and delete.
                 std::fs::write(&self.path, b"RIFF....WAVEfake").map_err(|e| e.to_string())?;
-                let partial = FAKE_MODE.load(Ordering::SeqCst) == FAKE_PARTIAL;
+                let partial = mode == FAKE_PARTIAL;
                 Ok(CaptureOutcome {
                     wav_path: Some(self.path.clone()),
                     sys_wav_path: None,
                     tap_rebuilds: None,
+                    track_rates: if mode == FAKE_TWO_TRACK_DRIFT {
+                        fake_track_rates()
+                    } else {
+                        Vec::new()
+                    },
                     seconds,
                     note: if partial {
                         Some("stopped early: the Mac ran out of disk".into())

@@ -24,14 +24,15 @@
 //! ## What this is NOT
 //!
 //! It is not YV107. The shipped cross-track merge (`HostTimeline`, per-track
-//! true-rate logging into the meeting's `diagnostics`) is PR #130, still in
-//! review and **not on `main` at the time this landed** — which is why nothing
-//! here is imported from the library and why the E2E beside it is honest about
-//! rebasing the two tracks with this reference rather than with a shipped
-//! function that does not exist yet. When #130 merges, the gates that use this
-//! module become a cross-check of `HostTimeline` against an independent
-//! implementation instead of the only implementation, and that is a strictly
-//! better position than deleting it.
+//! true-rate logging into the meeting's `diagnostics`) is the OTHER half of
+//! this module, appended below when PR #130 rebased onto this file — a fixture
+//! generator, not a reference implementation. The two halves are deliberately
+//! independent: nothing above this line imports `meeting_asr`, and nothing
+//! below it is used to score the harness's own residual. That is what makes
+//! the YV109 gates a CROSS-CHECK of `HostTimeline` against an independent
+//! implementation rather than a measurement of the implementation by itself —
+//! the position this module's original header said would be strictly better
+//! than deleting it, now reached.
 //!
 //! ## The one thing this reference refuses to do
 //!
@@ -52,7 +53,11 @@
 
 use std::path::Path;
 
+use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan};
 use wilson_voice_lib::meeting::{plan_silence_splices, IndexRecord, TARGET_RATE};
+use wilson_voice_lib::meeting_asr::{
+    BoundaryKind, ChunkOutcome, ChunkStatus, MergedSpan, MEETING_RATE,
+};
 use wilson_voice_lib::meetings::{MeetingSegment, TranscriptLine};
 
 /// The horizon every residual in this phase is quoted at: the meeting hard cap
@@ -404,6 +409,355 @@ pub fn segments_from_host_spans(meeting_id: &str, spans: &[HostSpan]) -> Vec<Mee
             confidence: None,
             created_at: chrono::Utc::now(),
             track: s.track,
+        })
+        .collect()
+}
+
+// ============================================================================
+// YV107 — synthetic two-track FIXTURES (a generator, not a reference)
+// ============================================================================
+//
+// Everything below is derived from ONE model of the defect, stated once:
+//
+// * A track's device runs at `nominal x (1 + ppm/1e6)` real hertz.
+// * `IndexRecord::captured_samples` counts what the device DELIVERED, scaled
+//   onto the nominal rate — so after `t` real seconds it reads
+//   `nominal x (1 + ppm/1e6) x t`, which is more (or less) than `nominal x t`.
+// * `IndexRecord::host_ns` counts real nanoseconds, because it is stamped off
+//   the host clock rather than derived from samples.
+// * The finalized wav is what reached the disk plus what the repair put back —
+//   `spilled_samples + sum` of the splices `meeting::plan_silence_splices`
+//   planned up to that point (`meeting::finalized_positions`) — and the ASR
+//   times it at the NOMINAL rate, so on a clean track a word spoken at real
+//   second `t` is timestamped at `t x (1 + ppm/1e6)`: the drift, in one line.
+//   On a track that lost audio that reduces to `captured_samples`; on a track
+//   whose DEVICE stalled it does not, and `index_records_stalled` is the
+//   fixture for the difference.
+//
+// That last line is the bug OS-2 names, and it is GENERATED here rather than
+// asserted, so a test that passes because the fixture is flat cannot happen:
+// `local_seconds` is what the merge is fed, and `t` is what it must recover.
+
+/// The relative offset OS-2's acceptance criterion names. 100 ppm over the
+/// 3-hour cap is 1.08 s of skew — well past the 200 ms at which an interleave
+/// starts putting an answer before its question.
+pub const FIXTURE_PPM: f64 = 100.0;
+
+/// The plan's own cap, and the horizon the residual is asserted at. Aliased
+/// onto [`RESIDUAL_HORIZON_SECONDS`] rather than restated: two spellings of the
+/// 3-hour cap in one module is how the merge's budget and the harness's budget
+/// would eventually stop being the same number.
+pub const THREE_HOURS: f64 = RESIDUAL_HORIZON_SECONDS;
+
+/// The acceptance criterion's line, in seconds — [`RESIDUAL_BUDGET_MS`] in the
+/// unit this half of the module works in.
+pub const RESIDUAL_BUDGET_SECONDS: f64 = RESIDUAL_BUDGET_MS / 1000.0;
+
+/// Samples this track's device has delivered after `t` real seconds, as
+/// `captured_samples` counts them.
+pub fn captured_at(ppm: f64, t: f64) -> f64 {
+    MEETING_RATE as f64 * (1.0 + ppm / 1e6) * t
+}
+
+/// Where a word spoken at real second `t` lands on this track's OWN timeline —
+/// i.e. what the ASR will timestamp it as, because the finalized wav is timed at
+/// the nominal rate. This is the drifted number the merge has to undo.
+pub fn local_seconds(ppm: f64, t: f64) -> f64 {
+    captured_at(ppm, t) / MEETING_RATE as f64
+}
+
+/// One index record per host second, exactly as the capture consumer writes
+/// them ([`wilson_voice_lib::meeting::INDEX_INTERVAL`] is one second).
+///
+/// `spilled_samples` equals `captured_samples`: this fixture is about clocks,
+/// not about loss, and a divergence here would be testing
+/// `plan_silence_splices` instead.
+pub fn index_records(ppm: f64, seconds: u64) -> Vec<IndexRecord> {
+    (0..=seconds)
+        .map(|k| {
+            let captured = captured_at(ppm, k as f64).round() as u64;
+            IndexRecord {
+                host_ns: k * 1_000_000_000,
+                captured_samples: captured,
+                spilled_samples: captured,
+            }
+        })
+        .collect()
+}
+
+/// The same sequence, but the journal stopped accepting for a moment: the
+/// device kept delivering, the queue was full, and from `loss_at_second`
+/// onwards `spilled_samples` trails `captured_samples` by `loss_samples`.
+///
+/// This is the fixture that separates the two COUNTERS, and it separates them
+/// because the finalize does. The counter rule splices `captured − spilled`
+/// samples of silence into the wav at the point the loss happened, so here —
+/// and only here — the finalized track is `captured` samples long. A map keyed
+/// on `spilled_samples` shifts everything after the gap by the whole length of
+/// the gap, and nothing in a lossless fixture can tell the two apart.
+///
+/// It cannot show the other half of the finalize, and that is the point of
+/// [`index_records_stalled`]: this shape can never make `finalized` differ from
+/// `captured`, so a map keyed on `captured_samples` passes it, which is exactly
+/// how that keying survived review.
+///
+/// **`spilled_samples` only ever moves forward.** A journal that lost two
+/// seconds inside a one-second interval is not a thing that can happen — the
+/// counter would have to run backwards — so the deficit here opens at the rate
+/// the device delivers and stops at `loss_samples`, which spreads a loss longer
+/// than one interval across as many intervals as it really takes.
+pub fn index_records_lossy(
+    ppm: f64,
+    seconds: u64,
+    loss_at_second: u64,
+    loss_samples: u64,
+) -> Vec<IndexRecord> {
+    let opens_at = captured_at(ppm, loss_at_second.saturating_sub(1) as f64);
+    index_records(ppm, seconds)
+        .into_iter()
+        .enumerate()
+        .map(|(k, r)| {
+            let deficit = if (k as u64) < loss_at_second {
+                0
+            } else {
+                loss_samples.min((r.captured_samples as f64 - opens_at).max(0.0) as u64)
+            };
+            IndexRecord {
+                spilled_samples: r.spilled_samples.saturating_sub(deficit),
+                ..r
+            }
+        })
+        .collect()
+}
+
+/// The sequence a DEVICE STALL leaves behind: `host_ns` keeps advancing while
+/// **both** counters freeze, for `stall_seconds` starting at `stall_at_second`.
+///
+/// This is the shape [`index_records_lossy`] cannot express, and it is the one
+/// that decides how the host-time map must be keyed. No callback fires during a
+/// stall, so nothing counts anything: `captured − spilled` stays at zero, the
+/// counter rule sees a flawless recording, and only
+/// [`wilson_voice_lib::meeting::plan_silence_splices`]'s wall-clock rule
+/// notices — splicing the whole shortfall into the finalized wav, which comes
+/// out LONGER than `captured` by the length of the stall. Everything after it
+/// therefore sits `stall_seconds` further into the wav than `captured_samples`
+/// says, which is the residual a map keyed on `captured_samples` inherits.
+///
+/// It is also the routine case rather than the exotic one on track 1: a process
+/// tap delivers nothing at all whenever the tapped app is silent.
+pub fn index_records_stalled(
+    ppm: f64,
+    seconds: u64,
+    stall_at_second: u64,
+    stall_seconds: u64,
+) -> Vec<IndexRecord> {
+    (0..=seconds)
+        .map(|k| {
+            // Audio only exists for the host seconds the device was actually
+            // delivering in; the stall's seconds produced none.
+            let delivered = k as f64 - k.saturating_sub(stall_at_second).min(stall_seconds) as f64;
+            let captured = captured_at(ppm, delivered).round() as u64;
+            IndexRecord {
+                host_ns: k * 1_000_000_000,
+                captured_samples: captured,
+                spilled_samples: captured,
+            }
+        })
+        .collect()
+}
+
+/// The sequence a stream REOPEN leaves behind: `host_ns` restarts at zero on
+/// the new stream's first callback while BOTH counters keep running.
+///
+/// That is not a hypothetical shape, it is the shipped one.
+/// `record.rs::build_capture_stream` rebases `host_ns` to each stream build's
+/// own first callback — it has to, because `cpal` only defines
+/// `StreamInstant::duration_since` within one stream — and
+/// [`wilson_voice_lib::meeting::MeetingCapture::retune_track`], the documented
+/// handler for exactly this reopen (an AirPods swap on track 0, YV103's
+/// `RebuildAggregate` on track 1), deliberately carries `captured_samples`
+/// across the seam via its `captured_base`. So the wav is CONTINUOUS and the
+/// clock underneath it restarts.
+///
+/// **`post_seconds` longer than `pre_seconds` is the case that matters**, and it
+/// is the common one: a swap five minutes into a ninety-minute meeting, an
+/// aggregate rebuilt minutes in with hours left to run. A map that merely DROPS
+/// the backwards records recovers only until the new clock passes the old
+/// maximum, and then re-times the whole remainder of the meeting by the length
+/// of the pre-reopen run — which is why a fixture with a SHORT post-reopen run
+/// cannot fail and is therefore not a test.
+///
+/// The reopen itself is instantaneous here. Real dead air across a stream
+/// rebuild is audio that was never captured and is in neither clock's domain, so
+/// it is a separate, bounded, non-accumulating offset — see
+/// `a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else`.
+pub fn index_records_rebased(
+    pre_ppm: f64,
+    pre_seconds: u64,
+    post_ppm: f64,
+    post_seconds: u64,
+) -> Vec<IndexRecord> {
+    let mut records = index_records(pre_ppm, pre_seconds);
+    let (captured, spilled) = records
+        .last()
+        .map(|r| (r.captured_samples, r.spilled_samples))
+        .unwrap_or((0, 0));
+    records.extend(
+        index_records(post_ppm, post_seconds)
+            .into_iter()
+            .map(|r| IndexRecord {
+                host_ns: r.host_ns,
+                captured_samples: r.captured_samples + captured,
+                spilled_samples: r.spilled_samples + spilled,
+            }),
+    );
+    records
+}
+
+/// Where a word spoken at real second `t` lands on the timeline of a track that
+/// STALLED — i.e. what the ASR will timestamp it as, given the finalize spliced
+/// the stall back in as silence.
+///
+/// Two terms, and they are the whole point: the silence the repair inserted
+/// (nominal-rate, because that is the rate the wall-clock rule counts in) plus
+/// the audio the device actually delivered before and after it (drifted, at the
+/// device's own rate). Generated from the same model as
+/// [`index_records_stalled`] rather than asserted, so the fixture and the
+/// expectation cannot quietly agree on the wrong thing.
+pub fn local_seconds_stalled(ppm: f64, t: f64, stall_at: f64, stall_seconds: f64) -> f64 {
+    let silence = (t - stall_at).clamp(0.0, stall_seconds);
+    silence + local_seconds(ppm, t - silence)
+}
+
+/// One chunk holding `spans`, with a content range that owns all of them.
+///
+/// `merge_timed` keeps a span whose MIDPOINT falls inside the content range, so
+/// the range is stated explicitly rather than inferred: a fixture whose chunk
+/// silently dropped half its spans would make every downstream assertion pass
+/// vacuously.
+pub fn chunk(
+    index: usize,
+    content_start: f64,
+    content_end: f64,
+    start_boundary: BoundaryKind,
+    spans: Vec<TimedSpan>,
+) -> ChunkOutcome {
+    let text = spans
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    ChunkOutcome {
+        index,
+        audio_start_seconds: content_start,
+        content_start_seconds: content_start,
+        content_end_seconds: content_end,
+        start_boundary,
+        end_boundary: BoundaryKind::Silence,
+        status: ChunkStatus::Done,
+        text,
+        spans,
+        timestamp_kind: TimedKind::Word,
+        error: None,
+    }
+}
+
+/// A word on one track's own timeline, spoken at real second `t` for
+/// `duration` real seconds.
+pub fn word(ppm: f64, t: f64, duration: f64, text: &str) -> TimedSpan {
+    TimedSpan {
+        start_seconds: local_seconds(ppm, t),
+        end_seconds: local_seconds(ppm, t + duration),
+        text: text.to_string(),
+    }
+}
+
+/// `(speaker, text)` for every merged span, in the order the merge produced —
+/// the readable form of "who spoke when".
+pub fn turns(merged: &[MergedSpan]) -> Vec<(String, String)> {
+    merged
+        .iter()
+        .map(|s| (s.speaker.clone(), s.text.clone()))
+        .collect()
+}
+
+/// The worst |merged − truth| over a list of `(text, real_second)` expectations,
+/// in milliseconds.
+pub fn worst_residual_ms(merged: &[MergedSpan], truth: &[(&str, f64)]) -> f64 {
+    let mut worst = 0.0f64;
+    for (text, at) in truth {
+        let span = merged
+            .iter()
+            .find(|s| s.text == *text)
+            .unwrap_or_else(|| panic!("the merge dropped {text:?} entirely"));
+        worst = worst.max((span.start_seconds - at).abs() * 1000.0);
+    }
+    worst
+}
+
+/// A track whose device delivers in BURSTS: `silent_for` seconds of nothing in
+/// every `period` seconds, on an otherwise perfect `ppm` crystal.
+///
+/// This is not a fault fixture. It is the ORDINARY shape of the far side of a
+/// call — a process tap gets no callbacks at all while the tapped app is silent,
+/// which this PR's own documentation calls "the routine shape of the far side
+/// rather than a hardware fault" — and it is the shape that made
+/// `measure_true_rate` report −333,241 ppm on a crystal that never drifted, by
+/// leaving every silent second in the denominator and none of its audio in the
+/// numerator.
+///
+/// `host_ns` runs whatever the device does; `captured_samples` only advances in
+/// the seconds it delivered, which is exactly what a frozen counter looks like.
+pub fn index_records_bursty(
+    ppm: f64,
+    seconds: u64,
+    period: u64,
+    silent_for: u64,
+) -> Vec<IndexRecord> {
+    let mut delivered = 0.0f64;
+    (0..=seconds)
+        .map(|k| {
+            // Second `k` produced audio unless it fell inside the silent window
+            // of its period. Second 0 is the origin record and delivers nothing.
+            if k > 0 && (k - 1) % period.max(1) >= silent_for {
+                delivered += 1.0;
+            }
+            let captured = captured_at(ppm, delivered).round() as u64;
+            IndexRecord {
+                host_ns: k * 1_000_000_000,
+                captured_samples: captured,
+                spilled_samples: captured,
+            }
+        })
+        .collect()
+}
+
+/// Stamp a deterministic PAIRING SLACK onto a record sequence: up to ±10 ms
+/// between a record's `host_ns` and its `captured_samples`.
+///
+/// Every other fixture in this module is exact, which is what makes them good
+/// tests of arithmetic and useless as tests of RESOLUTION. Real records are not
+/// exact: `MeetingCapture::accept` stamps `host_ns` from the LAST anchor it
+/// drained and counts `captured_samples` over the whole block, so the pair
+/// carries up to about one callback period of slack. Inside one stretch of kept
+/// intervals that slack telescopes away; across many short stretches it does
+/// not, and it is the reason a chopped-up track cannot resolve a 50 ppm crystal
+/// band. The generator is an LCG rather than a real RNG so a failure is
+/// reproducible from the test name alone.
+pub fn with_pairing_slack(records: &[IndexRecord]) -> Vec<IndexRecord> {
+    records
+        .iter()
+        .enumerate()
+        .map(|(k, record)| {
+            let mut x = (k as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x ^= x >> 33;
+            let slack_ns = (x % 20_000_001) as i64 - 10_000_000;
+            IndexRecord {
+                host_ns: (record.host_ns as i64 + slack_ns).max(0) as u64,
+                ..*record
+            }
         })
         .collect()
 }

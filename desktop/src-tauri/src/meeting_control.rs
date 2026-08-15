@@ -78,6 +78,14 @@ pub struct CaptureOutcome {
     /// YV104 / YV106 — the tap's rebuild log as JSON, when the meeting needed a
     /// rebuild at all. `None` is the common case and stays `NULL` in the row.
     pub tap_rebuilds: Option<String>,
+    /// YV107 / OS-2 — each track's measured true rate, straight off the
+    /// finalize. Rides the `diagnostics` blob under `track_rates`, never a
+    /// column: it is exhaust nothing queries on, which is the policy migration 2
+    /// stated for that column when it introduced it.
+    ///
+    /// Empty when the meeting was too short to measure — "never measured" is not
+    /// "measured nothing".
+    pub track_rates: Vec<crate::meeting::TrackRate>,
     /// Seconds of audio actually captured (NOT wall time — a stalled device
     /// makes those two differ, and the honest one is this).
     pub seconds: f64,
@@ -514,7 +522,7 @@ impl MeetingController {
         let outcome = active.capture.stop();
         let battery_at_end = self.probe.battery();
 
-        let (duration, wav, sys_wav, tap_rebuilds, note, state) = match outcome {
+        let (duration, wav, sys_wav, tap_rebuilds, track_rates, note, state) = match outcome {
             Ok(o) => {
                 let state = if o.wav_path.is_some() && !o.partial {
                     // Capture landed WHOLE. YV93's transcription pipeline moves
@@ -539,6 +547,7 @@ impl MeetingController {
                     o.wav_path,
                     o.sys_wav_path,
                     o.tap_rebuilds,
+                    o.track_rates,
                     o.note,
                     state,
                 )
@@ -550,6 +559,7 @@ impl MeetingController {
                     None,
                     None,
                     None,
+                    Vec::new(),
                     Some(e),
                     MeetingState::Partial,
                 )
@@ -557,6 +567,10 @@ impl MeetingController {
         };
 
         if let Ok(mut d) = active.diagnostics.lock() {
+            // YV107 / OS-2 — BEFORE `finish`, because `finish` is what stamps
+            // the blob and the very next line is what writes it. A measurement
+            // banked after the write is a measurement nobody ever reads.
+            d.record_track_rates(&track_rates);
             d.finish(battery_at_end, reason);
             let _ = self.db.set_meeting_diagnostics(&active.id, &d.to_json());
         }
@@ -719,6 +733,7 @@ impl ActiveCapture for SessionCapture {
                         .wav_for_track(crate::meeting::SYSTEM_TRACK)
                         .cloned(),
                     tap_rebuilds,
+                    track_rates: finalized.track_rates.clone(),
                     seconds: finalized.seconds,
                     note: if notes.is_empty() {
                         None
@@ -735,6 +750,7 @@ impl ActiveCapture for SessionCapture {
                 wav_path: None,
                 sys_wav_path: None,
                 tap_rebuilds,
+                track_rates: Vec::new(),
                 seconds: 0.0,
                 note: Some("no audio reached disk for this meeting".to_string()),
                 partial: true,
