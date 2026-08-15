@@ -19,6 +19,9 @@ const CARGO_TOML: &str = include_str!("../Cargo.toml");
 /// own `ggml` through `llama-cpp-sys-2` — but it ships inside the same signed
 /// bundle, so its dependency pins are this app's supply chain too.
 const POLISH_CARGO_TOML: &str = include_str!("../../yap-polish/Cargo.toml");
+/// The workspace lockfile — the file that decides which code actually links,
+/// as opposed to which ranges the manifests would accept (YV100).
+const CARGO_LOCK: &str = include_str!("../../Cargo.lock");
 
 /// The CSP has to exist, and has to be the policy this app was verified
 /// against. Every allowance below is something the frontend genuinely loads
@@ -129,7 +132,9 @@ fn polish_sidecar_pins_llama_cpp_exactly() {
     let parts: Vec<&str> = exact.split('.').collect();
     assert_eq!(parts.len(), 3, "expected an exact x.y.z pin, got `{exact}`");
     assert!(
-        parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
         "expected an exact x.y.z pin, got `{exact}`"
     );
     // Metal is what keeps decode off the CPU; losing it silently triples the
@@ -152,6 +157,143 @@ fn polish_sidecar_pins_llama_cpp_exactly() {
         external.contains(&"binaries/yap-polish"),
         "yap-polish must be bundled as a sidecar, got {external:?}"
     );
+}
+
+/// The exact `=x.y.z` pin a manifest line carries, or a panic naming the crate.
+fn exact_pin(manifest: &str, crate_name: &str) -> String {
+    let line = manifest
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(&format!("{crate_name} = ")))
+        .unwrap_or_else(|| panic!("{crate_name} is not declared in Cargo.toml"));
+    let version = line
+        .split('"')
+        .nth(1)
+        .unwrap_or_else(|| panic!("{crate_name} has no version string: {line}"));
+    let exact = version
+        .strip_prefix('=')
+        .unwrap_or_else(|| panic!("{crate_name} must be pinned with `=`, got `{version}`"));
+    let parts: Vec<&str> = exact.split('.').collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "{crate_name}: expected x.y.z, got `{exact}`"
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "{crate_name}: expected x.y.z, got `{exact}`"
+    );
+    exact.to_string()
+}
+
+/// The version `Cargo.lock` resolved a crate to.
+fn locked_version(crate_name: &str) -> String {
+    let needle = format!("name = \"{crate_name}\"");
+    let mut lines = CARGO_LOCK.lines().map(str::trim);
+    while let Some(line) = lines.next() {
+        if line == needle {
+            let version = lines
+                .next()
+                .unwrap_or_else(|| panic!("{crate_name} has no version line in Cargo.lock"));
+            return version
+                .strip_prefix("version = \"")
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("unparsable Cargo.lock version line: {version}"))
+                .to_string();
+        }
+    }
+    panic!("{crate_name} is not in Cargo.lock — the aggregate/tap FFI cannot link without it");
+}
+
+/// YV100 (plan finding OS-6). `objc2-core-audio` is what stands between Yap and
+/// hand-rolled `AudioHardwareCreateProcessTap` FFI, and it is the crate that
+/// carries the macOS **14.4** symbol set YV101 weak-links. Two things have to be
+/// true, and the finding is explicit that asserting only the first makes the
+/// pin decorative:
+///
+/// 1. **The pin is exact.** A caret range lets `cargo update` move the symbol
+///    set under a signed, notarized bundle with no reviewable diff.
+/// 2. **The feature set is intact.** The crate ships 13 features with 12
+///    default-on, and `AudioHardwareCreateProcessTap` is gated on
+///    `AudioHardware` + `objc2` while `AudioDeviceCreateIOProcIDWithBlock` is
+///    gated on `block2` + `dispatch2` + `objc2-core-audio-types`. A
+///    `default-features = false` anywhere in the graph deletes those symbols,
+///    and the failure surfaces as a compile error in a file nobody edited.
+///
+/// The block/queue/buffer crates are the finding's correction #1: they arrive
+/// transitively through the default features and land in `Cargo.lock` on their
+/// own. `syscapture.rs` names them directly (Rust cannot name a crate that is
+/// not declared), so they are pinned here too — and this test asserts the
+/// LOCKFILE agrees with those pins, which is the thing that decides what links.
+#[test]
+fn syscapture_pins_objc2_core_audio_exactly_and_asserts_its_feature_set() {
+    let core_audio = exact_pin(CARGO_TOML, "objc2-core-audio");
+    assert_eq!(
+        core_audio, "0.3.2",
+        "the tap was verified symbol-by-symbol against 0.3.2; re-verify before moving it"
+    );
+    assert_eq!(locked_version("objc2-core-audio"), core_audio);
+
+    // The feature set. Not one dependency in this manifest may turn the default
+    // features of these crates off — that is the switch that deletes the tap.
+    for line in CARGO_TOML.lines().map(str::trim) {
+        for crate_name in [
+            "objc2-core-audio",
+            "objc2-core-audio-types",
+            "block2",
+            "dispatch2",
+        ] {
+            if line.starts_with(&format!("{crate_name} = ")) {
+                assert!(
+                    !line.contains("default-features = false"),
+                    "{crate_name} must keep its default features — `AudioHardware`, `objc2`, \
+                     `block2`, `dispatch2` and `objc2-core-audio-types` are all default-on and \
+                     all load-bearing: {line}"
+                );
+                assert!(
+                    !line.contains("git = ") && !line.contains("path = "),
+                    "{crate_name} must come from crates.io: {line}"
+                );
+            }
+        }
+    }
+
+    // Correction #1: the block, the queue and the buffer/timestamp types the
+    // IOProc registration needs, at versions inside the ranges
+    // `objc2-core-audio` 0.3.2 itself declares
+    // (block2 ">=0.6.1, <0.8.0", dispatch2 ">=0.3.0, <0.5.0",
+    // objc2-core-audio-types "0.3.2").
+    let block2 = locked_version("block2");
+    assert_eq!(exact_pin(CARGO_TOML, "block2"), block2);
+    let (major, minor) = split_major_minor(&block2);
+    assert!(
+        major == 0 && (6..8).contains(&minor),
+        "block2 {block2} is outside the >=0.6.1, <0.8.0 range objc2-core-audio 0.3.2 declares"
+    );
+
+    let dispatch2 = locked_version("dispatch2");
+    assert_eq!(exact_pin(CARGO_TOML, "dispatch2"), dispatch2);
+    let (major, minor) = split_major_minor(&dispatch2);
+    assert!(
+        major == 0 && (3..5).contains(&minor),
+        "dispatch2 {dispatch2} is outside the >=0.3.0, <0.5.0 range objc2-core-audio 0.3.2 declares"
+    );
+
+    let types = locked_version("objc2-core-audio-types");
+    assert_eq!(exact_pin(CARGO_TOML, "objc2-core-audio-types"), types);
+    assert_eq!(
+        types, "0.3.2",
+        "objc2-core-audio 0.3.2 declares objc2-core-audio-types 0.3.2"
+    );
+}
+
+fn split_major_minor(version: &str) -> (u32, u32) {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    (major, minor)
 }
 
 /// Every `git = ` dependency must carry `rev = `. Cargo.lock pins the build
@@ -182,4 +324,75 @@ fn git_dependencies_are_pinned_to_a_rev() {
         );
     }
     assert!(checked >= 2, "expected the git deps to still be here");
+}
+
+/// THE TWO COPIES OF THE GATED-SYMBOL LIST MUST BE ONE LIST.
+///
+/// `scripts/assert-weak-linked-14_4-symbols.sh` (YV101) is what actually stands
+/// over the release binary in CI, and `imp::AVAILABILITY_GATED_SYMBOLS` (YV100)
+/// is what `dlsym` resolves at runtime and refuses on. They are the same four
+/// names written twice, in two languages, and neither one can see the other.
+///
+/// Drift between them is silent in the worst possible direction. Add a fifth
+/// availability-gated entry point to the Rust side and forget the script, and CI
+/// keeps printing `PASS` while the new symbol goes into the binary as a hard
+/// import — which is not a broken feature but a **launch failure of the whole
+/// app** on every macOS that lacks it. The check would be green, and Yap would
+/// not open.
+///
+/// This test existed on this branch as `tests/syscapture_no_hard_link.rs`,
+/// against this branch's own copy of the script. YV101's script superseded that
+/// copy and the file went with it; the assertion is the part that was worth
+/// keeping, so it lives here — next to the other "the build must not quietly
+/// change under us" checks — rather than being lost to a clean rebase.
+#[test]
+fn the_weak_link_ci_script_and_the_dlsym_list_are_the_same_four_symbols() {
+    let script_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("repo root")
+        .join("scripts/assert-weak-linked-14_4-symbols.sh");
+    let script = std::fs::read_to_string(&script_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", script_path.display()));
+
+    // The script names them with the Mach-O leading underscore; the Rust
+    // constant carries the C names. Compare as sets of C names.
+    let mut from_script: Vec<String> = script
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("_AudioHardware"))
+        .map(|l| l.trim_start_matches('_').to_string())
+        .collect();
+    from_script.sort();
+    from_script.dedup();
+
+    let mut from_rust: Vec<String> = wilson_voice_lib::syscapture::imp::AVAILABILITY_GATED_SYMBOLS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    from_rust.sort();
+
+    assert_eq!(
+        from_script, from_rust,
+        "the CI weak-link script and `imp::AVAILABILITY_GATED_SYMBOLS` name different \
+         symbols. Whichever one gained a name, the other must gain it too — a gated \
+         symbol the script does not check can ship as a hard import with CI green, and \
+         a hard import of a symbol the running macOS lacks is a dyld launch failure for \
+         the entire app.\nscript: {from_script:?}\nrust:   {from_rust:?}"
+    );
+
+    // Non-vacuous in both directions: an empty parse would make the assertion
+    // above pass against an empty Rust list, and a script that stopped naming
+    // them at all is exactly the regression this guards.
+    assert_eq!(
+        from_rust.len(),
+        4,
+        "four availability-gated entry points are expected: {from_rust:?}"
+    );
+    assert!(
+        script.contains("PASS")
+            && script.contains("_AudioHardwareCreateProcessTap")
+            && script.contains("_AudioHardwareDestroyAggregateDevice"),
+        "the script no longer reads like the weak-link checker this test is pinned to"
+    );
 }

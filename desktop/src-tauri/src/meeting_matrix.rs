@@ -395,9 +395,19 @@ pub const ROWS: &[MatrixRow] = &[
         // is unreachable in the app. A tap that cannot exist cannot die, and a
         // `Test` cell here would be read as "Yap survives losing the call's
         // audio", which is a sentence about a track Yap does not yet capture.
+        //
+        // YV100 update: `start_system_tap` now EXISTS (#123 merged) and still has
+        // no caller — the tap module ships deliberately unwired, which is its own
+        // spec's wording. So this row moves from "a named PR brings the wiring"
+        // to "nothing calls it", which is the stronger of the two cells: an
+        // unowned `PolicyOnly` row is the one `matrix_coverage`'s standing
+        // tripwire re-checks on every commit. No item in the 22-B backlog owns
+        // starting the tap inside a real meeting, and publishing a merged PR as
+        // the pending owner would have been a cell that reads as progress and
+        // describes none.
         coverage: Coverage::PolicyOnly {
             test: "matrix_row2_tap_revoked_mid_meeting.rs",
-            wiring_pr: Some("#123 (YV100)"),
+            wiring_pr: None,
             absent_call_site: "start_system_tap",
         },
     },
@@ -1070,7 +1080,7 @@ mod tests {
     /// merges without promoting its rows shows up as a stale `Some` a reader
     /// can act on rather than a claim nobody re-checks.
     #[test]
-    fn the_rows_nobody_owns_are_5b_16_17b_and_3() {
+    fn the_rows_nobody_owns_are_5b_16_17b_3_and_2() {
         let unowned: Vec<&str> = ROWS
             .iter()
             .filter(|r| {
@@ -1084,7 +1094,12 @@ mod tests {
             })
             .map(|r| r.id)
             .collect();
-        assert_eq!(unowned, vec!["5b", "16", "17b", "3"]);
+        // Row 2 joined this set when YV100 (#123) merged: the tap module ships,
+        // nothing calls `start_system_tap`, and no item in the 22-B backlog owns
+        // starting it inside a real meeting. Naming a merged PR as the thing
+        // still to come would be the stale `Some` this test's own doc comment
+        // describes — visible, but read by a hurrying reader as progress.
+        assert_eq!(unowned, vec!["5b", "16", "17b", "2", "3"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1096,11 +1111,21 @@ mod tests {
                 _ => None,
             })
             .collect();
+        // Row 14 KEEPS `#123 (YV100)` on purpose, and it is the stale `Some`
+        // this test's doc comment predicted rather than an oversight. YV103
+        // shipped `InputFormatWatch::watch_output` and could not wire it,
+        // because `syscapture.rs` was not on `main` to wire it to; #123 merging
+        // is what makes that wiring possible, and it is not in #123's scope —
+        // that PR is explicit, in its spec and in its body, that nothing calls
+        // the tap. So the row is still waiting, its named owner has landed, and
+        // the pair below is the signal a reader acts on. Row 2 could not stay
+        // here: its cell asserts that the *enforcement* arrives with the PR,
+        // and `start_system_tap` did arrive — it just has no caller, which is
+        // what `wiring_pr: None` says and this cell does not.
         assert_eq!(
             owned,
             vec![
                 ("1", "#125 (YV102)"),
-                ("2", "#123 (YV100)"),
                 ("12b", "#125 (YV102)"),
                 ("14", "#123 (YV100)"),
             ]

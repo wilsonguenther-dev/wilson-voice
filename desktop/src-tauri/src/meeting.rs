@@ -1498,6 +1498,19 @@ impl RtCapture {
         self.panicked.load(Ordering::Relaxed)
     }
 
+    /// YV100: raise the same flag from OUTSIDE `rt_capture_callback`.
+    ///
+    /// 22-B's tap IOProc has a step the mic callback does not — decoding
+    /// CoreAudio's `AudioBufferList` into the slice this callback is handed —
+    /// and that step runs inside the same `extern "C-unwind"` boundary, where an
+    /// unwind is undefined behaviour rather than a `Result`. So
+    /// `syscapture::tap_ioproc_guarded` wraps the WHOLE block body and reports
+    /// here. One flag, not two: YV104's watchdog reads
+    /// [`RtCapture::callback_panicked`] and does not care which half unwound.
+    pub fn note_callback_panic(&self) {
+        self.panicked.store(true, Ordering::Relaxed);
+    }
+
     /// Interleaved samples the ring could not hold — the consumer fell behind.
     pub fn overruns(&self) -> u64 {
         self.samples.overruns()

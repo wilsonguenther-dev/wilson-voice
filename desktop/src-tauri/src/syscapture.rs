@@ -1,3 +1,145 @@
+//! YV100 — the CoreAudio process tap (yap22-B), **global-exclude-self**, feeding
+//! the 22-A real-time ring verbatim.
+//!
+//! This is Track B: the audio the *other* people on the call make, captured from
+//! the Mac's own output path rather than from the microphone. It is a macOS 14.4+
+//! process tap over an aggregate device, which is the same substrate AudioCap and
+//! Recall.ai use, and it is deliberately the *only* thing in this file that is
+//! new — the callback body, the ring, the anchor and the session plumbing all
+//! already exist for the mic path and are reused, not re-derived.
+//!
+//! ## Three decisions this module is built around
+//!
+//! **1. Global-exclude-self only — never app-scoped (plan finding OS-5).** The
+//! obvious design is `initMonoMixdownOfProcesses([zoom_pid])`: tap *only* Zoom.
+//! The panel killed it for v1 and the reason is not taste. Browsers, Electron
+//! apps and Zoom itself render audio through *helper* processes; Google Meet in
+//! Chrome plays through Chrome's audio-service helper, and
+//! `NSRunningApplication.processIdentifier` hands back the UI PID, which produces
+//! no audio at all. An app-scoped tap built that way is legitimately, permanently
+//! silent — and a permanently silent tap is **indistinguishable** from a TCC
+//! denial and from OS-4's all-zero ghost-tap bug. Three failure modes collapsing
+//! onto one symptom is the largest silent-failure surface in the whole design,
+//! and collapsing them would also destroy YV104's discriminator ("did this tap
+//! *ever* deliver a non-zero sample?"), which is the only honest way to tell a
+//! denial from a wedge without a private API.
+//!
+//! So: [`CATapDescription::initMonoGlobalTapButExcludeProcesses`] with exactly
+//! one exclusion — us. No PID resolution for a *target*, no
+//! `kAudioHardwarePropertyProcessObjectList` enumeration, no re-enumeration
+//! listener. The accepted cost, stated out loud: Spotify and notification chimes
+//! land in the meeting track. That is the same trade §2.1 already accepted when
+//! it rejected ScreenCaptureKit.
+//!
+//! The one PID translation that *is* honest is our own — and it is a hard
+//! requirement, not a nicety. An **empty** exclusion list is not "exclude
+//! nothing safely", it is a global tap that includes Yap's own output, i.e. the
+//! meeting recording feeding itself. [`exclusion_list`] therefore refuses to
+//! build a description at all when our own process object cannot be resolved.
+//! This is the same class of silent inversion OS-1 warns about with the
+//! `exclusive` flag: the failure looks like a working tap.
+//!
+//! **2. The IOProc body is the 22-A ring, verbatim (OS-7).** `rtring.rs` says so
+//! in its own doc comment — *"built ONCE here for the mic path so 22-B reuses it
+//! verbatim rather than growing a second copy"*. So the block does exactly what
+//! the mic callback does: [`crate::meeting::rt_capture_callback`], nothing else.
+//! No DSP, no allocation, no lock, no logging. The constraint is *stricter* here
+//! than on the mic thread, because the aggregate's main sub-device is the user's
+//! real output device — a missed IOProc deadline is a glitch in the call the user
+//! is listening to, not merely a defect in the recording.
+//!
+//! The one thing the block does that is *not* a straight copy of the mic
+//! callback is the timestamp conversion, and it exists precisely so the anchor
+//! that comes out is the same: CoreAudio hands the block `mHostTime`, absolute
+//! mach ticks since boot, while `CaptureAnchor::host_ns` is a nanosecond clock
+//! **rebased to each stream's own first callback** (`record.rs` does the
+//! rebase with `duration_since`; `meeting.rs`'s splice planner spells the
+//! convention out). [`TapClock`] is that conversion, and
+//! `tests/syscapture_ioproc_rt_safety.rs` drives it — not a stand-in — to check
+//! both halves of the claim: first anchor `0`, and no allocation on the way
+//! there. Without it the two tracks would be an uptime apart in YV106's merge,
+//! and nothing single-track would notice.
+//!
+//! **3. The FFI is `extern "C-unwind"` (OS-6, correction #2).** A Rust panic
+//! inside the block unwinds *into CoreAudio's real-time thread*: undefined
+//! behaviour and a HAL-level process kill, not a `Result`. Everything the block
+//! does — including the `AudioBufferList` decode that produces the slice — runs
+//! inside [`tap_ioproc_guarded`], which catches, sets the atomic flag YV104's
+//! watchdog reads, and returns normally.
+//!
+//! ## Structure: pure state machine, thin platform
+//!
+//! Same split `sysaudio.rs`'s `restore_plan` established in this codebase. The
+//! *order of operations* — create tap, read UID and format, resolve the default
+//! output, compose the aggregate dictionary, create the IOProc, start; and on
+//! every exit path stop → destroy IOProc → destroy aggregate → destroy tap — is
+//! a pure state machine over the [`TapPlatform`] trait, so `cargo test` proves it
+//! with **zero audio hardware and no TCC grant**. The real CoreAudio calls live
+//! in [`imp`] behind that trait and are the only part that needs a Mac with a
+//! permission dialog.
+//!
+//! That teardown order is not stylistic either. Apple's own forum guidance for
+//! the ghost-tap bug is that restarting the IOProc alone, or recreating only the
+//! aggregate device, is *not* reliable — both the process tap and the aggregate
+//! device must be destroyed and recreated. YV104's 7-step rebuild is literally
+//! this teardown followed by this setup, which is why it is written once, here,
+//! and asserted by `tests/syscapture_teardown_order.rs`.
+//!
+//! ## What this item does NOT do
+//!
+//! * **No user-facing OS gate yet.** The visible, honest affordance ("System
+//!   audio capture requires macOS 14.4 or later"), the `ProcessInfo` version
+//!   read, `NSAudioCaptureUsageDescription` and the signed-build TCC acceptance
+//!   are **YV101**, and until they land nothing in the app calls
+//!   [`imp::start_system_tap`].
+//!
+//!   What is **not** deferred is the *linkage* floor, because deferring it was
+//!   wrong: `AudioHardwareCreateProcessTap`/`…DestroyProcessTap` are macOS 14.4
+//!   symbols and `AudioHardwareCreate/DestroyAggregateDevice` are 13.0 symbols,
+//!   and dyld binds imports at **load** time — before any Rust runs, and
+//!   entirely independent of whether a call site exists. A hard import of any of
+//!   the four is therefore not "a broken Notetaker on macOS 12/13", it is *Yap
+//!   failing to launch at all* for every one of those users, dictation and all.
+//!   So [`imp`] resolves those four through `dlsym` and the `CATapDescription`
+//!   class through the ObjC runtime, refusing with
+//!   [`TapError::ProcessTapApiUnavailable`] when they are absent.
+//!
+//!   That alone is not enough, and the reason is worth knowing: **cpal 0.18.1
+//!   calls the same four symbols itself** (`src/host/coreaudio/macos/loopback.rs`),
+//!   from an object the microphone path keeps alive, so `origin/main` — with no
+//!   process tap in it at all — already hard-imported them. `build.rs` therefore
+//!   also links CoreAudio with `-weak_framework`, which turns every CoreAudio
+//!   import in the binary weak: dyld binds the missing ones to NULL on macOS
+//!   12/13 and the app launches. Yap never asks cpal for a loopback device, and
+//!   [`imp`] null-checks before it calls, so nothing dereferences a NULL
+//!   binding. `scripts/assert-weak-linked-14_4-symbols.sh` (YV101, which landed this
+//!   check while this item was in review) asserts the outcome on the real
+//!   release binary in CI. `minimumSystemVersion` stays `"12.0"` (OS-11).
+//! * **No second DSP/epoch pipeline.** Per-track DSP, journal track 1 and the
+//!   two-track merge are **YV106**. This item stops at "the tap reliably delivers
+//!   frames + anchors into the ring, with a clean teardown".
+//! * **No TCC pre-warm UX** (YV102) and **no device-change guard** (YV103).
+//!   The silence watchdog (YV104) is in this file, below, but nothing wires the
+//!   two halves together yet — `CaptureEnv::tap_liveness` still returns `None`
+//!   for every shipping env, exactly as YV104 and YV105 both say out loud.
+//!
+//! ---
+//!
+//! # Two items, one module: the tap (YV100) and its watchdog (YV104)
+//!
+//! `syscapture.rs` landed in two pieces and in the reverse of the order they
+//! read. YV104's zero-buffer ghost watchdog merged to `main` first, while this
+//! item — the tap it watches — was still in review; the doc comment that
+//! follows was written in that world and its own words for the arrangement were
+//! *"YV100 binds its FFI to this list instead of writing a second copy that can
+//! drift from it."* That is now literally true rather than a plan:
+//! [`teardown`] runs the first four entries of [`full_rebuild_sequence`], and
+//! `syscapture_teardown_order`'s `the_teardown_order_is_the_first_four_steps_of_the_one_declared_rebuild`
+//! fails if the two ever diverge. The tap half of the file grew its own
+//! `TeardownStep` enum while the two branches were apart — a textually clean
+//! rebase that would have shipped exactly the drift the comment warned about —
+//! and that enum is gone: there is one [`TapStep`], one order, one declaration.
+//!
 //! YV104 — the zero-buffer ghost watchdog for the system-audio process tap
 //! (plan finding OS-4).
 //!
@@ -114,8 +256,8 @@
 //! This module is **pure**: state in, action out, no CoreAudio, no FFI, no
 //! allocation on any audio thread. The actual `AudioHardwareCreateProcessTap`
 //! call sequence, the IOProc block and the aggregate-device dictionary are
-//! YV100's, and YV100 is not merged at this commit. What this item lands for it
-//! is [`full_rebuild_sequence`] — the seven steps in the one order every exit
+//! YV100's, and they are now in this same file, above. What this item landed
+//! for it is [`full_rebuild_sequence`] — the seven steps in the one order every exit
 //! path uses, declared **once**, in this file, so YV100 binds its FFI to this
 //! list instead of writing a second copy that can drift from it. YV103's
 //! `FormatChangeAction::RebuildAggregate` already names this same sequence as
@@ -126,8 +268,14 @@
 //! the build if a meeting-path module contains a URL — the standing proof
 //! behind the phase's "records with Wi-Fi off" claim.)
 
+use std::cell::RefCell;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::meeting::{ExternalStream, RtCapture, SessionConfig};
 use crate::rtring::CaptureAnchor;
 
 // ── Budgets and thresholds, each declared exactly once ──────────────────────
@@ -1222,9 +1370,1529 @@ impl GhostWatchdog {
     }
 }
 
+// ── The aggregate-device composition dictionary (pure) ──────────────────────
+
+/// The CoreAudio dictionary keys the aggregate device is composed from.
+///
+/// These are string keys, not four-char codes, and a typo in one of them is a
+/// silent misconfiguration rather than a compile error: CoreAudio ignores keys
+/// it does not recognise, so `"tapautostart"` misspelled produces an aggregate
+/// device that is created successfully and never starts its tap. They are
+/// spelled out here so the pure builder can be tested without linking
+/// CoreAudio, and `coreaudio_aggregate_key_names` reads the *real* constants
+/// back out of `objc2-core-audio` so the test can prove the two agree.
+pub mod keys {
+    /// `kAudioAggregateDeviceUIDKey`
+    pub const AGGREGATE_UID: &str = "uid";
+    /// `kAudioAggregateDeviceNameKey`
+    pub const AGGREGATE_NAME: &str = "name";
+    /// `kAudioAggregateDeviceIsPrivateKey` — a private aggregate is not shown to
+    /// other apps and disappears with the process that made it, which is what
+    /// keeps a crashed Yap from leaving a phantom device in Audio MIDI Setup.
+    pub const IS_PRIVATE: &str = "private";
+    /// `kAudioAggregateDeviceMainSubDeviceKey`
+    pub const MAIN_SUB_DEVICE: &str = "master";
+    /// `kAudioAggregateDeviceSubDeviceListKey`
+    pub const SUB_DEVICE_LIST: &str = "subdevices";
+    /// `kAudioAggregateDeviceTapListKey`
+    pub const TAP_LIST: &str = "taps";
+    /// `kAudioAggregateDeviceTapAutoStartKey`
+    pub const TAP_AUTO_START: &str = "tapautostart";
+    /// `kAudioSubDeviceUIDKey`
+    pub const SUB_DEVICE_UID: &str = "uid";
+    /// `kAudioSubTapUIDKey`
+    pub const SUB_TAP_UID: &str = "uid";
+}
+
+/// The four inputs the composition dictionary is a pure function of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateSpec {
+    /// A UID we invent for our own private aggregate device.
+    pub aggregate_uid: String,
+    /// Human-readable name. Private devices are not listed anywhere the user
+    /// looks, but a crash report or a `coreaudiod` log will name it.
+    pub aggregate_name: String,
+    /// The UID of the CURRENT default output device — the aggregate's main sub
+    /// device. Reading this at compose time (rather than caching it) is what
+    /// YV103's device-change guard will re-run on an output switch.
+    pub output_uid: String,
+    /// The UID of the process tap created just before this call.
+    pub tap_uid: String,
+}
+
+/// A CoreFoundation dictionary value, as far as this composition needs one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictValue {
+    Str(String),
+    Bool(bool),
+    List(Vec<DictValue>),
+    Dict(Vec<(String, DictValue)>),
+}
+
+/// The aggregate-device description CoreAudio expects, as an ordered key/value
+/// list. Pure: no FFI, no hardware, no TCC.
+///
+/// `tapautostart: true` is what makes the tap begin delivering as soon as the
+/// device does, rather than waiting for a separate start that this design never
+/// issues. `private: true` keeps the device out of every other app's device
+/// list. The tap rides in `taps` as a one-element list of `{uid: <tap uid>}`,
+/// which is the shape the sub-tap keys describe — a bare string there is
+/// accepted and silently ignored.
+pub fn aggregate_description(spec: &AggregateSpec) -> Vec<(String, DictValue)> {
+    vec![
+        (
+            keys::AGGREGATE_UID.to_string(),
+            DictValue::Str(spec.aggregate_uid.clone()),
+        ),
+        (
+            keys::AGGREGATE_NAME.to_string(),
+            DictValue::Str(spec.aggregate_name.clone()),
+        ),
+        (keys::IS_PRIVATE.to_string(), DictValue::Bool(true)),
+        (
+            keys::MAIN_SUB_DEVICE.to_string(),
+            DictValue::Str(spec.output_uid.clone()),
+        ),
+        (
+            keys::SUB_DEVICE_LIST.to_string(),
+            DictValue::List(vec![DictValue::Dict(vec![(
+                keys::SUB_DEVICE_UID.to_string(),
+                DictValue::Str(spec.output_uid.clone()),
+            )])]),
+        ),
+        (
+            keys::TAP_LIST.to_string(),
+            DictValue::List(vec![DictValue::Dict(vec![(
+                keys::SUB_TAP_UID.to_string(),
+                DictValue::Str(spec.tap_uid.clone()),
+            )])]),
+        ),
+        (keys::TAP_AUTO_START.to_string(), DictValue::Bool(true)),
+    ]
+}
+
+/// The same key names, read back out of `objc2-core-audio`'s own constants.
+///
+/// This exists for exactly one assertion: that [`keys`] is not a set of
+/// plausible-looking typos. Returned in the order [`aggregate_description`]
+/// writes them.
+#[cfg(target_os = "macos")]
+pub fn coreaudio_aggregate_key_names() -> Vec<&'static str> {
+    use objc2_core_audio::{
+        kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceMainSubDeviceKey,
+        kAudioAggregateDeviceNameKey, kAudioAggregateDeviceSubDeviceListKey,
+        kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
+        kAudioAggregateDeviceUIDKey, kAudioSubDeviceUIDKey, kAudioSubTapUIDKey,
+    };
+    [
+        kAudioAggregateDeviceUIDKey,
+        kAudioAggregateDeviceNameKey,
+        kAudioAggregateDeviceIsPrivateKey,
+        kAudioAggregateDeviceMainSubDeviceKey,
+        kAudioAggregateDeviceSubDeviceListKey,
+        kAudioAggregateDeviceTapListKey,
+        kAudioAggregateDeviceTapAutoStartKey,
+        kAudioSubDeviceUIDKey,
+        kAudioSubTapUIDKey,
+    ]
+    .iter()
+    .map(|k| k.to_str().expect("CoreAudio keys are ASCII"))
+    .collect()
+}
+
+/// The same names [`keys`] declares, in the same order
+/// [`coreaudio_aggregate_key_names`] returns them.
+pub fn declared_aggregate_key_names() -> Vec<&'static str> {
+    vec![
+        keys::AGGREGATE_UID,
+        keys::AGGREGATE_NAME,
+        keys::IS_PRIVATE,
+        keys::MAIN_SUB_DEVICE,
+        keys::SUB_DEVICE_LIST,
+        keys::TAP_LIST,
+        keys::TAP_AUTO_START,
+        keys::SUB_DEVICE_UID,
+        keys::SUB_TAP_UID,
+    ]
+}
+
+// ── Errors ─────────────────────────────────────────────────────────────────
+
+/// Which CoreAudio call failed. Carried in the error so a log line names the
+/// step rather than an `OSStatus` on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapStage {
+    CreateTap,
+    ReadTapUid,
+    ReadTapFormat,
+    /// Not a CoreAudio call — the one place the format the tap *actually*
+    /// delivers is bound to the [`RtCapture`] that stamps every anchor from it.
+    /// It is a stage rather than a bare `?` because it is a real exit path with
+    /// a real teardown obligation: the tap exists by this point.
+    BindCapture,
+    ResolveDefaultOutput,
+    CreateAggregate,
+    CreateIoProc,
+    Start,
+}
+
+impl TapStage {
+    pub fn call(self) -> &'static str {
+        match self {
+            TapStage::CreateTap => "AudioHardwareCreateProcessTap",
+            TapStage::ReadTapUid => "kAudioTapPropertyUID",
+            TapStage::ReadTapFormat => "kAudioTapPropertyFormat",
+            TapStage::BindCapture => "bind kAudioTapPropertyFormat to the capture ring",
+            TapStage::ResolveDefaultOutput => "kAudioHardwarePropertyDefaultOutputDevice",
+            TapStage::CreateAggregate => "AudioHardwareCreateAggregateDevice",
+            TapStage::CreateIoProc => "AudioDeviceCreateIOProcIDWithBlock",
+            TapStage::Start => "AudioDeviceStart",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TapError {
+    /// Our own process object could not be resolved, so the exclusion list would
+    /// be empty — which is not "exclude nothing", it is a global tap that records
+    /// Yap recording. Refused. See the module docs.
+    SelfProcessObjectUnavailable,
+    /// A CoreAudio call returned a non-zero `OSStatus`.
+    Os { stage: TapStage, status: i32 },
+    /// Setup unwound. The FFI boundary is `extern "C-unwind"`, so this is caught
+    /// rather than propagated; the resources that existed at that moment were
+    /// torn down in the canonical order before this was returned.
+    PanicDuringSetup { stage: TapStage },
+    /// This OS has no process-tap API at all: `dlsym` found no
+    /// `AudioHardwareCreateProcessTap` (or one of the other three
+    /// availability-gated entry points, or the `CATapDescription` class) in the
+    /// running process. That is macOS 12/13, and it is a *linkage* fact, not a
+    /// user-facing verdict — the honest, visible "System audio capture requires
+    /// macOS 14.4 or later" affordance is YV101's `MeetingUnavailable` gate.
+    /// This variant exists so the symbols are resolved once, checked once, and
+    /// never called through a null pointer.
+    ProcessTapApiUnavailable { symbol: &'static str },
+    /// The tap delivers one format and the [`RtCapture`] stamping its anchors
+    /// was built for another. Refused before a single sample is stamped —
+    /// see [`capture_matches_format`] for why this is fatal rather than
+    /// cosmetic.
+    CaptureFormatMismatch {
+        tap_sample_rate: u32,
+        tap_channels: u16,
+        capture_sample_rate: u32,
+        capture_channels: u16,
+    },
+}
+
+impl std::fmt::Display for TapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TapError::SelfProcessObjectUnavailable => write!(
+                f,
+                "could not resolve Yap's own audio process object — refusing to \
+                 build a tap that would record Yap itself"
+            ),
+            TapError::Os { stage, status } => write!(
+                f,
+                "{} failed with OSStatus {status} ({})",
+                stage.call(),
+                fourcc(*status)
+            ),
+            TapError::PanicDuringSetup { stage } => {
+                write!(f, "panicked during {}", stage.call())
+            }
+            TapError::ProcessTapApiUnavailable { symbol } => write!(
+                f,
+                "this macOS build has no process-tap API ({symbol} is not present \
+                 in the running process) — system audio capture needs macOS 14.4 \
+                 or later"
+            ),
+            TapError::CaptureFormatMismatch {
+                tap_sample_rate,
+                tap_channels,
+                capture_sample_rate,
+                capture_channels,
+            } => write!(
+                f,
+                "the tap delivers {tap_sample_rate} Hz / {tap_channels} ch but the \
+                 capture ring stamping its anchors was built for \
+                 {capture_sample_rate} Hz / {capture_channels} ch — refusing to \
+                 stamp a sample axis that is wrong by construction"
+            ),
+        }
+    }
+}
+
+/// CoreAudio statuses are usually four-char codes. Rendering both spellings is
+/// the difference between a searchable log line and a bare negative number.
+fn fourcc(status: i32) -> String {
+    let bytes = (status as u32).to_be_bytes();
+    if bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        format!("'{}'", String::from_utf8_lossy(&bytes))
+    } else {
+        format!("0x{:08x}", status as u32)
+    }
+}
+
+// ── The platform seam ──────────────────────────────────────────────────────
+
+/// The tap's native format, as reported by `kAudioTapPropertyFormat`.
+///
+/// Read from the tap rather than assumed: a mono global tap is 1 channel, but
+/// the rate follows the output device and an AirPods swap moves it (OS-9). The
+/// [`crate::rtring::CaptureAnchor`] carries the rate per callback for exactly
+/// this reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TapFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// An opaque IOProc token. The real platform keeps the `AudioDeviceIOProcID`,
+/// the retained block and the dispatch queue in its own fields; the state
+/// machine only needs to know that one exists.
+pub type IoProcToken = u64;
+
+/// Every CoreAudio call the setup/teardown sequence makes, behind a seam.
+///
+/// A fake implementation is what lets `tests/syscapture_teardown_order.rs` prove
+/// the ordering contract on a CI box with no audio device and no TCC grant.
+/// THE INVARIANT THE TAP'S SAMPLE AXIS RESTS ON.
+///
+/// `rt_capture_callback` divides the interleaved block by
+/// [`RtCapture::channels`] to get a frame count, and stamps every
+/// [`CaptureAnchor`] with [`RtCapture::sample_rate`]. The tap's IOProc trims its
+/// buffer by [`TapFormat::channels`]. If those two disagree, **nothing fails** —
+/// every call returns `noErr`, audio arrives, the ring fills, and each anchor
+/// reports a frame count and a rate that are simply wrong.
+///
+/// Concretely, the case that was actually reproduced: a 44.1 kHz stereo tap
+/// stamped through a ring built from the mic's 48 kHz mono gives
+/// `anchor.frames = 882` where the truth is `441`, and `sample_rate = 48000`
+/// where the truth is `44100` — the sample axis 2× off and the declared rate
+/// 8.8 % off, silently. YV107's merge divides one of those by the other, so the
+/// error does not stay in this module: it lands as Track 1 drifting against
+/// Track 0 at a rate no measurement in this codebase would attribute to it.
+///
+/// It cannot be fixed by asking the caller to pass the right ring, because the
+/// caller cannot know: `kAudioTapPropertyFormat` is only readable *after*
+/// `AudioHardwareCreateProcessTap` succeeds. So the ring is constructed from the
+/// format — [`capture_for_format`] — and this function is the standing check
+/// that whatever ring reaches the IOProc really was.
+pub fn capture_matches_format(capture: &RtCapture, format: TapFormat) -> Result<(), TapError> {
+    if capture.sample_rate() == format.sample_rate && capture.channels() == format.channels {
+        Ok(())
+    } else {
+        Err(TapError::CaptureFormatMismatch {
+            tap_sample_rate: format.sample_rate,
+            tap_channels: format.channels,
+            capture_sample_rate: capture.sample_rate(),
+            capture_channels: capture.channels(),
+        })
+    }
+}
+
+/// The ring the tap's anchors are stamped from, built from the format the tap
+/// reported rather than from anything a caller believed.
+///
+/// `RtCapture::new` clamps `channels` to at least 1, which is why
+/// [`capture_matches_format`] compares against the *constructed* ring rather
+/// than against the arguments: a zero-channel format must not silently become a
+/// one-channel ring that the IOProc then trims by zero.
+pub fn capture_for_format(format: TapFormat) -> Arc<RtCapture> {
+    Arc::new(RtCapture::new(format.sample_rate, format.channels))
+}
+
+pub trait TapPlatform {
+    fn create_tap(&mut self, exclude_process_objects: &[u32]) -> Result<u32, i32>;
+    fn tap_uid(&mut self, tap: u32) -> Result<String, i32>;
+    fn tap_format(&mut self, tap: u32) -> Result<TapFormat, i32>;
+    /// Bind the just-read [`TapFormat`] to the [`RtCapture`] whose
+    /// `sample_rate`/`channels` stamp every [`CaptureAnchor`], and refuse if
+    /// they disagree.
+    ///
+    /// This exists because the format is **undiscoverable before the tap is
+    /// created**, and the anchors are **wrong from the first callback** if it is
+    /// guessed. There is no caller ordering that gets it right by passing a
+    /// ready-made ring in, which is why the ring is built *here*, from the
+    /// truth, and handed back out afterwards. See [`capture_matches_format`].
+    fn bind_capture(&mut self, format: TapFormat) -> Result<(), TapError>;
+    fn default_output_uid(&mut self) -> Result<String, i32>;
+    fn create_aggregate(&mut self, description: &[(String, DictValue)]) -> Result<u32, i32>;
+    fn create_ioproc(&mut self, aggregate: u32, format: TapFormat) -> Result<IoProcToken, i32>;
+    fn start(&mut self, aggregate: u32, ioproc: IoProcToken) -> Result<(), i32>;
+
+    // Teardown never reports failure. There is nothing a caller could do with
+    // it, and a teardown that stops early on the first non-zero status is how a
+    // process tap outlives the app that made it.
+    fn stop(&mut self, aggregate: u32, ioproc: IoProcToken);
+    fn destroy_ioproc(&mut self, aggregate: u32, ioproc: IoProcToken);
+    fn destroy_aggregate(&mut self, aggregate: u32);
+    fn destroy_tap(&mut self, tap: u32);
+}
+
+/// The canonical teardown order — **derived**, never retyped.
+///
+/// The four teardown calls are the first four entries of
+/// [`full_rebuild_sequence`], which this module declares exactly once (above,
+/// with YV104's watchdog). This constant slices that list rather than spelling
+/// the four names a second time, so there is no second copy for a later edit to
+/// leave behind.
+///
+/// That is not a stylistic preference, it is the fix for a real near-miss.
+/// While YV104 was on `main` and this tap was in review, the tap grew its own
+/// four-variant `TeardownStep` enum with its own literal order. Nothing about
+/// that conflicts *textually* — the rebase was clean — but the whole reason
+/// `full_rebuild_sequence`'s doc comment says *"YV100 binds its FFI to this
+/// list instead of writing a second copy that can drift from it"* is that a
+/// second copy is precisely what a clean rebase produces. Reordering either
+/// list now fails to compile or fails
+/// `the_teardown_order_is_the_first_four_steps_of_the_one_declared_rebuild`.
+///
+/// Every exit path emits a SUBSEQUENCE of this — never a permutation, never a
+/// step whose resource does not exist.
+pub const TEARDOWN_ORDER: [TapStep; 4] = {
+    let all = full_rebuild_sequence();
+    [all[0], all[1], all[2], all[3]]
+};
+
+/// What exists right now. Every field is cleared by the step that destroys it,
+/// so a second teardown is a no-op rather than a double-free.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TapResources {
+    pub tap: Option<u32>,
+    pub aggregate: Option<u32>,
+    pub ioproc: Option<IoProcToken>,
+    pub running: bool,
+}
+
+impl TapResources {
+    pub fn is_empty(&self) -> bool {
+        self.tap.is_none() && self.aggregate.is_none() && self.ioproc.is_none() && !self.running
+    }
+}
+
+/// Tear down whatever exists, in [`TEARDOWN_ORDER`], and return the steps that
+/// actually fired.
+///
+/// This is the first half of YV104's 7-step rebuild; that item calls this
+/// function rather than writing the sequence a second time.
+pub fn teardown<P: TapPlatform + ?Sized>(
+    platform: &mut P,
+    resources: &mut TapResources,
+) -> Vec<TapStep> {
+    let mut steps = Vec::with_capacity(4);
+    if let (true, Some(aggregate), Some(ioproc)) =
+        (resources.running, resources.aggregate, resources.ioproc)
+    {
+        platform.stop(aggregate, ioproc);
+        steps.push(TapStep::AudioDeviceStop);
+    }
+    resources.running = false;
+    if let (Some(aggregate), Some(ioproc)) = (resources.aggregate, resources.ioproc.take()) {
+        platform.destroy_ioproc(aggregate, ioproc);
+        steps.push(TapStep::AudioDeviceDestroyIOProcID);
+    }
+    if let Some(aggregate) = resources.aggregate.take() {
+        platform.destroy_aggregate(aggregate);
+        steps.push(TapStep::AudioHardwareDestroyAggregateDevice);
+    }
+    if let Some(tap) = resources.tap.take() {
+        platform.destroy_tap(tap);
+        steps.push(TapStep::AudioHardwareDestroyProcessTap);
+    }
+    steps
+}
+
+/// The exclusion list for the tap description — never empty.
+///
+/// `Ok([self])` or a refusal. There is no third case on purpose: an empty
+/// `initMonoGlobalTapButExcludeProcesses` argument excludes nothing, so the tap
+/// would include Yap's own output. That is a working-looking tap that records
+/// the recording, and it is the exact shape of silent inversion the plan's
+/// §2.1 `exclusive`-flag gotcha describes.
+pub fn exclusion_list(self_process_object: Option<u32>) -> Result<[u32; 1], TapError> {
+    match self_process_object {
+        Some(object) if object != 0 => Ok([object]),
+        _ => Err(TapError::SelfProcessObjectUnavailable),
+    }
+}
+
+/// A tap that is created, wired to an aggregate device and running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTap {
+    pub resources: TapResources,
+    pub format: TapFormat,
+    pub tap_uid: String,
+    pub aggregate_uid: String,
+}
+
+/// THE SETUP SEQUENCE (pure state machine over [`TapPlatform`]).
+///
+/// `CATapDescription` → `AudioHardwareCreateProcessTap` → read
+/// `kAudioTapPropertyUID` + `kAudioTapPropertyFormat` → resolve
+/// `kAudioHardwarePropertyDefaultOutputDevice` →
+/// `AudioHardwareCreateAggregateDevice` →
+/// `AudioDeviceCreateIOProcIDWithBlock` → `AudioDeviceStart`.
+///
+/// **Every** exit path — a non-zero `OSStatus` at any step, or a panic mid-setup
+/// — runs [`teardown`] over exactly what existed at that moment before
+/// returning. A half-built tap is the one outcome this function will not
+/// produce: a leaked process tap survives the app, and a leaked aggregate device
+/// takes the user's output device with it.
+pub fn open_tap<P: TapPlatform>(
+    platform: &mut P,
+    self_process_object: Option<u32>,
+    aggregate_uid: &str,
+    aggregate_name: &str,
+) -> Result<OpenTap, TapError> {
+    let exclude = exclusion_list(self_process_object)?;
+    let resources = RefCell::new(TapResources::default());
+    let stage = std::cell::Cell::new(TapStage::CreateTap);
+
+    let attempt = catch_unwind(AssertUnwindSafe(|| -> Result<OpenTap, TapError> {
+        let os = |stage: TapStage| move |status: i32| TapError::Os { stage, status };
+
+        stage.set(TapStage::CreateTap);
+        let tap = platform
+            .create_tap(&exclude)
+            .map_err(os(TapStage::CreateTap))?;
+        resources.borrow_mut().tap = Some(tap);
+
+        stage.set(TapStage::ReadTapUid);
+        let tap_uid = platform.tap_uid(tap).map_err(os(TapStage::ReadTapUid))?;
+
+        stage.set(TapStage::ReadTapFormat);
+        let format = platform
+            .tap_format(tap)
+            .map_err(os(TapStage::ReadTapFormat))?;
+
+        // The format is known and nothing has been stamped yet. This is the
+        // only window in which the ring can be built from the truth, so it is
+        // where it happens — and a failure here tears the tap down like any
+        // other, rather than proceeding with a ring that disagrees.
+        stage.set(TapStage::BindCapture);
+        platform.bind_capture(format)?;
+
+        stage.set(TapStage::ResolveDefaultOutput);
+        let output_uid = platform
+            .default_output_uid()
+            .map_err(os(TapStage::ResolveDefaultOutput))?;
+
+        stage.set(TapStage::CreateAggregate);
+        let description = aggregate_description(&AggregateSpec {
+            aggregate_uid: aggregate_uid.to_string(),
+            aggregate_name: aggregate_name.to_string(),
+            output_uid,
+            tap_uid: tap_uid.clone(),
+        });
+        let aggregate = platform
+            .create_aggregate(&description)
+            .map_err(os(TapStage::CreateAggregate))?;
+        resources.borrow_mut().aggregate = Some(aggregate);
+
+        stage.set(TapStage::CreateIoProc);
+        let ioproc = platform
+            .create_ioproc(aggregate, format)
+            .map_err(os(TapStage::CreateIoProc))?;
+        resources.borrow_mut().ioproc = Some(ioproc);
+
+        stage.set(TapStage::Start);
+        platform
+            .start(aggregate, ioproc)
+            .map_err(os(TapStage::Start))?;
+        resources.borrow_mut().running = true;
+
+        Ok(OpenTap {
+            resources: *resources.borrow(),
+            format,
+            tap_uid,
+            aggregate_uid: aggregate_uid.to_string(),
+        })
+    }));
+
+    match attempt {
+        Ok(Ok(open)) => Ok(open),
+        Ok(Err(err)) => {
+            let mut live = resources.borrow_mut();
+            teardown(platform, &mut live);
+            Err(err)
+        }
+        Err(_) => {
+            // A panic mid-setup is the path that leaks if it is not handled
+            // here: `?` unwinding past the platform calls would drop a tap and
+            // an aggregate device that only CoreAudio can free.
+            let mut live = resources.borrow_mut();
+            teardown(platform, &mut live);
+            Err(TapError::PanicDuringSetup { stage: stage.get() })
+        }
+    }
+}
+
+// ── The IOProc body ────────────────────────────────────────────────────────
+
+/// THE `extern "C-unwind"` GUARD (OS-6, correction #2).
+///
+/// The block registered with `AudioDeviceCreateIOProcIDWithBlock` runs on the
+/// aggregate device's real-time IO thread, behind an `extern "C-unwind"`
+/// boundary. A Rust panic that reaches that boundary is undefined behaviour and
+/// a HAL-level process kill. So the *whole* block body — including the
+/// `AudioBufferList` decode, which is where an off-by-one becomes a panic —
+/// runs inside this guard, which catches, flags and returns.
+///
+/// Real-time safe on the happy path: `catch_unwind` costs nothing when nothing
+/// unwinds, and the flag is a `Relaxed` atomic store only on the failure path.
+/// `tests/syscapture_ioproc_rt_safety.rs` proves the zero-allocation claim with
+/// a scoped allocator hook; `tests/syscapture_ioproc_catch_unwind.rs` proves the
+/// catch.
+///
+/// The flag it sets is the same [`RtCapture::callback_panicked`] the mic path
+/// already exposes — YV104's watchdog reads one flag, not two.
+pub fn tap_ioproc_guarded<R>(capture: &RtCapture, body: impl FnOnce() -> R) -> Option<R> {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            capture.note_callback_panic();
+            None
+        }
+    }
+}
+
+// ── The tap's host clock: rebased to ITS OWN first callback ────────────────
+
+/// `mHostTime` is mach absolute time — *ticks since boot*, order 10^12 ns after
+/// a few hours of uptime. [`CaptureAnchor::host_ns`](crate::rtring::CaptureAnchor)
+/// is not that. The mic path stamps
+/// `captured_at.duration_since(first_callback)` (`record.rs`, `build_capture_stream`),
+/// i.e. a **stream-relative** nanosecond clock whose first anchor is `0`, and
+/// `meeting.rs`'s splice planner documents the convention in those words:
+/// *"record 0's `host_ns` is an arbitrary stream-relative instant, not zero"* —
+/// arbitrary in WHICH instant it corresponds to, but starting at zero for the
+/// stream that produced it.
+///
+/// So the tap converts to the same shape or it is in a different time domain
+/// than the track it will be merged against. Single-track logic would not
+/// notice: `plan_silence_splices` only ever takes *differences* within one
+/// track, and a constant offset cancels. YV106's two-track merge is where it
+/// would land, and it would land as Track 1 sitting hours-to-days away from
+/// Track 0 — silently, with every per-track number still self-consistent.
+///
+/// Hence this: the first tick value the tap's IOProc ever sees becomes the
+/// epoch, and every anchor is the delta from it in nanoseconds. Per *stream*,
+/// not per process — a rebuilt tap (YV104's 7-step rebuild) gets a fresh
+/// `TapClock` and rebases to zero again, exactly as a rebuilt cpal stream does
+/// on the mic side.
+///
+/// Real-time safe: one relaxed load, at most one `compare_exchange` (only the
+/// first callback ever takes the store path), one multiply and one divide. No
+/// allocation, no lock, no syscall — [`TapClock::new`] pays the one syscall
+/// (`mach_timebase_info`) up front, off the IO thread.
+pub struct TapClock {
+    /// The first `mHostTime` this stream delivered, in raw mach ticks, or
+    /// [`Self::UNSET`].
+    ///
+    /// One atomic and not a `(bool, u64)` pair on purpose: a flag plus a value
+    /// is two stores and therefore a race a second IOProc invocation can land
+    /// inside. `compare_exchange` makes "claim the epoch" a single operation.
+    first_ticks: AtomicU64,
+}
+
+impl TapClock {
+    /// "No callback has arrived yet." `u64::MAX` and not `0`: `mHostTime` of
+    /// exactly zero is a legal (if degenerate) reading at the instant of boot,
+    /// while `u64::MAX` ticks is ~12 years of uptime at the Apple-silicon
+    /// timebase, so the sentinel cannot collide with a real epoch that matters.
+    const UNSET: u64 = u64::MAX;
+
+    /// Builds a clock and **primes the mach timebase**.
+    ///
+    /// Called from `create_ioproc`, before the block is registered — the
+    /// timebase read is a one-time `mach_timebase_info` syscall and the comment
+    /// on [`mach_ticks_to_ns`] says the IOProc must not make it. Before this,
+    /// the very first callback made it, on the real-time thread.
+    pub fn new() -> Self {
+        let _ = mach_ticks_to_ns(0);
+        Self {
+            first_ticks: AtomicU64::new(Self::UNSET),
+        }
+    }
+
+    /// Raw `mHostTime` in, stream-relative nanoseconds out. The first call
+    /// returns `0` by construction.
+    pub fn stamp(&self, host_ticks: u64) -> u64 {
+        let first = match self.first_ticks.compare_exchange(
+            Self::UNSET,
+            host_ticks,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => host_ticks,
+            Err(already) => already,
+        };
+        // `saturating_sub`: a timestamp that runs backwards (a device the HAL
+        // re-timed under us) clamps to the epoch instead of wrapping to ~10^19,
+        // which is what `plan_silence_splices` already treats as "changed
+        // clock, skip this interval" rather than a negative gap.
+        mach_ticks_to_ns(host_ticks.saturating_sub(first))
+    }
+}
+
+impl Default for TapClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Mach ticks → nanoseconds.
+///
+/// Lives at module level, not inside [`imp`], so the test that checks the tap's
+/// anchors are in the mic path's domain can drive the real conversion instead of
+/// a hand-written stand-in.
+// `libc`'s `mach_timebase_info` carries a deprecation pointing at the `mach2`
+// crate. Taking that advice would add a crate to a signed bundle to read two
+// `u32`s that have not changed since 2006; the declaration is stable ABI and is
+// called ONCE per process, so the deprecation is acknowledged and declined here
+// rather than paid for in supply chain.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn mach_ticks_to_ns(ticks: u64) -> u64 {
+    // `mach_timebase_info` is constant for the life of the process, so it is
+    // read once and cached — the IOProc must not make this call, which is why
+    // `TapClock::new` forces it off the real-time thread.
+    static NUMER: AtomicU64 = AtomicU64::new(0);
+    static DENOM: AtomicU64 = AtomicU64::new(0);
+    let (mut numer, mut denom) = (NUMER.load(Ordering::Relaxed), DENOM.load(Ordering::Relaxed));
+    if denom == 0 {
+        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: `info` is a valid out-parameter for the whole call.
+        let rc = unsafe { libc::mach_timebase_info(&mut info) };
+        (numer, denom) = if rc == 0 && info.denom != 0 {
+            (info.numer as u64, info.denom as u64)
+        } else {
+            (1, 1)
+        };
+        NUMER.store(numer, Ordering::Relaxed);
+        DENOM.store(denom, Ordering::Relaxed);
+    }
+    ticks.saturating_mul(numer) / denom
+}
+
+/// Off macOS there is no mach clock and no tap; the identity keeps the pure
+/// state machine and its tests compiling on any host.
+#[cfg(not(target_os = "macos"))]
+fn mach_ticks_to_ns(ticks: u64) -> u64 {
+    ticks
+}
+
+// ── Wiring into a meeting session ──────────────────────────────────────────
+
+/// The `SessionConfig` a tap-backed (virtual-meeting) session runs under.
+///
+/// Two tracks — the mic keeps writing track 0 through its own `MicStream`, and
+/// the tap is the second producer `MeetingJournal::start(dir, tracks)` was
+/// generalized for — and [`ExternalStream`], because a CoreAudio tap owns its
+/// own IOProc and has no cpal stream for the session to hold open. Both of those
+/// seams already exist and already say in their own doc comments that 22-B is
+/// what they were built for; this function is that claim being cashed.
+///
+/// The per-track DSP/epoch bookkeeping that turns two producers into two
+/// finished tracks is **YV106**. This builds the config; it does not start
+/// anything.
+pub fn virtual_meeting_config(dir: impl Into<PathBuf>, format: TapFormat) -> SessionConfig {
+    let mut config = SessionConfig::new(dir, format.sample_rate, format.channels);
+    config.tracks = 2;
+    config.stream = Arc::new(ExternalStream);
+    config
+}
+
+// ── The real CoreAudio implementation ──────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+pub mod imp {
+    //! The only part of this module that needs a Mac, a 14.4 kernel and a TCC
+    //! grant. Everything above is provable without any of the three.
+    //!
+    //! ## Why the four 14.4-era entry points are resolved by `dlsym`
+    //!
+    //! `minimumSystemVersion` is `12.0` and stays there (OS-11, §2.1). If this
+    //! module *imported* `AudioHardwareCreateProcessTap` and the three other
+    //! availability-gated symbols the ordinary way, they would land in the
+    //! shipped Mach-O as plain `(undefined) external`, and **dyld binds those at
+    //! LOAD time, before any Rust code runs**. Not "the tap fails on macOS 13" —
+    //! *Yap does not launch at all* on macOS 12/13, dictation included. Having
+    //! no call site does not help: linkage is decided by what is linked, not by
+    //! what is called. (`AudioHardwareCreate/DestroyAggregateDevice` are 13.0+,
+    //! so the blast radius is macOS 12 as well, not just pre-14.4.)
+    //!
+    //! So the four functions are looked up once, at runtime, through
+    //! `dlsym(RTLD_DEFAULT, …)`, and the `CATapDescription` class through
+    //! `AnyClass::get` (objc2 already resolves ObjC classes by name — there is
+    //! no `_OBJC_CLASS_$_CATapDescription` import in the binary either). If any
+    //! of the five is missing, [`CoreAudioPlatform::new`] refuses with
+    //! [`TapError::ProcessTapApiUnavailable`] and nothing is ever called through
+    //! a null pointer. The remaining CoreAudio calls this module makes
+    //! (`AudioObjectGetPropertyData`, `AudioDeviceCreateIOProcIDWithBlock`,
+    //! `AudioDeviceStart/Stop/DestroyIOProcID`) are 10.x-era symbols that exist
+    //! on every OS Yap supports, so they stay ordinary imports.
+    //!
+    //! **This module is not the only source of those imports**, which is why
+    //! `build.rs` also weak-links the CoreAudio framework: cpal 0.18.1's
+    //! `host/coreaudio/macos/loopback.rs` calls all four, from an object the
+    //! microphone path keeps live, and `origin/main` already shipped them as
+    //! hard imports before this file existed. Weak linking makes dyld bind the
+    //! missing ones to NULL and launch the app; this module's `dlsym` probe is
+    //! what turns "NULL" into a typed refusal instead of a crash.
+    //!
+    //! `scripts/assert-weak-linked-14_4-symbols.sh` (YV101's, which landed this
+    //! check on `main` while this item was in review) runs in CI against the
+    //! actual release binary and fails the build if any of the four ever comes
+    //! back as a non-weak import. It carries two controls of its own so it
+    //! cannot pass vacuously. It is the falsifiable half of this comment; the
+    //! comment alone is worth nothing.
+    //!
+    //! **Still no call site.** Nothing in the app calls [`start_system_tap`]
+    //! until YV101 lands the user-visible macOS 14.4 gate
+    //! (`MeetingUnavailable::RequiresMacOS14_4`), the `NSAudioCaptureUsageDescription`
+    //! string and the signed-build TCC acceptance. What changed here is only
+    //! that the *absence* of a call site is no longer load-bearing.
+
+    use std::ffi::{c_void, CStr};
+    use std::ptr::NonNull;
+    use std::sync::Arc;
+
+    use block2::RcBlock;
+    use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyClass;
+    use objc2::AllocAnyThread;
+    use objc2_core_audio::{
+        kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioObjectPropertyElementMain,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioTapPropertyFormat,
+        kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID,
+        AudioDeviceStart, AudioDeviceStop, AudioObjectGetPropertyData, AudioObjectID,
+        AudioObjectPropertyAddress, CATapDescription,
+    };
+    use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp};
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString};
+
+    use super::{
+        keys, teardown, DictValue, IoProcToken, OpenTap, TapClock, TapError, TapFormat,
+        TapPlatform, TapResources,
+    };
+    use crate::meeting::{rt_capture_callback, RtCapture};
+
+    // ── The availability-gated symbols, resolved at runtime ────────────────
+
+    /// `dlsym`'s "search every image already loaded into this process" handle.
+    ///
+    /// `libc` declares `dlsym` but not this constant on Apple platforms;
+    /// `<dlfcn.h>` spells it `((void *) -2)` and has since 10.3. CoreAudio is
+    /// unconditionally loaded here — the app links `AudioObjectGetPropertyData`
+    /// and cpal links the framework too — so no `dlopen` is needed.
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+
+    /// `OSStatus AudioHardwareCreateProcessTap(CATapDescription *, AudioObjectID *)`
+    /// — macOS 14.4+.
+    type CreateProcessTapFn = unsafe extern "C-unwind" fn(*const c_void, *mut AudioObjectID) -> i32;
+    /// `OSStatus AudioHardwareDestroyProcessTap(AudioObjectID)` — macOS 14.4+.
+    type DestroyProcessTapFn = unsafe extern "C-unwind" fn(AudioObjectID) -> i32;
+    /// `OSStatus AudioHardwareCreateAggregateDevice(CFDictionaryRef, AudioObjectID *)`
+    /// — macOS 13.0+ (this one breaks macOS 12 on its own).
+    type CreateAggregateFn = unsafe extern "C-unwind" fn(*const c_void, *mut AudioObjectID) -> i32;
+    /// `OSStatus AudioHardwareDestroyAggregateDevice(AudioObjectID)` — macOS 13.0+.
+    type DestroyAggregateFn = unsafe extern "C-unwind" fn(AudioObjectID) -> i32;
+
+    /// The names, in the order [`TapSymbols::resolve`] looks them up. Also the
+    /// list `scripts/assert-weak-linked-14_4-symbols.sh` asserts is absent (or
+    /// weak) in the shipped binary — two copies of one list, in two languages,
+    /// which is a drift waiting to happen. `tests/supply_chain.rs`'s
+    /// `the_weak_link_ci_script_and_the_dlsym_list_are_the_same_four_symbols`
+    /// reads the script and keeps them in step.
+    pub const AVAILABILITY_GATED_SYMBOLS: [&str; 4] = [
+        "AudioHardwareCreateProcessTap",
+        "AudioHardwareDestroyProcessTap",
+        "AudioHardwareCreateAggregateDevice",
+        "AudioHardwareDestroyAggregateDevice",
+    ];
+
+    /// The `CATapDescription` class is 14.4-gated too. objc2 resolves ObjC
+    /// classes by name at runtime already, so this is a check, not a fix — but
+    /// it belongs in the same probe, because a resolved function set plus a
+    /// missing class is still a crash.
+    const TAP_DESCRIPTION_CLASS: &CStr = c"CATapDescription";
+
+    /// The four entry points, resolved once and null-checked once.
+    ///
+    /// Holding them as fields is the point: after [`TapSymbols::resolve`]
+    /// returns, every call site below goes through a pointer that has already
+    /// been proven non-null, and there is no path that can call an absent
+    /// symbol.
+    #[derive(Clone, Copy)]
+    struct TapSymbols {
+        create_process_tap: CreateProcessTapFn,
+        destroy_process_tap: DestroyProcessTapFn,
+        create_aggregate: CreateAggregateFn,
+        destroy_aggregate: DestroyAggregateFn,
+    }
+
+    /// `dlsym(RTLD_DEFAULT, name)`, or `None` when this OS does not have it.
+    fn lookup(name: &CStr) -> Option<NonNull<c_void>> {
+        // SAFETY: `name` is a NUL-terminated C string, and RTLD_DEFAULT is the
+        // documented pseudo-handle for "the images already loaded".
+        NonNull::new(unsafe { libc::dlsym(RTLD_DEFAULT, name.as_ptr()) })
+    }
+
+    impl TapSymbols {
+        /// Resolve all five (four functions + the description class) or name the
+        /// first one missing. All-or-nothing on purpose: a partial set is how a
+        /// tap gets created on an OS that cannot destroy it.
+        fn resolve() -> Result<Self, TapError> {
+            fn get<F: Copy>(c_name: &CStr, name: &'static str) -> Result<F, TapError> {
+                debug_assert_eq!(c_name.to_bytes(), name.as_bytes());
+                assert_eq!(
+                    std::mem::size_of::<F>(),
+                    std::mem::size_of::<*mut c_void>(),
+                    "F must be a plain (non-nullable) function pointer"
+                );
+                let symbol =
+                    lookup(c_name).ok_or(TapError::ProcessTapApiUnavailable { symbol: name })?;
+                // SAFETY: `F` is one of the fn-pointer aliases above, declared
+                // with the exact C signature CoreAudio publishes for `name`;
+                // `symbol` is non-null and the sizes were just asserted equal.
+                Ok(unsafe { std::mem::transmute_copy::<*mut c_void, F>(&symbol.as_ptr()) })
+            }
+
+            let symbols = Self {
+                create_process_tap: get(
+                    c"AudioHardwareCreateProcessTap",
+                    AVAILABILITY_GATED_SYMBOLS[0],
+                )?,
+                destroy_process_tap: get(
+                    c"AudioHardwareDestroyProcessTap",
+                    AVAILABILITY_GATED_SYMBOLS[1],
+                )?,
+                create_aggregate: get(
+                    c"AudioHardwareCreateAggregateDevice",
+                    AVAILABILITY_GATED_SYMBOLS[2],
+                )?,
+                destroy_aggregate: get(
+                    c"AudioHardwareDestroyAggregateDevice",
+                    AVAILABILITY_GATED_SYMBOLS[3],
+                )?,
+            };
+            if AnyClass::get(TAP_DESCRIPTION_CLASS).is_none() {
+                return Err(TapError::ProcessTapApiUnavailable {
+                    symbol: "CATapDescription",
+                });
+            }
+            Ok(symbols)
+        }
+    }
+
+    /// Is the process-tap API present in *this* process?
+    ///
+    /// The honest, user-visible gate — the disabled affordance and its plain
+    /// sentence — is YV101's `os_version_gate.rs` and reads the OS version.
+    /// This is the linkage probe underneath it: whether the four entry points
+    /// are actually resolvable in *this* process, which is a different question
+    /// from what the OS claims to be. Nothing calls it yet, for the same reason
+    /// nothing calls [`start_system_tap`] yet.
+    pub fn process_tap_api_available() -> bool {
+        TapSymbols::resolve().is_ok()
+    }
+
+    fn address(selector: u32) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        }
+    }
+
+    /// Read a fixed-size property off an audio object.
+    ///
+    /// # Safety
+    /// `T` must be the exact type CoreAudio writes for `selector`.
+    unsafe fn get_property<T>(object: AudioObjectID, selector: u32) -> Result<T, i32> {
+        let address = address(selector);
+        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        let mut size = std::mem::size_of::<T>() as u32;
+        let status = AudioObjectGetPropertyData(
+            object,
+            NonNull::from(&address),
+            0,
+            std::ptr::null(),
+            NonNull::from(&mut size),
+            NonNull::new(value.as_mut_ptr().cast::<c_void>()).expect("stack pointer is non-null"),
+        );
+        if status == 0 {
+            Ok(value.assume_init())
+        } else {
+            Err(status)
+        }
+    }
+
+    /// Read a `CFStringRef`-valued property and copy it into a Rust `String`.
+    /// CoreFoundation gives us a +1 reference here; `Retained` takes ownership
+    /// of it (these properties are documented as "the caller is responsible for
+    /// releasing the returned CFString").
+    fn get_string_property(object: AudioObjectID, selector: u32) -> Result<String, i32> {
+        // SAFETY: both `kAudioTapPropertyUID` and `kAudioDevicePropertyDeviceUID`
+        // are documented as CFStringRef-valued, and NSString is toll-free
+        // bridged with CFString.
+        let raw: *mut NSString = unsafe { get_property(object, selector)? };
+        let owned = NonNull::new(raw)
+            .map(|p| unsafe { Retained::from_raw(p.as_ptr()) })
+            .flatten()
+            .ok_or(-1i32)?;
+        Ok(owned.to_string())
+    }
+
+    /// Our own audio process object, translated from our PID.
+    ///
+    /// This is the ONE PID translation this design makes, and it is the safe
+    /// one: OS-5's finding is about translating somebody *else's* UI PID and
+    /// getting a process that renders no audio. Ours is the process we want to
+    /// exclude, and if it cannot be resolved [`super::exclusion_list`] refuses
+    /// to build a description at all.
+    pub fn self_process_object() -> Option<u32> {
+        let address = address(kAudioHardwarePropertyTranslatePIDToProcessObject);
+        let pid: i32 = std::process::id() as i32;
+        let mut object: AudioObjectID = 0;
+        let mut size = std::mem::size_of::<AudioObjectID>() as u32;
+        // SAFETY: the qualifier is a `pid_t` as the selector documents, and the
+        // out-parameter is a stack `AudioObjectID` of the size we pass.
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                kAudioObjectSystemObject as AudioObjectID,
+                NonNull::from(&address),
+                std::mem::size_of::<i32>() as u32,
+                (&pid as *const i32).cast::<c_void>(),
+                NonNull::from(&mut size),
+                NonNull::from(&mut object).cast::<c_void>(),
+            )
+        };
+        (status == 0 && object != 0).then_some(object)
+    }
+
+    /// Build the CoreFoundation dictionary from the pure description.
+    ///
+    /// NSDictionary/NSArray/NSNumber/NSString are toll-free bridged with their
+    /// CF counterparts, so the composed object is passed straight to
+    /// `AudioHardwareCreateAggregateDevice` — which is why this file needs no
+    /// hand-rolled CFDictionary construction.
+    fn to_ns_object(value: &DictValue) -> Retained<NSObject> {
+        match value {
+            DictValue::Str(s) => Retained::into_super(NSString::from_str(s)),
+            // NSNumber → NSValue → NSObject: two supers, because CoreAudio wants
+            // a CFBoolean here and the toll-free bridge is through NSNumber.
+            DictValue::Bool(b) => {
+                Retained::into_super(Retained::into_super(NSNumber::new_bool(*b)))
+            }
+            DictValue::List(items) => {
+                let objects: Vec<Retained<NSObject>> = items.iter().map(to_ns_object).collect();
+                let refs: Vec<&NSObject> = objects.iter().map(|o| &**o).collect();
+                Retained::into_super(NSArray::from_slice(&refs))
+            }
+            DictValue::Dict(entries) => Retained::into_super(to_ns_dictionary(entries)),
+        }
+    }
+
+    fn to_ns_dictionary(
+        entries: &[(String, DictValue)],
+    ) -> Retained<NSDictionary<NSString, NSObject>> {
+        let keys: Vec<Retained<NSString>> =
+            entries.iter().map(|(k, _)| NSString::from_str(k)).collect();
+        let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+        let values: Vec<Retained<NSObject>> =
+            entries.iter().map(|(_, v)| to_ns_object(v)).collect();
+        let value_refs: Vec<&NSObject> = values.iter().map(|v| &**v).collect();
+        NSDictionary::from_slices(&key_refs, &value_refs)
+    }
+
+    /// The live IOProc's owned state. Dropping it releases the block and the
+    /// queue; CoreAudio holds its own reference until `AudioDeviceDestroyIOProcID`,
+    /// which is why teardown order matters here too.
+    struct LiveIoProc {
+        id: objc2_core_audio::AudioDeviceIOProcID,
+        /// The aggregate device this IOProc belongs to.
+        ///
+        /// `AudioDeviceDestroyIOProcID` needs it, and the two paths that must
+        /// destroy an IOProc without a caller handing one over — a rebuild that
+        /// creates a second one, and a panic between `create_ioproc` returning
+        /// and its token reaching `TapResources` — have no other way to know it.
+        aggregate: objc2_core_audio::AudioObjectID,
+        _block: RcBlock<
+            dyn Fn(
+                NonNull<AudioTimeStamp>,
+                NonNull<AudioBufferList>,
+                NonNull<AudioTimeStamp>,
+                NonNull<AudioBufferList>,
+                NonNull<AudioTimeStamp>,
+            ),
+        >,
+        _queue: DispatchRetained<DispatchQueue>,
+    }
+
+    /// `kAudioHardwareIllegalOperationError` ('!hog'), returned when
+    /// `create_ioproc` is reached without a bound capture ring. Unreachable
+    /// through [`start_system_tap`]; it exists so the impossible path is an
+    /// error with a name rather than an `unwrap`.
+    const CAPTURE_NOT_BOUND: i32 = i32::from_be_bytes(*b"!hog");
+
+    /// The real CoreAudio platform.
+    pub struct CoreAudioPlatform {
+        /// `None` until [`TapPlatform::bind_capture`] runs, which is after
+        /// `kAudioTapPropertyFormat` has been read and before the IOProc that
+        /// stamps through it exists. There is deliberately no way to construct
+        /// this platform with a ring already in it: the format is not knowable
+        /// that early, and a guessed ring is a wrong sample axis with no
+        /// symptom (see [`capture_matches_format`]).
+        capture: Option<Arc<RtCapture>>,
+        live: Option<LiveIoProc>,
+        symbols: TapSymbols,
+    }
+
+    impl CoreAudioPlatform {
+        /// Fails — before anything is created — when this OS has no process-tap
+        /// API. Constructing the platform IS the availability check, so there is
+        /// no ordering in which a call goes out to an unresolved symbol.
+        pub fn new() -> Result<Self, TapError> {
+            Ok(Self {
+                capture: None,
+                live: None,
+                symbols: TapSymbols::resolve()?,
+            })
+        }
+
+        /// The ring this platform bound to the tap's own format, once
+        /// `bind_capture` has run.
+        pub fn capture(&self) -> Option<&Arc<RtCapture>> {
+            self.capture.as_ref()
+        }
+
+        /// Destroy whatever IOProc this platform is currently holding, if any.
+        ///
+        /// Idempotent, and the single place `AudioDeviceDestroyIOProcID` is
+        /// called from: the ordinary teardown, a rebuild that creates a second
+        /// IOProc, and `Drop` all route through here, so there is one
+        /// destroy-and-release pair rather than three.
+        fn destroy_live_ioproc(&mut self) {
+            if let Some(live) = self.live.take() {
+                // SAFETY: `live.id` came from `AudioDeviceCreateIOProcIDWithBlock`
+                // on `live.aggregate`, and `live` is consumed here so the block
+                // and the queue are released only after CoreAudio has let go.
+                unsafe { AudioDeviceDestroyIOProcID(live.aggregate, live.id) };
+            }
+        }
+    }
+
+    /// The backstop for the one window `TapResources` cannot cover.
+    ///
+    /// `open_tap` records the IOProc token into `TapResources` on the line
+    /// *after* `create_ioproc` returns, and `teardown` destroys an IOProc only
+    /// when that field is `Some`. A panic in between — inside this platform,
+    /// after CoreAudio has already registered the proc — therefore tears down
+    /// the aggregate and the tap and leaves the IOProc behind, holding its block
+    /// and its dispatch queue, with no handle anywhere that could free it.
+    ///
+    /// The window is narrow and the consequence is not: an IOProc registered
+    /// against a destroyed aggregate device is exactly the half-built state the
+    /// whole teardown sequence exists to make impossible. So the platform owns
+    /// its own IOProc for the platform's whole life, and drops it when it dies.
+    /// On every ordinary path `self.live` is already `None` by then and this
+    /// does nothing.
+    impl Drop for CoreAudioPlatform {
+        fn drop(&mut self) {
+            self.destroy_live_ioproc();
+        }
+    }
+
+    impl TapPlatform for CoreAudioPlatform {
+        fn create_tap(&mut self, exclude_process_objects: &[u32]) -> Result<u32, i32> {
+            debug_assert!(
+                !exclude_process_objects.is_empty(),
+                "an empty exclusion list is a global tap that records Yap itself"
+            );
+            let numbers: Vec<Retained<NSNumber>> = exclude_process_objects
+                .iter()
+                .map(|id| NSNumber::new_u32(*id))
+                .collect();
+            let refs: Vec<&NSNumber> = numbers.iter().map(|n| n.as_ref()).collect();
+            let excluded = NSArray::from_slice(&refs);
+            // SAFETY: the initializer takes an NSArray of NSNumbers holding
+            // AudioObjectIDs, which is exactly what was built above.
+            let description = unsafe {
+                CATapDescription::initMonoGlobalTapButExcludeProcesses(
+                    CATapDescription::alloc(),
+                    &excluded,
+                )
+            };
+            let mut tap: AudioObjectID = 0;
+            // SAFETY: `description` is live for the call, `tap` is a valid
+            // out-parameter, and `create_process_tap` is the dlsym-resolved
+            // `AudioHardwareCreateProcessTap` — a `CATapDescription *` first
+            // argument, which is what `Retained::as_ptr` hands over.
+            let status = unsafe {
+                (self.symbols.create_process_tap)(
+                    Retained::as_ptr(&description).cast::<c_void>(),
+                    &mut tap,
+                )
+            };
+            if status == 0 && tap != 0 {
+                Ok(tap)
+            } else {
+                Err(if status == 0 { -1 } else { status })
+            }
+        }
+
+        fn tap_uid(&mut self, tap: u32) -> Result<String, i32> {
+            get_string_property(tap, kAudioTapPropertyUID)
+        }
+
+        fn tap_format(&mut self, tap: u32) -> Result<TapFormat, i32> {
+            // SAFETY: `kAudioTapPropertyFormat` is documented as an
+            // AudioStreamBasicDescription.
+            let asbd: AudioStreamBasicDescription =
+                unsafe { get_property(tap, kAudioTapPropertyFormat)? };
+            let channels = asbd.mChannelsPerFrame.max(1).min(u16::MAX as u32) as u16;
+            let rate = asbd.mSampleRate;
+            if !(rate.is_finite() && rate > 0.0) {
+                return Err(-1);
+            }
+            Ok(TapFormat {
+                sample_rate: rate.round() as u32,
+                channels,
+            })
+        }
+
+        fn bind_capture(&mut self, format: TapFormat) -> Result<(), TapError> {
+            // Built from the format the tap just reported, never from a value a
+            // caller carried in. Then checked anyway: `RtCapture::new` clamps
+            // `channels`, so "constructed from it" and "agrees with it" are not
+            // the same statement, and the one the IOProc depends on is the
+            // second one.
+            let capture = super::capture_for_format(format);
+            super::capture_matches_format(&capture, format)?;
+            self.capture = Some(capture);
+            Ok(())
+        }
+
+        fn default_output_uid(&mut self) -> Result<String, i32> {
+            // SAFETY: the selector is documented as an AudioObjectID.
+            let device: AudioObjectID = unsafe {
+                get_property(
+                    kAudioObjectSystemObject as AudioObjectID,
+                    kAudioHardwarePropertyDefaultOutputDevice,
+                )?
+            };
+            if device == 0 {
+                return Err(-1);
+            }
+            get_string_property(device, kAudioDevicePropertyDeviceUID)
+        }
+
+        fn create_aggregate(&mut self, description: &[(String, DictValue)]) -> Result<u32, i32> {
+            debug_assert_eq!(
+                description.len(),
+                7,
+                "the composition dictionary is {} keys",
+                keys::TAP_AUTO_START
+            );
+            let dictionary = to_ns_dictionary(description);
+            let mut device: AudioObjectID = 0;
+            // SAFETY: NSDictionary is toll-free bridged with CFDictionary, the
+            // dictionary outlives the call, and `device` is a valid
+            // out-parameter.
+            let status = unsafe {
+                (self.symbols.create_aggregate)(
+                    Retained::as_ptr(&dictionary).cast::<c_void>(),
+                    &mut device,
+                )
+            };
+            if status == 0 && device != 0 {
+                Ok(device)
+            } else {
+                Err(if status == 0 { -1 } else { status })
+            }
+        }
+
+        fn create_ioproc(&mut self, aggregate: u32, format: TapFormat) -> Result<IoProcToken, i32> {
+            // A second IOProc must not silently replace a first. `open_tap`
+            // calls this once, but YV104's 7-step rebuild — in this same file,
+            // above — is create-after-teardown by construction and a future
+            // caller that skips a step would otherwise leave the old IOProc
+            // registered with `coreaudiod` and its block alive on the RT thread,
+            // with nothing holding a handle to destroy it. Overwriting
+            // `self.live` was that leak; destroying first is the fix.
+            self.destroy_live_ioproc();
+            // `open_tap` always runs `bind_capture` first, so this is `Some` on
+            // every path that exists. It is still an error rather than an
+            // `unwrap`: this block is what stamps the anchors, and the one thing
+            // it must never do is stamp them through a ring nobody checked.
+            let Some(capture) = self.capture.as_ref().map(Arc::clone) else {
+                return Err(CAPTURE_NOT_BOUND);
+            };
+            debug_assert!(
+                super::capture_matches_format(&capture, format).is_ok(),
+                "the IOProc trims by the tap's channel count and the ring stamps \
+                 by its own — bind_capture is what makes those the same number"
+            );
+            let channels = format.channels.max(1) as usize;
+            // A dedicated serial queue, NOT `None`. Passing a nil queue makes
+            // CoreAudio invoke the block directly, which is one of the silence
+            // causes OS-4 enumerates — and a queue is retained by CoreAudio
+            // until `AudioDeviceDestroyIOProcID`, so it is owned here for
+            // exactly as long as the IOProc is.
+            let queue = DispatchQueue::new("consulting.drivia.yap.tap", DispatchQueueAttr::SERIAL);
+            // Built HERE, off the IO thread, so the first callback finds the
+            // mach timebase already cached — and owned by the block, so it is
+            // per-stream: a rebuilt tap rebases to zero the way a rebuilt cpal
+            // stream does.
+            let clock = TapClock::new();
+            let block = RcBlock::new(
+                move |in_now: NonNull<AudioTimeStamp>,
+                      in_input_data: NonNull<AudioBufferList>,
+                      _in_input_time: NonNull<AudioTimeStamp>,
+                      _out_output_data: NonNull<AudioBufferList>,
+                      _in_output_time: NonNull<AudioTimeStamp>| {
+                    // EVERYTHING is inside the guard: this is an
+                    // `extern "C-unwind"` boundary onto a real-time thread, and
+                    // the buffer-list decode below is exactly where an
+                    // off-by-one becomes a panic (OS-6, correction #2).
+                    super::tap_ioproc_guarded(&capture, || {
+                        // SAFETY: CoreAudio guarantees both pointers are valid
+                        // for the duration of the block, and `mNumberBuffers`
+                        // describes the trailing array of `AudioBuffer`.
+                        unsafe {
+                            // Rebased to THIS stream's first callback, which is
+                            // the domain `CaptureAnchor::host_ns` is defined in
+                            // (see `TapClock`). Absolute mach time here would
+                            // put Track 1 an uptime away from Track 0 in
+                            // YV106's merge.
+                            let host_ns = clock.stamp(in_now.as_ref().mHostTime);
+                            let list = in_input_data.as_ref();
+                            if list.mNumberBuffers == 0 {
+                                return;
+                            }
+                            // A mono global tap delivers one interleaved buffer;
+                            // only the first is read, and a de-interleaved
+                            // multi-buffer layout would be a format this item
+                            // does not claim to handle.
+                            let buffer = &*list.mBuffers.as_ptr();
+                            let samples =
+                                buffer.mDataByteSize as usize / std::mem::size_of::<f32>();
+                            if buffer.mData.is_null() || samples == 0 {
+                                return;
+                            }
+                            let frames = std::slice::from_raw_parts(
+                                buffer.mData.cast::<f32>(),
+                                samples - (samples % channels),
+                            );
+                            // Verbatim: the same body the mic path runs, from
+                            // the same module (`rtring.rs`'s own doc comment
+                            // asks for exactly this).
+                            rt_capture_callback(&capture, frames, |s| s, host_ns);
+                        }
+                    });
+                },
+            );
+
+            let mut id: objc2_core_audio::AudioDeviceIOProcID = None;
+            // SAFETY: the block and the queue are kept alive in `self.live`
+            // below for as long as CoreAudio holds the IOProc.
+            let status = unsafe {
+                AudioDeviceCreateIOProcIDWithBlock(
+                    NonNull::from(&mut id),
+                    aggregate,
+                    Some(&queue),
+                    RcBlock::as_ptr(&block),
+                )
+            };
+            if status != 0 || id.is_none() {
+                return Err(if status == 0 { -1 } else { status });
+            }
+            self.live = Some(LiveIoProc {
+                id,
+                aggregate,
+                _block: block,
+                _queue: queue,
+            });
+            Ok(1)
+        }
+
+        fn start(&mut self, aggregate: u32, _ioproc: IoProcToken) -> Result<(), i32> {
+            let Some(live) = self.live.as_ref() else {
+                return Err(-1);
+            };
+            // SAFETY: the IOProc id came from this device.
+            let status = unsafe { AudioDeviceStart(aggregate, live.id) };
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(status)
+            }
+        }
+
+        fn stop(&mut self, aggregate: u32, _ioproc: IoProcToken) {
+            if let Some(live) = self.live.as_ref() {
+                // SAFETY: as above; a non-zero status is logged by the caller's
+                // teardown, never a reason to skip the remaining steps.
+                unsafe { AudioDeviceStop(aggregate, live.id) };
+            }
+        }
+
+        fn destroy_ioproc(&mut self, _aggregate: u32, _ioproc: IoProcToken) {
+            // The device id comes from `LiveIoProc` rather than from the
+            // argument: they are always the same device, and taking it from the
+            // handle is what lets `Drop` and the rebuild path do this too.
+            self.destroy_live_ioproc();
+        }
+
+        fn destroy_aggregate(&mut self, aggregate: u32) {
+            // SAFETY: `aggregate` came from AudioHardwareCreateAggregateDevice,
+            // and the destroy symbol was resolved alongside the create one — an
+            // aggregate device can never exist here without its destructor.
+            unsafe { (self.symbols.destroy_aggregate)(aggregate) };
+        }
+
+        fn destroy_tap(&mut self, tap: u32) {
+            // SAFETY: `tap` came from AudioHardwareCreateProcessTap; same
+            // all-or-nothing resolution argument as above.
+            unsafe { (self.symbols.destroy_process_tap)(tap) };
+        }
+    }
+
+    /// A started system tap, torn down on drop.
+    ///
+    /// Drop is the backstop, not the plan: [`SystemTap::stop`] is the ordinary
+    /// path. But a panic anywhere in the meeting stack must not leave a private
+    /// aggregate device holding the user's output device, so the teardown runs
+    /// from `Drop` as well — the same four calls, the same order.
+    pub struct SystemTap {
+        platform: CoreAudioPlatform,
+        resources: TapResources,
+        format: TapFormat,
+        capture: Arc<RtCapture>,
+    }
+
+    impl SystemTap {
+        pub fn format(&self) -> TapFormat {
+            self.format
+        }
+
+        pub fn capture(&self) -> &Arc<RtCapture> {
+            &self.capture
+        }
+
+        pub fn stop(mut self) {
+            teardown(&mut self.platform, &mut self.resources);
+        }
+    }
+
+    impl Drop for SystemTap {
+        fn drop(&mut self) {
+            if !self.resources.is_empty() {
+                teardown(&mut self.platform, &mut self.resources);
+            }
+        }
+    }
+
+    /// Create, wire and start the tap — and **return** the capture ring it is
+    /// stamping into.
+    ///
+    /// The ring is an output, not an input, and that is the correction this
+    /// function exists in its current shape for. It used to take an
+    /// `Arc<RtCapture>`, which reads naturally and is impossible to call
+    /// correctly: `kAudioTapPropertyFormat` — the tap's real rate and channel
+    /// count — cannot be read until `AudioHardwareCreateProcessTap` has already
+    /// succeeded, so every caller had to guess the format before the tap that
+    /// determines it existed. A wrong guess is not an error, it is a silently
+    /// wrong sample axis on every anchor (see [`capture_matches_format`]). So
+    /// the tap is opened, the format is read, the ring is built from it, and the
+    /// caller gets both back together via [`SystemTap::capture`] and
+    /// [`SystemTap::format`] — which is also exactly the pair
+    /// [`virtual_meeting_config`] needs.
+    ///
+    /// **Caller contract:** gate this on macOS 14.4 first (YV101). Nothing calls
+    /// it yet for that reason. The linkage floor is enforced here regardless —
+    /// on an OS without the API this returns
+    /// [`TapError::ProcessTapApiUnavailable`] rather than trusting a caller to
+    /// have checked.
+    pub fn start_system_tap() -> Result<SystemTap, TapError> {
+        let mut platform = CoreAudioPlatform::new()?;
+        let uid = format!("consulting.drivia.yap.tap.{}", uuid::Uuid::new_v4());
+        let open: OpenTap = super::open_tap(
+            &mut platform,
+            self_process_object(),
+            &uid,
+            "Yap meeting capture",
+        )?;
+        // `open_tap` returning `Ok` means `bind_capture` ran, so this is `Some`.
+        // Checked rather than unwrapped for the same reason `create_ioproc`
+        // checks: an unbound ring here would be a tap delivering into nothing.
+        let capture =
+            platform
+                .capture()
+                .map(Arc::clone)
+                .ok_or(TapError::CaptureFormatMismatch {
+                    tap_sample_rate: open.format.sample_rate,
+                    tap_channels: open.format.channels,
+                    capture_sample_rate: 0,
+                    capture_channels: 0,
+                })?;
+        super::capture_matches_format(&capture, open.format)?;
+        Ok(SystemTap {
+            platform,
+            resources: open.resources,
+            format: open.format,
+            capture,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── YV100: the tap's own pure seams ─────────────────────────────────
+
+    #[test]
+    fn an_unresolvable_self_process_object_refuses_rather_than_taps_everything() {
+        assert_eq!(
+            exclusion_list(None),
+            Err(TapError::SelfProcessObjectUnavailable)
+        );
+        // Object 0 is "no object" in CoreAudio, so it is the same refusal by a
+        // second route rather than an exclusion of nothing.
+        assert_eq!(
+            exclusion_list(Some(0)),
+            Err(TapError::SelfProcessObjectUnavailable)
+        );
+        assert_eq!(exclusion_list(Some(77)), Ok([77]));
+    }
+
+    #[test]
+    fn the_declared_key_names_are_the_ones_coreaudio_uses() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            declared_aggregate_key_names(),
+            coreaudio_aggregate_key_names()
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(declared_aggregate_key_names().len(), 9);
+    }
+
+    #[test]
+    fn a_status_renders_as_its_four_char_code_when_it_is_one() {
+        // 'who?' — kAudioHardwareBadObjectError, the status a destroyed tap
+        // returns, and the one a log reader will actually search for.
+        assert_eq!(fourcc(i32::from_be_bytes(*b"who?")), "'who?'");
+        assert_eq!(fourcc(-1), "0xffffffff");
+    }
+
+    // ── YV104: the ghost watchdog ───────────────────────────────────────
 
     fn healthy_tap() -> TapLiveness {
         TapLiveness {
