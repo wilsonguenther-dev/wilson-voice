@@ -1,0 +1,145 @@
+YV104 review round 2 — the two BLOCKING findings, reproduced and then closed.
+
+Method: every run below is the SAME test file
+(desktop/src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs) at the
+SAME commit. Only the shipping module is mutated back to its as-submitted
+behaviour, one finding at a time, to prove the tests are not vacuous. Ticks are
+at meeting::WATCHDOG_INTERVAL = 60 s throughout — the value the shipping
+watchdog thread sleeps for.
+
+================================================================================
+[1] AS SUBMITTED, finding 1: `silence_is_explained` deleted and `verdict()`
+    ignoring whether anything was ever observed playing.
+================================================================================
+running 10 tests
+test a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag ... ok
+test an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval ... ok
+test evidence_that_audio_was_playing_does_not_outlive_the_silence_it_belonged_to ... ok
+test liveness_is_read_before_the_in_flight_timeout_is_honoured ... ok
+test silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not ... FAILED
+test an_explained_silence_releases_a_stale_flag_without_spending_the_budget ... FAILED
+test a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied ... FAILED
+test the_permission_verdict_requires_evidence_that_something_was_playing ... FAILED
+test a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either ... FAILED
+test the_shipping_watchdog_also_leaves_a_quiet_meeting_alone ... FAILED
+
+failures:
+
+---- silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not stdout ----
+
+thread 'silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not' (10916799) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:221:5:
+assertion failed: !is_unexplained_silence(&tap, &nothing_playing())
+
+---- an_explained_silence_releases_a_stale_flag_without_spending_the_budget stdout ----
+
+thread 'an_explained_silence_releases_a_stale_flag_without_spending_the_budget' (10916795) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:465:5:
+assertion failed: !actions.iter().any(|a| a.is_rebuild())
+
+---- a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied stdout ----
+
+thread 'a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied' (10916794) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:148:5:
+a meeting with nothing playing must produce no tap action at all: [RebuildFull { attempt: 1, kind: AllZeroBuffers, causes: SilenceCauses(2) }, RebuildFull { attempt: 2, kind: AllZeroBuffers, causes: SilenceCauses(2) }, RebuildFull { attempt: 3, kind: AllZeroBuffers, causes: SilenceCauses(2) }, DegradeTrackLost { verdict: PermissionLikelyDenied, after_rebuilds: 3, causes: SilenceCauses(2) }, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- the_permission_verdict_requires_evidence_that_something_was_playing stdout ----
+
+thread 'the_permission_verdict_requires_evidence_that_something_was_playing' (10916800) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:244:5:
+assertion `left == right` failed: nothing was ever observed playing, so nothing here says 'denied'
+  left: Some(PermissionLikelyDenied)
+ right: Some(NoSystemAudioObserved)
+
+---- a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either stdout ----
+
+thread 'a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either' (10916792) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:181:5:
+assertion failed: actions.iter().all(|a| *a == TapWatchdogAction::Continue)
+
+---- the_shipping_watchdog_also_leaves_a_quiet_meeting_alone stdout ----
+
+thread 'the_shipping_watchdog_also_leaves_a_quiet_meeting_alone' (10916801) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:205:9:
+assertion `left == right` failed: t=60s produced Tap(RebuildFull { attempt: 1, kind: AllZeroBuffers, causes: SilenceCauses(2) })
+  left: Tap(RebuildFull { attempt: 1, kind: AllZeroBuffers, causes: SilenceCauses(2) })
+ right: Continue
+
+
+failures:
+    a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either
+    a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied
+    an_explained_silence_releases_a_stale_flag_without_spending_the_budget
+    silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not
+    the_permission_verdict_requires_evidence_that_something_was_playing
+    the_shipping_watchdog_also_leaves_a_quiet_meeting_alone
+
+test result: FAILED. 4 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test syscapture_ghost_watchdog_false_positives`
+
+================================================================================
+[2] AS SUBMITTED, finding 2: the in-flight branch restored to honouring its
+    timeout without reading liveness, and TAP_REBUILD_IN_FLIGHT_TIMEOUT back to
+    the hard-coded 20 s (under one 60 s tick).
+================================================================================
+running 10 tests
+test a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either ... ok
+test a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied ... ok
+test evidence_that_audio_was_playing_does_not_outlive_the_silence_it_belonged_to ... ok
+test silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not ... ok
+test liveness_is_read_before_the_in_flight_timeout_is_honoured ... FAILED
+test the_permission_verdict_requires_evidence_that_something_was_playing ... ok
+test an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval ... FAILED
+test a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag ... FAILED
+test the_shipping_watchdog_also_leaves_a_quiet_meeting_alone ... ok
+test an_explained_silence_releases_a_stale_flag_without_spending_the_budget ... FAILED
+
+failures:
+
+---- liveness_is_read_before_the_in_flight_timeout_is_honoured stdout ----
+
+thread 'liveness_is_read_before_the_in_flight_timeout_is_honoured' (10917484) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:385:9:
+assertion `left == right` failed: with 0 rebuilds spent, a delivering tap still must not be touched
+  left: RebuildFull { attempt: 1, kind: PreviousRebuildTimedOut, causes: SilenceCauses(0) }
+ right: RebuildSettled { outcome: Succeeded }
+
+---- an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval stdout ----
+
+thread 'an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval' (10917482) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:402:5:
+in-flight timeout 20s is under two 60s ticks, so the wait branch cannot be reached
+
+---- a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag stdout ----
+
+thread 'a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag' (10917479) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:342:5:
+a tap delivering audio was rebuilt again: [RebuildFull { attempt: 2, kind: PreviousRebuildTimedOut, causes: SilenceCauses(0) }, RebuildFull { attempt: 3, kind: PreviousRebuildTimedOut, causes: SilenceCauses(0) }, DegradeTrackLost { verdict: GhostTapUnrecovered, after_rebuilds: 3, causes: SilenceCauses(0) }, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue, Continue]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- an_explained_silence_releases_a_stale_flag_without_spending_the_budget stdout ----
+
+thread 'an_explained_silence_releases_a_stale_flag_without_spending_the_budget' (10917481) panicked at src-tauri/tests/syscapture_ghost_watchdog_false_positives.rs:465:5:
+assertion failed: !actions.iter().any(|a| a.is_rebuild())
+
+
+failures:
+    a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag
+    an_explained_silence_releases_a_stale_flag_without_spending_the_budget
+    an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval
+    liveness_is_read_before_the_in_flight_timeout_is_honoured
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test syscapture_ghost_watchdog_false_positives`
+
+================================================================================
+[3] AS SHIPPED IN THIS REVISION — the same file, unmutated module.
+================================================================================
+running 10 tests
+test a_call_that_goes_quiet_after_real_audio_is_not_rebuilt_either ... ok
+test a_delivering_tap_is_never_rebuilt_or_degraded_by_a_stale_in_flight_flag ... ok
+test a_quiet_but_granted_meeting_is_never_rebuilt_and_never_badged_denied ... ok
+test an_in_flight_rebuild_is_actually_waited_for_at_the_shipping_interval ... ok
+test an_explained_silence_releases_a_stale_flag_without_spending_the_budget ... ok
+test liveness_is_read_before_the_in_flight_timeout_is_honoured ... ok
+test evidence_that_audio_was_playing_does_not_outlive_the_silence_it_belonged_to ... ok
+test silence_with_nothing_playing_is_explained_and_silence_with_audio_playing_is_not ... ok
+test the_shipping_watchdog_also_leaves_a_quiet_meeting_alone ... ok
+test the_permission_verdict_requires_evidence_that_something_was_playing ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

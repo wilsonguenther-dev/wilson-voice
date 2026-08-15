@@ -1,0 +1,53 @@
+$ grep -n "AudioDeviceStop" desktop/src-tauri/src/syscapture.rs
+172:    /// `AudioDeviceStop` — stop the IOProc before anything it touches is freed.
+173:    AudioDeviceStop,
+199:            TapStep::AudioDeviceStop => "AudioDeviceStop",
+215:            TapStep::AudioDeviceStop
+225:/// `AudioDeviceStop` → `AudioDeviceDestroyIOProcID` →
+237:        TapStep::AudioDeviceStop,
+1035:        assert_eq!(steps[0], TapStep::AudioDeviceStop);
+
+$ # …and the six steps that follow it, in ONE function — the single declaration
+$ sed -n "/pub const fn full_rebuild_sequence/,/^}/p" desktop/src-tauri/src/syscapture.rs
+pub const fn full_rebuild_sequence() -> [TapStep; 7] {
+    [
+        TapStep::AudioDeviceStop,
+        TapStep::AudioDeviceDestroyIOProcID,
+        TapStep::AudioHardwareDestroyAggregateDevice,
+        TapStep::AudioHardwareDestroyProcessTap,
+        TapStep::AudioHardwareCreateProcessTap,
+        TapStep::AudioHardwareCreateAggregateDevice,
+        TapStep::CreateAndStartIOProc,
+    ]
+}
+
+$ grep -n "AudioHardwareDestroyAggregateDevice\|AudioHardwareDestroyProcessTap\|AudioHardwareCreateProcessTap\|AudioHardwareCreateAggregateDevice\|AudioDeviceDestroyIOProcID" desktop/src-tauri/src/syscapture.rs
+6://! Apple Developer Forums thread **825780**: `AudioHardwareCreateProcessTap`
+80://! allocation on any audio thread. The actual `AudioHardwareCreateProcessTap`
+174:    /// `AudioDeviceDestroyIOProcID` — release the proc id itself.
+175:    AudioDeviceDestroyIOProcID,
+176:    /// `AudioHardwareDestroyAggregateDevice` — the private aggregate goes next,
+178:    AudioHardwareDestroyAggregateDevice,
+179:    /// `AudioHardwareDestroyProcessTap` — and only then the tap. Destroying the
+182:    AudioHardwareDestroyProcessTap,
+183:    /// `AudioHardwareCreateProcessTap` — a brand new tap. OS-4 is explicit that
+185:    AudioHardwareCreateProcessTap,
+186:    /// `AudioHardwareCreateAggregateDevice` — a brand new aggregate around it,
+188:    AudioHardwareCreateAggregateDevice,
+200:            TapStep::AudioDeviceDestroyIOProcID => "AudioDeviceDestroyIOProcID",
+201:            TapStep::AudioHardwareDestroyAggregateDevice => "AudioHardwareDestroyAggregateDevice",
+202:            TapStep::AudioHardwareDestroyProcessTap => "AudioHardwareDestroyProcessTap",
+203:            TapStep::AudioHardwareCreateProcessTap => "AudioHardwareCreateProcessTap",
+204:            TapStep::AudioHardwareCreateAggregateDevice => "AudioHardwareCreateAggregateDevice",
+216:                | TapStep::AudioDeviceDestroyIOProcID
+217:                | TapStep::AudioHardwareDestroyAggregateDevice
+218:                | TapStep::AudioHardwareDestroyProcessTap
+225:/// `AudioDeviceStop` → `AudioDeviceDestroyIOProcID` →
+226:/// `AudioHardwareDestroyAggregateDevice` → `AudioHardwareDestroyProcessTap` →
+227:/// `AudioHardwareCreateProcessTap` → `AudioHardwareCreateAggregateDevice` →
+238:        TapStep::AudioDeviceDestroyIOProcID,
+239:        TapStep::AudioHardwareDestroyAggregateDevice,
+240:        TapStep::AudioHardwareDestroyProcessTap,
+241:        TapStep::AudioHardwareCreateProcessTap,
+242:        TapStep::AudioHardwareCreateAggregateDevice,
+760:    /// "`AudioHardwareCreateProcessTap` returned -4" is.

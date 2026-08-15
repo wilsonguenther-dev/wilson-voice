@@ -1,0 +1,58 @@
+$ cargo test --test syscapture_ghost_watchdog_rebuild_budget -- --ignored --nocapture
+#
+# The 51-minute M2 Air session from Apple Developer Forums thread 825780,
+# replayed through the shipping state machine: holes of 60 s, 53 s, 141 s,
+# 16 min 3 s and 3 min 8 s, on a 60 s watchdog tick.
+
+     Running tests/syscapture_ghost_watchdog_rebuild_budget.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_rebuild_budget-7c343cd0cef02f9b)
+
+running 1 test
+second  since_nonzero  action
+   360             60  RebuildFull { attempt: 1, kind: AllZeroBuffers, causes: SilenceCauses(0) }
+   960             60  RebuildFull { attempt: 2, kind: AllZeroBuffers, causes: SilenceCauses(0) }
+  1020            120  RebuildFull { attempt: 3, kind: AllZeroBuffers, causes: SilenceCauses(0) }
+  1560             60  DegradeTrackLost { verdict: GhostTapUnrecovered, after_rebuilds: 3, causes: SilenceCauses(0) }
+
+stored on the meeting row as `tap_rebuilds`:
+{
+  "attempts": [
+    {
+      "at_ms": 360000,
+      "attempt": 1,
+      "causes": [],
+      "host_ns": 7670,
+      "kind": "all_zero_buffers",
+      "outcome": "succeeded",
+      "silent_ms": 60000
+    },
+    {
+      "at_ms": 960000,
+      "attempt": 2,
+      "causes": [],
+      "host_ns": 8270,
+      "kind": "all_zero_buffers",
+      "outcome": "succeeded",
+      "silent_ms": 60000
+    },
+    {
+      "at_ms": 1020000,
+      "attempt": 3,
+      "causes": [],
+      "host_ns": 8330,
+      "kind": "all_zero_buffers",
+      "outcome": "succeeded",
+      "silent_ms": 120000
+    }
+  ],
+  "budget": 3,
+  "count": 3,
+  "verdict": "ghost_tap_unrecovered",
+  "version": 1
+}
+
+degraded: true
+banner:   System audio stopped coming through and could not be restarted. Your microphone track is still recording.
+test transcript_of_the_51_minute_m2_air_session_from_thread_825780 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

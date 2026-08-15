@@ -123,6 +123,13 @@ pub mod support;
 // enforced by `sysaudio::mute_for_take`, and that gate is asserted from
 // `tests/meeting_no_automute.rs` against a fake output device.
 pub mod sysaudio;
+// YV104 / OS-4 — the system-audio tap's zero-buffer ghost watchdog. Pure: the
+// rebuild decision, the 3-per-meeting budget, the rebuild log YV106 persists,
+// and the "did this tap ever deliver a non-zero sample" discriminator that is
+// the ONLY honest way to tell a TCC denial from Apple's all-zero-buffer bug.
+// Public because every one of those is driven from `tests/syscapture_*.rs`
+// with zero audio hardware, which is the whole point of the split.
+pub mod syscapture;
 // YV93 — public because the preemption contract (a dictation request takes the
 // one warm engine back from meeting ASR at the next chunk boundary) is proved
 // against the REAL manager in `tests/meeting_dictation_preempts_transcription.rs`
