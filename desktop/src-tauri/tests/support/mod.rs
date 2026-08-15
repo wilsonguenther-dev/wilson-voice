@@ -16,6 +16,12 @@
 /// code it is scoring.
 pub mod two_track;
 
+/// YV124 — the shipped `yap-diarize` sidecar behind the shipped `DiarizePool`,
+/// plus the three-state answer to "can this machine produce embeddings?". Here
+/// rather than in one test file because the anti-alias EER arm is the first
+/// caller and YV126/YV129 are the next two.
+pub mod diarize;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

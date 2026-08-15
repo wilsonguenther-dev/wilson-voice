@@ -1,0 +1,54 @@
+YV124 — non-vacuous mutations
+=============================
+
+Every assertion this item adds, deliberately broken one at a time, with the
+failure it produces. Run from `desktop/src-tauri`. The tree is restored after
+each run — this file is the record, not a committed mutation.
+
+Why four and not one: this arm has three separable claims (the two decimators
+differ on this audio; the pair labels come from the fixture; the scoring can
+see the corruption OS-8 predicts) and a precondition (the fixture carries more
+than one speaker). A mutation that only broke one of them would leave the
+other three unproven.
+
+Note on M1's -1.1 dB: with the shipped column swapped to the pre-fix
+decimator, its folded energy is still measured against the Butterworth clean
+control, so the ratio lands slightly below 0 dB rather than exactly at it. The
+point stands either way — 28.3 dB of separation becomes none.
+
+── M1 the shipped column is silently the pre-fix decimator
+$ cargo test --test meeting_eval anti_alias_eer_regression
+exit=101
+meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.076254 removed_db=-1.1
+test meeting_eval_anti_alias_eer_regression ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.02s
+thread 'meeting_eval_anti_alias_eer_regression' (16175010) panicked at src-tauri/tests/meeting_eval.rs:3581:5:
+the shipped decimator must keep ≥20 dB more of the >8 kHz band out of the speech band on fixture (e), got -1.1 dB — with the two arms this close there is nothing for an EER to separate
+
+── M2 every pair is labelled genuine
+$ cargo test --test meeting_eval anti_alias_eer_pairs_are_labeled_by_speaker
+exit=101
+test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+thread 'meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker' (16175259) panicked at src-tauri/tests/meeting_eval.rs:3739:5:
+assertion `left == right` failed
+  left: 66
+ right: 18
+
+── M3 the common-mode corruption is not applied
+$ cargo test --test meeting_eval anti_alias_eer_arm_scores_the_degradation
+exit=101
+meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.0000 genuine=18 impostor=48
+test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+thread 'meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts' (16175502) panicked at src-tauri/tests/meeting_eval.rs:3705:5:
+nine parts shared noise to one part person still separates at EER 0.0000, so the degradation is not a degradation
+
+── M4 the fixture's speaker labels are flattened to one person
+$ cargo test --test meeting_eval anti_alias_eer_regression
+exit=101
+test meeting_eval_anti_alias_eer_regression ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.08s
+thread 'meeting_eval_anti_alias_eer_regression' (16175748) panicked at src-tauri/tests/meeting_eval.rs:3560:5:
+an EER needs impostor pairs: 1 speaker(s), 12 utterance(s)
+

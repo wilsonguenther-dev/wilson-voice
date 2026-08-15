@@ -1,0 +1,82 @@
+YV124 — anti-alias EER validation arm: acceptance transcript
+host: macOS 26.5.2 / arm64; rustc 1.94.0
+corpus: ~/yap-eval-corpus/meetings (present); diarize models: not installed; yap-diarize: YV121 scaffold (no inference backend)
+
+$ cargo test --test meeting_eval anti_alias_eer_regression -- --nocapture
+
+running 1 test
+meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
+meeting_eval anti_alias_eer EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
+  the fold half of OS-8's arm is measured above; the EER half needs an embedder and this machine has none: no inference backend in yap-diarize (load_models answered 'no_backend')
+test meeting_eval_anti_alias_eer_regression ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.11s
+
+
+$ cargo test --test meeting_eval anti_alias_eer -- --nocapture   # all three arms of this item
+
+running 3 tests
+meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
+test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
+test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
+meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
+meeting_eval anti_alias_eer EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
+  the fold half of OS-8's arm is measured above; the EER half needs an embedder and this machine has none: no inference backend in yap-diarize (load_models answered 'no_backend')
+test meeting_eval_anti_alias_eer_regression ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 2.13s
+
+
+── acceptance criterion 2: the EXISTING WER arm, unmodified ───────────────
+the backlog names it `anti_alias_wer_regression`; no test has that substring.
+$ cargo test --test meeting_eval anti_alias_wer_regression
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+^ 0 tests run. A name filter that matches nothing exits 0, which is why the
+  evidence below uses the arm's REAL name instead.
+
+$ cargo test --test meeting_eval antialias_decimation -- --nocapture
+
+running 1 test
+meeting_eval antialias in_band_fold_linear=0.094703 in_band_fold_antialiased=0.003846 removed_db=27.8
+  [alias-linear] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [alias-filtered] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
+  linear (pre-YV92): WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  anti-aliased:      WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  [clean-linear] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [clean-filtered] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
+test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.92s
+
+
+── the whole eval binary, 3× (flaky-prone) ───────────────────────────────
+run 1: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.33s
+run 2: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.29s
+run 3: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.31s
+
+── the whole crate's tests, as CI runs them ──────────────────────────────
+$ cargo test --features custom-protocol   ×3
+run 1: ONE failure — two_track_journal_round_trip::a_journal_queue_drop_on_one_track_is_spliced_into_that_track
+       "12801 sample(s) were dropped but only 12800 were spliced" (an off-by-one in a
+       load-dependent drop counter). That test binary compiles none of this item's files
+       and this item changes nothing under src/ — see the diffstat. Re-run 5× in isolation:
+       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+run 2: ok (every binary green)
+run 3: ok (every binary green)
+       plus 3 earlier full runs without --features custom-protocol, all green.
+
+$ cargo fmt --all -- --check   # informational in CI; this item adds no new diff
+  7 hunks, all present on origin/main before this branch (96/810/1886/2082/2136/2212/2241,
+  shifted +6 by the import block this item adds). tests/support/diarize.rs is fmt-clean.
+$ cargo clippy --all-targets --features custom-protocol   # no warning points at this item's files
+$ npx tsc --noEmit -> 0

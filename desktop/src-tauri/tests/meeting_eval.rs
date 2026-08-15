@@ -92,7 +92,13 @@ use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
 // YV120: the diarization metrics score fixtures (e) and (f). Same rule as the
 // chunker above — the harness runs the SHIPPED metric, never a copy of it, so a
 // change to `der`/`jer` fails here as well as in its own unit file.
-use wilson_voice_lib::diarize_metrics::{der, jer, RttmTurn};
+// YV124 adds the EER half of finding OS-8's validation arm, and takes the same
+// posture: `cosine_similarity` and `enrollment_eer` are the SHIPPED functions,
+// not a copy of them, so the arm cannot be scored by a metric that has drifted
+// away from the one enrollment will use.
+use wilson_voice_lib::diarize_metrics::{
+    cosine_similarity, der, enrollment_eer, jer, CosineSimilarity, EerReport, RttmTurn,
+};
 use wilson_voice_lib::meeting_asr::{
     merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, merge_timed_reporting,
     plan_windows, plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig,
@@ -3374,6 +3380,483 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
         report.rate(),
         (total - busiest) / total
     );
+}
+
+// ---------------------------------------------------------------------------
+// YV124 — the anti-alias EER arm: plan finding OS-8's deferred half
+// ---------------------------------------------------------------------------
+//
+// OS-8 asked for two arms on the same fixture, not one: "run one fixture
+// through both resamplers and compare CAM++ EER **and** WER… before the
+// enrollment thresholds are tuned, or those thresholds permanently encode the
+// aliasing." YV92/YV93 shipped the WER half — it is
+// `meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise`,
+// forty lines above, and this item does not touch it. The EER half could not
+// ship then because there was no embedding extractor in the repo. This is it.
+//
+// ## Which fixture, and why it is not fixture (c)
+//
+// The WER arm scores fixture (c) `device-change`, which is the right fixture
+// for a WER: one voice, native 48 kHz, a known reference transcript. An EER is
+// not a WER. It needs a labeled genuine/impostor distribution, which needs at
+// least two PEOPLE, and fixture (c) has exactly one (`meta.json` carries no
+// `speakers` and no `rttm`). Fixture (e) `room-3-near-field` is the corpus's
+// multi-speaker fixture: three distinct `say` voices, four turns each, every
+// turn 3.2–4.4 s — enrollment-utterance length, by construction. So the arm
+// takes its SPEAKERS from fixture (e) and its FOLD-BAND CONTENT from the same
+// `with_ultrasonic_noise` the WER arm uses, which is the "far-field room tone:
+// HVAC/fan/keyboard energy above 8 kHz" the finding names.
+//
+// ## Getting fixture (e) to a native rate honestly
+//
+// The corpus stores fixture (e) at the pipeline's 16 kHz target, so the arm
+// has to put it back at a capture rate before it can decimate it two ways.
+// That is done with the app's own upsampler (`resample_linear` 16→48 kHz, the
+// direction `resample.rs` documents as unable to fold) followed by the SHIPPED
+// anti-alias cascade — `LowPassCascade::for_decimation(48k, 16k)`, the exact
+// 8th-order Butterworth the app installs — run once over the upsampled signal
+// to remove the interpolator's images. After that step the ONLY energy above
+// 8 kHz in the arm's input is the fold-band noise the arm adds on purpose,
+// which is the experiment OS-8 describes and not a resampling artifact wearing
+// its clothes.
+//
+// ## What is measured with no model on the machine, and what is not
+//
+// The fold measurement below is real on any machine with the corpus and needs
+// no model: each arm's decimated output is compared against THAT SAME ARM's
+// decimation of the clean signal, so the number is the energy the noise put
+// into 0–8 kHz and the two arms' filter phase never enters it (the WER arm
+// measures the fold the same way, against the same 20 dB bar — one constant,
+// asserted in two places).
+//
+// The EER itself needs embeddings, and embeddings need an inference backend in
+// `yap-diarize`. YV121 shipped that sidecar with zero model bytes on purpose
+// and YV122 — open, unmerged as this item lands — is what replaces its
+// `load_backend`. So on this base the arm measures the fold, then reports the
+// exact refusal tag it got back (`no_backend`) and stops. It does not
+// interpolate an EER, it does not quote one, and it does not skip silently:
+// `support::diarize::backend()` panics on every failure that is NOT one of the
+// two honest "this machine has no embedder" states, so a broken sidecar can
+// never present here as a green arm.
+
+/// The native capture rate the two decimators are compared at — the rate OS-8's
+/// 3:1 analysis is about, and the rate fixture (c)'s native half was rendered
+/// at.
+const ARM_NATIVE_RATE: u32 = 48_000;
+
+/// How much more of the >8 kHz band the shipped decimator must keep out of the
+/// speech band than the pre-fix one, in dB. The same bar the WER arm holds on
+/// the same measurement, so the two arms cannot drift apart on what "the fix
+/// works" means.
+const FOLD_REJECTION_DB: f32 = 20.0;
+
+/// One enrollment utterance: who said it, and the fixture's own samples for the
+/// RTTM turn that bounds it.
+struct ArmUtterance {
+    speaker: String,
+    /// 16 kHz, as the corpus stores it.
+    samples: Vec<f32>,
+}
+
+/// Fixture (e)'s turns, sliced out of its audio. Exact by construction: the
+/// fixture was ASSEMBLED from these turns, so a slice is the utterance and not
+/// an approximation of one.
+fn arm_utterances(root: &Path) -> Vec<ArmUtterance> {
+    let (rate, samples) = read_wav_i16(&root.join(ROOM_3).join("audio.wav"));
+    assert_eq!(
+        rate, TARGET_RATE,
+        "fixture (e) is stored at the pipeline's target rate"
+    );
+    read_rttm(root, ROOM_3)
+        .iter()
+        .map(|turn| {
+            let start = (turn.start_seconds * rate as f64) as usize;
+            let end = ((turn.end_seconds * rate as f64) as usize).min(samples.len());
+            assert!(end > start, "empty turn {turn:?}");
+            ArmUtterance {
+                speaker: turn.speaker_id.clone(),
+                samples: samples[start..end]
+                    .iter()
+                    .map(|&s| s as f32 / i16::MAX as f32)
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// Put a 16 kHz utterance back at [`ARM_NATIVE_RATE`] with nothing above 8 kHz
+/// in it. See the section header for why the image-removal pass matters.
+fn at_native_rate(utterance: &[f32]) -> Vec<f32> {
+    let mut up =
+        wilson_voice_lib::resample::resample_linear(utterance, TARGET_RATE, ARM_NATIVE_RATE);
+    let mut images =
+        wilson_voice_lib::resample::LowPassCascade::for_decimation(ARM_NATIVE_RATE, TARGET_RATE)
+            .expect("48 kHz → 16 kHz decimates, so the shipped cascade exists");
+    images.process(&mut up);
+    up
+}
+
+/// The two decimations of one utterance, plus the clean control each is scored
+/// against.
+struct DecimatedPair {
+    speaker: String,
+    /// Pre-fix: `resample_linear`, no lowpass ahead of a 3:1 reduction.
+    linear: Vec<f32>,
+    /// Shipped: `resample_decimate`, the 8th-order Butterworth then the
+    /// interpolator.
+    shipped: Vec<f32>,
+    /// The same two decimations of the SAME utterance without the fold-band
+    /// noise — the reference each arm's folded energy is measured against, so
+    /// the measurement never crosses the two filters' phase responses.
+    linear_clean: Vec<f32>,
+    shipped_clean: Vec<f32>,
+}
+
+fn decimate_both_ways(utterances: &[ArmUtterance]) -> Vec<DecimatedPair> {
+    utterances
+        .iter()
+        .map(|u| {
+            let clean = at_native_rate(&u.samples);
+            let noisy = with_ultrasonic_noise(&clean, ARM_NATIVE_RATE);
+            DecimatedPair {
+                speaker: u.speaker.clone(),
+                linear: wilson_voice_lib::resample::resample_linear(
+                    &noisy,
+                    ARM_NATIVE_RATE,
+                    TARGET_RATE,
+                ),
+                shipped: wilson_voice_lib::resample::resample_decimate(
+                    &noisy,
+                    ARM_NATIVE_RATE,
+                    TARGET_RATE,
+                ),
+                linear_clean: wilson_voice_lib::resample::resample_linear(
+                    &clean,
+                    ARM_NATIVE_RATE,
+                    TARGET_RATE,
+                ),
+                shipped_clean: wilson_voice_lib::resample::resample_decimate(
+                    &clean,
+                    ARM_NATIVE_RATE,
+                    TARGET_RATE,
+                ),
+            }
+        })
+        .collect()
+}
+
+/// Every pair of embeddings, split by whether the two utterances are the same
+/// person. This is the labeled distribution `enrollment_eer` needs, and the
+/// label comes from the fixture's RTTM rather than from anything the pipeline
+/// decided — the ground truth cannot be contaminated by the thing being scored.
+fn genuine_and_impostor(
+    embeddings: &[(String, Vec<f32>)],
+) -> (Vec<CosineSimilarity>, Vec<CosineSimilarity>) {
+    let mut genuine = Vec::new();
+    let mut impostor = Vec::new();
+    for (i, (a_speaker, a)) in embeddings.iter().enumerate() {
+        for (b_speaker, b) in embeddings.iter().skip(i + 1) {
+            let score = cosine_similarity(a, b);
+            if a_speaker == b_speaker {
+                genuine.push(score);
+            } else {
+                impostor.push(score);
+            }
+        }
+    }
+    (genuine, impostor)
+}
+
+/// The EER of one arm's embeddings.
+fn arm_eer(embeddings: &[(String, Vec<f32>)]) -> EerReport {
+    let (genuine, impostor) = genuine_and_impostor(embeddings);
+    enrollment_eer(&genuine, &impostor)
+}
+
+/// **The arm.** Both decimations of the same fixture, scored on enrollment-EER.
+///
+/// ```sh
+/// cargo test --test meeting_eval anti_alias_eer_regression -- --nocapture
+/// ```
+///
+/// Two things are asserted, and the first one runs everywhere the corpus does:
+///
+/// 1. **The two arms differ, in the way OS-8 says they differ.** The shipped
+///    decimator keeps at least [`FOLD_REJECTION_DB`] more of the >8 kHz band
+///    out of 0–8 kHz than the pre-fix one, measured on fixture (e)'s own
+///    speech. Without this, an EER comparison could report "no difference" and
+///    mean "there was nothing to fold".
+/// 2. **The shipped arm's EER is not worse** — the actual ask. This half needs
+///    an embedder; see the section header for what happens when there is none.
+#[test]
+fn meeting_eval_anti_alias_eer_regression() {
+    let Some(root) = corpus() else { return };
+    let utterances = arm_utterances(&root);
+    let speakers = {
+        let mut ids: Vec<&str> = utterances.iter().map(|u| u.speaker.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    };
+    assert!(
+        speakers >= 2 && utterances.len() >= 4,
+        "an EER needs impostor pairs: {speakers} speaker(s), {} utterance(s)",
+        utterances.len()
+    );
+
+    let pairs = decimate_both_ways(&utterances);
+
+    // ── (1) the two arms are actually different on this audio ────────────────
+    // Concatenated so this is one number over the whole fixture rather than a
+    // per-utterance average that a single loud turn could carry.
+    let cat = |pick: fn(&DecimatedPair) -> &Vec<f32>| -> Vec<f32> {
+        pairs.iter().flat_map(|p| pick(p).iter().copied()).collect()
+    };
+    let folded_linear = residual_rms(&cat(|p| &p.linear), &cat(|p| &p.linear_clean));
+    let folded_shipped = residual_rms(&cat(|p| &p.shipped), &cat(|p| &p.shipped_clean));
+    let removed_db = 20.0 * (folded_linear / folded_shipped.max(1e-12)).log10();
+    println!(
+        "meeting_eval anti_alias_eer in_band_fold_linear={folded_linear:.6} \
+         in_band_fold_antialiased={folded_shipped:.6} removed_db={removed_db:.1}"
+    );
+    assert!(
+        removed_db >= FOLD_REJECTION_DB,
+        "the shipped decimator must keep ≥{FOLD_REJECTION_DB:.0} dB more of the >8 kHz \
+         band out of the speech band on fixture (e), got {removed_db:.1} dB — with the \
+         two arms this close there is nothing for an EER to separate"
+    );
+
+    // ── (2) the EER of each arm ──────────────────────────────────────────────
+    let embedder = support::diarize::embedder();
+    let (pool, embedding_dim) = match &embedder {
+        support::diarize::Embedder::Ready {
+            pool,
+            embedding_dim,
+        } => (pool, *embedding_dim),
+        other => {
+            let why = other.skip_reason().expect("not Ready");
+            println!(
+                "meeting_eval anti_alias_eer EER=UNMEASURED reason={why} \
+                 fold_rejection_db={removed_db:.1}"
+            );
+            eprintln!(
+                "  the fold half of OS-8's arm is measured above; the EER half needs an \
+                 embedder and this machine has none: {why}"
+            );
+            return;
+        }
+    };
+    eprintln!("  embedder ready: {embedding_dim}-dimensional embeddings");
+
+    let dir = support::temp_dir("yv124-anti-alias-eer");
+    let mut linear_embeddings = Vec::new();
+    let mut shipped_embeddings = Vec::new();
+    for (i, pair) in pairs.iter().enumerate() {
+        for (arm, samples, out) in [
+            ("linear", &pair.linear, &mut linear_embeddings),
+            ("shipped", &pair.shipped, &mut shipped_embeddings),
+        ] {
+            let path = dir.join(format!("{arm}-{i:02}.wav"));
+            write_wav_16k_mono(&path, &to_i16(samples));
+            let embedding = pool
+                .embed(&path)
+                .unwrap_or_else(|e| panic!("embed {arm}-{i:02}: {e:?}"));
+            assert_eq!(
+                embedding.len() as u32,
+                embedding_dim,
+                "the child reported {embedding_dim} dimensions and then returned {}",
+                embedding.len()
+            );
+            out.push((pair.speaker.clone(), embedding));
+        }
+    }
+    pool.shutdown();
+
+    let pre_fix = arm_eer(&linear_embeddings);
+    let shipped = arm_eer(&shipped_embeddings);
+    println!(
+        "meeting_eval anti_alias_eer eer_pre_fix={:.4} eer_shipped={:.4} \
+         threshold_pre_fix={:.4} threshold_shipped={:.4} genuine={} impostor={}",
+        pre_fix.eer,
+        shipped.eer,
+        pre_fix.threshold_at_eer.get(),
+        shipped.threshold_at_eer.get(),
+        shipped.genuine,
+        shipped.impostor
+    );
+    eprintln!("  pre-fix (linear decimation): {pre_fix:?}");
+    eprintln!("  shipped (Butterworth):       {shipped:?}");
+    eprintln!(
+        "  NOTE: neither threshold_at_eer above is a shipped threshold. YV129 tunes the \
+         enrollment bands, against post-fix embeddings only."
+    );
+    assert!(
+        shipped.eer <= pre_fix.eer,
+        "the shipped decimator must not make speaker embeddings worse: EER {:.4} \
+         (pre-fix) → {:.4} (shipped)",
+        pre_fix.eer,
+        shipped.eer
+    );
+}
+
+/// **The arm's scoring path, proved able to fail — with no corpus and no
+/// model.**
+///
+/// The gate above cannot report an EER on this base, so the machinery between
+/// "two sets of embeddings" and "the assertion" would otherwise never execute
+/// anywhere. It executes here, on the SAME [`genuine_and_impostor`] and the
+/// SAME `enrollment_eer` the arm calls, over vectors this test builds.
+///
+/// **These vectors are not CAM++ output and nothing here is a measurement of
+/// the resampler.** They are a model of one specific thing: what folded
+/// broadband noise does to an embedding. Aliased energy lands in the same part
+/// of the spectrum for every speaker, so it enters every utterance's embedding
+/// as a shared, common-mode direction — which drags impostor pairs toward each
+/// other and collapses the margin an EER measures. The degraded set below is
+/// the clean set plus exactly that common-mode component, and the assertion is
+/// that the arm's own scoring reports it as worse. An arm that could not tell
+/// these two apart could not tell the two decimators apart either.
+#[test]
+fn meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts() {
+    let clean = synthetic_embeddings(0.0);
+    let folded = synthetic_embeddings(0.9);
+
+    let clean_eer = arm_eer(&clean);
+    let folded_eer = arm_eer(&folded);
+    println!(
+        "meeting_eval anti_alias_eer synthetic clean_eer={:.4} common_mode_eer={:.4} \
+         genuine={} impostor={}",
+        clean_eer.eer, folded_eer.eer, clean_eer.genuine, clean_eer.impostor
+    );
+
+    // The gate the arm above applies, as a function, so it can be run in both
+    // directions: `assert!(shipped.eer <= pre_fix.eer)`.
+    let gate = |shipped: f64, pre_fix: f64| shipped <= pre_fix;
+    assert!(
+        gate(clean_eer.eer, folded_eer.eer),
+        "the arm's scoring cannot see a common-mode corruption it is supposed to \
+         catch: clean {:.4}, corrupted {:.4}",
+        clean_eer.eer,
+        folded_eer.eer
+    );
+    // …and both ends are what they claim to be. A corrupted set that still
+    // separates, or a clean set that does not, would make the comparison above
+    // true for reasons that have nothing to do with the arm working. MEASURED:
+    // clean 0.0000, nine-parts-shared 0.4410 (near the 0.5 of a coin flip).
+    assert!(
+        folded_eer.eer > 0.25,
+        "nine parts shared noise to one part person still separates at EER {:.4}, so \
+         the degradation is not a degradation",
+        folded_eer.eer
+    );
+    assert!(
+        clean_eer.eer < 0.05,
+        "the clean distribution does not separate, so this test would pass on any \
+         two piles of noise: clean EER {:.4}",
+        clean_eer.eer
+    );
+    // …and the same gate with the two arms swapped must REJECT. Without this
+    // line, a gate that is true for every input would satisfy everything above.
+    assert!(
+        !gate(folded_eer.eer, clean_eer.eer),
+        "`eer_shipped <= eer_pre_fix` holds even with the arms swapped, so it \
+         gates nothing"
+    );
+}
+
+/// The pair labelling, which is where an EER arm silently goes wrong: a genuine
+/// list that quietly contains cross-speaker pairs reports a beautiful EER for
+/// any embedder at all.
+#[test]
+fn meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker() {
+    let embeddings = synthetic_embeddings(0.0);
+    let speakers = SYNTHETIC_SPEAKERS;
+    let per_speaker = SYNTHETIC_UTTERANCES;
+    let (genuine, impostor) = genuine_and_impostor(&embeddings);
+
+    // Every unordered pair is used exactly once, and split the one way the
+    // fixture's own labels allow.
+    let n = speakers * per_speaker;
+    assert_eq!(
+        genuine.len(),
+        speakers * per_speaker * (per_speaker - 1) / 2
+    );
+    assert_eq!(impostor.len(), n * (n - 1) / 2 - genuine.len());
+
+    // The labels are the speakers', not the scores': re-derive the split by
+    // brute force from the ids and check it agrees pair for pair.
+    let mut expected_genuine = 0usize;
+    for (i, (a, _)) in embeddings.iter().enumerate() {
+        for (b, _) in embeddings.iter().skip(i + 1) {
+            if a == b {
+                expected_genuine += 1;
+            }
+        }
+    }
+    assert_eq!(genuine.len(), expected_genuine);
+
+    // And a mislabelled distribution — one impostor pair smuggled into the
+    // genuine list — moves the number, so the assertion above is load-bearing.
+    let mut smuggled = genuine.clone();
+    smuggled.push(*impostor.first().expect("impostor pairs exist"));
+    assert_ne!(
+        enrollment_eer(&genuine, &impostor).eer,
+        enrollment_eer(&smuggled, &impostor).eer,
+        "a cross-speaker pair in the genuine list changes nothing, so the labels \
+         are not being read"
+    );
+}
+
+const SYNTHETIC_SPEAKERS: usize = 3;
+const SYNTHETIC_UTTERANCES: usize = 4;
+/// Embedding width for the synthetic vectors. Not the shipped CAM++ width and
+/// deliberately not equal to it — nothing in this file may look like a claim
+/// about the model's geometry (`models.rs` records why that number lives only
+/// where the graph is loaded).
+const SYNTHETIC_DIM: usize = 32;
+
+/// How far one utterance of a speaker sits from that speaker's own centroid,
+/// as a fraction of the centroid's own scale. Small enough that `common_mode
+/// = 0` separates perfectly, large enough that a collapsed identity component
+/// leaves nothing behind.
+const SYNTHETIC_JITTER: f32 = 0.25;
+
+/// `SYNTHETIC_SPEAKERS × SYNTHETIC_UTTERANCES` labeled vectors: a per-speaker
+/// direction, per-utterance jitter, and `common_mode` — the fraction of each
+/// vector that is one direction SHARED by every speaker rather than that
+/// speaker's own.
+///
+/// It is a mix rather than an addition because that is what the fold does: the
+/// aliased energy does not sit alongside the identity information, it lands on
+/// top of the formant region the embedding reads, so the identity component
+/// shrinks as the shared one grows. `common_mode = 0` is three well-separated
+/// speakers; `common_mode = 0.9` is nine parts shared noise to one part person.
+///
+/// Deterministic (a fixed xorshift, the same trick [`room_tone`] uses) because
+/// a test that reports an EER off an RNG reports a different number on every
+/// machine.
+fn synthetic_embeddings(common_mode: f32) -> Vec<(String, Vec<f32>)> {
+    let mut state = 0x5eed_1234u32;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    let shared: Vec<f32> = (0..SYNTHETIC_DIM).map(|_| next()).collect();
+    let mut out = Vec::new();
+    for s in 0..SYNTHETIC_SPEAKERS {
+        let centroid: Vec<f32> = (0..SYNTHETIC_DIM).map(|_| next()).collect();
+        for _ in 0..SYNTHETIC_UTTERANCES {
+            let vector: Vec<f32> = centroid
+                .iter()
+                .zip(shared.iter())
+                .map(|(c, k)| c * (1.0 - common_mode) + k * common_mode + next() * SYNTHETIC_JITTER)
+                .collect();
+            out.push((format!("spk_{s}"), vector));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
