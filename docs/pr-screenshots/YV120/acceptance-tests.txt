@@ -1,10 +1,5 @@
 YV120 — DER/JER/enrollment-EER metric harness: acceptance transcript
-awk: syntax error at source line 1
- context is
-	/^release:/ {print >>>  \ <<< "rustc \" \$2}
-awk: illegal statement at source line 1
-Run on macOS 15 (aarch64), , 2026-08-15T12:34Z
-Corpus present at ~/yap-eval-corpus/meetings (6 fixtures).
+Run on macOS 15 (aarch64), rustc 1.94.0 (4a4ef493e 2026-03-02), 2026-08-15T12:34Z
 
 ============================================================
 1. cargo test --test diarization_metrics
