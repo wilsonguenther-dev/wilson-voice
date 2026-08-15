@@ -1,0 +1,44 @@
+YV105 — the backlog's row-count criterion, computed both ways, because the raw grep
+counts two tables and only one of them is the matrix.
+
+=== 1. The generated table (the criterion's actual subject) ===
+$ git show origin/main:docs/yap22a-error-matrix.md | sed -n "/^| Row | Failure/,/^$/p" | grep -c "^| [0-9]"
+10
+$ sed -n "/^| Row | Failure/,/^$/p" docs/yap22a-error-matrix.md | grep -c "^| [0-9]"
+16
+
+10 -> 16. That is +5 rows (1, 2, 3, 12, 14) plus ONE documented row-half:
+row 12 splits into 12/12b the way rows 5 and 17 already had, which the criterion
+explicitly allows if the split is documented. It is, in the PR body and in the
+document's own 'a row is a cell, not a failure' paragraph.
+
+The ids, before and after:
+4,5,5b,6,15,16,17,17b,3a,3b
+4,5,5b,6,15,16,17,17b,3a,3b,1,2,3,12,12b,14
+
+=== 2. The raw whole-file grep the criterion names ===
+$ git show origin/main:docs/yap22a-error-matrix.md | grep -c "| [0-9]"
+19
+$ grep -c "| [0-9]" docs/yap22a-error-matrix.md
+25
+
+That number is NOT +5, and pretending otherwise would be the arithmetic dressed up.
+`grep -c '| [0-9]'` over the whole file matches THREE tables, not one — the matrix, the
+"which plan rows are still out and why" table (whose first column is a plan-row number),
+and the "which rows the app actually performs today" legend (whose last column lists row
+ids). Line by line, 19 -> 25:
+
+  matrix table                 10 -> 16   (+6: five rows, one documented split)
+  still-out table               3 ->  5   (main matched 3 of its 7 lines: `1, 2, 14`,
+                                          `7, 8`, `12, 13`; the other four begin with a
+                                          non-digit. Five of those plan rows graduated
+                                          into the matrix, and the remaining five each
+                                          got their own line: 7/8, 9, 10, 11, 13)
+  legend table                  2 ->  4   (a fourth cell type — "Policy only, with an
+                                          owning PR" — is now a real category, and both
+                                          policy rows list their ids)
+                               --------
+                               19 -> 25
+
+The isolated count in section 1 is the one that answers the criterion. Both are printed
+so a reviewer does not have to take either on trust.

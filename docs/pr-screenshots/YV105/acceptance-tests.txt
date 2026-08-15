@@ -1,0 +1,67 @@
+YV105 — the five named acceptance commands, run in a fresh clone at 8d5aa0e + this branch.
+Machine: macOS 26.5.2 arm64
+
+$ cargo test --test matrix_row1_tap_permission_denied
+running 6 tests
+test the_published_cell_names_the_owner_of_the_missing_wiring ... ok
+test prewarm_tap_is_still_absent_so_row_1_is_not_wired ... ok
+test a_tap_that_never_delivered_while_audio_was_playing_reads_as_permission_denied ... ok
+test nothing_this_row_can_produce_ends_the_meeting ... ok
+test no_permission_verdict_is_ever_reached_before_the_rebuild_budget_is_spent ... ok
+test a_granted_tap_with_nothing_playing_is_never_badged_denied ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+$ cargo test --test matrix_row2_tap_revoked_mid_meeting
+running 6 tests
+test the_published_cell_names_the_owner_of_the_missing_wiring ... ok
+test no_shipping_capture_env_supplies_a_tap_liveness_yet ... ok
+test start_system_tap_is_still_absent_so_row_2_is_not_wired ... ok
+test a_tap_that_worked_and_then_died_degrades_to_track_lost_after_its_whole_budget ... ok
+test a_degraded_meeting_is_never_rebuilt_or_re_badged ... ok
+test the_shipping_watchdog_never_stops_a_meeting_over_a_dead_tap ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+$ cargo test --test matrix_row3_mic_denied_system_only
+running 7 tests
+test a_denied_mic_with_a_working_tap_still_records_the_meeting ... ok
+test a_denied_tap_with_a_working_mic_is_22as_ordinary_meeting_badged ... ok
+test only_a_complete_meeting_goes_unbadged ... ok
+test the_only_honest_refusal_is_when_nothing_could_be_opened ... ok
+test the_system_audio_only_session_already_has_a_stream_type_to_hold ... ok
+test the_published_cell_admits_nobody_owns_this_one ... ok
+test meeting_start_plan_reaches_no_call_site_so_row_3_is_not_wired ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+$ cargo test --test matrix_row12_macos_144_gate
+running 6 tests
+test the_published_cells_split_the_gate_from_its_missing_surface ... ok
+test the_requirement_is_declared_in_exactly_one_place ... ok
+test below_14_4_the_system_audio_track_is_refused_with_a_sentence_that_names_the_requirement ... ok
+test at_and_above_14_4_the_gate_is_no_longer_the_answer ... ok
+test the_sentence_reaches_no_surface_yet_so_row_12b_is_not_wired ... ok
+test mic_only_recording_is_never_gated_by_this_row ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+$ cargo test --test matrix_row14_output_device_change
+running 6 tests
+test an_output_device_change_asks_for_the_aggregate_to_be_rebuilt ... ok
+test a_device_that_comes_and_goes_inside_the_window_costs_nothing ... ok
+test one_connect_is_one_rebuild_however_many_notifications_it_emits ... ok
+test the_published_cell_names_the_owner_of_the_missing_wiring ... ok
+test the_rebuilds_own_notifications_cannot_start_another_rebuild ... ok
+test nothing_arms_the_output_watch_yet_so_row_14_is_not_wired ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+$ cargo test --test matrix_coverage
+running 9 tests
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test the_matrix_still_covers_every_failure_22a_and_22b_own ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test the_published_sweep_is_runnable_and_complete ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test test_rows_drive_the_shipping_code_they_name ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
