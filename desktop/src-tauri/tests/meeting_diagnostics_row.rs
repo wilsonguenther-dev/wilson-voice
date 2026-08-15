@@ -13,7 +13,7 @@ mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::{open_db, temp_dir};
 use wilson_voice_lib::meeting_control::{
@@ -43,16 +43,12 @@ fn quiet_sink() -> StatusSink {
 /// Fair]`). Widening the sleep does not fix a starvable thread; waiting on the
 /// thread's own progress counter does, and turns the wall-clock race into a
 /// timeout that names what never happened.
-fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !cond() {
-        assert!(
-            start.elapsed() < RAMP_DEADLINE,
-            "timed out after {:?} waiting for {what}",
-            RAMP_DEADLINE
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
+///
+/// YV111 lifted the body into [`support::wait_until`] when the same bet lost
+/// again next door, in `meeting_manual_start_stop`. One idiom, one place to
+/// argue with.
+fn wait_for(what: &str, cond: impl FnMut() -> bool) {
+    support::wait_until(what, RAMP_DEADLINE, cond);
 }
 
 /// Walks a fixed thermal ramp, one step per read, then holds the last value —
