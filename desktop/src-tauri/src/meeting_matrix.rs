@@ -59,6 +59,35 @@
 //! absent — so neither can quietly rot into an implied "the app already does
 //! this".
 //!
+//! ## YV105 — the five tap-scoped rows (1, 2, 3, 12, 14)
+//!
+//! This table is no longer 22-A's alone. YV105 wires the five rows of the
+//! plan's §6 that are **tap-scoped** into the same const, because the
+//! alternative — a second table for 22-B — is the parallel-mechanism mistake
+//! this module was built to avoid. The rows the plan lists that are still NOT
+//! here are still not here for stated reasons (see [`ROWS`]).
+//!
+//! **Four of the five are `PolicyOnly`, and that is the finding of this item
+//! rather than a shortfall in it.** YV101 (the 14.4 gate), YV103 (the
+//! output-device state machine) and YV104 (the ghost watchdog) have merged, so
+//! their *decisions* ship. The thing that produces the events those decisions
+//! consume — the CoreAudio tap itself — has not: YV100 and YV102 are open PRs,
+//! `CaptureEnv::tap_liveness` returns `None` for every environment in the tree
+//! (`meeting.rs` says so in as many words), and nothing calls
+//! `InputFormatWatch::watch_output`, so the output half of that watch is inert.
+//! A `Test` cell on row 2 would tell a reader "if the system-audio track dies
+//! mid-meeting, Yap keeps your mic track and banners the pill". Today Yap has
+//! no system-audio track to lose. The mechanism being merged is not the same
+//! claim as the app performing the behaviour, and this table's whole reason for
+//! existing is that the second claim is the one people read.
+//!
+//! Row 12 is the exception and it splits, exactly as rows 5 and 17 did: the
+//! gate itself runs (`meeting_asr::meeting_availability_for` is consulted by
+//! the shipping `notetaker_status` command, and it is what keeps mic-only
+//! recording working down to the macOS 12 floor), while the sentence it
+//! produces reaches no surface, because no frontend calls that command yet. Two
+//! truth values, two cells.
+//!
 //! **And it does not re-declare a threshold that ships somewhere else.** The
 //! 3 h cap and its 2 h 45 m warning are `meeting::MEETING_HARD_CAP` /
 //! `meeting::MEETING_CAP_WARN_AT`, enforced by `meeting::watchdog_tick` — the
@@ -119,7 +148,20 @@ pub enum Coverage {
     /// This is tripwired in the opposite direction to [`Test`](Coverage::Test):
     /// `tests/matrix_coverage.rs` fails the moment `absent_call_site` shows up
     /// as code anywhere in `src/` outside this module, because that is the day
-    /// the row became a real `Test` row and must be flipped.
+    /// the row became a real `Test` row and must be flipped. That tripwire runs
+    /// over the rows with **no owning PR**, which are the ones that can rot
+    /// silently; a row whose `wiring_pr` names an open PR is checked by its own
+    /// test instead (YV105's five rows each assert their named call site is
+    /// still absent), so the claim is checked either way.
+    ///
+    /// **The pure decision does not have to live in this module.** It did for
+    /// all three of 22-A's policy rows, which is why the wording above says
+    /// "here" — but YV105's tap rows are decided in the module that owns the
+    /// mechanism (`syscapture::ghost_tick`, `input_format::InputFormatWatch`),
+    /// and that is the better place for them: a second copy here would be the
+    /// same duplicate-threshold trap row 17 was rejected for. What makes those
+    /// rows `PolicyOnly` is unchanged and is the only thing this variant has
+    /// ever meant — **nothing in the shipping app can reach the decision yet**.
     PolicyOnly {
         /// The test file that drives the pure policy on this branch.
         test: &'static str,
@@ -156,15 +198,30 @@ pub struct MatrixRow {
 /// `matrix_coverage::every_row_names_a_test_the_acceptance_sweep_can_reach`.
 pub const REQUIRED_TEST_PREFIX: &str = "matrix_";
 
-/// The eight failures of the plan's §6 matrix that belong to 22-A, as nine
-/// cells (row 5's two halves have different truth values — see the module docs).
+/// The thirteen failures of the plan's §6 matrix that 22-A and 22-B own, as
+/// sixteen cells (rows 5, 12 and 17 each have two halves with different truth
+/// values — see the module docs).
 ///
-/// Rows 1, 2, 3, 7–14 are NOT here and that is deliberate: 1/2/14 are system
-/// -audio process taps (22-B), 3 is a mic-denied fallback that needs the tap to
-/// fall back *to*, 7/8 are diarization (yap23), 10 is the summarizer's own
-/// degrade ladder (YV97 owns it), 11 is calendar (yap24), 12/13 are the 14.4 and
-/// model-missing gates that 22-A does not reach. Listing them here with no
-/// mechanism behind them would make the matrix look more covered than it is.
+/// **Rows 7, 8, 9, 10, 11 and 13 are NOT here, and each has a different reason
+/// — stated so the boundary is a decision rather than an omission:**
+///
+///   * **7, 8** (diarization sidecar OOM/panic; garbage clusters) — diarization
+///     is yap23 and does not exist yet to fail.
+///   * **9** (an ASR chunk fails) — already general-purpose in the shipped
+///     chunker and published as row `3b`, which is the same failure stated with
+///     the timeout that causes it. It applies identically to a tap track, so
+///     there is nothing tap-specific to add and a second cell would be the same
+///     mechanism counted twice.
+///   * **10** (summarizer OOM/deadline/invalid JSON) — YV97's own degrade
+///     ladder owns it, and that ladder is track-agnostic.
+///   * **11** (calendar access revoked) — calendar is yap24 and does not exist.
+///   * **13** (model missing / partially downloaded) — 22-B introduces no new
+///     downloadable model; the only model-gated feature in the epic is
+///     diarization, which is yap23's.
+///
+/// Listing any of them here with no mechanism behind it would make the matrix
+/// look more covered than it is, which is the one thing this table must never
+/// do.
 pub const ROWS: &[MatrixRow] = &[
     MatrixRow {
         id: "4",
@@ -299,6 +356,118 @@ pub const ROWS: &[MatrixRow] = &[
             test: "matrix_new_asr_chunk_timeout.rs",
             subject: "TranscriptionManager",
             subject_module: "transcription.rs",
+        },
+    },
+    // ── 22-B · the tap-scoped rows (YV105) ──────────────────────────────────
+    //
+    // Appended rather than interleaved, for the same reason `3a`/`3b` were: the
+    // rendered document is read top-to-bottom and a reader who knows the 22-A
+    // table should see what was added, not have to diff it.
+    MatrixRow {
+        id: "1",
+        failure: "System-audio (tap) permission denied at start",
+        behavior: "The meeting still records, mic-only, badged `system audio unavailable`, with one deep link to the right Settings pane — never aborted",
+        // NOT `Test`. The discriminator that can say "denied" honestly ships
+        // (`syscapture::TapLiveness::verdict`, and its evidence rule: never
+        // delivered a non-zero sample AND something was observably playing).
+        // What does not ship is the thing that asks the question at START —
+        // YV102's `prewarm_tap` — so nothing in the app can reach this verdict
+        // before a meeting begins, and the badge has no producer. The mic-only
+        // half of the required behaviour is 22-A's ordinary meeting and is not
+        // this row's contribution.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row1_tap_permission_denied.rs",
+            wiring_pr: Some("#125 (YV102)"),
+            absent_call_site: "prewarm_tap",
+        },
+    },
+    MatrixRow {
+        id: "2",
+        failure: "Tap permission revoked, or the tap dies mid-meeting",
+        behavior: "A `track_lost` marker into the meeting, Track A keeps recording, a banner in the pill — the meeting is NEVER stopped",
+        // NOT `Test`, and this is the row the honesty rule was hardest on.
+        // YV104's degrade ships and `meeting::watchdog_tick` really does consult
+        // it: `syscapture::TapWatchdogAction` has no stop variant, so "degrade,
+        // never end the meeting" is enforced by the type rather than by a
+        // reviewer. But `WatchdogInputs::tap` is `None` for every environment in
+        // the shipping tree — `CaptureEnv::tap_liveness`'s default is `None` and
+        // nothing overrides it until YV100's tap session lands — so the branch
+        // is unreachable in the app. A tap that cannot exist cannot die, and a
+        // `Test` cell here would be read as "Yap survives losing the call's
+        // audio", which is a sentence about a track Yap does not yet capture.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row2_tap_revoked_mid_meeting.rs",
+            wiring_pr: Some("#123 (YV100)"),
+            absent_call_site: "start_system_tap",
+        },
+    },
+    MatrixRow {
+        id: "3",
+        failure: "Mic permission denied",
+        behavior: "The meeting still starts, system-audio only — a webinar or a lecture stream is a real meeting — and says which track it is missing",
+        // NOT `Test`, and unlike rows 1, 2 and 14 **no open PR owns this one**.
+        // The decision is written here (`meeting_start_plan`), because nothing
+        // else in the tree makes it: `MeetingSession::start` holds one
+        // `CaptureStream` and a `hold()` that fails is the end of the meeting.
+        // Turning that into "start anyway with the other source" is a change to
+        // the capture session, which is YV106's, and publishing this row as
+        // covered before that exists would be exactly the optimistic cell rows
+        // `5b`/`16`/`17b` were demoted for.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row3_mic_denied_system_only.rs",
+            wiring_pr: None,
+            absent_call_site: "meeting_start_plan",
+        },
+    },
+    MatrixRow {
+        id: "12",
+        failure: "macOS older than 14.4",
+        behavior: "The system-audio track is refused with one plain sentence naming the requirement, and mic-only meeting recording keeps working all the way down to Yap's macOS 12 floor",
+        // `Test`, and the subject is the door the shipping app actually walks
+        // through: `notetaker_status` calls `meeting_availability_for` for BOTH
+        // capture modes and publishes the two answers separately. The half that
+        // matters most is the negative one — the gate must never touch
+        // `MicOnly`, on any OS — because a gate that leaked would turn "system
+        // audio needs a newer Mac" into "meetings do not work on your Mac" for
+        // every pre-14.4 user, with a green build.
+        coverage: Coverage::Test {
+            test: "matrix_row12_macos_144_gate.rs",
+            subject: "meeting_availability_for",
+            subject_module: "meeting_asr.rs",
+        },
+    },
+    MatrixRow {
+        id: "12b",
+        failure: "…and the sentence the gate produces reaches no Notetaker surface",
+        behavior: "The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12",
+        // NOT `Test`, the row 5/17 split applied to row 12. `notetaker_status`
+        // is registered and returns `systemAudioAvailable`/`systemAudioMessage`;
+        // no frontend file invokes it, so on a macOS 13 Mac the app today shows
+        // nothing at all rather than a disabled control with a reason. YV102's
+        // Settings step (`system_audio_setup`) is what gives the sentence a
+        // surface.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row12_macos_144_gate.rs",
+            wiring_pr: Some("#125 (YV102)"),
+            absent_call_site: "system_audio_setup",
+        },
+    },
+    MatrixRow {
+        id: "14",
+        failure: "Output device changes mid-meeting (AirPods connect)",
+        behavior: "Tear down and rebuild the aggregate around the new output device, splice the spill, log a `device_change` marker — this happens constantly in real use and is not an edge case",
+        // NOT `Test`. YV103's state machine ships, and so does a handler for its
+        // action — but `record.rs`'s handler exists precisely to LOG that a
+        // rebuild action arrived on the mic path, where it means nothing. The
+        // producer is missing: nothing calls `InputFormatWatch::watch_output`,
+        // so `output_device_uid` is empty everywhere in the app and
+        // `observe_output` short-circuits on `NO_OUTPUT_WATCHED` before it can
+        // ever compare a device. The watch's output half is armed by 22-B's tap
+        // session and by nothing else.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row14_output_device_change.rs",
+            wiring_pr: Some("#123 (YV100)"),
+            absent_call_site: "watch_output",
         },
     },
 ];
@@ -639,6 +808,153 @@ pub fn continuation_title(previous_title: &str) -> String {
     format!("{base} (continued)")
 }
 
+// ── Row 3 · which tracks a meeting starts with when a source is missing ─────
+//
+// The tap itself is NOT here, and neither is the mic, for the same reason the
+// cap and the journal are not: `MeetingSession` opens the streams and
+// `syscapture` opens the tap. What is here is the half nothing in the tree
+// decides — *given that one of the two sources could not be opened, does the
+// meeting start anyway, and as what?*
+//
+// Today `MeetingSession::start` holds one `CaptureStream`, and a `hold()` that
+// returns `Err` ends the attempt. That is correct for 22-A, where the mic is
+// the only source and a meeting without it is nothing. It stops being correct
+// the moment there is a second source, and the plan's row 3 is that case named:
+// a lecture stream or a webinar recorded with the presenter's mic denied is a
+// real, useful meeting. So this is the rule, written once, tested, and — until
+// YV106 gives the session two sources to fail independently — called by
+// nothing, which is what `Coverage::PolicyOnly` says out loud.
+
+/// Whether one capture source could be opened, and if not, why — because the
+/// two reasons need different sentences and only one of them is worth offering
+/// a Settings deep link for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceAvailability {
+    /// The source opened and is delivering.
+    Ready,
+    /// The OS refused it: TCC denied, or revoked, or the user said no. The one
+    /// case where sending the user to Settings can actually fix something.
+    Denied,
+    /// The source cannot exist on this machine — the tap below macOS 14.4
+    /// (matrix row 12), or no input device at all. Settings cannot fix it and
+    /// the sentence must not pretend otherwise.
+    Unsupported,
+}
+
+impl SourceAvailability {
+    pub fn is_ready(self) -> bool {
+        self == SourceAvailability::Ready
+    }
+}
+
+/// What a meeting starts as, given what could be opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeetingStartPlan {
+    /// Start recording. `mic`/`system_audio` are the tracks that will actually
+    /// carry audio — the pair `SessionConfig` needs — and `badge` is the note
+    /// the meeting owes the user when one of them is missing.
+    ///
+    /// `badge` is `None` only when **both** sources opened. A meeting that is
+    /// quietly missing half of what the user expected is the failure mode row 1
+    /// and row 3 are both about; the plan says "badge it" for exactly that
+    /// reason.
+    Start {
+        mic: bool,
+        system_audio: bool,
+        badge: Option<&'static str>,
+    },
+    /// Nothing could be opened. The only case where refusing is honest — and it
+    /// carries the sentence, because "recording failed" is not a reason.
+    Refuse { reason: &'static str },
+}
+
+impl MeetingStartPlan {
+    /// How many journal tracks this plan opens: 2, 1, or 0.
+    pub fn tracks(self) -> usize {
+        match self {
+            MeetingStartPlan::Start {
+                mic, system_audio, ..
+            } => usize::from(mic) + usize::from(system_audio),
+            MeetingStartPlan::Refuse { .. } => 0,
+        }
+    }
+
+    /// Did the meeting start at all?
+    pub fn starts(self) -> bool {
+        matches!(self, MeetingStartPlan::Start { .. })
+    }
+}
+
+/// Row 3, and the fallback half of row 1, as one function: **a meeting starts
+/// if either source opened, and it says which one it is missing.**
+///
+/// One function rather than two because the two rows are the same decision seen
+/// from opposite ends — mic denied with a tap (row 3), tap denied with a mic
+/// (row 1) — and splitting them is how the two halves end up disagreeing about
+/// the both-denied case. The refusal sentence names the source that was
+/// refused, so a user who denied one thing is not told the other is broken.
+pub fn meeting_start_plan(
+    mic: SourceAvailability,
+    system_audio: SourceAvailability,
+) -> MeetingStartPlan {
+    match (mic, system_audio) {
+        (SourceAvailability::Ready, SourceAvailability::Ready) => MeetingStartPlan::Start {
+            mic: true,
+            system_audio: true,
+            badge: None,
+        },
+        // Row 1: the tap is missing. 22-A's meeting, badged — and the badge
+        // distinguishes "you turned it off" from "this Mac cannot do it",
+        // because only the first one has a next step.
+        (SourceAvailability::Ready, SourceAvailability::Denied) => MeetingStartPlan::Start {
+            mic: true,
+            system_audio: false,
+            badge: Some(
+                "System audio is not being recorded — Yap does not have permission to capture it. \
+                 Your microphone track is recording normally.",
+            ),
+        },
+        (SourceAvailability::Ready, SourceAvailability::Unsupported) => MeetingStartPlan::Start {
+            mic: true,
+            system_audio: false,
+            badge: Some(
+                "System audio is not being recorded — this Mac cannot capture it. \
+                 Your microphone track is recording normally.",
+            ),
+        },
+        // Row 3: the mic is missing and the tap is not. A webinar or a lecture
+        // stream recorded from the other end of the call is the whole point.
+        (SourceAvailability::Denied, SourceAvailability::Ready) => MeetingStartPlan::Start {
+            mic: false,
+            system_audio: true,
+            badge: Some(
+                "Your microphone is not being recorded — Yap does not have permission to use it. \
+                 The call's own audio is recording normally.",
+            ),
+        },
+        (SourceAvailability::Unsupported, SourceAvailability::Ready) => MeetingStartPlan::Start {
+            mic: false,
+            system_audio: true,
+            badge: Some(
+                "Your microphone is not being recorded — Yap could not open an input device. \
+                 The call's own audio is recording normally.",
+            ),
+        },
+        // Neither source. The sentence names the microphone first because that
+        // is the permission the user is far more likely to be able to fix, and
+        // on a pre-14.4 Mac the system-audio half was never on offer anyway.
+        (SourceAvailability::Denied, _) => MeetingStartPlan::Refuse {
+            reason: "Yap does not have permission to use your microphone, and there is no system \
+                     audio to record instead. Grant microphone access in System Settings › \
+                     Privacy & Security › Microphone.",
+        },
+        (SourceAvailability::Unsupported, _) => MeetingStartPlan::Refuse {
+            reason: "Yap could not open an input device, and there is no system audio to record \
+                     instead. Connect a microphone and try again.",
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,10 +971,11 @@ mod tests {
         }
         assert_eq!(
             ROWS.len(),
-            10,
-            "22-A owns eight matrix failures, published as ten cells — two of \
-             them (5 and 17) have a wired half and an unwired half, and one \
-             cell each way is the only way to state both truthfully"
+            16,
+            "22-A owns eight matrix failures and 22-B's YV105 wires five more, \
+             published as sixteen cells — three of them (5, 12 and 17) have a \
+             wired half and an unwired half, and one cell each way is the only \
+             way to state both truthfully"
         );
     }
 
@@ -733,19 +1050,73 @@ mod tests {
     /// exists — `tests/matrix_coverage.rs` is where that claim gets checked, and
     /// this assertion is the reminder that flipping it is a deliberate act.
     #[test]
-    fn the_unwired_rows_are_exactly_5b_16_and_17b() {
+    fn the_unwired_rows_are_the_ones_whose_call_site_is_missing() {
         let unwired: Vec<&str> = ROWS
             .iter()
             .filter(|r| matches!(r.coverage, Coverage::PolicyOnly { .. }))
             .map(|r| r.id)
             .collect();
-        assert_eq!(unwired, vec!["5b", "16", "17b"]);
+        assert_eq!(
+            unwired,
+            vec!["5b", "16", "17b", "1", "2", "3", "12b", "14"],
+            "22-A's three unwired policies, plus the five YV105 rows whose \
+             mechanism has merged and whose producer has not"
+        );
+    }
+
+    /// Of the unwired rows, which ones have somebody bringing the wiring and
+    /// which are waiting on nobody. The distinction is the whole reason
+    /// `wiring_pr` is an `Option`, and stating it here means an open PR that
+    /// merges without promoting its rows shows up as a stale `Some` a reader
+    /// can act on rather than a claim nobody re-checks.
+    #[test]
+    fn the_rows_nobody_owns_are_5b_16_17b_and_3() {
+        let unowned: Vec<&str> = ROWS
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.coverage,
+                    Coverage::PolicyOnly {
+                        wiring_pr: None,
+                        ..
+                    }
+                )
+            })
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(unowned, vec!["5b", "16", "17b", "3"]);
+
+        let owned: Vec<(&str, &str)> = ROWS
+            .iter()
+            .filter_map(|r| match r.coverage {
+                Coverage::PolicyOnly {
+                    wiring_pr: Some(pr),
+                    ..
+                } => Some((r.id, pr)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            owned,
+            vec![
+                ("1", "#125 (YV102)"),
+                ("2", "#123 (YV100)"),
+                ("12b", "#125 (YV102)"),
+                ("14", "#123 (YV100)"),
+            ]
+        );
     }
 
     /// The rows the shipping app actually performs, spelled out, because this
-    /// is the number every reader of the table is really asking for. Six cells
-    /// are `Test` now that YV91 and YV93 have merged, one is a manual repro, and
-    /// the remaining three are decisions nobody calls.
+    /// is the number every reader of the table is really asking for. Seven
+    /// cells are `Test`, one is a manual repro, and the remaining eight are
+    /// decisions nothing in the app can reach.
+    ///
+    /// Row 12 is the only one of YV105's five that made it into this list, and
+    /// it is worth saying why it did while rows 1, 2 and 14 did not: the 14.4
+    /// gate needs no tap to be in effect. It is a refusal, `notetaker_status`
+    /// computes it on every call, and its load-bearing half — mic-only
+    /// recording is never gated — is a property of the app today.
     #[test]
     fn the_wired_rows_are_the_ones_whose_mechanism_shipped() {
         let wired: Vec<&str> = ROWS
@@ -753,7 +1124,7 @@ mod tests {
             .filter(|r| matches!(r.coverage, Coverage::Test { .. }))
             .map(|r| r.id)
             .collect();
-        assert_eq!(wired, vec!["4", "5", "6", "17", "3a", "3b"]);
+        assert_eq!(wired, vec!["4", "5", "6", "17", "3a", "3b", "12"]);
 
         let manual: Vec<&str> = ROWS
             .iter()

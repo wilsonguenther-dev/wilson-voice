@@ -1,0 +1,91 @@
+YV105 — are these tests evidence, or are they green because everything is green?
+
+A matrix-wiring item is exactly the kind of change that can ship thirty-one passing
+assertions that prove nothing: five of them are source scans by nature, and the rest
+drive state machines that already had their own suites. So each new test was checked by
+BREAKING the shipping code it claims to drive and confirming the right assertions go red
+— and, for the five absence tripwires, by making the missing call site appear.
+
+Every mutation below was applied to `main`'s code, run, and reverted. The working tree
+at commit time is clean of all of them (`git status` in the PR body).
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 1 — the 14.4 gate leaks onto the mic-only door.
+  src/meeting_asr.rs: `if capture == MeetingCapture::MicPlusSystemAudio {` → `if true {`
+  This is the regression row 12 exists to prevent: "system audio needs a newer Mac"
+  becomes "meetings do not work on your Mac" for every pre-14.4 user.
+
+  cargo test --test matrix_row12_macos_144_gate
+    test the_published_cells_split_the_gate_from_its_missing_surface ... ok
+    test below_14_4_the_system_audio_track_is_refused_with_a_sentence_that_names_the_requirement ... ok
+    test the_requirement_is_declared_in_exactly_one_place ... ok
+    test mic_only_recording_is_never_gated_by_this_row ... FAILED
+    test at_and_above_14_4_the_gate_is_no_longer_the_answer ... ok
+    test the_sentence_reaches_no_surface_yet_so_row_12b_is_not_wired ... ok
+    test result: FAILED. 5 passed; 1 failed.
+
+  → the load-bearing half of row 12 is the assertion that reddens. Correct.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 2 — sustained silence badges a verdict instead of rebuilding first.
+  src/syscapture.rs, in `ghost_tick`: `if state.rebuilds_issued < MAX_TAP_REBUILDS_PER_MEETING {`
+  → `if false {`, so the budget is never spent and the first silence degrades.
+  This is the plan's original §2.1 heuristic, which is the bug OS-4 documented.
+
+  cargo test --test matrix_row1_tap_permission_denied
+    test no_permission_verdict_is_ever_reached_before_the_rebuild_budget_is_spent ... FAILED
+    (5 others ok)
+  cargo test --test matrix_row2_tap_revoked_mid_meeting
+    test a_tap_that_worked_and_then_died_degrades_to_track_lost_after_its_whole_budget ... FAILED
+    test a_degraded_meeting_is_never_rebuilt_or_re_badged ... FAILED
+    (4 others ok)
+
+  → both rows notice, and each notices through the assertion that is actually about it:
+    row 1's "never a verdict before the budget", row 2's "the whole budget, then degrade".
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 3 — the in-flight guard stops discarding our own notifications.
+  src/input_format.rs, in `observe_output`: `if self.aggregate_work_in_flight {` → `if false {`
+  This is Hyprnote's documented infinite loop (fastrepl/hyprnote #1654): the listener
+  answers its own rebuild with another rebuild.
+
+  FIRST ATTEMPT: the row-14 suite stayed GREEN, and that was a real defect in this
+  branch's test, not in the code. The assertion read `matches!(action, Ignored(_))`, and
+  with the guard removed the events are still `Ignored` — by the 500 ms debounce instead
+  — so a genuinely broken guard produced an identical result. Fixed by asserting the
+  exact reason (`Ignored(InputFormatWatch::GUARDED)`), that nothing is left QUEUED
+  (`has_pending_rebuild()`), and that the watchdog's own settle tick is guarded too.
+
+  cargo test --test matrix_row14_output_device_change   (after the fix)
+    test the_rebuilds_own_notifications_cannot_start_another_rebuild ... FAILED
+    (5 others ok)
+  and clean, unmutated: 6 passed; 0 failed.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 4 — row 3 refuses the meeting instead of recording the lecture.
+  src/meeting_matrix.rs: `(Denied, Ready)` returns `Refuse` instead of a system-audio-only
+  `Start`. This is what the app does TODAY, which is why the row is published as unwired.
+
+  cargo test --test matrix_row3_mic_denied_system_only
+    test a_denied_mic_with_a_working_tap_still_records_the_meeting ... FAILED
+    test only_a_complete_meeting_goes_unbadged ... FAILED
+    test the_only_honest_refusal_is_when_nothing_could_be_opened ... FAILED
+    test the_system_audio_only_session_already_has_a_stream_type_to_hold ... FAILED
+    (3 others ok)
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 5 — all five named call sites appear in src/.
+  A probe function was appended to src/logging.rs binding `prewarm_tap`,
+  `start_system_tap`, `watch_output`, `meeting_start_plan` and `system_audio_setup` as
+  local identifiers, so each appears as CODE (not a comment, not a string literal) in a
+  shipping module. This is the event that must force each row to be promoted.
+
+    matrix_coverage:                unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... FAILED
+    matrix_row1_tap_permission_denied:  prewarm_tap_is_still_absent_so_row_1_is_not_wired ... FAILED
+    matrix_row2_tap_revoked_mid_meeting: start_system_tap_is_still_absent_so_row_2_is_not_wired ... FAILED
+    matrix_row3_mic_denied_system_only:  meeting_start_plan_reaches_no_call_site_so_row_3_is_not_wired ... FAILED
+    matrix_row12_macos_144_gate:         the_sentence_reaches_no_surface_yet_so_row_12b_is_not_wired ... FAILED
+    matrix_row14_output_device_change:   nothing_arms_the_output_watch_yet_so_row_14_is_not_wired ... FAILED
+
+  → six tripwires, six reds, one per unwired cell. The day #123 or #125 merges, the
+    author is told which row to promote and what to rewrite its test into.

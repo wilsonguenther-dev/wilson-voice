@@ -316,9 +316,12 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         checked += 1;
     }
     assert_eq!(
-        checked, 3,
-        "rows 5b, 16 and 17b are the unwired policies; if that set changed, the change is a \
-         claim about what the app now does and belongs in the table's tests too"
+        checked, 4,
+        "rows 5b, 16, 17b and 3 are the policies NOBODY owns; if that set changed, the change is \
+         a claim about what the app now does and belongs in the table's tests too. (YV105's rows \
+         1, 2, 12b and 14 are policy-only as well, but each names an open PR as the owner of its \
+         wiring and asserts its own call site's absence in its own test — this tripwire is for \
+         the rows with no owner, which are the ones that can rot unnoticed.)"
     );
 }
 
@@ -364,14 +367,24 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
     );
 }
 
-/// The rows 22-A owns, by id. If a future edit drops one, the phase's own
-/// definition of done changed and that should be a deliberate act.
+/// The rows 22-A and 22-B own, by id. If a future edit drops one, the phase's
+/// own definition of done changed and that should be a deliberate act.
+///
+/// YV105 appended the five tap-scoped rows (1, 2, 3, 12, 14) to this same
+/// table, with row 12 splitting into `12`/`12b` the way rows 5 and 17 already
+/// had — the gate runs, the sentence it produces reaches no surface. Every
+/// *rule* in this file applied to them unchanged; this assertion and the
+/// unowned-policy count below are inventories of the phase's scope rather than
+/// rules, which is why they are the two that moved.
 #[test]
-fn the_matrix_still_covers_the_eight_failures_22a_owns() {
+fn the_matrix_still_covers_every_failure_22a_and_22b_own() {
     let ids: Vec<&str> = ROWS.iter().map(|r| r.id).collect();
     assert_eq!(
         ids,
-        vec!["4", "5", "5b", "6", "15", "16", "17", "17b", "3a", "3b"]
+        vec![
+            "4", "5", "5b", "6", "15", "16", "17", "17b", "3a", "3b", "1", "2", "3", "12", "12b",
+            "14"
+        ]
     );
 }
 
