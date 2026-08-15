@@ -1630,6 +1630,14 @@ impl Database {
 
     /// Segments in wall-clock order — the order YV93 produced them and the only
     /// order a transcript may ever be read in.
+    ///
+    /// YV108 adds `track` as the tiebreak BEFORE `created_at`. Two tracks are
+    /// appended in separate batches, so `created_at` for a tap segment says
+    /// when transcription got to it, not when it was said: at an exact
+    /// `start_seconds` tie it would order the interleave by the transcriber's
+    /// scheduling. Track order (mic first) is at least a fixed, explainable
+    /// answer. A mic-only meeting is unaffected — `track` is constant there, so
+    /// this is the same sequence 22-A returned.
     pub fn list_meeting_segments(&self, meeting_id: &str) -> Result<Vec<MeetingSegment>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -1637,7 +1645,7 @@ impl Database {
                 "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
                         track
                  FROM meeting_segments WHERE meeting_id = ?1
-                 ORDER BY start_seconds ASC, created_at ASC",
+                 ORDER BY start_seconds ASC, track ASC, created_at ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt

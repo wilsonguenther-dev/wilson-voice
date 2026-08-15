@@ -23,6 +23,10 @@ const host = process.env.TAURI_DEV_HOST;
  * sheet, whose interesting state is a Mac whose mail client AppKit refuses to
  * drive — not something you can produce on demand.
  *
+ * `dev/meeting-transcript-preview.html` does the same for YV108's mixed Me/Them
+ * transcript, whose interesting state needs a recorded SECOND track — i.e. a
+ * live call with the system-audio tap granted.
+ *
  *   YAP_DEV_TOOLING=1 npm run build   # then dist/dev/*.html
  */
 // @ts-expect-error process is a nodejs global
@@ -59,6 +63,14 @@ export default defineConfig(async () => ({
               supportBundlePreview: resolve(
                 __dirname,
                 "dev/support-bundle-preview.html",
+              ),
+              // YV108 — the meeting transcript, mic-only and two-track. The
+              // two-track shape needs a second recorded track to exist, so
+              // seeing it otherwise means holding a live call with the tap
+              // granted.
+              meetingTranscriptPreview: resolve(
+                __dirname,
+                "dev/meeting-transcript-preview.html",
               ),
             }
           : {}),

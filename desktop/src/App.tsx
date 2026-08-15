@@ -24,6 +24,7 @@ import PurchasePrompt from "./license/PurchasePrompt";
 // the preview page, rather than being inline strings in this file.
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import { acknowledgedLabel, type MeetingConsent } from "./meetings/consent";
+import TranscriptList from "./meetings/TranscriptList";
 import SupportBundleSheet from "./support/SupportBundleSheet";
 import type {
   SupportBundlePreview,
@@ -433,7 +434,10 @@ interface Meeting {
   segmentCount: number;
 }
 
-/** One chronological transcript segment. 22-A records one track: the mic. */
+/**
+ * One chronological transcript segment. 22-A recorded one track (the mic);
+ * YV106 gave the row a `track`, and YV108 renders it.
+ */
 interface MeetingSegment {
   id: string;
   meetingId: string;
@@ -442,28 +446,15 @@ interface MeetingSegment {
   text: string;
   confidence?: number | null;
   createdAt: string;
+  /** 0 = mic ("Me"), 1 = system audio ("Them"). Absent = mic, per the column's
+   *  `DEFAULT 0`: every row written before migration 3 really was the mic. */
+  track?: number | null;
 }
 
 interface MeetingDetail {
   meeting: Meeting;
   segments: MeetingSegment[];
   audioOnDisk: boolean;
-}
-
-/**
- * YV94 — 22-A captures ONE track: the mic, which is whoever is holding the Mac.
- * Labelling it costs nothing today and is what makes the 22-B upgrade legible
- * ("now it can tell you apart from the room") — plan finding #10.
- */
-const MIC_SPEAKER_LABEL = "Me";
-
-/** `3725.4` → `01:02:05`. Mirrors `meetings::format_offset` in Rust. */
-function formatOffset(seconds: number): string {
-  const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
 /** `750` → `12m 30s`. Mirrors `meetings::format_duration` in Rust. */
@@ -2714,21 +2705,7 @@ export default function App() {
                   </p>
                 </div>
               ) : (
-                <ol className="transcript">
-                  {openMeeting.segments.map((s) => (
-                    <li key={s.id}>
-                      {/* Timestamp and speaker are DATA, so they wear the
-                          pixel voice the rest of the app gives numbers. 22-A
-                          records one track — the mic — labelled "Me"; the
-                          system track arrives as "Them" in 22-B. */}
-                      <span className="seg-time">
-                        {formatOffset(s.startSeconds)}
-                      </span>
-                      <span className="seg-who">{MIC_SPEAKER_LABEL}</span>
-                      <span className="seg-text">{s.text}</span>
-                    </li>
-                  ))}
-                </ol>
+                <TranscriptList segments={openMeeting.segments} />
               )}
             </div>
           )}

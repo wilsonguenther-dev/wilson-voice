@@ -1,0 +1,145 @@
+YV108 — every claimed assertion, shown FAILING against a deliberately broken
+implementation. Each mutation was applied, run, and reverted; the tree on this
+branch is the unmutated one (`git diff` after each revert was empty).
+
+=== MUTATION 1: export hardcodes the mic label (the 22-A line, left in place) ===
+test the_order_comes_from_the_clock_not_from_the_insert_order ... ok
+test a_mic_only_export_is_unchanged_from_22a ... ok
+test a_two_track_export_reads_as_one_labelled_conversation ... FAILED
+failures:
+assertion `left == right` failed: the export must be the conversation, in the order it happened
+failures:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+error: test failed, to rerun pass `--test meeting_markdown_export_two_track`
+
+=== MUTATION 2: group by speaker, then by time (the 'two columns' failure) ===
+test the_order_comes_from_the_clock_not_from_the_insert_order ... ok
+test a_mic_only_export_is_unchanged_from_22a ... ok
+test a_two_track_export_reads_as_one_labelled_conversation ... FAILED
+failures:
+assertion `left == right` failed: the export must be the conversation, in the order it happened
+  left: ["**[00:00:00] Me:** can we ship the notarised build on friday", "**[00:00:09] Me:** the cert cleared this morning", "**[00:00:18] Me:** and we hold the price where it is", "**[00:00:04] Them:** friday works if the signing cert lands", "**[00:00:13] Them:** then i will tell the reseller friday", "**[00:00:22] Them:** agreed nobody is discounting this quarter"]
+failures:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+error: test failed, to rerun pass `--test meeting_markdown_export_two_track`
+test labels_come_from_the_track_and_an_unknown_track_is_not_you ... ok
+test two_track_detection_is_about_the_segments_not_the_meeting_row ... ok
+test empty_spans_never_become_blank_turns ... ok
+test an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in ... ok
+test the_output_is_a_conversation_not_two_stacked_columns ... FAILED
+test ordering_is_by_host_time_across_both_tracks ... FAILED
+test a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order ... FAILED
+test mixed_tracks_render_as_one_interleaved_me_them_list ... FAILED
+failures:
+assertion `left == right` failed
+assertion `left == right` failed
+assertion `left == right` failed
+assertion `left == right` failed: expected one back-and-forth transcript in host-time order
+failures:
+test result: FAILED. 4 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== MUTATION 3: the query orders by insert time (rows come back grouped by track) ===
+test a_mic_only_export_is_unchanged_from_22a ... ok
+test the_order_comes_from_the_clock_not_from_the_insert_order ... FAILED
+test a_two_track_export_reads_as_one_labelled_conversation ... ok
+failures:
+assertion `left == right` failed: rows came back grouped by track — the query is ordering by insert time
+failures:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+=== MUTATION 4: every line is labelled 'Them' (a mic-only meeting regresses) ===
+test an_empty_mic_only_meeting_still_exports_the_honest_line ... ok
+test the_comparison_is_not_vacuous ... ok
+test every_line_of_a_mic_only_transcript_is_still_me_in_input_order ... FAILED
+test a_mic_only_export_is_byte_identical_to_the_pre_yv108_renderer ... FAILED
+failures:
+assertion `left == right` failed
+assertion `left == right` failed: YV108 changed a mic-only export. The fixture is what 22-A shipped:
+failures:
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+################################################################################
+# ROUND 2 — the review's BLOCKING (the Rust renderer and its TypeScript mirror
+# produced different transcripts) and the tests added to close it.
+#
+# Same discipline: each mutation applied to the FIXED tree, run, and reverted;
+# `git status` was empty after every revert. Mutation 5 is the shipped defect
+# itself, restored — which is what makes "this branch fixes it" checkable rather
+# than asserted.
+################################################################################
+=== MUTATION 5: orderedTranscript keeps whitespace-only spans (the reviewed defect) ===
+   [32m✓[39m orderedTranscript[2m > [22minterleaves both tracks into one time-ordered conversation[32m 1[2mms[22m[39m
+   [32m✓[39m orderedTranscript[2m > [22mdoes not group by speaker — that is the failure mode, not the feature[32m 0[2mms[22m[39m
+   [32m✓[39m orderedTranscript[2m > [22mbreaks an exact tie to the mic, whichever order the rows arrived in[32m 0[2mms[22m[39m
+   [32m✓[39m orderedTranscript[2m > [22mleaves a mic-only transcript in exactly the order it arrived[32m 0[2mms[22m[39m
+   [32m✓[39m orderedTranscript[2m > [22mtreats a broken offset as zero rather than scrambling the list[32m 0[2mms[22m[39m
+[31m   [31m×[31m orderedTranscript[2m > [22mnever turns an empty span into a blank turn[39m[32m 3[2mms[22m[39m
+[31m     → expected 3 to be 2 // Object.is equality[39m
+   [32m✓[39m orderedTranscript[2m > [22mrenders the collapsed text, so the screen shows what the file shows[32m 0[2mms[22m[39m
+   [32m✓[39m oneLine[2m > [22mcollapses interior runs and trims, exactly as Rust's one_line does[32m 0[2mms[22m[39m
+[31m   [31m×[31m oneLine[2m > [22magrees with Rust on the two characters JS and Rust disagree about[39m[32m 1[2mms[22m[39m
+[31m     → expected [ { …(6) } ] to deeply equal [][39m
+   [32m✓[39m track and label[2m > [22mdefaults a missing track to the mic, as the column's DEFAULT 0 does[32m 0[2mms[22m[39m
+   [32m✓[39m track and label[2m > [22mlabels the mic Me and anything else Them[32m 0[2mms[22m[39m
+   [32m✓[39m isTwoTrack[2m > [22mis true only when a second track really was recorded[32m 0[2mms[22m[39m
+[31m   [31m×[31m isTwoTrack[2m > [22mdoes not widen the gutter for a tap track that renders nothing[39m[32m 0[2mms[22m[39m
+[31m     → expected false to be true // Object.is equality[39m
+ [32m✓[39m src/meetings/consent.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+[31m   [31m×[31m TranscriptList[2m > [22mdraws one row per rendered line — a blank span is not a turn[39m[32m 6[2mms[22m[39m
+[31m     → expected 3 to be 2 // Object.is equality[39m
+   [32m✓[39m TranscriptList[2m > [22mshows the collapsed text, the same string the export writes[32m 0[2mms[22m[39m
+
+=== MUTATION 6: TranscriptList draws segment.text (the raw span) instead of the rendered line ===
+   [32m✓[39m TranscriptList[2m > [22mdraws one row per rendered line — a blank span is not a turn[32m 3[2mms[22m[39m
+[31m   [31m×[31m TranscriptList[2m > [22mshows the collapsed text, the same string the export writes[39m[32m 3[2mms[22m[39m
+[31m     → expected '<ol class="transcript"><li><span clas…' to contain '<span class="seg-text">so we are agre…'[39m
+   [32m✓[39m TranscriptList[2m > [22monly widens the gutter when a second speaker is really on screen[32m 0[2mms[22m[39m
+   [32m✓[39m TranscriptList[2m > [22minterleaves the two tracks in one list, in clock order[32m 0[2mms[22m[39m
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m3 passed[39m[22m[90m (4)[39m
+
+=== MUTATION 7: isTwoTrack counts raw rows, so a blank tap track widens the gutter ===
+[31m   [31m×[31m isTwoTrack[2m > [22mdoes not widen the gutter for a tap track that renders nothing[39m[32m 3[2mms[22m[39m
+[31m     → expected true to be false // Object.is equality[39m
+[31m   [31m×[31m TranscriptList[2m > [22monly widens the gutter when a second speaker is really on screen[39m[32m 3[2mms[22m[39m
+[31m     → expected '<ol class="transcript two-track"><li>…' to contain '<ol class="transcript">'[39m
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m36 passed[39m[22m[90m (38)[39m
+
+=== MUTATION 8: the mirror spells whitespace as JS \s, which is not Rust's char::is_whitespace ===
+[31m   [31m×[31m oneLine[2m > [22magrees with Rust on the two characters JS and Rust disagree about[39m[32m 2[2mms[22m[39m
+[31m     → expected '\u0085' to be '' // Object.is equality[39m
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m12 passed[39m[22m[90m (13)[39m
+
+=== MUTATION 9 (Rust): is_two_track counts raw rows, so the two languages disagree again ===
+test a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order ... ok
+test a_span_of_exotic_whitespace_is_collapsed_the_same_way_rust_collapses_it ... ok
+test an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in ... ok
+test labels_come_from_the_track_and_an_unknown_track_is_not_you ... ok
+test empty_spans_never_become_blank_turns ... ok
+test mixed_tracks_render_as_one_interleaved_me_them_list ... ok
+test the_output_is_a_conversation_not_two_stacked_columns ... ok
+test ordering_is_by_host_time_across_both_tracks ... ok
+test two_track_detection_is_about_the_segments_not_the_meeting_row ... ok
+test a_tap_track_that_renders_nothing_is_not_a_second_speaker ... FAILED
+thread 'a_tap_track_that_renders_nothing_is_not_a_second_speaker' (12413700) panicked at src-tauri/tests/meeting_transcript_render_two_track.rs:190:5:
+assertion failed: !meetings::is_two_track(&blank_tap)
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== MUTATION 10 (Rust): render_transcript trims instead of collapsing interior whitespace ===
+test labels_come_from_the_track_and_an_unknown_track_is_not_you ... ok
+test a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order ... ok
+test empty_spans_never_become_blank_turns ... ok
+test mixed_tracks_render_as_one_interleaved_me_them_list ... ok
+test ordering_is_by_host_time_across_both_tracks ... ok
+test the_output_is_a_conversation_not_two_stacked_columns ... ok
+test an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in ... ok
+test two_track_detection_is_about_the_segments_not_the_meeting_row ... ok
+test a_tap_track_that_renders_nothing_is_not_a_second_speaker ... ok
+test a_span_of_exotic_whitespace_is_collapsed_the_same_way_rust_collapses_it ... FAILED
+assertion `left == right` failed
+  left: "a\u{85}b"
+ right: "a b"
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

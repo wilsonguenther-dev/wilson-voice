@@ -32,6 +32,32 @@ The printed text must contain the phrase words (e.g. `quick`, `fox`). The first
 run downloads the catalog's smallest model (Whisper Tiny, ~46 MB, sha256
 verified) into Application Support; later runs are offline.
 
+## `mic_only_export_22a.md` — the pre-YV108 Markdown export (YV108)
+
+The regression anchor for the mixed Me/Them transcript. YV108 rewrote
+`meetings::render_markdown`'s transcript body to go through the new
+`render_transcript` (so the Meetings UI and the export can never disagree about
+who spoke), and every meeting anyone has recorded so far is mic-only — so "a
+mic-only export is byte-identical" is the criterion that matters most and the
+one easiest to fool yourself about.
+
+This file is the renderer's output **captured from `main` before the change**,
+not a string typed from the new code. Reproduce it on any checkout of the parent
+commit by rendering a three-segment mic-only meeting (title *Thursday planning*,
+750 s, summary *We agreed to ship on Friday.*, segments at 0 / 4 / 8 s) and
+masking the one line that is not deterministic:
+
+```sh
+# on the pre-YV108 commit, print render_markdown's output, then:
+sed -E 's/^- \*\*Started:\*\* .*/- **Started:** <LOCAL>/'
+```
+
+`- **Started:**` is formatted in the machine's LOCAL timezone, so the fixture
+holds `<LOCAL>` and `meeting_transcript_render_single_track_unchanged.rs` masks
+both sides before comparing. Every other byte — spacing, blank lines, the `Me:`
+labels — is compared verbatim, and `the_comparison_is_not_vacuous` proves the
+mask cannot swallow a real difference.
+
 ## `meeting_eval_manifest.json` + `.sha256` — the meeting eval corpus (YV90)
 
 The accuracy backstop for the yap22-A notetaker, landed BEFORE any capture or

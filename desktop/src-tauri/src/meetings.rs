@@ -67,6 +67,15 @@ pub const AUDIO_RETENTION_DAYS: i64 = 7;
 /// ("now it can tell you apart from the room") — finding #10.
 pub const MIC_SPEAKER_LABEL: &str = "Me";
 
+/// YV108 — the counterpart finding #10 promised: everything that reached the
+/// Mac's speakers rather than its microphone, which in a virtual meeting is
+/// whoever else is in the call.
+///
+/// Deliberately NOT a name and not per-person: the system track is one mixed
+/// stream of every remote participant, and telling those apart is diarization
+/// (yap23). "Them" is the honest granularity this phase actually has.
+pub const SYSTEM_SPEAKER_LABEL: &str = "Them";
+
 /// Lifecycle states a meeting row may hold. Kept as `&str` rather than a SQL
 /// CHECK so a future phase can add one without a migration, but validated on
 /// the way in by [`MeetingState::parse`] so a typo cannot reach the DB.
@@ -490,6 +499,125 @@ pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
     format!("{slug}-{stamp}")
 }
 
+// ── YV108 · the mixed Me/Them transcript ────────────────────────────────────
+//
+// YV106 gave every stored segment a `track`; YV107 orders the two tracks
+// against one common host-time base. This is the third and last step: turning
+// that sequence into something a person reads.
+//
+// The shape is ONE interleaved list, not two columns. Finding #10's whole
+// point is a legible conversation ("now it can tell the Thems apart"), and two
+// parallel dumps leave the reader doing the interleave by eye — which is the
+// work the merge was for. The rules live here and the Markdown export calls
+// them directly; a UI-only fix would leave every exported file still labelling
+// the room as "Me".
+//
+// The Meetings UI cannot call this function — it is React, rendering rows it
+// already holds — so it runs a hand-written mirror, `src/meetings/transcript.ts`.
+// A mirror agrees only where something checks that it does, which is why every
+// rule here (order, tie-break, labels, whitespace collapsing, dropped blank
+// spans, what counts as a second track) has the SAME fixture asserted on both
+// sides. The first review of YV108 found this exact seam open — Rust dropped
+// whitespace-only spans and the mirror did not, so a blank tap segment drew a
+// labelled empty "Them" row on a screen whose export had no such line. Adding a
+// rule below without adding its fixture to `transcript.test.ts` reopens it.
+
+/// The speaker label for a stored segment's track.
+///
+/// [`MIC_TRACK`] is the person holding the Mac. Anything else came out of the
+/// process tap — i.e. it was NOT this user's microphone — so it is "Them". The
+/// catch-all is deliberate rather than a `panic!` or an `Option`: `track` is a
+/// plain `INTEGER` column with no CHECK constraint, and a transcript that
+/// renders is worth more than one that refuses to over a number no writer in
+/// this codebase produces.
+pub fn speaker_label(track: i64) -> &'static str {
+    if track == MIC_TRACK {
+        MIC_SPEAKER_LABEL
+    } else {
+        SYSTEM_SPEAKER_LABEL
+    }
+}
+
+/// Does this meeting have a second track worth labelling?
+///
+/// Drives the UI's decision to show a speaker column at all: a 22-A (mic-only)
+/// meeting must render exactly as it always did, with no phantom "Them" and no
+/// layout that implies a second speaker who was never recorded.
+///
+/// Asked of the segments that RENDER, not of the raw rows. A tap track whose
+/// spans all collapse to nothing produces no lines out of [`render_transcript`],
+/// so treating it as a second speaker would reserve gutter width for someone
+/// who appears neither on the screen nor in the exported file — which is the
+/// same "the two surfaces disagree" failure the shared rendering exists to
+/// prevent, just moved into the layout.
+pub fn is_two_track(segments: &[MeetingSegment]) -> bool {
+    segments
+        .iter()
+        .any(|s| s.track != MIC_TRACK && !one_line(&s.text).is_empty())
+}
+
+/// One rendered transcript line — the unit both surfaces draw.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptLine {
+    pub segment_id: String,
+    /// Which track spoke it, kept so a surface can style Me and Them apart
+    /// without re-deriving it from the label string.
+    pub track: i64,
+    pub speaker: &'static str,
+    /// `hh:mm:ss` from the start of the meeting, already formatted.
+    pub offset: String,
+    pub start_seconds: f64,
+    /// Whitespace-collapsed to exactly one line (see [`one_line`]).
+    pub text: String,
+}
+
+/// Order a meeting's segments into the single interleaved transcript the UI and
+/// the export both render.
+///
+/// Ordering is by `start_seconds` — which, for a two-track meeting, YV107 has
+/// already rebased onto one common host-time origin, so comparing them is
+/// meaningful across tracks rather than comparing two unrelated clocks. Ties
+/// break to the mic first, so an answer and the question it overlaps land in a
+/// fixed order instead of whichever row SQLite happened to return.
+///
+/// The sort is STABLE and the comparator is a total order (a non-finite
+/// `start_seconds` from a broken decoder sorts as 0, matching
+/// [`format_offset`]'s clamp rather than poisoning the whole comparison the way
+/// a raw `partial_cmp().unwrap()` would). On an already-ascending single-track
+/// input — every 22-A meeting, and everything `db::list_meeting_segments`
+/// returns — it is the identity, which is what makes the byte-identical
+/// no-regression guarantee hold.
+///
+/// Empty segments are dropped, exactly as the 22-A renderer already dropped
+/// them: a blank line with a timestamp is noise in the UI and in the file.
+pub fn render_transcript(segments: &[MeetingSegment]) -> Vec<TranscriptLine> {
+    let mut lines: Vec<TranscriptLine> = segments
+        .iter()
+        .filter_map(|seg| {
+            let text = one_line(&seg.text);
+            if text.is_empty() {
+                return None;
+            }
+            Some(TranscriptLine {
+                segment_id: seg.id.clone(),
+                track: seg.track,
+                speaker: speaker_label(seg.track),
+                offset: format_offset(seg.start_seconds),
+                start_seconds: seg.start_seconds,
+                text,
+            })
+        })
+        .collect();
+    lines.sort_by(|a, b| {
+        let key = |v: f64| if v.is_finite() { v } else { 0.0 };
+        key(a.start_seconds)
+            .total_cmp(&key(b.start_seconds))
+            .then(a.track.cmp(&b.track))
+    });
+    lines
+}
+
 /// Render one meeting as Markdown. Pure — no DB, no clock, no filesystem — so
 /// the "round-trips readably" acceptance is a real assertion.
 ///
@@ -512,6 +640,12 @@ pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
 /// Every transcript line begins with the bold timestamp, so segment text that
 /// happens to start with `#`, `-` or `>` can never be reinterpreted as Markdown
 /// structure — the export is untrusted ASR output, not authored prose.
+///
+/// YV108 — the transcript body is [`render_transcript`], so a two-track meeting
+/// exports as one interleaved `Me:` / `Them:` conversation in the same file
+/// shape, and a mic-only meeting exports BYTE-IDENTICALLY to what 22-A shipped
+/// (`tests/meeting_markdown_export_two_track.rs` pins that against a fixture
+/// captured from the pre-YV108 renderer).
 pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String {
     let mut out = String::with_capacity(256 + segments.len() * 64);
     out.push_str(&format!("# {}\n\n", one_line(&meeting.title)));
@@ -547,16 +681,10 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
         out.push_str("_No transcript segments._\n");
         return out;
     }
-    for seg in segments {
-        let text = one_line(&seg.text);
-        if text.is_empty() {
-            continue;
-        }
+    for line in render_transcript(segments) {
         out.push_str(&format!(
             "**[{}] {}:** {}\n\n",
-            format_offset(seg.start_seconds),
-            MIC_SPEAKER_LABEL,
-            text
+            line.offset, line.speaker, line.text
         ));
     }
     out
