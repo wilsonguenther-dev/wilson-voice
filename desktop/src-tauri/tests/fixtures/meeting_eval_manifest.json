@@ -5,7 +5,9 @@
     "lecture-15min",
     "seam-stress",
     "device-change",
-    "two-track-ordering"
+    "two-track-ordering",
+    "room-3-near-field",
+    "classroom-6-far-field"
   ],
   "synthesis": {
     "tool": "macOS `say` -> `afconvert` (no network, no third-party asset)",
@@ -14,6 +16,21 @@
   },
   "note": "SYNTHETIC audio only — no real dictation, no meeting recording, and no third party's voice ever enters this corpus. `say` output is stable for a given macOS + voice build and NOT across them, so regenerating on another machine changes every hash below; re-run the writer and commit the diff.",
   "files": [
+    {
+      "path": "classroom-6-far-field/audio.wav",
+      "bytes": 2462206,
+      "sha256": "3441ac0f347dcc2e6d79438e0da29f126d64346618e1c355b478365903b56761"
+    },
+    {
+      "path": "classroom-6-far-field/meta.json",
+      "bytes": 6102,
+      "sha256": "f1eef251d166978e62a06d5037ff42b5e7f1d8e6ae796d114b82f990633425a7"
+    },
+    {
+      "path": "classroom-6-far-field/reference.txt",
+      "bytes": 1307,
+      "sha256": "33235ec3e141e91552321f724b6f6a49c930abdb8dd98918722a71b2df11c11e"
+    },
     {
       "path": "device-change/audio.wav",
       "bytes": 510802,
@@ -53,6 +70,21 @@
       "path": "lecture-15min/reference.txt",
       "bytes": 16659,
       "sha256": "4970d455ec1b57cceddf9e8fd772681eb5617b8f33034aa7bcf5df981b51c3cd"
+    },
+    {
+      "path": "room-3-near-field/audio.wav",
+      "bytes": 1417800,
+      "sha256": "f5c5d6012c614f4935e973f070a40d9a55f80c10283a4cd1ece17e139949ee6f"
+    },
+    {
+      "path": "room-3-near-field/meta.json",
+      "bytes": 3965,
+      "sha256": "b8c1802dfd73ae1771b57b347cae672290f3db1ebf08abefdb0cc9b487b3e282"
+    },
+    {
+      "path": "room-3-near-field/reference.txt",
+      "bytes": 882,
+      "sha256": "81a4fcd5574186a636c5c8f2f3538950a793d3271a9e26e9c73998c678f4cd35"
     },
     {
       "path": "seam-stress/audio.wav",

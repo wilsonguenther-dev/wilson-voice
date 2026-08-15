@@ -30,8 +30,16 @@
 //!   ([`MergeReport`]) so an unmerged seam is a failure wherever it happens
 //!   rather than only where a marker happens to sit.
 //!
-//! DER/JER/enrollment-EER are deliberately out of scope: they need RTTM speaker
-//! ground truth that only exists once diarization lands in yap23.
+//! * **Speaker ground truth** — YV120 adds the diarization half. The metrics
+//!   themselves (DER, JER, enrollment-EER) are pure functions over labeled
+//!   intervals and live in `wilson_voice_lib::diarize_metrics`, pinned to
+//!   hand-worked answers in `tests/diarization_metrics.rs`. What lives HERE is
+//!   what only a corpus can carry: fixtures (e) and (f), each with RTTM speaker
+//!   turns that are exact by construction because the fixture was ASSEMBLED
+//!   from them. No DER/JER number is gated yet — there is no diarizer to score
+//!   until YV126 — and the gate constants say `None` rather than a guess, for
+//!   the same reason YV90 shipped `WER_GATE = 0.15` as an admitted placeholder
+//!   and YV93 replaced it with a measurement.
 //!
 //! ## The corpus is synthetic, and that is permanent
 //!
@@ -56,6 +64,8 @@
 //! cargo test --test meeting_eval meeting_eval_generate_corpus -- --ignored --nocapture
 //! # regrow only the seam fixture (after a change to the chunk geometry)
 //! cargo test --test meeting_eval meeting_eval_generate_seam_stress -- --ignored --nocapture
+//! # regrow only YV120's diarization fixtures (e) and (f)
+//! cargo test --test meeting_eval meeting_eval_generate_diarization_fixtures -- --ignored --nocapture
 //! # re-hash an existing corpus into the committed manifest
 //! cargo test --test meeting_eval meeting_eval_write_manifest -- --ignored --nocapture
 //! # run the gates
@@ -79,6 +89,10 @@ use sha2::{Digest, Sha256};
 // so a regression in `meeting_asr` fails here instead of passing against a copy
 // of itself.
 use wilson_voice_lib::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
+// YV120: the diarization metrics score fixtures (e) and (f). Same rule as the
+// chunker above — the harness runs the SHIPPED metric, never a copy of it, so a
+// change to `der`/`jer` fails here as well as in its own unit file.
+use wilson_voice_lib::diarize_metrics::{der, jer, RttmTurn};
 use wilson_voice_lib::meeting_asr::{
     merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, merge_timed_reporting,
     plan_windows, plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig,
@@ -123,9 +137,25 @@ const DEVICE_CHANGE: &str = "device-change";
 /// clocks, with known words placed at known times on a clock BOTH of them can
 /// be put back onto.
 const TWO_TRACK: &str = "two-track-ordering";
+/// YV120 fixture (e): three people round one mic, near-field, no overlap — the
+/// case pyannote-segmentation-3.0's mechanism ceiling has no trouble with, and
+/// therefore the fixture YV126's clustering threshold gets TUNED against.
+const ROOM_3: &str = "room-3-near-field";
+/// YV120 fixture (f): six people, far-field, deliberate crosstalk — built to
+/// EXCEED that ceiling (merged finding #5: 3 speakers per 10 s window, 2
+/// simultaneous), so that "full N-way clustering cannot do this" is a
+/// measurement rather than an opinion.
+const CLASSROOM_6: &str = "classroom-6-far-field";
 /// Every fixture the manifest must name. Fixture (c) is generated here but
 /// consumed by YV92 (anti-alias + input format change), not by this file's gates.
-const FIXTURE_IDS: [&str; 4] = [LECTURE, SEAM_STRESS, DEVICE_CHANGE, TWO_TRACK];
+const FIXTURE_IDS: [&str; 6] = [
+    LECTURE,
+    SEAM_STRESS,
+    DEVICE_CHANGE,
+    TWO_TRACK,
+    ROOM_3,
+    CLASSROOM_6,
+];
 
 /// MEASURED (YV93, Parakeet Unified EN 0.6B on Metal, no meeting tuning, clean
 /// synthesized speech). The placeholder this replaces was 0.15 — a number from
@@ -449,6 +479,41 @@ struct FixtureMeta {
     /// single-track fixture has no place for.
     #[serde(default)]
     two_track: Option<TwoTrackMeta>,
+    /// YV120 fixtures (e)/(f): who is speaking when, as RTTM speaker turns.
+    ///
+    /// EXACT by construction, not annotated: the generator places one
+    /// synthesized utterance per turn at a start it chose, so the ground truth
+    /// is the schedule the audio was assembled from rather than a human's guess
+    /// at what they heard. That is what makes a DER measured against it a
+    /// statement about the diarizer and nothing else — the same argument that
+    /// makes this corpus's WER references exact.
+    ///
+    /// Serialised as `{speaker_id, start_seconds, end_seconds}`, the shape
+    /// `pyannote.metrics` and `dscore` consume, so a cross-check against either
+    /// costs a `RttmTurn::to_rttm_line` call.
+    #[serde(default)]
+    rttm: Vec<RttmTurn>,
+    /// YV120 fixtures (e)/(f): which synthesizer voice each RTTM speaker id was
+    /// rendered with, and how far from the mic they were placed.
+    ///
+    /// Committed because "these two speakers are different people" is the
+    /// fixture's central claim: a corpus regrown with one voice for all six
+    /// would still have well-formed RTTM and would silently be scoring nothing.
+    #[serde(default)]
+    speakers: Vec<FixtureSpeaker>,
+}
+
+/// One speaker of a YV120 diarization fixture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FixtureSpeaker {
+    /// The id used in [`FixtureMeta::rttm`] and in `reference.txt`.
+    id: String,
+    /// The macOS `say` voice. Distinct per speaker, by construction.
+    voice: String,
+    /// Direct-path gain applied before mixing — 1.0 is at the mic. Fixture (f)
+    /// seats its six speakers at different distances, because a far-field room
+    /// where everyone is equally loud is not a far-field room.
+    direct_gain: f32,
 }
 
 /// One marker word in fixture (d): which track said it, when on the SHARED host
@@ -2653,6 +2718,436 @@ fn to_i16(samples: &[f32]) -> Vec<i16> {
 }
 
 // ---------------------------------------------------------------------------
+// YV120 — the diarization fixtures (e) and (f)
+// ---------------------------------------------------------------------------
+//
+// The metrics themselves are unit-tested in `tests/diarization_metrics.rs`
+// against hand-worked answers. What is checked HERE is the other half: that the
+// two fixtures really carry the ground truth those metrics need, and that each
+// is hard in the specific way it was built to be hard. A fixture nobody checked
+// is worth exactly as much as a metric nobody checked — YV109's two-track
+// fixture has `two_track_ordering_fixture_is_hard_by_construction` for the same
+// reason, and it caught a fixture whose markers had drifted out of the seams.
+
+/// The DER gate for fixture (e). `None` — deliberately UNMEASURED.
+///
+/// There is no diarizer in this repo yet. A number here today would be a guess
+/// dressed as a gate, which is the failure merged finding #16 is about and the
+/// reason this item ships before YV121 rather than after it. YV126 is the first
+/// item with real output to score; it replaces these with measurements and
+/// records them in the backlog, the way YV93 replaced `WER_GATE`'s placeholder
+/// with four measured arms.
+// TODO(YV126): replace once real diarization output exists.
+const ROOM_3_DER_GATE: Option<f64> = None;
+// TODO(YV126): replace once real diarization output exists.
+const ROOM_3_JER_GATE: Option<f64> = None;
+/// Fixture (f) is expected to score BADLY under full N-way clustering — the
+/// segmentation model cannot do the task (merged finding #5), and the fix is a
+/// smaller task, not a better threshold. So this gate, when YV126 measures it,
+/// is a ceiling on the `EnrolledVsEveryoneElse` mode and a recorded-but-ungated
+/// number for full clustering. Guessing either today would prejudge the
+/// measurement that decides it.
+// TODO(YV126): replace once real diarization output exists.
+const CLASSROOM_6_DER_GATE: Option<f64> = None;
+// TODO(YV126): replace once real diarization output exists.
+const CLASSROOM_6_JER_GATE: Option<f64> = None;
+
+/// Fixture (e)'s speakers: three voices, three distances, near-field.
+const ROOM_3_SPEAKERS: [(&str, &str, f32); 3] = [
+    ("spk_a", "Samantha", 1.00),
+    ("spk_b", "Fred", 0.92),
+    ("spk_c", "Kathy", 0.85),
+];
+
+/// Fixture (f)'s speakers: six voices across a room, the instructor nearest the
+/// mic and the back row a third of that. Distinct synthesizer voices are the
+/// fixture's central claim — see [`FixtureSpeaker`].
+const CLASSROOM_6_SPEAKERS: [(&str, &str, f32); 6] = [
+    ("spk_a", "Samantha", 0.55),
+    ("spk_b", "Fred", 0.34),
+    ("spk_c", "Kathy", 0.30),
+    ("spk_d", "Ralph", 0.26),
+    ("spk_e", "Junior", 0.24),
+    ("spk_f", "Albert", 0.22),
+];
+
+/// The RTTM turns of a fixture, in start order.
+fn read_rttm(root: &Path, id: &str) -> Vec<RttmTurn> {
+    let meta = read_meta(root, id);
+    let mut turns = meta.rttm;
+    assert!(
+        !turns.is_empty(),
+        "{id} carries no RTTM — regrow it with \
+         `cargo test meeting_eval_generate_diarization_fixtures -- --ignored`"
+    );
+    turns.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+    turns
+}
+
+/// The distinct speaker ids in an RTTM, sorted.
+fn rttm_speakers(turns: &[RttmTurn]) -> Vec<String> {
+    let mut ids: Vec<String> = turns.iter().map(|t| t.speaker_id.clone()).collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The greatest number of speakers audible at one instant.
+///
+/// `1` means the fixture has no overlap at all; pyannote-segmentation-3.0 caps
+/// at `2` simultaneous, so a fixture built to exceed the mechanism ceiling has
+/// to reach `3`.
+fn max_simultaneous(turns: &[RttmTurn]) -> usize {
+    let mut events: Vec<(f64, i32)> = Vec::with_capacity(turns.len() * 2);
+    for t in turns {
+        events.push((t.start_seconds, 1));
+        events.push((t.end_seconds, -1));
+    }
+    // Ends before starts at the same instant: two turns that merely touch are
+    // not overlapping.
+    events.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut here = 0i32;
+    let mut most = 0i32;
+    for (_, delta) in events {
+        here += delta;
+        most = most.max(here);
+    }
+    most as usize
+}
+
+/// The greatest number of DISTINCT speakers inside any window of `window`
+/// seconds — the quantity pyannote-segmentation-3.0's "3 speakers per 10 s
+/// window" ceiling is expressed in.
+///
+/// An optimal window can always be slid so that its left edge sits on a turn
+/// start or its right edge on a turn end, so those are the only candidates
+/// worth evaluating.
+fn max_speakers_in_window(turns: &[RttmTurn], window: f64) -> usize {
+    let mut starts: Vec<f64> = turns.iter().map(|t| t.start_seconds).collect();
+    starts.extend(turns.iter().map(|t| t.end_seconds - window));
+    let mut most = 0usize;
+    for start in starts {
+        let end = start + window;
+        let mut ids: Vec<&str> = turns
+            .iter()
+            .filter(|t| t.start_seconds < end && t.end_seconds > start)
+            .map(|t| t.speaker_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        most = most.max(ids.len());
+    }
+    most
+}
+
+/// Total speech time per speaker.
+fn speaker_seconds(turns: &[RttmTurn], speaker: &str) -> f64 {
+    turns
+        .iter()
+        .filter(|t| t.speaker_id == speaker)
+        .map(RttmTurn::duration)
+        .sum()
+}
+
+/// Every declared turn lies inside the audio, is long enough to embed, and the
+/// declared duration is the wav's real one — checks that belong to both
+/// fixtures.
+fn assert_rttm_fits_the_audio(root: &Path, id: &str, turns: &[RttmTurn]) {
+    let meta = read_meta(root, id);
+    let (rate, samples) = read_wav_i16(&root.join(id).join("audio.wav"));
+    assert_eq!(rate, TARGET_RATE, "{id}: the corpus is 16 kHz mono");
+    let wav_seconds = samples.len() as f64 / TARGET_RATE as f64;
+    assert!(
+        (wav_seconds - meta.duration_seconds).abs() < 0.05,
+        "{id}: meta says {:.2}s, the wav is {wav_seconds:.2}s",
+        meta.duration_seconds
+    );
+    for t in turns {
+        assert!(
+            t.start_seconds >= 0.0 && t.end_seconds <= wav_seconds + 1e-6,
+            "{id}: turn {t:?} falls outside the audio"
+        );
+        // CAM++ needs something to embed. A turn shorter than this is not a
+        // speaker attribution problem, it is a VAD problem, and putting one in
+        // the ground truth would charge the diarizer for the wrong thing.
+        assert!(
+            t.duration() >= 0.5,
+            "{id}: turn {t:?} is too short to carry speaker identity"
+        );
+    }
+    // The RTTM describes THIS audio, and the check for that is energy: every
+    // declared turn has to be loud against the fixture's own room tone. A turn
+    // placed past the end of the mix, or a script edit that left a start where
+    // no speech landed, is silent — well-formed ground truth pointing at
+    // nothing, and every DER measured against it would be measuring the
+    // fixture's bug. Measured on the committed corpus: the quietest turn of
+    // fixture (f) (the back row, far-field) runs 9.4x its silence floor, and
+    // fixture (e) runs ~200x, so a 4x gate fails a placement bug long before it
+    // fails a quiet speaker.
+    let rms = |from: f64, to: f64| -> f64 {
+        let a = ((from * TARGET_RATE as f64) as usize).min(samples.len());
+        let b = ((to * TARGET_RATE as f64) as usize).min(samples.len());
+        if b <= a {
+            return 0.0;
+        }
+        let sum: f64 = samples[a..b]
+            .iter()
+            .map(|s| {
+                let v = *s as f64 / 32_768.0;
+                v * v
+            })
+            .sum();
+        (sum / (b - a) as f64).sqrt()
+    };
+    let mut speech = vec![false; samples.len()];
+    for t in turns {
+        let a = ((t.start_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+        let b = ((t.end_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+        speech[a..b].iter_mut().for_each(|s| *s = true);
+    }
+    let quiet: Vec<i16> = samples
+        .iter()
+        .zip(speech.iter())
+        .filter(|(_, on)| !**on)
+        .map(|(s, _)| *s)
+        .collect();
+    let floor = {
+        let sum: f64 = quiet
+            .iter()
+            .map(|s| {
+                let v = *s as f64 / 32_768.0;
+                v * v
+            })
+            .sum();
+        (sum / quiet.len().max(1) as f64).sqrt()
+    };
+    assert!(
+        floor > 0.0,
+        "{id}: digital silence between turns is not a room"
+    );
+    for t in turns {
+        let level = rms(t.start_seconds, t.end_seconds);
+        assert!(
+            level > floor * 4.0,
+            "{id}: turn {t:?} carries {level:.5} RMS against a {floor:.5} floor — \
+             the ground truth points at silence"
+        );
+    }
+    let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+    assert!(
+        peak < 32_400,
+        "{id}: the mix clips at {peak} — a clipped fixture measures the mixer"
+    );
+
+    let speakers = rttm_speakers(turns);
+    assert_eq!(
+        speakers.len(),
+        meta.speakers.len(),
+        "{id}: the RTTM and the speaker table disagree on how many people are in the room"
+    );
+    let mut voices: Vec<&str> = meta.speakers.iter().map(|s| s.voice.as_str()).collect();
+    voices.sort_unstable();
+    voices.dedup();
+    assert_eq!(
+        voices.len(),
+        meta.speakers.len(),
+        "{id}: two speakers share a synthesizer voice — the fixture would be \
+         scoring one person against themselves"
+    );
+}
+
+/// No number is gated until something has been measured.
+///
+/// This test exists so that a placeholder cannot be quietly promoted to a gate:
+/// the moment YV126 sets one of these to `Some(x)`, this test is what has to be
+/// edited, and editing it means writing down where `x` came from.
+#[test]
+fn meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate() {
+    for (name, gate) in [
+        ("ROOM_3_DER_GATE", ROOM_3_DER_GATE),
+        ("ROOM_3_JER_GATE", ROOM_3_JER_GATE),
+        ("CLASSROOM_6_DER_GATE", CLASSROOM_6_DER_GATE),
+        ("CLASSROOM_6_JER_GATE", CLASSROOM_6_JER_GATE),
+    ] {
+        assert!(
+            gate.is_none(),
+            "{name} carries a number ({gate:?}) but nothing in this repo has \
+             produced a diarization hypothesis yet — a gate set before the first \
+             measurement is the vendor-blog threshold problem in a different \
+             file. YV126 sets these, against fixture (e), and records the \
+             tuning run."
+        );
+    }
+}
+
+/// Fixture (e) is the tuning fixture: three people, near-field, NO overlap.
+///
+/// Every property asserted here is one YV126's threshold tune depends on. If the
+/// fixture drifted into overlap, a clustering threshold tuned on it would be
+/// compensating for the mechanism ceiling instead of measuring similarity — and
+/// the number would look fine.
+#[test]
+fn meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be() {
+    let Some(root) = corpus() else { return };
+    let turns = read_rttm(&root, ROOM_3);
+    assert_rttm_fits_the_audio(&root, ROOM_3, &turns);
+
+    assert_eq!(rttm_speakers(&turns).len(), 3, "three people in the room");
+    assert_eq!(
+        max_simultaneous(&turns),
+        1,
+        "fixture (e) is the NO-OVERLAP case: {turns:#?}"
+    );
+    assert!(
+        max_speakers_in_window(&turns, 10.0) <= 3,
+        "fixture (e) must stay inside pyannote-segmentation-3.0's 3-per-10s \
+         ceiling — that is what makes it the fixture a threshold can be tuned on"
+    );
+    let changes = turns
+        .windows(2)
+        .filter(|w| w[0].speaker_id != w[1].speaker_id)
+        .count();
+    assert!(changes >= 3, "only {changes} speaker changes");
+    eprintln!(
+        "fixture (e): {} turns, {} speaker changes, {:.1}s",
+        turns.len(),
+        changes,
+        turns.last().map(|t| t.end_seconds).unwrap_or(0.0)
+    );
+}
+
+/// Fixture (f) is the fixture built to FAIL, on purpose.
+///
+/// Merged finding #5: pyannote-segmentation-3.0 caps at 3 speakers per 10 s
+/// window and 2 simultaneous, and sherpa's pipeline deletes every overlapped
+/// frame before embedding. A six-person classroom exceeds that, so full N-way
+/// clustering is expected to produce visibly bad DER here — not because the
+/// threshold is wrong but because the mechanism cannot do the task. That
+/// argument is only falsifiable against a fixture that really does exceed the
+/// ceiling, so this test measures the excess rather than asserting it in prose.
+#[test]
+fn meeting_eval_classroom_6_exceeds_the_segmentation_ceiling_on_purpose() {
+    let Some(root) = corpus() else { return };
+    let turns = read_rttm(&root, CLASSROOM_6);
+    assert_rttm_fits_the_audio(&root, CLASSROOM_6, &turns);
+
+    assert_eq!(rttm_speakers(&turns).len(), 6, "six people in the room");
+    let simultaneous = max_simultaneous(&turns);
+    assert!(
+        simultaneous >= 3,
+        "fixture (f) must exceed the 2-simultaneous ceiling; peak is {simultaneous}"
+    );
+    let in_ten = max_speakers_in_window(&turns, 10.0);
+    assert!(
+        in_ten >= 4,
+        "fixture (f) must exceed the 3-speakers-per-10s ceiling; peak is {in_ten}"
+    );
+    let overlapped: f64 = {
+        // Seconds during which more than one person is speaking.
+        let mut events: Vec<(f64, i32)> = Vec::new();
+        for t in &turns {
+            events.push((t.start_seconds, 1));
+            events.push((t.end_seconds, -1));
+        }
+        events.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut here = 0i32;
+        let mut last = 0.0f64;
+        let mut total = 0.0f64;
+        for (at, delta) in events {
+            if here > 1 {
+                total += at - last;
+            }
+            here += delta;
+            last = at;
+        }
+        total
+    };
+    assert!(
+        overlapped > 3.0,
+        "only {overlapped:.2}s of crosstalk — sherpa drops overlapped frames \
+         before embedding, so a fixture with a token amount of overlap proves \
+         nothing about what that costs"
+    );
+    eprintln!(
+        "fixture (f): {} turns, {simultaneous} simultaneous at peak, \
+         {in_ten} distinct speakers in one 10s window, {overlapped:.1}s overlapped",
+        turns.len()
+    );
+}
+
+/// The metrics, pointed at the real fixtures.
+///
+/// Two arms, both with an answer that is known without a diarizer:
+///
+/// * The ground truth scored against ITSELF is 0.0 error. A metric that could
+///   not return zero for a perfect hypothesis would fail every later comparison
+///   in a direction nobody would question.
+/// * A "perfect VAD, one cluster" hypothesis — every reference turn kept, all
+///   relabeled to one speaker — is the exact baseline a diarizer has to beat.
+///   On fixture (e), where there is no overlap, its DER is derivable on paper:
+///   nothing is missed and nothing is invented, so the error is precisely the
+///   speech belonging to the two speakers that were not the mapped one.
+///
+/// The second arm is what proves the harness is scoring the FIXTURE and not a
+/// hand-built interval list: its expected value is computed from the fixture's
+/// own RTTM at test time.
+#[test]
+fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
+    let Some(root) = corpus() else { return };
+    for id in [ROOM_3, CLASSROOM_6] {
+        let turns = read_rttm(&root, id);
+        let perfect = der(&turns, &turns);
+        assert!(
+            perfect.rate().abs() < 1e-9,
+            "{id}: the ground truth scored against itself is not zero: {perfect:?}"
+        );
+        assert!(jer(&turns, &turns).abs() < 1e-9, "{id}: JER against itself");
+
+        let one_cluster: Vec<RttmTurn> = turns
+            .iter()
+            .map(|t| RttmTurn::new("cluster_0", t.start_seconds, t.end_seconds))
+            .collect();
+        let report = der(&turns, &one_cluster);
+        eprintln!(
+            "{id}: one-cluster baseline DER {:.4} JER {:.4}",
+            report.rate(),
+            jer(&turns, &one_cluster)
+        );
+        assert!(
+            report.rate() > 0.3,
+            "{id}: a single cluster cannot be a good hypothesis for this fixture"
+        );
+    }
+
+    // Fixture (e) has no overlap, so the one-cluster baseline's DER is exactly
+    // "everything that is not the busiest speaker".
+    let turns = read_rttm(&root, ROOM_3);
+    let total: f64 = turns.iter().map(RttmTurn::duration).sum();
+    let busiest = rttm_speakers(&turns)
+        .iter()
+        .map(|s| speaker_seconds(&turns, s))
+        .fold(0.0f64, f64::max);
+    let one_cluster: Vec<RttmTurn> = turns
+        .iter()
+        .map(|t| RttmTurn::new("cluster_0", t.start_seconds, t.end_seconds))
+        .collect();
+    let report = der(&turns, &one_cluster);
+    assert!(report.miss.abs() < 1e-9 && report.false_alarm.abs() < 1e-9);
+    assert!(
+        (report.confusion - (total - busiest)).abs() < 1e-6,
+        "confusion {:.4} is not the {:.4}s of speech outside the busiest speaker",
+        report.confusion,
+        total - busiest
+    );
+    assert!(
+        (report.rate() - (total - busiest) / total).abs() < 1e-9,
+        "DER {:.6} is not the hand-derivable {:.6}",
+        report.rate(),
+        (total - busiest) / total
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The generator — synthetic audio only, run by hand, never in CI
 // ---------------------------------------------------------------------------
 
@@ -2847,6 +3342,8 @@ fn meeting_eval_generate_corpus() {
     generate_seam_stress(&root);
     generate_device_change(&root);
     generate_two_track_ordering(&root);
+    generate_room_3(&root);
+    generate_classroom_6(&root);
 
     write_manifest_from(&root);
 }
@@ -2889,6 +3386,8 @@ fn generate_lecture(root: &Path) {
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
         two_track: None,
+        rttm: Vec::new(),
+        speakers: Vec::new(),
     };
     write_fixture(root, &meta, &audio);
 }
@@ -3013,6 +3512,8 @@ fn generate_seam_stress(root: &Path) {
         device_change_seconds: None,
         source_rates_hz: vec![TARGET_RATE],
         two_track: None,
+        rttm: Vec::new(),
+        speakers: Vec::new(),
     };
     write_fixture(root, &meta, &audio);
 }
@@ -3064,6 +3565,8 @@ fn generate_device_change(root: &Path) {
         device_change_seconds: Some(change_at),
         source_rates_hz: vec![48_000, 24_000],
         two_track: None,
+        rttm: Vec::new(),
+        speakers: Vec::new(),
     };
     write_fixture(root, &meta, &audio);
 }
@@ -3315,6 +3818,8 @@ fn generate_two_track_ordering(root: &Path) {
             residual_horizon_seconds: RESIDUAL_HORIZON_SECONDS,
             residual_budget_ms: RESIDUAL_BUDGET_MS,
         }),
+        rttm: Vec::new(),
+        speakers: Vec::new(),
     };
     fs::write(
         dir.join("meta.json"),
@@ -3330,6 +3835,432 @@ fn generate_two_track_ordering(root: &Path) {
         TWO_TRACK_SECONDS,
         TWO_TRACK_CONVERSATION.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// YV120 — the diarization fixture writers
+// ---------------------------------------------------------------------------
+
+/// Fixture (e)'s script: twelve turns, three people, never the same person
+/// twice in a row. Mundane and about nobody, same rule as the rest of this
+/// corpus — no names, no digits, no addresses.
+const ROOM_3_TURNS: [(usize, &str); 12] = [
+    (
+        0,
+        "Let us start with the part everyone said was confusing last time",
+    ),
+    (
+        1,
+        "I read it twice and the second half still does not follow from the first",
+    ),
+    (
+        2,
+        "The example in the middle is the one that finally made it click for me",
+    ),
+    (
+        0,
+        "Then we lead with the example and keep the longer argument for later",
+    ),
+    (
+        2,
+        "That would also give us room to cut the closing section entirely",
+    ),
+    (
+        1,
+        "I would rather shorten it than rewrite it the week before we ship",
+    ),
+    (
+        0,
+        "Fine, we shorten it, and we leave the appendix exactly as it is",
+    ),
+    (
+        1,
+        "Someone still has to check the numbers in the middle table",
+    ),
+    (
+        2,
+        "I can take that this week if nobody else has picked it up already",
+    ),
+    (
+        0,
+        "Take it, and tell us on the call if anything in there looks wrong",
+    ),
+    (
+        1,
+        "One more thing before we stop, the room is booked for an hour only",
+    ),
+    (
+        2,
+        "Then we finish here and carry whatever is left to the next session",
+    ),
+];
+
+/// Fixture (f)'s script: `(start on the shared clock, speaker, sentence)`.
+///
+/// The starts are chosen, not accumulated, which is what makes the crosstalk
+/// deliberate rather than emergent. Three of them (the burst at twenty seconds)
+/// begin within a second of each other, so three voices are live at once — past
+/// pyannote-segmentation-3.0's 2-simultaneous ceiling — and a fourth speaker
+/// inside the same ten-second window puts it past the 3-per-window ceiling too.
+/// The generator MEASURES both before writing the fixture, so a script edit that
+/// accidentally made the fixture easy fails at generation time rather than
+/// silently turning fixture (f) into a second fixture (e).
+const CLASSROOM_6_TURNS: [(f64, usize, &str); 20] = [
+    (
+        0.5,
+        0,
+        "The reading for today is the short chapter, not the one on the syllabus",
+    ),
+    (6.0, 1, "Does that mean the problem set moves as well"),
+    (
+        10.0,
+        0,
+        "It moves, and I will say so again at the end so nobody misses it",
+    ),
+    (
+        14.5,
+        2,
+        "Could you go back to the diagram from the last session",
+    ),
+    (
+        20.0,
+        3,
+        "I still do not see where the second term comes from",
+    ),
+    (21.0, 4, "It comes from the substitution two lines above it"),
+    (
+        22.2,
+        5,
+        "That is what I said and nobody listened to me either",
+    ),
+    (
+        26.5,
+        0,
+        "One at a time please, the back of the room cannot hear any of this",
+    ),
+    (
+        31.0,
+        1,
+        "Sorry, my question was whether the substitution is even allowed there",
+    ),
+    (
+        35.5,
+        2,
+        "It is allowed as long as nothing in the denominator goes to zero",
+    ),
+    (
+        40.0,
+        0,
+        "That is the condition, and it is the one people forget on the exam",
+    ),
+    (
+        45.0,
+        3,
+        "So the whole method falls apart the moment the room is not ideal",
+    ),
+    (
+        48.5,
+        4,
+        "Not falls apart, it just needs the correction term we skipped",
+    ),
+    (
+        49.5,
+        5,
+        "Which is the part that never fits on one page of notes",
+    ),
+    (
+        54.0,
+        0,
+        "We will do the correction term properly on the board next week",
+    ),
+    (59.0, 1, "Can we have the worked example before then"),
+    (
+        62.5,
+        2,
+        "And maybe one that is not the same example as in the book",
+    ),
+    (
+        63.5,
+        3,
+        "The book example is the only one I actually understood",
+    ),
+    (
+        68.0,
+        0,
+        "I will write a new one and post both of them together",
+    ),
+    (
+        73.0,
+        4,
+        "Thank you, that is all I wanted to ask about today",
+    ),
+];
+
+/// Early reflections of a hard-surfaced room: three taps, no one of them a
+/// multiple of another, so the comb they make has no single deep null that a
+/// later spectral measurement could mistake for the anti-alias filter's work.
+const CLASSROOM_REFLECTIONS: [(f64, f32); 3] = [(0.013, 0.35), (0.023, 0.25), (0.037, 0.18)];
+
+/// Room tone level for each fixture, as a peak fraction of full scale. Fixture
+/// (e) is near-field and nearly clean; fixture (f) carries the HVAC-and-laptops
+/// floor of a real lecture hall, which is a large part of why far-field
+/// embeddings are worse.
+const ROOM_3_TONE: f32 = 0.0015;
+const CLASSROOM_6_TONE: f32 = 0.010;
+
+/// Deterministic room tone: filtered noise plus a low hum, from a fixed seed.
+///
+/// Deterministic because the manifest hashes this corpus — a random noise floor
+/// would change every sha256 on every regeneration and make the checksum file
+/// meaningless. An xorshift and two fixed-phase tones are enough to sound like
+/// a room and cost nothing to reproduce.
+fn room_tone(len: usize, seed: u32, level: f32) -> Vec<f32> {
+    let mut state = seed | 1;
+    let mut low = 0.0f32;
+    (0..len)
+        .map(|i| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let white = (state as f32 / u32::MAX as f32) * 2.0 - 1.0;
+            // One-pole lowpass: HVAC is not white.
+            low = low * 0.85 + white * 0.15;
+            let t = i as f32 / TARGET_RATE as f32;
+            let hum = (2.0 * std::f32::consts::PI * 118.0 * t).sin() * 0.35
+                + (2.0 * std::f32::consts::PI * 236.0 * t + 1.1).sin() * 0.15;
+            (low * 2.2 + hum) * level
+        })
+        .collect()
+}
+
+/// One speaker's utterance as the single room mic hears it: attenuated by
+/// distance, plus [`CLASSROOM_REFLECTIONS`].
+fn far_field(samples: &[i16], gain: f32) -> Vec<f32> {
+    let direct: Vec<f32> = samples
+        .iter()
+        .map(|s| *s as f32 / 32_768.0 * gain)
+        .collect();
+    let tail = CLASSROOM_REFLECTIONS
+        .iter()
+        .map(|(delay, _)| (delay * TARGET_RATE as f64) as usize)
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![0.0f32; direct.len() + tail];
+    out[..direct.len()].copy_from_slice(&direct);
+    for (delay, reflection_gain) in CLASSROOM_REFLECTIONS {
+        let offset = (delay * TARGET_RATE as f64) as usize;
+        for (i, s) in direct.iter().enumerate() {
+            out[i + offset] += s * reflection_gain;
+        }
+    }
+    out
+}
+
+/// Write a diarization fixture: the mixed audio, one `speaker: text` line per
+/// turn in start order, and the meta carrying the RTTM.
+///
+/// `reference.txt` is speaker-prefixed for the same reason fixture (d)'s is:
+/// the reference for a multi-speaker recording is not a bag of words, it is who
+/// said what, and a file that dropped the speaker would be unable to express
+/// the thing the fixture exists to check.
+fn write_diarization_fixture(root: &Path, meta: &FixtureMeta, audio: &[f32]) {
+    let dir = root.join(&meta.id);
+    fs::create_dir_all(&dir).expect("fixture dir");
+    write_wav_16k_mono(&dir.join("audio.wav"), &to_i16(audio));
+    let reference: String = meta
+        .utterances
+        .iter()
+        .map(|u| u.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(dir.join("reference.txt"), format!("{reference}\n")).expect("reference");
+    fs::write(
+        dir.join("meta.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(meta).expect("meta serialises")
+        ),
+    )
+    .expect("meta");
+    eprintln!(
+        "wrote {} — {:.1}s, {} turns, {} speakers, peak {} simultaneous",
+        dir.display(),
+        meta.duration_seconds,
+        meta.rttm.len(),
+        meta.speakers.len(),
+        max_simultaneous(&meta.rttm)
+    );
+}
+
+/// Fixture (e): three people round one mic in a small room, near-field, no
+/// overlap. The case the segmentation model handles, and therefore the only
+/// honest place to tune a clustering threshold (YV126).
+fn generate_room_3(root: &Path) {
+    let gap = (SENTENCE_GAP * TARGET_RATE as f64) as usize;
+    let mut mix: Vec<f32> = Vec::new();
+    let mut rttm: Vec<RttmTurn> = Vec::new();
+    let mut utterances: Vec<Utterance> = Vec::new();
+
+    for (who, text) in ROOM_3_TURNS {
+        let (id, voice, gain) = ROOM_3_SPEAKERS[who];
+        let spoken = trim_silence(&synthesize(text, TARGET_RATE)).to_vec();
+        let start = seconds(mix.len());
+        mix.extend(spoken.iter().map(|s| *s as f32 / 32_768.0 * gain));
+        let end = seconds(mix.len());
+        mix.extend(std::iter::repeat_n(0.0f32, gap));
+        rttm.push(RttmTurn::new(id, start, end));
+        utterances.push(Utterance {
+            text: format!("{id}: {text}"),
+            start_seconds: start,
+            end_seconds: end,
+        });
+        let _ = voice;
+    }
+
+    let tone = room_tone(mix.len(), 0x5EED_C0DE, ROOM_3_TONE);
+    for (s, n) in mix.iter_mut().zip(tone.iter()) {
+        *s = (*s + *n).clamp(-1.0, 1.0);
+    }
+
+    // Hard by construction, checked before it is written: fixture (e) is the
+    // NO-OVERLAP case, and a generator that produced overlap here would hand
+    // YV126 a threshold tuned against the mechanism ceiling.
+    assert_eq!(max_simultaneous(&rttm), 1, "fixture (e) must not overlap");
+    assert!(max_speakers_in_window(&rttm, 10.0) <= 3);
+
+    let meta = FixtureMeta {
+        id: ROOM_3.to_string(),
+        kind: "conference_room_3_near_field".to_string(),
+        sample_rate: TARGET_RATE,
+        duration_seconds: seconds(mix.len()),
+        utterances,
+        boundary_seconds: Vec::new(),
+        seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
+        device_change_seconds: None,
+        source_rates_hz: vec![TARGET_RATE],
+        two_track: None,
+        rttm,
+        speakers: ROOM_3_SPEAKERS
+            .iter()
+            .map(|(id, voice, gain)| FixtureSpeaker {
+                id: (*id).to_string(),
+                voice: (*voice).to_string(),
+                direct_gain: *gain,
+            })
+            .collect(),
+    };
+    write_diarization_fixture(root, &meta, &mix);
+}
+
+/// Fixture (f): six people in a lecture hall, one far-field mic, deliberate
+/// crosstalk — engineered to break full N-way clustering.
+///
+/// Every voice is attenuated by its distance and carries the room's early
+/// reflections, and the whole mix sits on an HVAC floor. That is not decoration:
+/// far-field is where speaker embeddings degrade (it is why OS-8's aliasing bug
+/// mattered at all), and a "six speaker" fixture recorded as six clean
+/// near-field voices would be an easy fixture wearing a hard fixture's name.
+fn generate_classroom_6(root: &Path) {
+    let mut rendered: Vec<(f64, usize, &str, Vec<i16>)> = Vec::new();
+    for (start, who, text) in CLASSROOM_6_TURNS {
+        let spoken = trim_silence(&synthesize(text, TARGET_RATE)).to_vec();
+        rendered.push((start, who, text, spoken));
+    }
+
+    let total_seconds = rendered
+        .iter()
+        .map(|(start, _, _, spoken)| start + seconds(spoken.len()))
+        .fold(0.0f64, f64::max)
+        + 1.0;
+    let mut mix = vec![0.0f32; (total_seconds * TARGET_RATE as f64) as usize];
+    let mut rttm: Vec<RttmTurn> = Vec::new();
+    let mut utterances: Vec<Utterance> = Vec::new();
+
+    for (start, who, text, spoken) in &rendered {
+        let (id, _voice, gain) = CLASSROOM_6_SPEAKERS[*who];
+        let at = (start * TARGET_RATE as f64) as usize;
+        let wet = far_field(spoken, gain);
+        for (i, s) in wet.iter().enumerate() {
+            if at + i < mix.len() {
+                mix[at + i] += s;
+            }
+        }
+        // The TURN is the dry speech, not its reverb tail: the tail is what the
+        // room did, and charging a diarizer for failing to attribute a decaying
+        // reflection would be scoring the fixture's own reverb.
+        let end = start + seconds(spoken.len());
+        rttm.push(RttmTurn::new(id, *start, end));
+        utterances.push(Utterance {
+            text: format!("{id}: {text}"),
+            start_seconds: *start,
+            end_seconds: end,
+        });
+    }
+
+    let tone = room_tone(mix.len(), 0xC0FF_EE11, CLASSROOM_6_TONE);
+    for (s, n) in mix.iter_mut().zip(tone.iter()) {
+        *s = (*s + *n).clamp(-1.0, 1.0);
+    }
+
+    rttm.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+    utterances.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
+
+    // Hard by construction, checked before it is written (merged finding #5).
+    let simultaneous = max_simultaneous(&rttm);
+    let in_ten = max_speakers_in_window(&rttm, 10.0);
+    assert!(
+        simultaneous >= 3,
+        "fixture (f) came out with only {simultaneous} simultaneous speakers — \
+         the script's starts no longer overlap after synthesis"
+    );
+    assert!(
+        in_ten >= 4,
+        "fixture (f) came out with only {in_ten} distinct speakers in a 10s window"
+    );
+
+    let meta = FixtureMeta {
+        id: CLASSROOM_6.to_string(),
+        kind: "classroom_6_far_field_overlap".to_string(),
+        sample_rate: TARGET_RATE,
+        duration_seconds: seconds(mix.len()),
+        utterances,
+        boundary_seconds: Vec::new(),
+        seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
+        device_change_seconds: None,
+        source_rates_hz: vec![TARGET_RATE],
+        two_track: None,
+        rttm,
+        speakers: CLASSROOM_6_SPEAKERS
+            .iter()
+            .map(|(id, voice, gain)| FixtureSpeaker {
+                id: (*id).to_string(),
+                voice: (*voice).to_string(),
+                direct_gain: *gain,
+            })
+            .collect(),
+    };
+    write_diarization_fixture(root, &meta, &mix);
+}
+
+/// Regrow ONLY the two diarization fixtures, then re-hash. Their geometry is
+/// tied to the scripts above and to the installed speech voices, not to the
+/// chunk geometry, so they are regrown on their own — rebuilding the 15-minute
+/// lecture beside them would change its hashes and invalidate a measured WER
+/// for no reason.
+#[test]
+#[ignore = "writer, not a check: renders both diarization fixtures with `say`"]
+fn meeting_eval_generate_diarization_fixtures() {
+    let root = corpus_root();
+    fs::create_dir_all(&root).expect("corpus root");
+    generate_room_3(&root);
+    generate_classroom_6(&root);
+    write_manifest_from(&root);
 }
 
 // ---------------------------------------------------------------------------

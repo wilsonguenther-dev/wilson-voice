@@ -1,0 +1,130 @@
+YV120 — DER/JER/enrollment-EER metric harness: acceptance transcript
+awk: syntax error at source line 1
+ context is
+	/^release:/ {print >>>  \ <<< "rustc \" \$2}
+awk: illegal statement at source line 1
+Run on macOS 15 (aarch64), , 2026-08-15T12:34Z
+Corpus present at ~/yap-eval-corpus/meetings (6 fixtures).
+
+============================================================
+1. cargo test --test diarization_metrics
+   (pure: zero hardware, zero corpus, zero model bytes)
+============================================================
+     Running tests/diarization_metrics.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarization_metrics-35d3fb004f9e692f)
+
+running 12 tests
+test cosine_distance_and_similarity_conversion_round_trips ... ok
+test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
+test eer_is_near_zero_for_well_separated_scores ... ok
+test eer_is_near_half_for_fully_overlapping_scores ... ok
+test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
+test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+test der_matches_hand_worked_example ... ok
+test der_counts_overlapped_reference_speech_once_per_speaker ... ok
+test jer_matches_hand_worked_example ... ok
+test jer_exposes_a_speaker_der_hides ... ok
+test rttm_turns_round_trip_through_the_standard_line_format ... ok
+test no_threshold_shaped_declaration_takes_a_bare_float ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+============================================================
+2. the type-discipline grep the item's acceptance names
+   grep -n "fn .*: f32" desktop/src-tauri/tests/diarization_metrics.rs
+============================================================
+(no match — exit 1)
+
+   Same, over the module that defines the functions:
+   grep -n "fn .*: f32" desktop/src-tauri/src/diarize_metrics.rs
+94:    pub fn new(value: f32) -> Self {
+115:    pub fn new(value: f32) -> Self {
+(only the newtype constructors' `value: f32` may appear — exit 0)
+
+   And the automated version of the same rule, which runs on every push:
+   no_threshold_shaped_declaration_takes_a_bare_float (passing above)
+
+============================================================
+3. the committed corpus checksums, verified without cargo
+   (cd ~/yap-eval-corpus/meetings && shasum -a 256 -c <repo>/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256)
+============================================================
+classroom-6-far-field/audio.wav: OK
+classroom-6-far-field/meta.json: OK
+classroom-6-far-field/reference.txt: OK
+device-change/audio.wav: OK
+device-change/meta.json: OK
+device-change/reference.txt: OK
+device-change/segment-a-48000hz.wav: OK
+device-change/segment-b-24000hz.wav: OK
+lecture-15min/audio.wav: OK
+lecture-15min/meta.json: OK
+lecture-15min/reference.txt: OK
+room-3-near-field/audio.wav: OK
+room-3-near-field/meta.json: OK
+room-3-near-field/reference.txt: OK
+seam-stress/audio.wav: OK
+seam-stress/meta.json: OK
+seam-stress/reference.txt: OK
+two-track-ordering/meta.json: OK
+two-track-ordering/reference.txt: OK
+two-track-ordering/track0-anchors.json: OK
+two-track-ordering/track0.wav: OK
+two-track-ordering/track1-anchors.json: OK
+two-track-ordering/track1.wav: OK
+
+   ls ~/yap-eval-corpus/meetings/
+classroom-6-far-field
+device-change
+lecture-15min
+room-3-near-field
+seam-stress
+two-track-ordering
+
+   fixtures named by the committed manifest:
+['lecture-15min', 'seam-stress', 'device-change', 'two-track-ordering', 'room-3-near-field', 'classroom-6-far-field']
+
+============================================================
+4. the extended eval harness, corpus PRESENT
+   cargo test --test meeting_eval -- --nocapture (fixtures (e)/(f) arms)
+============================================================
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-0078f3ed4daa5634)
+
+running 8 tests
+test meeting_eval_generate_diarization_fixtures ... ignored, writer, not a check: renders both diarization fixtures with `say`
+test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate ... ok
+test meeting_eval_manifest_is_committed_and_names_every_fixture ... ok
+room-3-near-field: one-cluster baseline DER 0.6524 JER 0.8841
+classroom-6-far-field: one-cluster baseline DER 0.6698 JER 0.9373
+test meeting_eval_diarization_metrics_score_the_real_fixtures ... ok
+fixture (e): 12 turns, 11 speaker changes, 44.0s
+test meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be ... ok
+fixture (f): 20 turns, 3 simultaneous at peak, 5 distinct speakers in one 10s window, 6.9s overlapped
+test meeting_eval_classroom_6_exceeds_the_segmentation_ceiling_on_purpose ... ok
+corpus verified: 23 files match the committed sha256s
+test meeting_eval_corpus_matches_committed_sha256s ... ok
+
+test result: ok. 6 passed; 0 failed; 2 ignored; 0 measured; 24 filtered out; finished in 1.60s
+
+
+============================================================
+5. the skip path was EXTENDED, not replaced — corpus ABSENT
+   YAP_EVAL_CORPUS=/tmp/no-such-corpus cargo test --test meeting_eval -- --nocapture
+============================================================
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test the_harness_geometry_is_the_shipped_geometry ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test timestamps_are_sorted_gate_catches_out_of_order_segments ... two-track fixture: 4ok swappable pairs, 
+290 ppm relative clock error = 3132 ms at the 3 h cap
+test seam_gate_catches_a_duplicated_boundary_word ... ok
+test wer_counts_substitutions_insertions_and_deletions ... ok
+test two_track_ordering_fixture_is_hard_by_construction ... ok
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
+
+test result: ok. 27 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+   the one line the criterion names, counted in that run:
+12
+   grep -n "meeting eval corpus not found" desktop/src-tauri/tests/meeting_eval.rs
+131:const CORPUS_ABSENT: &str = "meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping";
