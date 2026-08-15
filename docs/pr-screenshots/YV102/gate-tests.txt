@@ -70,3 +70,68 @@ $ npx vitest run src/meetings/systemAudio.test.ts
    Start at  15:44:51
    Duration  184ms (transform 18ms, setup 0ms, collect 17ms, tests 14ms, environment 0ms, prepare 34ms)
 
+
+
+===================================================================
+REBASE ONTO main (a0890ac, post-#123) — the same criteria, re-run
+===================================================================
+
+$ cargo test --test syscapture_prewarm_tap --test settings_kv --test syscapture_never_delivered_denied_state
+
+     Running tests/settings_kv.rs (…/deps/settings_kv-4ba838b32491a421)
+
+running 7 tests
+test an_unparseable_row_never_becomes_a_denial ... ok
+test the_two_keys_are_different_versioned_names ... ok
+test every_verdict_round_trips ... ok
+test the_setup_step_never_blocks_a_recording ... ok
+test the_setup_state_is_exactly_one_settings_kv_row ... ok
+test the_latest_verdict_wins_and_survives_a_relaunch ... ok
+test the_setup_key_and_the_consent_key_do_not_ack_each_other ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/syscapture_never_delivered_denied_state.rs (…/deps/syscapture_never_delivered_denied_state-32bfa360d4f61619)
+
+running 8 tests
+test negative_zero_is_still_silence ... ok
+test a_tap_whose_ioproc_never_fired_is_the_same_verdict ... ok
+test silence_below_the_grace_window_is_unknown_not_denied ... ok
+test the_two_hundred_millisecond_prewarm_cannot_manufacture_a_denial ... ok
+test a_single_non_zero_sample_is_sticky ... ok
+test the_denied_state_is_never_reported_as_recording_silently ... ok
+test a_session_that_delivered_then_went_silent_is_not_denied ... ok
+test a_tap_that_never_delivered_anything_is_reported_as_looks_denied ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/syscapture_prewarm_tap.rs (…/deps/syscapture_prewarm_tap-469a6f0c1ca8331f)
+
+running 7 tests
+test a_panic_during_the_dwell_still_tears_the_tap_down ... ok
+test a_failure_at_any_setup_step_leaves_nothing_behind ... ok
+test the_dwell_is_two_hundred_milliseconds ... ok
+test the_teardown_order_is_yv100s_canonical_order ... ok
+test the_prewarm_excludes_yap_like_every_other_tap ... ok
+test pressing_the_setup_button_repeatedly_accumulates_nothing ... ok
+test the_prewarm_tears_down_completely_whether_or_not_it_heard_a_sample ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test --features custom-protocol   # full suite, rebased tree
+  binaries ok: 81
+  tests passed: 988   tests failed: 0
+
+$ ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+  control 1 OK: links CoreAudio, 14 imported symbol(s) from it
+  control 2 OK: nm discriminates (hard control: external _objc_msgSend (from libobjc))
+  ok   _AudioHardwareCreateProcessTap: weak import
+  ok   _AudioHardwareDestroyProcessTap: weak import
+  ok   _AudioHardwareCreateAggregateDevice: weak import
+  ok   _AudioHardwareDestroyAggregateDevice: weak import
+  PASS: no 14.4-era CoreAudio symbol is a hard load-time requirement
+
+$ npx tsc --noEmit    → 0
+$ npx vitest run      → 10 files, 118 passed
+$ cargo test -p yap-polish --release → 11 passed
