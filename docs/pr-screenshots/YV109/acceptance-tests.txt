@@ -1,0 +1,142 @@
+YV109 — acceptance evidence, run 2026-08-15 (macOS aarch64, Parakeet Unified EN 0.6B on Metal)
+
+── criterion 1: the corpus holds fixture (d), and the committed manifest checks ──
+$ ls ~/yap-eval-corpus/meetings/
+device-change
+lecture-15min
+seam-stress
+two-track-ordering
+
+$ ls -l ~/yap-eval-corpus/meetings/two-track-ordering/
+.rw-r--r-- 4.9k wilsonguenther 15 Aug 01:35 meta.json
+.rw-r--r--  567 wilsonguenther 15 Aug 01:35 reference.txt
+.rw-r--r-- 6.5k wilsonguenther 15 Aug 01:35 track0-anchors.json
+.rw-r--r-- 2.4M wilsonguenther 15 Aug 01:35 track0.wav
+.rw-r--r-- 6.5k wilsonguenther 15 Aug 01:35 track1-anchors.json
+.rw-r--r-- 2.4M wilsonguenther 15 Aug 01:35 track1.wav
+
+$ cd ~/yap-eval-corpus/meetings && shasum -a 256 -c .../tests/fixtures/meeting_eval_manifest.sha256
+device-change/audio.wav: OK
+device-change/meta.json: OK
+device-change/reference.txt: OK
+device-change/segment-a-48000hz.wav: OK
+device-change/segment-b-24000hz.wav: OK
+lecture-15min/audio.wav: OK
+lecture-15min/meta.json: OK
+lecture-15min/reference.txt: OK
+seam-stress/audio.wav: OK
+seam-stress/meta.json: OK
+seam-stress/reference.txt: OK
+two-track-ordering/meta.json: OK
+two-track-ordering/reference.txt: OK
+two-track-ordering/track0-anchors.json: OK
+two-track-ordering/track0.wav: OK
+two-track-ordering/track1-anchors.json: OK
+two-track-ordering/track1.wav: OK
+
+── criterion 2: the extended harness runs fixture (d) and prints the residual ──
+$ cargo test --test meeting_eval meeting_eval_two_track_ordering -- --nocapture
+running 1 test
+two-track-ordering track 0: measured rate 15999.3600 Hz (-40.0 ppm, declared -40.0), origin -0.0099 s (declared +0.000)
+two-track-ordering track 1: measured rate 16004.0000 Hz (+250.0 ppm, declared +250.0), origin +0.7301 s (declared +0.750)
+meeting_eval two-track-ordering residual_ms_at_3h mic=9.9 system=19.9 cross_track=10.0
+two-track-ordering: residual at the simulated 3 h mark — mic 9.9 ms, system 19.9 ms, CROSS-TRACK 10.0 ms (budget 50 ms)
+two-track-ordering: nominal-rate control drifts 3121 ms
+  [two-track-ordering-t0-chunk000] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t0] window 000    0.00s–  30.00s  timestamps=token spans=65
+  [two-track-ordering-t0-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t0] window 001   28.00s–  60.00s  timestamps=token spans=74
+  [two-track-ordering-t0-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t0] window 002   58.00s–  75.99s  timestamps=token spans=57
+  [two-track-ordering-t1-chunk000] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t1] window 000    0.00s–  30.00s  timestamps=token spans=60
+  [two-track-ordering-t1-chunk001] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t1] window 001   28.00s–  60.00s  timestamps=token spans=67
+  [two-track-ordering-t1-chunk002] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [two-track-ordering-t1] window 002   58.00s–  75.26s  timestamps=token spans=28
+two-track-ordering: 13 markers, in spoken order
+    [00:00:03] Me: avocado,
+    [00:00:07] Them: bramble
+    [00:00:12] Me: kettle,
+    [00:00:12] Them: custard
+    [00:00:18] Them: harpoon
+    [00:00:23] Me: marigold,
+    [00:00:36] Me: penguin
+    [00:00:36] Them: meadow,
+    [00:00:44] Them: walrus,
+    [00:00:50] Me: sandal
+    [00:00:50] Them: turnip,
+    [00:01:08] Me: violin,
+    [00:01:08] Them: tundra,
+test meeting_eval_two_track_ordering_survives_the_clock_mismatch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 4.84s
+
+
+── criterion 3: corpus absent -> the same literal skip line, exit 0 ──
+$ YAP_EVAL_CORPUS=/tmp/does-not-exist-yv109 cargo test --test meeting_eval
+
+test result: ok. 23 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+$ YAP_EVAL_CORPUS=/tmp/does-not-exist-yv109 cargo test --test meeting_eval -- --nocapture | grep -c 'meeting eval corpus not found'
+9
+$ grep -n 'meeting eval corpus not found' desktop/src-tauri/tests/meeting_eval.rs
+119:const CORPUS_ABSENT: &str = "meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping";
+
+── criterion 4: the phase-closing E2E, no hardware / no model / no corpus ──
+$ cargo test --test two_track_phase_e2e -- --nocapture
+running 4 tests
+  nominal-rate cross-track residual at 3 h: 3121 ms
+test the_nominal_rate_assumption_misses_the_budget_by_two_orders_of_magnitude ... ok
+test without_the_rebase_four_pairs_render_in_the_wrong_order ... ok
+  track 0: 45 records, measured rate 15999.3600 Hz (-40.0 ppm), origin -0.0099 s
+  track 1: 45 records, measured rate 16004.0000 Hz (+250.0 ppm), origin +0.7301 s
+  residual at the 3 h mark: mic 9.9 ms, system 19.9 ms, CROSS-TRACK 10.0 ms (budget 50 ms)
+test a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript ... ok
+test a_mic_only_meeting_walks_the_same_chain_and_never_grows_a_them ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+
+── the fixture-hardness gate (runs in CI, needs nothing) ──
+$ cargo test --test meeting_eval two_track_ordering_fixture_is_hard_by_construction -- --nocapture
+running 1 test
+two-track fixture: 4 swappable pairs, 290 ppm relative clock error = 3132 ms at the 3 h cap
+test two_track_ordering_fixture_is_hard_by_construction ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+── the whole eval harness, corpus present ──
+$ cargo test --test meeting_eval
+running 27 tests
+test meeting_eval_generate_corpus ... ignored, writer, not a check: renders ~18 minutes of synthetic audio with `say`
+test meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
+test meeting_eval_generate_two_track_ordering ... ignored, writer, not a check: renders the two-track fixture with `say`
+test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
+test meeting_eval_write_manifest ... ignored, writer, not a check: rewrites the committed manifest
+test meeting_eval_manifest_is_committed_and_names_every_fixture ... ok
+test merge_chunk_tokens_removes_the_overlap_repeat ... ok
+test merge_reports_the_seams_that_found_no_anchor ... ok
+test one_silent_chunk_does_not_demote_the_whole_meeting_to_the_text_fallback ... ok
+test overlap_token_budget_matches_the_chunk_geometry ... ok
+test seam_dedupe_never_deletes_real_words ... ok
+test seam_regions_are_the_only_places_two_windows_overlap ... ok
+test seam_gate_catches_a_duplicated_boundary_word ... ok
+test the_harness_geometry_is_the_shipped_geometry ... ok
+test timestamps_are_sorted_gate_catches_out_of_order_segments ... ok
+test wer_counts_substitutions_insertions_and_deletions ... ok
+test two_track_ordering_fixture_is_hard_by_construction ... ok
+test seam_drift_gate_catches_a_marker_preserving_word_eater ... ok
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... ok
+test meeting_eval_corpus_matches_committed_sha256s ... ok
+test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... ok
+test meeting_eval_two_track_ordering_survives_the_clock_mismatch ... ok
+test meeting_eval_seam_dedupe_and_ordering_hold ... ok
+test meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap ... ok
+test meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated ... ok
+test meeting_eval_lecture_segment_timestamps_are_sorted ... ok
+test meeting_eval_lecture_wer_is_under_the_gate ... ok
+
+test result: ok. 23 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 49.54s
+

@@ -141,6 +141,54 @@ recording whose input format changes mid-way (48 kHz built-in mic → 24 kHz, wh
 AirPods report), with both native-rate halves kept beside the resampled 16 kHz
 track so the resampler can be driven at the rate the device actually declared.
 
+### `two-track-ordering` — fixture (d), the two-clock conversation (YV109)
+
+The 22-B extension, and the same idea as `seam-stress` one axis over. Fixture (b)
+made the seam merge falsifiable by putting a known word inside every region two
+windows share; fixture (d) puts known words on two SOURCES at known times on a
+clock neither source's wav records.
+
+| file | what it is |
+|---|---|
+| `track0.wav` / `track1.wav` | the mic track and the tap track, 16 kHz mono, **produced by the shipped capture path** — fed to a real `MeetingCapture` in real callback-sized blocks, spilled through a real `MeetingJournal`, and written by the real `finalize` |
+| `track0-anchors.json` / `track1-anchors.json` | that run's own persisted index records (`host_ns`, `captured_samples`, `spilled_samples`), copied out of the journal's sidecars before `finalize` removed them |
+| `meta.json` | the ground truth: every marker's host time AND its local time, each device's declared clock error, and the `Me:` / `Them:` sequence the transcript must equal |
+| `reference.txt` | the same conversation as labelled prose, for a human |
+
+**The clocks disagree on purpose.** Both devices claim 16 kHz; one really runs
+40 ppm slow, the other 250 ppm fast, and the second starts 750 ms late — a tap
+has to build a process tap and an aggregate device before it can deliver
+anything. Two well-behaved crystals over 76 seconds of desk test drift by
+microseconds, and a fixture built from that would pass under a merge that did
+nothing at all: exactly the unfalsifiable-acceptance failure finding #16 named,
+arriving in a new place.
+
+**Both errors have their own negative control, and neither control needs the
+corpus.** Four Me/Them pairs sit closer together than the 750 ms start offset
+with *Me* first, so dropping the rebase swaps exactly those four —
+`two_track_ordering_fixture_is_hard_by_construction` asserts the count and then
+asserts the un-rebased render displaces exactly eight rows. The rate mismatch is
+290 ppm relative, which is **3 132 ms** by the three-hour meeting cap, against a
+50 ms budget; the corpus gate runs that control on the same records it rebases
+from.
+
+Measured on 2026-08-15, Parakeet Unified EN 0.6B (Metal), 6 windows over the two
+tracks: both rates recovered to within 0.1 ppm of the declared ones, cross-track
+residual at the simulated 3 h mark **10.0 ms** against the 50 ms budget (mic
+9.9 ms, system 19.9 ms), all 13 markers decoded exactly once and rendered in
+spoken order. The residual is not zero and it is not noise: an index record's
+`host_ns` is the last drained anchor's capture timestamp while its counters run
+through the end of that callback, so each track's fitted origin is one callback
+early — 10 ms for the mic, 20 ms for the tap, and the 10 ms difference is what
+the cross-track number reports.
+
+```sh
+cd desktop/src-tauri
+# regrow ONLY the two-track fixture (it is tied to the clock constants and to the
+# shipped capture path), then re-hash both manifests
+cargo test --test meeting_eval meeting_eval_generate_two_track_ordering -- --ignored --nocapture
+```
+
 **The audio is NOT in this repo, and the audio is not anybody's speech.** Same
 rule as the gate corpus below: real dictation never enters a public repo, and a
 meeting recording is strictly worse — it carries other people's voices. Every
@@ -175,7 +223,7 @@ harness reads (sizes, hashes, fixture ids, the synthesis settings the corpus was
 grown with); `meeting_eval_manifest.sha256` is the same list in the format
 `shasum -a 256 -c` reads, because a JSON document cannot also be a checksum file
 — every line of one would have to start with a bare hex digest, which no JSON
-line can. `meeting_eval_manifest_is_committed_and_names_three_fixtures` asserts
+line can. `meeting_eval_manifest_is_committed_and_names_every_fixture` asserts
 the two agree, so they cannot drift. To verify the corpus by hand, with no cargo
 involved:
 
