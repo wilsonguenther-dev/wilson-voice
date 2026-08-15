@@ -113,6 +113,20 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
 
+      # YV124 (review fix #1). The anti-alias EER arm PANICS when it cannot
+      # compute an EER unless the machine declares it, so that the skip expires
+      # instead of staying green forever. CI is such a machine on two counts: it
+      # never installs the two catalog diarization models (they download only
+      # when a user switches diarization on), and until YV122 lands `yap-diarize`
+      # has no inference backend at all.
+      #
+      # DELETE THIS LINE when CI installs the segmentation + embedding models.
+      # The moment it does, removing the declaration is what makes CI measure a
+      # real EER instead of printing `EER=UNMEASURED`. Leaving it set on a
+      # machine that CAN measure one costs nothing — `embedder()` returns
+      # `Ready` there and this variable is never consulted.
       - name: cargo test
         working-directory: desktop/src-tauri
+        env:
+          YAP_EER_UNMEASURED_OK: "1"
         run: cargo test --features custom-protocol

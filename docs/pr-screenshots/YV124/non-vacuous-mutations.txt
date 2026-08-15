@@ -5,50 +5,116 @@ Every assertion this item adds, deliberately broken one at a time, with the
 failure it produces. Run from `desktop/src-tauri`. The tree is restored after
 each run — this file is the record, not a committed mutation.
 
-Why four and not one: this arm has three separable claims (the two decimators
-differ on this audio; the pair labels come from the fixture; the scoring can
-see the corruption OS-8 predicts) and a precondition (the fixture carries more
-than one speaker). A mutation that only broke one of them would leave the
-other three unproven.
+REGENERATED for review fix #1 (the skip now expires) and review fix #2 (a
+statistic that does not saturate, and fixture (f) as a second scored fixture).
+M1–M4 are the original four, re-run at this sha so their line numbers and
+messages are this tree's; M5–M10 are the six the two fixes add.
+
+M5 is the one to read first: it is the ORIGINAL BUG, reproduced. Nothing is
+edited for it — the arm is simply run on a machine that has not declared it
+cannot measure an EER, which is what the first shipped version of this arm
+silently passed. It now fails, and names both ways out.
 
 Note on M1's -1.1 dB: with the shipped column swapped to the pre-fix
 decimator, its folded energy is still measured against the Butterworth clean
 control, so the ratio lands slightly below 0 dB rather than exactly at it. The
 point stands either way — 28.3 dB of separation becomes none.
 
+Note on M6/M7: the margin and d′ comparisons are each regressed IN ISOLATION
+(an `ArmScore` with only that one field made worse), so neither can be dropped
+from the gate and covered for by the other. Before that isolation existed, M6
+was caught by d′ — red, but for the neighbour's reason rather than its own.
+
 ── M1 the shipped column is silently the pre-fix decimator
 $ cargo test --test meeting_eval anti_alias_eer_regression
 exit=101
-meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.076254 removed_db=-1.1
 test meeting_eval_anti_alias_eer_regression ... FAILED
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.02s
-thread 'meeting_eval_anti_alias_eer_regression' (16175010) panicked at src-tauri/tests/meeting_eval.rs:3581:5:
-the shipped decimator must keep ≥20 dB more of the >8 kHz band out of the speech band on fixture (e), got -1.1 dB — with the two arms this close there is nothing for an EER to separate
+meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.076254 removed_db=-1.1
+thread 'meeting_eval_anti_alias_eer_regression' (16423092) panicked at src-tauri/tests/meeting_eval.rs:3899:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 2.02s
 
 ── M2 every pair is labelled genuine
 $ cargo test --test meeting_eval anti_alias_eer_pairs_are_labeled_by_speaker
 exit=101
 test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... FAILED
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
-thread 'meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker' (16175259) panicked at src-tauri/tests/meeting_eval.rs:3739:5:
+thread 'meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker' (16423361) panicked at src-tauri/tests/meeting_eval.rs:4353:5:
 assertion `left == right` failed
   left: 66
  right: 18
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
 
 ── M3 the common-mode corruption is not applied
 $ cargo test --test meeting_eval anti_alias_eer_arm_scores_the_degradation
 exit=101
-meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.0000 genuine=18 impostor=48
 test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... FAILED
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
-thread 'meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts' (16175502) panicked at src-tauri/tests/meeting_eval.rs:3705:5:
+thread 'meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts' (16423608) panicked at src-tauri/tests/meeting_eval.rs:4067:5:
 nine parts shared noise to one part person still separates at EER 0.0000, so the degradation is not a degradation
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
 
 ── M4 the fixture's speaker labels are flattened to one person
 $ cargo test --test meeting_eval anti_alias_eer_regression
 exit=101
 test meeting_eval_anti_alias_eer_regression ... FAILED
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.08s
-thread 'meeting_eval_anti_alias_eer_regression' (16175748) panicked at src-tauri/tests/meeting_eval.rs:3560:5:
-an EER needs impostor pairs: 1 speaker(s), 12 utterance(s)
+thread 'meeting_eval_anti_alias_eer_regression' (16423840) panicked at src-tauri/tests/meeting_eval.rs:3873:13:
+room-3-near-field: an EER needs impostor pairs: 1 speaker(s), 12 utterance(s)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.08s
 
+── M5 the declaration is not required — the ORIGINAL bug, restored
+$ env -u YAP_EER_UNMEASURED_OK cargo test --test meeting_eval anti_alias_eer_regression
+exit=101
+test meeting_eval_anti_alias_eer_regression ... FAILED
+meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
+meeting_eval anti_alias_eer fixture=classroom-6-far-field in_band_fold_linear=0.040976 in_band_fold_antialiased=0.001406 removed_db=29.3
+meeting_eval anti_alias_eer fixture=room-3-near-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
+meeting_eval anti_alias_eer fixture=classroom-6-far-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=29.3
+thread 'meeting_eval_anti_alias_eer_regression' (16424068) panicked at src-tauri/tests/meeting_eval.rs:3824:5:
+the EER half of OS-8's arm did not run and this machine did not declare why.
+  reason from the shipped sidecar: no inference backend in yap-diarize (load_models answered 'no_backend')
+OS-8 requires the EER comparison BEFORE any enrollment threshold is tuned, so a silent skip here is the failure it was written to prevent. Do one of:
+  * install the two catalog diarization models and re-run — this is the path that closes the item;
+  * set YAP_EER_UNMEASURED_OK=1 for this run, which is a statement in the PR transcript that this machine has no embedder. `ci.yml` sets it, and the comment beside it names the condition for deleting it.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 4.25s
+
+── M6 the margin comparison is dropped from the gate
+$ cargo test --test meeting_eval anti_alias_eer_the_gate_rejects
+exit=101
+test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... FAILED
+thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (16424331) panicked at src-tauri/tests/meeting_eval.rs:4246:10:
+the margin is in the report but not in the gate: ()
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+── M7 the d-prime comparison is dropped from the gate
+$ cargo test --test meeting_eval anti_alias_eer_the_gate_rejects
+exit=101
+test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... FAILED
+thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (16424563) panicked at src-tauri/tests/meeting_eval.rs:4252:10:
+d′ is in the report but not in the gate: ()
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+── M8 the overlap trim returns each turn whole
+$ cargo test --test meeting_eval anti_alias_eer_overlapped_frames
+exit=101
+test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... FAILED
+thread 'meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label' (16424800) panicked at src-tauri/tests/meeting_eval.rs:4308:5:
+assertion `left == right` failed: the trim did not leave exactly the one-speaker stretches
+  left: ["spk_a 0.0..4.0", "spk_a 9.0..13.0", "spk_b 12.0..16.0", "spk_b 20.0..24.0", "spk_a 20.5..23.5"]
+ right: ["spk_a 0.0..4.0", "spk_a 9.0..12.0", "spk_b 13.0..16.0", "spk_b 20.0..20.5"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+── M9 fixture (f) is dropped and only the near-field room is scored
+$ cargo test --test meeting_eval anti_alias_eer_scores_every_multi_speaker_fixture
+exit=101
+test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... FAILED
+thread 'meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture' (16425036) panicked at src-tauri/tests/meeting_eval.rs:4194:5:
+assertion `left == right` failed: the arm scores ["room-3-near-field"] but the corpus can carry an EER on ["classroom-6-far-field", "room-3-near-field"]
+  left: ["room-3-near-field"]
+ right: ["classroom-6-far-field", "room-3-near-field"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+── M10 any value of the variable counts as a declaration
+$ cargo test --test meeting_eval anti_alias_eer_unmeasured_needs_an_explicit_declaration
+exit=101
+test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... FAILED
+thread 'meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration' (16425268) panicked at src-tauri/tests/meeting_eval.rs:4269:9:
+Some("") must not count as a declaration that this machine cannot measure an EER
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
