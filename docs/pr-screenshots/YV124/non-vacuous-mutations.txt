@@ -118,3 +118,85 @@ test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... FA
 thread 'meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration' (16425268) panicked at src-tauri/tests/meeting_eval.rs:4269:9:
 Some("") must not count as a declaration that this machine cannot measure an EER
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+===========================================================================
+SECOND REVIEW PASS — "the expiry binds nowhere automated"
+===========================================================================
+
+The finding: the `YAP_EER_UNMEASURED_OK: "1"` this branch added to ci.yml was
+INERT. `meeting_eval_anti_alias_eer_regression` opens on `corpus()`, CI has no
+corpus, and the arm returns before the declaration is ever read — so CI was
+green with no declaration, the ci.yml comment named the wrong precondition
+(models, not the corpus), and the expiry reached exactly one machine in the
+world. Reproduced verbatim on the parent commit 5e84fc5:
+
+  $ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
+      cargo test --features custom-protocol --test meeting_eval anti_alias
+  test result: ok. 8 passed; 0 failed        <- green, no declaration made
+
+The fix moves the expiry to a gate that needs neither the corpus nor a model
+(`..._unmeasured_expires_when_the_sidecar_gains_a_backend`), deletes the dead
+variable from ci.yml, and makes the local declaration name its REASON so a
+stale `export` cannot outlive the state it described. M11-M15 break each of
+those, one at a time.
+
+── M11 the sidecar gains a backend (the expiry's actual trigger)
+   yap-diarize/src/main.rs: `load_backend` returns Ok(Backend{embedding_dim:192})
+$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
+      anti_alias_eer_unmeasured_expires
+exit=101
+test meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend ... FAILED
+the expiry has FIRED: `yap-diarize` LOADED a backend from two files that are
+not models and reported 192-dimensional embeddings. Whatever else that is, it
+is not `no_backend` — measure YV124's EER (see the sibling panic message)
+rather than leaving `EER: UNMEASURED` standing.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
+  NOTE: no corpus and no catalog model on this run. That is the point — this
+  is the half of the expiry CI can hold, and it holds it in 0.15 s.
+
+── M12 the sidecar answers with a different refusal tag
+   yap-diarize/src/main.rs: `load_backend` returns Err(ERR_MODEL_NOT_FOUND)
+$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
+      anti_alias_eer_unmeasured_expires
+exit=101
+the expiry has FIRED: `yap-diarize` answered `model_not_found` rather than
+`no_backend`, which means this build has an inference backend and the probe
+files were merely rejected by it.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
+
+── M13 the dead ci.yml variable comes back
+   .github/workflows/ci.yml: re-add `env: YAP_EER_UNMEASURED_OK: "1"`
+$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
+      anti_alias_eer_ci_does_not
+exit=101
+test meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches ... FAILED
+ci.yml sets YAP_EER_UNMEASURED_OK but never sets YAP_EVAL_CORPUS, so
+`meeting_eval_anti_alias_eer_regression` returns at its `corpus()` line and the
+declaration is never read. Dead configuration that reads like a gate is worse
+than no configuration: either give CI the corpus (and then this test steps
+aside), or leave the variable out and let
+`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`
+be CI's half of the expiry.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
+
+── M14 the old bare-`1` escape hatch, on a corpus machine
+   Nothing edited. The value the previous revision accepted, offered again.
+$ YAP_EER_UNMEASURED_OK=1 cargo test --test meeting_eval anti_alias_eer_regression
+exit=101
+test meeting_eval_anti_alias_eer_regression ... FAILED
+the EER half of OS-8's arm did not run and this machine did not declare why.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
+  This is the "one `export` away from permanent" half of the finding: a bare
+  `1` is no longer a declaration at all.
+
+── M15 a stale declaration for a reason that is no longer this machine's
+   Nothing edited. `models_missing` exported on a machine whose reason is
+   `no_backend` — the shape a shell-profile export takes once the world moves.
+$ YAP_EER_UNMEASURED_OK=models_missing cargo test --test meeting_eval \
+      anti_alias_eer_regression
+exit=101
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
+  The same in reverse (`no_backend` exported when the reason has become
+  `models_missing`) is pinned as a pure table in
+  `..._unmeasured_needs_an_explicit_declaration`, which is what makes today's
+  declaration expire by itself the day YV122 lands.

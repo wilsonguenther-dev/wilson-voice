@@ -201,3 +201,77 @@ $ cargo clippy --all-targets --features custom-protocol   # informational
   70 warnings, unchanged from the count this branch already recorded.
   The only meeting_eval.rs lines clippy names are 672, 2321 and 4701 — none
   of them inside this pass's range (3401-4360).
+
+===========================================================================
+SECOND REVIEW PASS — where the expiry actually binds
+===========================================================================
+
+WHAT WAS WRONG. The previous revision claimed CI was held to the expiring
+skip via `YAP_EER_UNMEASURED_OK: "1"` in ci.yml. It was not: the arm opens on
+`corpus()`, CI has no corpus, and the arm returns before the fold assert,
+before `embedder()` and before the declaration is read. Measured on the parent
+commit, not argued:
+
+$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
+    cargo test --features custom-protocol --test meeting_eval anti_alias
+  test result: ok. 8 passed; 0 failed   <- green with NO declaration made
+
+WHAT BINDS NOW, and where:
+
+  1. corpus-equipped machine  -> the declaration, and it names its REASON
+     (`no_backend` / `models_missing`), so a stale export stops counting the
+     moment the reason changes. This is one machine today and the doc says so.
+  2. every machine, CI first  -> `..._unmeasured_expires_when_the_sidecar_gains_a_backend`
+     needs no corpus and no model: it asks the shipped `yap-diarize` whether
+     this build has an inference backend and requires the answer to still be
+     `no_backend`. Red from the day YV122 merges until the EER is measured.
+     No environment variable turns it off.
+  3. the workflow itself      -> `..._ci_does_not_declare_what_it_never_reaches`
+     keeps the inert variable from drifting back into ci.yml.
+
+── CI simulation: no corpus, no declaration, nothing set ──────────────────
+$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
+    cargo test --features custom-protocol --test meeting_eval anti_alias -- --nocapture
+meeting_eval anti_alias_eer UNRUN reason=no corpus at /nonexistent — fold, EER
+and the YAP_EER_UNMEASURED_OK gate all need it; the expiry that binds without a
+corpus is meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend
+meeting_eval anti_alias_eer backend_probe=no_backend — no build on this machine
+can produce a CAM++ embedding, so `EER: UNMEASURED` is still the honest state
+and this gate stays green
+test result: ok. 10 passed; 0 failed; 0 ignored; 32 filtered out
+  (8 before this pass; +2 = the two gates it adds. The UNRUN line is new: a run
+  that printed nothing about this arm read in a log exactly like a run that
+  passed it.)
+
+$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
+    cargo test --features custom-protocol
+  92 binaries, 1099 passed, 0 failed, 18 ignored. No occurrence of FAILED.
+  (1097 before this pass; +2, the same two tests.) This is the exact
+  environment ci.yml now runs in — no env: block on the step at all.
+
+── corpus-equipped machine (macOS 26.5.2 / arm64, ~/yap-eval-corpus) ──────
+$ env -u YAP_EER_UNMEASURED_OK cargo test --features custom-protocol \
+    --test meeting_eval
+  test result: FAILED. 36 passed; 1 failed — the arm, refusing to skip:
+    "…this machine did not declare why … This machine has the corpus, which
+     makes it one of the few that can close the item."
+$ YAP_EER_UNMEASURED_OK=no_backend cargo test --features custom-protocol \
+    --test meeting_eval
+  test result: ok. 37 passed; 0 failed; 5 ignored; finished in 49.93s
+  (35 before this pass; +2.)
+$ YAP_EER_UNMEASURED_OK=no_backend cargo test --features custom-protocol
+  92 binaries, 1099 passed, 0 failed, 18 ignored. No occurrence of FAILED.
+
+── the sidecar + frontend halves of CI, unchanged by this pass ────────────
+$ cargo test -p yap-polish -p yap-diarize --release   -> 9 passed / 11 passed
+$ npm run build                                        -> built in 687ms
+$ npm test                                    -> 10 files / 121 passed
+
+── rustfmt / clippy (both informational in CI) ────────────────────────────
+$ cargo fmt --all -- --check
+  170 hunks with this pass applied; 170 with it STASHED (measured, not
+  assumed: `git stash` -> 170 -> `git stash pop` -> 170). This pass adds none.
+$ cargo clippy --all-targets --features custom-protocol
+  The only meeting_eval.rs line clippy names is 4921 (`manual_is_multiple_of`),
+  which is outside this pass's range and predates it. tests/support/diarize.rs:
+  no warning.

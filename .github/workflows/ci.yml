@@ -113,20 +113,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
 
-      # YV124 (review fix #1). The anti-alias EER arm PANICS when it cannot
-      # compute an EER unless the machine declares it, so that the skip expires
-      # instead of staying green forever. CI is such a machine on two counts: it
-      # never installs the two catalog diarization models (they download only
-      # when a user switches diarization on), and until YV122 lands `yap-diarize`
-      # has no inference backend at all.
+      # YV124. This step deliberately sets NOTHING for the anti-alias EER arm.
       #
-      # DELETE THIS LINE when CI installs the segmentation + embedding models.
-      # The moment it does, removing the declaration is what makes CI measure a
-      # real EER instead of printing `EER=UNMEASURED`. Leaving it set on a
-      # machine that CAN measure one costs nothing — `embedder()` returns
-      # `Ready` there and this variable is never consulted.
+      # An earlier revision exported `YAP_EER_UNMEASURED_OK: "1"` here and said
+      # CI was therefore held to that arm's expiring skip. It was not, and could
+      # not be: `meeting_eval_anti_alias_eer_regression` opens on `corpus()`,
+      # and the corpus is `say`-generated audio under `~/yap-eval-corpus` that
+      # no runner has and no checkout carries. The arm returns on its first line
+      # here — before the fold assert, before the embedder request, and before
+      # the declaration would be read. The two catalog diarization models were
+      # never the precondition the old comment named; the CORPUS is, and
+      # installing models in CI would not change this by itself.
+      #
+      # What CI DOES hold, with no corpus and no model, is
+      # `meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`:
+      # it asks the shipped `yap-diarize` whether this build has an inference
+      # backend and requires the answer to still be `no_backend`, which is the
+      # one condition under which `EER: UNMEASURED` is honest. The day YV122
+      # merges, that test turns this job red until the EER is measured on a
+      # corpus-equipped machine and written into the backlog. It takes no
+      # configuration, and `meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`
+      # keeps the dead variable from drifting back into this file.
       - name: cargo test
         working-directory: desktop/src-tauri
-        env:
-          YAP_EER_UNMEASURED_OK: "1"
         run: cargo test --features custom-protocol

@@ -3440,23 +3440,48 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
 // two honest "this machine has no embedder" states, so a broken sidecar can
 // never present here as a green arm.
 //
-// ## The skip EXPIRES — review fix #1
+// ## The skip EXPIRES — and WHERE it expires, which the first fix got wrong
 //
 // The first shipped version of this arm returned quietly on `NoBackend` and on
-// `ModelsMissing`, which made it a permanently self-skipping gate: CI never
-// installs the two catalog models (they download only when diarization is
-// switched on), so the arm would have stayed green forever without ever
-// computing an EER, including after YV122 lands. Nothing mechanical enforced
-// OS-8's ordering requirement; it rested on a human remembering to come back.
+// `ModelsMissing`, which made it a permanently self-skipping gate: it would
+// have stayed green forever without ever computing an EER, including after
+// YV122 lands. Nothing mechanical enforced OS-8's ordering requirement; it
+// rested on a human remembering to come back.
 //
-// So the skip is now a DECLARATION, not a default. A machine with no embedder
-// must say so in [`EER_UNMEASURED_OK`] before the arm will let it pass, and
-// without that variable the arm PANICS. The variable is set in exactly two
-// places, both of which are visible: the `cargo test` step of `ci.yml` (with
-// the removal condition written beside it) and the local transcript recorded
-// in a PR. The first machine that has YV122 plus the two models and forgets to
-// unset it still measures a real EER — `embedder()` returns `Ready` there and
-// the declaration is never consulted.
+// The first fix turned that skip into a DECLARATION — a machine with no
+// embedder has to name its reason in [`EER_UNMEASURED_OK`] or this arm PANICS —
+// and then claimed CI was held to it. **CI is not, and cannot be.** This test
+// opens on `corpus()`, and the corpus is `say`-generated audio under
+// `~/yap-eval-corpus/meetings` that no CI runner has and no repo carries. On a
+// corpus-less machine the arm returns at its first line: before the fold
+// assert, before `embedder()`, and before the declaration is ever consulted.
+// The models were never the precondition — the CORPUS is, and installing the
+// two catalog models in CI would change nothing on its own. That claim is
+// deleted rather than softened, and `ci.yml` no longer exports a variable
+// nothing there reads (see
+// [`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`],
+// which keeps the dead configuration from coming back).
+//
+// So the expiry is enforced in two places, and only the second of them is
+// automated:
+//
+//  1. **The declaration, on a corpus-equipped machine.** Today that is one
+//     machine in the world — the one this item's numbers were measured on. It
+//     is a real gate there (`cargo test` is red until the reason is named or
+//     the EER is measured) and it is honest to say it reaches nowhere else.
+//  2. **The backend probe, everywhere, CI included** —
+//     [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`].
+//     It needs no corpus and no model: it asks the shipped sidecar directly
+//     whether this build has an inference backend, and requires the answer to
+//     still be `no_backend`. That is the exact condition under which `EER:
+//     UNMEASURED` is an honest state, so the moment YV122 lands on `main` CI
+//     goes red and stays red until someone runs the arm on a corpus machine and
+//     pastes the numbers. No environment variable can turn it off.
+//
+// The declaration also names the REASON (`no_backend` / `models_missing`)
+// rather than a bare `1`, so the `export` that gets pasted into a shell profile
+// and forgotten expires by itself: it stops counting as soon as the machine's
+// reason changes underneath it.
 //
 // ## Two fixtures, and a statistic that does not saturate — review fix #2
 //
@@ -3833,32 +3858,43 @@ fn arm_is_not_worse(pre_fix: &ArmScore, shipped: &ArmScore) -> Result<(), String
 /// The environment variable a machine that cannot compute an EER must set
 /// before this arm will let it pass.
 ///
-/// See the section header. The point is that the skip EXPIRES: without this
-/// declaration the arm is red, so the first machine that has YV122's backend
-/// and the two catalog models installed measures a real EER instead of quietly
-/// printing `UNMEASURED` forever. Set in `ci.yml`'s `cargo test` step (which
-/// carries the condition for deleting it) and nowhere else in the repo.
+/// See the section header for where this gate reaches and where it does not.
+/// The short version: it is consulted only on a machine that HAS the eval
+/// corpus, because this arm returns at `corpus()` before anything else. It is
+/// deliberately set nowhere in the repo — `ci.yml` used to export it, which was
+/// dead configuration on a runner that never reaches this line, and
+/// [`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`]
+/// keeps it from coming back. The automated half of the expiry is
+/// [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`],
+/// which needs neither the corpus nor a model and cannot be declared away.
 const EER_UNMEASURED_OK: &str = "YAP_EER_UNMEASURED_OK";
 
-/// Whether a given value of [`EER_UNMEASURED_OK`] counts as a declaration.
+/// Whether a given value of [`EER_UNMEASURED_OK`] counts as a declaration of
+/// THIS machine's current reason for having no embedder.
 ///
 /// Split out from the panic so the POLICY can be tested without a test writing
 /// to the process environment — which is both racy under the test harness's
-/// threads and `unsafe` on modern editions. Only the exact string `1` counts:
-/// an empty value, a `0`, or a `true` left over from some other tool are all
-/// treated as "no declaration", because a variable that merely EXISTS is the
-/// kind of thing that gets exported once in a shell profile and never removed.
-fn unmeasured_eer_is_declared(value: Option<&str>) -> bool {
-    value == Some("1")
+/// threads and `unsafe` on modern editions.
+///
+/// The value has to be the reason's own tag (`Embedder::skip_tag`), not a bare
+/// `1`. That is the difference between a declaration and an escape hatch: an
+/// `export YAP_EER_UNMEASURED_OK=1` in a shell profile silences this arm
+/// permanently, whereas `=no_backend` stops counting the moment `yap-diarize`
+/// gains a backend and the machine's reason becomes `models_missing`. An empty
+/// value, a `0` or a `true` left over from some other tool have never been
+/// declarations and still are not.
+fn unmeasured_eer_is_declared(value: Option<&str>, reason_tag: &str) -> bool {
+    value == Some(reason_tag)
 }
 
-/// Panic unless this machine has DECLARED that it cannot measure an EER.
-fn require_declared_unmeasured_eer(why: &str) {
+/// Panic unless this machine has DECLARED, by name, why it cannot measure an
+/// EER.
+fn require_declared_unmeasured_eer(why: &str, reason_tag: &str) {
     let declared = std::env::var(EER_UNMEASURED_OK);
-    if unmeasured_eer_is_declared(declared.as_deref().ok()) {
+    if unmeasured_eer_is_declared(declared.as_deref().ok(), reason_tag) {
         eprintln!(
-            "  {EER_UNMEASURED_OK}=1 — this machine has declared, on the record, that it \
-             cannot measure an EER: {why}"
+            "  {EER_UNMEASURED_OK}={reason_tag} — this machine has declared, on the record, \
+             that it cannot measure an EER: {why}"
         );
         return;
     }
@@ -3866,12 +3902,15 @@ fn require_declared_unmeasured_eer(why: &str) {
         "the EER half of OS-8's arm did not run and this machine did not declare why.\n\
          \n  reason from the shipped sidecar: {why}\n\
          \nOS-8 requires the EER comparison BEFORE any enrollment threshold is tuned, so \
-         a silent skip here is the failure it was written to prevent. Do one of:\n\
+         a silent skip here is the failure it was written to prevent. This machine has \
+         the corpus, which makes it one of the few that can close the item. Do one of:\n\
          \n  * install the two catalog diarization models and re-run — this is the path \
          that closes the item;\n\
-         \n  * set {EER_UNMEASURED_OK}=1 for this run, which is a statement in the PR \
-         transcript that this machine has no embedder. `ci.yml` sets it, and the \
-         comment beside it names the condition for deleting it.\n"
+         \n  * set {EER_UNMEASURED_OK}={reason_tag} for this run, which is a statement in \
+         the PR transcript that this machine has no embedder, and which stops counting by \
+         itself as soon as that stops being the reason. Nothing in the repo sets it: CI \
+         has no corpus, so CI never reaches this line and a declaration there would be \
+         decoration.\n"
     );
 }
 
@@ -3896,9 +3935,28 @@ fn require_declared_unmeasured_eer(why: &str) {
 ///
 /// The last two need an embedder; see the section header for what a machine
 /// without one has to declare before this test will pass.
+///
+/// **All three need the CORPUS**, which is the whole reason this arm's expiry
+/// reaches only a corpus-equipped developer machine. On every other machine —
+/// CI included — the very first line below returns, and the automated half of
+/// the expiry is
+/// [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`]
+/// instead.
 #[test]
 fn meeting_eval_anti_alias_eer_regression() {
-    let Some(root) = corpus() else { return };
+    let Some(root) = corpus() else {
+        // Said out loud, because a run that prints nothing about this arm reads
+        // in a log exactly like a run where the arm passed. Nothing below here
+        // executed: not the fold assert, not the embedder request, and not the
+        // declaration gate.
+        println!(
+            "meeting_eval anti_alias_eer UNRUN reason=no corpus at {} — fold, EER and the \
+             {EER_UNMEASURED_OK} gate all need it; the expiry that binds without a corpus is \
+             meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend",
+            corpus_root().display()
+        );
+        return;
+    };
 
     // ── (1) the two arms are actually different on this audio ────────────────
     let prepared: Vec<(&str, Vec<DecimatedPair>, f32)> = ARM_FIXTURES
@@ -3972,6 +4030,7 @@ fn meeting_eval_anti_alias_eer_regression() {
         } => (pool, *embedding_dim),
         other => {
             let why = other.skip_reason().expect("not Ready");
+            let reason_tag = other.skip_tag().expect("not Ready");
             for (id, _, removed_db) in &prepared {
                 println!(
                     "meeting_eval anti_alias_eer fixture={id} EER=UNMEASURED reason={why} \
@@ -3982,7 +4041,7 @@ fn meeting_eval_anti_alias_eer_regression() {
                 "  the fold half of OS-8's arm is measured above; the EER half needs an \
                  embedder and this machine has none: {why}"
             );
-            require_declared_unmeasured_eer(&why);
+            require_declared_unmeasured_eer(&why, reason_tag);
             return;
         }
     };
@@ -4307,35 +4366,196 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
     assert!(rejected.starts_with("[dprime]"), "{rejected}");
 }
 
-/// **The skip expires.** Review fix #1's policy, as a table.
+/// **The declaration expires by itself.** The local half of the policy, as a
+/// table.
 ///
 /// The failure this replaces was not a wrong number, it was a green test that
 /// had never run its own subject: `Embedder::NoBackend` and
-/// `Embedder::ModelsMissing` both returned quietly, and CI installs neither
-/// catalog model, so the arm would have stayed green past YV122 without ever
-/// computing an EER. The arm now panics unless the machine says out loud that
-/// it cannot measure one — and "says out loud" means exactly `1`, so a stale
-/// export cannot silently re-open the hole.
+/// `Embedder::ModelsMissing` both returned quietly, so the arm would have
+/// stayed green past YV122 without ever computing an EER. The arm now panics
+/// unless the machine says out loud why it cannot measure one.
+///
+/// "Out loud" means the machine's CURRENT reason, not a bare `1`. That is the
+/// second half of the same review finding: a bare-`1` gate is one
+/// `export YAP_EER_UNMEASURED_OK=1` away from being permanently off, while a
+/// reason-named one goes red by itself the moment the reason changes
+/// underneath it — which is exactly the moment the EER becomes measurable.
 #[test]
 fn meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration() {
-    assert!(unmeasured_eer_is_declared(Some("1")));
+    // A declaration is the reason this machine actually has.
+    assert!(unmeasured_eer_is_declared(Some("no_backend"), "no_backend"));
+    assert!(unmeasured_eer_is_declared(
+        Some("models_missing"),
+        "models_missing"
+    ));
+
+    // The stale-export case, in both directions: a declaration written for one
+    // world does not carry into the next one. `no_backend` left over from
+    // today stops counting the day YV122 lands and the reason becomes
+    // `models_missing`.
+    assert!(!unmeasured_eer_is_declared(
+        Some("no_backend"),
+        "models_missing"
+    ));
+    assert!(!unmeasured_eer_is_declared(
+        Some("models_missing"),
+        "no_backend"
+    ));
+
     for not_a_declaration in [
         None,
         Some(""),
         Some("0"),
         Some("true"),
         Some("yes"),
-        Some("1 "),
+        // The old bare-`1` form, which is what made the escape permanent.
+        Some("1"),
+        Some("no_backend "),
+        Some("NO_BACKEND"),
     ] {
         assert!(
-            !unmeasured_eer_is_declared(not_a_declaration),
+            !unmeasured_eer_is_declared(not_a_declaration, "no_backend"),
             "{not_a_declaration:?} must not count as a declaration that this machine \
              cannot measure an EER"
         );
     }
+
+    // The tags are the `Embedder` states' own, so the value a developer is told
+    // to export is the value the arm will compare against.
+    assert_eq!(
+        support::diarize::Embedder::NoBackend.skip_tag(),
+        Some("no_backend")
+    );
+    assert_eq!(
+        support::diarize::Embedder::ModelsMissing("x".into()).skip_tag(),
+        Some("models_missing")
+    );
+
     // The variable is named in exactly one place in the test tree, so a rename
-    // cannot leave `ci.yml` exporting a name nothing reads.
+    // cannot leave a workflow exporting a name nothing reads.
     assert_eq!(EER_UNMEASURED_OK, "YAP_EER_UNMEASURED_OK");
+}
+
+/// The workflow this repo actually runs, read at compile time — the same
+/// `include_str!` trick `syscapture_os_gate.rs` uses to keep a CI claim
+/// honest.
+const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
+
+/// **CI does not declare what CI never reaches.**
+///
+/// The revision this replaces exported `YAP_EER_UNMEASURED_OK: "1"` in
+/// `ci.yml`'s `cargo test` step and said in the PR that CI was therefore held
+/// to the expiry. It was not: `meeting_eval_anti_alias_eer_regression` opens on
+/// `corpus()`, CI has no corpus, and the arm returns before the declaration is
+/// read. The variable was inert, and the comment beside it named the wrong
+/// precondition (the two catalog models) — so anyone who followed the written
+/// deletion condition would have installed models, deleted the line, and
+/// believed a hole was closed that was still open.
+///
+/// This test is what keeps that configuration from drifting back. It is
+/// conditional rather than absolute on purpose: if CI ever DOES grow a corpus,
+/// the declaration stops being decoration and the choice between measuring and
+/// declaring becomes a real one to make there.
+#[test]
+fn meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches() {
+    // Comments are stripped first: this is a claim about what the workflow
+    // CONFIGURES, and the step above the `cargo test` line explains all of this
+    // in prose that names both variables.
+    let configuration: String = CI_WORKFLOW
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if configuration.contains(CORPUS_ENV) {
+        return;
+    }
+    assert!(
+        !configuration.contains(EER_UNMEASURED_OK),
+        "ci.yml sets {EER_UNMEASURED_OK} but never sets {CORPUS_ENV}, so \
+         `meeting_eval_anti_alias_eer_regression` returns at its `corpus()` line and the \
+         declaration is never read. Dead configuration that reads like a gate is worse \
+         than no configuration: either give CI the corpus (and then this test steps \
+         aside), or leave the variable out and let \
+         `meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend` \
+         be CI's half of the expiry."
+    );
+}
+
+/// **The half of the expiry that binds with no corpus and no model — including
+/// in CI.**
+///
+/// `EER: UNMEASURED` is an honest state under exactly one condition: this build
+/// of `yap-diarize` has no inference backend compiled in, so there are no CAM++
+/// embeddings on ANY machine to compute an EER from. That condition is
+/// checkable without the eval corpus and without either catalog model, by
+/// asking the shipped sidecar itself — which is what this does.
+///
+/// `yap-diarize`'s `load_backend` validates that both paths exist BEFORE it
+/// answers, so two ordinary files that are not models separate the two states
+/// this has to tell apart: `model_not_found` would mean the probe was wrong,
+/// and `no_backend` means the build genuinely has none. Every other outcome —
+/// a load that succeeds, a refusal with a different tag, or a backend that
+/// chokes on the probe files — means a backend now exists, and therefore that
+/// YV124's EER is measurable and overdue.
+///
+/// So this test is red from the moment YV122 merges until someone runs the arm
+/// on a corpus machine with the models installed and pastes the numbers into
+/// the backlog. No environment variable turns it off; there is no declaration
+/// to make. This is the gate the first revision claimed to have and did not.
+#[test]
+fn meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend() {
+    use wilson_voice_lib::diarize::{DiarizeError, DiarizePool};
+    use wilson_voice_lib::diarize_protocol::ERR_NO_BACKEND;
+
+    let dir = support::temp_dir("yv124-backend-probe");
+    let segmentation = dir.join("not-a-segmentation-model.onnx");
+    let embedding = dir.join("not-an-embedding-model.onnx");
+    for path in [&segmentation, &embedding] {
+        std::fs::write(path, b"not a model").expect("write probe file");
+    }
+
+    let pool = DiarizePool::new(
+        support::diarize::launcher(),
+        std::time::Duration::from_secs(10),
+    );
+    let answer = pool.load_models(&segmentation, &embedding);
+    let status = pool.status();
+    pool.shutdown();
+
+    match answer {
+        Err(DiarizeError::Refused(tag)) if tag == ERR_NO_BACKEND => {
+            println!(
+                "meeting_eval anti_alias_eer backend_probe={ERR_NO_BACKEND} — no build on this \
+                 machine can produce a CAM++ embedding, so `EER: UNMEASURED` is still the \
+                 honest state and this gate stays green"
+            );
+        }
+        Err(DiarizeError::Refused(tag)) => panic!(
+            "the expiry has FIRED: `yap-diarize` answered `{tag}` rather than \
+             `{ERR_NO_BACKEND}`, which means this build has an inference backend and the \
+             probe files were merely rejected by it.\n\
+             \nYV124's EER is now measurable, so `EER: UNMEASURED` in the backlog is no \
+             longer an honest state. Close it: install the two catalog diarization models \
+             on a machine that has the eval corpus, run\n\
+             \n  cargo test --test meeting_eval anti_alias_eer_regression -- --nocapture\n\
+             \nand paste eer/margin/d′ for both fixtures and both arms into YV124's \
+             MEASURED block. Then delete this test — it exists only to make sure that \
+             happens, and its deletion is the last step of the item, not the first."
+        ),
+        Ok(embedding_dim) => panic!(
+            "the expiry has FIRED: `yap-diarize` LOADED a backend from two files that are \
+             not models and reported {embedding_dim}-dimensional embeddings. Whatever else \
+             that is, it is not `{ERR_NO_BACKEND}` — measure YV124's EER (see the sibling \
+             panic message) rather than leaving `EER: UNMEASURED` standing."
+        ),
+        Err(other) => panic!(
+            "the backend probe got no answer at all: {other:?} (status {status:?}). A spawn \
+             failure, a missed deadline or a garbled frame is a defect in the sidecar, not a \
+             machine without a model — and while it stands, nothing here can vouch for \
+             `EER: UNMEASURED` either."
+        ),
+    }
 }
 
 /// **Overlap removal, on fixture (f)'s real RTTM shape.**

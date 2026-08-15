@@ -101,6 +101,28 @@ pub enum Embedder {
 }
 
 impl Embedder {
+    /// The STABLE tag for why there are no embeddings, or `None` when there
+    /// are.
+    ///
+    /// Separate from [`Embedder::skip_reason`] because the two are read by
+    /// different audiences. `skip_reason` is prose for a transcript and carries
+    /// which model is missing; this is the machine-readable half, and it is
+    /// what a machine with no embedder has to name in
+    /// `YAP_EER_UNMEASURED_OK` before the anti-alias EER arm will pass.
+    ///
+    /// Naming the REASON rather than a bare `1` is what stops a declaration
+    /// from outliving the state it described: an `export
+    /// YAP_EER_UNMEASURED_OK=no_backend` left in a shell profile stops counting
+    /// the moment `yap-diarize` gains a backend and this machine's reason
+    /// becomes `models_missing`.
+    pub fn skip_tag(&self) -> Option<&'static str> {
+        match self {
+            Embedder::Ready { .. } => None,
+            Embedder::NoBackend => Some("no_backend"),
+            Embedder::ModelsMissing(_) => Some("models_missing"),
+        }
+    }
+
     /// One line naming why there are no embeddings, or `None` when there are.
     pub fn skip_reason(&self) -> Option<String> {
         match self {
