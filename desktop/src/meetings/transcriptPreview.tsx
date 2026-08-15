@@ -157,7 +157,7 @@ function Preview() {
               </span>
               <span>audio kept</span>
             </p>
-            <TranscriptList segments={segments} />
+            <TranscriptList segments={segments} kind={twoTrack ? "virtual" : "unknown"} />
           </div>
         </div>
       </section>

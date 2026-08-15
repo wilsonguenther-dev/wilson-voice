@@ -129,8 +129,14 @@ fn the_order_comes_from_the_clock_not_from_the_insert_order() {
 }
 
 /// The other half of the criterion. A mic-only meeting exported through the
-/// same DB path is byte-for-byte what 22-A produced: same lines, same "Me",
-/// no "Them" anywhere, no second wav.
+/// same DB path: same lines, same order, no "Them" anywhere, no second wav.
+///
+/// YV125 changed exactly one word of it. `seed_meeting` skips the kind picker,
+/// so the row is `unknown`; a meeting nobody said was a call has one recorded
+/// track carrying whoever was in the room, and its lines are the un-named
+/// speaker rather than "Me" (merged finding #4).
+/// `meeting_transcript_render_single_track_unchanged.rs` is what proves that
+/// word is the ONLY byte of this document that moved.
 #[test]
 fn a_mic_only_export_is_unchanged_from_22a() {
     let dir = temp_dir("md-mic-only");
@@ -151,13 +157,19 @@ fn a_mic_only_export_is_unchanged_from_22a() {
     assert!(!md.contains("Them"), "no phantom second speaker:\n{md}");
 
     let transcript: Vec<&str> = md.lines().filter(|l| l.starts_with("**[")).collect();
+    let who = meetings::UNCLUSTERED_SPEAKER_LABEL;
     assert_eq!(
         transcript,
         vec![
-            "**[00:00:00] Me:** let us start with the release checklist",
-            "**[00:00:04] Me:** the notarised dmg goes out on friday",
-            "**[00:00:08] Me:** and we hold the price at nineteen dollars",
+            format!("**[00:00:00] {who}:** let us start with the release checklist"),
+            format!("**[00:00:04] {who}:** the notarised dmg goes out on friday"),
+            format!("**[00:00:08] {who}:** and we hold the price at nineteen dollars"),
         ]
+    );
+    assert!(
+        !md.contains("] Me:**"),
+        "one recorded track and no answered kind is not evidence that the \
+         microphone held only this user:\n{md}"
     );
     assert!(md.starts_with("# Thursday planning\n"));
     assert!(md.contains("- **Duration:** 12s"));

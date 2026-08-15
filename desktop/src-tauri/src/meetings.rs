@@ -36,10 +36,12 @@ use serde::{Deserialize, Serialize};
 /// 2 = YV95's `diagnostics` column (OS-12's thermal + battery instrumentation).
 /// 3 = YV106's two-track columns (`sys_wav_path`, [`TAP_REBUILDS_COLUMN`],
 ///     `meeting_segments.track`).
+/// 4 = YV125's [`MeetingKind`] column (`meetings.kind`), which is what the
+///     diarization branch reads.
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -75,6 +77,23 @@ pub const MIC_SPEAKER_LABEL: &str = "Me";
 /// stream of every remote participant, and telling those apart is diarization
 /// (yap23). "Them" is the honest granularity this phase actually has.
 pub const SYSTEM_SPEAKER_LABEL: &str = "Them";
+
+/// YV125 — what the mic track is called when it is the track that has to be
+/// CLUSTERED, and clustering has not run yet.
+///
+/// [`MIC_SPEAKER_LABEL`] is a claim about identity: "these words are the person
+/// holding the Mac". Merged finding #4 is that the claim was being made from a
+/// track INDEX, which supports it in exactly one configuration (a virtual call
+/// whose other participants arrive on a separate, cleanly-isolated track) and
+/// is false in every other — an in-person meeting, a class, a hybrid room, or a
+/// call whose system-audio tap never attached. On those, track 0 is the whole
+/// room, and "Me" swallows every other voice in it.
+///
+/// So where the mechanism does not support "Me", the label says only what is
+/// actually known: somebody spoke. Singular and unnumbered on purpose — YV126
+/// replaces it with the per-cluster `Speaker 1` / `Speaker 2` this is the zero
+/// element of, and YV129/YV130 replace those with enrolled names.
+pub const UNCLUSTERED_SPEAKER_LABEL: &str = "Speaker";
 
 /// Lifecycle states a meeting row may hold. Kept as `&str` rather than a SQL
 /// CHECK so a future phase can add one without a migration, but validated on
@@ -117,6 +136,122 @@ impl MeetingState {
     }
 }
 
+// ── YV125 · what KIND of meeting this is, and what that means for diarization ─
+//
+// Merged finding #4, flagged Critical by all three lenses: "diarization
+// architecture is inverted relative to Wilson's stated IRL priority. Plan
+// hardcodes Track A (mic/room) as a single un-clustered 'me' and diarizes only
+// Track B (system audio) — exactly backwards for in-person/cannot-join
+// meetings, where Track B doesn't exist and Track A carries every speaker in
+// the room."
+//
+// The fix is a branch, and the thing it branches on has to be STORED, because
+// it is a fact about the recording that outlives the session: a meeting is
+// diarized after it ends, possibly after a relaunch, and re-deriving "was this
+// in a room" from the audio is exactly the guess this column exists to stop.
+// Migration 4 is that column. `source` (manual/calendar/detected) already
+// answers "how did this recording start"; `kind` answers "what was in the
+// room", which is a different question with a different answer.
+
+/// Where the sound in this meeting came from — the one input the diarization
+/// branch reads.
+///
+/// This backlog has no calendar (yap24), so nothing can infer it: it is ASKED,
+/// once, at meeting start, and [`MeetingKind::Unknown`] is a first-class answer
+/// rather than a missing one. See [`diarization_target`] for what each value
+/// actually decides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingKind {
+    /// A call — Zoom/Meet/Teams — where the other participants' audio arrives
+    /// through the Mac's own output and is captured on a separate track.
+    Virtual,
+    /// Everyone is in the room. There is no second track and never was; the
+    /// microphone carries every voice.
+    InPerson,
+    /// The user skipped the picker, or the row predates the column. Treated as
+    /// the more general case (see [`diarization_target`]) — never as a call.
+    ///
+    /// `#[default]` deliberately, and on THIS variant: a `MeetingKind` that
+    /// arrives from nowhere must land on the branch that clusters, never on the
+    /// one that files a whole room as a single speaker.
+    #[default]
+    Unknown,
+}
+
+/// The value migration 4 writes as the column's default, spelled once.
+pub const DEFAULT_MEETING_KIND: &str = "unknown";
+
+impl MeetingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MeetingKind::Virtual => "virtual",
+            MeetingKind::InPerson => "in_person",
+            MeetingKind::Unknown => DEFAULT_MEETING_KIND,
+        }
+    }
+
+    /// Read a stored value. Anything unrecognised — including a value written
+    /// by a NEWER build and read by an older one — degrades to
+    /// [`MeetingKind::Unknown`], which is the branch that clusters rather than
+    /// the branch that asserts one speaker. An unreadable kind must never be
+    /// able to resurrect the "Me" shortcut on a room recording.
+    pub fn parse(s: &str) -> MeetingKind {
+        match s {
+            "virtual" => MeetingKind::Virtual,
+            "in_person" => MeetingKind::InPerson,
+            _ => MeetingKind::Unknown,
+        }
+    }
+}
+
+/// What diarization must do with **Track A** (the microphone) for a meeting.
+///
+/// Two values, not three, because there are only two mechanisms: either the mic
+/// track has to be split into speakers, or it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiarizationTarget {
+    /// Full clustering runs on Track A. Nobody is assumed — not even the person
+    /// holding the Mac, who becomes an enrolled `speaker_profiles` row with
+    /// `is_me = 1` like anyone else (YV128), reached through a voice match and
+    /// not through a track index.
+    ClusterTrackA,
+    /// Track A is ONE un-clustered speaker: this user. Correct only where the
+    /// mechanism makes it correct — a live system-audio tap is carrying every
+    /// other participant on Track B, so the microphone really does hold one
+    /// voice. Free (zero clustering cost, zero error surface) exactly there,
+    /// and a lie anywhere else.
+    MicIsMe,
+}
+
+/// The branch, as one pure function — merged finding #4's fix, mechanically.
+///
+/// `has_system_track` is "is there a live second track on this meeting", not
+/// "was one configured": a `virtual` meeting whose tap was denied (matrix row
+/// 1), revoked mid-meeting (row 2) or unavailable below macOS 14.4 (row 12) is
+/// recording the call through the room's speakers into the microphone, which is
+/// acoustically the in-person case wearing a calendar invite.
+///
+/// | `kind`      | Track B live | target |
+/// |-------------|--------------|--------|
+/// | `in_person` | either       | [`DiarizationTarget::ClusterTrackA`] |
+/// | `unknown`   | either       | [`DiarizationTarget::ClusterTrackA`] |
+/// | `virtual`   | yes          | [`DiarizationTarget::MicIsMe`] |
+/// | `virtual`   | no           | [`DiarizationTarget::ClusterTrackA`] |
+///
+/// `unknown` deliberately clusters even WITH a second track: a tap proves audio
+/// came out of the speakers, never that the room behind the microphone is
+/// empty. That case — a hybrid meeting, some people in the room and some on the
+/// call — is the one where the "Me" shortcut is most expensive, so the answer
+/// the user did not give may not be read as the one that makes it cheap.
+pub fn diarization_target(kind: MeetingKind, has_system_track: bool) -> DiarizationTarget {
+    match kind {
+        MeetingKind::Virtual if has_system_track => DiarizationTarget::MicIsMe,
+        _ => DiarizationTarget::ClusterTrackA,
+    }
+}
+
 /// One recorded meeting. Mirrors the `meetings` table one-for-one, plus
 /// `segment_count`, which is a JOIN count rather than a stored column so it can
 /// never drift from the segments actually present.
@@ -127,6 +262,16 @@ pub struct Meeting {
     pub title: String,
     /// `manual` in 22-A. `calendar` / `detected` are yap24 / yap26.
     pub source: String,
+    /// YV125 — `virtual` | `in_person` | `unknown`, as
+    /// [`MeetingKind::as_str`] spells them. Stored as the column's own text
+    /// rather than as a [`MeetingKind`] for the same reason `state` and
+    /// `source` are: an older build must be able to READ a row a newer build
+    /// wrote without the deserializer refusing the whole meeting over a word it
+    /// does not know. Ask [`Meeting::kind`] for the decision-grade value, which
+    /// is where the unrecognised case is resolved (to `unknown`, the safe
+    /// branch).
+    #[serde(default = "default_kind_field")]
+    pub kind: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub duration_seconds: f64,
@@ -166,6 +311,18 @@ pub struct Meeting {
     /// probes all failed — "never measured" is not "measured nothing".
     #[serde(default)]
     pub diagnostics: Option<String>,
+}
+
+fn default_kind_field() -> String {
+    DEFAULT_MEETING_KIND.to_string()
+}
+
+impl Meeting {
+    /// This meeting's [`MeetingKind`], with an unreadable value resolved to
+    /// [`MeetingKind::Unknown`] — the branch that clusters.
+    pub fn kind(&self) -> MeetingKind {
+        MeetingKind::parse(&self.kind)
+    }
 }
 
 /// One chronological transcript segment. Track 0 is the mic — the person
@@ -570,6 +727,32 @@ ALTER TABLE meetings ADD COLUMN tap_rebuilds TEXT;
 ALTER TABLE meeting_segments ADD COLUMN track INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// Migration 4 — YV125's [`MeetingKind`] column.
+///
+/// One additive column, `NOT NULL DEFAULT 'unknown'`, and the default is doing
+/// real work rather than filling a hole: `unknown` is a value the user can
+/// genuinely choose (they skipped the picker), and it is the value every row
+/// written before this build gets. Both mean the same thing to the branch —
+/// [`diarization_target`] clusters Track A — which is why no backfill exists
+/// and none is wanted. Guessing `virtual` for old rows to preserve their "Me"
+/// labels would be inventing an answer nobody gave, on the exact question
+/// finding #4 says was being answered wrongly by assumption.
+///
+/// Deliberately NOT a `CHECK (kind IN (…))` constraint: a CHECK is a schema
+/// change to add a value to, and yap24's calendar work may well learn to say
+/// something this ladder cannot re-run to allow. [`MeetingKind::parse`] is the
+/// validator, it runs on every read, and an unrecognised value resolves to the
+/// SAFE branch rather than to an error — a meeting that refuses to open over an
+/// unknown word is worse than one that clusters a track it did not have to.
+///
+/// `ALTER TABLE … ADD COLUMN` with a constant default is an O(1) header rewrite
+/// in SQLite. Not `IF NOT EXISTS` (there is no such clause): the ladder in
+/// `db::run_migrations` runs a step exactly once, inside its own transaction,
+/// with `user_version` written in the same transaction.
+pub const MIGRATION_4_MEETING_KIND: &str = r#"
+ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
+"#;
+
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.
 pub fn format_offset(seconds: f64) -> String {
@@ -651,19 +834,38 @@ pub fn export_file_stem(title: &str, started_at: DateTime<Utc>) -> String {
 // labelled empty "Them" row on a screen whose export had no such line. Adding a
 // rule below without adding its fixture to `transcript.test.ts` reopens it.
 
-/// The speaker label for a stored segment's track.
+/// The speaker label for a stored segment's track, under this meeting's
+/// diarization target.
 ///
-/// [`MIC_TRACK`] is the person holding the Mac. Anything else came out of the
-/// process tap — i.e. it was NOT this user's microphone — so it is "Them". The
+/// **YV125 — the track index is no longer enough, and that is the item.** This
+/// function used to take `track` alone and answer "Me" for [`MIC_TRACK`]. That
+/// is a claim about identity derived from a channel number, and merged finding
+/// #4 is that it holds in one configuration and is false in the rest. So the
+/// second argument is the branch: only [`DiarizationTarget::MicIsMe`] — a
+/// `virtual` meeting with a live second track — may call the microphone "Me".
+/// Everywhere else the mic track is the one being clustered, and until
+/// clustering has run (YV126) the honest answer is
+/// [`UNCLUSTERED_SPEAKER_LABEL`].
+///
+/// Anything that is not [`MIC_TRACK`] came out of the process tap — it was NOT
+/// this user's microphone — so it stays "Them" under both targets. That is
+/// mechanical rather than inferred, which is why the kind does not move it. The
 /// catch-all is deliberate rather than a `panic!` or an `Option`: `track` is a
 /// plain `INTEGER` column with no CHECK constraint, and a transcript that
-/// renders is worth more than one that refuses to over a number no writer in
-/// this codebase produces.
-pub fn speaker_label(track: i64) -> &'static str {
-    if track == MIC_TRACK {
-        MIC_SPEAKER_LABEL
-    } else {
-        SYSTEM_SPEAKER_LABEL
+/// renders is worth more than one that refuses over a number no writer in this
+/// codebase produces.
+///
+/// Note what is NOT here: `is_me`. Whether a voice is Wilson's is a property of
+/// an enrolled `speaker_profiles` row (`is_me = 1`, YV128), matched by
+/// embedding — it is not a property of a channel, and nothing in this function
+/// may re-derive it from one.
+pub fn speaker_label(track: i64, target: DiarizationTarget) -> &'static str {
+    if track != MIC_TRACK {
+        return SYSTEM_SPEAKER_LABEL;
+    }
+    match target {
+        DiarizationTarget::MicIsMe => MIC_SPEAKER_LABEL,
+        DiarizationTarget::ClusterTrackA => UNCLUSTERED_SPEAKER_LABEL,
     }
 }
 
@@ -720,7 +922,16 @@ pub struct TranscriptLine {
 ///
 /// Empty segments are dropped, exactly as the 22-A renderer already dropped
 /// them: a blank line with a timestamp is noise in the UI and in the file.
-pub fn render_transcript(segments: &[MeetingSegment]) -> Vec<TranscriptLine> {
+///
+/// YV125 — `kind` is the second half of the labelling rule. Whether this
+/// meeting HAS a live second track is read off the segments that actually
+/// render rather than taken as a separate argument: a tap that was configured
+/// and delivered nothing produces no lines, and a meeting whose Track B is a
+/// row of blanks is mic-only in every way a reader can observe. That is the
+/// same question [`is_two_track`] already answers for the layout, asked once
+/// here so the gutter and the labels cannot disagree.
+pub fn render_transcript(segments: &[MeetingSegment], kind: MeetingKind) -> Vec<TranscriptLine> {
+    let target = diarization_target(kind, is_two_track(segments));
     let mut lines: Vec<TranscriptLine> = segments
         .iter()
         .filter_map(|seg| {
@@ -731,7 +942,7 @@ pub fn render_transcript(segments: &[MeetingSegment]) -> Vec<TranscriptLine> {
             Some(TranscriptLine {
                 segment_id: seg.id.clone(),
                 track: seg.track,
-                speaker: speaker_label(seg.track),
+                speaker: speaker_label(seg.track, target),
                 offset: format_offset(seg.start_seconds),
                 start_seconds: seg.start_seconds,
                 text,
@@ -772,9 +983,12 @@ pub fn render_transcript(segments: &[MeetingSegment]) -> Vec<TranscriptLine> {
 ///
 /// YV108 — the transcript body is [`render_transcript`], so a two-track meeting
 /// exports as one interleaved `Me:` / `Them:` conversation in the same file
-/// shape, and a mic-only meeting exports BYTE-IDENTICALLY to what 22-A shipped
-/// (`tests/meeting_markdown_export_two_track.rs` pins that against a fixture
-/// captured from the pre-YV108 renderer).
+/// shape (`tests/meeting_markdown_export_two_track.rs` pins it against a
+/// fixture captured from the pre-YV108 renderer).
+///
+/// YV125 — the speaker column of that body now depends on `meeting.kind`, so
+/// this is where the meeting and its segments have to meet: a renderer handed
+/// only segments cannot know whether the microphone may be called "Me".
 pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String {
     let mut out = String::with_capacity(256 + segments.len() * 64);
     out.push_str(&format!("# {}\n\n", one_line(&meeting.title)));
@@ -810,7 +1024,7 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
         out.push_str("_No transcript segments._\n");
         return out;
     }
-    for line in render_transcript(segments) {
+    for line in render_transcript(segments, meeting.kind()) {
         out.push_str(&format!(
             "**[{}] {}:** {}\n\n",
             line.offset, line.speaker, line.text
@@ -835,6 +1049,7 @@ mod tests {
             id: "m1".into(),
             title: "Weekly sync".into(),
             source: "manual".into(),
+            kind: DEFAULT_MEETING_KIND.into(),
             started_at: Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap(),
             ended_at: None,
             duration_seconds: 750.0,
@@ -885,15 +1100,35 @@ mod tests {
 
     #[test]
     fn markdown_has_headers_timestamps_and_body() {
+        // The fixture meeting's `kind` is `unknown` — the picker was skipped —
+        // so its single mic track is the one that has to be clustered and it is
+        // NOT labelled "Me" (YV125). `a_virtual_meeting_with_a_second_track_is_still_me_and_them`
+        // covers the case that still may be.
         let md = render_markdown(
             &meeting(),
             &[seg(0.0, "hello there"), seg(65.0, "second thing")],
         );
         assert!(md.starts_with("# Weekly sync\n"), "{md}");
         assert!(md.contains("## Transcript"));
-        assert!(md.contains("**[00:00:00] Me:** hello there"));
-        assert!(md.contains("**[00:01:05] Me:** second thing"));
+        assert!(md.contains("**[00:00:00] Speaker:** hello there"));
+        assert!(md.contains("**[00:01:05] Speaker:** second thing"));
         assert!(md.contains("- **Duration:** 12m 30s"));
+    }
+
+    /// The configuration where the mic really is one speaker, still rendered
+    /// exactly as YV108 shipped it.
+    #[test]
+    fn a_virtual_meeting_with_a_second_track_is_still_me_and_them() {
+        let mut m = meeting();
+        m.kind = MeetingKind::Virtual.as_str().into();
+        let mut them = seg(2.0, "morning, can you hear me");
+        them.track = SYSTEM_TRACK;
+        let md = render_markdown(&m, &[seg(0.0, "morning everyone"), them]);
+        assert!(md.contains("**[00:00:00] Me:** morning everyone"), "{md}");
+        assert!(
+            md.contains("**[00:00:02] Them:** morning, can you hear me"),
+            "{md}"
+        );
     }
 
     #[test]
@@ -901,7 +1136,7 @@ mod tests {
         // ASR output is untrusted: a segment beginning "# " must not become a
         // heading in the exported file.
         let md = render_markdown(&meeting(), &[seg(0.0, "# not a heading\n- not a list")]);
-        assert!(md.contains("**[00:00:00] Me:** # not a heading - not a list"));
+        assert!(md.contains("**[00:00:00] Speaker:** # not a heading - not a list"));
         assert_eq!(
             md.lines().filter(|l| l.starts_with("# ")).count(),
             1,
@@ -963,6 +1198,58 @@ mod tests {
                 .track,
             SYSTEM_TRACK
         );
+    }
+
+    /// Migration 4 adds the column the branch reads, spelled the one way
+    /// [`MeetingKind::Unknown`] spells it. A default of anything else would
+    /// silently put every existing meeting on a branch nobody chose.
+    #[test]
+    fn migration_four_adds_the_kind_column_defaulted_to_unknown() {
+        assert_eq!(MeetingKind::Unknown.as_str(), DEFAULT_MEETING_KIND);
+        assert!(
+            MIGRATION_4_MEETING_KIND.contains(&format!(
+                "ADD COLUMN kind TEXT NOT NULL DEFAULT '{DEFAULT_MEETING_KIND}'"
+            )),
+            "{MIGRATION_4_MEETING_KIND}"
+        );
+        // The value the column defaults to must be the one `parse` resolves an
+        // untouched row to — otherwise the ladder writes a word the branch
+        // cannot read.
+        assert_eq!(
+            MeetingKind::parse(DEFAULT_MEETING_KIND),
+            MeetingKind::Unknown
+        );
+    }
+
+    #[test]
+    fn kinds_round_trip_and_anything_unreadable_clusters() {
+        for k in [
+            MeetingKind::Virtual,
+            MeetingKind::InPerson,
+            MeetingKind::Unknown,
+        ] {
+            assert_eq!(MeetingKind::parse(k.as_str()), k);
+        }
+        // A value from a newer build, a typo, an empty string: all of them land
+        // on the branch that does NOT assert one speaker.
+        for junk in ["hybrid", "", "VIRTUAL", "in-person"] {
+            assert_eq!(MeetingKind::parse(junk), MeetingKind::Unknown);
+            assert_eq!(
+                diarization_target(MeetingKind::parse(junk), true),
+                DiarizationTarget::ClusterTrackA
+            );
+        }
+        assert_eq!(MeetingKind::default(), MeetingKind::Unknown);
+    }
+
+    #[test]
+    fn a_meeting_row_reads_its_kind_and_defaults_to_unknown() {
+        let mut m = meeting();
+        assert_eq!(m.kind(), MeetingKind::Unknown);
+        m.kind = "in_person".into();
+        assert_eq!(m.kind(), MeetingKind::InPerson);
+        m.kind = "something a later build wrote".into();
+        assert_eq!(m.kind(), MeetingKind::Unknown);
     }
 
     #[test]

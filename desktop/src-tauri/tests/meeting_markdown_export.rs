@@ -50,11 +50,31 @@ fn a_three_segment_meeting_round_trips_readably() {
     assert!(round_tripped.contains("## Transcript"));
 
     // Timestamps: one per segment, zero-padded hh:mm:ss, in order, each carrying
-    // that segment's words and the mic speaker label (finding #10 — mic = "Me";
-    // the system track arrives labelled "Them" in 22-B).
-    assert!(round_tripped.contains("**[00:00:00] Me:** let us start with the release checklist"));
-    assert!(round_tripped.contains("**[00:00:04] Me:** the notarised dmg goes out on friday"));
-    assert!(round_tripped.contains("**[00:00:08] Me:** and we hold the price at nineteen dollars"));
+    // that segment's words and this meeting's speaker label.
+    //
+    // `seed_meeting` starts a meeting the way `Database::create_meeting` does —
+    // with the kind picker skipped — so this row is `unknown`, its single mic
+    // track is the one that has to be clustered, and its lines are the
+    // un-named speaker rather than "Me" (YV125, merged finding #4). The
+    // configuration that still reads "Me" is a call with a live second track:
+    // `meeting_markdown_export_two_track.rs` covers it, and
+    // `meeting_transcript_render_single_track_unchanged.rs` proves the speaker
+    // WORD is the only byte of this document that YV125 moved.
+    let who = meetings::UNCLUSTERED_SPEAKER_LABEL;
+    assert!(round_tripped.contains(&format!(
+        "**[00:00:00] {who}:** let us start with the release checklist"
+    )));
+    assert!(round_tripped.contains(&format!(
+        "**[00:00:04] {who}:** the notarised dmg goes out on friday"
+    )));
+    assert!(round_tripped.contains(&format!(
+        "**[00:00:08] {who}:** and we hold the price at nineteen dollars"
+    )));
+    assert!(
+        !round_tripped.contains("] Me:**"),
+        "a meeting whose kind was never asked may not claim the microphone was \
+         only this user:\n{round_tripped}"
+    );
 
     let stamps: Vec<&str> = round_tripped
         .lines()

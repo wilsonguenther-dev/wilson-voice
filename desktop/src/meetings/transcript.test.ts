@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  diarizationTarget,
   isTwoTrack,
   oneLine,
   orderedTranscript,
@@ -22,8 +23,19 @@ import {
   trackOf,
   MIC_TRACK,
   SYSTEM_TRACK,
+  UNCLUSTERED_SPEAKER_LABEL,
+  type MeetingKind,
   type TranscriptSegment,
 } from "./transcript";
+
+/**
+ * YV125 — the kind every fixture below runs under unless it says otherwise: a
+ * CALL, which is the one configuration in which the microphone holds exactly
+ * one speaker and its lines read "Me". `meeting_kind_branch.rs` is the Rust
+ * twin of the branch itself; the "diarizationTarget" block near the bottom is
+ * this file's copy of that truth table.
+ */
+const CALL: MeetingKind = "virtual";
 
 function seg(id: string, startSeconds: number, track: number | null | undefined, text: string) {
   return { id, startSeconds, track, text } as TranscriptSegment;
@@ -41,7 +53,7 @@ const CONVERSATION: TranscriptSegment[] = [
 describe("orderedTranscript", () => {
   it("interleaves both tracks into one time-ordered conversation", () => {
     expect(
-      orderedTranscript(CONVERSATION).map((l) => [l.speaker, l.segment.text]),
+      orderedTranscript(CONVERSATION, CALL).map((l) => [l.speaker, l.segment.text]),
     ).toEqual([
       ["Me", "can we ship the notarised build on friday"],
       ["Them", "friday works if the signing cert lands"],
@@ -51,19 +63,25 @@ describe("orderedTranscript", () => {
   });
 
   it("does not group by speaker — that is the failure mode, not the feature", () => {
-    const tracks = orderedTranscript(CONVERSATION).map((l) => l.track);
+    const tracks = orderedTranscript(CONVERSATION, CALL).map((l) => l.track);
     expect(tracks).toEqual([MIC_TRACK, SYSTEM_TRACK, MIC_TRACK, SYSTEM_TRACK]);
   });
 
   it("breaks an exact tie to the mic, whichever order the rows arrived in", () => {
-    const forwards = orderedTranscript([
-      seg("m", 9, MIC_TRACK, "so we are agreed"),
-      seg("s", 9, SYSTEM_TRACK, "so we are agreed"),
-    ]);
-    const backwards = orderedTranscript([
-      seg("s", 9, SYSTEM_TRACK, "so we are agreed"),
-      seg("m", 9, MIC_TRACK, "so we are agreed"),
-    ]);
+    const forwards = orderedTranscript(
+      [
+        seg("m", 9, MIC_TRACK, "so we are agreed"),
+        seg("s", 9, SYSTEM_TRACK, "so we are agreed"),
+      ],
+      CALL,
+    );
+    const backwards = orderedTranscript(
+      [
+        seg("s", 9, SYSTEM_TRACK, "so we are agreed"),
+        seg("m", 9, MIC_TRACK, "so we are agreed"),
+      ],
+      CALL,
+    );
     expect(forwards.map((l) => l.speaker)).toEqual(["Me", "Them"]);
     expect(backwards.map((l) => l.speaker)).toEqual(["Me", "Them"]);
   });
@@ -74,19 +92,30 @@ describe("orderedTranscript", () => {
       seg("2", 4, MIC_TRACK, "second"),
       seg("3", 8, MIC_TRACK, "third"),
     ];
-    expect(orderedTranscript(micOnly).map((l) => l.segment.id)).toEqual([
+    expect(orderedTranscript(micOnly, CALL).map((l) => l.segment.id)).toEqual([
       "1",
       "2",
       "3",
     ]);
-    expect(orderedTranscript(micOnly).every((l) => l.speaker === "Me")).toBe(true);
+    // NOT "Me" (YV125), and under `virtual` at that: the user said this was a
+    // call and the call's audio never arrived on a second track, so the
+    // microphone carried whatever was in the room. Rust's twin is
+    // `a_mic_only_meeting_walks_the_same_chain_and_never_grows_a_them`.
+    expect(
+      orderedTranscript(micOnly, CALL).every(
+        (l) => l.speaker === UNCLUSTERED_SPEAKER_LABEL,
+      ),
+    ).toBe(true);
   });
 
   it("treats a broken offset as zero rather than scrambling the list", () => {
-    const lines = orderedTranscript([
-      seg("late", 5, MIC_TRACK, "second"),
-      seg("nan", Number.NaN, SYSTEM_TRACK, "first, clamped"),
-    ]);
+    const lines = orderedTranscript(
+      [
+        seg("late", 5, MIC_TRACK, "second"),
+        seg("nan", Number.NaN, SYSTEM_TRACK, "first, clamped"),
+      ],
+      CALL,
+    );
     expect(lines.map((l) => l.segment.id)).toEqual(["nan", "late"]);
     // Rust keeps the raw `start_seconds` on the line and clamps only where it
     // formats and compares (`a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order`
@@ -105,20 +134,24 @@ describe("orderedTranscript", () => {
    * with a timestamp and nothing in it.
    */
   it("never turns an empty span into a blank turn", () => {
-    const lines = orderedTranscript([
-      seg("a", 0.0, MIC_TRACK, "real words"),
-      seg("b", 1.0, SYSTEM_TRACK, "   "),
-      seg("c", 2.0, SYSTEM_TRACK, "also real"),
-    ]);
+    const lines = orderedTranscript(
+      [
+        seg("a", 0.0, MIC_TRACK, "real words"),
+        seg("b", 1.0, SYSTEM_TRACK, "   "),
+        seg("c", 2.0, SYSTEM_TRACK, "also real"),
+      ],
+      CALL,
+    );
     expect(lines.length).toBe(2);
     expect(lines[0].text).toBe("real words");
     expect(lines[1].text).toBe("also real");
   });
 
   it("renders the collapsed text, so the screen shows what the file shows", () => {
-    const lines = orderedTranscript([
-      seg("m", 0, MIC_TRACK, "  so   we\nare\tagreed  "),
-    ]);
+    const lines = orderedTranscript(
+      [seg("m", 0, MIC_TRACK, "  so   we\nare\tagreed  ")],
+      CALL,
+    );
     expect(lines[0].text).toBe("so we are agreed");
     // The raw segment is untouched: the collapsing belongs to the rendering,
     // not to the stored row.
@@ -145,8 +178,12 @@ describe("oneLine", () => {
     expect(oneLine("\u0085")).toBe(""); // NEL: whitespace to Rust, and so to us
     expect(oneLine("a\u0085b")).toBe("a b");
     expect(oneLine("\uFEFF")).toBe("\uFEFF"); // ZWNBSP: NOT whitespace to Rust
-    expect(orderedTranscript([seg("nel", 0, SYSTEM_TRACK, "\u0085")])).toEqual([]);
-    expect(orderedTranscript([seg("bom", 0, SYSTEM_TRACK, "\uFEFF")]).length).toBe(1);
+    expect(orderedTranscript([seg("nel", 0, SYSTEM_TRACK, "\u0085")], CALL)).toEqual(
+      [],
+    );
+    expect(
+      orderedTranscript([seg("bom", 0, SYSTEM_TRACK, "\uFEFF")], CALL).length,
+    ).toBe(1);
   });
 });
 
@@ -154,13 +191,77 @@ describe("track and label", () => {
   it("defaults a missing track to the mic, as the column's DEFAULT 0 does", () => {
     expect(trackOf(seg("x", 0, undefined, "pre-migration-3 row"))).toBe(MIC_TRACK);
     expect(trackOf(seg("y", 0, null, "pre-migration-3 row"))).toBe(MIC_TRACK);
-    expect(orderedTranscript([seg("z", 0, undefined, "hi")])[0].speaker).toBe("Me");
+    // A pre-migration-3 row in a mic-only meeting: the mic, and — since YV125 —
+    // not automatically this user.
+    expect(
+      orderedTranscript([seg("z", 0, undefined, "hi")], CALL)[0].speaker,
+    ).toBe(UNCLUSTERED_SPEAKER_LABEL);
   });
 
-  it("labels the mic Me and anything else Them", () => {
-    expect(speakerLabel(MIC_TRACK)).toBe("Me");
-    expect(speakerLabel(SYSTEM_TRACK)).toBe("Them");
-    expect(speakerLabel(7)).toBe("Them");
+  it("labels the mic Me only where the mechanism supports it", () => {
+    expect(speakerLabel(MIC_TRACK, "micIsMe")).toBe("Me");
+    expect(speakerLabel(MIC_TRACK, "clusterTrackA")).toBe(
+      UNCLUSTERED_SPEAKER_LABEL,
+    );
+    // The system track is not this user's microphone under EITHER branch —
+    // that is mechanical, not inferred, so no kind can move it.
+    expect(speakerLabel(SYSTEM_TRACK, "micIsMe")).toBe("Them");
+    expect(speakerLabel(SYSTEM_TRACK, "clusterTrackA")).toBe("Them");
+    expect(speakerLabel(7, "micIsMe")).toBe("Them");
+    expect(speakerLabel(7, "clusterTrackA")).toBe("Them");
+    // Not vacuous: the two mic labels are different strings.
+    expect(UNCLUSTERED_SPEAKER_LABEL).not.toBe("Me");
+  });
+});
+
+/**
+ * YV125 — the same truth table `meeting_kind_branch.rs` asserts in Rust, so the
+ * screen and the exported file cannot disagree about WHICH BRANCH a meeting is
+ * on, having already been held to agreeing about the labels on it.
+ */
+describe("diarizationTarget", () => {
+  it("mirrors the Rust branch, row for row", () => {
+    const table: [MeetingKind | string, boolean, string][] = [
+      ["in_person", false, "clusterTrackA"],
+      ["in_person", true, "clusterTrackA"],
+      ["unknown", false, "clusterTrackA"],
+      ["unknown", true, "clusterTrackA"],
+      ["virtual", true, "micIsMe"],
+      ["virtual", false, "clusterTrackA"],
+    ];
+    for (const [kind, hasSystemTrack, want] of table) {
+      expect(diarizationTarget(kind, hasSystemTrack)).toBe(want);
+    }
+  });
+
+  it("treats anything it does not recognise as unknown, which clusters", () => {
+    for (const junk of ["hybrid", "", "VIRTUAL", "in-person", null, undefined]) {
+      expect(diarizationTarget(junk, true)).toBe("clusterTrackA");
+      expect(diarizationTarget(junk, false)).toBe("clusterTrackA");
+    }
+  });
+
+  it("follows the segments, not a flag: a silent tap is a mic-only meeting", () => {
+    const call = [
+      seg("mic", 0, MIC_TRACK, "can we ship on friday"),
+      seg("them", 4, SYSTEM_TRACK, "friday works for us"),
+    ];
+    expect(orderedTranscript(call, "virtual").map((l) => l.speaker)).toEqual([
+      "Me",
+      "Them",
+    ]);
+    const silentTap = [
+      seg("mic", 0, MIC_TRACK, "can we ship on friday"),
+      seg("them", 4, SYSTEM_TRACK, "   "),
+    ];
+    expect(orderedTranscript(silentTap, "virtual").map((l) => l.speaker)).toEqual([
+      UNCLUSTERED_SPEAKER_LABEL,
+    ]);
+    // The hybrid case: the tap delivered, and the room is still clustered.
+    expect(orderedTranscript(call, "in_person").map((l) => l.speaker)).toEqual([
+      UNCLUSTERED_SPEAKER_LABEL,
+      "Them",
+    ]);
   });
 });
 
@@ -186,9 +287,9 @@ describe("isTwoTrack", () => {
       seg("tap", 1, SYSTEM_TRACK, "   "),
     ];
     expect(isTwoTrack(blankTap)).toBe(false);
-    expect(orderedTranscript(blankTap).every((l) => l.track === MIC_TRACK)).toBe(
-      true,
-    );
+    expect(
+      orderedTranscript(blankTap, CALL).every((l) => l.track === MIC_TRACK),
+    ).toBe(true);
     // One real word from the far side and it IS a two-track meeting again.
     expect(
       isTwoTrack([...blankTap, seg("tap2", 2, SYSTEM_TRACK, "hello")]),

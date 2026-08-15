@@ -1,0 +1,67 @@
+YV125 — non-vacuous mutations. Each one is a plausible wrong version of the
+branch, applied to the tree, run, and reverted. A green suite under any of them
+would mean the tests describe the change rather than hold it.
+
+macOS 26.5.2 / arm64, rustc 1.94.0. Every mutation was reverted and the full
+suite re-run green afterwards (1107 passed, 0 failed).
+
+M1 — `virtual` stops looking at whether a second track is live
+    meetings.rs: `MeetingKind::Virtual if has_system_track =>` becomes
+    `MeetingKind::Virtual =>`
+    This is the exact regression the third row of the spec's table exists for:
+    a call whose tap was denied (matrix row 1), revoked mid-meeting (row 2) or
+    unavailable below macOS 14.4 (row 12) is a microphone carrying the room
+    through the laptop speakers, and it would go back to being labelled "Me".
+    → 7 FAILED across 4 binaries: meeting_kind_branch,
+      meeting_transcript_render_single_track_unchanged,
+      two_track_merge_no_regression_single_track, two_track_phase_e2e.
+
+M2 — `unknown` + a live tap takes the "Me" shortcut (the hybrid regression)
+    meetings.rs: an extra arm, `MeetingKind::Unknown if has_system_track =>
+    DiarizationTarget::MicIsMe`.
+    A tap proves audio came out of the speakers, never that the room behind the
+    microphone is empty — and a hybrid meeting is where the shortcut costs most.
+    → meeting_kind_branch::the_diarization_target_follows_the_kind_and_the_second_track
+      FAILED (6 passed, 1 failed).
+
+M3 — the un-clustered label quietly becomes "Me" again
+    meetings.rs: `UNCLUSTERED_SPEAKER_LABEL = "Speaker"` → `"Me"`.
+    Every branch assertion in the suite would still pass on the TARGET while the
+    user-visible half of finding #4 was silently undone.
+    → 3 FAILED across 3 binaries: meeting_kind_branch::the_branch_is_not_vacuous,
+      meeting_markdown_export::a_three_segment_meeting_round_trips_readably,
+      meeting_transcript_render_two_track::labels_come_from_the_track_and_an_unknown_track_is_not_you.
+
+M4 — the TypeScript mirror drifts from Rust
+    src/meetings/transcript.ts: `kind === "virtual" && hasSystemTrack` →
+    `kind === "virtual"` (M1, on the other side of the language boundary).
+    The mirror is a copy, so nothing about it is guaranteed by construction —
+    this is the drift YV108's own review already had to close once.
+    → 4 vitest cases FAILED in transcript.test.ts, including both
+      "diarizationTarget mirrors the Rust branch, row for row" and
+      "follows the segments, not a flag: a silent tap is a mic-only meeting".
+
+M5 — the skip default silently becomes `virtual`
+    db.rs: `create_meeting` delegates with `MeetingKind::Virtual` instead of
+    `Unknown`. Every caller that does not name a kind — ⌃⌘M, the tray's plain
+    item, every pre-YV125 call site — would file its meeting as a call.
+    → meeting_kind_default_on_skip::a_row_created_without_a_kind_is_unknown
+      FAILED (3 passed, 1 failed).
+
+M6 — migration 4 backfills every existing meeting as a call
+    meetings.rs: `ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown'` →
+    `DEFAULT 'virtual'`. This is the tempting version: it would preserve the
+    "Me" labels on every export a user already has. It also invents an answer
+    nobody gave, on the one question finding #4 says was being answered wrongly
+    by assumption.
+    → db_migration_idempotent::migration_four_adds_kind_as_unknown_without_touching_existing_rows
+      FAILED (8 passed, 1 failed), and separately the unit test
+      meetings::tests::migration_four_adds_the_kind_column_defaulted_to_unknown.
+
+Not mutated, stated instead: the expiry test
+`the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands` is
+non-vacuous by construction in the other direction — it asserts that
+`cluster_index` is absent from the shipped migration ladder, so it goes RED the
+day YV126 adds it, on the merge commit, with no corpus, no model and no audio
+hardware. It also asserts `SCHEMA_VERSION == ladder.len()`, so it cannot pass by
+looking at a stale subset of the schema.

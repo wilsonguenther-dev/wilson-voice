@@ -53,7 +53,8 @@ use wilson_voice_lib::meeting::{
 };
 use wilson_voice_lib::meeting_asr::{merge_timed, BoundaryKind, ChunkOutcome, ChunkStatus};
 use wilson_voice_lib::meetings::{
-    is_two_track, render_markdown, render_transcript, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL,
+    is_two_track, render_markdown, render_transcript, MeetingKind, MIC_SPEAKER_LABEL,
+    SYSTEM_SPEAKER_LABEL, UNCLUSTERED_SPEAKER_LABEL,
 };
 use wilson_voice_lib::rtring::CaptureAnchor;
 
@@ -446,7 +447,7 @@ fn a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript() {
     let dir = support::temp_dir("yv109-e2e");
     let db = support::open_db(&dir);
     let meeting = db
-        .create_meeting("Two-source phase demo", "manual")
+        .create_meeting_with_kind("Two-source phase demo", "manual", MeetingKind::Virtual)
         .expect("create meeting");
     let rows = segments_from_host_spans(&meeting.id, &spans);
     for track in [MIC_TRACK as i64, SYSTEM_TRACK as i64] {
@@ -477,6 +478,20 @@ fn a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript() {
         is_two_track(&stored),
         "this meeting has a real second track"
     );
+    // YV125 — read back from the ROW rather than from the local variable, so
+    // the kind the recording was started under is proved to have survived the
+    // round trip that the transcript is then rendered under.
+    let meeting_kind = db
+        .get_meeting(&meeting.id)
+        .expect("get")
+        .expect("exists")
+        .kind();
+    assert_eq!(
+        meeting_kind,
+        MeetingKind::Virtual,
+        "a call with a live second track is the one configuration whose mic \
+         track is a single speaker"
+    );
 
     // Rendered TWICE, from two different orderings of the same rows, because
     // they answer different questions. `list_meeting_segments` sorts in SQL
@@ -485,14 +500,14 @@ fn a_two_source_clock_offset_meeting_renders_one_ordered_me_them_transcript() {
     // the renderer is what the React mirror and the Markdown export both go
     // through. So the same rows are also rendered in INSERT order, one whole
     // track after the other, which is the shape the renderer has to fix itself.
-    let unsorted = render_transcript(&rows);
+    let unsorted = render_transcript(&rows, MeetingKind::Virtual);
     assert_eq!(
         marker_sequence(&unsorted, &markers()),
         expected_sequence(),
         "the renderer did not order the two tracks itself"
     );
 
-    let lines = render_transcript(&stored);
+    let lines = render_transcript(&stored, meeting_kind);
     // Row ids differ (SQLite minted its own), so the comparison is on what a
     // reader sees: who, when, what.
     let shape = |ls: &[wilson_voice_lib::meetings::TranscriptLine]| -> Vec<(i64, String, String)> {
@@ -557,7 +572,7 @@ fn without_the_rebase_four_pairs_render_in_the_wrong_order() {
         spans.extend(onto_host_clock(track, &decode_track(track), &naive));
     }
     let rows = segments_from_host_spans("no-rebase", &spans);
-    let lines = render_transcript(&rows);
+    let lines = render_transcript(&rows, MeetingKind::Virtual);
     let got = marker_sequence(&lines, &markers());
     let want = expected_sequence();
     assert_eq!(
@@ -597,10 +612,19 @@ fn a_mic_only_meeting_walks_the_same_chain_and_never_grows_a_them() {
         !is_two_track(&rows),
         "a mic-only meeting must not claim a second track"
     );
-    let lines = render_transcript(&rows);
+    // Rendered as the CALL it was started as, which is the strong version of
+    // the claim: even under `Virtual`, a meeting whose second track never
+    // arrived falls back to clustering Track A (YV125), so every line is the
+    // one unnamed speaker and none of them is a phantom "Them".
+    let lines = render_transcript(&rows, MeetingKind::Virtual);
     assert!(
-        lines.iter().all(|l| l.speaker == MIC_SPEAKER_LABEL),
+        lines.iter().all(|l| l.speaker == UNCLUSTERED_SPEAKER_LABEL),
         "a phantom Them appeared in a one-track meeting"
+    );
+    assert!(
+        lines.iter().all(|l| l.speaker != MIC_SPEAKER_LABEL),
+        "and with no second track carrying the other people, the microphone \
+         cannot claim to be only this user"
     );
     let starts: Vec<f64> = lines.iter().map(|l| l.start_seconds).collect();
     assert!(out_of_order(&starts).is_empty());

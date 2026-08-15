@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::meeting_energy::{self, BatteryReading, MeetingDiagnostics, ThermalState};
-use crate::meetings::{self, MeetingState};
+use crate::meetings::{self, MeetingKind, MeetingState};
 use crate::syscapture;
 
 /// OS-12 fix (1): one elapsed emit per second, with the canvas parked.
@@ -140,8 +140,14 @@ pub type SystemAudioProbe = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// Whoever owns audio capture implements this and installs it once.
 pub trait CaptureEngine: Send + Sync + 'static {
-    /// Begin capturing into `dir`.
-    fn start(&self, dir: &Path) -> Result<Box<dyn ActiveCapture>, String>;
+    /// Begin capturing into `dir`, for a meeting of `kind` (YV125).
+    ///
+    /// The kind is passed to the ENGINE and not only written on the row because
+    /// the session carries it for its whole life (see
+    /// `meeting::SessionConfig::kind`) — the recording and the row describing it
+    /// are set from the same value at the same instant, so they cannot come
+    /// apart if one write fails.
+    fn start(&self, dir: &Path, kind: MeetingKind) -> Result<Box<dyn ActiveCapture>, String>;
 }
 
 static ENGINE: OnceLock<Arc<dyn CaptureEngine>> = OnceLock::new();
@@ -258,6 +264,61 @@ pub struct StoppedMeeting {
 /// row says something before the user renames it (YV94 already has rename).
 pub fn default_title(now: DateTime<Local>) -> String {
     format!("Meeting {}", now.format("%-l:%M %p"))
+}
+
+// ─────────────────────────── YV125 · the kind picker ────────────────────────
+//
+// There is no calendar in this backlog (yap24), so nothing can infer whether a
+// meeting is a call or a room — it is ASKED, once, at the moment the user is
+// already looking at a start-of-meeting surface. Three choices, one line, and
+// skipping is a supported answer rather than a dead end: the picker is a HINT
+// that improves the diarization target, never a gate in front of the record
+// button. `tests/meeting_kind_default_on_skip.rs` is what holds that open.
+//
+// The list lives here, in Rust, rather than being written out twice: the tray
+// submenu and the Meetings tab both render these three, so a fourth option (or
+// a re-worded one) cannot appear on one surface and not the other.
+
+/// One choice on the start-of-meeting kind picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindChoice {
+    pub kind: MeetingKind,
+    /// What the user reads. Plain words about the room, not about diarization:
+    /// nobody starting a recording is thinking in clustering targets.
+    pub label: &'static str,
+    /// The tray menu item's id. Namespaced so `on_menu_event`'s match cannot
+    /// collide with an unrelated item.
+    pub menu_id: &'static str,
+}
+
+/// The three choices, in the order both surfaces show them.
+///
+/// "Not sure" is LAST and is the same answer as not choosing at all — it exists
+/// as a visible option so a user who wants to answer the question can answer it
+/// honestly, rather than being pushed into guessing "Virtual" because the menu
+/// only offered the two confident answers.
+pub const KIND_PICKER: [KindChoice; 3] = [
+    KindChoice {
+        kind: MeetingKind::InPerson,
+        label: "In person",
+        menu_id: "meeting_start_in_person",
+    },
+    KindChoice {
+        kind: MeetingKind::Virtual,
+        label: "Virtual",
+        menu_id: "meeting_start_virtual",
+    },
+    KindChoice {
+        kind: MeetingKind::Unknown,
+        label: "Not sure",
+        menu_id: "meeting_start_unknown",
+    },
+];
+
+/// The choice a tray menu id names, if any.
+pub fn kind_for_menu_id(id: &str) -> Option<MeetingKind> {
+    KIND_PICKER.iter().find(|c| c.menu_id == id).map(|c| c.kind)
 }
 
 // ────────────────────────────── the controller ──────────────────────────────
@@ -406,12 +467,28 @@ impl MeetingController {
         (self.sink)(&status);
     }
 
+    /// Start a meeting with the picker SKIPPED — the ⌃⌘M path, the tray's
+    /// primary item, and every caller that has no opinion.
+    ///
+    /// [`MeetingKind::Unknown`] is a real answer here and not a placeholder:
+    /// `meetings::diarization_target` treats it as the general case (cluster
+    /// Track A) precisely so that skipping the question can never be the reason
+    /// a room recording gets filed as one speaker.
+    pub fn start(&self, dir: &Path, title: Option<String>) -> Result<String, String> {
+        self.start_with_kind(dir, title, MeetingKind::Unknown)
+    }
+
     /// Start a meeting. `dir` is where the capture engine writes its audio.
     ///
     /// Order matters: capture is started BEFORE the row is created, so a machine
     /// that cannot record does not leave a trail of empty `failed` meetings in
     /// the user's list every time they press the hotkey by accident.
-    pub fn start(&self, dir: &Path, title: Option<String>) -> Result<String, String> {
+    pub fn start_with_kind(
+        &self,
+        dir: &Path,
+        title: Option<String>,
+        kind: MeetingKind,
+    ) -> Result<String, String> {
         let mut guard = self
             .active
             .lock()
@@ -429,13 +506,13 @@ impl MeetingController {
         let pill_visible = self.probe.pill_visible();
 
         std::fs::create_dir_all(dir).map_err(|e| format!("meeting audio folder: {e}"))?;
-        let capture = engine.start(dir)?;
+        let capture = engine.start(dir, kind)?;
 
         let title = title
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| default_title(Local::now()));
-        let meeting = match self.db.create_meeting(&title, "manual") {
+        let meeting = match self.db.create_meeting_with_kind(&title, "manual", kind) {
             Ok(m) => m,
             Err(e) => {
                 // The row is the only thing that makes a recording findable, so
@@ -454,8 +531,9 @@ impl MeetingController {
             let _ = self.db.set_meeting_diagnostics(&meeting.id, &d.to_json());
         }
         log::info!(
-            "meeting {} started — thermal {}, battery {}%{}, pill {}",
+            "meeting {} started — kind {}, thermal {}, battery {}%{}, pill {}",
             meeting.id,
+            kind.as_str(),
             thermal_at_start.as_str(),
             battery_at_start
                 .percent
@@ -656,11 +734,26 @@ impl MeetingController {
     /// The single toggle every entry point calls — tray item, ⌃⌘M, the pill's
     /// stop control and the empty state's button all land here, so the four can
     /// never disagree about what pressing them does.
+    ///
+    /// The picker is skipped on this path (see [`MeetingController::start`]).
     pub fn toggle(&self, dir: &Path, title: Option<String>) -> Result<MeetingStatus, String> {
+        self.toggle_with_kind(dir, title, MeetingKind::Unknown)
+    }
+
+    /// The same toggle, with the kind the user picked. `kind` is ignored on a
+    /// STOP for the obvious reason: a meeting that is already running was
+    /// started under whatever it was started under, and a picker press cannot
+    /// retroactively change what was in the room.
+    pub fn toggle_with_kind(
+        &self,
+        dir: &Path,
+        title: Option<String>,
+        kind: MeetingKind,
+    ) -> Result<MeetingStatus, String> {
         if self.is_recording() {
             self.stop("user stopped")?;
         } else {
-            self.start(dir, title)?;
+            self.start_with_kind(dir, title, kind)?;
         }
         Ok(self.status())
     }
@@ -834,6 +927,7 @@ pub fn start_capture_session(
     tap: Option<Arc<syscapture::MeetingTap>>,
     db: Option<Arc<Database>>,
     stream: Arc<dyn crate::meeting::CaptureStream>,
+    kind: MeetingKind,
 ) -> Result<Box<dyn ActiveCapture>, String> {
     // `SessionConfig::virtual_meeting` and NOT `syscapture::virtual_meeting_config`:
     // that one swaps the held stream for `ExternalStream`, which is right for a
@@ -848,6 +942,9 @@ pub fn start_capture_session(
         crate::meeting::SessionConfig::new(dir, native_rate, channels)
     };
     config.stream = stream;
+    // YV125 — what the USER said, never what the tap implies. A hybrid meeting
+    // opens the same tap as a call and must still cluster Track A.
+    config.kind = kind;
     if let Some(tap) = tap.as_ref() {
         // The environment that finally answers `Some` to `tap_liveness`, which
         // is what puts YV104's ghost watchdog in effect inside a real meeting.
@@ -879,7 +976,7 @@ pub fn start_capture_session(
 }
 
 impl CaptureEngine for SessionEngine {
-    fn start(&self, dir: &Path) -> Result<Box<dyn ActiveCapture>, String> {
+    fn start(&self, dir: &Path, kind: MeetingKind) -> Result<Box<dyn ActiveCapture>, String> {
         // Hold the input stream FIRST. This opens it if it is closed and blocks
         // until it is actually running, which is the only moment its true native
         // format is knowable — and a meeting whose resampler was configured from
@@ -926,6 +1023,7 @@ impl CaptureEngine for SessionEngine {
             tap,
             Some(Arc::clone(&self.db)),
             Arc::new(crate::meeting::MicStream),
+            kind,
         ) {
             Ok(capture) => Ok(capture),
             Err(e) => {
@@ -1098,6 +1196,35 @@ mod tests {
         assert_eq!(default_title(t), "Meeting 3:04 PM");
         let morning = Local.with_ymd_and_hms(2026, 8, 11, 9, 30, 0).unwrap();
         assert_eq!(default_title(morning), "Meeting 9:30 AM");
+    }
+
+    /// YV125 — the picker offers each kind exactly once, under an id nothing
+    /// else in the tray claims, and "Not sure" is the same answer as skipping.
+    #[test]
+    fn the_kind_picker_covers_every_kind_once() {
+        let kinds: Vec<MeetingKind> = KIND_PICKER.iter().map(|c| c.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                MeetingKind::InPerson,
+                MeetingKind::Virtual,
+                MeetingKind::Unknown
+            ]
+        );
+        for c in KIND_PICKER {
+            assert_eq!(kind_for_menu_id(c.menu_id), Some(c.kind));
+            assert!(
+                c.menu_id.starts_with("meeting_start_"),
+                "{} must be namespaced so the tray match cannot collide",
+                c.menu_id
+            );
+            assert!(!c.label.is_empty());
+        }
+        assert_eq!(kind_for_menu_id("meeting_toggle"), None);
+        // The skip default and the last visible option are the same answer, so
+        // a user who chooses "Not sure" and a user who never opened the submenu
+        // land on the same branch.
+        assert_eq!(KIND_PICKER[2].kind, MeetingKind::default());
     }
 
     #[test]

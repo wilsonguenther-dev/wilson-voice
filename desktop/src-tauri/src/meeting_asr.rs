@@ -1016,7 +1016,10 @@ pub fn merge_timed_reporting(chunks: &[ChunkOutcome]) -> (Vec<TimedSpan>, Vec<Se
 pub struct MergedSpan {
     /// [`crate::meeting::MIC_TRACK`] or [`crate::meeting::SYSTEM_TRACK`].
     pub track: usize,
-    /// [`crate::meetings::speaker_label`] of `track` — "Me" or "Them".
+    /// [`crate::meetings::speaker_label`] of `track` under this meeting's
+    /// diarization target — "Me"/"Them" for a call with a live second track,
+    /// "Speaker"/"Them" wherever the microphone is the track being clustered
+    /// (YV125).
     pub speaker: String,
     pub start_seconds: f64,
     pub end_seconds: f64,
@@ -1103,22 +1106,31 @@ impl TrackEpochs {
 /// in the wild goes through this path, and buying them a rounding change for no
 /// alignment benefit would be a regression with nothing on the other side of it.
 /// `tests/two_track_merge_no_regression_single_track.rs` is the guard.
+///
+/// YV125 — `kind` is what decides whether the mic track may be called "Me".
+/// Whether this meeting HAS a second track is not a second argument: it is
+/// `spans_b`, right here, which is the same "ask the audio that actually
+/// landed" rule `meetings::render_transcript` uses. A configured tap that
+/// delivered nothing is a mic-only meeting to every reader of the transcript,
+/// and it must be one to the labeller too.
 pub fn merge_two_tracks_by_host_time(
     track_a: &[ChunkOutcome],
     track_b: &[ChunkOutcome],
     anchors_a: &[IndexRecord],
     anchors_b: &[IndexRecord],
     epochs: TrackEpochs,
+    kind: crate::meetings::MeetingKind,
 ) -> Vec<MergedSpan> {
     let spans_a = merge_timed(track_a);
     let spans_b = merge_timed(track_b);
+    let target = crate::meetings::diarization_target(kind, !spans_b.is_empty());
 
     // The 22-A shape, preserved byte for byte. See the doc comment above: no
     // second track means no cross-clock question to answer.
     if spans_b.is_empty() {
         return spans_a
             .into_iter()
-            .map(|s| label(MIC_TRACK, s.start_seconds, s.end_seconds, s.text))
+            .map(|s| label(MIC_TRACK, s.start_seconds, s.end_seconds, s.text, target))
             .collect();
     }
 
@@ -1139,7 +1151,7 @@ pub fn merge_two_tracks_by_host_time(
             // session clock instead of anchoring one end to it and letting the
             // other keep drifting.
             let end = map.session_seconds(span.end_seconds);
-            out.push(label(track, start, end.max(start), span.text));
+            out.push(label(track, start, end.max(start), span.text, target));
         }
     }
 
@@ -1167,10 +1179,16 @@ pub fn merge_two_tracks_by_host_time(
 /// and would be a third copy of the rule — is what keeps the merge, the
 /// Markdown export and the screen from ever disagreeing about who spoke.
 /// `the_merge_labels_through_the_shipped_render_rule` is the guard.
-fn label(track: usize, start_seconds: f64, end_seconds: f64, text: String) -> MergedSpan {
+fn label(
+    track: usize,
+    start_seconds: f64,
+    end_seconds: f64,
+    text: String,
+    target: crate::meetings::DiarizationTarget,
+) -> MergedSpan {
     MergedSpan {
         track,
-        speaker: crate::meetings::speaker_label(track as i64).to_string(),
+        speaker: crate::meetings::speaker_label(track as i64, target).to_string(),
         start_seconds,
         end_seconds,
         text,

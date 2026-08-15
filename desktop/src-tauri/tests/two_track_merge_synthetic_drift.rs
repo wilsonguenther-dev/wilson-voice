@@ -154,8 +154,14 @@ fn a_hundred_ppm_offset_merges_in_the_right_order_and_under_fifty_ms_at_three_ho
     // Both streams' first callbacks treated as the same instant: this fixture's
     // whole subject is the RATE offset, and adding an epoch offset would test
     // the caller's bookkeeping instead.
-    let merged =
-        merge_two_tracks_by_host_time(&mic, &tap, &anchors_mic, &anchors_tap, TrackEpochs::SHARED);
+    let merged = merge_two_tracks_by_host_time(
+        &mic,
+        &tap,
+        &anchors_mic,
+        &anchors_tap,
+        TrackEpochs::SHARED,
+        wilson_voice_lib::meetings::MeetingKind::Virtual,
+    );
 
     assert_eq!(
         turns(&merged),

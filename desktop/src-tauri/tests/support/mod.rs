@@ -74,13 +74,25 @@ pub fn seed_meeting(db: &Database, dir: &std::path::Path, title: &str, texts: &[
 /// were spoken after them — so a transcript that comes back in the right order
 /// came back that way because of `start_seconds`, not by accident of insert
 /// order.
+///
+/// YV125 — the row is created as [`MeetingKind::Virtual`], which is what a
+/// two-track meeting IS: a call whose other participants arrived on their own
+/// track. That is also the one kind under which the mic track is labelled "Me",
+/// so a seeder that left it `unknown` would quietly make every Me/Them
+/// expectation in this suite unreachable.
 pub fn seed_two_track_meeting(
     db: &Database,
     dir: &std::path::Path,
     title: &str,
     turns: &[(f64, i64, &str)],
 ) -> String {
-    let meeting = db.create_meeting(title, "manual").expect("create meeting");
+    let meeting = db
+        .create_meeting_with_kind(
+            title,
+            "manual",
+            wilson_voice_lib::meetings::MeetingKind::Virtual,
+        )
+        .expect("create meeting");
     let batch = |track: i64| -> Vec<NewMeetingSegment> {
         turns
             .iter()
@@ -218,10 +230,44 @@ pub fn fake_stops() -> usize {
     FAKE_STOPS.load(Ordering::SeqCst)
 }
 
+/// YV125 — the kind the fake engine was last asked to start under, so a test
+/// can assert what the control plane HANDED THE ENGINE and not only what it
+/// wrote on the row. Those are two writes from one value, and a test that only
+/// checks the row would not notice them coming apart.
+static FAKE_KIND: AtomicU8 = AtomicU8::new(FAKE_KIND_NONE);
+const FAKE_KIND_NONE: u8 = 0;
+const FAKE_KIND_VIRTUAL: u8 = 1;
+const FAKE_KIND_IN_PERSON: u8 = 2;
+const FAKE_KIND_UNKNOWN: u8 = 3;
+
+/// The kind of the most recent `FakeEngine::start`, or `None` before the first.
+pub fn fake_started_kind() -> Option<wilson_voice_lib::meetings::MeetingKind> {
+    use wilson_voice_lib::meetings::MeetingKind;
+    match FAKE_KIND.load(Ordering::SeqCst) {
+        FAKE_KIND_VIRTUAL => Some(MeetingKind::Virtual),
+        FAKE_KIND_IN_PERSON => Some(MeetingKind::InPerson),
+        FAKE_KIND_UNKNOWN => Some(MeetingKind::Unknown),
+        _ => None,
+    }
+}
+
 pub struct FakeEngine;
 
 impl CaptureEngine for FakeEngine {
-    fn start(&self, dir: &Path) -> Result<Box<dyn ActiveCapture>, String> {
+    fn start(
+        &self,
+        dir: &Path,
+        kind: wilson_voice_lib::meetings::MeetingKind,
+    ) -> Result<Box<dyn ActiveCapture>, String> {
+        use wilson_voice_lib::meetings::MeetingKind;
+        FAKE_KIND.store(
+            match kind {
+                MeetingKind::Virtual => FAKE_KIND_VIRTUAL,
+                MeetingKind::InPerson => FAKE_KIND_IN_PERSON,
+                MeetingKind::Unknown => FAKE_KIND_UNKNOWN,
+            },
+            Ordering::SeqCst,
+        );
         FAKE_STARTS.fetch_add(1, Ordering::SeqCst);
         if FAKE_MODE.load(Ordering::SeqCst) == FAKE_START_FAILS {
             return Err("no input device".into());

@@ -113,7 +113,9 @@ use support::two_track::{
 use wilson_voice_lib::meeting::{
     MeetingCapture, MeetingJournal, MeetingState, MIC_TRACK, SYSTEM_TRACK,
 };
-use wilson_voice_lib::meetings::{render_transcript, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL};
+use wilson_voice_lib::meetings::{
+    render_transcript, MeetingKind, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL,
+};
 use wilson_voice_lib::rtring::CaptureAnchor;
 
 // ---------------------------------------------------------------------------
@@ -2361,7 +2363,12 @@ fn two_track_ordering_fixture_is_hard_by_construction() {
             }
         })
         .collect();
-    let lines = render_transcript(&segments_from_host_spans("no-rebase", &spans));
+    let lines = // A CALL with both tracks recorded — the configuration whose
+    // labels are Me/Them (YV125).
+    render_transcript(
+        &segments_from_host_spans("no-rebase", &spans),
+        MeetingKind::Virtual,
+    );
     let got = marker_sequence(&lines, &two_track_words());
     let want = two_track_expected_sequence();
     let displaced = got.iter().zip(want.iter()).filter(|(a, b)| a != b).count();
@@ -2542,7 +2549,10 @@ fn meeting_eval_two_track_ordering_survives_the_clock_mismatch() {
     // Appended track by track, exactly as the pipeline stores them (one
     // transcription pass per recorded wav), so an ordered transcript is ordered
     // because of the host clock and not because of insert order.
-    let lines = render_transcript(&segments_from_host_spans(TWO_TRACK, &spans));
+    let lines = render_transcript(
+        &segments_from_host_spans(TWO_TRACK, &spans),
+        MeetingKind::Virtual,
+    );
     let starts: Vec<f64> = lines.iter().map(|l| l.start_seconds).collect();
     assert!(
         out_of_order(&starts).is_empty(),

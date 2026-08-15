@@ -486,6 +486,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             1 => meetings::MIGRATION_1_MEETINGS,
             2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
             3 => meetings::MIGRATION_3_TWO_TRACK,
+            4 => meetings::MIGRATION_4_MEETING_KIND,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1352,6 +1353,24 @@ impl Database {
 
     /// Open a new meeting row in state `recording`.
     pub fn create_meeting(&self, title: &str, source: &str) -> Result<Meeting, String> {
+        // YV125 — the SKIP path, spelled out. A caller that does not name a
+        // kind has not silently chosen one: `Unknown` is the answer "I did not
+        // say", and `meetings::diarization_target` treats it as the general
+        // case (cluster Track A) rather than as a call.
+        self.create_meeting_with_kind(title, source, meetings::MeetingKind::Unknown)
+    }
+
+    /// The same row, with the kind the user picked at the start-of-meeting
+    /// surface (YV125). Stored at INSERT rather than patched afterwards: the
+    /// branch it feeds is read by everything downstream of the recording, and a
+    /// row that exists for a moment without a kind is a row that can be read
+    /// during that moment.
+    pub fn create_meeting_with_kind(
+        &self,
+        title: &str,
+        source: &str,
+        kind: meetings::MeetingKind,
+    ) -> Result<Meeting, String> {
         let now = Utc::now();
         let title = {
             let t = title.trim();
@@ -1361,6 +1380,7 @@ impl Database {
             id: Uuid::new_v4().to_string(),
             title,
             source: source.to_string(),
+            kind: kind.as_str().to_string(),
             started_at: now,
             ended_at: None,
             duration_seconds: 0.0,
@@ -1380,12 +1400,13 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO meetings
-             (id, title, source, started_at, state, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (id, title, source, kind, started_at, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 row.id,
                 row.title,
                 row.source,
+                row.kind,
                 row.started_at.to_rfc3339(),
                 row.state,
                 row.created_at.to_rfc3339(),
@@ -3011,7 +3032,7 @@ const MEETING_COLS: &str = "m.id, m.title, m.source, m.started_at, m.ended_at, \
      m.duration_seconds, m.state, m.error, m.processed_through_seconds, m.audio_kept, \
      m.mic_wav_path, m.summary, m.summary_model, m.created_at, \
      (SELECT COUNT(*) FROM meeting_segments s WHERE s.meeting_id = m.id), \
-     m.diagnostics, m.sys_wav_path, m.tap_rebuilds";
+     m.diagnostics, m.sys_wav_path, m.tap_rebuilds, m.kind";
 
 fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
     Ok(Meeting {
@@ -3039,6 +3060,10 @@ fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
         // meeting, which is all of 22-A's and most of 22-B's.
         sys_wav_path: row.get(16)?,
         tap_rebuilds: row.get(17)?,
+        // YV125 — migration 4. `NOT NULL DEFAULT 'unknown'`, so this is never
+        // NULL and never absent; a row written before the column existed reads
+        // as `unknown`, which is the branch that clusters Track A.
+        kind: row.get(18)?,
     })
 }
 

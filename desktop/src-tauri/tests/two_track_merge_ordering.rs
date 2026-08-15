@@ -29,6 +29,12 @@ use wilson_voice_lib::meeting_asr::{
     merge_two_tracks_by_host_time, BoundaryKind, ChunkOutcome, TrackEpochs,
 };
 
+/// Every fixture in these two files is a CALL — two recorded tracks, the merge's
+/// entire subject. YV125's kind is what decides whether the microphone may be
+/// labelled "Me", and `Virtual` is the one value under which it may.
+const CALL: wilson_voice_lib::meetings::MeetingKind =
+    wilson_voice_lib::meetings::MeetingKind::Virtual;
+
 const MIC_PPM: f64 = 0.0;
 const TAP_PPM: f64 = 100.0;
 
@@ -122,6 +128,7 @@ fn misaligned_seams_still_interleave_strictly_by_host_time() {
         &index_records(MIC_PPM, 120),
         &index_records(TAP_PPM, 120),
         TrackEpochs::SHARED,
+        CALL,
     );
 
     // 1. Strictly ordered on the session clock.
@@ -171,7 +178,10 @@ fn misaligned_seams_still_interleave_strictly_by_host_time() {
     for span in &merged {
         assert_eq!(
             span.speaker,
-            wilson_voice_lib::meetings::speaker_label(span.track as i64)
+            wilson_voice_lib::meetings::speaker_label(
+                span.track as i64,
+                wilson_voice_lib::meetings::DiarizationTarget::MicIsMe,
+            )
         );
     }
     assert!(merged.iter().any(|s| s.track == 0));
@@ -212,6 +222,7 @@ fn a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own() {
         &index_records(MIC_PPM, 120),
         &index_records(TAP_PPM, 120),
         TrackEpochs::new(0, TAP_LATE_NS),
+        CALL,
     );
 
     // Beat 0 is at session second 2.0 and beat 1 at 5.0, so the tap's first
@@ -264,6 +275,7 @@ fn a_track_that_lost_audio_is_mapped_on_what_the_device_delivered() {
         &index_records(MIC_PPM, 120),
         &index_records_lossy(TAP_PPM, 120, 50, LOST_SAMPLES),
         TrackEpochs::SHARED,
+        CALL,
     );
 
     let them = merged
@@ -352,6 +364,7 @@ fn a_device_stall_does_not_shift_the_rest_of_the_meeting() {
         &index_records(MIC_PPM, 120),
         &records,
         TrackEpochs::SHARED,
+        CALL,
     );
 
     let them = merged
@@ -434,6 +447,7 @@ fn a_stream_reopened_early_does_not_re_zero_the_rest_of_the_meeting() {
         &index_records(MIC_PPM, REOPEN_AT + AFTER),
         &records,
         TrackEpochs::SHARED,
+        CALL,
     );
 
     let them = merged
@@ -517,6 +531,7 @@ fn a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else() {
         &index_records(MIC_PPM, REOPEN_AT + AFTER),
         &records,
         TrackEpochs::SHARED,
+        CALL,
     );
 
     let offset = |text: &str, truth: f64| {
@@ -565,7 +580,8 @@ fn a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else() {
 #[test]
 fn the_merge_labels_through_the_shipped_render_rule() {
     use wilson_voice_lib::meetings::{
-        render_transcript, MeetingSegment, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL,
+        render_transcript, MeetingKind, MeetingSegment, MIC_SPEAKER_LABEL, SYSTEM_SPEAKER_LABEL,
+        UNCLUSTERED_SPEAKER_LABEL,
     };
 
     let merged = merge_two_tracks_by_host_time(
@@ -586,6 +602,7 @@ fn the_merge_labels_through_the_shipped_render_rule() {
         &index_records(0.0, 60),
         &index_records(0.0, 60),
         TrackEpochs::SHARED,
+        CALL,
     );
 
     // The same two tracks, as the DB stores them for the renderer.
@@ -602,7 +619,7 @@ fn the_merge_labels_through_the_shipped_render_rule() {
             track: s.track as i64,
         })
         .collect();
-    let rendered = render_transcript(&segments);
+    let rendered = render_transcript(&segments, CALL);
 
     assert_eq!(merged.len(), 2);
     assert_eq!(rendered.len(), 2);
@@ -622,4 +639,37 @@ fn the_merge_labels_through_the_shipped_render_rule() {
     // match because both were typed wrong the same way.
     assert_eq!(merged[0].speaker, MIC_SPEAKER_LABEL);
     assert_eq!(merged[1].speaker, SYSTEM_SPEAKER_LABEL);
+
+    // YV125 widened what "the same rule" has to mean: the label now depends on
+    // the meeting's KIND as well as its track, and the merge and the renderer
+    // each take that kind separately. So the pair is asserted again under the
+    // OTHER branch — a merge that ignored its `kind` argument, or a renderer
+    // that ignored its own, would agree here on the first pass and disagree on
+    // this one.
+    let merged_room = merge_two_tracks_by_host_time(
+        &[chunk(
+            0,
+            0.0,
+            30.0,
+            BoundaryKind::Edge,
+            vec![word(0.0, 1.0, 0.5, "mine")],
+        )],
+        &[chunk(
+            0,
+            0.0,
+            30.0,
+            BoundaryKind::Edge,
+            vec![word(0.0, 2.0, 0.5, "theirs")],
+        )],
+        &index_records(0.0, 60),
+        &index_records(0.0, 60),
+        TrackEpochs::SHARED,
+        MeetingKind::Unknown,
+    );
+    let rendered_room = render_transcript(&segments, MeetingKind::Unknown);
+    assert_eq!(merged_room[0].speaker, UNCLUSTERED_SPEAKER_LABEL);
+    assert_eq!(rendered_room[0].speaker, UNCLUSTERED_SPEAKER_LABEL);
+    for (span, line) in merged_room.iter().zip(rendered_room.iter()) {
+        assert_eq!(span.speaker, line.speaker);
+    }
 }

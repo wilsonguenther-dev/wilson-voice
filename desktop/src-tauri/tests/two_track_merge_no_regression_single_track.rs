@@ -20,7 +20,17 @@ use wilson_voice_lib::asr_engine::TimedSpan;
 use wilson_voice_lib::meeting_asr::{
     merge_timed, merge_two_tracks_by_host_time, BoundaryKind, ChunkOutcome, TrackEpochs,
 };
-use wilson_voice_lib::meetings::MIC_SPEAKER_LABEL;
+use wilson_voice_lib::meetings::{MeetingKind, UNCLUSTERED_SPEAKER_LABEL};
+
+/// The kind these fixtures run under: a meeting the user called a CALL whose
+/// second track never delivered a word — matrix rows 1, 2 and 12, and the
+/// single most common way a "virtual" meeting ends up mic-only.
+///
+/// It is deliberately NOT `Unknown`, because that would make the label
+/// assertions below trivially true for the wrong reason. Under `Virtual` the
+/// branch has to notice that Track B produced nothing and fall back on its own
+/// (YV125's third table row) — which is what these two tests then pin.
+const CALL: MeetingKind = MeetingKind::Virtual;
 
 fn span(start: f64, end: f64, text: &str) -> TimedSpan {
     TimedSpan {
@@ -78,7 +88,7 @@ fn a_mic_only_meeting_is_byte_for_byte_what_merge_timed_produces() {
     // fixture offset, over the whole 90 seconds. The point is that they are
     // present and ignored.
     let anchors = index_records(100.0, 120);
-    let got = merge_two_tracks_by_host_time(&chunks, &[], &anchors, &[], TrackEpochs::SHARED);
+    let got = merge_two_tracks_by_host_time(&chunks, &[], &anchors, &[], TrackEpochs::SHARED, CALL);
 
     assert_eq!(got.len(), want.len(), "no span gained or lost");
     for (a, b) in got.iter().zip(want.iter()) {
@@ -93,7 +103,11 @@ fn a_mic_only_meeting_is_byte_for_byte_what_merge_timed_produces() {
         );
         assert_eq!(a.end_seconds.to_bits(), b.end_seconds.to_bits());
         assert_eq!(a.track, 0);
-        assert_eq!(a.speaker, MIC_SPEAKER_LABEL);
+        // NOT "Me" (YV125): the user said this was a call, and the call's
+        // audio never arrived on a second track — so the microphone carried
+        // whatever was in the room, exactly as it would in person. The TIMES
+        // are what this file guards, and they are untouched above.
+        assert_eq!(a.speaker, UNCLUSTERED_SPEAKER_LABEL);
     }
 }
 
@@ -102,7 +116,7 @@ fn a_mic_only_meeting_is_byte_for_byte_what_merge_timed_produces() {
 #[test]
 fn a_mic_only_meeting_with_no_index_records_is_the_same_transcript() {
     let chunks = mic_only_chunks();
-    let got = merge_two_tracks_by_host_time(&chunks, &[], &[], &[], TrackEpochs::SHARED);
+    let got = merge_two_tracks_by_host_time(&chunks, &[], &[], &[], TrackEpochs::SHARED, CALL);
     let want = merge_timed(&chunks);
     assert_eq!(got.len(), want.len());
     for (a, b) in got.iter().zip(want.iter()) {
@@ -158,6 +172,7 @@ fn a_two_track_meeting_is_re_timed_which_is_the_whole_point() {
         &index_records(0.0, 120),
         &index_records(100.0, 120),
         TrackEpochs::SHARED,
+        CALL,
     );
     let them = merged.iter().find(|s| s.text == "them").unwrap();
     assert!(
