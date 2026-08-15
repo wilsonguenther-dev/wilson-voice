@@ -1,0 +1,30 @@
+[package]
+name = "yap-diarize"
+version = "0.1.0"
+description = "Yap diarization sidecar — speaker segmentation + embeddings over JSONL/stdio"
+authors = ["Wilson Guenther"]
+edition = "2021"
+
+# Bundled as a Tauri sidecar. `bundle.externalBin` resolves
+# `binaries/yap-diarize` to `binaries/yap-diarize-<target-triple>`, so the
+# release job copies this binary there under its triple before bundling — and
+# because tauri-build checks that file on EVERY `cargo build` of the app, the
+# staged binary is a precondition of building `wilson-voice` at all.
+[[bin]]
+name = "yap-diarize"
+path = "src/main.rs"
+
+[dependencies]
+# YV121 ships this crate with NO inference dependency at all, deliberately.
+#
+# The whole point of this item is to prove the sidecar SHAPE — process
+# boundary, wire protocol, readiness handshake, restart budget, idle unload —
+# before `sherpa-onnx` (and the second statically-linked onnxruntime it brings)
+# enters the tree in YV122. A scaffold that already carried the risky crate
+# could not tell "the process model is wrong" from "the linker is unhappy".
+#
+# `tests/supply_chain.rs::diarize_sidecar_carries_no_inference_crate_yet` in
+# `wilson-voice` enforces this list, so YV122 adding `sherpa-onnx = "=1.13.4"`
+# is a deliberate, reviewable edit to BOTH files rather than a silent one here.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

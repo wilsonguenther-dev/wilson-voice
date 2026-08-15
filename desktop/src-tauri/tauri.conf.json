@@ -41,7 +41,8 @@
     ],
     "createUpdaterArtifacts": true,
     "externalBin": [
-      "binaries/yap-polish"
+      "binaries/yap-polish",
+      "binaries/yap-diarize"
     ],
     "category": "Productivity",
     "shortDescription": "Local dictation with history \u2014 Wispr Flow alternative",
