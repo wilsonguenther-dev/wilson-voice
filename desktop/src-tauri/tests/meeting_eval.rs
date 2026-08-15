@@ -499,6 +499,12 @@ struct FixtureMeta {
     /// Committed because "these two speakers are different people" is the
     /// fixture's central claim: a corpus regrown with one voice for all six
     /// would still have well-formed RTTM and would silently be scoring nothing.
+    ///
+    /// This field is provenance, NOT evidence. It records what the generator was
+    /// asked to render; it cannot record what it rendered, and the first cut of
+    /// this corpus proved the difference by shipping six declared voices over
+    /// one actual one. The claim is checked against the samples, in
+    /// [`assert_rttm_fits_the_audio`].
     #[serde(default)]
     speakers: Vec<FixtureSpeaker>,
 }
@@ -2753,6 +2759,14 @@ const CLASSROOM_6_DER_GATE: Option<f64> = None;
 const CLASSROOM_6_JER_GATE: Option<f64> = None;
 
 /// Fixture (e)'s speakers: three voices, three distances, near-field.
+///
+/// The voice is what makes each of these a different PERSON. The gain is only
+/// where they sit — and gain is exactly the quantity an L2-normalised cosine
+/// embedding throws away, so a roster that varied only the gain would carry no
+/// separable identity at all. `generate_room_3` renders through
+/// [`synthesize_with`] with the voice named here, and
+/// [`assert_rttm_fits_the_audio`] re-measures the rendered audio rather than
+/// trusting this table.
 const ROOM_3_SPEAKERS: [(&str, &str, f32); 3] = [
     ("spk_a", "Samantha", 1.00),
     ("spk_b", "Fred", 0.92),
@@ -2762,13 +2776,23 @@ const ROOM_3_SPEAKERS: [(&str, &str, f32); 3] = [
 /// Fixture (f)'s speakers: six voices across a room, the instructor nearest the
 /// mic and the back row a third of that. Distinct synthesizer voices are the
 /// fixture's central claim — see [`FixtureSpeaker`].
+///
+/// The six voices are chosen for MEASURED fundamental-frequency spread, not for
+/// having six different names: `say`'s "Junior" and "Kathy" both render at a
+/// 216 Hz median on this machine and "Albert" at 232 Hz, so the original
+/// roster's top three were one cluster wearing three names — six names is not
+/// six speakers. Flo and Sandy replace Junior and Albert, chosen off a sweep of
+/// all 43 installed English `say` voices (transcript in
+/// `docs/pr-screenshots/YV120/f0-separation.txt`).
+/// [`assert_rttm_fits_the_audio`] re-measures the spread on the rendered mix, so
+/// this comment cannot drift away from the audio.
 const CLASSROOM_6_SPEAKERS: [(&str, &str, f32); 6] = [
     ("spk_a", "Samantha", 0.55),
     ("spk_b", "Fred", 0.34),
     ("spk_c", "Kathy", 0.30),
     ("spk_d", "Ralph", 0.26),
-    ("spk_e", "Junior", 0.24),
-    ("spk_f", "Albert", 0.22),
+    ("spk_e", "Flo (English (US))", 0.24),
+    ("spk_f", "Sandy (English (US))", 0.22),
 ];
 
 /// The RTTM turns of a fixture, in start order.
@@ -2849,6 +2873,96 @@ fn speaker_seconds(turns: &[RttmTurn], speaker: &str) -> f64 {
         .sum()
 }
 
+/// The band the fundamental-frequency estimator will report in.
+///
+/// Wide enough for every voice in the two rosters as this machine renders them
+/// (Ralph is the lowest at ~72 Hz, Sandy the highest at ~302 Hz) and narrow
+/// enough that nothing outside a human fundamental can be reported as one.
+const F0_MIN_HZ: f64 = 60.0;
+const F0_MAX_HZ: f64 = 340.0;
+/// A frame counts as voiced only if its normalized autocorrelation peak clears
+/// this. Unvoiced speech and room tone have no periodicity to find, and letting
+/// them vote would drag every speaker's median toward the same noise.
+const F0_VOICED_AUTOCORRELATION: f32 = 0.30;
+/// How far apart two speakers' medians have to sit before the audio is willing
+/// to call them two people — as a RATIO, not a difference in Hz.
+///
+/// The unit matters and is not a stylistic choice. This estimator resolves F0
+/// by picking an integer autocorrelation lag, so its resolution is `f^2 / rate`:
+/// about 0.8 Hz at 80 Hz and 13 Hz at 320 Hz. A fixed Hz floor is therefore
+/// simultaneously far too lax at the bottom of the band and nearly unsatisfiable
+/// at the top, and would push the roster toward voices that differ in Hz rather
+/// than voices that differ.
+///
+/// MEASURED, not chosen — the sweep and the per-fixture numbers are in
+/// `docs/pr-screenshots/YV120/f0-separation.txt`. On the committed corpus:
+/// fixture (e) is 103.9 / 170.2 / 216.2 Hz, closest pair 1.270x; fixture (f) is
+/// 77.7 / 105.3 / 170.2 / 210.5 / 250.0 / 296.3 Hz, closest pair 1.185x
+/// (spk_e/spk_f). 1.12 leaves the tightest shipped pair 35% of headroom above
+/// the floor, and sits ~4x above the estimator's own resolution there (1.032x at
+/// 250 Hz). It fails a roster that collapsed — the corpus this replaces measured
+/// 170.2 / 170.2 / 170.2 Hz, i.e. 1.000x — and passes the one that ships.
+const MIN_SPEAKER_F0_RATIO: f64 = 1.12;
+
+/// Median fundamental frequency over the voiced frames of `samples`, or `None`
+/// if nothing in it was voiced.
+///
+/// Plain time-domain autocorrelation, run at half the corpus rate — `F0_MAX_HZ`
+/// is two decades below 8 kHz, and halving the rate quarters the work, which
+/// keeps this an O(seconds) check rather than a reason not to run it. Frames
+/// quieter than twice the fixture's own `noise_floor` are skipped, so the
+/// far-field fixture's back row is measured on its speech and not on the HVAC
+/// underneath it.
+fn median_f0_hz(samples: &[f32], noise_floor: f64) -> Option<f64> {
+    // 3-tap binomial lowpass before decimating by two: cheap, and enough to
+    // keep the room tone's 236 Hz component from folding down into the band.
+    let half: Vec<f32> = samples
+        .windows(3)
+        .step_by(2)
+        .map(|w| 0.25 * w[0] + 0.5 * w[1] + 0.25 * w[2])
+        .collect();
+    let rate = TARGET_RATE as f64 / 2.0;
+    let frame = (0.040 * rate) as usize;
+    let hop = (0.020 * rate) as usize;
+    let lo = (rate / F0_MAX_HZ) as usize;
+    let hi = ((rate / F0_MIN_HZ) as usize).min(frame - 1);
+    let gate = (noise_floor * 2.0).max(0.002) as f32;
+
+    let mut voiced: Vec<f64> = Vec::new();
+    let mut start = 0usize;
+    while start + frame <= half.len() {
+        let window = &half[start..start + frame];
+        start += hop;
+        let mean = window.iter().sum::<f32>() / frame as f32;
+        let centred: Vec<f32> = window.iter().map(|s| s - mean).collect();
+        let energy: f32 = centred.iter().map(|v| v * v).sum();
+        if (energy / frame as f32).sqrt() < gate {
+            continue;
+        }
+        let mut best_lag = 0usize;
+        let mut best = 0.0f32;
+        for lag in lo..=hi {
+            let mut acc = 0.0f32;
+            for i in 0..frame - lag {
+                acc += centred[i] * centred[i + lag];
+            }
+            if acc > best {
+                best = acc;
+                best_lag = lag;
+            }
+        }
+        if best_lag == 0 || best / energy < F0_VOICED_AUTOCORRELATION {
+            continue;
+        }
+        voiced.push(rate / best_lag as f64);
+    }
+    if voiced.is_empty() {
+        return None;
+    }
+    voiced.sort_by(f64::total_cmp);
+    Some(voiced[voiced.len() / 2])
+}
+
 /// Every declared turn lies inside the audio, is long enough to embed, and the
 /// declared duration is the wav's real one — checks that belong to both
 /// fixtures.
@@ -2881,9 +2995,9 @@ fn assert_rttm_fits_the_audio(root: &Path, id: &str, turns: &[RttmTurn]) {
     // no speech landed, is silent — well-formed ground truth pointing at
     // nothing, and every DER measured against it would be measuring the
     // fixture's bug. Measured on the committed corpus: the quietest turn of
-    // fixture (f) (the back row, far-field) runs 9.4x its silence floor, and
-    // fixture (e) runs ~200x, so a 4x gate fails a placement bug long before it
-    // fails a quiet speaker.
+    // fixture (f) (the back row, far-field) runs 5.8x its silence floor and the
+    // loudest 24.1x, and fixture (e) runs 120.4x to 281.6x, so a 4x gate fails a
+    // placement bug long before it fails a quiet speaker.
     let rms = |from: f64, to: f64| -> f64 {
         let a = ((from * TARGET_RATE as f64) as usize).min(samples.len());
         let b = ((to * TARGET_RATE as f64) as usize).min(samples.len());
@@ -2954,6 +3068,80 @@ fn assert_rttm_fits_the_audio(root: &Path, id: &str, turns: &[RttmTurn]) {
         "{id}: two speakers share a synthesizer voice — the fixture would be \
          scoring one person against themselves"
     );
+
+    // …and the same claim again, measured off the AUDIO rather than off the
+    // metadata. The check above reads a string the generator wrote from the same
+    // table it was supposed to render with: it passes just as happily on a
+    // corpus where all six speakers are literally one voice, which is precisely
+    // the failure its own message names. So take each speaker's own turns,
+    // concatenate them, and estimate a fundamental — a per-speaker descriptor
+    // that is a property of the samples and of nothing else.
+    //
+    // F0 is deliberately a WEAK proxy for speaker identity: it cannot prove two
+    // voices embed apart, and it is not trying to. It proves the one thing that
+    // was actually wrong, at a cost of a couple of seconds and zero models — the
+    // rendered audio carries per-speaker variation that survives the L2
+    // normalisation a cosine embedding ends with, instead of only the scalar
+    // gain, which does not.
+    //
+    // Only the SOLO part of each turn is measured. Fixture (f) overlaps on
+    // purpose, and a frame where two people are talking belongs to neither of
+    // them as a descriptor — including it makes a speaker's number depend on who
+    // happened to interrupt them, which is how a "measurement" starts moving
+    // when a neighbouring speaker is swapped.
+    let mut covering = vec![0u16; samples.len()];
+    for t in turns {
+        let a = ((t.start_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+        let b = ((t.end_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+        covering[a..b].iter_mut().for_each(|c| *c += 1);
+    }
+    let mut f0: Vec<(String, f64)> = Vec::new();
+    for speaker in &speakers {
+        let mut solo: Vec<f32> = Vec::new();
+        for t in turns.iter().filter(|t| &t.speaker_id == speaker) {
+            let a = ((t.start_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+            let b = ((t.end_seconds * TARGET_RATE as f64) as usize).min(samples.len());
+            solo.extend(
+                samples[a..b]
+                    .iter()
+                    .zip(covering[a..b].iter())
+                    .filter(|(_, c)| **c == 1)
+                    .map(|(s, _)| *s as f32 / 32_768.0),
+            );
+        }
+        assert!(
+            solo.len() > TARGET_RATE as usize,
+            "{id}: {speaker} has under a second of un-overlapped speech — \
+             there is nothing to take a descriptor from"
+        );
+        let hz = median_f0_hz(&solo, floor)
+            .unwrap_or_else(|| panic!("{id}: {speaker}'s turns contain no voiced speech at all"));
+        f0.push((speaker.clone(), hz));
+    }
+    eprintln!(
+        "{id}: measured median F0 — {}",
+        f0.iter()
+            .map(|(s, hz)| format!("{s} {hz:.1} Hz"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for (i, (a, a_hz)) in f0.iter().enumerate() {
+        for (b, b_hz) in &f0[i + 1..] {
+            let ratio = a_hz.max(*b_hz) / a_hz.min(*b_hz);
+            assert!(
+                ratio >= MIN_SPEAKER_F0_RATIO,
+                "{id}: {a} ({a_hz:.1} Hz) and {b} ({b_hz:.1} Hz) are the same \
+                 voice as far as the audio is concerned — {ratio:.3}x apart, \
+                 under the {MIN_SPEAKER_F0_RATIO:.3}x floor. meta.json can name \
+                 them differently and it changes nothing: a fixture whose \
+                 speakers differ only by gain has no identity for an embedding \
+                 to separate — gain is exactly what L2 normalisation removes — \
+                 and every distance measured on it would be noise that looks \
+                 like a measurement. Fix the roster, then regrow with \
+                 `cargo test meeting_eval_generate_diarization_fixtures -- --ignored`."
+            );
+        }
+    }
 }
 
 /// No number is gated until something has been measured.
@@ -3151,10 +3339,17 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
 // The generator — synthetic audio only, run by hand, never in CI
 // ---------------------------------------------------------------------------
 
-/// The voice the corpus is rendered with. `say` output is stable for a given
-/// macOS + voice build, and NOT across them: regenerating on a different machine
-/// legitimately changes every sha256, which is why the manifest writer is a
-/// separate one-liner below.
+/// The voice the SINGLE-speaker fixtures (a)-(d) are rendered with. `say` output
+/// is stable for a given macOS + voice build, and NOT across them: regenerating
+/// on a different machine legitimately changes every sha256, which is why the
+/// manifest writer is a separate one-liner below.
+///
+/// The two diarization fixtures do NOT use this constant — they render each
+/// speaker with that speaker's own voice from [`ROOM_3_SPEAKERS`] /
+/// [`CLASSROOM_6_SPEAKERS`], through [`synthesize_with`]. A multi-speaker
+/// fixture rendered with one voice is one person wearing several names, and an
+/// L2-normalised cosine embedding is invariant to the per-speaker gain that
+/// would be the only thing left distinguishing them.
 const VOICE: &str = "Samantha";
 const WORDS_PER_MINUTE: u32 = 175;
 /// Gap between spoken sentences, in seconds — enough for a VAD to find a
@@ -3268,9 +3463,24 @@ const DEVICE_CHANGE_SECOND: &str =
     "This second half is captured after the input device changed to a headset, which reports a \
      different rate entirely, and the transcript must not break here.";
 
-/// Render `text` with the system speech synthesizer at `rate_hz`, mono 16-bit.
-/// Nothing leaves the machine and no third-party asset is involved.
+/// Render `text` in the corpus's default [`VOICE`] at `rate_hz`. The
+/// single-speaker fixtures (a)-(d) go through here, and their bytes — and so
+/// their committed sha256s — are exactly what they were before
+/// [`synthesize_with`] existed.
 fn synthesize(text: &str, rate_hz: u32) -> Vec<i16> {
+    synthesize_with(text, VOICE, rate_hz)
+}
+
+/// Render `text` with the system speech synthesizer at `rate_hz`, mono 16-bit,
+/// in the named `say` voice. Nothing leaves the machine and no third-party asset
+/// is involved.
+///
+/// The voice is a parameter and not a constant because the diarization fixtures
+/// are the only place in this corpus where WHO is speaking is the measured
+/// quantity. `say -v` fails loudly on a voice that is not installed, so a
+/// fixture roster naming a voice this machine does not have cannot be rendered
+/// as a silent fallback to the default voice.
+fn synthesize_with(text: &str, voice: &str, rate_hz: u32) -> Vec<i16> {
     let scratch = std::env::temp_dir().join("yap-meeting-eval-gen");
     fs::create_dir_all(&scratch).expect("scratch dir");
     let aiff = scratch.join("utterance.aiff");
@@ -3279,12 +3489,12 @@ fn synthesize(text: &str, rate_hz: u32) -> Vec<i16> {
     let _ = fs::remove_file(&wav);
 
     let say = Command::new("say")
-        .args(["-v", VOICE, "-r", &WORDS_PER_MINUTE.to_string(), "-o"])
+        .args(["-v", voice, "-r", &WORDS_PER_MINUTE.to_string(), "-o"])
         .arg(&aiff)
         .arg(text)
         .status()
         .expect("`say` is a macOS built-in");
-    assert!(say.success(), "say failed on: {text}");
+    assert!(say.success(), "say -v {voice} failed on: {text}");
 
     let convert = Command::new("afconvert")
         .args(["-f", "WAVE", "-d", &format!("LEI16@{rate_hz}"), "-c", "1"])
@@ -3905,7 +4115,7 @@ const ROOM_3_TURNS: [(usize, &str); 12] = [
 /// The generator MEASURES both before writing the fixture, so a script edit that
 /// accidentally made the fixture easy fails at generation time rather than
 /// silently turning fixture (f) into a second fixture (e).
-const CLASSROOM_6_TURNS: [(f64, usize, &str); 20] = [
+const CLASSROOM_6_TURNS: [(f64, usize, &str); 21] = [
     (
         0.5,
         0,
@@ -3993,6 +4203,17 @@ const CLASSROOM_6_TURNS: [(f64, usize, &str); 20] = [
         73.0,
         4,
         "Thank you, that is all I wanted to ask about today",
+    ),
+    // The back row gets the last word, alone. Speaker 5's other two turns both
+    // land inside the crosstalk bursts on purpose, which left them with under a
+    // second of un-overlapped speech in the whole fixture — not enough for
+    // anything, human or model, to characterise that voice from. A speaker who
+    // is never audible by themselves cannot be enrolled and cannot be measured,
+    // and a fixture that contains one is quietly a five-speaker fixture.
+    (
+        77.0,
+        5,
+        "One more from the back, is the correction term going to be on the exam",
     ),
 ];
 
@@ -4103,7 +4324,7 @@ fn generate_room_3(root: &Path) {
 
     for (who, text) in ROOM_3_TURNS {
         let (id, voice, gain) = ROOM_3_SPEAKERS[who];
-        let spoken = trim_silence(&synthesize(text, TARGET_RATE)).to_vec();
+        let spoken = trim_silence(&synthesize_with(text, voice, TARGET_RATE)).to_vec();
         let start = seconds(mix.len());
         mix.extend(spoken.iter().map(|s| *s as f32 / 32_768.0 * gain));
         let end = seconds(mix.len());
@@ -4114,7 +4335,6 @@ fn generate_room_3(root: &Path) {
             start_seconds: start,
             end_seconds: end,
         });
-        let _ = voice;
     }
 
     let tone = room_tone(mix.len(), 0x5EED_C0DE, ROOM_3_TONE);
@@ -4166,7 +4386,8 @@ fn generate_room_3(root: &Path) {
 fn generate_classroom_6(root: &Path) {
     let mut rendered: Vec<(f64, usize, &str, Vec<i16>)> = Vec::new();
     for (start, who, text) in CLASSROOM_6_TURNS {
-        let spoken = trim_silence(&synthesize(text, TARGET_RATE)).to_vec();
+        let (_, voice, _) = CLASSROOM_6_SPEAKERS[who];
+        let spoken = trim_silence(&synthesize_with(text, voice, TARGET_RATE)).to_vec();
         rendered.push((start, who, text, spoken));
     }
 
@@ -4180,7 +4401,7 @@ fn generate_classroom_6(root: &Path) {
     let mut utterances: Vec<Utterance> = Vec::new();
 
     for (start, who, text, spoken) in &rendered {
-        let (id, _voice, gain) = CLASSROOM_6_SPEAKERS[*who];
+        let (id, _, gain) = CLASSROOM_6_SPEAKERS[*who];
         let at = (start * TARGET_RATE as f64) as usize;
         let wet = far_field(spoken, gain);
         for (i, s) in wet.iter().enumerate() {

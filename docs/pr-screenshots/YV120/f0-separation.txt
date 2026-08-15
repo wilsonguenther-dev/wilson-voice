@@ -1,0 +1,148 @@
+YV120 review fix — the tuning transcript for the acoustic speaker-distinctness gate
+Run on macOS 15 (aarch64), rustc 1.94.0, 2026-08-15.
+
+WHY THIS FILE EXISTS
+--------------------
+The first cut of this item shipped two diarization fixtures in which all six
+"speakers" were one voice. `synthesize()` hardcoded `const VOICE = "Samantha"`
+and took no voice argument; `generate_room_3` threw the per-speaker voice away
+(`let _ = voice;`) and `generate_classroom_6` never bound it (`_voice`). The only
+per-speaker difference left in the audio was a scalar gain — which is exactly the
+quantity an L2-normalised cosine embedding is invariant to — so fixture (e), the
+fixture YV126's clustering threshold is meant to be tuned against, carried no
+separable speaker identity at all.
+
+The gate that was supposed to catch that read meta.json's `voice` STRINGS, which
+the generator wrote from the same table it ignored. It passed. This file is the
+measurement behind its replacement, which reads the audio.
+
+MEASURED ON THE CORPUS THAT SHIPPED (the defect, quantified)
+------------------------------------------------------------
+  $ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval room_3_is_the_clean -- --nocapture
+  room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 170.2 Hz, spk_c 170.2 Hz
+  room-3-near-field: spk_a (170.2 Hz) and spk_b (170.2 Hz) are the same voice as far as
+  the audio is concerned — 1.000x apart, under the 1.120x floor.
+  test result: FAILED.
+
+  $ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval classroom_6_exceeds -- --nocapture
+  classroom-6-far-field: measured median F0 — spk_a 170.2 Hz, spk_b 173.9 Hz, spk_c 170.2 Hz,
+                         spk_d 170.2 Hz, spk_e 173.9 Hz, spk_f 156.9 Hz
+  classroom-6-far-field: spk_a (170.2 Hz) and spk_b (173.9 Hz) ... 1.022x apart, under the 1.120x floor.
+  test result: FAILED.
+
+  Six declared voices, one rendered one. The 156.9/173.9 spread is prosody inside
+  a single Samantha, not six people.
+
+THE SWEEP — every English `say` voice installed on this machine
+---------------------------------------------------------------
+One sentence, `say -r 175`, afconvert to 16 kHz mono, autocorrelation median F0
+over voiced frames (the same estimator the gate uses, run standalone). n is the
+number of voiced frames the median was taken over.
+
+Albert     n= 279 median=  231.9 p25=  216.2 p75=  290.9
+Aman       n= 215 median=  131.1 p25=  118.1 p75=  148.1
+Bad News   n= 616 median=   71.4 p25=   64.3 p75=   76.6
+Bahh       n= 213 median=  262.3 p25=  141.6 p75=  301.9
+Bells      n= 824 median=  121.2 p25=   96.4 p75=  254.0
+Boing      n= 227 median=   85.1 p25=   78.2 p75=  244.3
+Bubbles    n= 144 median=  301.9 p25=  254.0 p75=  320.0
+Cellos     n= 511 median=  108.1 p25=   91.4 p75=  115.9
+Daniel     n= 241 median=  109.6 p25=   98.8 p75=  118.5
+Wobble     n= 234 median=  254.0 p25=  239.7 p75=  262.3
+Eddy (English (UK)) n= 221 median=  124.0 p25=  116.8 p75=  130.1
+Eddy (English (US)) n= 225 median=  124.0 p25=  116.8 p75=  130.1
+Flo (English (UK)) n= 238 median=  254.0 p25=  238.8 p75=  266.7
+Flo (English (US)) n= 239 median=  254.0 p25=  238.8 p75=  266.7
+Fred       n= 250 median=  106.0 p25=   95.8 p75=  116.8
+Good News  n= 912 median=  206.5 p25=  183.9 p75=  246.2
+Grandma (English (UK)) n= 225 median=  120.3 p25=  115.1 p75=  126.0
+Grandma (English (US)) n= 225 median=  121.2 p25=  115.1 p75=  126.0
+Grandpa (English (UK)) n= 207 median=   94.1 p25=   87.0 p75=  100.9
+Grandpa (English (US)) n= 209 median=   94.7 p25=   87.9 p75=  100.6
+Jester     n= 607 median=  301.9 p25=  254.0 p75=  320.0
+Junior     n= 275 median=  216.2 p25=  200.0 p75=  231.9
+Karen      n= 253 median=  190.5 p25=  181.8 p75=  200.0
+Kathy      n= 273 median=  216.2 p25=  200.0 p75=  231.9
+Moira      n= 241 median=  186.0 p25=  173.9 p75=  195.1
+Organ      n= 544 median=   90.9 p25=   85.6 p75=  135.6
+Superstar  n= 276 median=  250.0 p25=  228.6 p75=  266.7
+Ralph      n= 215 median=   72.4 p25=   65.6 p75=   80.0
+Reed (English (UK)) n= 221 median=  109.6 p25=  103.9 p75=  114.3
+Reed (English (US)) n= 224 median=  110.3 p25=  103.9 p75=  114.5
+Rishi      n= 264 median=  112.7 p25=  108.1 p75=  115.9
+Rocko (English (UK)) n= 197 median=   81.6 p25=   76.6 p75=   87.4
+Rocko (English (US)) n= 202 median=   82.1 p25=   76.6 p75=   87.4
+Samantha   n= 236 median=  171.1 p25=  156.9 p75=  183.9
+Sandy (English (UK)) n= 239 median=  301.9 p25=  283.2 p75=  313.7
+Sandy (English (US)) n= 242 median=  301.9 p25=  285.7 p75=  320.0
+Shelley (English (UK)) n= 231 median=  188.2 p25=  179.8 p75=  197.5
+Shelley (English (US)) n= 234 median=  190.5 p25=  180.3 p75=  197.5
+Tara       n= 222 median=  179.8 p25=  166.7 p75=  195.1
+Tessa      n= 258 median=  183.9 p25=  170.2 p75=  196.9
+Trinoids   n= 260 median=  213.3 p25=  200.0 p75=  216.2
+Whisper    n=  46 median=  285.7 p25=  229.4 p75=  318.4
+Zarvox     n= 254 median=   89.9 p25=   89.4 p75=   90.4
+
+Read off that table:
+  * "Junior" and "Kathy" are the SAME median (216.2 Hz), and "Albert" is 232 Hz.
+    The original fixture (f) roster's top three voices were one cluster wearing
+    three names — so simply passing the declared voices through would have fixed
+    the "one person" defect and left a "three of these six are barely separable"
+    defect behind it. Flo and Sandy replace Junior and Albert.
+  * The novelty voices (Bells, Boing, Organ, Good News, Bad News, Jester, Wobble,
+    Zarvox, Whisper) are excluded on purpose: several have bimodal or musical
+    excitation (note Bells' 96-254 Hz interquartile range against a 121 Hz
+    median), which is not a fixture property anyone should tune a threshold
+    against.
+
+THE COMMITTED ROSTERS, MEASURED ON THE RENDERED MIX
+----------------------------------------------------
+Measured by the gate itself, off the committed wav — not off the isolated
+renders above. Only each speaker's SOLO (un-overlapped) audio is measured: a
+frame where two people are talking is a descriptor of neither, and including
+those frames made fixture (f)'s numbers move when a NEIGHBOURING speaker was
+swapped, which is how a "measurement" stops being one.
+
+  fixture (e) room-3-near-field
+    spk_b Fred      103.9 Hz
+    spk_a Samantha  170.2 Hz
+    spk_c Kathy     216.2 Hz
+    adjacent ratios: 1.638x, 1.270x        -> closest pair 1.270x
+
+  fixture (f) classroom-6-far-field
+    spk_d Ralph              77.7 Hz
+    spk_b Fred              105.3 Hz
+    spk_a Samantha          170.2 Hz
+    spk_c Kathy             210.5 Hz
+    spk_e Flo (English (US)) 250.0 Hz
+    spk_f Sandy (English (US)) 296.3 Hz
+    adjacent ratios: 1.355x, 1.617x, 1.236x, 1.188x, 1.185x  -> closest pair 1.185x
+
+THE CONSTANT
+------------
+    const MIN_SPEAKER_F0_RATIO: f64 = 1.12;
+
+A RATIO and not a difference in Hz, because this estimator resolves F0 by picking
+an integer autocorrelation lag: its resolution is f^2/rate, ~0.8 Hz at 80 Hz and
+~13 Hz at 320 Hz. A fixed Hz floor would be far too lax at the bottom of the band
+and nearly unsatisfiable at the top, and would push the roster toward voices that
+differ in Hz rather than voices that differ.
+
+  tightest measured pair on the shipped corpus   1.185x   (fixture (f), spk_e/spk_f)
+  the floor                                      1.120x
+  the corpus this replaces                       1.000x   (fixture (e), spk_a/spk_b)
+  estimator resolution at 250 Hz                 ~1.032x
+
+So the floor sits comfortably below what ships, comfortably above the estimator's
+own noise, and fails the corpus it was written to catch.
+
+WHAT THIS GATE DOES NOT CLAIM
+-----------------------------
+F0 is a weak proxy for speaker identity. Two voices an embedding separates easily
+can share a fundamental, and this check would not notice. It is not trying to
+predict CAM++ distances — YV126 measures those, against this corpus, with the
+model. What it proves is the one thing that was actually wrong: that the rendered
+audio carries per-speaker variation which survives the L2 normalisation a cosine
+embedding ends with, instead of only the scalar gain, which does not. It costs
+about two seconds, needs no model bytes and no network, and reads the samples
+rather than the metadata.

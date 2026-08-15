@@ -57,3 +57,51 @@ the last one past the end of the file. Both asserts are guarding the same claim
 — that the ground truth describes THIS audio — and the earlier one fired first.
 A smaller shift reaches the energy assert instead ("the ground truth points at
 silence"); the failure that matters is that a misaligned RTTM cannot pass.
+
+
+============================================================
+Added by the review fix — the two mutations for the acoustic
+speaker-distinctness gate (assert_rttm_fits_the_audio)
+============================================================
+
+M7 — no mutation at all: the corpus that ACTUALLY SHIPPED, run against the new gate
+     (the strongest form of non-vacuity available — the defect is not hypothetical,
+      it is the bytes this branch is replacing, and the string-table check passed on
+      them, which is why they shipped)
+$ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval room_3_is_the_clean -- --nocapture
+room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 170.2 Hz, spk_c 170.2 Hz
+thread 'meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be' panicked at src-tauri/tests/meeting_eval.rs:3127:13:
+room-3-near-field: spk_a (170.2 Hz) and spk_b (170.2 Hz) are the same voice as far as the audio is concerned — 1.000x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.69s
+
+$ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval classroom_6_exceeds -- --nocapture
+classroom-6-far-field: measured median F0 — spk_a 170.2 Hz, spk_b 173.9 Hz, spk_c 170.2 Hz, spk_d 170.2 Hz, spk_e 173.9 Hz, spk_f 156.9 Hz
+classroom-6-far-field: spk_a (170.2 Hz) and spk_b (173.9 Hz) are the same voice as far as the audio is concerned — 1.022x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.79s
+
+Note that in both runs the string-table check — `voices.dedup(); assert_eq!(voices.len(),
+meta.speakers.len())` — ran FIRST and passed, on six speakers who are one person. That is
+the whole argument for the acoustic half: it is the assert immediately after the one that
+already agreed with the metadata.
+
+M8 — the original defect, restored: synthesize_with() ignores its `voice` argument
+     (`.args(["-v", VOICE, ...])` instead of `.args(["-v", voice, ...])`), both fixtures
+     regrown from scratch into a scratch corpus root, gate run against the result
+$ YAP_EVAL_CORPUS=/tmp/yv120-m8 cargo test --test meeting_eval meeting_eval_generate_diarization_fixtures -- --ignored --nocapture
+wrote /tmp/yv120-m8/room-3-near-field — 44.3s, 12 turns, 3 speakers, peak 1 simultaneous
+wrote /tmp/yv120-m8/classroom-6-far-field — 81.8s, 21 turns, 6 speakers, peak 3 simultaneous
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 20.22s
+
+$ YAP_EVAL_CORPUS=/tmp/yv120-m8 cargo test --test meeting_eval room_3_is_the_clean -- --nocapture
+room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 170.2 Hz, spk_c 170.2 Hz
+room-3-near-field: spk_a (170.2 Hz) and spk_b (170.2 Hz) are the same voice as far as the audio is concerned — 1.000x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.69s
+
+Mutation reverted, the scratch corpus root deleted, and the committed manifest restored
+(the writer had rewritten it for the 6-file scratch root; `meeting_eval_write_manifest`
+regenerated it against the real corpus and the diff is byte-identical for the four
+fixtures this branch does not touch).
+
+Both re-verified green afterwards:
+test result: ok. 27 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 49.46s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
