@@ -43,9 +43,13 @@
 //!
 //! The embedding width is read off the extractor
 //! ([`SpeakerEmbeddingExtractor::dim`]) and reported on the `load_models`
-//! response. The plan's §5 schema assumed 512; CAM++ is **192** (audit finding
-//! #19). Nothing in this file, and nothing on the parent's side of the wire,
-//! writes either number down.
+//! response. It is whatever the model reports: the shipped
+//! `wespeaker_en_voxceleb_CAM++` **measures 512** (its own ONNX metadata says
+//! `output_dim: 512`) and the `wespeaker_en_voxceleb_resnet34` control measures
+//! **256**. Audit finding #19 predicted 192 for CAM++ — its *mechanism* (never
+//! assume a width) is right and its *number* is wrong, which is precisely how
+//! the mechanism earned its keep. Nothing in this file, and nothing on the
+//! parent's side of the wire, writes any of those numbers down.
 //!
 //! ## Not one clustering number lives in this file
 //!
@@ -109,8 +113,9 @@ const CLUSTER_COUNT_UNKNOWN: i32 = -1;
 /// on is a wrong-threshold labeling nothing downstream can see.
 ///
 /// `embedding_dim` is read off the model, never assumed: the plan's schema
-/// assumed 512 and the shipped CAM++ is 192 (finding #19), and the only place
-/// that discrepancy can be caught is here, where the file actually is.
+/// guessed a width, audit finding #19 "corrected" that guess to 192, and the
+/// shipped CAM++ measures 512 (the ResNet34 control, 256). The only place any
+/// of those claims can be checked is here, where the file actually is.
 struct Backend {
     segmentation_path: String,
     embedding_path: String,
@@ -221,8 +226,9 @@ fn looks_like_onnx(path: &Path) -> bool {
 /// Both models are OPENED here, not merely path-checked, and the embedding
 /// width comes off the extractor that was just built. A `load_models` that
 /// answered `ok` on a truncated download would hand YV123's vendoring work a
-/// green light for bytes that cannot infer, and would make this item's own
-/// `embedding_dim == 192` assertion a claim about a filename.
+/// green light for bytes that cannot infer, and would turn `sherpa_load_smoke`'s
+/// width assertions (`dim == 512` for CAM++, explicitly `dim != 192`, and
+/// `== 256` for the ResNet34 control) into claims about a filename.
 ///
 /// The segmentation model is proved by building a diarizer and dropping it
 /// again — it is a local, so no clustering config from this function can reach
@@ -574,8 +580,9 @@ mod tests {
     /// meaning something: `embedding_dim` may only ever be a number read off an
     /// opened model. Two real files that are certainly not ONNX go in; the
     /// answer is a load failure, the response carries no width, and nothing is
-    /// held — which is what makes `sherpa_load_smoke`'s `== 192` a measurement
-    /// rather than a restatement of the plan's arithmetic.
+    /// held — which is what makes `sherpa_load_smoke`'s width assertions
+    /// (`== 512` on CAM++, `!= 192`, `== 256` on the ResNet34 control) a
+    /// measurement rather than a restatement of the plan's arithmetic.
     #[test]
     fn a_file_that_is_not_a_model_reports_no_dimension() {
         let mut backend = None;

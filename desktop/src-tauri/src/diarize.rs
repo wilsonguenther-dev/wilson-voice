@@ -352,10 +352,11 @@ impl DiarizePool {
     /// Load a segmentation + embedding model pair.
     ///
     /// Returns the embedding dimension **the child reported**. There is no
-    /// dimension constant anywhere on this side of the wire: the plan assumed
-    /// 512 and the shipped CAM++ is 192 (finding #19), and a parent that held
-    /// an opinion about a model it has not opened is how that discrepancy
-    /// stayed invisible.
+    /// dimension constant anywhere on this side of the wire: the plan guessed a
+    /// width, audit finding #19 "corrected" it to 192, and the shipped CAM++
+    /// measures 512 (ResNet34, 256) — a parent that held an opinion about a
+    /// model it has not opened is how that stays invisible, whichever number
+    /// the opinion happens to be.
     pub fn load_models(
         &self,
         segmentation: &Path,

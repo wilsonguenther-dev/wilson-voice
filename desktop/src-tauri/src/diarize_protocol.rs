@@ -28,7 +28,7 @@
 //! // → stdin: load a vendored model pair (YV123 supplies the paths)
 //! {"id":1,"kind":"load_models","segmentation_path":"…","embedding_path":"…"}
 //! // ← stdout
-//! {"id":1,"ok":true,"embedding_dim":192}
+//! {"id":1,"ok":true,"embedding_dim":512}  // the width the child MEASURED
 //! // → stdin: diarize one track's audio (YV126 wires this to Track A/B)
 //! {"id":2,"kind":"diarize","wav_path":"…","clustering_distance_threshold":0.35}
 //! // ← stdout
@@ -56,12 +56,20 @@
 //!
 //! ## `embedding_dim` is reported, never assumed
 //!
-//! The plan's §5 schema assumed 512-dimension embeddings; the model yap23
-//! actually ships (`wespeaker_en_voxceleb_CAM++`) is **192** (audit finding
-//! #19). So the dimension is a value the CHILD reports at load time and the
-//! parent stores — there is no dimension constant on the Rust side of this
-//! wire, and `tests/diarize_sidecar_pool.rs` holds the parent to that by
-//! answering with a number no model has.
+//! The width is whatever the child measures off the model it has just opened.
+//! Measured on the shipped files: `wespeaker_en_voxceleb_CAM++` reports **512**
+//! (its own ONNX metadata carries `output_dim: 512`) and the
+//! `wespeaker_en_voxceleb_resnet34` control reports **256**. Audit finding #19
+//! predicted 192 for CAM++; that number is wrong, and the mechanism the same
+//! finding argued for — never write a width down — is exactly why it was
+//! catchable. `desktop/src-tauri/tests/sherpa_load_smoke.rs` asserts the
+//! measured 512 and asserts explicitly that it is not 192.
+//!
+//! So the dimension is a value the CHILD reports at load time and the parent
+//! stores — there is no dimension constant on the Rust side of this wire, and
+//! `tests/diarize_sidecar_pool.rs` holds the parent to that by answering with a
+//! number no model has. **YV128's `speaker_profiles` schema stores the reported
+//! value: no `DEFAULT 512`, and no 192 written down either.**
 //!
 //! ## `clustering_distance_threshold` is a DISTANCE
 //!
@@ -354,7 +362,8 @@ impl DiarizeResponse {
     /// The embedding dimension a successful [`KIND_LOAD_MODELS`] reports.
     /// `None` on any failure and on a success that omitted it — a load that
     /// cannot say how wide its vectors are has not told the parent what it
-    /// needs, and inventing 192 here is the exact bug finding #19 is about.
+    /// needs, and inventing a width here — 512, 192, any number — is the exact
+    /// bug finding #19 is about.
     pub fn into_embedding_dim(self) -> Option<u32> {
         self.ok.then_some(self.embedding_dim).flatten()
     }
