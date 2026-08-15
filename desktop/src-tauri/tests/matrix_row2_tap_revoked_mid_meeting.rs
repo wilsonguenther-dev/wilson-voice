@@ -270,14 +270,37 @@ fn the_shipping_watchdog_never_stops_a_meeting_over_a_dead_tap() {
 }
 
 /// **The absence half.** Row 2's behaviour needs a tap to lose, and nothing in
-/// `src/` starts one: `start_system_tap` lands with #123 (YV100).
+/// `src/` starts one.
+///
+/// `start_system_tap` itself now exists — YV100 (#123) merged the tap module —
+/// so the exclusion this check has always been entitled to is finally load
+/// bearing: `syscapture.rs` is where the symbol is *defined*, and
+/// `callsite::call_sites`'s own doc comment is that *"a symbol's own definition
+/// is not a call site"*. Rows 3 and 14 have passed their defining module here
+/// since YV105 wrote them; row 2 passed `&[]` only because at that commit there
+/// was nothing to exclude.
+///
+/// What this asserts is therefore unchanged and is the thing that matters: no
+/// file in the shipping tree **calls** it. The day one does, this goes red with
+/// the promote-the-row instruction, exactly as designed.
 #[test]
 fn start_system_tap_is_still_absent_so_row_2_is_not_wired() {
-    let found = callsite::call_sites("start_system_tap", &[]);
+    let found = callsite::call_sites("start_system_tap", &["syscapture.rs"]);
     assert!(
         found.is_empty(),
         "{}",
         callsite::promote_the_row("2", "start_system_tap", &found)
+    );
+
+    // And the exclusion is not a blanket amnesty for that file: the definition
+    // is skipped, a call from anywhere else is not. Proved rather than trusted,
+    // because "we excluded the module the tap lives in" would otherwise be
+    // indistinguishable from "we stopped checking".
+    let syscapture = std::fs::read_to_string(callsite::src_dir().join("syscapture.rs"))
+        .expect("read syscapture.rs");
+    assert!(
+        callsite::mentions_as_code(&syscapture, "start_system_tap"),
+        "the symbol must really be defined there, or this exclusion is hiding nothing          and the assertion above is vacuous"
     );
 }
 
@@ -314,11 +337,17 @@ fn the_published_cell_names_the_owner_of_the_missing_wiring() {
         row.coverage,
         Coverage::PolicyOnly {
             test: "matrix_row2_tap_revoked_mid_meeting.rs",
-            wiring_pr: Some("#123 (YV100)"),
+            // No PR owns this any more: #123 landed the tap module and nothing
+            // in the 22-B backlog calls it. `None` is the honest owner, and it
+            // is also the value that puts this row under `matrix_coverage`'s
+            // standing unowned-row tripwire.
+            wiring_pr: None,
             absent_call_site: "start_system_tap",
         }
     );
     let cell = row.coverage.cell();
-    assert!(cell.contains("#123 (YV100)"), "{cell}");
+    assert!(cell.contains("NOT WIRED"), "{cell}");
     assert!(cell.contains("start_system_tap"), "{cell}");
+    // The cell must not go on naming a merged PR as the thing still to come.
+    assert!(!cell.contains("#123"), "{cell}");
 }

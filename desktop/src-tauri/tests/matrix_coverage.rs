@@ -126,6 +126,34 @@ fn mentions_as_code(body: &str, needle: &str) -> bool {
     body.lines().any(|line| code_only(line).contains(needle))
 }
 
+/// True if `needle` is **called** here — code, and not the line that defines it.
+///
+/// The third exclusion, and the one that was missing. `tests/support/callsite.rs`
+/// — YV105's other implementation of this same rule, which its own docs say
+/// *"must agree on both exclusions"* — already carries it, as a `defined_in`
+/// parameter with the reason written out: *"a symbol's own definition is not a
+/// call site"*. This copy did not, and the difference was invisible for exactly
+/// as long as every `absent_call_site` named a symbol that did not exist yet.
+///
+/// YV100 is where that stopped being true. Merging the tap module makes
+/// `pub fn start_system_tap` real code in `src/syscapture.rs` while **nothing
+/// calls it** — the module's own docs, this item's spec and its PR body all say
+/// so deliberately — and the row-2 tripwire fired on the definition and demanded
+/// the row be promoted to `Coverage::Test`. Promoting it would have published
+/// "Yap survives losing the call's audio" for a track Yap still does not
+/// capture: a false capability claim, produced by the test that exists to
+/// prevent them.
+///
+/// So the rule is the one both copies now state: a definition is not a call.
+/// Everything else about the tripwire is unchanged, and it still goes red the
+/// moment a genuine caller appears.
+fn mentions_as_call(body: &str, needle: &str) -> bool {
+    body.lines().any(|line| {
+        let code = code_only(line);
+        code.contains(needle) && !code.contains(&format!("fn {needle}"))
+    })
+}
+
 /// Repository root — `desktop/src-tauri/` → `../../`.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -300,8 +328,8 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         for path in shipping_sources() {
             let body = fs::read_to_string(&path).unwrap_or_default();
             assert!(
-                !mentions_as_code(&body, absent_call_site),
-                "TRIPWIRE — matrix row {}: `{absent_call_site}` is now code in {}, so somebody \
+                !mentions_as_call(&body, absent_call_site),
+                "TRIPWIRE — matrix row {}: `{absent_call_site}` is now CALLED in {}, so somebody \
                  wired it. This row is no longer `PolicyOnly`: promote it to \
                  Coverage::Test in src/meeting_matrix.rs — naming `{absent_call_site}`'s module \
                  as the subject — and rewrite `{test}` to drive that call site: assert the \
@@ -316,12 +344,14 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         checked += 1;
     }
     assert_eq!(
-        checked, 4,
-        "rows 5b, 16, 17b and 3 are the policies NOBODY owns; if that set changed, the change is \
-         a claim about what the app now does and belongs in the table's tests too. (YV105's rows \
-         1, 2, 12b and 14 are policy-only as well, but each names an open PR as the owner of its \
-         wiring and asserts its own call site's absence in its own test — this tripwire is for \
-         the rows with no owner, which are the ones that can rot unnoticed.)"
+        checked, 5,
+        "rows 5b, 16, 17b, 3 and 2 are the policies NOBODY owns; if that set changed, the change \
+         is a claim about what the app now does and belongs in the table's tests too. (YV105's \
+         rows 1, 12b and 14 are policy-only as well, but each names an open PR as the owner of \
+         its wiring and asserts its own call site's absence in its own test — this tripwire is \
+         for the rows with no owner, which are the ones that can rot unnoticed.) Row 2 joined \
+         this set with YV100: the tap module merged, so no open PR owns its wiring any more, and \
+         nothing calls `start_system_tap`."
     );
 }
 

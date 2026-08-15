@@ -3193,7 +3193,9 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
 dependencies = [
+ "block2",
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -6318,10 +6320,12 @@ name = "wilson-voice"
 version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "core-foundation 0.10.1",
  "cpal",
  "dirs 6.0.0",
+ "dispatch2",
  "ed25519-dalek",
  "env_logger",
  "hound",
@@ -6330,6 +6334,8 @@ dependencies = [
  "nnnoiseless",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
  "objc2-foundation",
  "parking_lot",
  "reqwest",
