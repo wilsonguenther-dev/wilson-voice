@@ -620,7 +620,11 @@ mod tests {
             crate::diarize_protocol::ERR_MODEL_NOT_FOUND,
             crate::diarize_protocol::ERR_AUDIO_NOT_FOUND,
             crate::diarize_protocol::ERR_NO_MODELS,
-            crate::diarize_protocol::ERR_NO_BACKEND,
+            crate::diarize_protocol::ERR_MODEL_LOAD_FAILED,
+            crate::diarize_protocol::ERR_AUDIO_UNREADABLE,
+            crate::diarize_protocol::ERR_SAMPLE_RATE,
+            crate::diarize_protocol::ERR_AUDIO_TOO_SHORT,
+            crate::diarize_protocol::ERR_BACKEND_FAILED,
         ] {
             assert_eq!(sanitize_tag(tag), tag);
         }

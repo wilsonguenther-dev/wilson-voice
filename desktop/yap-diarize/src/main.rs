@@ -28,18 +28,48 @@
 //! `load_models` response and nowhere else, which keeps a multi-second ONNX
 //! session build out of the parent's spawn budget.
 //!
-//! ## What this build does NOT do, and says so
+//! ## The models (YV122)
 //!
-//! YV121 carries **zero model bytes and zero onnxruntime** — `Cargo.toml` names
-//! `serde` and `serde_json` and nothing else. So `load_models` validates its
-//! paths and then answers `{"ok":false,"err":"no_backend"}`, and `diarize` /
-//! `embed` answer `no_models`. It never invents a plausible `embedding_dim` or
-//! a plausible segment list: a scaffold that answered as though it had run
-//! would make every test above it vacuous, and YV122's first real assertion
-//! (`embedding_dim == 192`, audit finding #19) would already be "passing".
+//! Two files, both named by the parent on a `load_models` request — this
+//! process holds no catalog, no download logic and no default path, so a
+//! re-vendoring (YV123) never touches this binary:
 //!
-//! YV122 replaces exactly one function — [`load_backend`] — plus the two arms
-//! that call into it. Everything else here is the shape that ships.
+//! * **pyannote-segmentation-3.0** (MIT) through
+//!   [`sherpa_onnx::OfflineSpeakerDiarization`] — segments the track and
+//!   clusters the turns.
+//! * **wespeaker_en_voxceleb_CAM++** (Apache-2.0 toolkit, CC-BY-4.0 weights)
+//!   through [`sherpa_onnx::SpeakerEmbeddingExtractor`] — one embedding per
+//!   turn, and the whole payload of an `embed` request.
+//!
+//! The embedding width is read off the extractor
+//! ([`SpeakerEmbeddingExtractor::dim`]) and reported on the `load_models`
+//! response. The plan's §5 schema assumed 512; CAM++ is **192** (audit finding
+//! #19). Nothing in this file, and nothing on the parent's side of the wire,
+//! writes either number down.
+//!
+//! ## Not one clustering number lives in this file
+//!
+//! `FastClusteringConfig.threshold` is a cosine **DISTANCE** — smaller is more
+//! similar — and it arrives on every `diarize` request. It is never stored,
+//! never defaulted here, and never converted: the one place a bare `f32` and
+//! that field meet is [`clustering_from`], four lines long, and the value it
+//! reads came off the request line the parent sent.
+//!
+//! The diarizer is therefore built **per request** rather than at load time.
+//! That is the mechanism, not a style choice: a resident diarizer would hold a
+//! clustering threshold from some earlier call (or from
+//! `FastClusteringConfig::default()`'s 0.5, a vendor number this epic is not
+//! allowed to let decide anything), and a `set_config` forgotten on one path
+//! would silently label a meeting at the wrong threshold with nothing to
+//! observe it. A `Backend` that cannot hold a threshold cannot leak one.
+//!
+//! ## `stdout` is still only JSON, and now something else writes to it
+//!
+//! sherpa-onnx's C++ core logs — a bad model path prints
+//! `speaker-embedding-extractor.cc:Validate:40 …` — which would be a
+//! catastrophe on this stream. It logs to **stderr**; measured, not assumed,
+//! and `tests/sherpa_load_smoke.rs::sherpa_logs_never_reach_the_protocol_stream`
+//! is the standing proof, run with zero model bytes against the refusal path.
 
 // The wire contract lives with the app it talks to. Compiled, not copied.
 #[path = "../../src-tauri/src/diarize_protocol.rs"]
@@ -49,39 +79,313 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use diarize_protocol::{
-    recover_id, DiarizeReady, DiarizeRequest, DiarizeResponse, ERR_AUDIO_NOT_FOUND,
-    ERR_BAD_REQUEST, ERR_MISSING_FIELD, ERR_MODEL_NOT_FOUND, ERR_NO_BACKEND, ERR_NO_MODELS,
-    ERR_UNSUPPORTED_KIND, KIND_DIARIZE, KIND_EMBED, KIND_LOAD_MODELS,
+use sherpa_onnx::{
+    FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
+    OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
+    SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig, Wave,
 };
 
-/// The loaded model pair, once there is a backend that can load one.
+use diarize_protocol::{
+    recover_id, DiarizeReady, DiarizeRequest, DiarizeResponse, DiarizeSegment,
+    ERR_AUDIO_NOT_FOUND, ERR_AUDIO_TOO_SHORT, ERR_AUDIO_UNREADABLE, ERR_BACKEND_FAILED,
+    ERR_BAD_REQUEST, ERR_MISSING_FIELD, ERR_MODEL_LOAD_FAILED, ERR_MODEL_NOT_FOUND,
+    ERR_NO_MODELS, ERR_SAMPLE_RATE, ERR_UNSUPPORTED_KIND, KIND_DIARIZE, KIND_EMBED,
+    KIND_LOAD_MODELS,
+};
+
+/// `FastClusteringConfig.num_clusters`' "I do not know how many people are in
+/// this room" sentinel — which is the whole reason the threshold path is used
+/// at all. Plan §2.3: for a meeting we do not know the speaker count, and for a
+/// class we really do not. Fixing the count would be a different product.
+const CLUSTER_COUNT_UNKNOWN: i32 = -1;
+
+/// The loaded model pair.
+///
+/// The embedding extractor is resident (one ONNX session, reused by every turn
+/// of every track and by every enrollment utterance); the segmentation model is
+/// held as a **path**, and a diarizer is built from it per request. There is
+/// deliberately no `OfflineSpeakerDiarization` field: that type carries a
+/// clustering threshold, and a threshold that outlives the request it arrived
+/// on is a wrong-threshold labeling nothing downstream can see.
 ///
 /// `embedding_dim` is read off the model, never assumed: the plan's schema
 /// assumed 512 and the shipped CAM++ is 192 (finding #19), and the only place
 /// that discrepancy can be caught is here, where the file actually is.
 struct Backend {
+    segmentation_path: String,
+    embedding_path: String,
+    extractor: SpeakerEmbeddingExtractor,
     embedding_dim: u32,
+}
+
+/// Turn the request's wire value into sherpa's clustering config.
+///
+/// **The only line in this binary where a bare `f32` and a clustering threshold
+/// meet.** No conversion happens: `clustering_distance_threshold` is a cosine
+/// distance on the wire and `FastClusteringConfig.threshold` is a cosine
+/// distance in sherpa, so writing `1.0 - x` here — the reflex when the plan's
+/// enrollment bands are quoted as similarities two paragraphs away — is the
+/// whole of merged finding #20. `tests/diarize_wire_unit_discipline.rs` reads
+/// this file to hold the line.
+fn clustering_from(clustering_distance_threshold: f32) -> FastClusteringConfig {
+    FastClusteringConfig {
+        num_clusters: CLUSTER_COUNT_UNKNOWN,
+        threshold: clustering_distance_threshold,
+    }
+}
+
+/// Build a diarizer over a model pair.
+///
+/// `clustering` is passed in as sherpa's own typed struct so this function has
+/// no opinion about the number inside it — the load-time probe hands it
+/// `FastClusteringConfig::default()` and never processes a sample, and every
+/// real pass hands it [`clustering_from`]'s value off the request.
+///
+/// ## `num_threads` is sherpa's default of **1**, deliberately and expensively
+///
+/// Measured on this machine (M-series, 12 cores / 8 performance, release build,
+/// 183 s of two-voice audio, identical 44 turns at every setting — threads move
+/// throughput and nothing else):
+///
+/// ```text
+/// num_threads   1 -> 29.7 s   RTF 0.162
+///               2 -> 17.9 s   RTF 0.098
+///               4 -> 12.4 s   RTF 0.068
+///               8 -> 10.8 s   RTF 0.059
+/// ```
+///
+/// So the shipped default costs roughly 2.7x, and a 45-minute meeting lands
+/// near 7 minutes rather than 3. It is still what ships out of this item,
+/// because the right number is not "8": diarization runs on a machine that is
+/// also transcribing, and a thread budget picked here in isolation is the same
+/// class of unmeasured constant this epic exists to stop. YV126 owns it, with
+/// the table above as its starting evidence and `meeting_eval`'s fixtures as
+/// the place to run the sweep against a real workload.
+///
+/// The number worth carrying forward regardless: the plan's cited prior for
+/// this exact stack is **RTF 0.011** (~30 s for a 45-minute meeting,
+/// OpenWhispr), and §2.3 flags it as "a strong prior, not a measurement". It is
+/// **15x optimistic** at the shipped setting and still **5x optimistic** at 8
+/// threads. That is the real benchmark §2.3 asked for.
+fn build_diarizer(
+    segmentation: &str,
+    embedding: &str,
+    clustering: FastClusteringConfig,
+) -> Option<OfflineSpeakerDiarization> {
+    OfflineSpeakerDiarization::create(&OfflineSpeakerDiarizationConfig {
+        segmentation: OfflineSpeakerSegmentationModelConfig {
+            pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
+                model: Some(segmentation.to_string()),
+            },
+            ..Default::default()
+        },
+        embedding: SpeakerEmbeddingExtractorConfig {
+            model: Some(embedding.to_string()),
+            ..Default::default()
+        },
+        clustering,
+        ..Default::default()
+    })
+}
+
+/// Does this file's first bytes look like a serialized ONNX model?
+///
+/// **This is a sniff, not validation, and it exists because onnxruntime's
+/// failure mode is not a return value.** Handing `Ort` a file that is not a
+/// model throws a C++ `Ort::Exception` straight through sherpa's C API; there
+/// is no Rust frame that can catch it, so `libc++abi` aborts the process
+/// (measured: `signal: 6, SIGABRT`, feeding this sidecar its own `Cargo.toml`).
+/// A refusal cannot be built out of a return code that never arrives.
+///
+/// So the realistic bad-bytes cases — an HTML error page saved as `.onnx`, a
+/// `.tar.bz2` that was never extracted (YV123's archive path), a zero-length
+/// file from an interrupted download — are turned away before onnxruntime sees
+/// them. An ONNX file is a protobuf whose first field is `ir_version`: byte
+/// `0x08` (field 1, varint) followed by a single-byte version.
+///
+/// It does not catch a *truncated* valid model, and nothing in this process
+/// can. Three layers cover that, and this is only the cheapest: YV123's sha256
+/// verification means the parent never names a file whose bytes were not
+/// checked, and the process boundary means even an abort costs a restart rather
+/// than the app. That containment is the third independent argument for this
+/// sidecar existing, and the first one that was measured instead of predicted.
+fn looks_like_onnx(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    matches!(bytes.first(), Some(0x08)) && matches!(bytes.get(1), Some(&v) if v < 0x80)
 }
 
 /// Load a segmentation + embedding model pair.
 ///
-/// **YV122 replaces this function body** with `sherpa_onnx`'s
-/// `OfflineSpeakerDiarization` + `SpeakerEmbeddingExtractor` construction. Its
-/// signature is already the one that will be needed, so the change is one
-/// function and not a reshaping of the serve loop.
+/// Both models are OPENED here, not merely path-checked, and the embedding
+/// width comes off the extractor that was just built. A `load_models` that
+/// answered `ok` on a truncated download would hand YV123's vendoring work a
+/// green light for bytes that cannot infer, and would make this item's own
+/// `embedding_dim == 192` assertion a claim about a filename.
 ///
-/// Until then it returns the honest answer: this build has no inference backend
-/// compiled in. The paths are still validated first, because "that file is not
-/// there" is a different bug from "this build cannot use it" and the parent
-/// (and YV123's vendoring work) needs to be able to tell them apart.
+/// The segmentation model is proved by building a diarizer and dropping it
+/// again — it is a local, so no clustering config from this function can reach
+/// a labeling decision. That probe is the reason `load_models` costs a second
+/// ONNX session; the alternative is discovering a bad segmentation file on the
+/// first `diarize` of a three-hour meeting.
 fn load_backend(segmentation: &Path, embedding: &Path) -> Result<Backend, &'static str> {
     for path in [segmentation, embedding] {
         if !path.is_file() {
             return Err(ERR_MODEL_NOT_FOUND);
         }
+        if !looks_like_onnx(path) {
+            return Err(ERR_MODEL_LOAD_FAILED);
+        }
     }
-    Err(ERR_NO_BACKEND)
+    let segmentation_path = segmentation.to_string_lossy().into_owned();
+    let embedding_path = embedding.to_string_lossy().into_owned();
+
+    let extractor = SpeakerEmbeddingExtractor::create(&SpeakerEmbeddingExtractorConfig {
+        model: Some(embedding_path.clone()),
+        ..Default::default()
+    })
+    .ok_or(ERR_MODEL_LOAD_FAILED)?;
+    let dim = extractor.dim();
+    if dim <= 0 {
+        return Err(ERR_MODEL_LOAD_FAILED);
+    }
+
+    // The probe. Built, checked, dropped — see the doc comment.
+    let probe = build_diarizer(
+        &segmentation_path,
+        &embedding_path,
+        FastClusteringConfig::default(),
+    )
+    .ok_or(ERR_MODEL_LOAD_FAILED)?;
+    let model_rate = probe.sample_rate();
+    drop(probe);
+    if model_rate <= 0 {
+        return Err(ERR_MODEL_LOAD_FAILED);
+    }
+    eprintln!("yap-diarize: models loaded, embedding_dim={dim}, segmentation rate={model_rate}Hz");
+
+    Ok(Backend {
+        segmentation_path,
+        embedding_path,
+        extractor,
+        embedding_dim: dim as u32,
+    })
+}
+
+/// Segment one track, cluster the turns, and embed each one.
+///
+/// Takes the whole request rather than an unpacked threshold: an `f32`
+/// parameter named for a threshold is exactly what the unit discipline forbids
+/// outside [`clustering_from`], and passing the request means the wire value
+/// reaches sherpa without a stop in between where a sign could flip.
+fn diarize_wav(backend: &Backend, req: &DiarizeRequest) -> Result<Vec<DiarizeSegment>, &'static str> {
+    let wav = req.wav_path.as_deref().ok_or(ERR_MISSING_FIELD)?;
+    let clustering = clustering_from(
+        req.clustering_distance_threshold
+            .ok_or(ERR_MISSING_FIELD)?,
+    );
+    let wave = Wave::read(wav).ok_or(ERR_AUDIO_UNREADABLE)?;
+
+    let diarization = build_diarizer(
+        &backend.segmentation_path,
+        &backend.embedding_path,
+        clustering,
+    )
+    .ok_or(ERR_MODEL_LOAD_FAILED)?;
+
+    // `process` takes samples and NO sample rate: it reads them at whatever the
+    // segmentation model runs at. Feeding it 44.1 kHz audio for a 16 kHz model
+    // returns turn boundaries that are silently 2.76x off, at times that still
+    // look like times. Refuse instead — resampling belongs upstream, behind the
+    // anti-alias filter OS-8 shipped, not in a guess made here.
+    let model_rate = diarization.sample_rate();
+    if wave.sample_rate() != model_rate {
+        return Err(ERR_SAMPLE_RATE);
+    }
+
+    let samples = wave.samples();
+    let result = diarization
+        .process(samples)
+        .ok_or(ERR_BACKEND_FAILED)?;
+
+    Ok(result
+        .sort_by_start_time()
+        .into_iter()
+        .map(|turn| DiarizeSegment {
+            start: turn.start as f64,
+            end: turn.end as f64,
+            // sherpa numbers speakers from 0 within one pass. Cluster ids are
+            // local to this call — cluster 0 of two meetings is two people
+            // until an enrollment match says otherwise (YV129).
+            cluster: turn.speaker.max(0) as u32,
+            embedding: embed_span(backend, samples, model_rate, turn.start, turn.end),
+        })
+        .collect())
+}
+
+/// The embedding for one turn's span of `samples`, or an EMPTY vector.
+///
+/// Empty is a real answer here and not an error: pyannote's `min_duration_on`
+/// admits turns shorter than CAM++ needs to compute anything, and failing the
+/// whole meeting because one 0.4 s "yeah" has no voiceprint would throw away
+/// every turn that does. The turn's times and cluster are still measured, so it
+/// still belongs in the transcript; `DiarizeResponse::into_embedding` already
+/// treats an empty vector as "not an embedding", which is what YV129's
+/// enrollment matching reads.
+fn embed_span(backend: &Backend, samples: &[f32], rate: i32, start: f32, end: f32) -> Vec<f32> {
+    let index = |seconds: f32| -> usize {
+        if seconds <= 0.0 {
+            return 0;
+        }
+        ((seconds * rate as f32) as usize).min(samples.len())
+    };
+    let (lo, hi) = (index(start), index(end));
+    if hi <= lo {
+        return Vec::new();
+    }
+    match compute_embedding(backend, &samples[lo..hi], rate) {
+        Ok(embedding) => embedding,
+        Err(tag) => {
+            eprintln!("yap-diarize: turn at {start:.2}s..{end:.2}s has no embedding ({tag})");
+            Vec::new()
+        }
+    }
+}
+
+/// One embedding over one span of audio.
+///
+/// The sample rate is handed to `accept_waveform` rather than checked against a
+/// constant: unlike the diarizer's `process`, this API takes the rate, so the
+/// extractor is TOLD what it is being given instead of assuming. That is also
+/// why `embed` has no sample-rate refusal while `diarize` does — the asymmetry
+/// is in sherpa's own signatures, not a policy invented here.
+fn compute_embedding(
+    backend: &Backend,
+    samples: &[f32],
+    rate: i32,
+) -> Result<Vec<f32>, &'static str> {
+    let stream = backend
+        .extractor
+        .create_stream()
+        .ok_or(ERR_BACKEND_FAILED)?;
+    stream.accept_waveform(rate, samples);
+    stream.input_finished();
+    if !backend.extractor.is_ready(&stream) {
+        return Err(ERR_AUDIO_TOO_SHORT);
+    }
+    backend
+        .extractor
+        .compute(&stream)
+        .ok_or(ERR_BACKEND_FAILED)
+}
+
+/// Embed one whole enrollment utterance — no segmentation, no clustering: the
+/// caller already knows this audio is one person (YV129).
+fn embed_wav(backend: &Backend, req: &DiarizeRequest) -> Result<Vec<f32>, &'static str> {
+    let wav = req.wav_path.as_deref().ok_or(ERR_MISSING_FIELD)?;
+    let wave = Wave::read(wav).ok_or(ERR_AUDIO_UNREADABLE)?;
+    compute_embedding(backend, wave.samples(), wave.sample_rate())
 }
 
 fn main() {
@@ -170,15 +474,24 @@ fn handle(backend: &mut Option<Backend>, req: &DiarizeRequest) -> DiarizeRespons
             let Some(wav) = req.wav_path.as_deref() else {
                 return DiarizeResponse::err(req.id, ERR_MISSING_FIELD);
             };
-            if backend.is_none() {
+            let Some(loaded) = backend.as_ref() else {
                 return DiarizeResponse::err(req.id, ERR_NO_MODELS);
-            }
+            };
             if !Path::new(wav).is_file() {
                 return DiarizeResponse::err(req.id, ERR_AUDIO_NOT_FOUND);
             }
-            // Unreachable in this build — `backend` is never `Some` without a
-            // backend to have loaded it. YV122 fills these two arms in.
-            DiarizeResponse::err(req.id, ERR_NO_BACKEND)
+            let ms = || started.elapsed().as_millis() as u64;
+            if req.kind == KIND_DIARIZE {
+                match diarize_wav(loaded, req) {
+                    Ok(segments) => DiarizeResponse::diarized(req.id, segments, ms()),
+                    Err(tag) => DiarizeResponse::err(req.id, tag),
+                }
+            } else {
+                match embed_wav(loaded, req) {
+                    Ok(embedding) => DiarizeResponse::embedded(req.id, embedding, ms()),
+                    Err(tag) => DiarizeResponse::err(req.id, tag),
+                }
+            }
         }
         // An unknown kind is a version skew between the app and a stale staged
         // sidecar. Answer, so the caller stops waiting, and run nothing.
@@ -214,22 +527,130 @@ mod tests {
         }
     }
 
-    /// The scaffold answers HONESTLY. A `load_models` against files that exist
-    /// must not report a dimension this build did not read off a model — that
-    /// answer would make YV122's `embedding_dim == 192` assertion pass against
-    /// nothing at all.
+    /// Bad bytes are turned away BEFORE onnxruntime, because after it there is
+    /// no turning away.
+    ///
+    /// The three shapes here are the three realistic corrupt-download cases:
+    /// a `.tar.bz2` that was never extracted (YV123's archive path is exactly
+    /// where that happens), an HTML error page saved under an `.onnx` name, and
+    /// a zero-length file from an interrupted transfer. Each one, handed to
+    /// `Ort`, is a C++ exception and a `SIGABRT` — not a `None` this process
+    /// could answer `model_load_failed` to.
     #[test]
-    fn a_backendless_build_never_reports_a_dimension_it_did_not_measure() {
+    fn bytes_that_are_not_an_onnx_model_never_reach_onnxruntime() {
+        let dir = std::env::temp_dir().join("yap-diarize-sniff");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let cases: [(&str, &[u8]); 4] = [
+            ("archive.onnx", b"BZh91AY&SY"),
+            ("error-page.onnx", b"<!DOCTYPE html><html><body>404"),
+            ("empty.onnx", b""),
+            // A protobuf-shaped first byte with a MULTI-byte varint after it:
+            // close enough to fool a one-byte check, which is why the second
+            // byte is checked too.
+            ("nearly.onnx", &[0x08, 0xff, 0xff, 0xff]),
+        ];
+        for (name, bytes) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).expect("write fixture");
+            assert!(!looks_like_onnx(&path), "{name} must not pass the sniff");
+
+            let mut backend = None;
+            let response = handle(&mut backend, &DiarizeRequest::load_models(1, &path, &path));
+            assert_eq!(response.err_tag(), Some(ERR_MODEL_LOAD_FAILED), "{name}");
+            assert_eq!(response.embedding_dim, None, "{name}");
+            assert!(backend.is_none(), "{name}");
+        }
+
+        // …and the sniff is not simply "always false": a real ONNX header
+        // passes it. (`sherpa_load_smoke` is where a real FILE is opened.)
+        let real = dir.join("header.onnx");
+        std::fs::write(&real, [0x08, 0x07, 0x12, 0x07]).expect("write fixture");
+        assert!(looks_like_onnx(&real), "an ir_version header must pass");
+    }
+
+    /// A file that EXISTS but is not a model reports no dimension.
+    ///
+    /// This is the assertion YV121 wrote as `no_backend` and YV122 has to keep
+    /// meaning something: `embedding_dim` may only ever be a number read off an
+    /// opened model. Two real files that are certainly not ONNX go in; the
+    /// answer is a load failure, the response carries no width, and nothing is
+    /// held — which is what makes `sherpa_load_smoke`'s `== 192` a measurement
+    /// rather than a restatement of the plan's arithmetic.
+    #[test]
+    fn a_file_that_is_not_a_model_reports_no_dimension() {
         let mut backend = None;
         // Two files that certainly exist: this crate's own manifest and source.
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
         let req = DiarizeRequest::load_models(1, &manifest, &source);
         let response = handle(&mut backend, &req);
-        assert!(!response.ok, "this build cannot load a model");
-        assert_eq!(response.err_tag(), Some(ERR_NO_BACKEND));
+        assert!(!response.ok, "a TOML file is not a speaker embedding model");
+        assert_eq!(response.err_tag(), Some(ERR_MODEL_LOAD_FAILED));
         assert_eq!(response.embedding_dim, None);
         assert!(backend.is_none(), "nothing was loaded, so nothing is held");
+    }
+
+    /// The clustering threshold is passed through, never converted.
+    ///
+    /// `clustering_from` is the single point where the wire's `f32` becomes
+    /// sherpa's `FastClusteringConfig.threshold`, and both are cosine
+    /// DISTANCES. The failure this guards is one character wide — `1.0 - x` —
+    /// and it is invisible everywhere else: 0.35 and 0.65 are both plausible
+    /// numbers, and a meeting clustered at the wrong one produces a plausible
+    /// number of plausible speakers.
+    #[test]
+    fn the_clustering_distance_reaches_sherpa_unconverted() {
+        // 0.5 is deliberately NOT an input: it is its own similarity twin, so
+        // an inverted implementation passes on it. That it is also sherpa's
+        // `FastClusteringConfig::default()` is the reason a resident diarizer
+        // carrying that default would have hidden this bug rather than shown it.
+        for distance in [0.0_f32, 0.35, 0.65, 1.0] {
+            let config = clustering_from(distance);
+            assert_eq!(
+                config.threshold, distance,
+                "a cosine DISTANCE on the wire is a cosine distance in sherpa \
+                 (merged finding #20); {distance} must not arrive as \
+                 {}",
+                config.threshold
+            );
+            assert_ne!(
+                config.threshold,
+                1.0 - distance,
+                "the similarity twin of {distance} reached FastClusteringConfig"
+            );
+        }
+        // And the speaker count is never fixed: the threshold path is the whole
+        // point (plan §2.3), so `num_clusters` stays sherpa's "unknown".
+        assert_eq!(clustering_from(0.35).num_clusters, CLUSTER_COUNT_UNKNOWN);
+        assert!(CLUSTER_COUNT_UNKNOWN < 0);
+    }
+
+    /// No clustering number is written down in this file.
+    ///
+    /// The EVAL-DISCIPLINE rule for this epic is that every threshold is tuned
+    /// against YV120's harness (YV126 for clustering), never inherited from a
+    /// vendor default or a blog. sherpa's own `FastClusteringConfig::default()`
+    /// is 0.5; the moment a float literal lands next to `threshold` here, this
+    /// binary has an opinion nobody measured, and the parent's value silently
+    /// stops mattering.
+    #[test]
+    fn no_clustering_threshold_literal_lives_in_this_file() {
+        for (n, line) in include_str!("main.rs").lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            if !code.contains("threshold") {
+                continue;
+            }
+            let has_float_literal = code
+                .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+                .any(|token| token.contains('.') && token.trim_matches('.').parse::<f32>().is_ok());
+            assert!(
+                !has_float_literal,
+                "main.rs:{}: the clustering threshold is the PARENT's to send \
+                 and YV126's to tune, never a literal here: {}",
+                n + 1,
+                line.trim()
+            );
+        }
     }
 
     /// A path that is not there is its own answer, distinct from "this build

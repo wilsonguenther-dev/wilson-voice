@@ -5,8 +5,10 @@
 //! tree rather than hypothetical. `vad-rs` runs Silero v4 through `ort`
 //! (onnxruntime) and links it **statically** into the app (see
 //! `src-tauri/Cargo.toml`'s own comment on that dependency, and `vad.rs`).
-//! `sherpa-onnx` — the crate YV122 adds to the sidecar — statically links its
-//! **own** vendored onnxruntime. Linking two independently-vendored copies of
+//! `sherpa-onnx` — in the sidecar since YV122 — statically links its **own**
+//! vendored onnxruntime (`sherpa-onnx-sys`'s build script emits
+//! `cargo:rustc-link-lib=static=onnxruntime` by name). Linking two
+//! independently-vendored copies of
 //! one C++ runtime into a single binary is the identical duplicate-symbol
 //! failure class that forced `yap-polish` out of process, documented verbatim
 //! at the head of `polish_protocol.rs` (llama.cpp #9267/#11303/#11491,
@@ -111,11 +113,33 @@ pub const ERR_MODEL_NOT_FOUND: &str = "model_not_found";
 pub const ERR_AUDIO_NOT_FOUND: &str = "audio_not_found";
 /// A `diarize`/`embed` arrived before any successful `load_models`.
 pub const ERR_NO_MODELS: &str = "no_models";
-/// This build has no inference backend compiled in (YV121's scaffold). YV122
-/// replaces the arm that returns it with the real `sherpa-onnx` load; until
-/// then the sidecar says so rather than answering with a plausible shape it
-/// did not compute.
-pub const ERR_NO_BACKEND: &str = "no_backend";
+/// The files are there and this build has a backend, but `sherpa-onnx` would
+/// not open one of them — a corrupt download, a truncated archive extraction,
+/// an `.onnx` that is not the model the catalog says it is.
+///
+/// YV121 answered with a "no-backend" tag here, because there was no inference
+/// crate in the sidecar at all. YV122 removed that tag along with the condition
+/// it named: a build that CAN load a model must never be able to say it cannot,
+/// or the one tag YV123's vendoring work reads to tell "bad bytes" from "no
+/// code" would mean both.
+pub const ERR_MODEL_LOAD_FAILED: &str = "model_load_failed";
+/// The audio file is there but is not a WAV this build can decode.
+pub const ERR_AUDIO_UNREADABLE: &str = "audio_unreadable";
+/// The WAV decoded, at a sample rate the loaded segmentation model does not
+/// run at.
+///
+/// This is a REFUSAL rather than a resample on purpose. `OfflineSpeakerDiarization::process`
+/// takes samples and no rate: hand it 44.1 kHz audio for a 16 kHz model and it
+/// returns segment boundaries in the wrong units — turns at plausible-looking
+/// times that are silently 2.76x off, which no assertion downstream of here
+/// would catch. Resampling belongs in the caller that owns the anti-alias
+/// filter (`resample.rs`, OS-8), not in a process that would have to guess.
+pub const ERR_SAMPLE_RATE: &str = "sample_rate";
+/// There was not enough audio for the embedding model to compute anything.
+pub const ERR_AUDIO_TOO_SHORT: &str = "audio_too_short";
+/// The models are loaded and the audio decoded, and the inference call itself
+/// returned nothing.
+pub const ERR_BACKEND_FAILED: &str = "backend_failed";
 
 /// The `type` value of the readiness line. The only message on this wire that
 /// is not keyed by a request id, which is how the two are told apart.
@@ -478,6 +502,47 @@ mod tests {
         assert_eq!(
             DiarizeResponse::embedded(4, vec![1.0], 1).into_embedding(),
             Some(vec![1.0])
+        );
+    }
+
+    /// The tag vocabulary is closed, distinct, and — since YV122 — no longer
+    /// contains the retired "no-backend" tag.
+    ///
+    /// The absence is the assertion. That tag meant "this binary has no
+    /// inference crate compiled in", a condition that stopped existing the
+    /// moment `sherpa-onnx` entered `yap-diarize/Cargo.toml`. Leaving the
+    /// constant behind is how it would quietly get reused for "the model file
+    /// was bad" — and YV123's vendoring work reads exactly that distinction to
+    /// tell a broken download from a broken build.
+    #[test]
+    fn diarize_protocol_tags_are_distinct_and_the_backendless_tag_is_gone() {
+        let tags = [
+            ERR_BAD_REQUEST,
+            ERR_UNSUPPORTED_KIND,
+            ERR_MISSING_FIELD,
+            ERR_MODEL_NOT_FOUND,
+            ERR_AUDIO_NOT_FOUND,
+            ERR_NO_MODELS,
+            ERR_MODEL_LOAD_FAILED,
+            ERR_AUDIO_UNREADABLE,
+            ERR_SAMPLE_RATE,
+            ERR_AUDIO_TOO_SHORT,
+            ERR_BACKEND_FAILED,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for tag in tags {
+            assert!(seen.insert(tag), "duplicate error tag: {tag}");
+            assert!(
+                tag.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "an error tag is a snake_case token, never prose: {tag}"
+            );
+        }
+        // Assembled at runtime so this assertion cannot match its own source.
+        let retired = format!("no_{}", "backend");
+        assert!(
+            !include_str!("diarize_protocol.rs").contains(&retired),
+            "`{retired}` named a condition that ended when YV122 gave the \
+             sidecar a backend; it must not linger as a spare tag"
         );
     }
 
