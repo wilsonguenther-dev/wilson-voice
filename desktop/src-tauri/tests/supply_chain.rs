@@ -220,6 +220,342 @@ fn diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet() {
     );
 }
 
+/// YV123 — the vendoring half of Wilson's closed O6 decision, guarded.
+///
+/// O6 closed as: *"VENDOR the diarization models — Wilson-owned HF mirror,
+/// pinned revisions + sha256, archive-extraction path in models.rs,
+/// supply-chain tests extended. No direct vendor-release downloads at
+/// runtime."* Four things have to stay true for that to mean anything, and each
+/// one fails silently on its own:
+///
+/// **(a) the inference crate is exactly pinned and fetches nothing at build
+/// time.** `sherpa-onnx`'s build script downloads a prebuilt archive when
+/// `SHERPA_ONNX_LIB_DIR` is unset — a build-time network fetch, the category
+/// plan finding #23 flagged as invisible to every compile-time manifest check
+/// in this file. See the note on `sherpa_onnx_pin_verdict` for why this half is
+/// written as a rule with its own falsification test rather than as a literal
+/// assertion today.
+///
+/// **(b) the vendored archive's sha256 is a compiled-in constant.** A re-vendor
+/// that updates `catalog.json` and not this file (or the reverse) fails here,
+/// loudly, instead of shipping stale bytes past a hash nobody re-read.
+///
+/// **(c) `binaries/yap-diarize` is bundled** — true since YV121, re-asserted
+/// now that there is a model for that sidecar to load.
+///
+/// **(d) the bzip2 decoder is the pure-Rust one, in the RESOLVED graph.** The
+/// manifest saying `bzip2-rs` proves nothing if a feature flag or a transitive
+/// edge pulled `bzip2-sys`/libbz2 in anyway — and a second native C library in
+/// this binary is the exact hazard that forced both sidecars out of process.
+#[test]
+fn diarize_sidecar_vendors_sherpa_onnx_and_pins_the_archive() {
+    // (a) -------------------------------------------------------------------
+    match sherpa_onnx_pin_verdict(DIARIZE_CARGO_TOML) {
+        SherpaPin::Absent => {
+            // YV122 is the item that adds the crate. Until it lands, the
+            // ASSERTION that has to hold is the one YV121 already makes (the
+            // manifest carries serde + serde_json and nothing else) — and the
+            // rule below is proven against fixtures instead of against a line
+            // that is not there yet, so it is not a check that silently passes
+            // on an empty file.
+            // Comments in that manifest discuss sherpa-onnx at length; a
+            // DEPENDENCY on it is what would have to be recognised as a pin.
+            let declared: Vec<&str> = DIARIZE_CARGO_TOML
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with('#') && l.contains("sherpa"))
+                .collect();
+            assert!(
+                declared.is_empty(),
+                "a sherpa-onnx dependency exists but was not recognised as a pin: {declared:?}"
+            );
+        }
+        SherpaPin::Exact(version) => assert_eq!(
+            version, "1.13.4",
+            "sherpa-onnx was verified API-by-API against 1.13.4; re-verify before moving it"
+        ),
+        SherpaPin::Rejected(why) => panic!("sherpa-onnx pin is not acceptable: {why}"),
+    }
+    // Whatever the sidecar depends on, it must not fetch it at build time.
+    assert!(
+        !DIARIZE_CARGO_TOML.contains("[build-dependencies]"),
+        "the diarization sidecar has no build script, and therefore nothing that \
+         downloads at build time. `sherpa-onnx` vendoring is done by exporting \
+         SHERPA_ONNX_LIB_DIR in ci.yml/release.yml, not by letting its build \
+         script reach the network."
+    );
+
+    // (b) -------------------------------------------------------------------
+    // The bytes Wilson vendored, hashed at vendoring time and pasted here. The
+    // catalog is the other copy; this test is what makes them one number.
+    const SEGMENTATION_ARCHIVE_SHA256: &str =
+        "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488";
+    const SEGMENTATION_MODEL_ONNX_SHA256: &str =
+        "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079";
+    const EMBEDDING_ONNX_SHA256: &str =
+        "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef";
+    const MIRROR_REVISION: &str = "c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec";
+
+    let seg = wilson_voice_lib::models::diarize_model_for_role(
+        wilson_voice_lib::models::DiarizeModelRole::Segmentation,
+    )
+    .expect("the segmentation model is in the catalog");
+    let emb = wilson_voice_lib::models::diarize_model_for_role(
+        wilson_voice_lib::models::DiarizeModelRole::Embedding,
+    )
+    .expect("the embedding model is in the catalog");
+    assert_eq!(
+        seg.file.sha256, SEGMENTATION_ARCHIVE_SHA256,
+        "the vendored .tar.bz2 changed without this constant changing — re-hash \
+         the mirrored asset and update BOTH, or the app installs bytes nobody re-verified"
+    );
+    assert_eq!(
+        seg.archive
+            .as_ref()
+            .expect("the segmentation entry declares an archive")
+            .extracted_sha256,
+        SEGMENTATION_MODEL_ONNX_SHA256
+    );
+    assert_eq!(emb.file.sha256, EMBEDDING_ONNX_SHA256);
+    for m in [seg, emb] {
+        assert_eq!(m.revision, MIRROR_REVISION, "{}: unpinned revision", m.id);
+        assert_eq!(
+            m.repo, "wilsonguenther/yap-diarize-models",
+            "{}: the models must come from the Wilson-owned mirror, never a vendor release",
+            m.id
+        );
+    }
+
+    // (c) -------------------------------------------------------------------
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
+    let external: Vec<&str> = config["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin lists the sidecars")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        external.contains(&"binaries/yap-diarize"),
+        "the models are useless without the sidecar that loads them, got {external:?}"
+    );
+
+    // (d) -------------------------------------------------------------------
+    // Asserted over the closure of THIS app's package in the lockfile, not over
+    // the whole file. That is a deliberate correction to the spec's own
+    // acceptance criterion, which reads `grep -rn "bzip2-sys\|libbz2"
+    // Cargo.lock` returns no match. That grep is true on this branch and stops
+    // being true the moment YV122 (#137) merges — `sherpa-onnx-sys` declares
+    // `bzip2 = "0.4"` as a BUILD-dependency to unpack its own prebuilt archive
+    // on the build host, which puts `bzip2`/`bzip2-sys` in the shared
+    // `desktop/Cargo.lock` while linking neither of them into anything that
+    // ships. A whole-file grep would then fail for a reason that has nothing to
+    // do with the property it is guarding, and the usual fix for a check that
+    // cries wolf is to delete it.
+    //
+    // The property actually worth guarding is: nothing in the app binary — the
+    // one that already statically links ggml and, through `vad-rs`/`ort`,
+    // onnxruntime — decompresses through a native C library. So: walk the
+    // lockfile graph from `wilson-voice` and assert over what it reaches.
+    let reachable = lockfile_closure("wilson-voice");
+    assert!(
+        reachable.contains("bzip2-rs"),
+        "the pure-Rust bzip2 decoder is gone from this app's resolved graph — either \
+         the extraction path was deleted, or it now decodes through something else"
+    );
+    assert!(
+        reachable.contains("tar"),
+        "the tar reader is gone from this app's resolved graph"
+    );
+    for banned in ["bzip2-sys", "bzip2", "libbz2-rs-sys"] {
+        assert!(
+            !reachable.contains(banned),
+            "`{banned}` is reachable from `wilson-voice` in Cargo.lock. The bzip2 decoder \
+             must stay pure Rust: this binary already statically links ggml and (through \
+             vad-rs/ort) onnxruntime, and a third native C library — for ONE 7 MB archive — \
+             is the same double-link hazard that forced yap-polish and yap-diarize out of \
+             process.\nreachable: {reachable:?}"
+        );
+    }
+}
+
+/// Every package reachable from `root` in `Cargo.lock`, by name.
+///
+/// The lockfile lists each package's resolved dependencies but not their KIND,
+/// so this closure is "everything the resolver put under `root`", which is
+/// exactly the right granularity for the question above: `sherpa-onnx-sys`'s
+/// build-time `bzip2` sits under the SIDECAR's root (`yap-diarize`), a separate
+/// link unit in a separate process, and never appears under this one.
+fn lockfile_closure(root: &str) -> std::collections::BTreeSet<String> {
+    // name -> its dependency names
+    let mut graph: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut name: Option<String> = None;
+    let mut in_deps = false;
+    for line in CARGO_LOCK.lines().map(str::trim) {
+        if line == "[[package]]" {
+            name = None;
+            in_deps = false;
+        } else if let Some(rest) = line.strip_prefix("name = \"") {
+            name = rest.strip_suffix('"').map(str::to_string);
+        } else if line == "dependencies = [" {
+            in_deps = true;
+        } else if in_deps {
+            if line == "]" {
+                in_deps = false;
+            } else if let Some(dep) = line
+                .trim_matches(|c| c == '"' || c == ',')
+                .split(' ')
+                .next()
+            {
+                if let Some(owner) = &name {
+                    graph
+                        .entry(owner.clone())
+                        .or_default()
+                        .push(dep.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        graph.contains_key(root),
+        "`{root}` is not a package in Cargo.lock — the closure walk would be vacuous"
+    );
+
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
+    let mut queue = vec![root.to_string()];
+    while let Some(next) = queue.pop() {
+        if !seen.insert(next.clone()) {
+            continue;
+        }
+        for dep in graph.get(&next).into_iter().flatten() {
+            queue.push(dep.clone());
+        }
+    }
+    seen
+}
+
+/// The closure walk, falsified: a package the app really does depend on has to
+/// be in it, and a workspace sibling that it does NOT depend on must not be.
+/// Without this, "no bzip2-sys is reachable" could be a sentence about an empty
+/// set — which is exactly how the whole-file grep it replaces would have failed.
+#[test]
+fn the_lockfile_closure_walk_is_not_an_empty_set() {
+    let app = lockfile_closure("wilson-voice");
+    for expected in ["tauri", "rusqlite", "reqwest", "sha2", "tar", "bzip2-rs"] {
+        assert!(
+            app.contains(expected),
+            "{expected} must be reachable from wilson-voice"
+        );
+    }
+    // The sidecars are separate link units: the app does not depend on them,
+    // which is the entire reason a build-time `bzip2` under `yap-diarize` is
+    // not a native C library in this binary.
+    assert!(
+        !app.contains("yap-polish"),
+        "the app must not link the polish sidecar"
+    );
+    assert!(
+        !app.contains("yap-diarize"),
+        "the app must not link the diarize sidecar"
+    );
+    // And a name that is in no graph at all stays out.
+    assert!(!app.contains("definitely-not-a-real-crate"));
+}
+
+/// What a manifest says about `sherpa-onnx`.
+#[derive(Debug, PartialEq)]
+enum SherpaPin {
+    /// Not declared. YV122 is the item that adds it; see the test above.
+    Absent,
+    /// `sherpa-onnx = "=x.y.z"` from crates.io.
+    Exact(String),
+    /// Declared, but not in a form this supply chain accepts.
+    Rejected(String),
+}
+
+/// The pin RULE, as a function, so it can be falsified against fixtures instead
+/// of only against whatever the manifest happens to say today.
+///
+/// This matters because of ordering: YV122 (which adds the crate) is open as
+/// PR #137 and is not in `main`, so a literal `assert!(manifest.contains(
+/// "sherpa-onnx = \"=1.13.4\""))` written here would either fail this branch's
+/// own CI or — if written as a `contains` guard — be a check that passes
+/// because there is nothing to check. Encoding the rule and testing the rule is
+/// the version that is true before AND after #137 merges: the moment the line
+/// appears, this test starts asserting it, and `sherpa_onnx_pin_rule_rejects_
+/// everything_but_an_exact_crates_io_pin` proves the rule is not a rubber stamp.
+fn sherpa_onnx_pin_verdict(manifest: &str) -> SherpaPin {
+    let Some(line) = manifest
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .find(|l| l.starts_with("sherpa-onnx"))
+    else {
+        return SherpaPin::Absent;
+    };
+    if line.contains("git = ") || line.contains("path = ") {
+        return SherpaPin::Rejected(format!("must come from crates.io: {line}"));
+    }
+    let Some(version) = line.split('"').nth(1) else {
+        return SherpaPin::Rejected(format!("no version string: {line}"));
+    };
+    let Some(exact) = version.strip_prefix('=') else {
+        return SherpaPin::Rejected(format!("must be pinned with `=`, got `{version}`"));
+    };
+    let parts: Vec<&str> = exact.split('.').collect();
+    if parts.len() != 3
+        || !parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return SherpaPin::Rejected(format!("expected an exact x.y.z pin, got `{exact}`"));
+    }
+    SherpaPin::Exact(exact.to_string())
+}
+
+/// The falsification half of the rule above. Without this, "the pin is
+/// acceptable" would be a sentence with no test behind it until YV122 lands.
+#[test]
+fn sherpa_onnx_pin_rule_rejects_everything_but_an_exact_crates_io_pin() {
+    assert_eq!(
+        sherpa_onnx_pin_verdict("[dependencies]\nserde = \"1\"\n"),
+        SherpaPin::Absent
+    );
+    assert_eq!(
+        sherpa_onnx_pin_verdict("sherpa-onnx = \"=1.13.4\"\n"),
+        SherpaPin::Exact("1.13.4".to_string())
+    );
+    assert_eq!(
+        sherpa_onnx_pin_verdict(
+            "sherpa-onnx = { version = \"=1.13.4\", features = [\"static\"] }\n"
+        ),
+        SherpaPin::Exact("1.13.4".to_string())
+    );
+    // A caret range lets `cargo update` move a statically linked onnxruntime
+    // under a signed, notarized bundle with no reviewable diff.
+    assert!(matches!(
+        sherpa_onnx_pin_verdict("sherpa-onnx = \"1.13.4\"\n"),
+        SherpaPin::Rejected(_)
+    ));
+    assert!(matches!(
+        sherpa_onnx_pin_verdict("sherpa-onnx = \"=1.13\"\n"),
+        SherpaPin::Rejected(_)
+    ));
+    // A git source is a moving target that `tests/supply_chain.rs`'s own
+    // `git_dependencies_are_pinned_to_a_rev` cannot see from the app manifest.
+    assert!(matches!(
+        sherpa_onnx_pin_verdict(
+            "sherpa-onnx = { git = \"https://github.com/k2-fsa/sherpa-onnx\", rev = \"abc\" }\n"
+        ),
+        SherpaPin::Rejected(_)
+    ));
+    // A commented-out line is not a dependency.
+    assert_eq!(
+        sherpa_onnx_pin_verdict("# sherpa-onnx = \"=1.13.4\"\n"),
+        SherpaPin::Absent
+    );
+}
+
 /// The exact `=x.y.z` pin a manifest line carries, or a panic naming the crate.
 fn exact_pin(manifest: &str, crate_name: &str) -> String {
     let line = manifest

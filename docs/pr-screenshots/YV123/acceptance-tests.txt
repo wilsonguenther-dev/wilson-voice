@@ -1,0 +1,205 @@
+YV123 acceptance — every criterion in the backlog section, run in a fresh clone
+of feat/yv123 branched off origin/main.
+Host: macOS 26.5.2 arm64; rustc 1.94.0 (4a4ef493e 2026-03-02)
+CARGO_TARGET_DIR is a scratch dir; the repo tree is untouched by it.
+
+==============================================================================
+PREREQUISITE (spec part 1) — the Wilson-owned mirror, created before the code
+     "This step is a prerequisite the PR must confirm happened, not code this
+      item writes."
+==============================================================================
+Repo:     https://huggingface.co/wilsonguenther/yap-diarize-models   (public)
+Revision: c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec
+Files:    .gitattributes, README.md,
+          sherpa-onnx-pyannote-segmentation-3-0.tar.bz2,
+          wespeaker_en_voxceleb_CAM++.onnx
+
+Uploaded byte-for-byte from the upstream sherpa-onnx releases — nothing was
+re-exported, re-quantized or re-packaged, so the mirrored digests equal the
+upstream digests:
+
+$ curl -sSL -o seg.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+$ curl -sSL -o 'wespeaker_en_voxceleb_CAM++.onnx' https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx
+$ shasum -a 256 *
+24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488  seg.tar.bz2          (6,958,444 B)
+c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef  wespeaker_..._CAM++.onnx (29,292,684 B)
+
+Both digests match, independently, the ones YV122's PR #137 measured on the
+same two assets (live-log 2026-08-15, "Upstream hashes for the mirror").
+
+The pinned resolve URLs were verified to serve those exact bytes — including
+the `++` in the embedding filename, which travels unencoded:
+
+$ REV=c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec
+$ curl -sSL -o dl.bin -w 'http=%{http_code} bytes=%{size_download}\n' \
+    "https://huggingface.co/wilsonguenther/yap-diarize-models/resolve/$REV/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+http=200 bytes=6958444
+24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488  dl.bin
+$ curl -sSL -o dl.bin -w 'http=%{http_code} bytes=%{size_download}\n' \
+    "https://huggingface.co/wilsonguenther/yap-diarize-models/resolve/$REV/wespeaker_en_voxceleb_CAM++.onnx"
+http=200 bytes=29292684
+c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef  dl.bin
+
+Archive contents (upstream, `tar -tvjf`) — note BOTH a full-precision
+`model.onnx` and a quantized `model.int8.onnx`, which is why extraction picks
+the largest `.onnx` and the caller then asserts it against the pinned path:
+  sherpa-onnx-pyannote-segmentation-3-0/model.onnx        5,992,913 B
+  sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx   1,540,506 B
+  sherpa-onnx-pyannote-segmentation-3-0/LICENSE           (MIT, (c) 2022 CNRS)
+  + the upstream export/vad helper scripts, mode 0o755
+
+==============================================================================
+AC1  cargo test --test extract_tar_bz2 — pure; a synthetic .tar.bz2 built IN
+     the test extracts correctly; a `../escape` entry is rejected with an
+     explicit error, not silently written outside dest_dir.
+==============================================================================
+$ cargo test --test extract_tar_bz2      # review fix #1 — 13 tests, was 10
+running 13 tests
+test rejects_a_missing_archive ... ok
+test rejects_bytes_that_are_not_bzip2 ... ok
+test rejects_a_parent_dir_escape_entry ... ok
+test rejects_an_absolute_path_entry ... ok
+test rejects_an_archive_that_claims_to_expand_past_the_cap ... ok
+test rejects_a_pax_size_record_that_claims_to_expand_past_the_cap ... ok
+test honours_a_pax_size_record_that_is_within_the_cap ... ok
+test the_fixture_writer_emits_an_archive_the_system_tar_agrees_with ... ok
+test the_system_tar_also_reads_the_pax_size_not_the_ustar_header ... ok
+test rejects_a_symlink_entry ... ok
+test rejects_an_archive_with_no_onnx ... ok
+test nothing_extracted_is_executable ... ok
+test returns_the_full_precision_onnx_not_the_quantized_sibling ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored
+
+The three new ones close the review's BLOCKING finding, and the bomb they
+describe was built and measured against the SHIPPED function first:
+
+  $ ls -l bomb.tar.bz2                     384 bytes
+  $ tar -tvjf bomb.tar.bz2                 pkg/model.onnx   314,572,800 B
+  # against feat/yv123 @ 314c576, before the fix:
+  RESULT: Ok("/tmp/yv123-bomb-out/pkg/model.onnx")
+  BYTES ON DISK: 314572800
+  # after the fix, same archive:
+  RESULT: Err("archive expands past the 268435456-byte extraction cap")
+  BYTES ON DISK: 0
+
+384 bytes in, 300 MB out, and the function returned Ok — the cap did not fire
+late, it did not fire at all. The counter had reached 512, because the entry
+states its size TWICE (a PAX `size=` record ahead of the ustar header) and the
+cap was reading the field tar-rs ignores while tar-rs streamed the other one.
+
+The fixtures are hand-written ustar streams piped through /usr/bin/bzip2 — no
+binary blob is committed. `tar::Builder` refuses to emit a `../escape` entry, so
+a guard tested only against archives a well-behaved writer produces would be a
+guard tested against the wrong input. The writer is itself checked by
+`the_fixture_writer_emits_an_archive_the_system_tar_agrees_with`, which lists
+the same fixture with `/usr/bin/tar -tjf`.
+
+==============================================================================
+AC2  cargo test --test diarize_catalog_shape — every entry has a 64-char
+     lowercase-hex sha256, a pinned (non-main/non-branch) revision, and the
+     segmentation entry specifically has a non-None `archive` field.
+==============================================================================
+$ cargo test --test diarize_catalog_shape
+running 6 tests
+test the_catalog_never_states_an_embedding_dimension ... ok
+test combined_download_size_is_the_real_asset_sizes ... ok
+test only_the_segmentation_entry_declares_an_archive ... ok
+test installed_paths_live_under_the_models_dir ... ok
+test every_entry_is_owned_pinned_and_hash_verified ... ok
+test download_urls_are_the_pinned_mirror_and_nothing_else ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored
+
+==============================================================================
+AC3  cargo test --test supply_chain diarize_sidecar_vendors_sherpa_onnx_and_pins_the_archive
+     (all four sub-assertions of spec part 4)
+==============================================================================
+$ cargo test --test supply_chain
+running 10 tests
+test csp_is_a_real_policy_not_null ... ok
+test no_personal_signing_identity_is_committed ... ok
+test polish_sidecar_pins_llama_cpp_exactly ... ok
+test git_dependencies_are_pinned_to_a_rev ... ok
+test syscapture_pins_objc2_core_audio_exactly_and_asserts_its_feature_set ... ok
+test the_weak_link_ci_script_and_the_dlsym_list_are_the_same_four_symbols ... ok
+test diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet ... ok
+test diarize_sidecar_vendors_sherpa_onnx_and_pins_the_archive ... ok
+test sherpa_onnx_pin_rule_rejects_everything_but_an_exact_crates_io_pin ... ok
+test the_lockfile_closure_walk_is_not_an_empty_set ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored
+
+(a) sherpa-onnx pinned exactly, no git source — encoded as a RULE with its own
+    falsification test, because YV122 (#137) is not in main and a literal
+    `contains("sherpa-onnx = \"=1.13.4\"")` would either fail this branch or
+    pass on nothing. The rule accepts `"=1.13.4"` bare and in table form,
+    rejects a caret range, a two-part version, a git source, and does not count
+    a commented-out line. `[build-dependencies]` absence is asserted separately.
+(b) archive sha256 vs a compiled-in constant: asserted for the .tar.bz2, for the
+    extracted model.onnx, and for the CAM++ .onnx, plus the pinned revision and
+    the mirror repo id.
+(c) `binaries/yap-diarize` present in tauri.conf.json's externalBin.
+(d) no libbz2 binding reachable from `wilson-voice` in Cargo.lock — see AC4.
+
+==============================================================================
+AC4  grep -rn "bzip2-sys\|libbz2" Cargo.lock returns no match
+==============================================================================
+$ cd desktop && grep -rn "bzip2-sys\|libbz2" Cargo.lock
+(no output)
+
+$ cargo tree -p wilson-voice -e normal | grep -i bzip
+├── bzip2-rs v0.1.2
+
+DEVIATION, stated plainly: this grep is true today and becomes UNSATISFIABLE
+when YV122 (#137) merges — `sherpa-onnx-sys` declares `bzip2 = "0.4"` as a
+BUILD-dependency to unpack its own prebuilt archive on the build host, which
+puts `bzip2`/`bzip2-sys` in the shared desktop/Cargo.lock while linking neither
+into anything that ships. (This was flagged forward by YV122's own review; see
+the live log, "FORWARD FINDINGS THAT BREAK YV123's ACs TODAY".) The shipped test
+therefore asserts the property the grep was standing in for — nothing in the APP
+binary decompresses through a native C library — by walking the lockfile graph
+from `wilson-voice`. Mutation M14 proves that walk fails when a libbz2 binding
+really is reachable; `the_lockfile_closure_walk_is_not_an_empty_set` proves it
+is not an empty set.
+
+==============================================================================
+AC5  Manual: download_diarize_model_with("sherpa-onnx-pyannote-segmentation-3-0")
+     on a clean models dir downloads, sha256-verifies and extracts to a working
+     .onnx.
+==============================================================================
+$ cargo test --test diarize_model_install_e2e -- --ignored --nocapture
+
+[Segmentation] sherpa-onnx-pyannote-segmentation-3-0
+  url:  https://huggingface.co/wilsonguenther/yap-diarize-models/resolve/c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+  dest: ~/Library/Application Support/WilsonVoice/models/diarize/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
+  downloaded 6958444 / 6958444 bytes
+  sha256 verified: 220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079
+
+[Embedding] wespeaker-en-voxceleb-campplus
+  url:  https://huggingface.co/wilsonguenther/yap-diarize-models/resolve/c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec/wespeaker_en_voxceleb_CAM++.onnx
+  dest: ~/Library/Application Support/WilsonVoice/models/wespeaker_en_voxceleb_CAM++.onnx
+  downloaded 29292684 / 29292684 bytes
+  sha256 verified: c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef
+test installs_both_models_from_the_pinned_mirror ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; finished in 9.73s
+
+The test also asserts the .tar.bz2 is removed once its contents are verified,
+that the installed sizes equal the catalog's, and that a SECOND call is a no-op
+rather than a second 36 MB.
+
+CROSS-IMPLEMENTATION CHECK on "a working .onnx": the pure-Rust extractor's
+output hashes to 220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079,
+which is byte-for-byte the same file `/usr/bin/tar -xjf` produces from the same
+archive. Two independent tar+bzip2 implementations, one digest.
+
+NOT CLAIMED: "…that YV122's sherpa_load_smoke (previously #[ignore]d for missing
+files) now runs against successfully". That test does not exist in main — YV122
+is open as PR #137 and has not merged. The models are now installed on this
+machine at the paths that test reads, so it turns live the moment #137 lands;
+this PR does not assert a result it cannot run.
+
+==============================================================================
+FULL GATE
+==============================================================================
+$ npx tsc --noEmit                     → exit 0
+$ npm test                             → see PR body
+$ cargo test  (x3, flaky-prone)        → see PR body
+$ cargo test -p yap-diarize            → see PR body

@@ -4,6 +4,47 @@
  "mirrors": [
   "https://blob.handy.computer"
  ],
+ "diarize_models": [
+  {
+   "id": "sherpa-onnx-pyannote-segmentation-3-0",
+   "role": "segmentation",
+   "repo": "wilsonguenther/yap-diarize-models",
+   "revision": "c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec",
+   "name": "pyannote segmentation 3.0",
+   "license": "mit",
+   "description": "Speaker segmentation (pyannote/segmentation-3.0, converted for sherpa-onnx). Caps at 3 speakers per 10 s window / 2 simultaneous.",
+   "file": {
+    "filename": "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+    "quant": "fp32",
+    "size_bytes": 6958444,
+    "sha256": "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+   },
+   "archive": {
+    "kind": "tar.bz2",
+    "extracted_path": "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+    "extracted_size_bytes": 5992913,
+    "extracted_sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
+   },
+   "recommended": true
+  },
+  {
+   "id": "wespeaker-en-voxceleb-campplus",
+   "role": "embedding",
+   "repo": "wilsonguenther/yap-diarize-models",
+   "revision": "c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec",
+   "name": "WeSpeaker CAM++ (English, VoxCeleb)",
+   "license": "cc-by-4.0",
+   "description": "Speaker embeddings. WeSpeaker toolkit is Apache-2.0; the VoxCeleb-derived weights are CC-BY-4.0. The embedding dimension is reported by the sidecar at load time and is deliberately NOT stated here.",
+   "file": {
+    "filename": "wespeaker_en_voxceleb_CAM++.onnx",
+    "quant": "fp32",
+    "size_bytes": 29292684,
+    "sha256": "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef"
+   },
+   "archive": null,
+   "recommended": true
+  }
+ ],
  "polish_models": [
   {
    "id": "qwen2.5-1.5b-instruct-q4_k_m",

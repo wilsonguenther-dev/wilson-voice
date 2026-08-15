@@ -71,6 +71,25 @@ transcribe-cpp = { version = "0.1.3", default-features = false }
 # Verified model downloader (YV30): resumable HTTP + mandatory sha256 check.
 reqwest = { version = "0.13", features = ["stream"] }
 sha2 = "0.10"
+# YV123 archive extraction. Every other catalog entry is a single file that the
+# sha256 gate hands straight to the engine; the pyannote segmentation model is
+# published ONLY as `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` (verified
+# against the release: no bare `.onnx` asset), and Wilson's closed O6 decision
+# keeps the mirror byte-for-byte identical to that archive rather than
+# pre-extracting it. So `models.rs::extract_tar_bz2` is the one decompression
+# path in the app, and it runs ONLY on bytes whose sha256 already matched.
+#
+# `bzip2-rs` — not `bzip2`/`bzip2-sys` — because those link libbz2, and this
+# codebase has spent two backlogs keeping a SECOND native C library out of the
+# binary that already statically links ggml and onnxruntime (the exact hazard
+# that forced `yap-polish` and `yap-diarize` out of process). `bzip2-rs` is a
+# pure-Rust decoder whose only runtime deps are `crc32fast` + `tinyvec`, both
+# pure Rust — the same "a well-known pure-Rust option" argument OS-8 used to
+# pick `rubato`. Exact pins, and `tests/supply_chain.rs` walks the lockfile
+# graph from `wilson-voice` and asserts no `bzip2`/`bzip2-sys` is reachable, so
+# a feature flag or a transitive edge cannot defeat the choice silently.
+tar = "=0.4.46"
+bzip2-rs = "=0.1.2"
 # YP2 licensing. Yap's license is an Ed25519-signed claims blob verified
 # OFFLINE against a public key compiled into this binary (src/license.rs) —
 # there is no license server on the hot path and no account system. dalek is the

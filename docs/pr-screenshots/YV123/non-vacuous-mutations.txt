@@ -1,0 +1,210 @@
+YV123 — non-vacuity: fourteen defects restored one at a time, each caught.
+
+Every assertion this item ships was checked by putting the defect it exists to
+catch back into the tree, running the named test, and watching it fail. Each
+mutation was applied ALONE, on top of the branch head, and the file was written
+back byte-for-byte before the next one.
+
+This item is mostly a catalog, a mirror and one decompressor, which is exactly
+the shape of change whose tests can be true by accident — a hash assertion that
+compares a constant to itself, a "no libbz2" grep over a tree that has no
+compression at all, a permissions check that passes because of the umask. Two of
+the fourteen below started out that way and were rewritten until they failed:
+
+  * M5 SURVIVED on the first pass. `nothing_extracted_is_executable` was
+    asserting a property that held because `File::create` respects the umask,
+    not because the extractor does anything — deleting `set_non_executable`
+    changed nothing. The test now pre-creates the target file 0o755 (the
+    re-extraction case, where `File::create` truncates an existing file and
+    leaves its MODE alone) and the mutation is caught.
+  * The spec's own acceptance criterion `grep -rn "bzip2-sys\|libbz2"
+    Cargo.lock` returns no match is satisfied on this branch and would become
+    UNSATISFIABLE the moment YV122 (#137) merges: `sherpa-onnx-sys` declares
+    `bzip2 = "0.4"` as a BUILD-dependency to unpack its own prebuilt archive on
+    the build host. The assertion is therefore made over the lockfile closure of
+    `wilson-voice` — the app binary, the one that actually decompresses — and
+    M14 below is what proves that walk is not an empty set.
+
+==============================================================================
+EXTRACTION SAFETY — `models.rs::extract_tar_bz2` / `safe_entry_path`
+==============================================================================
+
+M1  `..` in an archive entry is accepted instead of refused (the ParentDir arm
+    pops a component like a normal path resolution would).
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 rejects_a_parent_dir_escape_entry
+    RESULT CAUGHT — and the test's second assertion is the one that matters:
+           the `../escape.txt` entry was WRITTEN outside the destination.
+
+M2  An absolute entry path is accepted (RootDir resets the destination to `/`).
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 rejects_an_absolute_path_entry
+    RESULT CAUGHT
+
+M3  Non-regular entries (symlink, device, fifo) are skipped instead of refused.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 rejects_a_symlink_entry
+    RESULT CAUGHT
+
+M4  The SMALLEST `.onnx` is returned instead of the largest — i.e. the upstream
+    archive's quantized `model.int8.onnx` sibling silently becomes the shipped
+    segmentation model.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 \
+             returns_the_full_precision_onnx_not_the_quantized_sibling
+    RESULT CAUGHT
+
+M5  Extracted files keep whatever mode they had (the explicit 0o644 is dropped).
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 nothing_extracted_is_executable
+    RESULT CAUGHT — extract_tar_bz2.rs:204, after the test was rewritten (see
+           the note at the top: the first version of this test SURVIVED).
+
+M6  The decompression-bomb cap is effectively removed (`u64::MAX`).
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 \
+             rejects_an_archive_that_claims_to_expand_past_the_cap
+    RESULT CAUGHT
+
+M15 The cap is metered on `entry.header().size()` again instead of
+    `Entry::size()` — i.e. the defect the adversarial review found, restored.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2
+    RESULT CAUGHT, in BOTH directions and by two different tests:
+             rejects_a_pax_size_record_that_claims_to_expand_past_the_cap FAILED
+             honours_a_pax_size_record_that_is_within_the_cap             FAILED
+           And the finding's other half is visible in the same run: M6's guard,
+           `rejects_an_archive_that_claims_to_expand_past_the_cap`, PASSES under
+           this mutation. It only ever rewrote the ustar header field, so it was
+           vacuous on the path an attacker would actually use — M6 was catching
+           a defect one field over from the one that shipped.
+
+M16 The PAX record's self-referential length is written one byte too long, so
+    the record is malformed. This attacks the FIXTURE, not the extractor: a
+    silently-ignored PAX record would leave the bomb test passing for some
+    unrelated reason and prove nothing about the cap.
+    → tests/extract_tar_bz2.rs (fixture writer)
+    GUARD  cargo test --test extract_tar_bz2 \
+             the_system_tar_also_reads_the_pax_size_not_the_ustar_header
+    RESULT CAUGHT — bsdtar stops honouring the record and reports the ustar
+           size, which is exactly the "this fixture proves nothing" state the
+           cross-check exists to detect.
+
+M17 The `copied > claimed` tripwire after the copy is deleted.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2
+    RESULT *** SURVIVOR — BY CONSTRUCTION, DECLARED, NOT COUNTED ***
+           13/13 still pass. That branch is unreachable under the exactly-pinned
+           `tar = "=0.4.46"`, where an entry's data is bounded by `take(size)`
+           with the same `size` that `Entry::size()` reports, so nothing can
+           write more than it claimed. It is a guard against a FUTURE tar-rs
+           metering against a third number — the class this whole finding
+           belonged to — and it is recorded here as unfalsifiable rather than
+           quietly folded into the caught count.
+
+M13 An archive containing no `.onnx` succeeds, returning the destination
+    directory instead of an error — the shape of failure that would hand the
+    sidecar a directory path and let "model load failed" be the first symptom.
+    → src/models.rs
+    GUARD  cargo test --test extract_tar_bz2 rejects_an_archive_with_no_onnx
+    RESULT CAUGHT — extract_tar_bz2.rs:297
+
+==============================================================================
+THE PIN AND THE MIRROR — catalog.json / supply_chain.rs
+==============================================================================
+
+M7  The vendored `.tar.bz2` is re-hashed in `catalog.json` only, leaving the
+    compiled-in constant stale — a re-vendor that ships bytes nobody re-verified.
+    → src/catalog.json
+    GUARD  cargo test --test supply_chain \
+             diarize_sidecar_vendors_sherpa_onnx_and_pins_the_archive
+    RESULT CAUGHT
+
+M8  The mirror revision becomes `main` instead of a commit sha — the entire
+    point of "pinned revisions" in the closed O6 decision.
+    → src/catalog.json
+    GUARD  cargo test --test diarize_catalog_shape \
+             every_entry_is_owned_pinned_and_hash_verified
+    RESULT CAUGHT
+
+M9  Downloads go straight to the vendor's GitHub release again — the exact
+    behaviour O6 closed against ("no direct vendor-release downloads at
+    runtime").
+    → src/models.rs
+    GUARD  cargo test --test diarize_catalog_shape \
+             download_urls_are_the_pinned_mirror_and_nothing_else
+    RESULT CAUGHT — diarize_catalog_shape.rs:102
+
+M10 The catalog writes an embedding width down again (`"embedding_dim": 512`).
+    This is the one number this backlog has already been wrong about twice —
+    the plan defaulted to 512, finding #19 "corrected" it to 192, and the
+    shipped CAM++ measures 512 — so the catalog states no width at all and the
+    sidecar reports it from the loaded graph.
+    → src/catalog.json
+    GUARD  cargo test --test diarize_catalog_shape \
+             the_catalog_never_states_an_embedding_dimension
+    RESULT CAUGHT — diarize_catalog_shape.rs:142
+
+M11 The `sherpa-onnx` pin rule accepts a caret range (`strip_prefix('=')` made
+    optional). This is the mutation that makes sub-assertion (a) meaningful on
+    a branch where YV122 has not landed: the RULE is falsifiable even though the
+    manifest line it will judge does not exist yet.
+    → tests/supply_chain.rs
+    GUARD  cargo test --test supply_chain \
+             sherpa_onnx_pin_rule_rejects_everything_but_an_exact_crates_io_pin
+    RESULT CAUGHT — supply_chain.rs:518
+
+M12 The installed path for an archived entry points at the `.tar.bz2` rather
+    than the extracted graph — which would make `is_diarize_downloaded` true
+    for a file the sidecar cannot load (and, per YV122's own measurement,
+    handing sherpa an unextracted archive aborts the process with SIGABRT).
+    → src/models.rs
+    GUARD  cargo test --test diarize_catalog_shape \
+             installed_paths_live_under_the_models_dir
+    RESULT CAUGHT — diarize_catalog_shape.rs:126
+
+M14 The pure-Rust decoder is defeated: `bzip2 = "=0.4.4"` (the libbz2 binding)
+    added alongside `bzip2-rs`, and the lockfile regenerated so `bzip2-sys`
+    really does resolve into the app's graph.
+    → src-tauri/Cargo.toml + desktop/Cargo.lock
+    GUARD  cargo test --test supply_chain \
+             diarize_sidecar_vendors_sherpa_onnx_and_pins_the_archive
+    RESULT CAUGHT — supply_chain.rs:371,
+           "`bzip2-sys` is reachable from `wilson-voice` in Cargo.lock."
+    NOTE   The first attempt at this mutation REPLACED `bzip2-rs` with `bzip2`,
+           which only proved that `models.rs` fails to compile without the
+           crate it calls. The mutation above keeps the code compiling and
+           attacks the property the test actually claims.
+
+==============================================================================
+SCORE
+==============================================================================
+17 mutations, 16 caught, 1 declared survivor (M17, unreachable by construction)
+— after two tests were rewritten because their first version was vacuous (M5 and
+the lockfile check) and one more, M6's, was found VACUOUS BY REVIEW rather than
+by this file.
+
+That last point is the honest headline of the second pass. M6 was run, it was
+caught, and it was still not a cap test: it mutated the constant, which any
+assertion mentioning the constant would catch, and its fixture only ever set the
+ustar header field — so the ONE mutation this file never ran, "meter the cap on
+the other size field", was the one that shipped broken. Mutating the guard's
+constant proves the guard is wired up; it does not prove the guard reads the
+right input. M15 is the mutation that would have caught it, and it exists now.
+
+Supporting non-vacuity tests that ship WITH the item, so the guards above stay
+falsifiable without a human re-running this file:
+  * `the_lockfile_closure_walk_is_not_an_empty_set` — asserts tauri, rusqlite,
+    reqwest, sha2, tar and bzip2-rs ARE reachable from `wilson-voice` and that
+    the two sidecars are NOT. Without it, "no bzip2-sys is reachable" could be
+    a sentence about an empty set.
+  * `sherpa_onnx_pin_rule_rejects_everything_but_an_exact_crates_io_pin` —
+    six fixtures, three accepted forms and three rejected ones.
+  * `the_fixture_writer_emits_an_archive_the_system_tar_agrees_with` — the
+    hand-written ustar fixtures are listed by `/usr/bin/tar -tjf`, so a bug in
+    the fixture writer fails here instead of quietly validating itself.
+  * `the_system_tar_also_reads_the_pax_size_not_the_ustar_header` — the same
+    guard for the PAX half, and load-bearing in a way the ustar one is not: it
+    is what stops the bomb fixture from demonstrating a tar-rs quirk instead of
+    a property of the archive. Two implementations, one answer, and it is not
+    the number in the ustar header.

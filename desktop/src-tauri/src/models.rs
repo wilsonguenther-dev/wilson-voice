@@ -50,6 +50,12 @@ pub struct Catalog {
     /// in the transcription model manager or be picked by `recommended_model`.
     #[serde(default)]
     pub polish_models: Vec<PolishCatalogModel>,
+    /// Diarization models for the `yap-diarize` sidecar (YV123). A third
+    /// separate list, for the same reason the polish list is separate: an ONNX
+    /// segmentation graph offered as a transcription engine is a bug, and
+    /// `smallest_model()` on a fresh headless run would happily pick one.
+    #[serde(default)]
+    pub diarize_models: Vec<DiarizeCatalogModel>,
 }
 
 /// One model as written in `catalog.json`. Only the fields we need are
@@ -215,6 +221,427 @@ where
         progress,
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Diarization models (YV123) — Wilson's closed O6 decision, executed:
+// "VENDOR the diarization models — Wilson-owned HF mirror, pinned revisions +
+// sha256, archive-extraction path in models.rs, supply-chain tests extended.
+// No direct vendor-release downloads at runtime."
+//
+// Structurally these are the polish entries with one extra concern. Every other
+// catalog entry in this file is a single file that the sha256 gate hands
+// straight to the engine; pyannote-segmentation-3.0 is published ONLY as a
+// `.tar.bz2` (there is no bare `.onnx` asset in the sherpa-onnx release), and
+// the mirror keeps it in that form byte-for-byte, so the download is followed
+// by ONE decompression step — see [`extract_tar_bz2`], which never runs on
+// bytes whose sha256 did not already match.
+// ---------------------------------------------------------------------------
+
+/// Which half of the diarization pipeline an entry supplies. Callers ask for a
+/// role, not an id — the sidecar's `load_models` request needs exactly one of
+/// each and must never be handed two segmentation graphs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiarizeModelRole {
+    Segmentation,
+    Embedding,
+}
+
+/// The archive formats this app can extract. Deliberately an enum with ONE
+/// variant: the extraction path exists for a single vendored file, and a
+/// catalog entry naming a format with no decoder must fail to parse rather than
+/// fall through to "download it and hope".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum ArchiveKind {
+    #[serde(rename = "tar.bz2")]
+    TarBz2,
+}
+
+/// The extraction half of an archived catalog entry: what comes out, how big it
+/// is, and what it must hash to. The archive's own sha256 lives on
+/// [`ModelFile`]; this is the second gate, applied to the file the sidecar
+/// actually loads, so a decoder bug cannot produce silently-wrong bytes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiarizeArchive {
+    pub kind: ArchiveKind,
+    /// Path of the wanted file INSIDE the archive, relative to the extraction
+    /// directory (e.g. `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`).
+    pub extracted_path: String,
+    pub extracted_size_bytes: u64,
+    pub extracted_sha256: String,
+}
+
+/// One diarization model. Mirrors [`PolishCatalogModel`] field for field, plus
+/// `role` (which half of the pipeline it is) and `archive` (`None` for the
+/// plain `.onnx` embedding model, `Some` for the segmentation archive).
+///
+/// **There is deliberately no `embedding_dim` here.** The sidecar reports it at
+/// model-load time from the loaded graph (`load_models` → `embedding_dim`), and
+/// a number written down in this file would be a second, unverified source of
+/// truth for a value that has already been wrong twice in this backlog's paper
+/// trail: the plan's schema defaulted to 512, plan finding #19 "corrected" that
+/// to 192, and the shipped `wespeaker_en_voxceleb_CAM++.onnx` MEASURES 512 (its
+/// own ONNX metadata carries `output_dim: 512`; a `resnet34` control measures
+/// 256). Finding #19's mechanism holds; its number does not — which is the
+/// whole argument for the width living in exactly one place, reported by the
+/// thing that loaded the graph.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiarizeCatalogModel {
+    /// Stable local id — also the archive/file stem, so a settings value maps
+    /// to exactly one blob on disk.
+    pub id: String,
+    pub role: DiarizeModelRole,
+    /// Wilson-owned Hugging Face mirror. NOT the vendor's GitHub release: O6
+    /// closed on vendoring precisely so the bytes the app fetches are pinned to
+    /// a revision Wilson controls and a sha256 compiled into this binary.
+    pub repo: String,
+    /// Commit sha on the mirror. Pinned, never a branch.
+    pub revision: String,
+    pub name: String,
+    /// SPDX-ish id. `mit` for pyannote-segmentation-3.0; `cc-by-4.0` for the
+    /// VoxCeleb-derived CAM++ weights (the WeSpeaker toolkit itself is
+    /// Apache-2.0). Rev's diarization models are non-commercial and are
+    /// therefore not in this catalog at any price point — plan finding #14.
+    pub license: String,
+    pub description: String,
+    /// The file as it is mirrored — for the segmentation entry this is the
+    /// `.tar.bz2`, and its sha256 is verified BEFORE extraction.
+    pub file: ModelFile,
+    #[serde(default)]
+    pub archive: Option<DiarizeArchive>,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+/// Every diarization model in the bundled catalog.
+pub fn diarize_models() -> &'static [DiarizeCatalogModel] {
+    &catalog().diarize_models
+}
+
+/// Look up a diarization model by its catalog id.
+pub fn diarize_model(id: &str) -> Option<&'static DiarizeCatalogModel> {
+    catalog().diarize_models.iter().find(|m| m.id == id)
+}
+
+/// The single entry for a role — what `load_models` is built from.
+pub fn diarize_model_for_role(role: DiarizeModelRole) -> Option<&'static DiarizeCatalogModel> {
+    catalog().diarize_models.iter().find(|m| m.role == role)
+}
+
+/// Where extracted archive contents land: `<models>/diarize/…`. A subdirectory
+/// because an archive brings a whole tree (LICENSE, the upstream export
+/// scripts, a quantized sibling), and none of that belongs loose next to the
+/// GGUFs.
+pub fn diarize_extract_dir() -> PathBuf {
+    models_dir().join("diarize")
+}
+
+/// Where the archive itself is downloaded to, before extraction.
+pub fn diarize_archive_path(model: &DiarizeCatalogModel) -> PathBuf {
+    models_dir().join(&model.file.filename)
+}
+
+/// The path the sidecar loads: the extracted `.onnx` for an archived entry, the
+/// downloaded file itself otherwise.
+pub fn diarize_model_path(model: &DiarizeCatalogModel) -> PathBuf {
+    match &model.archive {
+        Some(archive) => diarize_extract_dir().join(&archive.extracted_path),
+        None => models_dir().join(&model.file.filename),
+    }
+}
+
+/// Expected size of whatever [`diarize_model_path`] points at.
+fn diarize_expected_bytes(model: &DiarizeCatalogModel) -> u64 {
+    match &model.archive {
+        Some(archive) => archive.extracted_size_bytes,
+        None => model.file.size_bytes,
+    }
+}
+
+/// Present at its full expected size. The sha256 of these bytes was verified at
+/// install time (the archive before extraction AND the extracted file after),
+/// so this stays the same cheap check the other catalogs use.
+pub fn is_diarize_downloaded(model: &DiarizeCatalogModel) -> bool {
+    std::fs::metadata(diarize_model_path(model))
+        .map(|m| m.is_file() && m.len() == diarize_expected_bytes(model))
+        .unwrap_or(false)
+}
+
+/// Both halves present — the only state in which the sidecar can be asked to
+/// load models at all. YV132's row-13 gate reads this.
+pub fn is_diarize_ready() -> bool {
+    let mut roles = 0;
+    for model in diarize_models() {
+        if !is_diarize_downloaded(model) {
+            return false;
+        }
+        roles += 1;
+    }
+    roles == 2
+}
+
+/// Total bytes a fresh install must fetch to enable speaker detection — the
+/// number the "download N MB to enable speaker detection" copy states, computed
+/// from the catalog rather than typed into a string.
+pub fn diarize_download_bytes() -> u64 {
+    diarize_models().iter().map(|m| m.file.size_bytes).sum()
+}
+
+/// Download URLs for a diarization model: Wilson's Hugging Face mirror at the
+/// pinned revision, and nothing else. The `mirrors` list in this catalog hosts
+/// Handy's ASR repos — pointing at it would only add a 404 per attempt — and
+/// the vendor's own GitHub release is exactly what O6 closed against.
+pub fn diarize_download_urls(model: &DiarizeCatalogModel) -> Vec<String> {
+    vec![format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        model.repo, model.revision, model.file.filename
+    )]
+}
+
+/// Fetch a diarization model through the same resumable, sha256-verified path
+/// as every other model, then — for an archived entry — extract it and verify
+/// the extracted file's own sha256. Returns the path the sidecar loads.
+pub async fn download_diarize_model_with<F>(id: &str, progress: F) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    let model = diarize_model(id).ok_or_else(|| format!("unknown diarize model '{id}'"))?;
+    let final_path = diarize_model_path(model);
+    // Idempotent: an already-installed model is not re-downloaded, and for an
+    // archived entry the archive is gone by then (deleted after extraction) —
+    // so this check has to be about the file that is actually used.
+    if is_diarize_downloaded(model) {
+        let total = model.file.size_bytes;
+        let mut progress = progress;
+        progress(total, total);
+        return Ok(final_path);
+    }
+
+    let urls = diarize_download_urls(model);
+    let downloaded = download_file(
+        &urls,
+        &diarize_archive_path(model),
+        model.file.size_bytes,
+        &model.file.sha256,
+        progress,
+    )
+    .await?;
+
+    let Some(archive) = &model.archive else {
+        return Ok(downloaded);
+    };
+    // From here on the bytes are byte-for-byte the ones the catalog's sha256
+    // pinned — extraction never runs on unverified input.
+    let dest_dir = diarize_extract_dir();
+    let extracted = match archive.kind {
+        ArchiveKind::TarBz2 => extract_tar_bz2(&downloaded, &dest_dir)?,
+    };
+    let expected = dest_dir.join(&archive.extracted_path);
+    if extracted != expected {
+        return Err(format!(
+            "{id}: archive yielded {} but the catalog pins {}",
+            extracted.display(),
+            expected.display()
+        ));
+    }
+    verify_sha256(&expected, &archive.extracted_sha256).map_err(|e| {
+        // Wrong bytes out of a right archive: leave nothing half-installed.
+        let _ = std::fs::remove_file(&expected);
+        e
+    })?;
+    // The archive is a second copy of bytes we now hold extracted; it is 7 MB
+    // of nothing. `is_diarize_downloaded` deliberately looks at the extracted
+    // file, so re-running this function is still a no-op after deletion.
+    let _ = std::fs::remove_file(&downloaded);
+    Ok(expected)
+}
+
+// ---------------------------------------------------------------------------
+// tar.bz2 extraction (YV123)
+// ---------------------------------------------------------------------------
+
+/// Hard cap on what one archive may decompress to. The vendored archive is
+/// 7.0 MB in and ~7.6 MB out; a decompression bomb is the one new abuse this
+/// path introduces that a plain sha256-verified download never had (a verified
+/// hash proves the bytes are the ones we pinned, and says nothing about what
+/// they expand to if the pin itself is ever wrong).
+const MAX_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Streaming bzip2 → tar extraction of `archive_path` into `dest_dir`,
+/// returning the path of the extracted `.onnx`.
+///
+/// This is the only decompression path in the app, so it treats the archive as
+/// untrusted structure even though its bytes are trusted:
+///
+/// * every entry path must be relative, with no `..` and no root/prefix
+///   component — a `../../…` entry is a hard error, never a write outside
+///   `dest_dir`;
+/// * only regular files and directories are extracted; a symlink, hardlink,
+///   device or fifo entry is a hard error (a symlink is the other half of the
+///   classic escape, and nothing in a model archive needs one);
+/// * files are written 0o644 — the upstream archive ships executable `.py`
+///   helpers, and Yap has no reason to make anything it unpacks runnable;
+/// * total output is capped at [`MAX_EXTRACTED_BYTES`], metered on
+///   [`tar::Entry::size`] — the size the READER acts on, which a PAX `size=`
+///   record can raise above the number in the entry's own ustar header. Metering
+///   the header field instead is how this cap was bypassable when it shipped
+///   (a 384-byte archive extracted 314,572,800 bytes); see the comment at the
+///   metering site.
+///
+/// When several `.onnx` files are present (the upstream segmentation archive
+/// carries `model.onnx` alongside a quantized `model.int8.onnx`), the LARGEST
+/// is returned — the full-precision graph. The caller does not rely on that
+/// alone: `download_diarize_model_with` asserts the returned path equals the
+/// one the catalog pins and re-verifies its sha256, so a wrong pick is an
+/// error rather than a quietly-different model.
+pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| format!("open {}: {e}", archive_path.display()))?;
+    let decoder = bzip2_rs::DecoderReader::new(std::io::BufReader::new(file));
+    let mut archive = tar::Archive::new(decoder);
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("create {}: {e}", dest_dir.display()))?;
+
+    let mut written: u64 = 0;
+    let mut onnx: Vec<(u64, PathBuf)> = Vec::new();
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("read {}: {e}", archive_path.display()))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("read {}: {e}", archive_path.display()))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("archive entry has an unreadable path: {e}"))?
+            .into_owned();
+        let kind = entry.header().entry_type();
+
+        // Metadata-only entries (pax/GNU long names) carry no payload of their
+        // own; the reader has already folded them into the entry that follows.
+        if kind.is_pax_global_extensions()
+            || kind.is_pax_local_extensions()
+            || kind.is_gnu_longname()
+            || kind.is_gnu_longlink()
+        {
+            continue;
+        }
+        let safe = safe_entry_path(dest_dir, &path)?;
+        if kind.is_dir() {
+            std::fs::create_dir_all(&safe)
+                .map_err(|e| format!("create {}: {e}", safe.display()))?;
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(format!(
+                "archive entry '{}' is not a regular file or directory ({kind:?}) — refusing to extract",
+                path.display()
+            ));
+        }
+        // `Entry::size()`, NOT `entry.header().size()`. A tar entry can state
+        // its size in two places, and tar-rs acts on the second one: a
+        // preceding PAX `x` header's `size=` record OVERRIDES the ustar header
+        // field (tar-0.4.46 `src/archive.rs:353`, whose own comment names
+        // parser disagreement as a malicious-archive construction vector), and
+        // the reader then hands over `Entry::size()` bytes. Metering the cap on
+        // the header field meant metering a number nothing else in the pipeline
+        // used: measured against this function, a 384-byte `.tar.bz2` declaring
+        // 512 in its ustar header and 300 MiB in a PAX record extracted
+        // 314,572,800 bytes to disk and returned `Ok` — the cap counter had
+        // reached 512. `Entry::size()` is the claim the reader acts on, so it
+        // is the claim the cap has to read.
+        //
+        // No `unwrap_or(0)` fallback either, and none is needed: `Entry::size()`
+        // is infallible because a size field too corrupt to parse already
+        // failed at `header.entry_size()?` inside the iterator above, which the
+        // `entry.map_err(…)` on the line before turns into a hard error. An
+        // unparseable size is never a free pass past the cap.
+        let claimed = entry.size();
+        written = written.saturating_add(claimed);
+        if written > MAX_EXTRACTED_BYTES {
+            return Err(format!(
+                "archive expands past the {MAX_EXTRACTED_BYTES}-byte extraction cap"
+            ));
+        }
+        if let Some(parent) = safe.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        let mut out =
+            std::fs::File::create(&safe).map_err(|e| format!("create {}: {e}", safe.display()))?;
+        let copied = std::io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("extract {}: {e}", safe.display()))?;
+        // The tripwire for the whole class the PAX bug belonged to: the cap is
+        // metered on a number the entry CLAIMS, which is only a cap at all so
+        // long as the reader cannot then hand over more than it claimed. It
+        // cannot today — tar-rs bounds an entry's data at `take(size)` with the
+        // same `size` `Entry::size()` reports — so this branch is unreachable
+        // under the exactly-pinned `tar = "=0.4.46"`, and it is deliberately
+        // unreachable rather than tested: what it guards is a future version
+        // metering against a third number. Declared as an unfalsifiable guard,
+        // not counted as tested coverage.
+        if copied > claimed {
+            return Err(format!(
+                "archive entry '{}' wrote {copied} bytes against a claimed {claimed} — refusing to extract",
+                path.display()
+            ));
+        }
+        out.sync_all()
+            .map_err(|e| format!("sync {}: {e}", safe.display()))?;
+        set_non_executable(&safe)?;
+        if safe.extension().map(|e| e.eq_ignore_ascii_case("onnx")) == Some(true) {
+            onnx.push((copied, safe));
+        }
+    }
+
+    onnx.into_iter()
+        .max_by_key(|(size, _)| *size)
+        .map(|(_, path)| path)
+        .ok_or_else(|| format!("{} contains no .onnx file", archive_path.display()))
+}
+
+/// `dest_dir` joined with an archive entry path, or an error if that path could
+/// ever land outside `dest_dir`. Checked on the COMPONENTS, not on the joined
+/// string: `dest.join("../x")` is a perfectly ordinary `PathBuf` that
+/// `starts_with(dest)` still answers `true` for.
+fn safe_entry_path(dest_dir: &Path, entry: &Path) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let mut out = dest_dir.to_path_buf();
+    let mut had_component = false;
+    for component in entry.components() {
+        match component {
+            Component::Normal(part) => {
+                out.push(part);
+                had_component = true;
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "archive entry '{}' escapes the extraction directory — refusing to extract",
+                    entry.display()
+                ));
+            }
+        }
+    }
+    if !had_component {
+        return Err(format!(
+            "archive entry '{}' has no usable name",
+            entry.display()
+        ));
+    }
+    Ok(out)
+}
+
+/// 0o644 on the extracted file. The upstream archive marks its `.py` helpers
+/// executable; nothing Yap unpacks is meant to be run.
+#[cfg(unix)]
+fn set_non_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+        .map_err(|e| format!("chmod {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_non_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// The catalog's smallest download — what the headless `--transcribe-file` mode
@@ -446,8 +873,7 @@ where
         return Ok(dest.to_path_buf());
     }
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let partial = partial_path(dest);
     let client = reqwest::Client::new();
@@ -569,7 +995,12 @@ mod tests {
         for m in &cat.models {
             assert!(!m.id.is_empty());
             assert!(!m.name.is_empty());
-            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert_eq!(
+                m.revision.len(),
+                40,
+                "{}: revision must be a pinned sha",
+                m.id
+            );
             assert!(!m.files.is_empty(), "{}: no files", m.id);
             for f in &m.files {
                 assert!(f.filename.ends_with(".gguf"), "{}: {}", m.id, f.filename);
@@ -577,7 +1008,11 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64, "{}: {} bad sha256", m.id, f.filename);
                 assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit()));
             }
-            assert!(m.default_file().is_some(), "{}: default_quant unresolvable", m.id);
+            assert!(
+                m.default_file().is_some(),
+                "{}: default_quant unresolvable",
+                m.id
+            );
         }
         // Handy's top-2 recommended set, plus the smallest whisper for tests.
         let ranks: Vec<Option<u32>> = cat.models.iter().map(|m| m.recommended_rank).collect();
@@ -595,7 +1030,12 @@ mod tests {
         assert_eq!(polish.len(), 2, "1.5B primary + 0.5B fast tier");
         for m in polish {
             assert!(!m.id.is_empty());
-            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert_eq!(
+                m.revision.len(),
+                40,
+                "{}: revision must be a pinned sha",
+                m.id
+            );
             assert!(
                 m.revision.chars().all(|c| c.is_ascii_hexdigit()),
                 "{}: revision must be a sha",
