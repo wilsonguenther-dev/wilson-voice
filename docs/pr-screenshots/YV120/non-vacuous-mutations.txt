@@ -1,0 +1,107 @@
+YV120 — non-vacuity: each gate, broken on purpose, failing
+Every mutation below was applied, run, and reverted. The point is that a
+green test file proves nothing unless the tests can go red for the reason
+they claim to check.
+
+M1 — der() stops counting confusion (the term the hand-worked example is built around)
+test der_matches_hand_worked_example ... FAILED
+thread 'der_matches_hand_worked_example' (14319705) panicked at src-tauri/tests/diarization_metrics.rs:86:5:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+M2 — the speaker mapping matches on NAME instead of maximising overlap
+test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... FAILED
+thread 'der_is_zero_when_the_hypothesis_only_renamed_the_speakers' (14320293) panicked at src-tauri/tests/diarization_metrics.rs:111:5:
+DER: DerReport { miss: 0.0, false_alarm: 0.0, confusion: 30.0, total: 30.0 }
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+M3 — jer() returns the DER rate instead of the per-speaker mean
+test jer_exposes_a_speaker_der_hides ... FAILED
+test jer_matches_hand_worked_example ... FAILED
+thread 'jer_exposes_a_speaker_der_hides' (14321347) panicked at src-tauri/tests/diarization_metrics.rs:173:5:
+JER
+thread 'jer_matches_hand_worked_example' (14321348) panicked at src-tauri/tests/diarization_metrics.rs:155:5:
+JER: 0.3 vs 0.26666666666666666
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+M4 — a threshold gets a guessed number (the failure this whole item exists to prevent)
+test meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate ... FAILED
+thread 'meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate' (14322348) panicked at src-tauri/tests/meeting_eval.rs:2972:9:
+ROOM_3_DER_GATE carries a number (Some(0.35)) but nothing in this repo has produced a diarization hypothesis yet — a gate set before the first measurement is the vendor-blog threshold problem in a different file. YV126 sets these, against fixture (e), and records the tuning run.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+
+M5 — the mechanism-ceiling gate is pointed at fixture (e) instead of fixture (f)
+     (proves the ceiling assertions discriminate between the two fixtures, rather
+      than passing on anything with speakers in it)
+test meeting_eval_classroom_6_exceeds_the_segmentation_ceiling_on_purpose ... FAILED
+thread 'meeting_eval_classroom_6_exceeds_the_segmentation_ceiling_on_purpose' (14322560) panicked at src-tauri/tests/meeting_eval.rs:3036:5:
+fixture (f) must exceed the 2-simultaneous ceiling; peak is 1
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.08s
+
+M6 — the RTTM is shifted five seconds out of alignment with the audio it describes
+     (a well-formed ground truth pointing at silence — the failure the energy
+      check exists for, and the one a schema-only check would miss)
+test meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be ... FAILED
+thread 'meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be' (14322788) panicked at src-tauri/tests/meeting_eval.rs:2869:9:
+room-3-near-field: turn RttmTurn { speaker_id: "spk_b", start_seconds: 41.8415, end_seconds: 45.3823125 } falls outside the audio
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.06s
+
+All six reverted; the suite is green again:
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+test result: ok. 27 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 49.40s
+
+
+Note on M6: the shifted RTTM tripped the "falls outside the audio" bound before
+it reached the energy check, because shifting every turn by five seconds pushes
+the last one past the end of the file. Both asserts are guarding the same claim
+— that the ground truth describes THIS audio — and the earlier one fired first.
+A smaller shift reaches the energy assert instead ("the ground truth points at
+silence"); the failure that matters is that a misaligned RTTM cannot pass.
+
+
+============================================================
+Added by the review fix — the two mutations for the acoustic
+speaker-distinctness gate (assert_rttm_fits_the_audio)
+============================================================
+
+M7 — no mutation at all: the corpus that ACTUALLY SHIPPED, run against the new gate
+     (the strongest form of non-vacuity available — the defect is not hypothetical,
+      it is the bytes this branch is replacing, and the string-table check passed on
+      them, which is why they shipped)
+$ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval room_3_is_the_clean -- --nocapture
+room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 170.2 Hz, spk_c 170.2 Hz
+thread 'meeting_eval_room_3_is_the_clean_near_field_case_it_claims_to_be' panicked at src-tauri/tests/meeting_eval.rs:3127:13:
+room-3-near-field: spk_a (170.2 Hz) and spk_b (170.2 Hz) are the same voice as far as the audio is concerned — 1.000x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.69s
+
+$ YAP_EVAL_CORPUS=<pre-fix corpus> cargo test --test meeting_eval classroom_6_exceeds -- --nocapture
+classroom-6-far-field: measured median F0 — spk_a 170.2 Hz, spk_b 173.9 Hz, spk_c 170.2 Hz, spk_d 170.2 Hz, spk_e 173.9 Hz, spk_f 156.9 Hz
+classroom-6-far-field: spk_a (170.2 Hz) and spk_b (173.9 Hz) are the same voice as far as the audio is concerned — 1.022x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.79s
+
+Note that in both runs the string-table check — `voices.dedup(); assert_eq!(voices.len(),
+meta.speakers.len())` — ran FIRST and passed, on six speakers who are one person. That is
+the whole argument for the acoustic half: it is the assert immediately after the one that
+already agreed with the metadata.
+
+M8 — the original defect, restored: synthesize_with() ignores its `voice` argument
+     (`.args(["-v", VOICE, ...])` instead of `.args(["-v", voice, ...])`), both fixtures
+     regrown from scratch into a scratch corpus root, gate run against the result
+$ YAP_EVAL_CORPUS=/tmp/yv120-m8 cargo test --test meeting_eval meeting_eval_generate_diarization_fixtures -- --ignored --nocapture
+wrote /tmp/yv120-m8/room-3-near-field — 44.3s, 12 turns, 3 speakers, peak 1 simultaneous
+wrote /tmp/yv120-m8/classroom-6-far-field — 81.8s, 21 turns, 6 speakers, peak 3 simultaneous
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 20.22s
+
+$ YAP_EVAL_CORPUS=/tmp/yv120-m8 cargo test --test meeting_eval room_3_is_the_clean -- --nocapture
+room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 170.2 Hz, spk_c 170.2 Hz
+room-3-near-field: spk_a (170.2 Hz) and spk_b (170.2 Hz) are the same voice as far as the audio is concerned — 1.000x apart, under the 1.120x floor.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.69s
+
+Mutation reverted, the scratch corpus root deleted, and the committed manifest restored
+(the writer had rewritten it for the 6-file scratch root; `meeting_eval_write_manifest`
+regenerated it against the real corpus and the diff is byte-identical for the four
+fixtures this branch does not touch).
+
+Both re-verified green afterwards:
+test result: ok. 27 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 49.46s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

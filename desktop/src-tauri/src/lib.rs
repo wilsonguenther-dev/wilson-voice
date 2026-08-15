@@ -22,6 +22,15 @@ pub mod db;
 // Public so the golden formatting corpus in `tests/fixtures/formatting/` can run
 // the real pipeline from an integration test (YV59).
 pub mod dictation;
+// YV120 — the diarization eval metrics (DER / JER / enrollment-EER) and the
+// `CosineDistance` / `CosineSimilarity` newtypes. In the LIBRARY rather than in
+// a test binary for two reasons the module header spells out: yap23's shipped
+// clustering API takes a `CosineDistance` (a newtype declared inside a test
+// crate could not be that type, and a second declaration is the mixed-unit bug
+// merged finding #20 is about), and four separate integration-test binaries
+// score against these same functions. Pure — no sidecar, no model bytes, no
+// audio — which is why it can land before any diarization code exists.
+pub mod diarize_metrics;
 // YV95: public because OS-12's energy rule is now a function with a test.
 // `hover_tick_ms` is the whole of fix (2) — a visible-but-untouched pill during
 // a three-hour meeting polls at 1 Hz, not 13 Hz — and
