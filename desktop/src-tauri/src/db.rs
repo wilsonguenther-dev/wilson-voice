@@ -485,6 +485,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         let sql = match next {
             1 => meetings::MIGRATION_1_MEETINGS,
             2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
+            3 => meetings::MIGRATION_3_TWO_TRACK,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1336,6 +1337,8 @@ impl Database {
             processed_through_seconds: 0.0,
             audio_kept: true,
             mic_wav_path: None,
+            sys_wav_path: None,
+            tap_rebuilds: None,
             summary: None,
             summary_model: None,
             created_at: now,
@@ -1427,6 +1430,43 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    /// YV106 — record the system-audio track's WAV for a two-track meeting.
+    ///
+    /// Separate from [`Self::finish_meeting`] rather than a fifth parameter on
+    /// it, for the reason `set_meeting_diagnostics` is separate: `finish_meeting`
+    /// is 22-A's shipped signature with a live caller, and a mic-only meeting
+    /// must keep taking exactly the path it takes today. A meeting with no tap
+    /// simply never calls this.
+    ///
+    /// `audio_kept` is deliberately NOT touched here: it tracks the meeting's
+    /// audio as one thing, and it is `finish_meeting`'s to set.
+    pub fn set_meeting_sys_wav_path(&self, id: &str, path: Option<&Path>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let wav = path.map(|p| p.to_string_lossy().to_string());
+        conn.execute(
+            "UPDATE meetings SET sys_wav_path = ?2 WHERE id = ?1",
+            params![id, wav],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// YV104 / YV106 — persist the tap's rebuild log onto the meeting row.
+    ///
+    /// Called once, at stop, with `syscapture::TapRebuildLog::to_json`. A
+    /// meeting that never needed a rebuild never calls this, so the column
+    /// stays `NULL` and "no rebuilds" is distinguishable from "an empty log was
+    /// written", which is the distinction a diagnosis a week later turns on.
+    pub fn set_meeting_tap_rebuilds(&self, id: &str, json: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE meetings SET tap_rebuilds = ?2 WHERE id = ?1",
+            params![id, json],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
     /// YV95 / OS-12 — write (or rewrite) the session's diagnostics blob.
     ///
     /// Called twice per meeting: once at start with the preflight readings, so a
@@ -1480,8 +1520,8 @@ impl Database {
         for seg in segments {
             tx.execute(
                 "INSERT INTO meeting_segments
-                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (id, meeting_id, start_seconds, end_seconds, text, confidence, created_at, track)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     Uuid::new_v4().to_string(),
                     meeting_id,
@@ -1490,6 +1530,7 @@ impl Database {
                     seg.text,
                     seg.confidence,
                     now,
+                    seg.track,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -1593,7 +1634,8 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at
+                "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
+                        track
                  FROM meeting_segments WHERE meeting_id = ?1
                  ORDER BY start_seconds ASC, created_at ASC",
             )
@@ -1634,17 +1676,27 @@ impl Database {
     pub fn delete_meeting(&self, id: &str) -> Result<Vec<PathBuf>, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let wavs: Vec<PathBuf> = {
+            // YV106: BOTH tracks. A delete that removed only the mic wav would
+            // leave the other people on the call on disk after the user asked
+            // for the meeting to be gone — a privacy feature that half-deletes
+            // is worse than none, and the second track is the half that would
+            // have been forgotten.
             let mut stmt = conn
-                .prepare("SELECT mic_wav_path FROM meetings WHERE id = ?1")
+                .prepare("SELECT mic_wav_path, sys_wav_path FROM meetings WHERE id = ?1")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![id], |r| r.get::<_, Option<String>>(0))
+                .query_map(params![id], |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                })
                 .map_err(|e| e.to_string())?;
             let mut v = Vec::new();
             for r in rows {
-                if let Some(p) = r.map_err(|e| e.to_string())? {
-                    v.push(PathBuf::from(p));
-                }
+                let (mic, sys) = r.map_err(|e| e.to_string())?;
+                v.extend(mic.map(PathBuf::from));
+                v.extend(sys.map(PathBuf::from));
             }
             v
         };
@@ -1692,24 +1744,34 @@ impl Database {
         let cutoff = cutoff.to_rfc3339();
         let mut paths = Vec::new();
         {
+            // YV106: both tracks age out together — the retention promise is
+            // about the meeting's AUDIO, and a system track left behind after
+            // the mic track expired would be the promise quietly broken.
             let mut stmt = conn
                 .prepare(
-                    "SELECT mic_wav_path FROM meetings
-                     WHERE mic_wav_path IS NOT NULL AND started_at < ?1",
+                    "SELECT mic_wav_path, sys_wav_path FROM meetings
+                     WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
+                       AND started_at < ?1",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![cutoff], |r| r.get::<_, Option<String>>(0))
+                .query_map(params![cutoff], |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                })
                 .map_err(|e| e.to_string())?;
             for r in rows {
-                if let Some(p) = r.map_err(|e| e.to_string())? {
-                    paths.push(PathBuf::from(p));
-                }
+                let (mic, sys) = r.map_err(|e| e.to_string())?;
+                paths.extend(mic.map(PathBuf::from));
+                paths.extend(sys.map(PathBuf::from));
             }
         }
         conn.execute(
-            "UPDATE meetings SET mic_wav_path = NULL, audio_kept = 0
-             WHERE mic_wav_path IS NOT NULL AND started_at < ?1",
+            "UPDATE meetings SET mic_wav_path = NULL, sys_wav_path = NULL, audio_kept = 0
+             WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
+               AND started_at < ?1",
             params![cutoff],
         )
         .map_err(|e| e.to_string())?;
@@ -2909,7 +2971,7 @@ const MEETING_COLS: &str = "m.id, m.title, m.source, m.started_at, m.ended_at, \
      m.duration_seconds, m.state, m.error, m.processed_through_seconds, m.audio_kept, \
      m.mic_wav_path, m.summary, m.summary_model, m.created_at, \
      (SELECT COUNT(*) FROM meeting_segments s WHERE s.meeting_id = m.id), \
-     m.diagnostics";
+     m.diagnostics, m.sys_wav_path, m.tap_rebuilds";
 
 fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
     Ok(Meeting {
@@ -2933,6 +2995,10 @@ fn map_meeting(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
         // defaulted string: "we never measured" and "we measured nothing" are
         // different answers.
         diagnostics: row.get(15)?,
+        // YV106 — migration 3. `None` is the honest answer for every mic-only
+        // meeting, which is all of 22-A's and most of 22-B's.
+        sys_wav_path: row.get(16)?,
+        tap_rebuilds: row.get(17)?,
     })
 }
 
@@ -2945,6 +3011,7 @@ fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegme
         text: row.get(4)?,
         confidence: row.get(5)?,
         created_at: parse_dt(row.get(6)?),
+        track: row.get(7)?,
     })
 }
 

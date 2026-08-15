@@ -17,8 +17,48 @@ use support::{open_db, temp_dir};
 /// 1 = YV94's meeting tables. 2 = YV95's `diagnostics` column (OS-12's thermal +
 /// battery instrumentation), which is what makes the ladder worth having: the
 /// second step is the first one that had to run against databases the first step
-/// already wrote.
-const EXPECTED_VERSION: i64 = 2;
+/// already wrote. 3 = YV106's two-track columns (`sys_wav_path`,
+/// `tap_rebuilds`, `meeting_segments.track`).
+const EXPECTED_VERSION: i64 = 3;
+
+/// Put a database BACK on an older rung, columns and all, so the step under
+/// test is a real upgrade of a real older database rather than a fresh install
+/// that happened to walk past it.
+///
+/// Drops are in reverse ladder order, and each rung's drop list is exactly the
+/// columns that rung's migration adds — which is what makes this rewind, and not
+/// a second, divergent statement of the schema.
+fn rewind_to(path: &std::path::Path, version: i64) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 3 {
+        sql.push_str(
+            "ALTER TABLE meetings DROP COLUMN sys_wav_path;\n\
+             ALTER TABLE meetings DROP COLUMN tap_rebuilds;\n\
+             ALTER TABLE meeting_segments DROP COLUMN track;\n",
+        );
+    }
+    if version < 2 {
+        sql.push_str("ALTER TABLE meetings DROP COLUMN diagnostics;\n");
+    }
+    sql.push_str(&format!("PRAGMA user_version = {version};\nCOMMIT;"));
+    conn.execute_batch(&sql)
+        .unwrap_or_else(|e| panic!("rewind to schema {version}: {e}"));
+}
+
+/// The columns on `meetings`, as SQLite reports them.
+fn columns(path: &std::path::Path, table: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+        .unwrap();
+    let cols = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    cols
+}
 
 #[test]
 fn opening_the_db_twice_is_a_no_op() {
@@ -144,39 +184,25 @@ fn migration_one_creates_the_whole_meeting_schema() {
         assert_eq!(n, 1, "migration 1 must create {kind} {name}");
     }
 
-    // The columns 22-A deliberately does NOT carry: consent_ack (finding #13 —
-    // one settings_kv key instead), the diarization columns (yap23), and the
-    // 22-B two-track columns. A future item ADDS them as migration 2; if one
-    // shows up here, someone shipped it early and this is the tripwire.
-    let mut stmt = conn
-        .prepare("SELECT name FROM pragma_table_info('meetings')")
-        .unwrap();
-    let cols: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
+    // The columns NO phase has shipped yet: consent_ack (finding #13 — one
+    // settings_kv key instead) and the diarization set (yap23). If one shows up
+    // here, someone shipped it early and this is the tripwire.
+    //
+    // `sys_wav_path` and `meeting_segments.track` USED to be on this list. They
+    // are migration 3's now (YV106), which is the step this list was waiting
+    // for, so they moved to
+    // `migration_three_adds_the_two_track_columns_without_touching_existing_rows`
+    // — asserted present rather than asserted absent. Nothing was loosened: the
+    // yap23 names below are still refused.
+    let path = dir.join("wilson_voice.db");
+    let cols = columns(&path, "meetings");
     assert!(!cols.contains(&"consent_ack".to_string()), "{cols:?}");
-    assert!(!cols.contains(&"sys_wav_path".to_string()), "{cols:?}");
 
-    let mut stmt = conn
-        .prepare("SELECT name FROM pragma_table_info('meeting_segments')")
-        .unwrap();
-    let cols: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    for banned in [
-        "speaker_id",
-        "speaker_label",
-        "cluster_index",
-        "overlapped",
-        "track",
-    ] {
+    let cols = columns(&path, "meeting_segments");
+    for banned in ["speaker_id", "speaker_label", "cluster_index", "overlapped"] {
         assert!(
             !cols.contains(&banned.to_string()),
-            "{banned} is a later phase's column, not 22-A's: {cols:?}"
+            "{banned} is a later phase's column (yap23), not this one's: {cols:?}"
         );
     }
 }
@@ -197,19 +223,17 @@ fn migration_two_adds_diagnostics_without_touching_existing_rows() {
         let db = open_db(&dir);
         let id = support::seed_meeting(&db, &dir, "Recorded before YV95", &["hello there"]);
         drop(db);
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "BEGIN IMMEDIATE; ALTER TABLE meetings DROP COLUMN diagnostics; \
-             PRAGMA user_version = 1; COMMIT;",
-        )
-        .expect("rewind to the YV94 schema");
+        rewind_to(&path, 1);
         id
     };
 
     let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
     assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
 
-    let m = db.get_meeting(&id).unwrap().expect("the old meeting survived");
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
     assert_eq!(m.title, "Recorded before YV95");
     assert_eq!(m.segment_count, 1, "its segments are untouched");
     assert!(
@@ -233,4 +257,175 @@ fn migration_two_adds_diagnostics_without_touching_existing_rows() {
     let db = wilson_voice_lib::db::Database::open(path).unwrap();
     assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
     assert!(db.get_meeting(&id).unwrap().unwrap().diagnostics.is_some());
+}
+
+// ── YV106 · migration 3 ──────────────────────────────────────────────────────
+
+/// The step this item owns: three additive columns, applied to a database that
+/// already has 22-A meetings in it, with nothing backfilled and nothing moved.
+///
+/// The interesting case is again the EXISTING database, not the fresh install:
+/// `meeting_segments.track` is `NOT NULL DEFAULT 0`, and the whole argument for
+/// that default is that every row already in the wild came from the mic. If that
+/// is true, an upgraded row reads back as track 0 with no migration code having
+/// touched it — and if it is not, this fails.
+#[test]
+fn migration_three_adds_the_two_track_columns_without_touching_existing_rows() {
+    let dir = temp_dir("two-track-columns");
+    let path = dir.join("wilson_voice.db");
+
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before YV106", &["hello there"]);
+        drop(db);
+        rewind_to(&path, 2);
+        id
+    };
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV106");
+    assert_eq!(m.segment_count, 1, "its segments are untouched");
+    assert!(
+        m.mic_wav_path.is_some(),
+        "the mic track it already had is still there"
+    );
+    assert!(
+        m.sys_wav_path.is_none() && m.tap_rebuilds.is_none(),
+        "a mic-only meeting has no second track and no rebuild log"
+    );
+    let segments = db.list_meeting_segments(&id).unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(
+        segments[0].track,
+        wilson_voice_lib::meetings::MIC_TRACK,
+        "every segment recorded before this migration IS a mic segment — that \
+         is why the default needs no backfill"
+    );
+
+    // The columns are real, and both of the meeting-level ones are writable.
+    let sys = dir.join("sys.wav");
+    std::fs::write(&sys, b"RIFF....WAVEfake").unwrap();
+    db.set_meeting_sys_wav_path(&id, Some(&sys)).unwrap();
+    db.set_meeting_tap_rebuilds(&id, r#"{"version":1,"count":2}"#)
+        .unwrap();
+    let m = db.get_meeting(&id).unwrap().unwrap();
+    assert_eq!(m.sys_wav_path.as_deref(), Some(sys.to_str().unwrap()));
+    assert!(m.tap_rebuilds.unwrap().contains("\"count\":2"));
+
+    // Re-opening does not re-run the step (an `ALTER TABLE … ADD COLUMN` that
+    // ran twice would be an error, not a no-op — which is the whole reason the
+    // ladder writes `user_version` inside the step's transaction).
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert!(db.get_meeting(&id).unwrap().unwrap().sys_wav_path.is_some());
+}
+
+/// A FRESH database reaches version 3 in one pass, with all three columns
+/// present — the install every new user gets, which never sees the steps as
+/// separate events.
+#[test]
+fn a_fresh_database_lands_on_three_with_every_column_present() {
+    let dir = temp_dir("fresh-three");
+    let db = open_db(&dir);
+    assert_eq!(db.schema_version().unwrap(), 3);
+    drop(db);
+
+    let path = dir.join("wilson_voice.db");
+    let meetings = columns(&path, "meetings");
+    for col in [
+        "mic_wav_path",
+        "diagnostics",
+        "sys_wav_path",
+        "tap_rebuilds",
+    ] {
+        assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
+    }
+    assert!(columns(&path, "meeting_segments").contains(&"track".to_string()));
+}
+
+/// The acceptance line in full: a synthetic VIRTUAL meeting — two recorded
+/// tracks, transcript segments from both — round-trips through the tables,
+/// keeps its two wav paths apart, and keeps its segments attributed.
+///
+/// This is the row shape YV107's merge reads and YV108 renders, proved at the
+/// storage layer before either exists.
+#[test]
+fn a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments() {
+    use wilson_voice_lib::meetings::{NewMeetingSegment, MIC_TRACK, SYSTEM_TRACK};
+
+    let dir = temp_dir("virtual-meeting");
+    let db = open_db(&dir);
+
+    let meeting = db.create_meeting("Virtual standup", "manual").unwrap();
+    let mic = dir.join("t0.wav");
+    let sys = dir.join("t1.wav");
+    std::fs::write(&mic, b"RIFF....WAVEfake").unwrap();
+    std::fs::write(&sys, b"RIFF....WAVEfake").unwrap();
+
+    db.append_meeting_segments(
+        &meeting.id,
+        &[
+            NewMeetingSegment::new(0.0, 2.0, "morning everyone"),
+            NewMeetingSegment::new(2.5, 5.0, "morning, can you hear me").on_track(SYSTEM_TRACK),
+            NewMeetingSegment::new(5.5, 7.0, "loud and clear"),
+        ],
+    )
+    .unwrap();
+    db.finish_meeting(&meeting.id, 7.0, Some(&mic)).unwrap();
+    db.set_meeting_sys_wav_path(&meeting.id, Some(&sys))
+        .unwrap();
+
+    let m = db.get_meeting(&meeting.id).unwrap().unwrap();
+    assert_eq!(m.mic_wav_path.as_deref(), Some(mic.to_str().unwrap()));
+    assert_eq!(m.sys_wav_path.as_deref(), Some(sys.to_str().unwrap()));
+    assert!(m.audio_kept);
+
+    let segments = db.list_meeting_segments(&meeting.id).unwrap();
+    let tracks: Vec<i64> = segments.iter().map(|s| s.track).collect();
+    assert_eq!(
+        tracks,
+        vec![MIC_TRACK, SYSTEM_TRACK, MIC_TRACK],
+        "in start-time order, and each segment still knows which track it came \
+         from — this is what makes Me/Them possible at all"
+    );
+
+    // Deleting the meeting hands back BOTH wavs to unlink. A delete that
+    // returned only the mic track would leave the other people on the call on
+    // disk after the user asked for the meeting to be gone.
+    let removed = db.delete_meeting(&meeting.id).unwrap();
+    assert!(
+        removed.contains(&mic) && removed.contains(&sys),
+        "{removed:?}"
+    );
+
+    // And so does the retention sweep, on the same rule.
+    let db2 = {
+        let dir2 = temp_dir("virtual-retention");
+        let db2 = open_db(&dir2);
+        let m2 = db2.create_meeting("Old virtual meeting", "manual").unwrap();
+        let mic2 = dir2.join("t0.wav");
+        let sys2 = dir2.join("t1.wav");
+        std::fs::write(&mic2, b"x").unwrap();
+        std::fs::write(&sys2, b"x").unwrap();
+        db2.finish_meeting(&m2.id, 7.0, Some(&mic2)).unwrap();
+        db2.set_meeting_sys_wav_path(&m2.id, Some(&sys2)).unwrap();
+        let purged = db2
+            .purge_meeting_audio(chrono::Utc::now() + chrono::Duration::days(1))
+            .unwrap();
+        assert!(
+            purged.contains(&mic2) && purged.contains(&sys2),
+            "both tracks age out together: {purged:?}"
+        );
+        let after = db2.get_meeting(&m2.id).unwrap().unwrap();
+        assert!(after.mic_wav_path.is_none() && after.sys_wav_path.is_none());
+        db2
+    };
+    drop(db2);
 }

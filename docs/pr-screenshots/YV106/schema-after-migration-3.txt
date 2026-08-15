@@ -1,0 +1,33 @@
+YV106 — the schema after a FRESH install (the DB `a_fresh_database_lands_on_three_with_every_column_present` just created)
+
+$ sqlite3 <db> "PRAGMA user_version"
+3
+
+$ sqlite3 <db> ".schema meetings" (columns only)
+0  id  TEXT  notnull=0  default=NULL
+1  title  TEXT  notnull=1  default='Meeting'
+2  source  TEXT  notnull=1  default='manual'
+3  started_at  TEXT  notnull=1  default=NULL
+4  ended_at  TEXT  notnull=0  default=NULL
+5  duration_seconds  REAL  notnull=1  default=0
+6  state  TEXT  notnull=1  default='recording'
+7  error  TEXT  notnull=0  default=NULL
+8  processed_through_seconds  REAL  notnull=1  default=0
+9  audio_kept  INTEGER  notnull=1  default=1
+10  mic_wav_path  TEXT  notnull=0  default=NULL
+11  summary  TEXT  notnull=0  default=NULL
+12  summary_model  TEXT  notnull=0  default=NULL
+13  created_at  TEXT  notnull=1  default=NULL
+14  diagnostics  TEXT  notnull=0  default=NULL
+15  sys_wav_path  TEXT  notnull=0  default=NULL
+16  tap_rebuilds  TEXT  notnull=0  default=NULL
+
+$ sqlite3 <db> (meeting_segments columns)
+0  id  TEXT  notnull=0  default=NULL
+1  meeting_id  TEXT  notnull=1  default=NULL
+2  start_seconds  REAL  notnull=1  default=NULL
+3  end_seconds  REAL  notnull=1  default=NULL
+4  text  TEXT  notnull=1  default=''
+5  confidence  REAL  notnull=0  default=NULL
+6  created_at  TEXT  notnull=1  default=NULL
+7  track  INTEGER  notnull=1  default=0

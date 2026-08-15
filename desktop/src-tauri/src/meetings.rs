@@ -34,10 +34,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// 1 = the meeting tables below.
 /// 2 = YV95's `diagnostics` column (OS-12's thermal + battery instrumentation).
+/// 3 = YV106's two-track columns (`sys_wav_path`, [`TAP_REBUILDS_COLUMN`],
+///     `meeting_segments.track`).
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -48,12 +50,12 @@ pub const SCHEMA_VERSION: i64 = 2;
 /// the verdict if the meeting ran out of rebuilds. `NULL` for every meeting
 /// that never needed one, which is almost all of them.
 ///
-/// **This item writes the structure; it does not add the column.** Bundling an
-/// unrelated `ALTER TABLE` into the watchdog's item is how a migration ladder
-/// gets a step nobody can attribute — YV106 adds `sys_wav_path`, the
-/// `meeting_segments.track` column and this one together, as one honest step 3.
-/// The name is fixed here so the producer and the destination cannot be written
-/// down differently in two places.
+/// YV104 wrote the structure; **YV106 (migration 3, below) adds the column** —
+/// `sys_wav_path`, `meeting_segments.track` and this one together, as one
+/// honest step 3. The name is fixed here so the producer and the destination
+/// cannot be written down differently in two places, and
+/// `migration_three_uses_the_column_name_yv104_published` is what proves the SQL
+/// below still spells it this way.
 pub const TAP_REBUILDS_COLUMN: &str = crate::syscapture::TAP_REBUILDS_COLUMN;
 
 /// How long a meeting's audio is kept before the startup/hygiene sweep purges
@@ -128,6 +130,20 @@ pub struct Meeting {
     pub audio_kept: bool,
     /// `None` once the retention sweep has purged the WAV (or it was never kept).
     pub mic_wav_path: Option<String>,
+    /// YV106 — the system-audio track's WAV, for a two-track (virtual) meeting.
+    ///
+    /// `None` means "this meeting has no second track", which covers every
+    /// meeting recorded before migration 3, every in-person one after it, and
+    /// one whose tap degraded to `track_lost` (matrix row #2) without ever
+    /// delivering audio. It goes `None` again when retention purges the audio,
+    /// exactly as `mic_wav_path` does.
+    #[serde(default)]
+    pub sys_wav_path: Option<String>,
+    /// YV104 / YV106 — the system-audio tap's rebuild log
+    /// (`syscapture::TapRebuildLog::to_json`), or `None` for the overwhelming
+    /// majority of meetings, which never needed a rebuild.
+    #[serde(default)]
+    pub tap_rebuilds: Option<String>,
     /// Populated by YV97. `None` here is not an error state.
     pub summary: Option<String>,
     pub summary_model: Option<String>,
@@ -143,8 +159,8 @@ pub struct Meeting {
     pub diagnostics: Option<String>,
 }
 
-/// One chronological transcript segment. 22-A has no speaker columns — every
-/// segment is the mic track, rendered as [`MIC_SPEAKER_LABEL`].
+/// One chronological transcript segment. Track 0 is the mic — the person
+/// holding the Mac — and is rendered as [`MIC_SPEAKER_LABEL`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSegment {
@@ -155,7 +171,20 @@ pub struct MeetingSegment {
     pub text: String,
     pub confidence: Option<f64>,
     pub created_at: DateTime<Utc>,
+    /// YV106 — which recorded track this segment was transcribed from.
+    /// [`MIC_TRACK`] (0) or [`SYSTEM_TRACK`] (1). Every 22-A row reads as 0
+    /// without a backfill, because 22-A only ever recorded the mic.
+    #[serde(default)]
+    pub track: i64,
 }
+
+/// The mic track, as the DB spells it. Mirrors `meeting::MIC_TRACK`, which is
+/// the same number on the capture side; `tracks_agree_across_the_two_modules`
+/// keeps the pair from drifting.
+pub const MIC_TRACK: i64 = 0;
+
+/// The system-audio track (22-B's process tap). Mirrors `meeting::SYSTEM_TRACK`.
+pub const SYSTEM_TRACK: i64 = 1;
 
 /// A segment on the way IN, before it has an id or a timestamp of its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +195,11 @@ pub struct NewMeetingSegment {
     pub text: String,
     #[serde(default)]
     pub confidence: Option<f64>,
+    /// Defaulted to [`MIC_TRACK`] by [`NewMeetingSegment::new`], so every
+    /// existing caller keeps writing exactly the rows it wrote before. The tap's
+    /// transcription says otherwise with [`NewMeetingSegment::on_track`].
+    #[serde(default)]
+    pub track: i64,
 }
 
 impl NewMeetingSegment {
@@ -175,7 +209,14 @@ impl NewMeetingSegment {
             end_seconds,
             text: text.into(),
             confidence: None,
+            track: MIC_TRACK,
         }
+    }
+
+    /// The same segment, attributed to `track`.
+    pub fn on_track(mut self, track: i64) -> Self {
+        self.track = track;
+        self
     }
 }
 
@@ -358,6 +399,39 @@ pub const MIGRATION_2_MEETING_DIAGNOSTICS: &str = r#"
 ALTER TABLE meetings ADD COLUMN diagnostics TEXT;
 "#;
 
+/// Migration 3 — YV106's two-track columns.
+///
+/// Three additive columns, one step, because they are one change: a meeting can
+/// now have a second recorded track, and all three answer a question about it.
+///
+///   * `sys_wav_path` — the system-audio track's wav, parallel to the
+///     `mic_wav_path` migration 1 shipped. `NULL` for every mic-only meeting,
+///     which is every meeting recorded before this build and every in-person one
+///     after it. A separate column rather than a `wav_paths` JSON array because
+///     the retention sweep and the delete path both need to find these paths
+///     with a `WHERE … IS NOT NULL`, which is a query, not exhaust.
+///   * [`TAP_REBUILDS_COLUMN`] — YV104's rebuild log, verbatim
+///     `TapRebuildLog::to_json`. Exhaust, so one nullable TEXT blob, following
+///     migration 2's own stated policy.
+///   * `meeting_segments.track` — which track a transcript segment came from,
+///     `0` = mic, `1` = system audio. `NOT NULL DEFAULT 0` so every segment
+///     already in the wild reads correctly as the mic track with **no backfill**:
+///     22-A only ever recorded the mic, so the default is not a guess, it is the
+///     fact. This is what lets a stored segment be attributed before YV107's
+///     host-time merge exists, and what YV108's Me/Them rendering reads.
+///
+/// `ALTER TABLE … ADD COLUMN` with a constant default is an O(1) header rewrite
+/// in SQLite — it does not touch existing rows — so this is free even on a
+/// database full of meetings. Not `IF NOT EXISTS` (SQLite's ADD COLUMN has no
+/// such clause): the ladder in `db::run_migrations` guarantees a step runs
+/// exactly once, inside its own transaction, with `user_version` written in the
+/// same transaction.
+pub const MIGRATION_3_TWO_TRACK: &str = r#"
+ALTER TABLE meetings ADD COLUMN sys_wav_path TEXT;
+ALTER TABLE meetings ADD COLUMN tap_rebuilds TEXT;
+ALTER TABLE meeting_segments ADD COLUMN track INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.
 pub fn format_offset(seconds: f64) -> String {
@@ -512,6 +586,8 @@ mod tests {
             processed_through_seconds: 750.0,
             audio_kept: true,
             mic_wav_path: None,
+            sys_wav_path: None,
+            tap_rebuilds: None,
             diagnostics: None,
             summary: None,
             summary_model: None,
@@ -529,6 +605,7 @@ mod tests {
             text: text.into(),
             confidence: None,
             created_at: Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap(),
+            track: MIC_TRACK,
         }
     }
 
@@ -594,6 +671,41 @@ mod tests {
         assert!(!stem.contains(' '));
         // A title with nothing usable still yields a name.
         assert!(export_file_stem("///", started).starts_with("meeting-"));
+    }
+
+    /// YV104 published the column name; migration 3 is where it lands. Nothing
+    /// else type-checks that pair — the SQL is a string literal, and a rename on
+    /// either side would leave the writer storing a blob into a column that does
+    /// not exist, discovered by a user with a broken tap and no log.
+    #[test]
+    fn migration_three_uses_the_column_name_yv104_published() {
+        assert_eq!(TAP_REBUILDS_COLUMN, "tap_rebuilds");
+        assert!(
+            MIGRATION_3_TWO_TRACK.contains(&format!("ADD COLUMN {TAP_REBUILDS_COLUMN} TEXT")),
+            "migration 3 no longer adds the column YV104 named:\n{MIGRATION_3_TWO_TRACK}"
+        );
+    }
+
+    /// The capture side and the storage side both number the tracks, in two
+    /// modules that never call each other. They must agree, or a segment
+    /// transcribed from the tap's wav is stored as the mic's.
+    #[test]
+    fn tracks_agree_across_the_two_modules() {
+        assert_eq!(MIC_TRACK as usize, crate::meeting::MIC_TRACK);
+        assert_eq!(SYSTEM_TRACK as usize, crate::meeting::SYSTEM_TRACK);
+    }
+
+    /// A segment written by any 22-A caller is still a mic segment: the default
+    /// is the fact, not a guess.
+    #[test]
+    fn a_new_segment_is_the_mic_track_unless_it_says_otherwise() {
+        assert_eq!(NewMeetingSegment::new(0.0, 1.0, "hello").track, MIC_TRACK);
+        assert_eq!(
+            NewMeetingSegment::new(0.0, 1.0, "hello")
+                .on_track(SYSTEM_TRACK)
+                .track,
+            SYSTEM_TRACK
+        );
     }
 
     #[test]

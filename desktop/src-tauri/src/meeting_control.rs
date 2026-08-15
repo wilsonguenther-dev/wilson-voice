@@ -65,9 +65,19 @@ pub const NO_ENGINE_MESSAGE: &str =
 /// A finished capture, as the control plane needs to record it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureOutcome {
-    /// The finalized WAV, if one was written. `None` means nothing landed on
+    /// The finalized MIC WAV, if one was written. `None` means nothing landed on
     /// disk, which is a `partial` meeting, not a silent success.
     pub wav_path: Option<PathBuf>,
+    /// YV106 — the finalized SYSTEM-AUDIO WAV of a two-track meeting.
+    ///
+    /// `None` for every mic-only meeting, and for a two-track meeting whose tap
+    /// never delivered a sample — matrix row #2's degrade, where the mic track
+    /// is still a whole recording and the row must not claim a second one.
+    #[allow(dead_code)] // read by `MeetingController::stop`
+    pub sys_wav_path: Option<PathBuf>,
+    /// YV104 / YV106 — the tap's rebuild log as JSON, when the meeting needed a
+    /// rebuild at all. `None` is the common case and stays `NULL` in the row.
+    pub tap_rebuilds: Option<String>,
     /// Seconds of audio actually captured (NOT wall time — a stalled device
     /// makes those two differ, and the honest one is this).
     pub seconds: f64,
@@ -504,7 +514,7 @@ impl MeetingController {
         let outcome = active.capture.stop();
         let battery_at_end = self.probe.battery();
 
-        let (duration, wav, note, state) = match outcome {
+        let (duration, wav, sys_wav, tap_rebuilds, note, state) = match outcome {
             Ok(o) => {
                 let state = if o.wav_path.is_some() && !o.partial {
                     // Capture landed WHOLE. YV93's transcription pipeline moves
@@ -524,11 +534,25 @@ impl MeetingController {
                 } else {
                     wall_seconds
                 };
-                (secs, o.wav_path, o.note, state)
+                (
+                    secs,
+                    o.wav_path,
+                    o.sys_wav_path,
+                    o.tap_rebuilds,
+                    o.note,
+                    state,
+                )
             }
             Err(e) => {
                 log::warn!("meeting {} capture stop failed: {e}", active.id);
-                (wall_seconds, None, Some(e), MeetingState::Partial)
+                (
+                    wall_seconds,
+                    None,
+                    None,
+                    None,
+                    Some(e),
+                    MeetingState::Partial,
+                )
             }
         };
 
@@ -538,6 +562,17 @@ impl MeetingController {
         }
         self.db
             .finish_meeting(&active.id, duration, wav.as_deref())?;
+        // YV106 — the second track and the tap's rebuild log, both written ONLY
+        // when they exist. A mic-only meeting leaves both columns NULL, which is
+        // the difference between "there was no second track" and "there was one
+        // and it was empty".
+        if sys_wav.is_some() {
+            self.db
+                .set_meeting_sys_wav_path(&active.id, sys_wav.as_deref())?;
+        }
+        if let Some(log) = tap_rebuilds.as_deref() {
+            let _ = self.db.set_meeting_tap_rebuilds(&active.id, log);
+        }
         self.db
             .set_meeting_state(&active.id, state, note.as_deref())?;
 
@@ -648,6 +683,14 @@ impl ActiveCapture for SessionCapture {
         // A watchdog stop is the engine's own verdict and it is read BEFORE the
         // finalize consumes the session, so the reason survives into the note.
         let watchdog = session.watchdog_stop();
+        // YV104's log, for the same reason and at the same moment: the session
+        // owns it and `stop()` consumes the session.
+        let rebuilds = session.tap_rebuild_log();
+        let tap_rebuilds = if rebuilds.is_empty() {
+            None
+        } else {
+            Some(rebuilds.to_json().to_string())
+        };
         match session.stop() {
             Some(finalized) => {
                 let partial = finalized.state != crate::meeting::MeetingState::Complete;
@@ -668,7 +711,14 @@ impl ActiveCapture for SessionCapture {
                     ));
                 }
                 Ok(CaptureOutcome {
-                    wav_path: finalized.tracks.first().cloned(),
+                    // YV106 — BY TRACK, never by position. A two-track meeting
+                    // whose mic never delivered finalizes with one wav, and
+                    // `tracks.first()` would file the room as the user.
+                    wav_path: finalized.wav_for_track(crate::meeting::MIC_TRACK).cloned(),
+                    sys_wav_path: finalized
+                        .wav_for_track(crate::meeting::SYSTEM_TRACK)
+                        .cloned(),
+                    tap_rebuilds,
                     seconds: finalized.seconds,
                     note: if notes.is_empty() {
                         None
@@ -683,6 +733,8 @@ impl ActiveCapture for SessionCapture {
             // still close and say why.
             None => Ok(CaptureOutcome {
                 wav_path: None,
+                sys_wav_path: None,
+                tap_rebuilds,
                 seconds: 0.0,
                 note: Some("no audio reached disk for this meeting".to_string()),
                 partial: true,
