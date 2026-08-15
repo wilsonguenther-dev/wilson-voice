@@ -3188,7 +3188,14 @@ fn generate_two_track_ordering(root: &Path) {
             .unwrap_or(0)
     ));
     fs::create_dir_all(&cap_dir).expect("capture dir");
-    let journal = MeetingJournal::start(&cap_dir, 2).expect("journal");
+    // A deep queue, for the same reason `two_track_phase_e2e` opens one: this
+    // loop feeds 76 seconds of audio as fast as the CPU will take it, and the
+    // shipped bound (`MEETING_QUEUE_DEPTH` = 512) is sized for a real-time
+    // producer. At the shipped depth the writer is outrun on a loaded machine
+    // and the generator's own `spliced_silence_samples == 0` assertion fires —
+    // which is the assertion doing its job, but it makes growing the corpus a
+    // question of how busy the Mac is. Backpressure has its own test.
+    let journal = MeetingJournal::start_with_depth(&cap_dir, 2, 32_768).expect("journal");
     let journal_id = journal.id().to_string();
     let capture = MeetingCapture::with_tracks(TARGET_RATE, 1, 2, Some(journal));
     for track in [MIC_TRACK, SYSTEM_TRACK] {

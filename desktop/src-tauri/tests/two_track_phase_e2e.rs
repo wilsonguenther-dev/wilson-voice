@@ -15,7 +15,7 @@
 //! | link | what runs | real? |
 //! |---|---|---|
 //! | capture | `MeetingCapture::with_tracks(…, 2, …)`, two block streams at two callback sizes with their own `host_ns` clocks | the shipped consumer |
-//! | journal | `MeetingJournal::start(dir, 2)` — two spills, two index sidecars, real writer thread | the shipped journal |
+//! | journal | `MeetingJournal::start_with_depth(dir, 2, …)` — two spills, two index sidecars, real writer thread | the shipped journal, on a deeper queue ([`E2E_QUEUE_DEPTH`]) |
 //! | finalize | `MeetingJournal::finalize` → two wavs through the crash-recovery path | the shipped finalize |
 //! | ASR | pre-baked `ChunkOutcome`s per track, merged by the shipped `merge_timed` | the shipped seam merge; the DECODER is stubbed (no model in CI) |
 //! | host-time merge | `support::two_track::TrackTimeline`, fitted from the journal's OWN persisted index records | the harness's reference — see below |
@@ -219,9 +219,32 @@ struct Recorded {
     spliced_silence_samples: u64,
 }
 
+/// The journal queue depth this test opens with, and why it is not the shipped
+/// [`MEETING_QUEUE_DEPTH`] (512).
+///
+/// The shipped depth is sized for a REAL-TIME producer: a callback every 10 ms,
+/// a writer thread flushing every 250 ms, and a hard bound on memory so a disk
+/// hiccup cannot grow a three-hour meeting in RAM (finding #1). This test is not
+/// that producer. It pushes 45 seconds of audio in about 0.3 seconds — roughly
+/// 150x real time, 6 609 blocks with no pause between them — so the bound is
+/// reached by the FEEDER outrunning the disk, which is a property of how fast
+/// the machine under it happens to be.
+///
+/// That is not a hypothetical. The first cut of this file used the shipped
+/// depth, passed on a quiet developer machine, and failed in CI with
+/// `spliced_silence_samples = 30080` — 1.88 s of audio the queue refused.
+/// Reproduced locally afterwards by running twelve copies of the test at once:
+/// 12 of 12 failed, losing between 176 160 and 1 263 838 samples. A test whose
+/// result depends on how loaded the machine is is worse than no test.
+///
+/// So the queue is opened deep enough that it cannot be the limit, and the
+/// backpressure behaviour keeps its own test — `matrix_row5_journal_backpressure`
+/// is where a full queue is the subject rather than the weather.
+const E2E_QUEUE_DEPTH: usize = 32_768;
+
 fn record_two_tracks(tag: &str, tracks: usize) -> Recorded {
     let dir = tmpdir(tag);
-    let journal = MeetingJournal::start(&dir, tracks).expect("journal");
+    let journal = MeetingJournal::start_with_depth(&dir, tracks, E2E_QUEUE_DEPTH).expect("journal");
     let id = journal.id().to_string();
     let capture = MeetingCapture::with_tracks(NATIVE_RATE, 1, tracks, Some(journal));
 

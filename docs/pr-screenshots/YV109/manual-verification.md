@@ -69,6 +69,39 @@ Seven prints of `meeting eval corpus not found at ~/yap-eval-corpus/meetings,
 skipping` (six before this item, seven after — the new gate joined the same
 path rather than growing a second one), and `grep` still matches the constant.
 
+### 5. CI caught a real machine-speed dependency, and it was reproduced before it was fixed
+
+The first push failed CI on `two_track_phase_e2e`:
+`spliced_silence_samples = 30080` — 1.88 s of audio the journal's bounded queue
+refused, on a test that asserts a clean capture. It had passed here.
+
+Reproduced locally before anything was changed, by running twelve copies of the
+test at once:
+
+```
+$ for i in $(seq 1 12); do (./two_track_phase_e2e a_two_source_… --exact | grep "left: ") & done
+left: 855358    left: 1093918   left: 1263838   left: 788318
+left: 924318    left: 1083998   left: 1111998   left: 820959
+left: 176160    left: 220000    left: 185120    left: 432799
+12 of 12 FAILED
+```
+
+**The cause is the feeder, not the journal.** `MEETING_QUEUE_DEPTH` (512) is
+sized for a real-time producer — a callback every 10 ms against a writer thread
+flushing every 250 ms, bounded so a disk hiccup cannot grow a three-hour meeting
+in RAM. This test pushes 6 609 blocks in about 0.3 seconds, roughly 150x real
+time, so the bound is reached by the test outrunning the disk, which is a
+property of how loaded the machine is. Both the E2E and the corpus generator now
+open the journal with `start_with_depth` deep enough that the queue cannot be the
+limit, with the reasoning in a named constant; backpressure keeps its own test
+(`matrix_row5_journal_backpressure`), where a full queue is the subject rather
+than the weather.
+
+Verified against the same reproduction: **16 of 16 green** under the load that
+produced 12 of 12 red. And the committed fixture is unchanged — the generator was
+re-run after the fix and `git diff` on both manifests is empty, because nothing
+was being dropped on this machine either way.
+
 ## What a reviewer should NOT read into this PR
 
 * That a Zoom call has been recorded end to end. It has not, on this branch.
