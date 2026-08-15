@@ -190,7 +190,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Emitter, Manager, State, WindowEvent, Wry,
 };
@@ -500,6 +500,10 @@ struct AppState {
     /// installed, because a Record button that does nothing is worse than one
     /// that says why it cannot.
     tray_meeting: PLMutex<Option<MenuItem<Wry>>>,
+    /// YV125 — the "Record a meeting as…" submenu (In person / Virtual / Not
+    /// sure). Disabled while a meeting is recording, for the same reason the
+    /// item above becomes "Stop meeting": there is nothing to pick a kind FOR.
+    tray_meeting_kind: PLMutex<Option<Submenu<Wry>>>,
     /// YV95 — the one owner of "a meeting is recording". Built in `setup` (it
     /// needs an `AppHandle` for its status sink), so this is a `OnceLock` rather
     /// than a field: every entry point reads it through [`AppState::meeting`]
@@ -615,6 +619,13 @@ fn meeting_status_sink(app: AppHandle) -> meeting_control::StatusSink {
                         MEETING_TRAY_START_LABEL
                     });
                 }
+                // YV125 — a kind is something you pick FOR a meeting you are
+                // about to start. While one is running there is nothing to pick
+                // it for, and a live submenu would read as "change this
+                // meeting's kind", which it is not.
+                if let Some(submenu) = state.tray_meeting_kind.lock().clone() {
+                    let _ = submenu.set_enabled(!recording);
+                }
             }
         });
     })
@@ -631,10 +642,20 @@ const MEETING_TRAY_START_LABEL: &str = "Record a meeting";
 /// The pill is shown for the duration when the user has it enabled: an
 /// always-visible recording indicator is the cheap, real trust feature YV96's
 /// consent copy leans on, and the OS-12 fixes above are what make it affordable.
-fn toggle_meeting(app: &AppHandle, state: &Arc<AppState>) -> Result<meeting_control::MeetingStatus, String> {
+///
+/// YV125 — `kind` is what the user said this meeting is, and it is only read on
+/// a START: the tray's plain item and ⌃⌘M pass `Unknown` (the picker skipped),
+/// the "Record a meeting as…" submenu and the Meetings tab pass what was
+/// chosen. A press that STOPS a meeting ignores it, because the recording that
+/// is ending was started under whatever it was started under.
+fn toggle_meeting(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    kind: meetings::MeetingKind,
+) -> Result<meeting_control::MeetingStatus, String> {
     let controller = state.meeting().ok_or("Yap is still starting up")?;
     let was_recording = controller.is_recording();
-    let status = controller.toggle(&meetings_dir(), None)?;
+    let status = controller.toggle_with_kind(&meetings_dir(), None, kind)?;
     if status.recording && !was_recording {
         if state.settings.lock().show_floating_pill {
             float_pill::show_for_recording(app);
@@ -670,13 +691,18 @@ fn toggle_meeting(app: &AppHandle, state: &Arc<AppState>) -> Result<meeting_cont
 /// The controller is still the only thing that decides whether a toggle is a
 /// start or a stop, and it makes that decision under its own lock — so two
 /// impatient presses cannot become two meetings, they become a start and a stop.
-fn toggle_meeting_off_thread(app: &AppHandle, state: &Arc<AppState>, source: &'static str) {
+fn toggle_meeting_off_thread(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    source: &'static str,
+    kind: meetings::MeetingKind,
+) {
     let app = app.clone();
     let state = state.clone();
     std::thread::Builder::new()
         .name("yap-meeting-toggle".into())
         .spawn(move || {
-            if let Err(e) = toggle_meeting(&app, &state) {
+            if let Err(e) = toggle_meeting(&app, &state, kind) {
                 log::warn!("meeting toggle from {source}: {e}");
                 notify(&app, "Yap", e);
             }
@@ -3288,13 +3314,33 @@ fn meeting_status(state: State<'_, Arc<AppState>>) -> meeting_control::MeetingSt
 }
 
 /// Start or stop the meeting — the one action behind all four entry points.
+///
+/// `kind` (YV125) is the webview's answer to the start-of-meeting picker, and
+/// it is OPTIONAL on the wire: a caller that sends nothing has skipped the
+/// question, which is `unknown` — the same thing ⌃⌘M does. An unrecognised
+/// string resolves to `unknown` too (`MeetingKind::parse`), so a UI that gets
+/// ahead of this build cannot start a meeting on a branch this build does not
+/// have.
 #[tauri::command]
 fn toggle_meeting_recording(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    kind: Option<String>,
 ) -> Result<meeting_control::MeetingStatus, String> {
     let st = state.inner().clone();
-    toggle_meeting(&app, &st)
+    let kind = kind
+        .as_deref()
+        .map(meetings::MeetingKind::parse)
+        .unwrap_or(meetings::MeetingKind::Unknown);
+    toggle_meeting(&app, &st, kind)
+}
+
+/// The three choices the start-of-meeting picker offers, so the webview renders
+/// the SAME list the tray submenu does rather than a second hand-written copy
+/// that can drift from it (YV125).
+#[tauri::command]
+fn meeting_kind_choices() -> Vec<meeting_control::KindChoice> {
+    meeting_control::KIND_PICKER.to_vec()
 }
 
 /// Start a meeting. Errors (no capture engine, one already running) come back as
@@ -3305,13 +3351,18 @@ fn start_meeting(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     title: Option<String>,
+    kind: Option<String>,
 ) -> Result<meeting_control::MeetingStatus, String> {
     let controller = state.meeting().ok_or("Yap is still starting up")?;
     if controller.is_recording() {
         return Ok(controller.status());
     }
     let st = state.inner().clone();
-    controller.start(&meetings_dir(), title)?;
+    let kind = kind
+        .as_deref()
+        .map(meetings::MeetingKind::parse)
+        .unwrap_or(meetings::MeetingKind::Unknown);
+    controller.start_with_kind(&meetings_dir(), title, kind)?;
     let status = controller.status();
     if st.settings.lock().show_floating_pill {
         float_pill::show_for_recording(&app);
@@ -4022,6 +4073,7 @@ pub fn run() {
         tray_hands_free: PLMutex::new(None),
         tray_paste_raw: PLMutex::new(None),
         tray_meeting: PLMutex::new(None),
+        tray_meeting_kind: PLMutex::new(None),
         meeting: std::sync::OnceLock::new(),
         undo_available: PLMutex::new(false),
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
@@ -4150,7 +4202,16 @@ pub fn run() {
                         if shortcut == &shortcuts::MEETING_TOGGLE.shortcut() {
                             if event.state == ShortcutState::Pressed {
                                 log::info!("⌃⌘M pressed — toggle meeting");
-                                toggle_meeting_off_thread(app, &state, "⌃⌘M");
+                                // The hotkey is the fastest path to a
+                                // recording, so it never asks: the picker is
+                                // skipped (`unknown`), which is the branch that
+                                // clusters rather than the one that assumes.
+                                toggle_meeting_off_thread(
+                                    app,
+                                    &state,
+                                    "⌃⌘M",
+                                    meetings::MeetingKind::Unknown,
+                                );
                             }
                             return;
                         }
@@ -4257,6 +4318,7 @@ pub fn run() {
             // without.
             meeting_status,
             toggle_meeting_recording,
+            meeting_kind_choices,
             start_meeting,
             stop_meeting,
             export_history,
@@ -4423,6 +4485,32 @@ pub fn run() {
                 meeting_available,
                 Some(shortcuts::MEETING_TOGGLE.accelerator),
             )?;
+            // YV125 — the kind picker, as the qualified variant of the item
+            // directly above it (the "Open" / "Open With ▸" shape macOS menus
+            // already use). The plain item and ⌃⌘M start a meeting with the
+            // question SKIPPED, which is a supported answer (`unknown`); this
+            // submenu is for the user who wants to answer it. It is a hint that
+            // improves the diarization target, never a gate — nothing here can
+            // stop a recording from starting.
+            let kind_items = meeting_control::KIND_PICKER
+                .iter()
+                .map(|choice| {
+                    MenuItem::with_id(app, choice.menu_id, choice.label, true, None::<&str>)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let meeting_kind_i = Submenu::with_id_and_items(
+                app,
+                "meeting_kind",
+                "Record a meeting as…",
+                // No meeting can be running at setup, so this matches the plain
+                // item's enabled state; the status sink flips both on the
+                // recording edge.
+                meeting_available,
+                &kind_items
+                    .iter()
+                    .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+                    .collect::<Vec<_>>(),
+            )?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep_meeting = PredefinedMenuItem::separator(app)?;
@@ -4445,6 +4533,7 @@ pub fn run() {
                     &paste_raw_i,
                     &sep_meeting,
                     &meeting_i,
+                    &meeting_kind_i,
                     &sep1,
                     &hands_free_i,
                     &sep2,
@@ -4462,6 +4551,7 @@ pub fn run() {
             *state.tray_hands_free.lock() = Some(hands_free_i);
             *state.tray_paste_raw.lock() = Some(paste_raw_i);
             *state.tray_meeting.lock() = Some(meeting_i);
+            *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -4510,9 +4600,21 @@ pub fn run() {
                         "paste_last" => {
                             paste_last_transcript(app, &state);
                         }
-                        // YV95 — start/stop a meeting from the menu bar.
+                        // YV95 — start/stop a meeting from the menu bar. The
+                        // picker is skipped on this path: `unknown`.
                         "meeting_toggle" => {
-                            toggle_meeting_off_thread(app, &state, "the tray item");
+                            toggle_meeting_off_thread(
+                                app,
+                                &state,
+                                "the tray item",
+                                meetings::MeetingKind::Unknown,
+                            );
+                        }
+                        // YV125 — the same start, with the kind the user chose.
+                        id if meeting_control::kind_for_menu_id(id).is_some() => {
+                            let kind = meeting_control::kind_for_menu_id(id)
+                                .expect("the guard above matched this id");
+                            toggle_meeting_off_thread(app, &state, "the tray kind picker", kind);
                         }
                         "paste_raw" => {
                             paste_raw_last_transcript(app, &state);
@@ -5839,6 +5941,7 @@ mod tests {
             tray_hands_free: super::PLMutex::new(None),
             tray_paste_raw: super::PLMutex::new(None),
             tray_meeting: super::PLMutex::new(None),
+            tray_meeting_kind: super::PLMutex::new(None),
             meeting: std::sync::OnceLock::new(),
             undo_available: super::PLMutex::new(false),
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),

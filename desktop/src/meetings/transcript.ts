@@ -2,7 +2,8 @@
  * YV108 — the mixed Me/Them transcript, frontend side.
  *
  * This is the TypeScript mirror of `meetings::render_transcript` /
- * `meetings::speaker_label` / `meetings::one_line` in Rust. The two exist
+ * `meetings::speaker_label` / `meetings::diarization_target` / `meetings::one_line`
+ * in Rust. The two exist
  * separately because the Meetings UI renders segment rows it already has in
  * memory (the detail command hands them over whole) while the Markdown export
  * renders the same segments in Rust — but they must agree about who spoke and
@@ -32,6 +33,41 @@ export const SYSTEM_TRACK = 1;
 export const MIC_SPEAKER_LABEL = "Me";
 /** Mirrors `meetings::SYSTEM_SPEAKER_LABEL`. */
 export const SYSTEM_SPEAKER_LABEL = "Them";
+/**
+ * YV125 — mirrors `meetings::UNCLUSTERED_SPEAKER_LABEL`: what the microphone is
+ * called when it is the track that has to be CLUSTERED and clustering has not
+ * run yet. "Me" is a claim about identity, and merged finding #4 is that
+ * deriving it from a channel number holds for a call with a live second track
+ * and is false for a room, a class, a hybrid meeting, or a call whose tap never
+ * attached.
+ */
+export const UNCLUSTERED_SPEAKER_LABEL = "Speaker";
+
+/** Mirrors `meetings::MeetingKind` — the `meetings.kind` column's values. */
+export type MeetingKind = "virtual" | "in_person" | "unknown";
+
+/** Mirrors `meetings::DiarizationTarget`. */
+export type DiarizationTarget = "clusterTrackA" | "micIsMe";
+
+/**
+ * Mirrors `meetings::diarization_target`, including its lenient parse: any
+ * value this build does not recognise — a kind written by a newer build, an
+ * empty string — is `unknown`, which is the branch that CLUSTERS rather than
+ * the one that asserts a single speaker.
+ *
+ * | kind        | live second track | target |
+ * |-------------|-------------------|--------|
+ * | `in_person` | either            | clusterTrackA |
+ * | `unknown`   | either            | clusterTrackA |
+ * | `virtual`   | yes               | micIsMe |
+ * | `virtual`   | no                | clusterTrackA |
+ */
+export function diarizationTarget(
+  kind: string | null | undefined,
+  hasSystemTrack: boolean,
+): DiarizationTarget {
+  return kind === "virtual" && hasSystemTrack ? "micIsMe" : "clusterTrackA";
+}
 
 /** One chronological transcript segment, as the detail command sends it. */
 export interface TranscriptSegment {
@@ -102,13 +138,17 @@ export function trackOf(segment: TranscriptSegment): number {
 }
 
 /**
- * The speaker label for a track. Anything that is not the mic did not come from
- * this user's microphone, so it is "Them" — same catch-all as the Rust side,
- * for the same reason (`track` is an unconstrained INTEGER column, and a
+ * The speaker label for a track under this meeting's diarization target
+ * (YV125). Anything that is not the mic did not come from this user's
+ * microphone, so it is "Them" under BOTH targets — same catch-all as the Rust
+ * side, for the same reason (`track` is an unconstrained INTEGER column, and a
  * transcript that renders beats one that refuses).
+ *
+ * Mirrors `meetings::speaker_label`.
  */
-export function speakerLabel(track: number): string {
-  return track === MIC_TRACK ? MIC_SPEAKER_LABEL : SYSTEM_SPEAKER_LABEL;
+export function speakerLabel(track: number, target: DiarizationTarget): string {
+  if (track !== MIC_TRACK) return SYSTEM_SPEAKER_LABEL;
+  return target === "micIsMe" ? MIC_SPEAKER_LABEL : UNCLUSTERED_SPEAKER_LABEL;
 }
 
 /**
@@ -145,7 +185,13 @@ export function isTwoTrack(segments: readonly TranscriptSegment[]): boolean {
  */
 export function orderedTranscript<S extends TranscriptSegment>(
   segments: readonly S[],
+  kind: string | null | undefined,
 ): TranscriptLine<S>[] {
+  // YV125 — whether this meeting HAS a live second track is read off the
+  // segments that actually render, not taken as a separate argument, exactly as
+  // `render_transcript` reads it: a tap that delivered nothing is a mic-only
+  // meeting to the reader, so it must be one to the labeller too.
+  const target = diarizationTarget(kind, isTwoTrack(segments));
   const lines: (TranscriptLine<S> & { index: number })[] = [];
   segments.forEach((segment, index) => {
     const text = oneLine(segment.text);
@@ -154,7 +200,7 @@ export function orderedTranscript<S extends TranscriptSegment>(
     lines.push({
       segment,
       track,
-      speaker: speakerLabel(track),
+      speaker: speakerLabel(track, target),
       offset: formatOffset(segment.startSeconds),
       startSeconds: segment.startSeconds,
       text,

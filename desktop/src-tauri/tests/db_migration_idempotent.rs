@@ -18,8 +18,9 @@ use support::{open_db, temp_dir};
 /// battery instrumentation), which is what makes the ladder worth having: the
 /// second step is the first one that had to run against databases the first step
 /// already wrote. 3 = YV106's two-track columns (`sys_wav_path`,
-/// `tap_rebuilds`, `meeting_segments.track`).
-const EXPECTED_VERSION: i64 = 3;
+/// `tap_rebuilds`, `meeting_segments.track`). 4 = YV125's `meetings.kind`, the
+/// column the diarization branch reads.
+const EXPECTED_VERSION: i64 = 4;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -31,6 +32,9 @@ const EXPECTED_VERSION: i64 = 3;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 4 {
+        sql.push_str("ALTER TABLE meetings DROP COLUMN kind;\n");
+    }
     if version < 3 {
         sql.push_str(
             "ALTER TABLE meetings DROP COLUMN sys_wav_path;\n\
@@ -327,14 +331,14 @@ fn migration_three_adds_the_two_track_columns_without_touching_existing_rows() {
     assert!(db.get_meeting(&id).unwrap().unwrap().sys_wav_path.is_some());
 }
 
-/// A FRESH database reaches version 3 in one pass, with all three columns
+/// A FRESH database reaches the current version in one pass, with every column
 /// present — the install every new user gets, which never sees the steps as
 /// separate events.
 #[test]
-fn a_fresh_database_lands_on_three_with_every_column_present() {
+fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
     let dir = temp_dir("fresh-three");
     let db = open_db(&dir);
-    assert_eq!(db.schema_version().unwrap(), 3);
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
     drop(db);
 
     let path = dir.join("wilson_voice.db");
@@ -344,10 +348,86 @@ fn a_fresh_database_lands_on_three_with_every_column_present() {
         "diagnostics",
         "sys_wav_path",
         "tap_rebuilds",
+        "kind",
     ] {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
     assert!(columns(&path, "meeting_segments").contains(&"track".to_string()));
+}
+
+// ── YV125 · migration 4 ──────────────────────────────────────────────────────
+
+/// The step this item owns, against a database that already has meetings in it.
+///
+/// `kind` is `NOT NULL DEFAULT 'unknown'`, and unlike migration 3's `track`
+/// default the value here is NOT a fact about the old rows — nobody was ever
+/// asked. That is exactly why it is `unknown` and why no backfill exists:
+/// `unknown` is the branch that CLUSTERS Track A, so a meeting whose kind was
+/// never asked is never mistaken for one whose microphone held a single
+/// speaker. Guessing `virtual` to preserve those rows' "Me" labels would be
+/// inventing an answer on the one question finding #4 says was being answered
+/// wrongly by assumption.
+#[test]
+fn migration_four_adds_kind_as_unknown_without_touching_existing_rows() {
+    use wilson_voice_lib::meetings::{MeetingKind, DEFAULT_MEETING_KIND};
+
+    let dir = temp_dir("kind-column");
+    let path = dir.join("wilson_voice.db");
+
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before YV125", &["hello there"]);
+        drop(db);
+        rewind_to(&path, 3);
+        id
+    };
+    assert!(
+        !columns(&path, "meetings").contains(&"kind".to_string()),
+        "the rewind must actually remove the column, or this proves nothing"
+    );
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV125");
+    assert_eq!(m.segment_count, 1, "its segments are untouched");
+    assert!(m.mic_wav_path.is_some(), "its audio is still there");
+    assert_eq!(
+        m.kind, DEFAULT_MEETING_KIND,
+        "a meeting recorded before the column existed was never asked"
+    );
+    assert_eq!(
+        m.kind(),
+        MeetingKind::Unknown,
+        "…and `unknown` is the branch that clusters Track A rather than the \
+         one that files the whole room as this user"
+    );
+
+    // The column is real and holds every value the picker can produce.
+    for kind in [
+        MeetingKind::Virtual,
+        MeetingKind::InPerson,
+        MeetingKind::Unknown,
+    ] {
+        let fresh = db
+            .create_meeting_with_kind("Picked", "manual", kind)
+            .unwrap();
+        assert_eq!(db.get_meeting(&fresh.id).unwrap().unwrap().kind(), kind);
+    }
+
+    // Re-opening does not re-run the step (an `ALTER TABLE … ADD COLUMN` that
+    // ran twice would be an error, not a no-op).
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert_eq!(
+        db.get_meeting(&id).unwrap().unwrap().kind(),
+        MeetingKind::Unknown
+    );
 }
 
 /// The acceptance line in full: a synthetic VIRTUAL meeting — two recorded

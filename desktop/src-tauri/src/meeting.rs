@@ -2909,6 +2909,18 @@ impl CaptureStream for ExternalStream {
 /// lifecycle — preflight, watchdog, stop, finalize — in milliseconds.
 pub struct SessionConfig {
     pub dir: PathBuf,
+    /// YV125 — what the user said this meeting is, carried on the session so
+    /// the recording and the row that describes it cannot disagree about it.
+    ///
+    /// The session does not BRANCH on this — it records audio, and the audio is
+    /// the same either way. It carries it because the kind is decided at the
+    /// one moment the user is present (the start-of-meeting picker) and
+    /// consumed long afterwards, by a diarization pass that may run after a
+    /// relaunch; a value that lived only in the control plane would have to be
+    /// re-fetched from the DB by everything downstream, which is one more place
+    /// to read a different answer. [`crate::meetings::diarization_target`] is
+    /// the function that turns it into a decision.
+    pub kind: crate::meetings::MeetingKind,
     pub tracks: usize,
     pub native_rate: u32,
     pub channels: u16,
@@ -2926,6 +2938,10 @@ impl SessionConfig {
             env: Arc::new(SystemEnv { path: dir.clone() }),
             stream: Arc::new(MicStream),
             dir,
+            // The skip default (YV125): a session nobody told anything about is
+            // `Unknown`, which clusters. Not `Virtual` — that is the one value
+            // that would let the "Me" shortcut back in by omission.
+            kind: crate::meetings::MeetingKind::Unknown,
             tracks: 1,
             native_rate,
             channels,
@@ -2946,6 +2962,14 @@ impl SessionConfig {
     /// [`fan_out_tap_block`]; a session configured for two tracks whose tap
     /// never delivers finalizes with exactly one wav, which is matrix row #2's
     /// stated degrade rather than a new failure.
+    ///
+    /// A third thing it deliberately does not do, since YV125: it does not set
+    /// [`SessionConfig::kind`] to [`crate::meetings::MeetingKind::Virtual`].
+    /// This constructor is chosen because a TAP OPENED, and a tap opening is
+    /// not the user saying they are on a call — a hybrid room (some people
+    /// present, some dialled in) opens exactly the same tap and is the case
+    /// where assuming the microphone holds one speaker costs the most. The kind
+    /// is whatever the user answered, and it is set by the caller.
     pub fn virtual_meeting(dir: impl Into<PathBuf>, native_rate: u32, channels: u16) -> Self {
         Self {
             tracks: 2,
@@ -2969,6 +2993,9 @@ pub struct MeetingSession {
     /// verdict if it ran out of them. Empty for every mic-only meeting. Read at
     /// finalize; YV106's migration is what gives it a column to land in.
     tap_rebuilds: Arc<Mutex<syscapture::TapRebuildLog>>,
+    /// YV125 — the kind this session was started under, readable for as long as
+    /// the session lives. See [`SessionConfig::kind`].
+    kind: crate::meetings::MeetingKind,
 }
 
 impl MeetingSession {
@@ -3140,7 +3167,14 @@ impl MeetingSession {
             stream: Some(stream),
             plan,
             tap_rebuilds,
+            kind: config.kind,
         })
+    }
+
+    /// YV125 — what the user said this meeting is. See [`SessionConfig::kind`];
+    /// [`crate::meetings::diarization_target`] is what turns it into a decision.
+    pub fn kind(&self) -> crate::meetings::MeetingKind {
+        self.kind
     }
 
     /// YV104 — the tap rebuild log, as it stands. Cheap to call and safe at any

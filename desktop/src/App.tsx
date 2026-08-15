@@ -430,6 +430,13 @@ interface Meeting {
   id: string;
   title: string;
   source: string;
+  /**
+   * YV125 — `virtual | in_person | unknown`, the answer to the
+   * start-of-meeting picker. Optional on the wire so a build of this UI can
+   * read a row written before migration 4; a missing kind is `unknown`, which
+   * is the branch that does not claim the microphone is you.
+   */
+  kind?: string | null;
   startedAt: string;
   endedAt?: string | null;
   durationSeconds: number;
@@ -460,6 +467,14 @@ interface MeetingSegment {
   /** 0 = mic ("Me"), 1 = system audio ("Them"). Absent = mic, per the column's
    *  `DEFAULT 0`: every row written before migration 3 really was the mic. */
   track?: number | null;
+}
+
+/** YV125 — one choice on the start-of-meeting kind picker. Mirrors
+ *  `meeting_control::KindChoice`. */
+interface KindChoice {
+  kind: string;
+  label: string;
+  menuId: string;
 }
 
 interface MeetingDetail {
@@ -692,6 +707,21 @@ export default function App() {
   // The meeting whose transcript is open. `null` = the list.
   const [openMeeting, setOpenMeeting] = useState<MeetingDetail | null>(null);
   const [meetingBusy, setMeetingBusy] = useState(false);
+  /**
+   * YV125 — the answer to "what kind of meeting is this?", held only until the
+   * next start. It begins as `unknown` (the skip answer) so the record button
+   * works exactly as it did for a user who never looks at the picker: this is a
+   * hint that improves diarization, never a gate.
+   */
+  const [meetingKind, setMeetingKind] = useState<string>("unknown");
+  /**
+   * The picker's options, fetched from Rust rather than written out again here
+   * — the tray submenu renders the SAME `meeting_control::KIND_PICKER`, so a
+   * re-worded or added choice cannot appear on one surface and not the other.
+   * Empty until it arrives (and if the call fails), which hides the picker and
+   * leaves the record button working on the skip answer.
+   */
+  const [meetingKinds, setMeetingKinds] = useState<KindChoice[]>([]);
   // YV95 — is a meeting recording right now? Driven by the backend's 1 Hz
   // `meeting` emit (OS-12 fix 1: no timer in the webview), plus one
   // `meeting_status` call on mount so a window opened mid-meeting is correct
@@ -1039,6 +1069,10 @@ export default function App() {
     invoke<MeetingStatus>("meeting_status")
       .then((s) => { if (!dead) setMeetingStatus(s); })
       .catch(() => {});
+    // YV125 — the three kind choices, from the one list Rust publishes.
+    invoke<KindChoice[]>("meeting_kind_choices")
+      .then((c) => { if (!dead) setMeetingKinds(c); })
+      .catch(() => {});
     listen<MeetingStatus>(MEETING_EVENT, (e) => {
       setMeetingStatus((prev) => {
         if (prev.recording && !e.payload.recording) {
@@ -1373,7 +1407,11 @@ export default function App() {
   async function toggleMeetingRecording() {
     setMeetingBusy(true);
     try {
-      const next = await invoke<MeetingStatus>("toggle_meeting_recording");
+      const next = await invoke<MeetingStatus>("toggle_meeting_recording", {
+        // Ignored by the backend on a press that STOPS a meeting: the recording
+        // that is ending was started under whatever it was started under.
+        kind: meetingKind,
+      });
       setMeetingStatus(next);
       if (!next.recording) await loadMeetings(meetingQuery);
     } catch (e) {
@@ -2678,6 +2716,35 @@ export default function App() {
                     Clear
                   </button>
                 )}
+                {/* YV125 — the start-of-meeting kind picker. It sits BESIDE
+                    the record button rather than in front of it: there is no
+                    calendar in this phase to infer the kind from, so it is
+                    asked, and "Not sure" is a real answer that changes nothing
+                    about whether the recording starts. Which choice is
+                    selected decides whether diarization clusters the
+                    microphone or treats it as one speaker. */}
+                {meetingKinds.length > 0 && !meetingStatus.recording && (
+                  <div
+                    className="meeting-kind-picker"
+                    role="radiogroup"
+                    aria-label="What kind of meeting is this?"
+                  >
+                    {meetingKinds.map((c) => (
+                      <button
+                        key={c.kind}
+                        type="button"
+                        role="radio"
+                        aria-checked={meetingKind === c.kind}
+                        className={
+                          meetingKind === c.kind ? "chip selected" : "chip"
+                        }
+                        onClick={() => setMeetingKind(c.kind)}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {/* Once there ARE meetings the CTA is a toolbar button; the
                     big empty-state version below is for the first one. */}
                 {meetings.length > 0 && !meetingStatus.recording && (
@@ -2707,6 +2774,30 @@ export default function App() {
                       to reach it; this is the one big button that fixes that. */}
                   {!meetingQuery && (
                     <>
+                      {/* The same three choices as the toolbar's, from the same
+                          list — a first-time user gets the question too. */}
+                      {meetingKinds.length > 0 && !meetingStatus.recording && (
+                        <div
+                          className="meeting-kind-picker"
+                          role="radiogroup"
+                          aria-label="What kind of meeting is this?"
+                        >
+                          {meetingKinds.map((c) => (
+                            <button
+                              key={c.kind}
+                              type="button"
+                              role="radio"
+                              aria-checked={meetingKind === c.kind}
+                              className={
+                                meetingKind === c.kind ? "chip selected" : "chip"
+                              }
+                              onClick={() => setMeetingKind(c.kind)}
+                            >
+                              {c.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <button
                         className="primary big"
                         disabled={meetingBusy || !!disabledReason(meetingStatus)}
@@ -2851,7 +2942,10 @@ export default function App() {
                   </p>
                 </div>
               ) : (
-                <TranscriptList segments={openMeeting.segments} />
+                <TranscriptList
+                  segments={openMeeting.segments}
+                  kind={openMeeting.meeting.kind}
+                />
               )}
             </div>
           )}

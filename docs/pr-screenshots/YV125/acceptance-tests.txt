@@ -1,0 +1,87 @@
+YV125 — acceptance commands, run on macOS 26.5.2 / arm64, 2026-08-15T23:05:08Z
+target dir: scratchpad/yap-target   rustc: rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+=== 1. sqlite3 <db> "PRAGMA user_version" on a FRESH install → 4
+$ cargo test --test db_migration_idempotent a_fresh_database   # writes a fresh DB via Database::open
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+$ sqlite3 "$FRESH_DB" "PRAGMA user_version;"
+4
+$ sqlite3 "$FRESH_DB" "SELECT name,type,notnull,dflt_value FROM pragma_table_info('meetings') WHERE name='kind';"
+kind|TEXT|notnull=1|default='unknown'
+
+=== 2. cargo test --test db_migration_idempotent  (migration 4 covered as 1-3 are)
+running 9 tests
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test a_newer_database_is_left_alone ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+
+=== 3. cargo test --test meeting_kind_branch  (table-driven over the 4 spec rows + 2 more)
+running 7 tests
+test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
+test the_branch_is_not_vacuous ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_diarization_target_follows_the_kind_and_the_second_track ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+test the_label_follows_the_same_branch_the_target_does ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== 4. cargo test --test meeting_kind_default_on_skip
+running 4 tests
+test a_row_created_without_a_kind_is_unknown ... ok
+test a_kind_on_the_stopping_press_does_not_rewrite_the_running_meeting ... ok
+test a_meeting_started_without_the_picker_records_unknown_and_still_records ... ok
+test a_picked_kind_reaches_both_the_row_and_the_capture_session ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+=== 5. grep -n "is_me" desktop/src-tauri/src/meetings.rs
+217:    /// `is_me = 1` like anyone else (YV128), reached through a voice match and
+858:/// Note what is NOT here: `is_me`. Whether a voice is Wilson's is a property of
+859:/// an enrolled `speaker_profiles` row (`is_me = 1`, YV128), matched by
+
+    (is_me appears ONLY as prose pointing at the enrolled speaker_profiles row YV128 adds.
+     It is not inside speaker_label, and speaker_label_decides_on_the_target_and_never_on_an_identity_flag
+     in tests/meeting_kind_branch.rs asserts that against the source text rather than by eye.)
+
+=== 6. Criterion 5 (manual): a synthetic two-speaker in_person recording
+    HALF MET ON THIS BASE, and the gap is instrumented rather than described.
+    'two distinct clusters' needs a clusterer; YV126 is the item that adds one
+    (cluster_track + meeting_segments.cluster_index, migration 5). What ships
+    here is the other clause — nothing swallows the room any more:
+
+$ cargo test --test meeting_markdown_export a_three_segment  -- --nocapture   # a synthetic mic-only, kind-unknown meeting
+running 1 test
+test a_three_segment_meeting_round_trips_readably ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+
+
+    and the two-speaker in_person case rendered end to end (from tests/meeting_kind_branch.rs::the_label_follows_the_same_branch_the_target_does):
+      in_person, two mic turns  → [Speaker, Speaker]  (2 turns, neither labelled Me)
+      unknown,   two mic turns  → [Speaker, Speaker]
+      virtual + live track B    → [Me, Them]
+      virtual, track B silent   → [Speaker]
+      in_person + live track B  → [Speaker, Them]   (hybrid: the room is still clustered)
+
+=== 7. full local gate
+$ cargo test --no-fail-fast   → 1107 passed, 0 failed, 18 ignored, across 94 binaries
+$ npx tsc --noEmit
+  (0 errors)
+$ npm test
+ Test Files  10 passed (10)
+      Tests  125 passed (125)

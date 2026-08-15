@@ -28,7 +28,7 @@ use wilson_voice_lib::meeting::{
     self, rt_capture_callback, CaptureStream, ExternalStream, MIC_TRACK, SYSTEM_TRACK,
 };
 use wilson_voice_lib::meeting_control::start_capture_session;
-use wilson_voice_lib::meetings::SetupVerdict;
+use wilson_voice_lib::meetings::{MeetingKind, SetupVerdict};
 use wilson_voice_lib::os_version_gate::{system_audio_gate, OsVersion, SystemAudioGate};
 use wilson_voice_lib::rtring::CaptureAnchor;
 use wilson_voice_lib::syscapture::{
@@ -41,6 +41,13 @@ mod support;
 mod tap;
 
 const RATE: u32 = 48_000;
+
+/// Every meeting in this file is a CALL — the whole file is about the
+/// system-audio tap, including the rows where the tap is denied or unavailable
+/// and the call falls back to the microphone. YV125's kind is what the user
+/// said, not what the tap managed, so it is `Virtual` throughout; what the tap
+/// actually delivered is `plan`, which is the other argument.
+const KIND: MeetingKind = MeetingKind::Virtual;
 /// One 10 ms block at 48 kHz mono — the cadence an IOProc really delivers at.
 const BLOCK_FRAMES: usize = 480;
 
@@ -159,6 +166,7 @@ fn meeting_on_supported_granted_attaches_track_b() {
         Some(Arc::clone(&fake.tap)),
         Some(Arc::clone(&db)),
         external(),
+        KIND,
     )
     .expect("the two-track session starts");
 
@@ -216,7 +224,7 @@ fn meeting_without_grant_stays_mic_only_with_badge() {
     );
     assert_eq!(plan.tracks(), 1);
 
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external())
+    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
         .expect("a mic-only meeting starts on any machine");
     let badge = capture
         .system_audio_probe()
@@ -268,7 +276,7 @@ fn meeting_pre_14_4_stays_mic_only() {
     )
     .attaches());
 
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external())
+    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
         .expect("22-A recording runs all the way down to the macOS 12 floor");
     assert_eq!(
         capture.system_audio_probe().and_then(|probe| probe()),
@@ -298,6 +306,7 @@ fn finish_tears_down_tap_via_watchdog_path() {
         Some(Arc::clone(&fake.tap)),
         None,
         external(),
+        KIND,
     )
     .expect("the two-track session starts");
     assert!(
@@ -432,7 +441,7 @@ fn a_tap_that_cannot_open_still_records_the_mic() {
     let plan = TrackBPlan::MicOnly {
         badge: syscapture::SETUP_FAILED_MESSAGE,
     };
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external())
+    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
         .expect("the meeting starts anyway");
     feed_mic(10);
     let outcome = capture.stop().expect("the meeting finalizes");
@@ -486,6 +495,7 @@ fn track_b_is_retuned_to_the_taps_own_format() {
         Some(Arc::clone(&meeting_tap)),
         None,
         external(),
+        KIND,
     )
     .expect("starts");
     let active = meeting::active_capture().expect("a meeting is recording");
