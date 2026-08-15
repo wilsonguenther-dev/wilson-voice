@@ -755,9 +755,11 @@ pub struct MeetingJournal {
     id: String,
     marker: PathBuf,
     spills: Vec<PathBuf>,
-    index: PathBuf,
+    /// One index sidecar PER TRACK — see [`MeetingJournal::index_track`].
+    indexes: Vec<PathBuf>,
     tx: Option<mpsc::SyncSender<JournalMsg>>,
-    pending_index: PendingIndex,
+    /// One pending-record queue per track, same order as `indexes`.
+    pending_index: Vec<PendingIndex>,
     writer: Option<thread::JoinHandle<()>>,
     dropped: AtomicU64,
     /// TEST SEAM — see [`MeetingJournal::pause_handle`].
@@ -783,25 +785,38 @@ impl MeetingJournal {
         let tracks = tracks.max(1);
         let id = Uuid::new_v4().to_string();
         let marker = dir.join(format!("{id}.{MEETING_MARKER_EXT}"));
-        let index = dir.join(format!("{id}.{MEETING_INDEX_EXT}"));
         let spills: Vec<PathBuf> = (0..tracks)
             .map(|t| dir.join(format!("{id}.t{t}.{MEETING_SPILL_EXT}")))
             .collect();
+        // Track 0 keeps 22-A's exact filename so a journal written by this build
+        // and one written by the shipped build are the same artifact; only the
+        // tracks 22-B adds get a suffixed sidecar. See `index_track`.
+        let indexes: Vec<PathBuf> = (0..tracks)
+            .map(|t| {
+                if t == 0 {
+                    dir.join(format!("{id}.{MEETING_INDEX_EXT}"))
+                } else {
+                    dir.join(format!("{id}.t{t}.{MEETING_INDEX_EXT}"))
+                }
+            })
+            .collect();
         let (tx, rx) = mpsc::sync_channel::<JournalMsg>(depth.max(1));
         let writer_pause = Arc::new(AtomicBool::new(false));
-        let pending_index: PendingIndex = Arc::new(Mutex::new(Vec::new()));
-        let (wdir, wspills, wmarker, windex, wpause, wpending) = (
+        let pending_index: Vec<PendingIndex> = (0..tracks)
+            .map(|_| Arc::new(Mutex::new(Vec::new())))
+            .collect();
+        let (wdir, wspills, wmarker, windexes, wpause, wpending) = (
             dir.to_path_buf(),
             spills.clone(),
             marker.clone(),
-            index.clone(),
+            indexes.clone(),
             Arc::clone(&writer_pause),
-            Arc::clone(&pending_index),
+            pending_index.clone(),
         );
         let Ok(writer) = thread::Builder::new()
             .name("wv-meeting-journal".into())
             .spawn(move || {
-                meeting_writer_loop(&wdir, &wspills, &wmarker, &windex, rx, &wpause, &wpending)
+                meeting_writer_loop(&wdir, &wspills, &wmarker, &windexes, rx, &wpause, &wpending)
             })
         else {
             log::warn!("YV91 meeting journal off (writer thread)");
@@ -811,7 +826,7 @@ impl MeetingJournal {
             id,
             marker,
             spills,
-            index,
+            indexes,
             tx: Some(tx),
             pending_index,
             writer: Some(writer),
@@ -819,6 +834,11 @@ impl MeetingJournal {
             writer_pause,
             keep: false,
         })
+    }
+
+    /// How many tracks this journal was opened for.
+    pub fn tracks(&self) -> usize {
+        self.spills.len()
     }
 
     pub fn id(&self) -> &str {
@@ -867,12 +887,38 @@ impl MeetingJournal {
         samples.len()
     }
 
-    /// Persist one index record (finding #12).
+    /// Persist one index record for track 0 (finding #12).
     ///
     /// Queued separately from the audio — see `PendingIndex`: the record that
     /// documents a drop must survive the condition that caused it.
     pub fn index(&self, record: IndexRecord) {
-        self.pending_index.lock().push(record);
+        self.index_track(0, record);
+    }
+
+    /// YV106 — persist one index record for `track`.
+    ///
+    /// **Why the index had to become per-track when the audio did not.** The
+    /// spills were N-track from the start (`append(track, …)`), and 22-A's own
+    /// doc comment says the shape was built for this item. The INDEX was not,
+    /// and it could not stay single: `plan_silence_splices` folds a record
+    /// sequence into "audio is missing HERE, splice this much silence", and the
+    /// two producers lose audio independently — a full journal queue while the
+    /// tap is mid-block, a ring overrun on the mic and not on the tap. Pouring
+    /// both tracks' records into one sidecar makes every interval's
+    /// `captured - spilled` the difference of two unrelated counters, so a
+    /// healthy mic track gets holes spliced into it because the TAP dropped
+    /// something, and both tracks' timestamps end up wrong in opposite
+    /// directions. One sequence per track keeps each track's repair a statement
+    /// about that track — and hands YV107 exactly the two `IndexRecord`
+    /// sequences its host-time merge is specified to walk.
+    ///
+    /// Out-of-range tracks are dropped rather than misfiled: a record with
+    /// nowhere honest to go must never land on track 0.
+    pub fn index_track(&self, track: usize, record: IndexRecord) {
+        let Some(pending) = self.pending_index.get(track) else {
+            return;
+        };
+        pending.lock().push(record);
     }
 
     /// Samples this journal could not hand to the writer.
@@ -928,7 +974,9 @@ impl Drop for MeetingJournal {
             return;
         }
         let _ = std::fs::remove_file(&self.marker);
-        let _ = std::fs::remove_file(&self.index);
+        for index in &self.indexes {
+            let _ = std::fs::remove_file(index);
+        }
         for spill in &self.spills {
             let _ = std::fs::remove_file(spill);
         }
@@ -958,6 +1006,13 @@ fn write_index_records(file: Option<&mut std::fs::File>, pending: &PendingIndex)
     let _ = file.flush();
 }
 
+/// Every track's pending records, in track order.
+fn write_all_index_records(files: &mut [Option<std::fs::File>], pending: &[PendingIndex]) {
+    for (file, pending) in files.iter_mut().zip(pending.iter()) {
+        write_index_records(file.as_mut(), pending);
+    }
+}
+
 /// The meeting journal's writer thread. Creates the spills, writes the marker
 /// FIRST (that pair is the crash signal), then appends audio and index records
 /// with a BATCHED flush (finding #12: a timer, not every callback).
@@ -965,10 +1020,10 @@ fn meeting_writer_loop(
     dir: &Path,
     spills: &[PathBuf],
     marker: &Path,
-    index: &Path,
+    indexes: &[PathBuf],
     rx: mpsc::Receiver<JournalMsg>,
     pause: &AtomicBool,
-    pending_index: &PendingIndex,
+    pending_index: &[PendingIndex],
 ) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         log::warn!("YV91 meeting journal off (recovery dir): {e}");
@@ -990,11 +1045,20 @@ fn meeting_writer_loop(
         "started_at": chrono::Utc::now().to_rfc3339(),
         "sample_rate": TARGET_RATE,
         "state": MeetingState::Recording.as_str(),
-        "index": index.to_string_lossy(),
+        // Track 0's sidecar stays the top-level `index` key it has always been,
+        // so a marker this build writes is still readable by the shipped
+        // finalize — and a marker the SHIPPED build left behind (one key, one
+        // track) is still readable by this one. Each track additionally names
+        // its own, which is what a two-track finalize splices from.
+        "index": indexes.first().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "tracks": spills
             .iter()
             .enumerate()
-            .map(|(i, p)| serde_json::json!({ "track": i, "spill": p.to_string_lossy() }))
+            .map(|(i, p)| serde_json::json!({
+                "track": i,
+                "spill": p.to_string_lossy(),
+                "index": indexes.get(i).map(|p| p.to_string_lossy().to_string()),
+            }))
             .collect::<Vec<_>>(),
     });
     if let Err(e) = std::fs::write(marker, meta.to_string()) {
@@ -1005,7 +1069,10 @@ fn meeting_writer_loop(
         return;
     }
 
-    let mut index_file = std::fs::File::create(index).ok();
+    let mut index_files: Vec<Option<std::fs::File>> = indexes
+        .iter()
+        .map(|path| std::fs::File::create(path).ok())
+        .collect();
     let mut last_flush = Instant::now();
     let mut buf: Vec<u8> = Vec::new();
     let mut final_state = MeetingState::Partial;
@@ -1038,7 +1105,7 @@ fn meeting_writer_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        write_index_records(index_file.as_mut(), pending_index);
+        write_all_index_records(&mut index_files, pending_index);
         if last_flush.elapsed() >= JOURNAL_FLUSH_INTERVAL {
             for file in files.iter_mut() {
                 let _ = file.flush();
@@ -1048,7 +1115,7 @@ fn meeting_writer_loop(
     }
     // The last records — including the one `MeetingCapture::close` wrote to
     // size the final splice — are written before the spills are flushed shut.
-    write_index_records(index_file.as_mut(), pending_index);
+    write_all_index_records(&mut index_files, pending_index);
     for file in files.iter_mut() {
         let _ = file.flush();
     }
@@ -1067,13 +1134,32 @@ fn meeting_writer_loop(
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinalizedMeeting {
     pub id: String,
-    /// One wav per track, in track order.
+    /// One wav per track that HAS audio, in track order. A track whose spill
+    /// never received a sample is left out entirely — that is a stray start, not
+    /// a recording, and an empty wav in the list would be worse than a gap.
     pub tracks: Vec<PathBuf>,
+    /// YV106 — which track each entry of `tracks` came from, same order.
+    ///
+    /// This exists because `tracks` is not positional once a meeting can have
+    /// two producers: a two-track meeting whose MIC never delivered (matrix row
+    /// #3 — mic permission denied, system audio only) finalizes with one wav,
+    /// and reading it as `tracks[0]` would file the system track as the mic's.
+    /// The caller asks [`FinalizedMeeting::wav_for_track`] instead of indexing.
+    pub track_numbers: Vec<usize>,
     pub seconds: f64,
     pub state: MeetingState,
-    /// How much silence had to be spliced for chunks that never reached disk.
-    /// Non-zero means the recording is honest about a gap rather than shifted.
+    /// How much silence had to be spliced for chunks that never reached disk,
+    /// summed over the tracks. Non-zero means the recording is honest about a
+    /// gap rather than shifted.
     pub spliced_silence_samples: u64,
+}
+
+impl FinalizedMeeting {
+    /// The wav for one track, or `None` when that track produced no audio.
+    pub fn wav_for_track(&self, track: usize) -> Option<&PathBuf> {
+        let at = self.track_numbers.iter().position(|t| *t == track)?;
+        self.tracks.get(at)
+    }
 }
 
 fn is_meeting_marker(name: &str) -> bool {
@@ -1236,19 +1322,6 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
         .unwrap_or_else(|| marker.with_extension("index.jsonl"));
-    let splices = plan_silence_splices(&read_index_records(&index_path));
-    let spliced_silence_samples: u64 = splices.iter().map(|s| s.silence_samples).sum();
-    // `complete` has to mean "nothing was lost", or it means nothing. A meeting
-    // that needed silence spliced into it lost audio — to a full queue, a full
-    // ring, or a device that stopped delivering — and the user is entitled to
-    // know that from the row rather than from counting samples. YV94's list
-    // shows `partial` with the quality note; a clean stop that happens to have
-    // a hole in it is still a hole.
-    let state = if spliced_silence_samples > 0 {
-        MeetingState::Partial
-    } else {
-        state
-    };
 
     let name = marker.file_name().unwrap_or_default().to_string_lossy();
     let id = name
@@ -1262,7 +1335,10 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         .cloned()
         .unwrap_or_default();
     let mut wavs = Vec::new();
+    let mut track_numbers: Vec<usize> = Vec::new();
     let mut seconds = 0.0f64;
+    let mut spliced_silence_samples: u64 = 0;
+    let mut index_paths: Vec<PathBuf> = Vec::new();
     for (i, track) in tracks.iter().enumerate() {
         let Some(spill) = track
             .get("spill")
@@ -1271,6 +1347,24 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         else {
             continue;
         };
+        // YV106 — each track is spliced from ITS OWN index sequence. Track 0
+        // falls back to the marker's top-level `index` key, which is where a
+        // 22-A marker (written before per-track sidecars existed) keeps it, so
+        // a journal abandoned by the shipped build still recovers correctly.
+        let index_path = track
+            .get("index")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if i == 0 {
+                    index_path.clone()
+                } else {
+                    marker.with_file_name(format!("{id}.t{i}.{MEETING_INDEX_EXT}"))
+                }
+            });
+        let splices = plan_silence_splices(&read_index_records(&index_path));
+        spliced_silence_samples += splices.iter().map(|s| s.silence_samples).sum::<u64>();
+        index_paths.push(index_path);
         let wav_path = marker.with_file_name(format!("{id}.t{i}.wav"));
         // Finding #1 again, at the other end: a three-hour spill is ~345 MB and
         // reading it into a `Vec<f32>` to write a wav would cost 690 MB — the
@@ -1280,6 +1374,7 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
             Ok(written) => {
                 seconds = seconds.max(written as f64 / sample_rate as f64);
                 wavs.push(wav_path);
+                track_numbers.push(i);
             }
             Err(e) => {
                 // Never leave a half-written wav; the marker stays so the next
@@ -1289,6 +1384,19 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
             }
         }
     }
+    // `complete` has to mean "nothing was lost", or it means nothing. A meeting
+    // that needed silence spliced into it lost audio — to a full queue, a full
+    // ring, or a device that stopped delivering — and the user is entitled to
+    // know that from the row rather than from counting samples. YV94's list
+    // shows `partial` with the quality note; a clean stop that happens to have
+    // a hole in it is still a hole. With two tracks the total is summed across
+    // them: a hole in the system track is missing audio just as a hole in the
+    // mic track is, and reporting only the larger would let one hide the other.
+    let state = if spliced_silence_samples > 0 {
+        MeetingState::Partial
+    } else {
+        state
+    };
     // Only now is the spill redundant.
     for track in tracks.iter() {
         if let Some(spill) = track.get("spill").and_then(|v| v.as_str()) {
@@ -1296,6 +1404,9 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
         }
     }
     let _ = std::fs::remove_file(&index_path);
+    for path in &index_paths {
+        let _ = std::fs::remove_file(path);
+    }
     let _ = std::fs::remove_file(marker);
     if wavs.is_empty() {
         return Ok(None);
@@ -1303,6 +1414,7 @@ fn finalize_meeting_marker(marker: &Path) -> Result<Option<FinalizedMeeting>, St
     Ok(Some(FinalizedMeeting {
         id,
         tracks: wavs,
+        track_numbers,
         seconds,
         state,
         spliced_silence_samples,
@@ -1489,18 +1601,44 @@ pub fn fan_out_block(
     }
 }
 
-/// The meeting's own consumer state: DSP + journal + the index cadence.
+/// YV106 — one drained block from the SYSTEM-AUDIO TAP, into track 1 of
+/// whatever meeting is recording.
+///
+/// The mirror of [`fan_out_block`], and deliberately a separate function rather
+/// than a `track` parameter on it: the mic block fans out to two consumers (the
+/// meeting and an armed dictation take) and the tap block fans out to exactly
+/// one. A dictation must never be able to paste the other people on the call
+/// into the user's document — that is not a feature with a flag, it is a
+/// property of there being no code path from here to a `DictationSink`.
+///
+/// A no-op when nothing is recording, and a no-op when the recording meeting is
+/// mic-only: `accept_track` drops a block for a track that does not exist rather
+/// than folding it into track 0.
+pub fn fan_out_tap_block(block: &[f32], anchors: &[CaptureAnchor]) {
+    if let Some(meeting) = active_capture() {
+        meeting.accept_track(SYSTEM_TRACK, block, anchors);
+    }
+}
+
+/// ONE track's consumer state: DSP + counters + the index cadence.
 ///
 /// Note what is NOT here: any buffer that grows with the length of the meeting.
 /// `out` is reused and truncated every block (finding #1) — the audio's only
 /// home is the spill.
-struct MeetingCaptureInner {
+///
+/// YV106 split this out of `MeetingCaptureInner` unchanged, field for field.
+/// 22-A modelled it once because there was one producer (the mic); 22-B's tap
+/// is a second producer with its OWN device, its own native rate, its own
+/// resampler phase, its own epochs and its own losses, so every field here has
+/// to exist per track or the two producers corrupt each other's numbers. The
+/// journal is deliberately NOT here: there is one journal per meeting, and both
+/// tracks write into it (`MeetingJournal::append(track, …)`).
+struct TrackState {
     channels: u16,
     mono: Vec<f32>,
     out: Vec<f32>,
     high_pass: Option<Biquad>,
     resampler: StreamResampler,
-    journal: Option<MeetingJournal>,
     /// Cumulative 16 kHz samples the journal ACCEPTED — what is on disk.
     spilled: u64,
     /// Cumulative 16 kHz-equivalent samples the DEVICE delivered.
@@ -1528,7 +1666,50 @@ struct MeetingCaptureInner {
     last_index_at: u64,
     last_host_ns: u64,
     index_written: u64,
+    /// 16 kHz samples and blocks THIS track has consumed. Per-track because a
+    /// live tap must never be able to stand in for a dead mic, and vice versa —
+    /// see [`MeetingCapture::since_last_block`].
+    samples_16k: u64,
+    blocks: u64,
 }
+
+impl TrackState {
+    fn new(native_rate: u32, channels: u16) -> Self {
+        Self {
+            channels: channels.max(1),
+            mono: Vec::new(),
+            out: Vec::new(),
+            high_pass: Biquad::high_pass(native_rate, HIGH_PASS_HZ),
+            resampler: StreamResampler::new(native_rate, TARGET_RATE),
+            spilled: 0,
+            captured: 0,
+            captured_base: 0,
+            native_rate,
+            native_frames: 0,
+            lost_frames: 0,
+            anchor_lost: 0,
+            last_index_at: 0,
+            last_host_ns: 0,
+            index_written: 0,
+            samples_16k: 0,
+            blocks: 0,
+        }
+    }
+}
+
+/// The meeting's own consumer state: one [`TrackState`] per track, and the ONE
+/// journal they all write into.
+struct MeetingCaptureInner {
+    tracks: Vec<TrackState>,
+    journal: Option<MeetingJournal>,
+}
+
+/// The mic track. Track 0 in every meeting, 22-A and 22-B alike.
+pub const MIC_TRACK: usize = 0;
+
+/// 22-B's system-audio tap track. Present only in a two-track (virtual) meeting
+/// — see [`SessionConfig::virtual_meeting`].
+pub const SYSTEM_TRACK: usize = 1;
 
 /// A meeting that is currently recording. Registered globally for the duration
 /// so the capture consumer can reach it without threading a handle through
@@ -1536,6 +1717,14 @@ struct MeetingCaptureInner {
 pub struct MeetingCapture {
     inner: Mutex<MeetingCaptureInner>,
     started: Instant,
+    /// The MEETING's clock, and deliberately the MIC track's clock: track 0 is
+    /// the only producer that advances these three. A meeting's elapsed time,
+    /// its watchdog liveness and its "is the device still delivering" answer all
+    /// belong to the microphone — a system-audio tap that is happily delivering
+    /// while the mic is dead must not read as a healthy meeting, which is
+    /// exactly what a shared counter would say. The tap has its own liveness
+    /// path (`CaptureEnv::tap_liveness` → YV104's ghost watchdog) and its own
+    /// per-track counters on [`TrackState`].
     samples_16k: AtomicU64,
     blocks: AtomicU64,
     /// Milliseconds since `started` at the last accepted block. The watchdog's
@@ -1550,24 +1739,30 @@ impl MeetingCapture {
     /// a journal it controls, and (in 22-B) by a tap that owns its own track
     /// and never touches the global active-meeting slot.
     pub fn new(native_rate: u32, channels: u16, journal: Option<MeetingJournal>) -> Self {
+        Self::with_tracks(native_rate, channels, 1, journal)
+    }
+
+    /// YV106 — a consumer with `tracks` independent track states.
+    ///
+    /// Every track starts on the mic's format because that is the only format
+    /// known at `start`. The tap learns its own (`kAudioTapPropertyFormat`)
+    /// after the aggregate device exists, and hands it over through
+    /// [`MeetingCapture::retune_track`] before it feeds its first block — the
+    /// same epoch-banking path YV92 already built for an AirPods swap, which is
+    /// exactly the operation "this track's rate is now X" needs.
+    pub fn with_tracks(
+        native_rate: u32,
+        channels: u16,
+        tracks: usize,
+        journal: Option<MeetingJournal>,
+    ) -> Self {
+        let tracks = tracks.max(1);
         Self {
             inner: Mutex::new(MeetingCaptureInner {
-                channels: channels.max(1),
-                mono: Vec::new(),
-                out: Vec::new(),
-                high_pass: Biquad::high_pass(native_rate, HIGH_PASS_HZ),
-                resampler: StreamResampler::new(native_rate, TARGET_RATE),
+                tracks: (0..tracks)
+                    .map(|_| TrackState::new(native_rate, channels))
+                    .collect(),
                 journal,
-                spilled: 0,
-                captured: 0,
-                captured_base: 0,
-                native_rate,
-                native_frames: 0,
-                lost_frames: 0,
-                anchor_lost: 0,
-                last_index_at: 0,
-                last_host_ns: 0,
-                index_written: 0,
             }),
             started: Instant::now(),
             samples_16k: AtomicU64::new(0),
@@ -1576,9 +1771,26 @@ impl MeetingCapture {
         }
     }
 
-    /// 16 kHz samples this meeting has captured. Also the meeting's clock.
+    /// How many tracks this meeting is recording.
+    pub fn tracks(&self) -> usize {
+        self.inner.lock().tracks.len()
+    }
+
+    /// 16 kHz samples this meeting has captured. Also the meeting's clock, and
+    /// therefore the MIC track's — see the note on the counters below.
     pub fn samples(&self) -> u64 {
         self.samples_16k.load(Ordering::Relaxed)
+    }
+
+    /// 16 kHz samples ONE track has captured. `0` for a track that does not
+    /// exist, which is what a mic-only meeting says about track 1.
+    pub fn track_samples(&self, track: usize) -> u64 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.samples_16k)
+            .unwrap_or(0)
     }
 
     pub fn seconds(&self) -> f64 {
@@ -1592,17 +1804,69 @@ impl MeetingCapture {
     /// 16 kHz-equivalent samples the DEVICE has delivered — the other half of
     /// the gap detector's pair (`spilled` is what reached the disk).
     pub fn captured_samples(&self) -> u64 {
-        self.inner.lock().captured
+        self.track_captured_samples(MIC_TRACK)
+    }
+
+    /// The same number, per track.
+    pub fn track_captured_samples(&self, track: usize) -> u64 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.captured)
+            .unwrap_or(0)
+    }
+
+    /// 16 kHz samples ONE track's journal ACCEPTED — what is on disk for it.
+    pub fn track_spilled_samples(&self, track: usize) -> u64 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.spilled)
+            .unwrap_or(0)
+    }
+
+    /// The native rate ONE track's current epoch is being captured at.
+    pub fn track_native_rate(&self, track: usize) -> u32 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.native_rate)
+            .unwrap_or(0)
     }
 
     /// Index records persisted so far — the gap detector's paper trail.
     pub fn index_records_written(&self) -> u64 {
-        self.inner.lock().index_written
+        self.track_index_records_written(MIC_TRACK)
     }
 
-    /// Blocks this meeting has consumed. A meeting's own liveness counter.
+    /// The same count, per track: each track keeps its own index sequence (see
+    /// [`MeetingJournal::index_track`]).
+    pub fn track_index_records_written(&self, track: usize) -> u64 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.index_written)
+            .unwrap_or(0)
+    }
+
+    /// Blocks this meeting has consumed. A meeting's own liveness counter — the
+    /// MIC's, deliberately (see the note on the counters below).
     pub fn blocks(&self) -> u64 {
         self.blocks.load(Ordering::Relaxed)
+    }
+
+    /// Blocks ONE track has consumed.
+    pub fn track_blocks(&self, track: usize) -> u64 {
+        self.inner
+            .lock()
+            .tracks
+            .get(track)
+            .map(|t| t.blocks)
+            .unwrap_or(0)
     }
 
     /// Wall time since this meeting last consumed a block — OS-1's liveness
@@ -1617,22 +1881,42 @@ impl MeetingCapture {
         self.started.elapsed().saturating_sub(last)
     }
 
-    /// One drained block: downmix → high-pass → 16 kHz → spill, then FORGET it.
+    /// One drained MIC block: downmix → high-pass → 16 kHz → spill, then FORGET
+    /// it. Track 0, which is what every 22-A caller means.
     pub fn accept(&self, interleaved: &[f32], anchors: &[CaptureAnchor]) {
+        self.accept_track(MIC_TRACK, interleaved, anchors);
+    }
+
+    /// YV106 — one drained block for `track`.
+    ///
+    /// This is the second producer's entry point: `syscapture.rs` drains its
+    /// tap's `SpscRing<f32>`/`SpscRing<CaptureAnchor>` exactly as the mic path
+    /// drains its own, and hands the block here as track
+    /// [`SYSTEM_TRACK`]. Everything downstream of it — DSP, epoch bookkeeping,
+    /// index cadence — is the same code the mic runs, on that track's own
+    /// state, writing into the same journal the mic already opened.
+    ///
+    /// A block for a track this meeting does not have is DROPPED, never folded
+    /// into track 0: a mic-only meeting that quietly mixed tap audio into "Me"
+    /// would be worse than one that recorded no tap at all.
+    pub fn accept_track(&self, track: usize, interleaved: &[f32], anchors: &[CaptureAnchor]) {
         if interleaved.is_empty() {
             return;
         }
         let mut guard = self.inner.lock();
+        let MeetingCaptureInner { tracks, journal } = &mut *guard;
+        let Some(state) = tracks.get_mut(track) else {
+            return;
+        };
         // Destructured so the reused `mono`/`out` scratch buffers can be
         // borrowed at the same time as the DSP state that fills them — which is
         // what lets this whole path steady-state allocate nothing.
-        let MeetingCaptureInner {
+        let TrackState {
             channels,
             mono,
             out,
             high_pass,
             resampler,
-            journal,
             spilled,
             captured,
             captured_base,
@@ -1643,7 +1927,9 @@ impl MeetingCapture {
             last_index_at,
             last_host_ns,
             index_written,
-        } = &mut *guard;
+            samples_16k,
+            blocks,
+        } = state;
 
         let ch = (*channels).max(1) as usize;
         mono.clear();
@@ -1669,17 +1955,23 @@ impl MeetingCapture {
         // whose two numbers always agree detects nothing. With no journal at
         // all there is no spill to fall behind, so the block counts in full.
         let accepted = match journal.as_ref() {
-            Some(journal) => journal.append(0, out),
+            Some(journal) => journal.append(track, out),
             None => out.len(),
         };
         *spilled += accepted as u64;
-        self.samples_16k
-            .fetch_add(out.len() as u64, Ordering::Relaxed);
-        self.blocks.fetch_add(1, Ordering::Relaxed);
-        // OS-1: the watchdog's proof that the device is still alive. A clock
-        // read on the consumer thread, never on the callback.
-        self.last_block_ms
-            .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        *samples_16k += out.len() as u64;
+        *blocks += 1;
+        if track == MIC_TRACK {
+            self.samples_16k
+                .fetch_add(out.len() as u64, Ordering::Relaxed);
+            self.blocks.fetch_add(1, Ordering::Relaxed);
+            // OS-1: the watchdog's proof that the device is still alive. A clock
+            // read on the consumer thread, never on the callback. The MIC's
+            // liveness only — the tap's is YV104's, and letting a live tap
+            // refresh this would make a dead microphone invisible.
+            self.last_block_ms
+                .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        }
         // The bounded-memory rule (finding #1), in one line: the block's audio
         // is on its way to disk, so nothing keeps it. `out` and `mono` survive
         // as CAPACITY only — the two buffers that used to grow for three hours
@@ -1732,7 +2024,7 @@ impl MeetingCapture {
                 spilled_samples: *spilled,
             };
             if let Some(journal) = journal.as_ref() {
-                journal.index(record);
+                journal.index_track(track, record);
             }
             *index_written += 1;
         }
@@ -1761,14 +2053,28 @@ impl MeetingCapture {
     /// not only a rate change: the reopen builds a new ring whose cumulative
     /// loss counter restarts at zero.
     pub fn retune(&self, native_rate: u32, channels: u16) {
+        self.retune_track(MIC_TRACK, native_rate, channels);
+    }
+
+    /// YV106 — the same epoch-closing retune, for any track.
+    ///
+    /// Two callers beyond YV92's: the tap announcing the format it actually got
+    /// from `kAudioTapPropertyFormat` before its first block, and YV103's
+    /// `RebuildAggregate` handing over the rate the REBUILT aggregate device
+    /// negotiated. Both are "this track's rate changes from here on", which is
+    /// precisely what this already does.
+    pub fn retune_track(&self, track: usize, native_rate: u32, channels: u16) {
         let native_rate = native_rate.max(1);
         let mut guard = self.inner.lock();
-        let MeetingCaptureInner {
+        let MeetingCaptureInner { tracks, journal } = &mut *guard;
+        let Some(state) = tracks.get_mut(track) else {
+            return;
+        };
+        let TrackState {
             channels: ch,
             out,
             high_pass,
             resampler,
-            journal,
             spilled,
             captured,
             captured_base,
@@ -1776,18 +2082,22 @@ impl MeetingCapture {
             native_frames,
             lost_frames,
             anchor_lost,
+            samples_16k,
             ..
-        } = &mut *guard;
+        } = state;
 
         out.clear();
         resampler.finish(out);
         let accepted = match journal.as_ref() {
-            Some(journal) => journal.append(0, out),
+            Some(journal) => journal.append(track, out),
             None => out.len(),
         };
         *spilled += accepted as u64;
-        self.samples_16k
-            .fetch_add(out.len() as u64, Ordering::Relaxed);
+        *samples_16k += out.len() as u64;
+        if track == MIC_TRACK {
+            self.samples_16k
+                .fetch_add(out.len() as u64, Ordering::Relaxed);
+        }
         out.clear();
 
         *captured_base +=
@@ -1802,42 +2112,48 @@ impl MeetingCapture {
         *resampler = StreamResampler::new(native_rate, TARGET_RATE);
     }
 
-    /// Flush the resampler tail, write a final index record and hand the
-    /// journal back to be finalized.
+    /// Flush EVERY track's resampler tail, write each one a final index record
+    /// and hand the journal back to be finalized.
     pub fn close(&self) -> Option<MeetingJournal> {
         let mut guard = self.inner.lock();
-        let MeetingCaptureInner {
-            out,
-            resampler,
-            journal,
-            spilled,
-            captured,
-            last_host_ns,
-            index_written,
-            ..
-        } = &mut *guard;
-        out.clear();
-        resampler.finish(out);
-        let accepted = match journal.as_ref() {
-            Some(journal) => journal.append(0, out),
-            None => out.len(),
-        };
-        *spilled += accepted as u64;
-        self.samples_16k
-            .fetch_add(out.len() as u64, Ordering::Relaxed);
-        out.clear();
-        // The last record is the one a recovery reads to size the FINAL splice,
-        // so it carries the two raw numbers, unclamped, for the same reason the
-        // periodic one does.
-        let record = IndexRecord {
-            host_ns: *last_host_ns,
-            captured_samples: *captured,
-            spilled_samples: *spilled,
-        };
-        if let Some(journal) = journal.as_ref() {
-            journal.index(record);
+        let MeetingCaptureInner { tracks, journal } = &mut *guard;
+        for (track, state) in tracks.iter_mut().enumerate() {
+            let TrackState {
+                out,
+                resampler,
+                spilled,
+                captured,
+                last_host_ns,
+                index_written,
+                samples_16k,
+                ..
+            } = state;
+            out.clear();
+            resampler.finish(out);
+            let accepted = match journal.as_ref() {
+                Some(journal) => journal.append(track, out),
+                None => out.len(),
+            };
+            *spilled += accepted as u64;
+            *samples_16k += out.len() as u64;
+            if track == MIC_TRACK {
+                self.samples_16k
+                    .fetch_add(out.len() as u64, Ordering::Relaxed);
+            }
+            out.clear();
+            // The last record is the one a recovery reads to size the FINAL
+            // splice, so it carries the two raw numbers, unclamped, for the same
+            // reason the periodic one does.
+            let record = IndexRecord {
+                host_ns: *last_host_ns,
+                captured_samples: *captured,
+                spilled_samples: *spilled,
+            };
+            if let Some(journal) = journal.as_ref() {
+                journal.index_track(track, record);
+            }
+            *index_written += 1;
         }
-        *index_written += 1;
         journal.take()
     }
 }
@@ -2167,6 +2483,25 @@ impl SessionConfig {
             watchdog_interval: WATCHDOG_INTERVAL,
         }
     }
+
+    /// YV106 — a VIRTUAL meeting: two tracks, mic on 0 and the system-audio tap
+    /// on 1, in ONE session writing into ONE journal.
+    ///
+    /// Two things this deliberately does not do. It does not swap the held
+    /// stream for [`ExternalStream`]: the tap is an ADDITIONAL producer, not a
+    /// replacement source, so the mic still has to be held open for the whole
+    /// meeting or track 0 ends sixty seconds in when `record.rs`'s worker closes
+    /// an idle stream. And it does not start a tap — `syscapture.rs` owns the
+    /// CoreAudio call sequence and feeds this session through
+    /// [`fan_out_tap_block`]; a session configured for two tracks whose tap
+    /// never delivers finalizes with exactly one wav, which is matrix row #2's
+    /// stated degrade rather than a new failure.
+    pub fn virtual_meeting(dir: impl Into<PathBuf>, native_rate: u32, channels: u16) -> Self {
+        Self {
+            tracks: 2,
+            ..Self::new(dir, native_rate, channels)
+        }
+    }
 }
 
 /// A recording meeting: the journal, the power assertion, the watchdog.
@@ -2219,9 +2554,10 @@ impl MeetingSession {
         }
         let _ = std::fs::create_dir_all(&config.dir);
         let journal = MeetingJournal::start(&config.dir, config.tracks);
-        let capture = Arc::new(MeetingCapture::new(
+        let capture = Arc::new(MeetingCapture::with_tracks(
             config.native_rate,
             config.channels,
+            config.tracks,
             journal,
         ));
         claim.install(Arc::clone(&capture));

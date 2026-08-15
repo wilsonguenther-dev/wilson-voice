@@ -1,0 +1,75 @@
+YV106 — the new tests fail when the behaviour they claim is removed.
+
+Four mutations, each applied alone to the branch, run, then reverted. Every one
+is a plausible "simpler" version of this item, not a syntax break.
+
+
+MUTATION 1 — the index sidecar goes back to being shared (every track's records
+into track 0's sequence), which is what "the journal needed no change" would
+have shipped:
+
+    pub fn index_track(&self, _track: usize, record: IndexRecord) {
+        let Some(pending) = self.pending_index.first() else { return };
+        pending.lock().push(record);
+    }
+
+    $ cargo test --test two_track_journal_round_trip
+    test a_mic_only_meeting_is_byte_for_byte_what_22a_produced ... ok
+    test two_tracks_round_trip_through_the_consumer_into_two_playable_wavs ... ok
+    test a_loss_on_one_track_splices_that_track_only ... FAILED
+    test a_journal_queue_drop_on_one_track_is_spliced_into_that_track ... FAILED
+    test a_crash_mid_two_track_meeting_recovers_both_tracks ... ok
+    test result: FAILED. 3 passed; 2 failed
+
+  Both failures are the mic track coming back a second LONGER than it recorded,
+  with the tap's hole spliced into it — the exact corruption per-track index
+  sequences exist to prevent.
+
+
+MUTATION 2 — an out-of-range track is folded into track 0 instead of dropped
+(the "be forgiving" version):
+
+    let track = if track < tracks.len() { track } else { 0 };
+
+    $ cargo test --test two_track_capture_consumer
+    test a_tap_block_into_a_mic_only_meeting_is_dropped_not_folded_into_track_zero ... FAILED
+    test a_retune_on_one_track_leaves_the_other_track_alone ... ok
+    test a_tap_block_never_reaches_a_dictation_take ... ok
+    test each_track_keeps_its_own_dsp_epoch_and_index_state ... ok
+    test result: FAILED. 3 passed; 1 failed
+
+
+MUTATION 3 — `NewMeetingSegment::new` defaults to the system track instead of
+the mic (the Rust-side default, as opposed to the SQL one):
+
+    track: SYSTEM_TRACK,   // was MIC_TRACK
+
+    $ cargo test --test db_migration_idempotent
+    test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... FAILED
+    test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+    (6 more) ... ok
+    test result: FAILED. 7 passed; 1 failed
+
+  Note which test does NOT fail: the migration-3 upgrade test writes its segment
+  BEFORE the column exists, so it proves the SQL `DEFAULT 0`, and this mutation
+  cannot reach it. The two defaults are pinned by two different tests, on
+  purpose.
+
+
+MUTATION 4 — the delete path forgets the system track (the one-line version of
+"22-A only had one wav"):
+
+    .prepare("SELECT mic_wav_path, NULL FROM meetings WHERE id = ?1")
+
+    $ cargo test --test db_migration_idempotent
+    test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... FAILED
+    test result: FAILED. 7 passed; 1 failed
+
+  "the other people on the call are still on disk after the user deleted the
+  meeting" is the failure, and it is a privacy failure, not a bookkeeping one.
+
+
+After reverting all four:
+
+    $ cargo test --test db_migration_idempotent
+    test result: ok. 8 passed; 0 failed

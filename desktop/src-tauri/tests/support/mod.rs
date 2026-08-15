@@ -152,6 +152,8 @@ impl ActiveCapture for FakeCapture {
             FAKE_STOP_FAILS => Err("device disappeared mid-meeting".into()),
             FAKE_NO_AUDIO => Ok(CaptureOutcome {
                 wav_path: None,
+                sys_wav_path: None,
+                tap_rebuilds: None,
                 seconds,
                 note: Some("no audio reached the disk".into()),
                 partial: true,
@@ -163,6 +165,8 @@ impl ActiveCapture for FakeCapture {
                 let partial = FAKE_MODE.load(Ordering::SeqCst) == FAKE_PARTIAL;
                 Ok(CaptureOutcome {
                     wav_path: Some(self.path.clone()),
+                    sys_wav_path: None,
+                    tap_rebuilds: None,
                     seconds,
                     note: if partial {
                         Some("stopped early: the Mac ran out of disk".into())
@@ -381,6 +385,7 @@ pub fn segments_from(texts: &[&str]) -> Vec<wilson_voice_lib::meetings::MeetingS
             text: (*text).to_string(),
             confidence: None,
             created_at: chrono::Utc::now(),
+            track: wilson_voice_lib::meetings::MIC_TRACK,
         })
         .collect()
 }
