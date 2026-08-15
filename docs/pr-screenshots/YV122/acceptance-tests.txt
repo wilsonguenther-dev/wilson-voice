@@ -1,0 +1,324 @@
+YV122 — acceptance transcript. Every command from the backlog item, run in the
+branch, plus the measurements that corrected three of its assumptions.
+
+Machine: macOS, Apple silicon, 12 cores / 8 performance. Models at
+~/yap-diarize-models (durable, outside the repo and outside any scratchpad).
+
+════════════════════════════════════════════════════════════════════════════
+AC1  cargo test --test sherpa_load_smoke
+════════════════════════════════════════════════════════════════════════════
+
+$ cargo test --test sherpa_load_smoke -- --nocapture
+
+running 2 tests
+yap-diarize ready: v0.1.0
+test the_sidecar_refuses_bad_model_bytes_and_keeps_stdout_pure_json ... ok
+yap-diarize: models loaded, embedding_dim=512, segmentation rate=16000Hz
+MEASURED embedding_dim = 512 for ~/yap-diarize-models/wespeaker_en_voxceleb_CAM++.onnx
+yap-diarize: models loaded, embedding_dim=256, segmentation rate=16000Hz
+MEASURED embedding_dim = 256 for ~/yap-diarize-models/wespeaker_en_voxceleb_resnet34.onnx
+test sherpa_loads_both_models_and_reports_the_measured_embedding_width ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored
+
+  ── SPEC CORRECTION (blocking, evidence below) ────────────────────────────
+  The criterion says: "asserts `embedding_dim == 192` — this is the first real
+  assertion that finding #19's correction holds against the actual shipped
+  model, not just the plan's arithmetic."
+
+  It does not hold. The shipped model is 512.
+
+    wespeaker_en_voxceleb_CAM++.onnx                    29,292,684 B -> 512
+    3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx                -> 512
+    wespeaker_en_voxceleb_resnet34.onnx                              -> 256
+
+  The byte size matches the GitHub release asset exactly, so this is the file
+  the plan names. The model states its own width:
+
+    $ strings -n 4 wespeaker_en_voxceleb_CAM++.onnx | tail
+    ...
+    framework / wespeakerr
+    language  / Englishrd
+    https://wespeaker-1256283475.cos.ap-shanghai.myqcloud.com/models/voxceleb/voxceleb_CAM++.onnx
+    sample_rate / 16000r
+    output_dim  / 512r
+    normalize_samples
+
+  So finding #19 is right about the MECHANISM and wrong about the NUMBER, and
+  wrong in the direction that matters: the plan's original `DEFAULT 512` was
+  accidentally correct. Asserting 192 would have written a width into the
+  schema that no model in the recommended set has.
+
+  The reason this surfaced instead of shipping is YV121's mechanism — the
+  width is reported by the child and there is no dimension constant on the
+  Rust side of the wire. The 256 line is the non-vacuity control: same
+  sidecar, same code path, a different number.
+
+  ACTION for YV128: `speaker_profiles` must store the reported value. It must
+  not write 192 down either.
+
+════════════════════════════════════════════════════════════════════════════
+AC2  cargo test --test diarize_embed_smoke
+════════════════════════════════════════════════════════════════════════════
+
+$ cargo test --test diarize_embed_smoke -- --nocapture --test-threads=1
+
+running 2 tests
+test a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more ...
+yap-diarize: models loaded, embedding_dim=512, segmentation rate=16000Hz
+clustering distance 0.05  -> 6 turns, 4 clusters {1, 2, 4, 6}
+clustering distance 1.2   -> 1 turns, 1 clusters {0}
+ok
+test camplus_embeddings_track_the_speaker_across_utterances ...
+yap-diarize: models loaded, embedding_dim=512, segmentation rate=16000Hz
+genuine  n= 18  mean 0.7837  min 0.5295
+impostor n=135  mean 0.5789  max 0.9362
+  Samantha  genuine mean 0.9292
+  Daniel    genuine mean 0.8571
+  Karen     genuine mean 0.8395
+  Rishi     genuine mean 0.6950
+  Fred      genuine mean 0.6611
+  Ralph     genuine mean 0.7205
+EER 0.272 at similarity 0.6422 (FAR 0.267 / FRR 0.278) — THIS IS THE
+SYNTHESIZER'S NUMBER, NOT CAM++'S
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; finished in 16.97s
+
+  ── SPEC CORRECTION (blocking, evidence above) ────────────────────────────
+  The criterion says: "embeds two utterances of the same synthetic voice and
+  two of a different one, asserts cosine_similarity(same_voice) >
+  cosine_similarity(different_voice)."
+
+  That pairwise claim is FALSE on macOS `say` voices. The first pair anyone
+  picks breaks it:
+
+    same  Samantha-1 vs Samantha-2 = 0.5551
+    diff  Samantha-1 vs Daniel-1   = 0.6775     <- higher than the genuine pair
+
+  Across the full sweep: `Fred`~`Ralph` (both legacy MacinTalk formant synths)
+  reach 0.936 as IMPOSTORS, and `Fred`~`Fred` falls to 0.529 as a GENUINE
+  pair. CAM++ is reading the synthesizer, not the persona. Its published
+  VoxCeleb EER is under 1%; 27.2% is this substrate's number.
+
+  What ships instead is the population form of the same claim, at full
+  strength and without a cherry-picked pair:
+    * mean genuine (0.7837) > mean impostor (0.5789)
+    * EVERY voice's own genuine mean clears the global impostor mean —
+      the weakest, Fred at 0.6611, still clears 0.5789.
+  Plus a tripwire asserting the distributions still OVERLAP, so if the
+  substrate ever changes nobody quietly starts tuning on it.
+
+  ACTION for YV126 / YV129 / YV131: YV120's fixtures (e) and (f) are rendered
+  with `say`. No clustering threshold and no enrollment band may be tuned on
+  them. A threshold fitted to an EER of 0.27 encodes macOS's TTS engine.
+
+  Scored with YV120's own `cosine_similarity` and `enrollment_eer` — the
+  harness that will judge YV129 judged its substrate first.
+
+════════════════════════════════════════════════════════════════════════════
+AC3  cargo test --test diarize_wire_unit_discipline
+════════════════════════════════════════════════════════════════════════════
+
+$ cargo test --test diarize_wire_unit_discipline
+
+running 3 tests
+test the_census_would_catch_a_new_bare_float_threshold ... ok
+test the_threshold_is_never_converted_between_the_api_and_sherpa ... ok
+test no_unsanctioned_bare_float_threshold_exists_on_the_diarization_surface ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored
+
+  The census over the whole diarization surface (diarize.rs, diarize_metrics.rs,
+  diarize_protocol.rs, yap-diarize/src/main.rs) finds EXACTLY two bare-`f32`
+  parameters naming a unit, both at boundaries where the newtype cannot exist:
+
+    diarize_protocol.rs :: diarize          :: clustering_distance_threshold
+    main.rs             :: clustering_from  :: clustering_distance_threshold
+
+  The two files that CAN see `CosineDistance`/`CosineSimilarity` have zero.
+  `DiarizePool::diarize`'s signature is held by a `const` fn pointer, so
+  widening it to `f32` is a COMPILE error (mutation M8), not a test failure.
+
+  Closes YV121's review advisory: "pub bare-f32 `DiarizeRequest::diarize` will
+  collide with YV122's grep-test" — it is one of the two sanctioned entries,
+  named by file and function, so a third cannot appear quietly.
+
+════════════════════════════════════════════════════════════════════════════
+AC4  grep -n 'sherpa-onnx = "=1.13.4"' desktop/yap-diarize/Cargo.toml
+════════════════════════════════════════════════════════════════════════════
+
+$ grep -n 'sherpa-onnx = "=1.13.4"' desktop/yap-diarize/Cargo.toml
+36:sherpa-onnx = "=1.13.4"
+
+$ grep -n 'sherpa-onnx' desktop/Cargo.lock
+4667:name = "sherpa-onnx"
+4668-version = "1.13.4"
+4678:name = "sherpa-onnx-sys"
+4679-version = "1.13.4"
+
+  ── SPEC CORRECTION (blocking) ────────────────────────────────────────────
+  `sherpa-onnx = "=1.13.4"` on its own DOES NOT BUILD, and does not pin.
+
+  $ cargo build     # with only the wrapper pinned
+     Compiling sherpa-onnx-sys v1.13.5
+     Compiling sherpa-onnx v1.13.4
+  error[E0063]: missing field `attenuation_limit_db` in initializer of
+                `sherpa_onnx_sys::OfflineSpeechDenoiserDpdfNetModelConfig`
+    --> sherpa-onnx-1.13.4/src/offline_speech_denoiser.rs:43:9
+
+  The wrapper declares `sherpa-onnx-sys = { version = "1.13.4" }` — a caret
+  range — and 1.13.5 added a field to a struct 1.13.4 initialises
+  exhaustively.
+
+  The build break is the cheap half. The expensive half: `sherpa-onnx-sys`'s
+  build.rs constructs its download URL from its OWN CARGO_PKG_VERSION —
+
+    https://github.com/k2-fsa/sherpa-onnx/releases/download/v{version}/
+      sherpa-onnx-v{version}-osx-arm64-static-lib.tar.bz2      (19.5 MB)
+
+  — so a floating `-sys` silently changes which prebuilt onnxruntime is
+  statically linked into a signed, notarized bundle, with no reviewable diff.
+  That is one level below where the `=x.y.z` discipline was looking.
+
+  Both halves are now pinned exactly, and asserted equal to each other:
+
+$ cargo test --test supply_chain diarize_sidecar_pins_sherpa_onnx_exactly
+running 1 test
+test diarize_sidecar_pins_sherpa_onnx_exactly ... ok
+test result: ok. 1 passed; 0 failed
+
+════════════════════════════════════════════════════════════════════════════
+The skip path (this is what CI runs — no models are vendored yet)
+════════════════════════════════════════════════════════════════════════════
+
+$ YAP_DIARIZE_MODELS=/tmp/no-such-models cargo test \
+    --test sherpa_load_smoke --test diarize_embed_smoke -- --nocapture
+
+diarization models not found at ~/yap-diarize-models, skipping
+diarization models not found at ~/yap-diarize-models, skipping
+test camplus_embeddings_track_the_speaker_across_utterances ... ok
+test a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more ... ok
+test result: ok. 2 passed; 0 failed
+diarization models not found at ~/yap-diarize-models, skipping
+test sherpa_loads_both_models_and_reports_the_measured_embedding_width ... ok
+test the_sidecar_refuses_bad_model_bytes_and_keeps_stdout_pure_json ... ok
+test result: ok. 2 passed; 0 failed
+exit=0
+
+  Same posture as `meeting_eval.rs`'s corpus gate, one line per skip, exit 0.
+  Note that `the_sidecar_refuses_bad_model_bytes_and_keeps_stdout_pure_json`
+  is NOT gated — it spawns the real sidecar with zero model bytes, so CI still
+  exercises the refusal path and the stdout-purity guard.
+
+════════════════════════════════════════════════════════════════════════════
+The benchmark §2.3 asked for and never got
+════════════════════════════════════════════════════════════════════════════
+
+Release build, CPU-only, `num_threads: 1` (sherpa's default, what ships):
+
+     18.3 s audio ->   2,075 ms   RTF 0.113   4 turns
+    183.4 s audio ->  30,253 ms   RTF 0.165  44 turns
+    550.3 s audio ->  92,901 ms   RTF 0.169 155 turns
+    load_models  ->     ~540 ms   (two ONNX sessions: extractor + probe)
+
+Steady-state RTF ≈ 0.169. The plan's §2.3 prior, from OpenWhispr's blog on
+this exact model pair, is ~30 s for a 45-minute meeting — RTF 0.011, flagged
+in the plan itself as "a strong prior, not a measurement".
+
+It is 15x optimistic. A 45-minute meeting takes ≈ 7.6 minutes here, not 30
+seconds. A 3-hour meeting takes ≈ 30 minutes.
+
+Thread sweep (183 s fixture, release, identical 44 turns at every setting —
+threads move throughput and nothing else, which is what makes this safe for
+YV126 to tune):
+
+    num_threads   1 -> 29.7 s   RTF 0.162
+                  2 -> 17.9 s   RTF 0.098
+                  4 -> 12.4 s   RTF 0.068
+                  8 -> 10.8 s   RTF 0.059
+
+Still 5x the blog prior at 8 threads. NOT changed in this item: diarization
+runs on a machine that is also transcribing, and a thread budget picked here
+in isolation is the same class of unmeasured constant this epic exists to
+stop. The table is recorded in `build_diarizer`'s doc comment for YV126.
+
+════════════════════════════════════════════════════════════════════════════
+Local gate
+════════════════════════════════════════════════════════════════════════════
+
+$ npx tsc --noEmit                                        -> 0
+$ npm test                                                -> 121 passed (10 files)
+$ cargo test --features custom-protocol                   -> 92 binaries,
+                                                             1075 passed,
+                                                             0 failed,
+                                                             17 ignored
+                                                    (YV121 base: 89 / 1067)
+$ cargo test -p yap-diarize                               -> 13 passed
+$ cargo test -p yap-diarize --release                     -> 13 passed
+$ cargo build -p yap-polish -p yap-diarize --release      -> ok
+
+3x flake check on the six process-spawning / manifest-reading binaries
+(handshake 4, pool 8, sherpa_load_smoke 2, diarize_embed_smoke 2,
+supply_chain 7, diarize_wire_unit_discipline 3):
+
+    run 1  ok / ok / ok / ok / ok / ok
+    run 2  ok / ok / ok / ok / ok / ok
+    run 3  ok / ok / ok / ok / ok / ok
+
+rustfmt, per touched file (`rustfmt --check --edition 2021`), base -> head:
+
+    src/diarize.rs                            0 -> 0
+    src/diarize_protocol.rs                   0 -> 0
+    yap-diarize/src/main.rs                   0 -> 0
+    tests/supply_chain.rs                     0 -> 0
+    tests/sherpa_load_smoke.rs                     0 (new)
+    tests/diarize_embed_smoke.rs                   0 (new)
+    tests/diarize_wire_unit_discipline.rs          0 (new)
+    tests/support/diarize_models.rs                0 (new)
+
+════════════════════════════════════════════════════════════════════════════
+Forward findings for YV123 (its acceptance criteria are affected TODAY)
+════════════════════════════════════════════════════════════════════════════
+
+1. `grep -rn "bzip2-sys\|libbz2" Cargo.lock returns no match` is ALREADY
+   unsatisfiable, before YV123 starts. `sherpa-onnx-sys` declares
+   `[build-dependencies] bzip2 = "0.4"`, which pulls `bzip2-sys`, and both are
+   in `desktop/Cargo.lock` as of this commit:
+
+     $ grep -n 'name = "bzip2' desktop/Cargo.lock
+     539:name = "bzip2"
+     549:name = "bzip2-sys"
+
+   The intent behind the criterion survives — nothing links libbz2 into a
+   shipped binary; it is a BUILD dependency of a build script, used to unpack
+   the prebuilt native archive. YV123's test must assert "no bzip2-sys in the
+   runtime graph of `wilson-voice`", e.g. `cargo tree -p wilson-voice -e normal`,
+   not "not in Cargo.lock".
+
+2. There is a cheaper vendoring hook than the one O6/finding #23 costed.
+   `sherpa-onnx-sys`'s build.rs checks, in order:
+     SHERPA_ONNX_LIB_DIR      — an already-EXTRACTED lib tree
+     SHERPA_ONNX_ARCHIVE_DIR  — a directory containing the `.tar.bz2`, which
+                                the build script then extracts itself
+     (else) download from GitHub Releases
+   Finding #23 only names the first, which is the expensive one: something has
+   to produce and cache an extracted tree in CI and at release. The second
+   means a checked-in (or LFS/artifact-fetched) 19.5 MB archive plus one env
+   var in ci.yml and release.yml is enough, and the sha256 can be asserted on
+   the archive exactly as the model catalog does.
+
+3. Upstream asset hashes measured while wiring this item, for the mirror:
+     sherpa-onnx-pyannote-segmentation-3-0.tar.bz2  (7.0 MB)
+       sha256 24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488
+     wespeaker_en_voxceleb_CAM++.onnx  (29,292,684 B)
+       sha256 c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef
+   The archive extracts to `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`
+   and `model.int8.onnx`; this item uses the fp32 one.
+
+4. The load path REFUSES bad bytes before onnxruntime sees them, and that is
+   load-bearing for YV123's archive work: handing `Ort` an unextracted
+   `.tar.bz2` aborts the process (SIGABRT, uncatchable from Rust — see M3).
+   `looks_like_onnx` turns that into `model_load_failed`. It cannot catch a
+   truncated-but-valid-headed file; the sha256 YV123 verifies before the path
+   is ever sent is the layer that does.
