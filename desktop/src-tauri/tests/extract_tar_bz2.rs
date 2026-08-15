@@ -128,7 +128,12 @@ fn upstream_shaped_entries() -> Vec<Vec<u8>> {
         ustar_entry("pkg/model.onnx", REGULAR, &vec![b'F'; 4096], 0o644),
         ustar_entry("pkg/model.int8.onnx", REGULAR, &vec![b'Q'; 1024], 0o644),
         ustar_entry("pkg/LICENSE", REGULAR, b"MIT License\n", 0o644),
-        ustar_entry("pkg/export-onnx.py", REGULAR, b"#!/usr/bin/env python3\n", 0o755),
+        ustar_entry(
+            "pkg/export-onnx.py",
+            REGULAR,
+            b"#!/usr/bin/env python3\n",
+            0o755,
+        ),
     ]
 }
 
@@ -149,7 +154,10 @@ fn the_fixture_writer_emits_an_archive_the_system_tar_agrees_with() {
         "pkg/LICENSE",
         "pkg/export-onnx.py",
     ] {
-        assert!(names.contains(expected), "system tar did not list {expected}:\n{names}");
+        assert!(
+            names.contains(expected),
+            "system tar did not list {expected}:\n{names}"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -201,7 +209,11 @@ fn nothing_extracted_is_executable() {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o111, 0, "{name} is executable after extraction: {mode:o}");
+        assert_eq!(
+            mode & 0o111,
+            0,
+            "{name} is executable after extraction: {mode:o}"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -290,12 +302,20 @@ fn rejects_an_archive_with_no_onnx() {
     let archive = write_archive(
         &dir,
         "pkg.tar.bz2",
-        &[ustar_entry("pkg/README.md", REGULAR, b"nothing here\n", 0o644)],
+        &[ustar_entry(
+            "pkg/README.md",
+            REGULAR,
+            b"nothing here\n",
+            0o644,
+        )],
     );
     let dest = dir.join("out");
 
     let err = extract_tar_bz2(&archive, &dest).expect_err("an .onnx-less archive is an error");
-    assert!(err.contains("contains no .onnx file"), "unexpected error: {err}");
+    assert!(
+        err.contains("contains no .onnx file"),
+        "unexpected error: {err}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

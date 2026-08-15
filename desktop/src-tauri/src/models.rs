@@ -512,12 +512,17 @@ pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, 
 
         // Metadata-only entries (pax/GNU long names) carry no payload of their
         // own; the reader has already folded them into the entry that follows.
-        if kind.is_pax_global_extensions() || kind.is_pax_local_extensions() || kind.is_gnu_longname() || kind.is_gnu_longlink() {
+        if kind.is_pax_global_extensions()
+            || kind.is_pax_local_extensions()
+            || kind.is_gnu_longname()
+            || kind.is_gnu_longlink()
+        {
             continue;
         }
         let safe = safe_entry_path(dest_dir, &path)?;
         if kind.is_dir() {
-            std::fs::create_dir_all(&safe).map_err(|e| format!("create {}: {e}", safe.display()))?;
+            std::fs::create_dir_all(&safe)
+                .map_err(|e| format!("create {}: {e}", safe.display()))?;
             continue;
         }
         if !kind.is_file() {
@@ -537,8 +542,8 @@ pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, 
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
-        let mut out = std::fs::File::create(&safe)
-            .map_err(|e| format!("create {}: {e}", safe.display()))?;
+        let mut out =
+            std::fs::File::create(&safe).map_err(|e| format!("create {}: {e}", safe.display()))?;
         let copied = std::io::copy(&mut entry, &mut out)
             .map_err(|e| format!("extract {}: {e}", safe.display()))?;
         out.sync_all()
@@ -552,12 +557,7 @@ pub fn extract_tar_bz2(archive_path: &Path, dest_dir: &Path) -> Result<PathBuf, 
     onnx.into_iter()
         .max_by_key(|(size, _)| *size)
         .map(|(_, path)| path)
-        .ok_or_else(|| {
-            format!(
-                "{} contains no .onnx file",
-                archive_path.display()
-            )
-        })
+        .ok_or_else(|| format!("{} contains no .onnx file", archive_path.display()))
 }
 
 /// `dest_dir` joined with an archive entry path, or an error if that path could
@@ -835,8 +835,7 @@ where
         return Ok(dest.to_path_buf());
     }
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let partial = partial_path(dest);
     let client = reqwest::Client::new();
@@ -958,7 +957,12 @@ mod tests {
         for m in &cat.models {
             assert!(!m.id.is_empty());
             assert!(!m.name.is_empty());
-            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert_eq!(
+                m.revision.len(),
+                40,
+                "{}: revision must be a pinned sha",
+                m.id
+            );
             assert!(!m.files.is_empty(), "{}: no files", m.id);
             for f in &m.files {
                 assert!(f.filename.ends_with(".gguf"), "{}: {}", m.id, f.filename);
@@ -966,7 +970,11 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64, "{}: {} bad sha256", m.id, f.filename);
                 assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit()));
             }
-            assert!(m.default_file().is_some(), "{}: default_quant unresolvable", m.id);
+            assert!(
+                m.default_file().is_some(),
+                "{}: default_quant unresolvable",
+                m.id
+            );
         }
         // Handy's top-2 recommended set, plus the smallest whisper for tests.
         let ranks: Vec<Option<u32>> = cat.models.iter().map(|m| m.recommended_rank).collect();
@@ -984,7 +992,12 @@ mod tests {
         assert_eq!(polish.len(), 2, "1.5B primary + 0.5B fast tier");
         for m in polish {
             assert!(!m.id.is_empty());
-            assert_eq!(m.revision.len(), 40, "{}: revision must be a pinned sha", m.id);
+            assert_eq!(
+                m.revision.len(),
+                40,
+                "{}: revision must be a pinned sha",
+                m.id
+            );
             assert!(
                 m.revision.chars().all(|c| c.is_ascii_hexdigit()),
                 "{}: revision must be a sha",

@@ -55,7 +55,12 @@ fn installs_both_models_from_the_pinned_mirror() {
             .unwrap_or_else(|e| panic!("{}: install failed: {e}", model.id));
 
         assert_eq!(path, installed);
-        assert!(path.is_file(), "{}: nothing at {}", model.id, path.display());
+        assert!(
+            path.is_file(),
+            "{}: nothing at {}",
+            model.id,
+            path.display()
+        );
         let expected_sha = match &model.archive {
             Some(a) => {
                 // The archive is a second copy of bytes we now hold extracted.
@@ -70,11 +75,17 @@ fn installs_both_models_from_the_pinned_mirror() {
                 a.extracted_sha256.clone()
             }
             None => {
-                assert_eq!(std::fs::metadata(&path).unwrap().len(), model.file.size_bytes);
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().len(),
+                    model.file.size_bytes
+                );
                 model.file.sha256.clone()
             }
         };
-        assert_eq!(sha256_hex(&path).expect("hash the installed file"), expected_sha);
+        assert_eq!(
+            sha256_hex(&path).expect("hash the installed file"),
+            expected_sha
+        );
         assert!(is_diarize_downloaded(model));
         println!("  sha256 verified: {expected_sha}");
 
@@ -89,7 +100,10 @@ fn installs_both_models_from_the_pinned_mirror() {
 
         if !preexisting {
             // Leave the machine as we found it unless it was already installed.
-            println!("  (leaving {} in place for sherpa_load_smoke)", path.display());
+            println!(
+                "  (leaving {} in place for sherpa_load_smoke)",
+                path.display()
+            );
         }
     }
 

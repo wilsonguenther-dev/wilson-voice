@@ -402,9 +402,16 @@ fn lockfile_closure(root: &str) -> std::collections::BTreeSet<String> {
         } else if in_deps {
             if line == "]" {
                 in_deps = false;
-            } else if let Some(dep) = line.trim_matches(|c| c == '"' || c == ',').split(' ').next() {
+            } else if let Some(dep) = line
+                .trim_matches(|c| c == '"' || c == ',')
+                .split(' ')
+                .next()
+            {
                 if let Some(owner) = &name {
-                    graph.entry(owner.clone()).or_default().push(dep.to_string());
+                    graph
+                        .entry(owner.clone())
+                        .or_default()
+                        .push(dep.to_string());
                 }
             }
         }
@@ -435,13 +442,22 @@ fn lockfile_closure(root: &str) -> std::collections::BTreeSet<String> {
 fn the_lockfile_closure_walk_is_not_an_empty_set() {
     let app = lockfile_closure("wilson-voice");
     for expected in ["tauri", "rusqlite", "reqwest", "sha2", "tar", "bzip2-rs"] {
-        assert!(app.contains(expected), "{expected} must be reachable from wilson-voice");
+        assert!(
+            app.contains(expected),
+            "{expected} must be reachable from wilson-voice"
+        );
     }
     // The sidecars are separate link units: the app does not depend on them,
     // which is the entire reason a build-time `bzip2` under `yap-diarize` is
     // not a native C library in this binary.
-    assert!(!app.contains("yap-polish"), "the app must not link the polish sidecar");
-    assert!(!app.contains("yap-diarize"), "the app must not link the diarize sidecar");
+    assert!(
+        !app.contains("yap-polish"),
+        "the app must not link the polish sidecar"
+    );
+    assert!(
+        !app.contains("yap-diarize"),
+        "the app must not link the diarize sidecar"
+    );
     // And a name that is in no graph at all stays out.
     assert!(!app.contains("definitely-not-a-real-crate"));
 }
@@ -510,7 +526,9 @@ fn sherpa_onnx_pin_rule_rejects_everything_but_an_exact_crates_io_pin() {
         SherpaPin::Exact("1.13.4".to_string())
     );
     assert_eq!(
-        sherpa_onnx_pin_verdict("sherpa-onnx = { version = \"=1.13.4\", features = [\"static\"] }\n"),
+        sherpa_onnx_pin_verdict(
+            "sherpa-onnx = { version = \"=1.13.4\", features = [\"static\"] }\n"
+        ),
         SherpaPin::Exact("1.13.4".to_string())
     );
     // A caret range lets `cargo update` move a statically linked onnxruntime
