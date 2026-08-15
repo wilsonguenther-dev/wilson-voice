@@ -53,3 +53,49 @@ test exporting_a_deleted_meeting_is_an_error_not_a_panic ... ok
 test an_empty_meeting_exports_something_honest ... ok
 test a_three_segment_meeting_round_trips_readably ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+################################################################################
+# ROUND 2 (review fix) — re-run after mirroring the blank-span drop into the
+# TypeScript side. Rust gained 2 tests (18 -> 20 across the four named suites);
+# the frontend gained 6 (transcript.test.ts 8 -> 13, plus a new 4-case
+# TranscriptList.test.tsx that renders the SHIPPING component).
+################################################################################
+
+$ cd desktop && npm test            # vitest
+  9 test files, 103 passed (was 8 / 94)
+
+$ cd desktop && npx tsc --noEmit
+(exit 0 -- no output)
+
+$ cd desktop/src-tauri && cargo test --features custom-protocol
+  71 binaries, 916 passed, 0 failed
+
+$ cargo test --test meeting_transcript_render_two_track \
+             --test meeting_transcript_render_single_track_unchanged \
+             --test meeting_markdown_export_two_track \
+             --test meeting_markdown_export
+test exporting_a_deleted_meeting_is_an_error_not_a_panic ... ok
+test an_empty_meeting_exports_something_honest ... ok
+test a_three_segment_meeting_round_trips_readably ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test the_order_comes_from_the_clock_not_from_the_insert_order ... ok
+test a_mic_only_export_is_unchanged_from_22a ... ok
+test a_two_track_export_reads_as_one_labelled_conversation ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test an_empty_mic_only_meeting_still_exports_the_honest_line ... ok
+test every_line_of_a_mic_only_transcript_is_still_me_in_input_order ... ok
+test a_mic_only_export_is_byte_identical_to_the_pre_yv108_renderer ... ok
+test the_comparison_is_not_vacuous ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test empty_spans_never_become_blank_turns ... ok
+test a_span_of_exotic_whitespace_is_collapsed_the_same_way_rust_collapses_it ... ok
+test labels_come_from_the_track_and_an_unknown_track_is_not_you ... ok
+test a_broken_offset_sorts_as_zero_instead_of_poisoning_the_order ... ok
+test a_tap_track_that_renders_nothing_is_not_a_second_speaker ... ok
+test an_exact_tie_breaks_to_the_mic_whichever_order_it_arrived_in ... ok
+test two_track_detection_is_about_the_segments_not_the_meeting_row ... ok
+test the_output_is_a_conversation_not_two_stacked_columns ... ok
+test mixed_tracks_render_as_one_interleaved_me_them_list ... ok
+test ordering_is_by_host_time_across_both_tracks ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

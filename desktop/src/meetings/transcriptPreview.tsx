@@ -9,6 +9,11 @@
  *
  *   * `mic-only`  — a 22-A meeting: one speaker, the layout that already ships.
  *   * `two-track` — a virtual meeting: one interleaved Me/Them conversation.
+ *   * `blank-tap` — a virtual meeting whose far side never made a sound: the
+ *     tap recorded rows, the ASR found no words in them, and the screen must
+ *     look exactly like the mic-only one. This scene exists because the review
+ *     of YV108 found the opposite — labelled empty "Them" rows and a widened
+ *     speaker gutter for a speaker the exported file did not contain.
  *
  * Same rules as `license/preview.tsx` and `meetings/preview.tsx`: a BUILD ENTRY
  * behind `YAP_DEV_TOOLING=1`, so no shipped build carries it.
@@ -64,7 +69,17 @@ const TWO_TRACK: TranscriptSegment[] = [
   },
 ];
 
-const SCENES = ["two-track", "mic-only"] as const;
+/** The far side was there but silent: rows exist, words do not. Blank spans are
+ *  a real ASR output, which is why `render_transcript` has always dropped them
+ *  and why the mirror now does too. */
+const BLANK_TAP: TranscriptSegment[] = [
+  { id: "b1", startSeconds: 0, track: MIC_TRACK, text: "can anyone hear me on this call" },
+  { id: "b2", startSeconds: 5, track: SYSTEM_TRACK, text: "   " },
+  { id: "b3", startSeconds: 9, track: MIC_TRACK, text: "i will send the notes over instead" },
+  { id: "b4", startSeconds: 13, track: SYSTEM_TRACK, text: "\n\t " },
+];
+
+const SCENES = ["two-track", "mic-only", "blank-tap"] as const;
 type Scene = (typeof SCENES)[number];
 
 function sceneFromHash(): Scene {
@@ -75,7 +90,8 @@ function sceneFromHash(): Scene {
 function Preview() {
   const [scene, setScene] = useState<Scene>(sceneFromHash());
   const twoTrack = scene === "two-track";
-  const segments = twoTrack ? TWO_TRACK : MIC_ONLY;
+  const segments =
+    scene === "two-track" ? TWO_TRACK : scene === "blank-tap" ? BLANK_TAP : MIC_ONLY;
 
   return (
     <div className="shell">
@@ -125,7 +141,13 @@ function Preview() {
             <button className="ghost">← All meetings</button>
             <input
               className="meeting-title-edit"
-              defaultValue={twoTrack ? "Reseller sync" : "Thursday planning"}
+              defaultValue={
+                scene === "two-track"
+                  ? "Reseller sync"
+                  : scene === "blank-tap"
+                    ? "Standup (nobody unmuted)"
+                    : "Thursday planning"
+              }
             />
             <p className="card-meta">
               <span>

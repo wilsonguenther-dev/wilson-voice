@@ -50,3 +50,31 @@ gate above feeds it exactly the sequence YV107 is specified to produce. The
 end-to-end proof — real capture through real merge through this render, plus a
 camera-documented run against a real virtual meeting — is YV109's job, and it is
 the item that closes the phase.
+
+---
+
+## Revision — review round 2 (the mirror drifted, and it was visible)
+
+The first review of this item found the Rust renderer and its TypeScript mirror
+producing different transcripts: `render_transcript` dropped whitespace-only
+spans, `orderedTranscript` did not. That is not a theoretical divergence, and
+this section is the picture of it.
+
+**Run: the blank-tap shape, in the same browser, on the same shipping
+component.** `dev/meeting-transcript-preview.html#blank-tap` is a new scene: a
+meeting whose far side was recorded but never spoke, so the tap's segments carry
+rows with no words in them (`"   "`, `"\n\t "`) — a routine ASR output, and the
+exact input the review used.
+
+* `blank-tap-before-fix.png` — the shipped branch. Two labelled **"Them"** rows
+  at 00:00:05 and 00:00:13 with nothing beside them, and the wider two-track
+  speaker gutter, for a speaker `Database::meeting_markdown` had already dropped
+  from the exported file. Captured by re-applying the defect to the fixed tree
+  (the filter removed, `isTwoTrack` back on raw rows, the component back on
+  `segment.text`), rebuilding the preview, screenshotting, and reverting.
+* `blank-tap-after-fix.png` — this branch. Two "Me" lines, the narrow gutter, no
+  "Them" anywhere: the same thing the export contains.
+
+**Still not run: a real tapped meeting.** Unchanged from above, and unchanged in
+what it means — the automated gate plus the browser-rendered shipping component
+is the whole gate for this item, and the real end-to-end run is YV109's.

@@ -186,7 +186,10 @@ fn two_track_detection_is_about_the_segments_not_the_meeting_row() {
 /// for a tap track that renders nothing" is the twin of this case.
 #[test]
 fn a_tap_track_that_renders_nothing_is_not_a_second_speaker() {
-    let blank_tap = [seg(0.0, MIC_TRACK, "real words"), seg(1.0, SYSTEM_TRACK, "   ")];
+    let blank_tap = [
+        seg(0.0, MIC_TRACK, "real words"),
+        seg(1.0, SYSTEM_TRACK, "   "),
+    ];
     assert!(!meetings::is_two_track(&blank_tap));
     let lines = meetings::render_transcript(&blank_tap);
     assert_eq!(lines.len(), 1);
