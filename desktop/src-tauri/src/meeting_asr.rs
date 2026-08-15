@@ -57,6 +57,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::asr_engine::{TimedKind, TimedSpan, TimedTranscript};
+use crate::meeting::{IndexRecord, MIC_TRACK, SYSTEM_TRACK};
 use crate::models;
 use crate::os_version_gate;
 use crate::transcription::{
@@ -995,6 +996,382 @@ pub fn merge_timed_reporting(chunks: &[ChunkOutcome]) -> (Vec<TimedSpan>, Vec<Se
     }
     out.sort_by(|a, b| a.start_seconds.total_cmp(&b.start_seconds));
     (out, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// YV107 / OS-2 — the CROSS-TRACK merge, on host time
+// ---------------------------------------------------------------------------
+
+/// One span of the merged, host-time-ordered, speaker-labeled transcript.
+///
+/// Deliberately not a [`TimedSpan`]: a merged span answers a question a
+/// single-track span cannot — *whose* words these are — and bolting a speaker
+/// onto `TimedSpan` would put that question into every one of the dozen places
+/// that carry an unlabeled span for a single track.
+///
+/// `start_seconds` / `end_seconds` are **session** seconds: one timeline both
+/// tracks were mapped onto, not either track's own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedSpan {
+    /// [`crate::meeting::MIC_TRACK`] or [`crate::meeting::SYSTEM_TRACK`].
+    pub track: usize,
+    /// [`crate::meetings::speaker_label`] of `track` — "Me" or "Them".
+    pub speaker: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+/// Where each track's `host_ns` zero sits on the SESSION's clock, in
+/// nanoseconds.
+///
+/// This exists because `IndexRecord::host_ns` is rebased to its own stream's
+/// first callback (`record.rs`'s `build_capture_stream` does it for the mic;
+/// the tap's IOProc does the same for track B), so the two tracks' host clocks
+/// are two clocks with the same TICK and different ZEROS. The tick is what
+/// defeats drift; the zero is a constant offset that nothing in the numbers
+/// themselves can recover, because the aggregate device takes real time to
+/// build and the tap's first callback therefore lands after the mic's.
+///
+/// So it is a parameter, not an assumption. Passing [`TrackEpochs::SHARED`]
+/// asserts the two streams started at the same instant — true for the synthetic
+/// fixtures and for a session that stamps both epochs from one clock read, and
+/// a lie the caller has to tell out loud rather than one this module makes on
+/// its behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrackEpochs {
+    pub a_ns: i64,
+    pub b_ns: i64,
+}
+
+impl TrackEpochs {
+    /// Both tracks' first callbacks treated as the same session instant.
+    pub const SHARED: TrackEpochs = TrackEpochs { a_ns: 0, b_ns: 0 };
+
+    pub fn new(a_ns: i64, b_ns: i64) -> TrackEpochs {
+        TrackEpochs { a_ns, b_ns }
+    }
+}
+
+/// Merge two tracks into ONE host-time-ordered, speaker-labeled transcript
+/// (OS-2, finding #10).
+///
+/// **The bug this deletes.** Every track time upstream of here is
+/// `samples ÷ nominal_rate`, and the nominal rate is the number that is wrong.
+/// Track A is clocked by the input device's crystal, track B by the aggregate's
+/// main sub-device — two independent oscillators the moment those are different
+/// hardware, spec'd ±20–50 ppm, which is **≈216 ms of relative drift at 20 ppm
+/// over the 3-hour cap, ≈430 ms at 40 ppm and ≈1.08 s at the ±50/±50 worst
+/// case**. Interleaving two such timelines by their own seconds starts placing
+/// an answer before its question at about 200 ms and is systematically wrong
+/// through the back half of every long meeting. It is invisible on a desk test,
+/// because built-in mic and built-in speakers on Apple Silicon are ONE clock
+/// domain; it appears in the configuration people actually use, which is AirPods
+/// or a monitor for output and something else for input.
+///
+/// **The fix, in one sentence.** Both tracks already carry a common time base —
+/// [`IndexRecord::host_ns`], the mach host time the anchor was captured at,
+/// which YV91/YV100/YV106 persist about once a second — so a track second is
+/// converted to a HOST second by interpolating that track's own index records,
+/// and the interleave happens there. Interpolating real host times against real
+/// capture counts uses each device's TRUE rate by construction: the nominal
+/// rate never enters the arithmetic, so there is nothing left for it to be
+/// wrong about. Residual error is bounded by one index interval of curvature —
+/// at a 1 s cadence and 100 ppm that is 100 µs, three orders of magnitude under
+/// the 50 ms the acceptance criterion asks for at 3 hours.
+///
+/// That bound is the DRIFT bound, and it is stated for as long as one stream
+/// runs. A stream REOPENED mid-meeting — an AirPods swap on track 0, YV103's
+/// `RebuildAggregate` on track 1 — restarts its clock at zero underneath a wav
+/// that keeps running, and [`HostTimeline`] handles that by SEGMENTING rather
+/// than by believing the new zero. Its doc comment states what that recovers,
+/// and states the one thing it cannot: the dead air across the reopen, a
+/// bounded one-off that never accumulates.
+///
+/// This is deliberately **additive**: [`merge_timed`] and
+/// [`merge_timed_reporting`] are untouched and still own the within-track seam
+/// dedupe, which this runs FIRST, per track. The two questions are separate —
+/// "did these two windows of the same microphone decode the same word twice"
+/// and "which of these two microphones spoke first" — and answering them in one
+/// pass would make the seam rule's careful text tie-break start comparing words
+/// across speakers.
+///
+/// **A mic-only meeting is not re-timed.** With `track_b` empty there is nothing
+/// to align against, so the function returns exactly what [`merge_timed`]
+/// returns, labeled — same spans, same times, same order. Every 22-A recording
+/// in the wild goes through this path, and buying them a rounding change for no
+/// alignment benefit would be a regression with nothing on the other side of it.
+/// `tests/two_track_merge_no_regression_single_track.rs` is the guard.
+pub fn merge_two_tracks_by_host_time(
+    track_a: &[ChunkOutcome],
+    track_b: &[ChunkOutcome],
+    anchors_a: &[IndexRecord],
+    anchors_b: &[IndexRecord],
+    epochs: TrackEpochs,
+) -> Vec<MergedSpan> {
+    let spans_a = merge_timed(track_a);
+    let spans_b = merge_timed(track_b);
+
+    // The 22-A shape, preserved byte for byte. See the doc comment above: no
+    // second track means no cross-clock question to answer.
+    if spans_b.is_empty() {
+        return spans_a
+            .into_iter()
+            .map(|s| label(MIC_TRACK, s.start_seconds, s.end_seconds, s.text))
+            .collect();
+    }
+
+    let map_a = HostTimeline::new(anchors_a, epochs.a_ns);
+    let map_b = HostTimeline::new(anchors_b, epochs.b_ns);
+
+    let mut out: Vec<MergedSpan> = Vec::with_capacity(spans_a.len() + spans_b.len());
+    for (track, spans, map) in [
+        (MIC_TRACK, spans_a, &map_a),
+        (SYSTEM_TRACK, spans_b, &map_b),
+    ] {
+        for span in spans {
+            let start = map.session_seconds(span.start_seconds);
+            // The END is mapped through the same timeline rather than carried
+            // as `start + duration`: a word's duration is in the track's own
+            // seconds, and a track running 100 ppm fast holds words that are
+            // 100 ppm short. Mapping both ends puts the whole span on the
+            // session clock instead of anchoring one end to it and letting the
+            // other keep drifting.
+            let end = map.session_seconds(span.end_seconds);
+            out.push(label(track, start, end.max(start), span.text));
+        }
+    }
+
+    // Ordered by host time, and by TRACK when two spans start at the same
+    // instant — which is a real overlap (both people talking), not a tie to be
+    // broken arbitrarily. `total_cmp` rather than `partial_cmp().unwrap()`: a
+    // NaN out of a degenerate timeline must not panic a three-hour transcript.
+    out.sort_by(|x, y| {
+        x.start_seconds
+            .total_cmp(&y.start_seconds)
+            .then(x.track.cmp(&y.track))
+    });
+    out
+}
+
+fn label(track: usize, start_seconds: f64, end_seconds: f64, text: String) -> MergedSpan {
+    MergedSpan {
+        track,
+        speaker: crate::meetings::speaker_label(track).to_string(),
+        start_seconds,
+        end_seconds,
+        text,
+    }
+}
+
+/// One track's own index records, as a monotone map from track seconds to
+/// session seconds.
+///
+/// The map's two axes are "where in the FINALIZED track an instant is" against
+/// `host_ns`, "when that instant really happened". The second axis is a column
+/// the record stores. **The first one is not**, and getting that wrong is the
+/// whole failure mode this doc comment exists for.
+///
+/// The finalized wav — the one the chunker cut and the ASR timestamped — is
+/// what reached the disk plus what the repair put back, which is exactly
+/// [`crate::meeting::finalized_positions`]:
+/// `spilled_samples + Σ silence of the splices planned at or before the record`.
+///
+/// Neither stored column is that number:
+///
+/// * `spilled_samples` alone ignores the repair, so it shifts by every gap the
+///   splice filled in.
+/// * `captured_samples` is right only under [`plan_silence_splices`]'s COUNTER
+///   rule, where the interval splices exactly `captured − spilled`. Under its
+///   WALL-CLOCK rule it is wrong by the whole stall: a device that stops
+///   delivering fires no callbacks, so both counters freeze in perfect
+///   agreement (`captured − spilled == 0`) while the finalize splices seconds
+///   of silence, and the finalized wav is LONGER than `captured`. A ten-second
+///   stall an hour into a meeting then mis-times every word after it by ten
+///   seconds against this item's 50 ms budget — and no lossless or merely lossy
+///   fixture can see it, because both of those reduce `finalized` back to
+///   `captured`. `a_device_stall_does_not_shift_the_rest_of_the_meeting` in
+///   `tests/two_track_merge_ordering.rs` is the guard, and the system track is
+///   where it bites: a process tap gets no callbacks whenever the tapped app is
+///   silent, which makes a stall splice routine on track 1 rather than exotic.
+///
+/// ## The seam a reopen leaves, and why dropping records at it is not enough
+///
+/// `host_ns` is rebased to the FIRST CALLBACK OF ITS OWN STREAM
+/// (`record.rs::build_capture_stream`), and it has to be: `cpal` only defines
+/// `StreamInstant::duration_since` within one stream, so there is no absolute
+/// tick to hand downstream. [`crate::meeting::MeetingCapture::retune_track`] —
+/// the documented handler for exactly this, an AirPods swap on track 0 or
+/// YV103's `RebuildAggregate` on track 1 — deliberately keeps `captured_samples`
+/// and `spilled_samples` running across the reopen, so the wav is CONTINUOUS
+/// while the clock underneath it restarts at zero.
+///
+/// So the sequence is not one monotone run, it is several. A filter that merely
+/// dropped the backwards records would recover for as long as the new clock
+/// stayed under the old maximum and then start accepting again on the NEW zero —
+/// re-timing the whole post-reopen remainder of the meeting by the length of the
+/// pre-reopen run. A five-minute-in mic swap in a 90-minute meeting would place
+/// a word spoken at session second 4000 at 3700: a 300,000 ms residual against
+/// this item's 50 ms budget, and worse the longer the meeting runs, which is the
+/// common case rather than the exotic one.
+///
+/// This map is therefore SEGMENTED. A backwards `host_ns` closes the current
+/// segment and opens the next, whose epoch is the session time already elapsed —
+/// derived from the finalized position the two runs meet at, which is the one
+/// axis the reopen did not disturb. Session time is continuous and monotone
+/// across the seam by construction.
+///
+/// **What a reopen still costs, stated rather than buried.** The dead air
+/// between the old stream's last callback and the new stream's first is audio
+/// that was never captured, so it is not in the wav and no map can invent it:
+/// the two clocks are rebased to different instants, and nothing in the sidecar
+/// measures the distance between them. Post-reopen spans are therefore early by
+/// exactly that reopen gap — a fraction of a second, once, bounded by how long a
+/// stream rebuild takes rather than by how long the meeting runs. It does not
+/// accumulate, which is the whole difference between it and the ppm drift this
+/// item exists to delete. Stamping a session offset into the sidecar at
+/// `retune_track` is what would close it; [`crate::meeting::TrackRate::segments`]
+/// is what makes it visible in the meantime.
+///
+/// [`plan_silence_splices`]: crate::meeting::plan_silence_splices
+struct HostTimeline {
+    /// One per monotonic run of the clock, in track order. Never empty.
+    segments: Vec<TimelineSegment>,
+}
+
+/// One stretch of a track over which `host_ns` never restarted.
+struct TimelineSegment {
+    /// `(finalized_samples, host_ns)` — strictly increasing on both axes.
+    points: Vec<(f64, f64)>,
+    /// An instant in this segment is at session nanosecond
+    /// `epoch_ns + host_ns`. For the first segment this is the caller's track
+    /// epoch; for every later one it is whatever keeps session time continuous
+    /// across the seam.
+    epoch_ns: f64,
+}
+
+impl HostTimeline {
+    fn new(records: &[IndexRecord], epoch_ns: i64) -> HostTimeline {
+        // The finalized position is DERIVED, not stored — see the struct's doc
+        // comment. It is derived by running the shipping splice planner over
+        // this track's own records rather than by re-implementing its two
+        // rules here, so the map and the wav it maps can never disagree about
+        // what the finalize did.
+        let finalized = crate::meeting::finalized_positions(records);
+        let epoch_ns = epoch_ns as f64;
+        let mut timeline = HostTimeline {
+            segments: Vec::new(),
+        };
+        let mut run: Vec<(f64, f64)> = Vec::new();
+        let mut previous_host: Option<f64> = None;
+        for (record, position) in records.iter().zip(finalized) {
+            let (position, host) = (position as f64, record.host_ns as f64);
+            // A record that runs backwards on the clock is a REOPEN, not a
+            // negative interval: it is the new stream's own first callback.
+            // That closes the run — it does not discard the run, and it does
+            // not discard what comes after it either.
+            if previous_host.is_some_and(|previous| host <= previous) {
+                timeline.close(std::mem::take(&mut run), epoch_ns);
+            }
+            previous_host = Some(host);
+            // Inside a run, still strictly forward on BOTH axes: an interval
+            // with no width on either axis is one this cannot divide by.
+            match run.last() {
+                Some(&(samples, last_host)) => {
+                    if position > samples && host > last_host {
+                        run.push((position, host));
+                    }
+                }
+                None => run.push((position, host)),
+            }
+        }
+        timeline.close(run, epoch_ns);
+        if timeline.segments.is_empty() {
+            // A journal that never got a record written. The nominal timeline
+            // shifted by the epoch is the 22-A behaviour — exactly as good as
+            // what the caller had before and no worse.
+            timeline.segments.push(TimelineSegment {
+                points: vec![(0.0, 0.0)],
+                epoch_ns,
+            });
+        }
+        timeline
+    }
+
+    /// Close a run, giving it the epoch that makes session time continuous with
+    /// the segment before it.
+    fn close(&mut self, points: Vec<(f64, f64)>, initial_epoch_ns: f64) {
+        let Some(&(first_sample, first_host)) = points.first() else {
+            return;
+        };
+        let epoch_ns = match self.segments.last() {
+            None => initial_epoch_ns,
+            Some(previous) => {
+                let &(last_sample, last_host) = previous
+                    .points
+                    .last()
+                    .expect("`close` never pushes an empty segment");
+                // Session time where the previous run ended, plus the WAV the
+                // two runs have between them. The reopen gap itself contributed
+                // no audio, so the bridge is what the finalized track actually
+                // gained across the seam, at the nominal rate — the only rate
+                // there is, since neither clock spans the gap. `max(0.0)` keeps
+                // the map monotone even if a future producer lets the position
+                // axis restart too.
+                let session_end_ns = previous.epoch_ns + last_host;
+                let bridge_ns = (first_sample - last_sample).max(0.0) / MEETING_RATE as f64 * 1e9;
+                session_end_ns + bridge_ns - first_host
+            }
+        };
+        self.segments.push(TimelineSegment { points, epoch_ns });
+    }
+
+    /// The segment a finalized sample belongs to: the LAST run that starts at
+    /// or before it, so a sample in the dead air between two runs is placed off
+    /// the run that preceded it rather than off one that had not started yet.
+    fn segment_for(&self, sample: f64) -> &TimelineSegment {
+        let at = self
+            .segments
+            .partition_point(|segment| segment.points[0].0 <= sample);
+        &self.segments[at.saturating_sub(1)]
+    }
+
+    /// Track seconds → session seconds.
+    ///
+    /// With no usable interval there is nothing measured to lean on, so this
+    /// degrades to the nominal timeline shifted by the epoch — the 22-A
+    /// behaviour, which is exactly as good as what the caller had before and no
+    /// worse. That is the honest floor for a meeting whose journal never got a
+    /// second record written.
+    fn session_seconds(&self, track_seconds: f64) -> f64 {
+        let sample = track_seconds * MEETING_RATE as f64;
+        let segment = self.segment_for(sample);
+        let host_ns = match segment.points.len() {
+            0 | 1 => {
+                let (base_sample, base_host) =
+                    segment.points.first().copied().unwrap_or((0.0, 0.0));
+                base_host + (sample - base_sample) / MEETING_RATE as f64 * 1e9
+            }
+            _ => {
+                // The first interval whose right edge is at or past `sample`.
+                // Clamped so a sample before the first record extrapolates
+                // backwards off the FIRST interval and one past the last
+                // extrapolates forwards off the LAST — both at that interval's
+                // own measured rate, which is the best evidence available for
+                // an instant the records do not bracket.
+                let at = segment
+                    .points
+                    .partition_point(|(samples, _)| *samples < sample)
+                    .clamp(1, segment.points.len() - 1);
+                let (s0, h0) = segment.points[at - 1];
+                let (s1, h1) = segment.points[at];
+                let frac = (sample - s0) / (s1 - s0);
+                h0 + frac * (h1 - h0)
+            }
+        };
+        (segment.epoch_ns + host_ns) / 1e9
+    }
 }
 
 /// How far apart two decodes of the SAME word at a seam may be timestamped

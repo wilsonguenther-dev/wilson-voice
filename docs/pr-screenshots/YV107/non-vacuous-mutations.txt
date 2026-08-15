@@ -1,0 +1,255 @@
+YV107 non-vacuity matrix — every mutation below is a plausible way to get
+this item wrong, and each one is asserted to turn a named acceptance test
+RED. A test that stays green under its own mutation proves nothing.
+
+Baseline (unmutated):
+  [two_track_merge_no_regression_single_track]
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_merge_ordering]
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_merge_synthetic_drift]
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_true_rate_logging]
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+==============================================================
+MUTATION 1 — merge on each track's OWN seconds again (the samples-over-nominal-rate timeline this item deletes)
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_merge_synthetic_drift]
+test a_hundred_ppm_offset_merges_in_the_right_order_and_under_fifty_ms_at_three_hours ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 2 — ignore the per-track epoch offset (assume both streams' zeros are the same instant)
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 3 — drop the final interleave sort — emit all of track 0, then all of track 1
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test misaligned_seams_still_interleave_strictly_by_host_time ... FAILED
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... FAILED
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_merge_synthetic_drift]
+test a_hundred_ppm_offset_merges_in_the_right_order_and_under_fifty_ms_at_three_hours ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 4 — skip the per-track seam merge — feed raw chunk spans straight into the interleave
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test misaligned_seams_still_interleave_strictly_by_host_time ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 5 — re-time a mic-only meeting too (remove the 22-A no-regression early return)
+--------------------------------------------------------------
+  [two_track_merge_no_regression_single_track]
+test a_mic_only_meeting_is_byte_for_byte_what_merge_timed_produces ... FAILED
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 6 — never flag a track, however far off its nominal rate it runs
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test a_track_outside_the_crystal_tolerance_is_flagged_and_one_inside_it_is_not ... FAILED
+test the_blob_carries_the_rates_under_the_track_rates_key ... FAILED
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+==============================================================
+MUTATION 7 — report the NOMINAL rate as the measured one (never actually divide by host seconds)
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test the_rate_is_what_the_device_delivered_not_what_reached_disk ... FAILED
+test the_measured_rate_is_delta_samples_over_delta_host_seconds ... FAILED
+test a_track_outside_the_crystal_tolerance_is_flagged_and_one_inside_it_is_not ... FAILED
+test the_blob_carries_the_rates_under_the_track_rates_key ... FAILED
+test result: FAILED. 4 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+==============================================================
+MUTATION 8 — compute the rates and drop them on the floor — never bank them into the blob
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test a_finished_meetings_row_carries_the_measured_rates ... FAILED
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+==============================================================
+MUTATION 9 — believe a rebased clock — accept index records whose host time runs backwards
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test a_stream_rebuilt_mid_meeting_rebases_its_clock_and_does_not_invent_a_rate ... FAILED
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+==============================================================
+MUTATION 10 — measure the rate from spilled_samples instead of captured_samples
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test the_rate_is_what_the_device_delivered_not_what_reached_disk ... FAILED
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+==============================================================
+MUTATION 11 — key the host-time MAP on spilled_samples instead of captured_samples
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_track_that_lost_audio_is_mapped_on_what_the_device_delivered ... FAILED
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+==============================================================
+Files restored from snapshot; verifying the tree is clean again:
+(no output above = every mutation reverted)
+
+
+##############################################################
+# ROUND 2 — the review's BLOCKING finding, and the mutations
+# that now cover it. The map is keyed on the FINALIZED
+# position (spilled + the splices planned up to that record),
+# not on captured_samples. Mutations 10 and 11 above tested
+# spilled-vs-captured and never the third candidate, which is
+# exactly how the defect survived them.
+##############################################################
+
+Baseline (unmutated, round 2):
+  [two_track_merge_ordering]
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [meeting::tests::the_finalized_position_is_neither_stored_counter]
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+
+==============================================================
+MUTATION 11 (re-run, round 2) — key the host-time MAP on spilled_samples instead of the finalized position
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... ok
+test misaligned_seams_still_interleave_strictly_by_host_time ... ok
+test a_device_stall_does_not_shift_the_rest_of_the_meeting ... FAILED
+test a_track_that_lost_audio_is_mapped_on_what_the_device_delivered ... FAILED
+thread 'a_device_stall_does_not_shift_the_rest_of_the_meeting' (11848814) panicked at src-tauri/tests/two_track_merge_ordering.rs:367:5:
+a word spoken at host second 80 came back at 89.9990 — a 9999.0 ms residual against a 50 ms budget. Keying the map on EITHER stored counter (a stall freezes both together) puts it at ≈90.0, the whole stall late.
+thread 'a_track_that_lost_audio_is_mapped_on_what_the_device_delivered' (11848816) panicked at src-tauri/tests/two_track_merge_ordering.rs:273:5:
+a word spoken at real second 80 came back at 81.9998; keying the map on spilled_samples — the raw counter, with the repair the finalize made left out — would put it at ≈82.0, the whole gap late
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+==============================================================
+MUTATION 12 (NEW, round 2) — key the host-time MAP on captured_samples: the shipped-then-reverted keying the review found
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_track_that_lost_audio_is_mapped_on_what_the_device_delivered ... ok
+test misaligned_seams_still_interleave_strictly_by_host_time ... ok
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... ok
+test a_device_stall_does_not_shift_the_rest_of_the_meeting ... FAILED
+thread 'a_device_stall_does_not_shift_the_rest_of_the_meeting' (11849375) panicked at src-tauri/tests/two_track_merge_ordering.rs:367:5:
+a word spoken at host second 80 came back at 89.9990 — a 9999.0 ms residual against a 50 ms budget. Keying the map on EITHER stored counter (a stall freezes both together) puts it at ≈90.0, the whole stall late.
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+==============================================================
+MUTATION 13 (NEW, round 2) — attribute an interval's splice to the record BEFORE it ("at or before" becomes "strictly before")
+--------------------------------------------------------------
+  [meeting::tests, lib]
+test meeting::tests::the_finalized_position_is_neither_stored_counter ... FAILED
+thread 'meeting::tests::the_finalized_position_is_neither_stored_counter' (11850059) panicked at src-tauri/src/meeting.rs:3397:9:
+assertion `left == right` failed: the spliced silence is IN the finalized wav, so the second record's instant sits five seconds further into it than `captured_samples` says — every word after a stall is mis-timed by the whole stall if a consumer believes that column
+  left: 32000
+ right: 112000
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.00s
+
+==============================================================
+Files restored from snapshot (cp, never 'git checkout' — the
+harness lesson from round 1); tree verified clean afterwards.
+
+##############################################################
+# ROUND 3 — the review's two BLOCKING findings, and the
+# mutations that now cover them. Both live at the same seam:
+# a stream REOPENED mid-meeting (record.rs rebases host_ns
+# per stream build; retune_track carries captured_samples
+# across it). Mutation 9 above tested a rebase whose POST run
+# was shorter than its PRE run, which is the one regime in
+# which the defect cannot show — which is exactly how it
+# survived 13 mutations.
+##############################################################
+
+Baseline (unmutated, round 3):
+  [two_track_merge_ordering]
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_true_rate_logging]
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+==============================================================
+MUTATION 14 (NEW, round 3) — DROP the backwards records instead of segmenting on them (the shipped-then-reverted filter the review found)
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... ok
+test a_device_stall_does_not_shift_the_rest_of_the_meeting ... ok
+test a_track_that_lost_audio_is_mapped_on_what_the_device_delivered ... ok
+test misaligned_seams_still_interleave_strictly_by_host_time ... ok
+test a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else ... FAILED
+test a_stream_reopened_early_does_not_re_zero_the_rest_of_the_meeting ... FAILED
+thread 'a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else' (12121468) panicked at src-tauri/tests/two_track_merge_ordering.rs:533:9:
+just after: expected the reopen's own 1.5 s of dead air and nothing else, got 19.9385 s
+thread 'a_stream_reopened_early_does_not_re_zero_the_rest_of_the_meeting' (12121469) panicked at src-tauri/tests/two_track_merge_ordering.rs:444:5:
+a word spoken at session second 4000 came back at 3700.0000 — a 300000.0 ms residual against a 50 ms budget
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+==============================================================
+MUTATION 15 (NEW, round 3) — measure the rate ACROSS the rebase (first = records[0], last advances past the seam once the new clock catches up)
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test the_rate_is_what_the_device_delivered_not_what_reached_disk ... ok
+test a_rate_that_cannot_honestly_be_measured_is_none_rather_than_zero ... ok
+test the_measured_rate_is_delta_samples_over_delta_host_seconds ... ok
+test a_track_that_was_never_reopened_reports_one_segment ... ok
+test a_blob_written_before_this_item_still_parses_and_says_nothing ... ok
+test a_track_outside_the_crystal_tolerance_is_flagged_and_one_inside_it_is_not ... ok
+test a_stream_rebuilt_mid_meeting_rebases_its_clock_and_does_not_invent_a_rate ... FAILED
+test the_rate_reported_is_the_longest_runs_own_rate ... FAILED
+test a_reopen_whose_second_run_outlives_the_first_still_measures_a_real_rate ... FAILED
+test the_blob_carries_the_rates_under_the_track_rates_key ... ok
+test a_finished_meetings_row_carries_the_measured_rates ... ok
+thread 'a_stream_rebuilt_mid_meeting_rebases_its_clock_and_does_not_invent_a_rate' (12122128) panicked at src-tauri/tests/two_track_true_rate_logging.rs:140:5:
+assertion `left == right` failed: the reopen is REPORTED, not merely survived — a reader has to be able to see that the number describes one run of a meeting that has two
+  left: 1
+ right: 2
+thread 'the_rate_reported_is_the_longest_runs_own_rate' (12122134) panicked at src-tauri/tests/two_track_true_rate_logging.rs:214:5:
+expected the 5100 s run's +12 ppm, got 58835.53 ppm
+thread 'a_reopen_whose_second_run_outlives_the_first_still_measures_a_real_rate' (12122127) panicked at src-tauri/tests/two_track_true_rate_logging.rs:172:5:
+a 0 ppm device stays a 0 ppm device across a reopen; got 58823.5 ppm (16941.176 Hz over 5100.0 s)
+test result: FAILED. 8 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+==============================================================
+MUTATION 16 (NEW, round 3) — segment, but start each segment on the caller's epoch instead of on the session time already elapsed
+--------------------------------------------------------------
+  [two_track_merge_ordering]
+test a_track_that_lost_audio_is_mapped_on_what_the_device_delivered ... ok
+test a_device_stall_does_not_shift_the_rest_of_the_meeting ... ok
+test misaligned_seams_still_interleave_strictly_by_host_time ... ok
+test a_tap_that_started_late_is_placed_on_the_sessions_clock_not_its_own ... ok
+test a_reopen_is_early_by_its_own_dead_air_and_by_nothing_else ... FAILED
+test a_stream_reopened_early_does_not_re_zero_the_rest_of_the_meeting ... FAILED
+just after: expected the reopen's own 1.5 s of dead air and nothing else, got 301.5000 s
+a word spoken at session second 4000 came back at 3700.0000 — a 300000.0 ms residual against a 50 ms budget
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+==============================================================
+MUTATION 17 (NEW, round 3) — measure per run, but report the FIRST run rather than the LONGEST
+--------------------------------------------------------------
+  [two_track_true_rate_logging]
+test a_track_that_was_never_reopened_reports_one_segment ... ok
+test the_measured_rate_is_delta_samples_over_delta_host_seconds ... ok
+test a_stream_rebuilt_mid_meeting_rebases_its_clock_and_does_not_invent_a_rate ... ok
+test the_rate_is_what_the_device_delivered_not_what_reached_disk ... ok
+test a_blob_written_before_this_item_still_parses_and_says_nothing ... ok
+test a_rate_that_cannot_honestly_be_measured_is_none_rather_than_zero ... ok
+test a_track_outside_the_crystal_tolerance_is_flagged_and_one_inside_it_is_not ... ok
+test the_blob_carries_the_rates_under_the_track_rates_key ... ok
+test a_reopen_whose_second_run_outlives_the_first_still_measures_a_real_rate ... FAILED
+test the_rate_reported_is_the_longest_runs_own_rate ... FAILED
+test a_finished_meetings_row_carries_the_measured_rates ... ok
+the LONGEST run is the one worth reporting; got 300.0 s
+expected the 5100 s run's +12 ppm, got 0.00 ppm
+test result: FAILED. 9 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+==============================================================
+Files restored from snapshot (cp, never 'git checkout'); tree
+verified clean afterwards, and the four binaries re-run green:
+  [two_track_merge_ordering]
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  [two_track_true_rate_logging]
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
