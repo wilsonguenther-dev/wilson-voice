@@ -365,6 +365,11 @@ fn finish_tears_down_tap_via_watchdog_path() {
 /// tests.
 #[test]
 fn an_attached_tap_supplies_the_watchdog_its_liveness() {
+    // Held even though this test starts no session: `MeetingTap::pump` fans its
+    // block out to whatever meeting is registered, and the tests in this file
+    // run concurrently. Without the turnstile this one would be feeding another
+    // test's track 1 while it ran.
+    let _turnstile = meeting::session_turnstile();
     let fake = fake_tap();
     let ring = Arc::clone(fake.tap.ring());
     let env = syscapture::TappedEnv::new(std::path::PathBuf::from("."), Arc::clone(&fake.tap));
