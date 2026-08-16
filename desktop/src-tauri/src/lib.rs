@@ -136,9 +136,11 @@ mod snippets;
 // enrolled? Public because every one of its acceptance criteria is an
 // integration test over these pure functions, and because the harness must
 // score the shipped matcher rather than a copy of it. Carries no threshold:
-// `EnrollmentBands` has no `Default` and no `const` instance anywhere in this
-// crate, and `bands_from_distribution` is the only producer that is not a
-// caller's literal — see the module header for why, and
+// `EnrollmentBands` has no `Default`, no `const` instance and — since a review
+// probe walked through the name-based version of that claim — no public
+// constructor at all in a shipping build. `bands_from_distribution` is the only
+// producer; the literal constructor is `cfg(test)`/`test-bands` only. See the
+// module header for why, and
 // `tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs` for the gate that
 // keeps it that way while YV124's EER is still unmeasured.
 pub mod speaker_profiles;

@@ -21,6 +21,39 @@
 //! `tests/enrollment_threshold_from_harness.rs` asserts the absence, exactly as
 //! YV126 asserts it for the clustering distance.
 //!
+//! **That absence is a TYPE property first and a scan second.** The first
+//! version of this gate was a name-based grep, and a review probe walked
+//! straight through it: rename the constants (`OPENWHISPR_HI` / `OPENWHISPR_LO`)
+//! and put one function between the literals and the constructor, and both
+//! threshold gates stayed green. So the literal constructor is now sealed —
+//! `EnrollmentBands::from_measured_edges` is private to this module and
+//! [`EnrollmentBands::for_test`] exists only under `cfg(test)` or the
+//! `test-bands` feature (which the package's own dev-dependency turns on for
+//! `cargo test` and nothing turns on for `cargo build --release`). That probe
+//! now fails to COMPILE in a shipping build. `tests/support/bands.rs` then
+//! asserts the same property by TYPE rather than by name: it walks
+//! `src/**/*.rs` for every construction of an [`EnrollmentBands`] or a
+//! [`ChipFloor`] and requires each one to sit inside a measured producer, it
+//! resolves one level of `const` indirection before calling a constructor
+//! argument literal-free, and it flags **any** non-endpoint decimal in an
+//! `f32`/`f64` `const` in this file whatever it is called.
+//!
+//! ## The rule that places the two edges, and why it is not the extrema
+//!
+//! [`bands_from_distribution`] places `new_voice_floor` at the harness's
+//! **equal-error operating point** and `auto_confirm` at the lowest operating
+//! point above it that meets a caller-supplied **false-accept budget**
+//! ([`TargetFar`]). The first shipped version used `min(genuine)` and
+//! `max(impostor) + ε` instead, and a review finding killed it for the right
+//! reason: both are extreme order statistics and both are monotone in sample
+//! size, so more measurement bought a strictly worse operating point — the
+//! suggest band widened with every added pair, one confusable impostor pushed
+//! auto-confirm toward `1.0`, and [`MatchResult::Known`] would then never fire,
+//! i.e. an enrolled speaker asked "who is this?" in every meeting forever. A
+//! quantile does not do that: it converges as `N` grows, and
+//! `enrollment_threshold_from_harness.rs::band_edges_do_not_diverge_as_the_sample_grows`
+//! measures both rules side by side to show which one moves.
+//!
 //! **On this base the bands are still unmeasured, and that is enforced rather
 //! than remembered.** OS-8 requires the anti-alias EER to be measured *before*
 //! the enrollment thresholds are tuned, or those thresholds permanently encode
@@ -182,10 +215,11 @@ impl SpeakerProfile {
 /// `auto_confirm`, suggest between the two edges, a new voice below
 /// `new_voice_floor`.
 ///
-/// Constructed only through [`EnrollmentBands::new`] (which rejects an inverted
-/// pair) or [`bands_from_distribution`] (which measures both edges). There is
-/// deliberately no `Default` and no `const` instance in this crate: see the
-/// module header.
+/// **Unconstructible from literals in a shipping build.** The checked
+/// constructor is private to this module, so [`bands_from_distribution`] is the
+/// only path in the crate that yields one; [`EnrollmentBands::for_test`] exists
+/// only under `cfg(test)` or the `test-bands` feature. There is deliberately no
+/// `Default` and no `const` instance: see the module header.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollmentBands {
@@ -215,11 +249,18 @@ impl std::fmt::Display for BandError {
 impl std::error::Error for BandError {}
 
 impl EnrollmentBands {
+    /// The one checked constructor, **private to this module**.
+    ///
+    /// Private is the point: with no `pub` constructor in a shipping build, the
+    /// only exported path to an `EnrollmentBands` is
+    /// [`bands_from_distribution`], and "the bands are an output of the
+    /// harness" stops being a convention a scanner has to police by name.
+    ///
     /// `auto_confirm` must sit **strictly above** `new_voice_floor`. Equal edges
     /// are rejected rather than collapsed into a two-way decision: a build that
     /// silently stopped ever suggesting anything would look like a tuning
     /// result rather than the mistake it is.
-    pub fn new(
+    fn from_measured_edges(
         auto_confirm: CosineSimilarity,
         new_voice_floor: CosineSimilarity,
     ) -> Result<Self, BandError> {
@@ -230,6 +271,23 @@ impl EnrollmentBands {
             auto_confirm,
             new_voice_floor,
         })
+    }
+
+    /// Two literal edges, for tests and for tests only.
+    ///
+    /// Compiled under `cfg(test)` (this file's own unit tests) or the
+    /// `test-bands` feature, which `Cargo.toml`'s self dev-dependency turns on
+    /// for `cargo test` and which nothing turns on for `cargo build`. A
+    /// shipping call site cannot name it — the review probe that defeated the
+    /// name-based scan (`EnrollmentBands::new(CosineSimilarity::new(OPENWHISPR_HI), …)`
+    /// behind a renamed constant and one function) is now a compile error in
+    /// the release build, before any scanner is consulted.
+    #[cfg(any(test, feature = "test-bands"))]
+    pub fn for_test(
+        auto_confirm: CosineSimilarity,
+        new_voice_floor: CosineSimilarity,
+    ) -> Result<Self, BandError> {
+        Self::from_measured_edges(auto_confirm, new_voice_floor)
     }
 
     pub fn auto_confirm(&self) -> CosineSimilarity {
@@ -257,16 +315,26 @@ pub struct TunedBands {
     /// The measured equal error rate of the distribution the bands came from.
     pub eer: f64,
     /// The similarity at the equal-error point — which is exactly where
-    /// [`EnrollmentBands::new_voice_floor`] was placed.
+    /// [`EnrollmentBands::new_voice_floor`] was placed, per the item's spec
+    /// ("compute the EER-optimal threshold and set the bands around it").
     pub eer_threshold: CosineSimilarity,
-    /// The observed false-accept rate at the auto-confirm edge, on this sample:
+    /// The false-accept budget the caller asked the auto-confirm edge to meet.
+    /// Policy, supplied by the call site — see [`TargetFar`].
+    pub target_far: f64,
+    /// The observed false-accept rate AT the auto-confirm edge, on this sample:
     /// impostor pairs that would have been given a name with no human in the
-    /// loop. Zero by construction; read it together with `far_resolution`,
-    /// which is the smallest non-zero value it could have taken.
+    /// loop. `<= target_far` by construction; read it together with
+    /// `far_resolution`, the smallest non-zero value it could have taken.
     pub far_at_auto_confirm: f64,
+    /// The observed false-REJECT rate at the auto-confirm edge: genuine pairs
+    /// that clear the floor but not the auto-confirm edge, i.e. the ones that
+    /// still cost the user a chip. This is the price of the FAR budget, and it
+    /// is reported rather than left to be discovered on a screen.
+    pub frr_at_auto_confirm: f64,
     /// The observed false-reject rate at the new-voice floor, on this sample:
-    /// genuine pairs that would have been called a stranger. Zero by
-    /// construction; read it together with `frr_resolution`.
+    /// genuine pairs that would have been called a stranger. At the equal-error
+    /// point this is `eer`-shaped by definition, not zero — read it together
+    /// with `frr_resolution`.
     pub frr_at_new_voice_floor: f64,
     /// The smallest non-zero FAR this impostor sample can express: `1/impostor`.
     pub far_resolution: f64,
@@ -291,9 +359,21 @@ pub enum TuningError {
     /// ship would itself be a number that has to come from a measurement, so
     /// this function reports the EER and refuses only at chance.
     Indistinguishable { eer: f64 },
-    /// Every impostor scored at or above the ceiling of the similarity line, so
-    /// there is no room above them for an auto-confirm edge.
+    /// No operating point above the equal-error floor meets the requested
+    /// false-accept budget without leaving the similarity line: the impostors
+    /// that would have to be excluded sit at or above `1.0`, and nothing can be
+    /// placed above them.
     NoRoomAboveImpostors { highest_impostor: f32 },
+    /// The requested false-accept budget is finer than this sample can express.
+    ///
+    /// A FAR of 1% cannot be measured against 48 impostor pairs: the smallest
+    /// non-zero rate they can show is `1/48 = 0.021`, so an edge "meeting" 1%
+    /// would be meeting a number the corpus never had. Enlarge the corpus or
+    /// loosen the budget; do not round. This is YV124's saturated-EER lesson
+    /// applied to the other tail.
+    TargetFarBelowResolution { target_far: f64, far_resolution: f64 },
+    /// A FAR budget has to be a rate strictly between `0` and chance.
+    TargetFarOutOfRange { target_far: f64 },
     /// The two measured edges landed on the same number, so there is no
     /// suggest region between them and the split is a single point. A distinct
     /// error rather than a silently collapsed two-way decision: a build that
@@ -314,8 +394,22 @@ impl std::fmt::Display for TuningError {
             ),
             TuningError::NoRoomAboveImpostors { highest_impostor } => write!(
                 f,
-                "the highest impostor scored {highest_impostor:.4}; there is no room above it for \
-                 an auto-confirm edge"
+                "the highest impostor scored {highest_impostor:.4}; no operating point above the \
+                 equal-error floor meets the false-accept budget without leaving the similarity line"
+            ),
+            TuningError::TargetFarBelowResolution {
+                target_far,
+                far_resolution,
+            } => write!(
+                f,
+                "a false-accept budget of {target_far:.4} is finer than this sample can express: \
+                 the smallest non-zero FAR {} impostor pairs can show is {far_resolution:.4}",
+                (1.0 / far_resolution).round() as u64
+            ),
+            TuningError::TargetFarOutOfRange { target_far } => write!(
+                f,
+                "a false-accept budget must be a rate strictly between 0 and chance (0.5), not \
+                 {target_far}"
             ),
             TuningError::Degenerate { edge } => write!(
                 f,
@@ -327,57 +421,112 @@ impl std::fmt::Display for TuningError {
 
 impl std::error::Error for TuningError {}
 
-/// How far above the highest observed impostor the auto-confirm edge is placed.
+/// The false-accept budget the auto-confirm edge is placed to meet.
 ///
-/// This is a floating-point epsilon, not a tuned margin: the decision rule is
-/// `accept if score >= edge`, so the edge has to sit strictly above the highest
-/// impostor for the observed FAR to be zero, and `f32::EPSILON`-scale is the
-/// smallest number that achieves it. Making it larger would be a guess about
-/// unobserved impostors, which is the vendor-blog failure in a different
-/// costume; making it zero would admit the worst impostor in the sample.
-const IMPOSTOR_HEADROOM: f32 = 1e-4;
+/// **This is policy, not a measurement, and it belongs to the CALLER.** How
+/// often the app may put a name on a stranger with nobody in the loop is a
+/// product decision; where that rate lands on the similarity line is a
+/// measurement. Keeping the two apart is why this is a parameter rather than a
+/// constant in this file — a `const TARGET_FAR` here would be a tuned number
+/// with no measurement behind it, which is the shape of thing this whole item
+/// exists to refuse, and `tests/support/bands.rs` scans for it by type.
+///
+/// A budget is only meaningful down to the sample's resolution: see
+/// [`TuningError::TargetFarBelowResolution`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TargetFar(f64);
+
+impl TargetFar {
+    /// # Errors
+    /// [`TuningError::TargetFarOutOfRange`] unless `0 < rate < 0.5`. A budget of
+    /// zero is unreachable on a finite sample (it would claim something about
+    /// impostors nobody measured) and a budget at chance is not a budget.
+    pub fn new(rate: f64) -> Result<Self, TuningError> {
+        if !rate.is_finite() || rate <= 0.0 || rate >= 0.5 {
+            return Err(TuningError::TargetFarOutOfRange { target_far: rate });
+        }
+        Ok(Self(rate))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// Every operating point the sample can distinguish, ascending.
+///
+/// The observed scores plus the midpoints between consecutive distinct ones,
+/// plus one point above the highest — the same candidate construction
+/// [`enrollment_eer`] sweeps, so the floor and the auto-confirm edge are chosen
+/// from the same grid and the ROC they are read off is one curve, not two.
+fn operating_points(genuine: &[CosineSimilarity], impostor: &[CosineSimilarity]) -> Vec<f64> {
+    let mut observed: Vec<f64> = genuine
+        .iter()
+        .chain(impostor.iter())
+        .map(|s| s.get() as f64)
+        .collect();
+    observed.sort_by(f64::total_cmp);
+    observed.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    let mut out = Vec::with_capacity(observed.len() * 2 + 1);
+    for pair in observed.windows(2) {
+        out.push(pair[0]);
+        out.push((pair[0] + pair[1]) / 2.0);
+    }
+    let highest = *observed.last().expect("a non-empty distribution");
+    out.push(highest);
+    out.push(highest + 1e-6);
+    out
+}
+
+/// The observed false-accept rate of `edge`: impostors the decision rule
+/// `accept if score >= edge` would let through.
+fn far_at(impostor: &[CosineSimilarity], edge: CosineSimilarity) -> f64 {
+    impostor.iter().filter(|s| s.get() >= edge.get()).count() as f64 / impostor.len() as f64
+}
+
+/// The observed false-reject rate of `edge`: genuine pairs it would refuse.
+fn frr_at(genuine: &[CosineSimilarity], edge: CosineSimilarity) -> f64 {
+    genuine.iter().filter(|s| s.get() < edge.get()).count() as f64 / genuine.len() as f64
+}
 
 /// Derive both band edges from a MEASURED genuine/impostor distribution.
 ///
-/// This is the only producer of an [`EnrollmentBands`] that is not a literal
-/// pair of numbers written by a caller, and it is what the item means by
-/// "thresholds are an OUTPUT of the harness".
+/// This is the only producer of an [`EnrollmentBands`] anywhere in a shipping
+/// build, and it is what the item means by "thresholds are an OUTPUT of the
+/// harness".
 ///
-/// ## The rule, and why it is these two statistics
+/// ## The rule, and why it is not the extrema
 ///
-/// The **suggest** band is the interval the sample cannot decide, and the two
-/// statistics that bound it are:
+/// * **`new_voice_floor` = the equal-error operating point** that
+///   [`enrollment_eer`] measured — the item's spec, verbatim: *"compute the
+///   EER-optimal threshold and set the auto-confirm/suggest/new bands around
+///   it."* Below it, the sample says a match is more likely wrong than right.
+/// * **`auto_confirm` = the LOWEST operating point strictly above the floor
+///   whose observed FAR is within `target_far`.** Lowest, because anything
+///   higher rejects genuine pairs for no measured gain; within the budget,
+///   because "auto-confirm" means nobody is asked, so the only honest way to
+///   place it is against the rate of strangers it would silently name.
 ///
-/// * `min(genuine)` — the lowest score a pair of the SAME person produced.
-///   Nothing below it was ever a real match in this sample, so below it "new
-///   voice" costs no measured genuine pair.
-/// * `max(impostor) + ε` — just above the highest score a pair of DIFFERENT
-///   people produced. Nothing at or above it was ever an impostor in this
-///   sample, so auto-confirming there admits no measured impostor.
+/// The first version of this function used `min(genuine)` and
+/// `max(impostor) + ε`. A review finding killed that, correctly: both are
+/// extreme order statistics, both are monotone in sample size (max(impostor)
+/// can only rise, min(genuine) can only fall), so the suggest band widened and
+/// the Known/New regions shrank as the corpus GREW. On a realistic CAM++
+/// distribution with overlapping tails one confusable pair pushes auto-confirm
+/// toward `1.0`, [`MatchResult::Known`] never fires, and an enrolled speaker is
+/// asked "who is this?" in every meeting forever — which contradicts
+/// [`who_is_this_chips`]'s own rule 3. A quantile of the impostor distribution
+/// converges instead of diverging; `band_edges_do_not_diverge_as_the_sample_grows`
+/// measures both rules on the same growing sample and prints the two curves.
 ///
-/// Those two points bound the ambiguous interval from whichever side the data
-/// puts them on, which is why the rule is `auto_confirm = max(the two)` and
-/// `new_voice_floor = min(the two)` rather than a fixed assignment:
+/// ## What is reported alongside, and why
 ///
-/// * **Overlapping distributions** (the normal case): `min(genuine)` sits BELOW
-///   `max(impostor)`, and the interval between them is the region where genuine
-///   and impostor pairs genuinely mix. Ask there.
-/// * **Cleanly separated distributions**: `max(impostor)` sits below
-///   `min(genuine)` and the interval between them is a GAP the sample never
-///   produced a score in. Ask there too — the sample says nothing about it, and
-///   a threshold placed anywhere inside it is a guess about unobserved data.
-///
-/// Both edges are therefore statistics of the measured distribution, not
-/// choices. `far_at_auto_confirm` and `frr_at_new_voice_floor` are zero **by
-/// construction** on the sample the bands came from, which is the point — and
-/// exactly why `far_resolution` / `frr_resolution` are returned alongside, so
-/// "no impostor got through" is read as "none of the N impostor pairs we had",
-/// never as a claim about impostors nobody measured. That is the lesson YV124's
-/// saturated-EER discipline already wrote down.
-///
-/// The equal-error point is reported (`eer`, `eer_threshold`) but does **not**
-/// place either edge: the EER is a single operating point for a two-way
-/// decision, and this is a three-way one.
+/// `far_at_auto_confirm` / `frr_at_auto_confirm` / `frr_at_new_voice_floor` are
+/// the ACHIEVED rates on the sample the bands came from, and
+/// `far_resolution` / `frr_resolution` (`1/impostor`, `1/genuine`) are the
+/// smallest non-zero rates that sample can express. A band printed without its
+/// resolution underneath it is a number nobody can support — YV124's
+/// saturated-EER lesson, applied to this item's numbers.
 ///
 /// # Errors
 /// [`TuningError`] — see its variants. Every one of them is a condition under
@@ -385,6 +534,7 @@ const IMPOSTOR_HEADROOM: f32 = 1e-4;
 pub fn bands_from_distribution(
     genuine: &[CosineSimilarity],
     impostor: &[CosineSimilarity],
+    target_far: TargetFar,
 ) -> Result<TunedBands, TuningError> {
     if genuine.is_empty() || impostor.is_empty() {
         return Err(TuningError::EmptyDistribution);
@@ -394,41 +544,51 @@ pub fn bands_from_distribution(
         return Err(TuningError::Indistinguishable { eer: report.eer });
     }
 
-    let highest_impostor = impostor
-        .iter()
-        .map(|s| s.get())
-        .fold(f32::NEG_INFINITY, f32::max);
-    let lowest_genuine = genuine.iter().map(|s| s.get()).fold(f32::INFINITY, f32::min);
-
-    let above_impostors = highest_impostor + IMPOSTOR_HEADROOM;
-    if above_impostors > CosineSimilarity::MAX {
-        return Err(TuningError::NoRoomAboveImpostors { highest_impostor });
+    let far_resolution = 1.0 / impostor.len() as f64;
+    let frr_resolution = 1.0 / genuine.len() as f64;
+    if target_far.get() < far_resolution {
+        return Err(TuningError::TargetFarBelowResolution {
+            target_far: target_far.get(),
+            far_resolution,
+        });
     }
 
-    let (upper, lower) = if above_impostors >= lowest_genuine {
-        (above_impostors, lowest_genuine)
-    } else {
-        (lowest_genuine, above_impostors)
+    // The floor is the measured equal-error point. The edge is chosen from the
+    // same grid, above the floor, on the achieved FAR of the f32 that will
+    // actually ship — not of the f64 candidate — so the reported rate is the
+    // rate the matcher will produce.
+    let new_voice_floor = report.threshold_at_eer;
+    let auto_confirm = operating_points(genuine, impostor)
+        .into_iter()
+        .map(|t| CosineSimilarity::new(t as f32))
+        .find(|edge| {
+            edge.get() > new_voice_floor.get() && far_at(impostor, *edge) <= target_far.get() + 1e-12
+        });
+    let Some(auto_confirm) = auto_confirm else {
+        return Err(TuningError::NoRoomAboveImpostors {
+            highest_impostor: impostor
+                .iter()
+                .map(|s| s.get())
+                .fold(f32::NEG_INFINITY, f32::max),
+        });
     };
-    let bands = EnrollmentBands::new(CosineSimilarity::new(upper), CosineSimilarity::new(lower))
-        .map_err(|_: BandError| TuningError::Degenerate { edge: upper })?;
+
+    let bands = EnrollmentBands::from_measured_edges(auto_confirm, new_voice_floor).map_err(
+        |_: BandError| TuningError::Degenerate {
+            edge: auto_confirm.get(),
+        },
+    )?;
 
     Ok(TunedBands {
         bands,
         eer: report.eer,
         eer_threshold: report.threshold_at_eer,
-        far_at_auto_confirm: impostor
-            .iter()
-            .filter(|s| s.get() >= bands.auto_confirm().get())
-            .count() as f64
-            / impostor.len() as f64,
-        frr_at_new_voice_floor: genuine
-            .iter()
-            .filter(|s| s.get() < bands.new_voice_floor().get())
-            .count() as f64
-            / genuine.len() as f64,
-        far_resolution: 1.0 / impostor.len() as f64,
-        frr_resolution: 1.0 / genuine.len() as f64,
+        target_far: target_far.get(),
+        far_at_auto_confirm: far_at(impostor, bands.auto_confirm()),
+        frr_at_auto_confirm: frr_at(genuine, bands.auto_confirm()),
+        frr_at_new_voice_floor: frr_at(genuine, bands.new_voice_floor()),
+        far_resolution,
+        frr_resolution,
         genuine: genuine.len(),
         impostor: impostor.len(),
     })
@@ -880,7 +1040,7 @@ mod tests {
     use super::*;
 
     fn bands(auto: f32, floor: f32) -> EnrollmentBands {
-        EnrollmentBands::new(CosineSimilarity::new(auto), CosineSimilarity::new(floor))
+        EnrollmentBands::for_test(CosineSimilarity::new(auto), CosineSimilarity::new(floor))
             .expect("well-ordered test bands")
     }
 
@@ -899,11 +1059,11 @@ mod tests {
     #[test]
     fn bands_reject_an_inverted_pair() {
         assert_eq!(
-            EnrollmentBands::new(CosineSimilarity::new(0.4), CosineSimilarity::new(0.6)),
+            EnrollmentBands::for_test(CosineSimilarity::new(0.4), CosineSimilarity::new(0.6)),
             Err(BandError::Inverted)
         );
         assert_eq!(
-            EnrollmentBands::new(CosineSimilarity::new(0.5), CosineSimilarity::new(0.5)),
+            EnrollmentBands::for_test(CosineSimilarity::new(0.5), CosineSimilarity::new(0.5)),
             Err(BandError::Inverted),
             "equal edges leave no suggest region and must not pass as a split"
         );

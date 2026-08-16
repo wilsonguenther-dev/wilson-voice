@@ -6368,6 +6368,7 @@ dependencies = [
  "transcribe-cpp",
  "uuid",
  "vad-rs",
+ "wilson-voice",
 ]
 
 [[package]]

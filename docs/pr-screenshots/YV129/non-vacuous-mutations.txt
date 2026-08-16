@@ -61,3 +61,106 @@ the_constructor_scan_is_paren_balanced_and_crosses_lines,
 unit_endpoints_are_not_tuned_thresholds_but_everything_else_is,
 the_block_extractor_fails_loudly_rather_than_returning_nothing, and
 the_scan_covers_the_module_this_item_added.
+
+===============================================================================
+REVISION (panel audit 2026-08-10). M1 above was NOT enough, and the finding that
+said so is now a committed test.
+===============================================================================
+
+M1 only proved the old scanner caught a band that volunteers its own name. The
+reviewer renamed the constants and put one function between the literals and the
+constructor, and BOTH gates stayed green (8 passed / 8 passed) with the vendor
+pair sitting in shipping source. M9/M10 are that exact probe, now caught twice
+over. Restore between mutations is a file copy, never `git checkout`.
+
+M9  THE REVIEW PROBE, VERBATIM, against the shipping build:
+      const OPENWHISPR_HI: f32 = 0.70;
+      const OPENWHISPR_LO: f32 = 0.55;
+      pub fn shipped_bands() -> EnrollmentBands {
+          EnrollmentBands::new(CosineSimilarity::new(OPENWHISPR_HI),
+                               CosineSimilarity::new(OPENWHISPR_LO)).expect("well ordered")
+      }
+    $ cargo build --release --features custom-protocol   → EXIT 101
+      error[E0599]: no function or associated item named `new` found for struct
+                    `EnrollmentBands` in the current scope
+    The seal, not the scanner: there is no public constructor to call. This is
+    the CI gate that builds the shipping binary, so it binds on every PR.
+
+M10 The same probe through `for_test` — the only literal constructor that
+    exists at all, and one a release build cannot see. In a TEST build it
+    compiles, so the scanner has to be the thing that catches it, and it does —
+    three independent nets, all reported:
+      enrollment_threshold_from_harness → FAILED (2 of 11)
+        speaker_profiles.rs: tuned float constant in the band module — OPENWHISPR_HI: f32 = 0.70
+        speaker_profiles.rs: tuned float constant in the band module — OPENWHISPR_LO: f32 = 0.55
+        speaker_profiles.rs: literal band edge — EnrollmentBands::for_test(
+          CosineSimilarity::new(OPENWHISPR_HI), CosineSimilarity::new(OPENWHISPR_LO))
+          [resolved: CosineSimilarity::new((0.70)), CosineSimilarity::new((0.55))]
+        speaker_profiles.rs: `EnrollmentBands::for_test(` is constructed in
+          `shipped_bands`, which is not a measured producer of EnrollmentBands
+      no_tuned_enrollment_band_ships_in_the_crate and enrollment_threshold_from_harness
+      both red. The probe is also committed as bands::PROBE_SOURCE and driven by
+      the_scanner_catches_the_renamed_indirect_probe, which requires EACH net to
+      fire on its own so no single one can rot behind the others.
+
+M11 docs/yap23-eer-status.md flipped to `EER: 0.1000 (measured)` with the SSOT
+    unreachable — YAP23_BACKLOG_PATH=/nonexistent, i.e. exactly CI.
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (3 of 14)
+        "docs/yap23-eer-status.md claims the anti-alias EER is MEASURED, and the
+         SSOT it is supposed to be a copy of is not reachable from this machine.
+         That combination is a FAILURE, never a skip…"
+        the_mirror_has_not_drifted_from_the_ssot   → FAILED (no longer skips)
+        the_mirror_matches_its_committed_digest    → FAILED
+    Under the version this PR revises, this same edit was GREEN.
+    (Note for anyone repeating it: the marker appears TWICE in the block, and
+     the gate is satisfied by either. A partial flip leaves it unmeasured.)
+
+M12 The same forgery with MIRROR_SHA256 updated in the same diff — the forger
+    doing their homework. SSOT still unreachable.
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (2 of 14)
+      the_mirror_matches_its_committed_digest        → ok (they updated it)
+    The hash was never the gate; the unreachable SSOT is.
+
+M13 The forgery WITH a matching SSOT (YAP23_BACKLOG_PATH pointed at a note that
+    contains the forged block verbatim) plus a provenance record — but one whose
+    numbers no run could have produced (floor moved off the EER point):
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (1 of 14)
+        "the MEASURED block's provenance is not internally consistent, so no run
+         produced it:
+           `new_voice_floor` 0.4 is not the equal-error point 0.59 — the shipped
+           rule places the floor AT the EER operating point"
+
+M14 The SAME record made self-consistent (floor = 0.5900 = the EER threshold):
+      enrollment_thresholds_refuse_an_unmeasured_eer → ok (14 passed)
+    The measured branch is therefore non-vacuous in BOTH directions: it can be
+    satisfied, and only by a record that is arithmetically coherent with its own
+    corpus size, its own ROC and the rule the crate implements.
+    a_forged_measurement_fails_on_its_own_arithmetic drives seven more forgeries
+    (EER not the mean of its FAR/FRR; a rate no 20-pair sample can express; the
+    floor off the EER point; auto-confirm below the floor; a budget finer than
+    the resolution; an operating point missing from the sweep; a sweep whose FAR
+    rises) and requires each to be rejected.
+
+M15 bands_from_distribution's floor taken off the EER point and put back on
+    `min(genuine)` — half of the deleted rule.
+      enrollment_threshold_from_harness → FAILED (3 of 11)
+        bands_bracket_the_overlap_between_the_two_distributions
+        a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it
+        band_edges_do_not_diverge_as_the_sample_grows
+
+M16 The auto-confirm edge's FAR budget replaced by `<= 0.0` — i.e. back to
+    "strictly above every observed impostor", the other half of the deleted rule
+    and the one that makes Known stop firing.
+      enrollment_threshold_from_harness → FAILED (2 of 11)
+        bands_bracket_the_overlap_between_the_two_distributions
+        band_edges_do_not_diverge_as_the_sample_grows
+
+Scanner-internal non-vacuity added with the rewrite:
+  the_scanner_catches_the_renamed_indirect_probe  (every net, driven separately,
+    plus a clean file that only PASSES bands around and must stay clean)
+  only_the_two_test_only_cfgs_are_blanked_from_the_shipping_half
+    (cfg(test) and cfg(any(test, feature="test-bands")) are blanked;
+     cfg(target_os="macos") is NOT; code after a test module is still scanned;
+     line numbers survive)
+  comments_and_string_literals_are_not_code (length-preserving mask)
+  a_consistent_provenance_record_verifies / a_forged_measurement_fails_on_its_own_arithmetic

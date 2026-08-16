@@ -51,7 +51,7 @@ fn dims(k: usize) -> Embedding {
 }
 
 fn bands() -> EnrollmentBands {
-    EnrollmentBands::new(CosineSimilarity::new(0.90), CosineSimilarity::new(0.50))
+    EnrollmentBands::for_test(CosineSimilarity::new(0.90), CosineSimilarity::new(0.50))
         .expect("well-ordered test bands")
 }
 

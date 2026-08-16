@@ -139,3 +139,22 @@ objc2-core-audio-types = "=0.3.2"
 default = ["custom-protocol", "macos-private-api"]
 custom-protocol = ["tauri/custom-protocol"]
 macos-private-api = ["tauri/macos-private-api"]
+# YV129 — the seal on the enrollment bands. `EnrollmentBands::for_test` is the
+# only constructor that takes two literal edges, and it exists ONLY under
+# `cfg(test)` or this feature. Nothing turns it on for `cargo build`, so a
+# shipping call site that tries to hand-place a band is a compile error rather
+# than something a scanner has to catch by name — which is exactly how the
+# first version of that gate was defeated (a rename plus one level of
+# indirection). See `src/speaker_profiles.rs`'s module header.
+test-bands = []
+
+[dev-dependencies]
+# Not a real dependency: a package may depend on ITSELF as a dev-dependency to
+# turn a feature on for test targets only. This is what makes `cargo test` (and
+# `cargo clippy --all-targets`) see `EnrollmentBands::for_test` while
+# `cargo build --release --features custom-protocol` — the CI gate that builds
+# the shipping binary — does not. Integration tests need no extra flags.
+wilson-voice = { path = ".", features = ["test-bands"] }
+# YV129 — the EER-status mirror carries a committed digest, so a hand-edit of
+# the block the tuning gate reads is a second, deliberate line in the diff.
+sha2 = "0.10"

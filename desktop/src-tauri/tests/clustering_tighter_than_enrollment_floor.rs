@@ -38,7 +38,7 @@ use wilson_voice_lib::speaker_profiles::{
 };
 
 fn bands(auto: f32, floor: f32) -> EnrollmentBands {
-    EnrollmentBands::new(CosineSimilarity::new(auto), CosineSimilarity::new(floor))
+    EnrollmentBands::for_test(CosineSimilarity::new(auto), CosineSimilarity::new(floor))
         .expect("well-ordered bands")
 }
 

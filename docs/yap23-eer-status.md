@@ -25,6 +25,68 @@ mirror is byte-identical to the SSOT, so the copy cannot drift. Point
 
 **Nothing here may be edited by hand except by re-copying the SSOT block.**
 
+## Flipping this file to MEASURED is three things, not one
+
+A review finding closed the obvious hole in the first version of this gate: the
+file it reads lives in the same repository as the diff that tunes the band, so a
+tuning PR could edit its own input — flip `EER: UNMEASURED` to
+`EER: 0.031 (measured)`, add a band, and go green on CI, where the SSOT does not
+exist and the drift check skipped instead of failing. A word is not a
+measurement. So a MEASURED state now has to satisfy all three of these, and the
+gate fails — never skips — on any one of them:
+
+1. **The mirror must match the SSOT, and the SSOT must be REACHABLE.** Once this
+   file stops saying `EER: UNMEASURED`, an absent backlog note is a hard failure.
+   That means the flip has to be made and verified on a machine that has the
+   vault (or with `YAP23_BACKLOG_PATH` pointed at the note), and the SSOT has to
+   be edited first — this file is a copy, in that order.
+2. **The block must carry the harness's machine-generated provenance record**
+   (below), and the gate verifies it for internal consistency rather than
+   reading it: the EER must be the mean of its own FAR/FRR, every rate must be a
+   multiple of its sample's resolution (`1/genuine`, `1/impostor`), the
+   new-voice floor must BE the equal-error threshold (which is where
+   `bands_from_distribution` places it), the auto-confirm edge must sit above it
+   and inside the FAR budget, and both operating points must appear in the
+   printed ROC sweep, which must be monotone. Forging that is fabricating a
+   coherent run, not editing an adjective.
+3. **`MIRROR_SHA256` in `tests/support/bands.rs` must be updated in the same
+   commit** to the digest the failing test prints, so an edit to this file is a
+   second deliberate line in the diff rather than prose that quietly changed.
+
+The provenance record goes INSIDE the YV124 block — in the SSOT first, then
+copied here — in exactly this shape (values are illustrative; the harness prints
+them):
+
+```
+<!-- BEGIN YV129 MEASUREMENT PROVENANCE -->
+harness: meeting_eval::tune_enrollment_band
+run_id: <iso8601>-<short hash of the run>
+corpus_digest: sha256:<64 hex over the fixture WAV + RTTM>
+fixture: room-3-near-field
+genuine: 18
+impostor: 48
+eer: 0.0208
+far_at_eer: 0.0208
+frr_at_eer: 0.0208
+eer_threshold: 0.5900
+target_far: 0.0208
+auto_confirm: 0.6100
+new_voice_floor: 0.5900
+far_at_auto_confirm: 0.0208
+frr_at_new_voice_floor: 0.0208
+sweep:
+  0.3900 far=0.0625 frr=0.0000
+  0.5900 far=0.0208 frr=0.0208
+  0.6100 far=0.0208 frr=0.0556
+  0.6300 far=0.0000 frr=0.1111
+<!-- END YV129 MEASUREMENT PROVENANCE -->
+```
+
+`target_far` is a **policy** input, not a measurement — how often the app may
+name a stranger with nobody in the loop — and it may not be finer than the
+sample's resolution (`1/impostor`). That is why it is a `TargetFar` parameter
+supplied by the caller rather than a constant anywhere in the crate.
+
 <!-- BEGIN YV124 MEASURED BLOCK — verbatim mirror of the SSOT, do not reflow -->
 **MEASURED (YV124, PR #139, branch `feat/yv124`, macOS 26.5.2 / arm64, corpus `~/yap-eval-corpus/meetings`).**
 

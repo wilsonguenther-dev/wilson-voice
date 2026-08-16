@@ -43,7 +43,7 @@
 use wilson_voice_lib::diarize_metrics::CosineSimilarity;
 use wilson_voice_lib::speaker_profiles::{
     bands_from_distribution, labeled_pair_scores, match_cluster, Centroid, Embedding,
-    EnrollmentBands, MatchResult, SpeakerProfile, TuningError,
+    EnrollmentBands, MatchResult, SpeakerProfile, TargetFar, TuningError,
 };
 
 #[path = "support/bands.rs"]
@@ -55,9 +55,22 @@ mod bands;
 /// `None` = not yet measured. See the header. To fill it: run YV126's
 /// `cargo test --test meeting_eval tune_enrollment_band -- --nocapture` on a
 /// corpus-equipped machine with an embedder, paste the printed pair, and record
-/// the sweep in the backlog note the way YV93 recorded its WER arms.
+/// the sweep — with the provenance record `docs/yap23-eer-status.md` specifies —
+/// in the backlog note the way YV93 recorded its WER arms.
 // TODO(YV122+YV124): pin once a backend exists and the anti-alias EER is measured.
 const PINNED_BANDS: Option<(f32, f32)> = None;
+
+/// The false-accept budget these tests place the auto-confirm edge against.
+///
+/// A POLICY, stated at the call site, never a constant in the crate: how often
+/// the app may name a stranger with nobody in the loop is a product decision,
+/// and `TargetFar` exists so that decision cannot be smuggled into
+/// `speaker_profiles.rs` as a tuned number. 1 impostor in 20 is what the
+/// twenty-pair hand-worked sample below can express — see
+/// `a_budget_finer_than_the_sample_can_express_is_refused`.
+fn budget(rate: f64) -> TargetFar {
+    TargetFar::new(rate).expect("a rate between 0 and chance")
+}
 
 fn sims(values: &[f32]) -> Vec<CosineSimilarity> {
     values.iter().copied().map(CosineSimilarity::new).collect()
@@ -93,91 +106,138 @@ fn enrollment_threshold_from_harness() {
             );
         }
         Some((auto, floor)) => {
-            let bands = EnrollmentBands::new(
-                CosineSimilarity::new(auto),
-                CosineSimilarity::new(floor),
-            )
-            .expect("a pinned pair must be well-ordered");
             assert!(
                 !shipped.is_empty(),
                 "PINNED_BANDS is Some({auto}, {floor}) but nothing in the shipping \
                  crate carries it — the measurement exists and the app is not using it"
             );
-            eprintln!(
-                "enrollment bands: auto_confirm={:.4} new_voice_floor={:.4}",
-                bands.auto_confirm().get(),
-                bands.new_voice_floor().get()
+            // The pin is not self-certifying either: it has to be the pair the
+            // recorded run produced. Same rule as the status block — a number
+            // with no provenance is the thing this item refuses.
+            let block = bands::eer_status_block();
+            let provenance = bands::parse_provenance(&block).unwrap_or_else(|e| {
+                panic!(
+                    "PINNED_BANDS is Some, so docs/yap23-eer-status.md must carry the run that \
+                     produced it, and it does not ({e})"
+                )
+            });
+            assert!(
+                (provenance.auto_confirm - auto as f64).abs() < 1e-4
+                    && (provenance.new_voice_floor - floor as f64).abs() < 1e-4,
+                "the pinned pair ({auto}, {floor}) is not the pair the recorded run produced \
+                 ({}, {})",
+                provenance.auto_confirm,
+                provenance.new_voice_floor
             );
+            eprintln!("enrollment bands: auto_confirm={auto:.4} new_voice_floor={floor:.4}");
         }
     }
 }
 
 /// The derivation itself, against a hand-worked OVERLAPPING distribution.
 ///
-/// genuine `{0.90, 0.60, 0.50}`, impostor `{0.75, 0.30, 0.10}`. The two edges
-/// are `min(genuine) = 0.50` and `max(impostor) + ε = 0.7501`, and since the
-/// clouds overlap the suggest band is exactly that overlap. Worked on paper:
+/// Twenty pairs a side, so the sample can express a rate of `1/20 = 0.05`:
 ///
-/// * `0.90` (genuine) ≥ `0.7501` ⇒ auto-confirmed.
-/// * `0.75` (the worst IMPOSTOR) sits just below the auto-confirm edge ⇒ asked
-///   about, never silently given a name. This is the property the edge exists
-///   for and the one a round number would not have.
-/// * `0.50` (the weakest GENUINE pair) sits exactly on the floor ⇒ still
-///   suggested, never dropped to "new voice".
+/// * impostor — eighteen scores from `0.10` to `0.27`, plus two confusable ones
+///   at `0.60` and `0.62`.
+/// * genuine — two weak pairs at `0.55` and `0.58`, plus eighteen from `0.70`
+///   to `0.87`.
+///
+/// Worked on paper before it was run:
+///
+/// * The two error curves cross between `0.58` and `0.60`: above `0.59` two
+///   impostors (`0.60`, `0.62`) are still accepted (FAR `0.10`) and two genuine
+///   pairs (`0.55`, `0.58`) are already refused (FRR `0.10`). So the equal-error
+///   point is `0.59` at EER `0.10`, and that is where the **new-voice floor**
+///   goes — the item's spec, verbatim.
+/// * With a 5 % false-accept budget the **auto-confirm** edge is the lowest
+///   operating point above the floor that admits at most one impostor in twenty:
+///   `0.60` still admits two, `0.61` admits one. So `0.61`, achieved FAR `0.05`,
+///   which is also exactly this sample's resolution.
 #[test]
 fn bands_bracket_the_overlap_between_the_two_distributions() {
-    let genuine = sims(&[0.90, 0.60, 0.50]);
-    let impostor = sims(&[0.75, 0.30, 0.10]);
-    let tuned = bands_from_distribution(&genuine, &impostor).expect("separable enough to tune");
+    let mut impostor: Vec<f32> = (0..18).map(|i| 0.10 + 0.01 * i as f32).collect();
+    impostor.extend([0.60, 0.62]);
+    let mut genuine: Vec<f32> = vec![0.55, 0.58];
+    genuine.extend((0..18).map(|i| 0.70 + 0.01 * i as f32));
 
+    let tuned = bands_from_distribution(&sims(&genuine), &sims(&impostor), budget(0.05))
+        .expect("twenty pairs a side, separable");
+
+    eprintln!(
+        "hand-worked 20/20: eer={:.4} @ {:.4} → floor={:.4} auto_confirm={:.4} \
+         far={:.4}(res {:.4}) frr@floor={:.4} frr@auto={:.4}(res {:.4})",
+        tuned.eer,
+        tuned.eer_threshold.get(),
+        tuned.bands.new_voice_floor().get(),
+        tuned.bands.auto_confirm().get(),
+        tuned.far_at_auto_confirm,
+        tuned.far_resolution,
+        tuned.frr_at_new_voice_floor,
+        tuned.frr_at_auto_confirm,
+        tuned.frr_resolution,
+    );
+
+    assert!((tuned.eer - 0.10).abs() < 1e-9, "{:?}", tuned.eer);
     assert!(
-        (tuned.bands.new_voice_floor().get() - 0.50).abs() < 1e-4,
-        "the floor is min(genuine): {:?}",
+        (tuned.bands.new_voice_floor().get() - 0.59).abs() < 1e-4,
+        "the floor is the equal-error point, not an order statistic: {:?}",
         tuned.bands
     );
     assert!(
-        tuned.bands.auto_confirm().get() > 0.75 && tuned.bands.auto_confirm().get() < 0.7502,
-        "the auto-confirm edge sits just above the highest impostor: {:?}",
+        (tuned.eer_threshold.get() - tuned.bands.new_voice_floor().get()).abs() < 1e-6,
+        "and it IS the EER threshold, not merely near it"
+    );
+    assert!(
+        (tuned.bands.auto_confirm().get() - 0.61).abs() < 1e-4,
+        "the auto-confirm edge is the lowest point above the floor inside the FAR budget: {:?}",
         tuned.bands
     );
-    assert_eq!(
-        tuned.far_at_auto_confirm, 0.0,
-        "no measured impostor may be auto-confirmed"
+    assert!(
+        (tuned.far_at_auto_confirm - 0.05).abs() < 1e-9,
+        "one impostor in twenty, which is the budget AND the resolution"
     );
-    assert_eq!(
-        tuned.frr_at_new_voice_floor, 0.0,
-        "no measured genuine pair may be called a new voice"
+    assert!(tuned.far_at_auto_confirm <= tuned.target_far + 1e-12);
+    assert!(
+        (tuned.frr_at_new_voice_floor - 0.10).abs() < 1e-9,
+        "the floor costs the two weak genuine pairs — an EER floor is not free, and \
+         printing it is the honest half"
     );
-    // The resolution of those two zeroes, which is what makes them honest:
-    // three pairs a side, so the smallest non-zero error either could show is
-    // 1/3. YV124's saturated-EER lesson, applied to this item's numbers.
-    assert!((tuned.far_resolution - 1.0 / 3.0).abs() < 1e-9);
-    assert!((tuned.frr_resolution - 1.0 / 3.0).abs() < 1e-9);
-    assert_eq!((tuned.genuine, tuned.impostor), (3, 3));
+    assert!((tuned.far_resolution - 0.05).abs() < 1e-9);
+    assert!((tuned.frr_resolution - 0.05).abs() < 1e-9);
+    assert_eq!((tuned.genuine, tuned.impostor), (20, 20));
 }
 
-/// The other topology: a clean gap, where the two edges swap sides.
+/// The other topology: a clean gap, where the sample says nothing in between.
 ///
-/// genuine `{0.95, 0.90, 0.80}`, impostor `{0.30, 0.20, 0.10}`. Now
-/// `max(impostor) + ε = 0.3001` is BELOW `min(genuine) = 0.80`, and the suggest
-/// band is the gap the sample never produced a score in — which is the honest
-/// place to ask, because a threshold anywhere inside it is a guess about data
-/// nobody measured. A rule that always assigned the floor to the equal-error
-/// point would have put both edges in the middle of that gap and auto-confirmed
-/// scores the sample says nothing about.
+/// genuine `{0.95, 0.90, 0.80}`, impostor `{0.30, 0.20, 0.10}`. Every threshold
+/// in `(0.30, 0.80]` scores zero errors, so the equal-error sweep reports the
+/// midpoint of the gap — `0.55` — and the floor goes there. The auto-confirm
+/// edge is then the lowest operating point above it, `0.80`, because there is no
+/// measured point between the two: a threshold placed anywhere inside a gap the
+/// sample never produced a score in is a guess about unobserved data, and the
+/// honest thing to do with the whole gap is ASK.
 #[test]
 fn a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it() {
     let genuine = sims(&[0.95, 0.90, 0.80]);
     let impostor = sims(&[0.30, 0.20, 0.10]);
-    let tuned = bands_from_distribution(&genuine, &impostor).expect("cleanly separable");
+    let tuned = bands_from_distribution(&genuine, &impostor, budget(0.34))
+        .expect("cleanly separable");
 
-    assert!((tuned.bands.auto_confirm().get() - 0.80).abs() < 1e-4, "{:?}", tuned.bands);
+    assert_eq!(tuned.eer, 0.0, "a clean gap has no errors to trade");
     assert!(
-        tuned.bands.new_voice_floor().get() > 0.30 && tuned.bands.new_voice_floor().get() < 0.3002,
+        (tuned.bands.new_voice_floor().get() - 0.55).abs() < 1e-4,
         "{:?}",
         tuned.bands
     );
-    assert_eq!(tuned.eer, 0.0, "a clean gap has no errors to trade");
+    assert!(
+        (tuned.bands.auto_confirm().get() - 0.80).abs() < 1e-4,
+        "{:?}",
+        tuned.bands
+    );
+    assert_eq!(tuned.far_at_auto_confirm, 0.0);
+    assert_eq!(tuned.frr_at_new_voice_floor, 0.0);
+
     // And a score inside the gap gets ASKED about rather than decided.
     let roster = [SpeakerProfile {
         id: "p1".into(),
@@ -195,11 +255,133 @@ fn a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_insi
     ));
 }
 
+/// **The finding this rule replaced, measured rather than argued.**
+///
+/// The first shipped rule put `auto_confirm` at `max(impostor) + ε` and
+/// `new_voice_floor` at `min(genuine)`. Both are extreme order statistics, both
+/// are monotone in sample size, and the review finding's consequence is the one
+/// asserted here: the suggest band WIDENS as the corpus grows, and a single
+/// confusable pair pushes auto-confirm to the ceiling, after which
+/// `MatchResult::Known` never fires again and an enrolled speaker is asked "who
+/// is this?" in every meeting forever.
+///
+/// The comparison is run against the same growing sample, so it is a
+/// measurement of the two rules and not a claim about them. `old_rule_edges`
+/// below is the deleted implementation, kept only so this test can falsify it.
+#[test]
+fn band_edges_do_not_diverge_as_the_sample_grows() {
+    /// The rule this item shipped first, verbatim, for comparison only.
+    fn old_rule_edges(genuine: &[CosineSimilarity], impostor: &[CosineSimilarity]) -> (f32, f32) {
+        let highest_impostor = impostor
+            .iter()
+            .map(|s| s.get())
+            .fold(f32::NEG_INFINITY, f32::max)
+            + 1e-4;
+        let lowest_genuine = genuine.iter().map(|s| s.get()).fold(f32::INFINITY, f32::min);
+        if highest_impostor >= lowest_genuine {
+            (highest_impostor, lowest_genuine)
+        } else {
+            (lowest_genuine, highest_impostor)
+        }
+    }
+
+    // A deterministic generator: three uniforms summed, so the tails get more
+    // extreme with N the way a real score distribution's do. No rand crate, no
+    // seed drift, same numbers on every machine.
+    struct Lcg(u64);
+    impl Lcg {
+        fn unit(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 40) as f32) / (1u64 << 24) as f32
+        }
+        fn score(&mut self, mean: f32, spread: f32) -> f32 {
+            let u = self.unit() + self.unit() + self.unit();
+            mean + spread * (u - 1.5) / 1.5
+        }
+    }
+
+    // ONE pool, and each sample size is a PREFIX of it — a corpus that grew,
+    // which is the situation the finding is about. Nested samples are also what
+    // make the comparison airtight: `max(impostor)` can then only rise and
+    // `min(genuine)` can only fall, by construction rather than by luck.
+    let mut rng = Lcg(0x5eed_1129);
+    let pool_genuine: Vec<CosineSimilarity> = (0..640)
+        .map(|_| CosineSimilarity::new(rng.score(0.65, 0.25)))
+        .collect();
+    let pool_impostor: Vec<CosineSimilarity> = (0..640)
+        .map(|_| CosineSimilarity::new(rng.score(0.50, 0.25)))
+        .collect();
+    let sample = |n: usize| (&pool_genuine[..n], &pool_impostor[..n]);
+
+    let mut new_widths = Vec::new();
+    let mut old_widths = Vec::new();
+    for n in [40usize, 160, 640] {
+        let (genuine, impostor) = sample(n);
+        let tuned = bands_from_distribution(genuine, impostor, budget(0.05))
+            .expect("overlapping but separable");
+        let (old_auto, old_floor) = old_rule_edges(genuine, impostor);
+        let new_width = tuned.bands.auto_confirm().get() - tuned.bands.new_voice_floor().get();
+        let old_width = old_auto - old_floor;
+        eprintln!(
+            "n={n:4}  MEASURED floor={:.4} auto={:.4} width={new_width:.4} (far {:.4})   \
+             ORDER-STATISTIC floor={old_floor:.4} auto={old_auto:.4} width={old_width:.4}",
+            tuned.bands.new_voice_floor().get(),
+            tuned.bands.auto_confirm().get(),
+            tuned.far_at_auto_confirm,
+        );
+        new_widths.push(new_width);
+        old_widths.push(old_width);
+    }
+
+    assert!(
+        old_widths[2] > old_widths[0],
+        "the order-statistic rule is supposed to widen with N; if it did not, this \
+         comparison proves nothing: {old_widths:?}"
+    );
+    assert!(
+        new_widths[2] <= new_widths[0] + 0.02,
+        "the measured rule's suggest band must not widen as the corpus grows: {new_widths:?}"
+    );
+    assert!(
+        new_widths[2] < old_widths[2],
+        "at the largest sample the measured band must be the tighter one: \
+         {new_widths:?} vs {old_widths:?}"
+    );
+
+    // The consequence, concretely: ONE confusable impostor pair.
+    let (genuine, impostor) = sample(640);
+    let genuine = genuine.to_vec();
+    let mut impostor = impostor.to_vec();
+    impostor.push(CosineSimilarity::new(0.98));
+    let tuned = bands_from_distribution(&genuine, &impostor, budget(0.05))
+        .expect("one confusable pair does not stop a quantile");
+    let (old_auto, _) = old_rule_edges(&genuine, &impostor);
+    let enrolled_again = CosineSimilarity::new(0.90);
+    eprintln!(
+        "one confusable impostor at 0.98: MEASURED auto={:.4} (a 0.90 match is Known) — \
+         ORDER-STATISTIC auto={old_auto:.4} (a 0.90 match is asked about, forever)",
+        tuned.bands.auto_confirm().get()
+    );
+    assert!(
+        enrolled_again.get() >= tuned.bands.auto_confirm().get(),
+        "a strong match must still auto-confirm: {:?}",
+        tuned.bands
+    );
+    assert!(
+        enrolled_again.get() < old_auto,
+        "the finding's failure mode, reproduced: under the order-statistic rule the same \
+         strong match no longer clears auto-confirm ({old_auto})"
+    );
+}
+
 /// A tuning run that cannot tell the two populations apart must refuse.
 #[test]
 fn an_indistinguishable_distribution_produces_no_bands() {
     let overlapping = sims(&[0.5, 0.5, 0.5, 0.5]);
-    let err = bands_from_distribution(&overlapping, &overlapping)
+    let err = bands_from_distribution(&overlapping, &overlapping, budget(0.25))
         .expect_err("identical distributions are chance");
     assert!(
         matches!(err, TuningError::Indistinguishable { eer } if eer >= 0.5),
@@ -207,31 +389,62 @@ fn an_indistinguishable_distribution_produces_no_bands() {
     );
     assert!(
         matches!(
-            bands_from_distribution(&[], &sims(&[0.1])),
+            bands_from_distribution(&[], &sims(&[0.1]), budget(0.25)),
             Err(TuningError::EmptyDistribution)
         ),
         "an EER over no genuine trials is not a number"
     );
     assert!(matches!(
-        bands_from_distribution(&sims(&[0.9]), &[]),
+        bands_from_distribution(&sims(&[0.9]), &[], budget(0.25)),
         Err(TuningError::EmptyDistribution)
     ));
 }
 
-/// An impostor at the ceiling of the similarity line leaves no room above it.
+/// A budget the corpus cannot express is refused, not rounded.
 ///
-/// One impostor in five scores a perfect `1.0` — a duplicated enrollment clip,
-/// or two profiles that are secretly the same person. The distributions are
-/// still mostly separable (EER `0.10`, so the chance refusal does not fire), and
-/// the run must fail for the RIGHT reason: there is no similarity above `1.0`
-/// for an auto-confirm edge to sit at, so any pair of bands returned here would
-/// admit that impostor.
+/// YV124's saturated-EER lesson on the other tail: 20 impostor pairs can show
+/// `0`, `0.05`, `0.10`… and nothing in between, so an edge "meeting 1 %" would
+/// be meeting a number that sample never had.
+#[test]
+fn a_budget_finer_than_the_sample_can_express_is_refused() {
+    let genuine = sims(&[0.80, 0.85, 0.90]);
+    let impostor = sims(&[0.10, 0.20, 0.30]);
+    let err = bands_from_distribution(&genuine, &impostor, budget(0.01))
+        .expect_err("three impostor pairs cannot express 1%");
+    assert!(
+        matches!(
+            err,
+            TuningError::TargetFarBelowResolution { far_resolution, .. }
+                if (far_resolution - 1.0 / 3.0).abs() < 1e-9
+        ),
+        "{err:?}"
+    );
+    // And the policy type itself refuses a rate that is not one.
+    assert!(matches!(
+        TargetFar::new(0.0),
+        Err(TuningError::TargetFarOutOfRange { .. })
+    ));
+    assert!(matches!(
+        TargetFar::new(0.5),
+        Err(TuningError::TargetFarOutOfRange { .. })
+    ));
+    assert!(TargetFar::new(0.05).is_ok());
+}
+
+/// Impostors at the ceiling of the similarity line leave nothing above them.
+///
+/// Four of twenty impostor pairs score a perfect `1.0` — duplicated enrollment
+/// clips, or two profiles that are secretly the same person. The distributions
+/// are still mostly separable, so the chance refusal does not fire, and the run
+/// must fail for the RIGHT reason: meeting a 1-in-20 FAR budget would need an
+/// edge above `1.0`, and there is no such similarity.
 #[test]
 fn an_impostor_at_the_ceiling_leaves_no_room_for_an_auto_confirm_edge() {
-    let genuine = sims(&[0.9, 0.9, 0.9, 0.9, 0.9]);
-    let impostor = sims(&[1.0, 0.1, 0.1, 0.1, 0.1]);
-    let err =
-        bands_from_distribution(&genuine, &impostor).expect_err("nothing can sit above 1.0");
+    let genuine: Vec<f32> = (0..20).map(|_| 0.9).collect();
+    let mut impostor: Vec<f32> = (0..16).map(|i| 0.10 + 0.01 * i as f32).collect();
+    impostor.extend([1.0, 1.0, 1.0, 1.0]);
+    let err = bands_from_distribution(&sims(&genuine), &sims(&impostor), budget(0.05))
+        .expect_err("nothing can sit above 1.0");
     assert!(
         matches!(err, TuningError::NoRoomAboveImpostors { .. }),
         "must fail on the ceiling, not on chance: {err:?}"
@@ -272,16 +485,17 @@ fn the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster() {
         "3 speakers × 3 takes = 36 unordered pairs: 3×C(3,2) genuine, the rest impostor"
     );
 
-    let tuned = bands_from_distribution(&genuine, &impostor)
+    let tuned = bands_from_distribution(&genuine, &impostor, budget(0.05))
         .expect("three separable speakers are tunable");
     eprintln!(
         "tuned from 9 genuine / 27 impostor pairs: auto_confirm={:.4} \
-         new_voice_floor={:.4} eer={:.4} (far_res={:.4} frr_res={:.4})",
+         new_voice_floor={:.4} eer={:.4} far={:.4} (far_res={:.4} frr_res={:.4})",
         tuned.bands.auto_confirm().get(),
         tuned.bands.new_voice_floor().get(),
         tuned.eer,
+        tuned.far_at_auto_confirm,
         tuned.far_resolution,
-        tuned.frr_resolution
+        tuned.frr_resolution,
     );
 
     // Enrol speaker 0 from its first take, then match a LATER take of the same
@@ -332,7 +546,8 @@ fn every_unordered_pair_is_scored_once_and_labeled_by_whether_the_speakers_match
 ///
 /// The scanner behind this is the same one
 /// `enrollment_thresholds_refuse_an_unmeasured_eer.rs` uses, and it is proved
-/// non-vacuous there in both directions.
+/// non-vacuous there in both directions — including against the review probe
+/// that defeated its first version.
 #[test]
 fn no_tuned_enrollment_band_ships_in_the_crate() {
     let sites = bands::tuned_band_sites();
@@ -341,4 +556,36 @@ fn no_tuned_enrollment_band_ships_in_the_crate() {
         "a tuned enrollment band has appeared in src/:\n  {}",
         sites.join("\n  ")
     );
+}
+
+/// The seal, asserted where a scanner cannot see it: the shipping crate exports
+/// no way to hand-place a band.
+///
+/// `EnrollmentBands::for_test` is the only literal constructor and it is behind
+/// `cfg(any(test, feature = "test-bands"))`, which `cargo build --release` does
+/// not turn on. This test can USE it (it is a test), so the visible half of the
+/// seal is checked in source: the checked constructor must be private, and the
+/// literal one must carry the cfg. A shipping caller that tried either is a
+/// compile error before any of the nets above are consulted.
+#[test]
+fn the_only_literal_constructor_is_sealed_behind_a_test_cfg() {
+    let src = std::fs::read_to_string(
+        bands::repo_root().join("desktop/src-tauri/src/speaker_profiles.rs"),
+    )
+    .expect("read speaker_profiles.rs");
+    assert!(
+        src.contains("    fn from_measured_edges(") && !src.contains("pub fn from_measured_edges("),
+        "the checked constructor must stay private to the module, or bands_from_distribution \
+         stops being the only shipping producer"
+    );
+    assert!(
+        src.contains("#[cfg(any(test, feature = \"test-bands\"))]\n    pub fn for_test("),
+        "the literal constructor must carry the test-only cfg immediately above it"
+    );
+    // …and it works, which is why every other test in this repo can build bands.
+    assert!(EnrollmentBands::for_test(
+        CosineSimilarity::new(0.9),
+        CosineSimilarity::new(0.5)
+    )
+    .is_ok());
 }

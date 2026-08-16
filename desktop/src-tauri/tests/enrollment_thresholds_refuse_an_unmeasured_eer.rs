@@ -25,21 +25,27 @@
 //! > **while the EER is unmeasured, no tuned enrollment band may exist in the
 //! > shipping crate.**
 //!
-//! Both halves are read from the repository, so the gate can go red for either
-//! reason: tune a band today and this test fails; measure the EER and replace
-//! the block, and the test permits (and the golden-value pin in
-//! `enrollment_threshold_from_harness.rs` then requires) a band. It is stated
-//! here rather than quietly done, because a spec deviation nobody wrote down is
-//! how a gate becomes decoration.
+//! # The measured branch is the half a review finding found open
 //!
-//! # Why the block is mirrored into the repo
+//! The first version of this gate read an adjective out of a file inside the
+//! same repository. A tuning PR could flip `EER: UNMEASURED` to
+//! `EER: 0.031 (measured)` and add a band in one diff, and on CI — where the
+//! Obsidian SSOT does not exist — every test stayed green, because the only half
+//! that could have caught the forgery (`the_mirror_has_not_drifted_from_the_ssot`)
+//! skipped instead of failing. That is the same shape as YV124's
+//! `YAP_EER_UNMEASURED_OK` declaration that was never reached, one level up.
 //!
-//! The SSOT is an Obsidian note on one laptop. A gate that only runs there is
-//! not a gate — YV124's own revision learned that when its
-//! `YAP_EER_UNMEASURED_OK` declaration turned out never to be reached on CI. So
-//! `docs/yap23-eer-status.md` carries a verbatim copy that every checkout has,
-//! and `the_mirror_has_not_drifted_from_the_ssot` checks the copy against the
-//! note on the machines that have the note.
+//! Two things close it, and both bind on CI:
+//!
+//! 1. **An absent SSOT is a hard FAILURE the moment the mirror stops saying
+//!    `UNMEASURED`.** It is only tolerable while the mirror admits there is
+//!    nothing to certify.
+//! 2. **A measured block must carry the harness's machine-generated
+//!    provenance** — run id, corpus digest, genuine/impostor counts, the ROC
+//!    sweep, the placed edges — and this test VERIFIES that record for internal
+//!    consistency against the rule `bands_from_distribution` implements, rather
+//!    than reading a word. Forging it means fabricating a self-consistent run,
+//!    not editing an adjective.
 
 #[path = "support/bands.rs"]
 mod bands;
@@ -79,27 +85,73 @@ fn enrollment_thresholds_refuse_an_unmeasured_eer() {
             sites.len(),
             sites.join("\n  ")
         );
-    } else {
-        eprintln!(
-            "the EER is recorded; tuned bands are now permitted and \
-             enrollment_threshold_from_harness.rs's golden pin is what holds them \
-             to the measurement"
-        );
+        return;
     }
+
+    // ---- the measured branch: the mirror no longer certifies itself ----
+
+    let ssot = bands::ssot_backlog().unwrap_or_else(|| {
+        panic!(
+            "docs/yap23-eer-status.md claims the anti-alias EER is MEASURED, and the SSOT it is \
+             supposed to be a copy of is not reachable from this machine. That combination is a \
+             FAILURE, never a skip: a status file inside this repository, editable in the same \
+             diff that tunes a band, certifies nothing on its own — which is exactly how a review \
+             probe flipped this gate green while adding the vendor pair. Either run this where \
+             the note lives, point YAP23_BACKLOG_PATH at it, or put the mirror back to `{}`.",
+            bands::UNMEASURED_MARKER
+        )
+    });
+    let note = std::fs::read_to_string(&ssot).expect("read the yap23 backlog note");
+    assert!(
+        note.contains(&block),
+        "the mirror claims MEASURED and does not match {} — re-copy YV124's block rather than \
+         editing either side by hand",
+        ssot.display()
+    );
+
+    let provenance = bands::parse_provenance(&block).unwrap_or_else(|e| {
+        panic!(
+            "the MEASURED block carries no machine-generated provenance ({e}). A measurement is a \
+             run id, a corpus digest, the pair counts and the printed sweep — not the word \
+             \"measured\". See docs/yap23-eer-status.md for the record this gate reads."
+        )
+    });
+    let problems = bands::verify_provenance(&provenance);
+    assert!(
+        problems.is_empty(),
+        "the MEASURED block's provenance is not internally consistent, so no run produced \
+         it:\n  {}",
+        problems.join("\n  ")
+    );
+    eprintln!(
+        "EER measured: run {} over {} genuine / {} impostor pairs on {} — bands {:.4} / {:.4}",
+        provenance.run_id,
+        provenance.genuine,
+        provenance.impostor,
+        provenance.fixture,
+        provenance.auto_confirm,
+        provenance.new_voice_floor
+    );
 }
 
 /// The gate reads a copy. This is what stops the copy from drifting.
 ///
 /// Binds only where the SSOT exists (a developer machine, or anywhere
-/// `YAP23_BACKLOG_PATH` points at the note). On CI there is no note, and the
-/// substance half above still binds — the same split YV124 settled on, for the
-/// same reason.
+/// `YAP23_BACKLOG_PATH` points at the note). On CI there is no note — and that
+/// is now only survivable while the mirror still says `UNMEASURED`, which the
+/// gate above enforces.
 #[test]
 fn the_mirror_has_not_drifted_from_the_ssot() {
     let Some(ssot) = bands::ssot_backlog() else {
+        assert!(
+            bands::block_says_unmeasured(&bands::eer_status_block()),
+            "no SSOT on this machine AND the mirror claims a measurement — see \
+             enrollment_thresholds_refuse_an_unmeasured_eer"
+        );
         eprintln!(
             "yap23 backlog note not on this machine, skipping the mirror-drift check \
-             (set YAP23_BACKLOG_PATH to run it)"
+             (set YAP23_BACKLOG_PATH to run it). The mirror still says UNMEASURED, which is \
+             the only state in which that skip is honest."
         );
         return;
     };
@@ -111,6 +163,24 @@ fn the_mirror_has_not_drifted_from_the_ssot() {
          copy of YV124's `**MEASURED**` block and nothing else; re-copy it rather \
          than editing either side by hand.",
         ssot.display()
+    );
+}
+
+/// The mirror's committed digest, checked everywhere, SSOT or not.
+///
+/// A hash is not a certificate — the same diff can move both — but it makes an
+/// edit to the file this gate reads a second, deliberate, reviewable line
+/// instead of a prose change nobody diffed.
+#[test]
+fn the_mirror_matches_its_committed_digest() {
+    let block = bands::eer_status_block();
+    let actual = bands::sha256_hex(block.as_bytes());
+    assert_eq!(
+        actual,
+        bands::MIRROR_SHA256,
+        "docs/yap23-eer-status.md's mirrored block has changed. If that was a re-copy of YV124's \
+         block from the SSOT, update MIRROR_SHA256 in tests/support/bands.rs to {actual} in the \
+         same commit and say so in the PR body."
     );
 }
 
@@ -170,7 +240,7 @@ fn the_band_scanner_catches_a_tuned_constant_and_ignores_a_type_signature() {
         "const IMPOSTOR_HEADROOM: f32 = 1e-4;",
         "return CosineSimilarity::new(0.0);",
         "Self::new(1.0 - similarity.get())",
-        "let bands = EnrollmentBands::new(upper, lower)?;",
+        "let bands = EnrollmentBands::from_measured_edges(upper, lower)?;",
     ] {
         assert!(
             !bands::is_tuned_band_line(clean),
@@ -213,6 +283,111 @@ fn unit_endpoints_are_not_tuned_thresholds_but_everything_else_is() {
     assert!(!bands::has_tuned_literal("1.0 - similarity.get()"));
 }
 
+/// **The review probe, committed.**
+///
+/// A rename plus one level of indirection defeated the name-based scanner: both
+/// threshold gates reported 8 passed / 8 passed with the vendor pair sitting in
+/// shipping source. Every net has to catch it independently, so no single one
+/// can rot and leave the others carrying a claim nobody checked.
+#[test]
+fn the_scanner_catches_the_renamed_indirect_probe() {
+    let hits = bands::scan_source("speaker_profiles.rs", bands::PROBE_SOURCE, &[]);
+    assert!(
+        !hits.is_empty(),
+        "the probe that defeated the first scanner is green again: {}",
+        bands::PROBE_SOURCE
+    );
+
+    // Net 3 — a tuned float constant in the band module, whatever it is called.
+    let consts = bands::numeric_const_sites(bands::PROBE_SOURCE);
+    assert_eq!(
+        consts.len(),
+        2,
+        "both renamed constants must be seen by location, not by name: {consts:?}"
+    );
+
+    // Net 2 — the literal reaches the constructor through one `const`.
+    let code = bands::shipping_code(bands::PROBE_SOURCE);
+    let table = bands::const_table(&code);
+    let args = bands::call_arguments(&code, "EnrollmentBands::new(");
+    assert_eq!(args.len(), 1);
+    assert!(
+        !bands::has_tuned_literal(&args[0]),
+        "the whole point of the probe: the call site itself is literal-free"
+    );
+    assert!(
+        bands::has_tuned_literal(&bands::expand_consts(&args[0], &table)),
+        "one level of const indirection must be resolved before calling it clean"
+    );
+
+    // Net 1 — provenance: a producer that is not the measured one.
+    let sites = bands::construction_sites(&code, "EnrollmentBands");
+    assert!(
+        sites.iter().any(|(owner, _)| owner == "shipped_bands"),
+        "the construction must be attributed to the function that did it: {sites:?}"
+    );
+
+    // …and the same scan over a file that only PASSES bands around is clean.
+    let clean = "pub fn match_cluster(c: &Embedding, p: &[SpeakerProfile], bands: EnrollmentBands) \
+                 -> MatchResult { if c.dim() == 0 { return MatchResult::New; } decide(bands) }";
+    assert!(
+        bands::scan_source("speaker_profiles.rs", clean, &[]).is_empty(),
+        "a gate that flags a parameter is unsatisfiable rather than strict"
+    );
+}
+
+/// The seal's scanner half: a test-only item is not shipping code, and nothing
+/// else is exempt.
+#[test]
+fn only_the_two_test_only_cfgs_are_blanked_from_the_shipping_half() {
+    let src = "pub fn a() {}\n\
+               #[cfg(any(test, feature = \"test-bands\"))]\n\
+               pub fn for_test() -> Bands { Bands::new(0.70, 0.55) }\n\
+               #[cfg(target_os = \"macos\")]\n\
+               pub fn mac() -> Bands { Bands::new(0.70, 0.55) }\n\
+               #[cfg(test)]\n\
+               mod tests { fn t() { let _ = \"{{\"; } }\n\
+               pub fn b() {}\n";
+    let half = bands::shipping_half(src);
+    assert!(half.contains("pub fn a()"), "{half}");
+    assert!(
+        half.contains("pub fn b()"),
+        "blanking, not truncating: code AFTER a test module must still be scanned\n{half}"
+    );
+    assert!(
+        !half.contains("for_test"),
+        "a cfg(test)/test-bands item is not in a release build\n{half}"
+    );
+    assert!(
+        half.contains("pub fn mac()"),
+        "cfg(target_os) IS shipping code and must still be scanned\n{half}"
+    );
+    assert_eq!(
+        half.lines().count(),
+        src.lines().count(),
+        "line numbers must survive so a hit can be reported at its line"
+    );
+}
+
+/// The mask is what makes every brace-balanced scan safe.
+#[test]
+fn comments_and_string_literals_are_not_code() {
+    let masked = bands::mask_code(
+        "let x = 1; // const AUTO_CONFIRM: f32 = 0.70;\nlet s = \"const NEW_VOICE_FLOOR = 0.55;\";\nlet y = 2;",
+    );
+    assert!(masked.contains("let x = 1;"));
+    assert!(masked.contains("let y = 2;"));
+    assert!(
+        !masked.contains("AUTO_CONFIRM") && !masked.contains("NEW_VOICE_FLOOR"),
+        "a threshold named in a comment or a string is not a threshold: {masked}"
+    );
+    assert_eq!(
+        masked.len(),
+        "let x = 1; // const AUTO_CONFIRM: f32 = 0.70;\nlet s = \"const NEW_VOICE_FLOOR = 0.55;\";\nlet y = 2;".len(),
+        "the mask is length-preserving so offsets stay meaningful"
+    );
+}
+
 /// The scanner must be looking at the real tree, not at nothing.
 ///
 /// `shipping_sources` already refuses a suspiciously small scan; this adds the
@@ -232,4 +407,95 @@ fn the_scan_covers_the_module_this_item_added() {
         scanned.iter().any(|p| p.ends_with("diarize_metrics.rs")),
         "the units module must be scanned too"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The provenance verifier, driven both ways
+// ---------------------------------------------------------------------------
+
+/// A record shaped exactly like one a real run prints: twenty pairs a side, an
+/// equal-error point at 0.59, a 5 % FAR budget putting auto-confirm at 0.61.
+fn worked_provenance() -> String {
+    format!(
+        "{}\nharness: meeting_eval::tune_enrollment_band\n\
+         run_id: 2026-08-20T17:04:11Z-9f3c1a\n\
+         corpus_digest: sha256:{}\n\
+         fixture: room-3-near-field\n\
+         genuine: 20\nimpostor: 20\n\
+         eer: 0.1000\nfar_at_eer: 0.1000\nfrr_at_eer: 0.1000\neer_threshold: 0.5900\n\
+         target_far: 0.0500\nauto_confirm: 0.6100\nnew_voice_floor: 0.5900\n\
+         far_at_auto_confirm: 0.0500\nfrr_at_new_voice_floor: 0.1000\n\
+         sweep:\n  0.3900 far=0.1000 frr=0.0000\n  0.5900 far=0.1000 frr=0.1000\n  \
+         0.6100 far=0.0500 frr=0.1000\n  0.6300 far=0.0000 frr=0.1000\n{}",
+        bands::PROVENANCE_BEGIN,
+        "a".repeat(64),
+        bands::PROVENANCE_END
+    )
+}
+
+#[test]
+fn a_consistent_provenance_record_verifies() {
+    let p = bands::parse_provenance(&worked_provenance()).expect("parses");
+    assert_eq!((p.genuine, p.impostor), (20, 20));
+    assert_eq!(p.sweep.len(), 4);
+    let problems = bands::verify_provenance(&p);
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+/// Every consistency rule, broken one at a time. This is the test that makes
+/// "flip the adjective" stop working: each mutation is a thing a forger has to
+/// get right, and each one is checked against another number in the same record.
+#[test]
+fn a_forged_measurement_fails_on_its_own_arithmetic() {
+    let cases: [(&str, &str, &str); 7] = [
+        (
+            "\neer: 0.1000",
+            "\neer: 0.0310",
+            "an EER that is not the mean of its own FAR/FRR",
+        ),
+        (
+            "far_at_auto_confirm: 0.0500",
+            "far_at_auto_confirm: 0.0310",
+            "an achieved FAR no sample of 20 impostor pairs can express",
+        ),
+        (
+            "new_voice_floor: 0.5900",
+            "new_voice_floor: 0.4000",
+            "a floor that is not the equal-error point the shipped rule places it at",
+        ),
+        (
+            "auto_confirm: 0.6100",
+            "auto_confirm: 0.5000",
+            "an auto-confirm edge below the floor",
+        ),
+        (
+            "target_far: 0.0500",
+            "target_far: 0.0100",
+            "a FAR budget finer than the sample's resolution",
+        ),
+        (
+            "  0.6100 far=0.0500 frr=0.1000\n",
+            "",
+            "an operating point that never appears in the sweep it was read off",
+        ),
+        (
+            "  0.6300 far=0.0000 frr=0.1000",
+            "  0.6300 far=0.9000 frr=0.1000",
+            "a sweep whose FAR rises with the threshold",
+        ),
+    ];
+    for (from, to, why) in cases {
+        let forged = worked_provenance().replace(from, to);
+        assert_ne!(forged, worked_provenance(), "mutation `{from}` did not apply");
+        let problems = match bands::parse_provenance(&forged) {
+            Ok(p) => bands::verify_provenance(&p),
+            Err(e) => vec![e],
+        };
+        assert!(
+            !problems.is_empty(),
+            "the verifier accepted {why}: `{from}` → `{to}`"
+        );
+    }
+    // And a missing record is a failure, not an empty pass.
+    assert!(bands::parse_provenance("MEASURED. trust me.").is_err());
 }
