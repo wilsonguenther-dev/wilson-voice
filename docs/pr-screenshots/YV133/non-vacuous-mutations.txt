@@ -1,0 +1,82 @@
+YV133 — non-vacuous mutation log. Every new assertion was shown to go RED against a
+plausible wrong implementation; the mutation was reverted after each run.
+
+Run from desktop/src-tauri with CARGO_TARGET_DIR pointed at a scratch target dir.
+
+1. the speaker is copied out of the model's own item text
+   (`speaker: cited.and_then(...)` -> `speaker: i.text.split_whitespace().next()...`)
+  mutation in desktop/src-tauri/src/summarize.rs
+  $ cargo test --test summarize_speaker_attribution_from_lookup
+  test no_speaker_source_renders_exactly_what_yv97_rendered ... FAILED
+  test the_speaker_is_looked_up_from_the_cited_segment_never_read_off_the_model ... FAILED
+  test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  $ cargo test --test summarize_grammar_unchanged_shape
+  test the_only_speaker_assignment_reads_the_lookup ... FAILED
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  $ cargo test --test summarize_e2e_speaker_attributed
+  test summarize_e2e_speaker_attributed ... FAILED
+  test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  => RED (good) — this is the whole item: an attribution that came from the model is
+     exactly the failure YV133 exists to make impossible, and it is caught three ways
+     (behaviour, source, end to end).
+
+2. the grammar grows a `"speaker"` field on `item`
+  mutation in desktop/src-tauri/src/summarize.rs (map_grammar's `item ::=` rule)
+  $ cargo test --test summarize_grammar_unchanged_shape
+  test the_grammar_has_no_rule_yv97_did_not_ship ... FAILED
+  test the_grammar_is_byte_identical_with_and_without_speakers ... FAILED
+  test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  => RED (good) — YV97's hallucination guard stays exactly as strict as it was.
+
+3. a track index is promoted to an identity
+   (`SegmentSpeaker::Anonymous(label)` -> `SegmentSpeaker::Named(label)`)
+  mutation in desktop/src-tauri/src/summarize.rs (TrackSpeakers::speaker_for)
+  $ cargo test --test summarize_speaker_attribution_from_lookup
+  test a_track_is_never_promoted_to_an_identity ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  $ cargo test --test summarize_e2e_speaker_attributed
+  test the_app_cannot_reach_a_named_speaker_yet ... FAILED
+  test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  => RED (good)
+  NOTE: on the first pass this mutation did NOT redden
+  `the_app_cannot_reach_a_named_speaker_yet` — the honesty test was built only on the
+  single-track IRL fixture, where every kind resolves to `ClusterTrackA` and the source
+  declines before it can name anything. The test now also drives a two-track call, which
+  is the one configuration that produces a label at all, and asserts the labels are
+  YV108's two anonymous words. The mutation log is what found that hole.
+
+4. the clustering branch tags every line "Speaker" instead of declining
+  mutation in desktop/src-tauri/src/summarize.rs (drop the UNCLUSTERED_SPEAKER_LABEL guard)
+  $ cargo test --test summarize_speaker_attribution_from_lookup
+  test the_clustering_branch_declines_rather_than_tagging_every_line ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  => RED (good) — a per-line tag that separates nobody costs tokens out of finding #35's
+     budget and writes the bare word "Speaker" into the text the groundedness floor scores
+     against.
+
+5. the truncation path strips only the id, not the whole prefix
+   (`line.prefix()` -> `format!("{}: ", line.label)`)
+  mutation in desktop/src-tauri/src/summarize.rs (plan_chunks)
+  $ cargo test --test summarize_speaker_attribution_from_lookup
+  test a_truncated_attributed_line_is_not_double_labelled ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  => RED (good) — a cut line would have gone back into the prompt as
+     `seg_0001 (Me): seg_0001 (Me): …`.
+
+6. the app stops passing speakers at all
+   (`summarize_segments_with(.., &speakers)` -> `summarize_segments(..)`)
+  mutation in desktop/src-tauri/src/lib.rs (summarize_meeting_blocking)
+  $ cargo test --test summarize_e2e_speaker_attributed
+  test the_app_cannot_reach_a_named_speaker_yet ... FAILED
+  test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  => RED (good) — the item is wired into the shipped path, not only into the tests.
+
+7. the render drops the speaker from the stored Markdown
+  mutation in desktop/src-tauri/src/summarize.rs (render_summary)
+  $ cargo test --test summarize_speaker_attribution_from_lookup
+  test the_speaker_is_looked_up_from_the_cited_segment_never_read_off_the_model ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  $ cargo test --test summarize_e2e_speaker_attributed
+  test summarize_e2e_speaker_attributed ... FAILED
+  test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  => RED (good) — the attribution has to reach the reader, not only the struct.

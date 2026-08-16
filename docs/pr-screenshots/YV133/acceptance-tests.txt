@@ -1,0 +1,67 @@
+YV133 — every acceptance command in the backlog section, run on this branch.
+Host: macOS (aarch64-apple-darwin). Run from desktop/src-tauri.
+
+$ cargo test --test summarize_speaker_attribution_from_lookup -- --nocapture
+running 9 tests
+test a_blank_speaker_is_no_speaker ... ok
+a 'Speaker' tag on every line of a 3-line transcript costs 15 tokens and separates nobody
+test an_uncited_id_resolves_to_no_speaker_rather_than_the_wrong_one ... ok
+test a_track_is_never_promoted_to_an_identity ... ok
+test track_speakers_agree_with_the_rendered_transcript_line_for_line ... ok
+test the_clustering_branch_declines_rather_than_tagging_every_line ... ok
+test a_speaker_key_in_the_model_answer_lands_nowhere ... ok
+test no_speaker_source_renders_exactly_what_yv97_rendered ... ok
+test the_speaker_is_looked_up_from_the_cited_segment_never_read_off_the_model ... ok
+test a_truncated_attributed_line_is_not_double_labelled ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+$ cargo test --test summarize_grammar_unchanged_shape -- --nocapture
+running 5 tests
+test the_grammar_has_no_rule_yv97_did_not_ship ... ok
+test a_citation_that_echoes_the_speaker_tag_is_dropped_like_any_other_bad_id ... ok
+test the_models_output_type_has_no_speaker_field ... ok
+test the_grammar_is_byte_identical_with_and_without_speakers ... ok
+test the_only_speaker_assignment_reads_the_lookup ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test --test summarize_e2e_speaker_attributed -- --nocapture
+running 2 tests
+the app's only speaker source is TrackSpeakers (Me/Them on a live two-track call, nothing on the clustering branch); enrolled names become reachable with YV128–130
+test the_app_cannot_reach_a_named_speaker_yet ... ok
+---- stored summary ----
+we should move the onboarding review before the release
+
+### Action items
+
+- i will send the pricing document over tomorrow morning (Aidan, 00:00:09)
+- i will confirm the onboarding review with the release (Aidan, 00:00:41)
+
+### Decisions
+
+- we are shipping without the calendar work this cycle (Jeisil, 00:00:26)
+
+### Open questions
+
+- can somebody confirm the onboarding review moved (00:00:34)
+------------------------
+summarize_e2e_speaker_attributed: 2 action(s), 1 decision(s), 1 question(s); 1 item(s) cite the unenrolled voice and carry NO name
+test summarize_e2e_speaker_attributed ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test --test summarize_validators_v1_v7          # YV97 regression, file unmodified
+running 3 tests
+test a_fabricated_item_is_stripped_while_its_neighbours_survive ... ok
+test a_fabricated_due_date_or_address_is_rejected ... ok
+test the_narrative_is_gated_and_capped ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ git diff --stat origin/main -- desktop/src-tauri/tests/summarize_validators_v1_v7.rs
+(no output above = the YV97 validator suite is byte-identical to main)
