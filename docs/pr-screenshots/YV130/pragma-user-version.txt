@@ -1,0 +1,50 @@
+YV130 — the migration ladder, read off a real file
+
+The backlog's acceptance line says `PRAGMA user_version` returns 7. It
+returns 5, and the deviation is forced rather than chosen — see
+MIGRATION_5_SEGMENT_ATTRIBUTION's doc comment. YV130's section was written
+expecting YV126 (cluster_index, step 5) and YV128 (speaker tables, step 6)
+to have landed first. Neither has: both are open PRs, and this branch is cut
+from main, whose ladder tops out at 4. run_migrations walks one rung at a
+time and breaks on a missing arm, so a build stamped 7 over holes at 5 and 6
+would log an error at 5 and create none of this. The next free rung is the
+only rung that works. YV128's branch made the same call for the same reason.
+
+The database below is one a test left behind, i.e. one the shipping code
+actually wrote.
+
+$ sqlite3 <db> "PRAGMA user_version"
+5
+
+$ sqlite3 <db> "SELECT name FROM pragma_table_info('meeting_segments')"
+id
+meeting_id
+start_seconds
+end_seconds
+text
+confidence
+created_at
+track
+cluster_index
+speaker_id
+speaker_locked
+embedding
+
+$ sqlite3 <db> ".schema speaker_relabel_history"
+CREATE TABLE speaker_relabel_history (
+  batch_id TEXT NOT NULL,
+  segment_id TEXT NOT NULL,
+  prior_speaker_id TEXT,                      -- NULL = was never labelled
+  prior_speaker_locked INTEGER NOT NULL,
+  new_speaker_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (batch_id, segment_id)
+);
+CREATE INDEX idx_relabel_history_segment
+  ON speaker_relabel_history(segment_id);
+
+$ sqlite3 <db> "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_seg%' OR name LIKE 'idx_relabel%'"
+idx_segments_meeting
+idx_segments_cluster
+idx_segments_speaker
+idx_relabel_history_segment

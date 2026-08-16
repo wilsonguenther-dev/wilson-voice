@@ -1,0 +1,170 @@
+YV130 — non-vacuous mutation evidence
+Every guard this item ships, deliberately broken one at a time, with the test
+that caught it. Each mutation was reverted (`git checkout --`) before the next.
+A green line here would mean the test is decoration.
+
+=== M1 — speaker_corrections.rs :: reassign_segment asks the sidecar for an embedding
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test reassign_and_merge_are_pure_db_ops
+    exit: 101
+      test a_cluster_cannot_be_merged_into_itself ... ok
+      test clearing_a_label_is_also_a_decision_and_is_also_free ... FAILED
+      test a_merge_reports_the_confirmed_labels_it_would_bring_together ... FAILED
+      test reassign_and_merge_never_reach_the_sidecar ... FAILED
+      ---- clearing_a_label_is_also_a_decision_and_is_also_free stdout ----
+      thread 'clearing_a_label_is_also_a_decision_and_is_also_free' (19378605) panicked at src-tauri/tests/reassign_and_merge_are_pure_db_ops.rs:122:5:
+      assertion `left == right` failed
+      ---- a_merge_reports_the_confirmed_labels_it_would_bring_together stdout ----
+      thread 'a_merge_reports_the_confirmed_labels_it_would_bring_together' (19378604) panicked at src-tauri/tests/reassign_and_merge_are_pure_db_ops.rs:156:5:
+      assertion `left == right` failed: still no model call
+      ---- reassign_and_merge_never_reach_the_sidecar stdout ----
+      thread 'reassign_and_merge_never_reach_the_sidecar' (19378606) panicked at src-tauri/tests/reassign_and_merge_are_pure_db_ops.rs:82:5:
+      assertion `left == right` failed: reassign + merge made 1 sidecar request(s); both are supposed to be UPDATE statements over already-embedded segments
+      test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+      error: test failed, to rerun pass `--test reassign_and_merge_are_pure_db_ops`
+
+=== M2 — plan_retroactive_relabel stops excluding locked segments
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test retroactive_relabel_never_touches_locked
+    exit: 101
+      test a_hand_correction_is_what_makes_a_segment_ineligible ... FAILED
+      test a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly ... FAILED
+      test a_segment_locked_after_the_offer_is_still_excluded_by_apply ... ok
+      ---- a_hand_correction_is_what_makes_a_segment_ineligible stdout ----
+      thread 'a_hand_correction_is_what_makes_a_segment_ineligible' (19379241) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:160:5:
+      ---- a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly stdout ----
+      thread 'a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly' (19379242) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:58:5:
+      assertion `left == right` failed: the offer counts two segments, not three
+      test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+      error: test failed, to rerun pass `--test retroactive_relabel_never_touches_locked`
+
+=== M3 — apply_retroactive_relabel trusts the plan instead of re-checking the row
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test retroactive_relabel_never_touches_locked
+    exit: 101
+      test a_hand_correction_is_what_makes_a_segment_ineligible ... ok
+      test a_segment_locked_after_the_offer_is_still_excluded_by_apply ... FAILED
+      test a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly ... ok
+      ---- a_segment_locked_after_the_offer_is_still_excluded_by_apply stdout ----
+      thread 'a_segment_locked_after_the_offer_is_still_excluded_by_apply' (19379842) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:123:5:
+      assertion `left == right` failed: the transaction re-checked the row
+      test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+      error: test failed, to rerun pass `--test retroactive_relabel_never_touches_locked`
+
+=== M4 — undo restores the NEW speaker instead of the prior one (the NULL case dies first)
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test retroactive_relabel_apply_and_undo
+    exit: 101
+      test an_offer_with_nothing_to_change_is_empty ... ok
+      test already_this_speaker_is_not_in_the_batch ... ok
+      test undoing_twice_is_a_no_op ... FAILED
+      test deleting_a_meeting_deletes_its_relabel_history ... ok
+      test undo_declines_to_clobber_a_later_hand_correction ... FAILED
+      test apply_writes_one_batch_and_one_undo_restores_every_prior_value ... FAILED
+      ---- undoing_twice_is_a_no_op stdout ----
+      thread 'undoing_twice_is_a_no_op' (19380465) panicked at src-tauri/tests/retroactive_relabel_apply_and_undo.rs:164:5:
+      assertion `left == right` failed: still unlabelled
+      ---- undo_declines_to_clobber_a_later_hand_correction stdout ----
+      thread 'undo_declines_to_clobber_a_later_hand_correction' (19380464) panicked at src-tauri/tests/retroactive_relabel_apply_and_undo.rs:199:5:
+      assertion `left == right` failed
+      ---- apply_writes_one_batch_and_one_undo_restores_every_prior_value stdout ----
+      thread 'apply_writes_one_batch_and_one_undo_restores_every_prior_value' (19380462) panicked at src-tauri/tests/retroactive_relabel_apply_and_undo.rs:117:5:
+      assertion `left == right` failed: a segment that was never labelled goes back to never labelled — the NULL case finding #31 explicitly asks for
+      test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+      error: test failed, to rerun pass `--test retroactive_relabel_apply_and_undo`
+
+=== M5 — split_partition sends every member to the first seed
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test split_cluster_uses_retained_embeddings
+    exit: 101
+      test fewer_than_two_members_is_refused ... ok
+      test an_indistinguishable_cluster_is_refused_rather_than_halved ... ok
+      test mixed_embedding_widths_are_refused ... ok
+      test the_partition_is_deterministic_and_both_parts_are_non_empty ... FAILED
+      test a_second_split_takes_the_next_free_index ... FAILED
+      test a_cluster_with_no_retained_embeddings_refuses_to_split ... ok
+      test members_without_an_embedding_stay_put_and_are_reported ... ok
+      test a_merged_cluster_splits_back_into_its_two_original_clusters ... FAILED
+      ---- the_partition_is_deterministic_and_both_parts_are_non_empty stdout ----
+      thread 'the_partition_is_deterministic_and_both_parts_are_non_empty' (19381077) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:194:5:
+      assertion failed: moved.contains(&"b1".to_string()) && moved.contains(&"b2".to_string())
+      ---- a_second_split_takes_the_next_free_index stdout ----
+      thread 'a_second_split_takes_the_next_free_index' (19381072) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:104:73:
+      ---- a_merged_cluster_splits_back_into_its_two_original_clusters stdout ----
+      thread 'a_merged_cluster_splits_back_into_its_two_original_clusters' (19381071) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:70:5:
+      test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+      error: test failed, to rerun pass `--test split_cluster_uses_retained_embeddings`
+
+=== M6 — a tuned threshold appears in the correction module
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test correction_ships_no_tuned_threshold
+    exit: 101
+      test a_trailing_comment_does_not_hide_a_threshold ... ok
+      test the_guard_catches_a_threshold_in_every_shape_it_could_arrive_in ... ok
+      test the_correction_module_holds_no_float_literal ... FAILED
+      ---- the_correction_module_holds_no_float_literal stdout ----
+      thread 'the_correction_module_holds_no_float_literal' (19381779) panicked at src-tauri/tests/correction_ships_no_tuned_threshold.rs:64:5:
+      test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      error: test failed, to rerun pass `--test correction_ships_no_tuned_threshold`
+
+=== M7 — SCHEMA_VERSION left at 4 while migration 5's SQL still exists
+    file: desktop/src-tauri/src/meetings.rs
+    test: cargo test --test db_migration_idempotent
+    exit: 101
+      test a_fresh_database_lands_on_the_current_version_with_every_column_present ... FAILED
+      test a_newer_database_is_left_alone ... FAILED
+      test opening_the_db_twice_is_a_no_op ... FAILED
+      test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... FAILED
+      test migration_five_adds_the_correction_columns_without_touching_existing_rows ... FAILED
+      test a_pre_ladder_database_upgrades_without_losing_rows ... FAILED
+      test migration_two_adds_diagnostics_without_touching_existing_rows ... FAILED
+      test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... FAILED
+      test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... FAILED
+      test migration_five_creates_the_history_table_and_its_indexes ... FAILED
+      test migration_one_creates_the_whole_meeting_schema ... ok
+      ---- a_fresh_database_lands_on_the_current_version_with_every_column_present stdout ----
+      thread 'a_fresh_database_lands_on_the_current_version_with_every_column_present' (19382397) panicked at src-tauri/tests/db_migration_idempotent.rs:361:5:
+      assertion `left == right` failed
+      ---- a_newer_database_is_left_alone stdout ----
+      thread 'a_newer_database_is_left_alone' (19382398) panicked at src-tauri/tests/db_migration_idempotent.rs:161:9:
+      assertion `left == right` failed
+      ---- opening_the_db_twice_is_a_no_op stdout ----
+      thread 'opening_the_db_twice_is_a_no_op' (19382407) panicked at src-tauri/tests/db_migration_idempotent.rs:85:5:
+      assertion `left == right` failed: a fresh DB must land on the current schema version
+      ---- a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments stdout ----
+      thread 'a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments' (19382400) panicked at src-tauri/tests/db_migration_idempotent.rs:511:50:
+      ---- migration_five_adds_the_correction_columns_without_touching_existing_rows stdout ----
+      thread 'migration_five_adds_the_correction_columns_without_touching_existing_rows' (19382401) panicked at src-tauri/tests/db_migration_idempotent.rs:63:29:
+
+=== M8 — delete_meeting stops cascading the relabel history
+    file: desktop/src-tauri/src/db.rs
+    test: cargo test --test retroactive_relabel_apply_and_undo
+    exit: 101
+      test an_offer_with_nothing_to_change_is_empty ... ok
+      test undoing_twice_is_a_no_op ... ok
+      test already_this_speaker_is_not_in_the_batch ... ok
+      test deleting_a_meeting_deletes_its_relabel_history ... FAILED
+      test undo_declines_to_clobber_a_later_hand_correction ... ok
+      test apply_writes_one_batch_and_one_undo_restores_every_prior_value ... ok
+      ---- deleting_a_meeting_deletes_its_relabel_history stdout ----
+      thread 'deleting_a_meeting_deletes_its_relabel_history' (19383001) panicked at src-tauri/tests/retroactive_relabel_apply_and_undo.rs:261:5:
+      assertion `left == right` failed: who was in that meeting must not outlive the meeting
+      test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+      error: test failed, to rerun pass `--test retroactive_relabel_apply_and_undo`
+
+=== M9 — reassign_segment stops locking the segment it just answered
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test retroactive_relabel_never_touches_locked
+    exit: 101
+      test a_hand_correction_is_what_makes_a_segment_ineligible ... FAILED
+      test a_segment_locked_after_the_offer_is_still_excluded_by_apply ... FAILED
+      test a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly ... FAILED
+      ---- a_hand_correction_is_what_makes_a_segment_ineligible stdout ----
+      thread 'a_hand_correction_is_what_makes_a_segment_ineligible' (19383590) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:160:5:
+      ---- a_segment_locked_after_the_offer_is_still_excluded_by_apply stdout ----
+      thread 'a_segment_locked_after_the_offer_is_still_excluded_by_apply' (19383592) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:123:5:
+      assertion `left == right` failed: the transaction re-checked the row
+      ---- a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly stdout ----
+      thread 'a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly' (19383591) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:53:5:
+      test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+      error: test failed, to rerun pass `--test retroactive_relabel_never_touches_locked`
