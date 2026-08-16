@@ -38,7 +38,7 @@ test the_cohort_was_built_by_the_model_the_app_downloads ... ok
 test the_distinctness_gate_is_measured_and_actually_holds ... ok
 test the_payload_hashes_to_what_the_manifest_claims ... ok
 test the_voices_are_attributed_and_license_clear ... ok
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 
 $ cargo test --features custom-protocol --test as_norm_cross_condition_measured -- --nocapture --test-threads=1
 running 9 tests
@@ -64,7 +64,7 @@ ok
 test the_measured_scores_do_not_fit_in_the_cosine_range ... 18132/25806 AS-norm scores (70.3%) lie outside the cosine range; min -10.245, max 6.766; the shipped band is 1.223
 ok
 test the_tune_and_report_splits_are_different_corpora ... ok
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.01s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.62s
 
 $ cargo test --features custom-protocol --test as_norm_admits_across_conditions -- --nocapture --test-threads=1
 running 7 tests
@@ -82,7 +82,7 @@ test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... dev-oth
   normalized band (1.223): FAR 8.81% FRR 18.16%
 ok
 test the_published_operating_point_is_what_the_shipped_band_actually_does ... ok
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.74s
 
 $ cargo test --features custom-protocol --test as_norm_improves_cross_condition_matching -- --nocapture --test-threads=1
 running 4 tests
@@ -110,7 +110,7 @@ test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... ok
 test normalized_scores_cannot_reach_a_cosine_band ... ok
 test the_module_never_names_the_blog_bands ... ok
 test the_tuned_numbers_live_in_the_manifest_not_the_code ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 $ cargo test --features custom-protocol --test diarization_metrics -- --nocapture --test-threads=1
 running 12 tests

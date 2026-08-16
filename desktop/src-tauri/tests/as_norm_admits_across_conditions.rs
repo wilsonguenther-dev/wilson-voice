@@ -1,4 +1,11 @@
-//! YV131 acceptance 3 — the cross-device case, made falsifiable.
+//! YV131 acceptance 3 — evidence toward it. **The criterion itself stays OPEN.**
+//!
+//! Read the two paragraphs below and the one at the end before quoting any
+//! number from this file as the criterion being met. It is not. The spec writes
+//! acceptance 3 as a MANUAL check against a real recording; everything here runs
+//! over simulated filters, and `speaker_asnorm` has no caller outside test
+//! binaries, so no enrolment and no `Suggested` prompt exists end to end for a
+//! real recording to be run through.
 //!
 //! The spec's third criterion is written as a manual check: *"an enrolled
 //! profile from a laptop-mic recording is offered as `Suggested` (not silently
@@ -9,8 +16,8 @@
 //! cross-device cosine fell under a fixed band was still missed as `New`. The
 //! headline capability was not delivered by anything that shipped.
 //!
-//! This file is the criterion, measured. It asks the question the spec asks —
-//! *is the right person offered, or missed?* — of two held-out conditions, and
+//! This file asks the question the spec asks — *is the right person offered, or
+//! missed?* — of two held-out SIMULATED conditions, and
 //! compares the shipped [`NormalizedBand`] against the fairest possible cosine
 //! band: one chosen by the same rule, on the same tuning split, at the same
 //! equal-error operating point. Nothing here is a synthetic geometry; every
@@ -20,8 +27,15 @@
 //! change is a SIMULATED filter, not a device. No AirPods were recorded and no
 //! volunteer was asked to speak. This turns "the mechanism helps under a
 //! simulated shift" into something a test binary can falsify; it does not turn
-//! it into "the mechanism helps Wilson", which still needs hardware and a
-//! person.
+//! it into "the mechanism helps Wilson", which still needs hardware, a person,
+//! and the enrolment path this module is not yet wired to.
+//!
+//! **And what the mechanism is.** The shipped normalization is enrollment-side
+//! only, so the decision below is `cos >= mu_e + band * sigma_e` — a per-profile
+//! ABSOLUTE cosine band, condition-blind. What it buys is that one band means
+//! the same strictness for every enrolled person, which is why its false-reject
+//! rate moves less when the channel does. It does not follow the microphone.
+//! See `speaker_asnorm`'s header and `docs/yap23-asnorm-measurement.md`.
 
 mod asnorm_arm;
 
@@ -81,10 +95,18 @@ fn one_band_means_one_thing_under_two_conditions() {
         raw_gap * 100.0
     );
 
+    // Note what is and is not being asserted. Neither band TRACKS the condition
+    // — the shipped normalization never reads the test embedding, so both are
+    // absolute cosine bands and the normalized one is simply chosen per profile
+    // (`cos >= mu_e + band * sigma_e`). What must hold is that removing the
+    // per-profile offset leaves a band whose false-reject rate is more STABLE
+    // when the channel moves, because inter-speaker variance is no longer part
+    // of the decision. That is the item's premise; condition tracking is not.
     assert!(
         norm_gap < raw_gap,
-        "a normalized band must track the condition better than a cosine one, \
-         or the item's premise is wrong: {:.3} vs {:.3}",
+        "a per-profile normalized band must hold its false-reject rate steadier \
+         across a channel change than a single shared cosine band, or the item's \
+         premise is wrong: {:.3} vs {:.3}",
         norm_gap,
         raw_gap
     );
