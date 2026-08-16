@@ -1,31 +1,41 @@
 YV124 — acceptance transcripts, FINISHER pass (rebased onto YV122 @ c3fd5d8)
 ================================================================================
-macOS 26.5.2 / arm64. Eval corpus present at ~/yap-eval-corpus/meetings.
-Both catalog diarization models installed (sherpa-onnx-pyannote-segmentation-3-0
-+ wespeaker_en_voxceleb_CAM++), so the EER half RUNS — it did not, and could
-not, on any machine before YV122 merged.
+macOS 26.5.2 / arm64. Eval corpus present at ~/yap-eval-corpus/meetings. Both
+catalog diarization models installed (sherpa-onnx-pyannote-segmentation-3-0 +
+wespeaker_en_voxceleb_CAM++), so the EER half RUNS — it did not, and could not,
+on any machine before YV122 merged.
 
 `YAP_EER_UNMEASURED_OK` is UNSET for every run below (`env -u`). On this machine
 that is the strict setting: the arm may not skip, and it does not.
 
+The four arms per fixture, in the order they are printed:
+  control_shipped  the same utterances with NOTHING above 8 kHz added, through
+                   the shipped 8th-order Butterworth decimator. The reference.
+  control_linear   the same, through the pre-fix linear decimation. With nothing
+                   to fold these two must agree, and the gate asserts it.
+  pre_fix          >8 kHz comb added, decimated the pre-fix way.
+  shipped          >8 kHz comb added, decimated the shipped way.
+The criterion is which of the last two lands closer to the first — see
+`distance_from_control`, printed per fixture.
+
 --------------------------------------------------------------------------------
 1. cargo test --features custom-protocol --test meeting_eval anti_alias -- --nocapture
 --------------------------------------------------------------------------------
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
      Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
 
 running 12 tests
 test meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself ... ok
-meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
 test meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches ... ok
 test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... ok
-test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
-test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
 test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... ok
+meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
+meeting_eval anti_alias_eer resolution genuine=18 impostor=48 frr_step=0.0556 far_step=0.0208 eer_step=0.0104 eer_clean=0.0000 eer_barely_worse=0.0000 margin_clean=0.993759 margin_barely_worse=0.976564 dprime_clean=14.5170 dprime_barely_worse=14.2246 auc_clean=1.0000 auc_barely_worse=1.0000
+test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
+test meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away ... ok
+test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
 meeting_eval anti_alias_eer dprime_blindness margin 0.993759 → 0.002976 (334x) dprime 14.5170 → 11.7876 (1.23x) auc 1.0000 → 1.0000 eer 0.0000 → 0.0000 mean_impostor -0.0545 → 0.9968
 test meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts ... ok
-meeting_eval anti_alias_eer resolution genuine=18 impostor=48 frr_step=0.0556 far_step=0.0208 eer_step=0.0104 eer_clean=0.0000 eer_barely_worse=0.0000 margin_clean=0.993759 margin_barely_worse=0.976564 dprime_clean=14.5170 dprime_barely_worse=14.2246 auc_clean=1.0000 auc_barely_worse=1.0000
-test meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away ... ok
 test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... ok
 test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... ok
 meeting_eval anti_alias_eer backend_probe=model_load_failed — a real inference backend read two non-model files and rejected them, so the EER numbers in YV124's MEASURED block still have a backend behind them
@@ -58,18 +68,19 @@ meeting_eval anti_alias_eer fixture=classroom-6-far-field distance_from_control 
   NOTE: no threshold_at_eer above is a shipped threshold, and the control's is not one either. YV129 tunes the enrollment bands, against post-fix embeddings only, and not on this corpus — see YV122's `diarize_embed_smoke`.
 test meeting_eval_anti_alias_eer_regression ... ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 9.88s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 10.16s
 
 
 --------------------------------------------------------------------------------
 2. cargo test --features custom-protocol --test meeting_eval antialias -- --nocapture
    (acceptance criterion 2 — the WER arm, evidenced against its real name; no
    test carries the substring `anti_alias_wer_regression`, and the criterion as
-   written matches zero tests. The only change to this arm in the whole item is
-   the bare `20.0` in its fold assert becoming FOLD_REJECTION_DB — same value,
-   same behaviour, and the WER numbers below are unchanged.)
+   written matches zero tests, which a cargo name filter reports as a pass over
+   zero tests. The only change to this arm in the whole item is the bare `20.0`
+   in its fold assert becoming FOLD_REJECTION_DB — same value, same behaviour,
+   and the WER numbers below are unchanged from `origin/main`.)
 --------------------------------------------------------------------------------
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
      Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
 
 running 2 tests
@@ -85,5 +96,5 @@ meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
 meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
 test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 3.33s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 3.84s
 

@@ -4218,7 +4218,11 @@ fn meeting_eval_anti_alias_eer_regression() {
         let mut shipped_embeddings = Vec::new();
         for (i, pair) in pairs.iter().enumerate() {
             for (arm, samples, out) in [
-                ("control-shipped", &pair.shipped_clean, &mut control_shipped_e),
+                (
+                    "control-shipped",
+                    &pair.shipped_clean,
+                    &mut control_shipped_e,
+                ),
                 ("control-linear", &pair.linear_clean, &mut control_linear_e),
                 ("linear", &pair.linear, &mut linear_embeddings),
                 ("shipped", &pair.shipped, &mut shipped_embeddings),
@@ -4254,7 +4258,11 @@ fn meeting_eval_anti_alias_eer_regression() {
         // Checked for the noisy pair AND for noisy-against-control, because it
         // is the control that carries the criterion now.
         for (what, a, b) in [
-            ("the two noisy arms", &linear_embeddings, &shipped_embeddings),
+            (
+                "the two noisy arms",
+                &linear_embeddings,
+                &shipped_embeddings,
+            ),
             (
                 "the shipped arm and its control",
                 &shipped_embeddings,
@@ -4719,10 +4727,10 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
     let flattered = ArmScore {
         eer: EerReport {
             eer: control.eer.eer * 0.2,
-            ..control.eer.clone()
+            ..control.eer
         },
         margin: control.margin * 1.6,
-        ..control.clone()
+        ..control
     };
     let rejected = shipped_arm_tracks_the_control(&control, &control_alt, &faithful, &flattered)
         .expect_err(
@@ -4737,7 +4745,7 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
 
     // Each comparison on its own, with the other held equal, so neither can be
     // dropped from the gate and covered for by the other.
-    let mut off_on_margin_only = faithful.clone();
+    let mut off_on_margin_only = faithful;
     off_on_margin_only.margin = control.margin + (faithful.margin - control.margin) * 40.0;
     let rejected =
         shipped_arm_tracks_the_control(&control, &control_alt, &faithful, &off_on_margin_only)
@@ -4747,7 +4755,7 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
     // And the premise: without a control the two decimators agree on, there is
     // nothing to measure either arm against, and the gate says so rather than
     // quietly picking one.
-    let mut disagreeing = control_alt.clone();
+    let mut disagreeing = control_alt;
     disagreeing.margin = control.margin - (degraded.margin - control.margin).abs() * 2.0;
     let rejected = shipped_arm_tracks_the_control(&control, &disagreeing, &degraded, &faithful)
         .expect_err("a control the two decimators disagree about is accepted as a reference");
@@ -4764,7 +4772,7 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
     // WOULD reject: the pre-fix arm here is the faithful one, whose d′ is far
     // above the value planted below. Getting that backwards is how the first
     // cut of this assertion let a re-added d′ gate survive a mutation.
-    let mut worse_dprime = faithful.clone();
+    let mut worse_dprime = faithful;
     worse_dprime.d_prime = degraded.d_prime * 0.1;
     assert!(
         worse_dprime.d_prime < degraded.d_prime,
@@ -4894,10 +4902,7 @@ fn meeting_eval_antialias_both_fold_gates_spend_one_constant() {
     // executed. A source-reading test has to be told, explicitly, not to read
     // itself.
     let needle = format!("removed_db {}", ">=");
-    let gates: Vec<&&str> = code
-        .iter()
-        .filter(|line| line.contains(&needle))
-        .collect();
+    let gates: Vec<&&str> = code.iter().filter(|line| line.contains(&needle)).collect();
     assert_eq!(
         gates.len(),
         2,
@@ -4916,17 +4921,28 @@ fn meeting_eval_antialias_both_fold_gates_spend_one_constant() {
         );
     }
 
-    // Non-vacuity, in the same test: the substring this searches for has to be
-    // the one the asserts actually use, and the constant has to be a number
-    // rather than a name that resolves to nothing.
+    // Non-vacuity, in the same test: the name the two gates share has to resolve
+    // to a real positive figure in THIS file, or "both gates spend one constant"
+    // is true of a constant that means nothing. Read out of the source for the
+    // same reason as everything else here — a `FOLD_REJECTION_DB > 0.0` written
+    // in Rust is constant-folded and asserts nothing at run time.
+    let definition = code
+        .iter()
+        .find(|line| line.contains("const FOLD_REJECTION_DB"))
+        .unwrap_or_else(|| {
+            panic!(
+                "FOLD_REJECTION_DB is not defined in this file, so the two gates above are \
+                 not reading the constant this test thinks they are"
+            )
+        });
+    let value: f32 = definition
+        .rsplit('=')
+        .next()
+        .and_then(|rhs| rhs.trim().trim_end_matches(';').parse().ok())
+        .unwrap_or_else(|| panic!("FOLD_REJECTION_DB is not a literal number: `{definition}`"));
     assert!(
-        FOLD_REJECTION_DB > 0.0,
-        "FOLD_REJECTION_DB is not a positive dB figure"
-    );
-    assert!(
-        code.iter().any(|line| line.contains("const FOLD_REJECTION_DB")),
-        "FOLD_REJECTION_DB is not defined in this file, so the two gates above are not \
-         reading the constant this test thinks they are"
+        value > 0.0,
+        "FOLD_REJECTION_DB is not a positive dB figure: `{definition}`"
     );
 }
 
