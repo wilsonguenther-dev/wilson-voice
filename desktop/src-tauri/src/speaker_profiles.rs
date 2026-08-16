@@ -81,7 +81,13 @@
 //! measured against a fixture — never a number copied from a vendor blog. This
 //! module ranks and reports; it never decides. `no_tuned_similarity_constant_
 //! ships_in_speaker_profiles` (in `tests/speaker_multi_centroid_best_match.rs`)
-//! greps this file so the rule survives the next person in a hurry.
+//! scans this file so the rule survives the next person in a hurry — and it
+//! scans VALUES, not `const` declarations, because `let band = 0.62_f32;` in
+//! the middle of [`best_match`] is the same defect and contains no `const`.
+//! Every numeric literal on a non-comment line above `#[cfg(test)]` must be
+//! `0.0` or `1.0`, the two arithmetic identities the centroid math needs.
+//! That matters most for the NEXT item: YV129 puts `match_cluster` and the
+//! enrollment bands in this same file.
 
 use serde::{Deserialize, Serialize};
 

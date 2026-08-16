@@ -264,9 +264,10 @@ fn a_profile_of_another_model_at_the_same_width_is_skipped_not_compared() {
 /// number is a measurement, and measurements come from the harness.
 ///
 /// The test-module half is deliberately out of scope: its `[3.0, 4.0]` fixtures
-/// are inputs, not decisions. If the `#[cfg(test)]` marker is ever renamed away
-/// the split fails closed — the whole file gets scanned and those fixtures go
-/// red — rather than silently scanning nothing.
+/// are inputs, not decisions. The cut is the first LINE that is exactly the
+/// `cfg(test)` attribute — a mention of it inside a doc comment is prose and
+/// does not move the boundary — and if that line ever disappears the scan fails
+/// closed with a named error rather than silently covering nothing.
 #[test]
 fn no_tuned_similarity_constant_ships_in_speaker_profiles() {
     let src = include_str!("../src/speaker_profiles.rs");
@@ -274,21 +275,22 @@ fn no_tuned_similarity_constant_ships_in_speaker_profiles() {
     // Arithmetic identities, not measurements. Anything outside this list in
     // shipped code is a number somebody chose.
     const ALLOWED: [&str; 2] = ["0.0", "1.0"];
+    const MARKER: &str = "#[cfg(test)]";
 
-    let shipped = src.split("#[cfg(test)]").next().unwrap();
+    let shipped: Vec<&str> = src.lines().take_while(|l| l.trim() != MARKER).collect();
     assert!(
-        shipped.len() < src.len(),
-        "the #[cfg(test)] marker is gone — this scan no longer knows where the \
-         shipped half of the module ends"
+        shipped.len() < src.lines().count(),
+        "no line of speaker_profiles.rs is exactly `{MARKER}` — this scan no \
+         longer knows where the shipped half of the module ends"
     );
     assert!(
-        shipped.contains("pub fn best_match"),
+        shipped.iter().any(|l| l.contains("pub fn best_match")),
         "best_match must be inside the scanned half, or this tripwire is not \
          watching the function that produces the scores"
     );
 
     let mut offset = 0usize;
-    for (i, line) in shipped.lines().enumerate() {
+    for (i, line) in shipped.iter().copied().enumerate() {
         let line_start = offset;
         offset += line.len() + 1;
         let trimmed = line.trim_start();
