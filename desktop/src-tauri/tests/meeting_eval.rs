@@ -3765,9 +3765,15 @@ fn yap23_e2e_irl_named_speaker_transcript() {
                 Box::new(move || Ok(std::process::Command::new(bin.clone()))),
                 std::time::Duration::from_secs(10),
             );
+            // This distance is arbitrary — the request is asserted below to be
+            // REFUSED, so no clustering ever reads it. It mirrors the other
+            // shipped call sites (`diarize.rs`, `diarize_sidecar_pool.rs`)
+            // purely so no reader promotes a test literal to a threshold;
+            // the real value is YV126's to measure, and sherpa's 0.5 default
+            // is a vendor number this tree does not carry.
             let outcome = pool.diarize(
                 &wav,
-                wilson_voice_lib::diarize_metrics::CosineDistance::new(0.5),
+                wilson_voice_lib::diarize_metrics::CosineDistance::new(0.35),
             );
             pool.shutdown();
             assert!(
