@@ -471,14 +471,20 @@ impl Ranking {
     /// ranking was computed in. A caller that wants to refuse a near-tie has
     /// the number to refuse it with; this module does not refuse anything,
     /// because that would be a threshold.
+    ///
+    /// `None` when there is no comparable pair to measure: fewer than two
+    /// candidates, or a runner-up that could not be normalized. That last case
+    /// is the one worth stating — the obvious implementation subtracts negative
+    /// infinity and reports a margin of `+inf`, which reads as total confidence
+    /// about a candidate nothing is known about. An unmeasurable runner-up
+    /// means the gap is unmeasurable, and saying so is the honest answer; the
+    /// winner is still ranked first either way.
     pub fn margin(&self) -> Option<f32> {
         let (a, b) = (self.ordered.first()?, self.ordered.get(1)?);
-        Some(match self.basis {
-            RankingBasis::AsNorm => {
-                a.normalized?.get() - b.normalized.map(|n| n.get()).unwrap_or(f32::NEG_INFINITY)
-            }
-            RankingBasis::RawCosine => a.raw.get() - b.raw.get(),
-        })
+        match self.basis {
+            RankingBasis::AsNorm => Some(a.normalized?.get() - b.normalized?.get()),
+            RankingBasis::RawCosine => Some(a.raw.get() - b.raw.get()),
+        }
     }
 }
 
