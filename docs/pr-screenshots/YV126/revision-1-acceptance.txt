@@ -1,0 +1,53 @@
+YV126 — REVISION 1 (adversarial review of PR #141, BLOCKING: binary mode was a post-hoc relabel)
+Run on the corpus machine, 2026-08-15. No inference backend in this tree (YV122 open), so every
+measured arm still skips — which is why the fix is structural rather than a number.
+
+=== cargo test --test diarize_full_clustering_vs_binary_fallback ===
+running 7 tests
+test assert_the_fixture_really_holds_six_voices ... ok
+test binary_mode_never_invents_a_speaker_who_was_not_there ... ok
+test the_enrolled_label_lands_on_the_voice_the_profile_describes ... ok
+test binary_mode_refuses_when_there_is_nothing_to_compare ... ok
+test the_same_six_cluster_pass_is_six_labels_or_exactly_two ... ok
+test binary_mode_is_not_bounded_by_what_the_n_way_pass_did ... ok
+test the_kind_branch_picks_the_track_and_the_mode_does_not_override_it ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+=== cargo test --test diarize_cluster_distance_threshold ===
+running 5 tests
+test one_pair_groups_below_the_threshold_and_splits_above_it ... ok
+test the_public_clustering_api_takes_a_typed_distance ... ok
+test no_tuned_clustering_constant_ships_in_the_crate ... ok
+test without_embeddings_the_childs_own_clusters_are_used_and_they_differ ... ok
+test cluster_track_groups_and_splits_at_the_threshold_it_was_given ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+=== cargo test --test meeting_eval fixture_ -- --nocapture --test-threads=1 ===
+running 5 tests
+test chunk_plan_covers_the_fixture_with_a_two_second_overlap ... ok
+test fixture_e_der_gate ... fixture (e) mechanism ceiling: DER 0.0000, JER 0.0000 — nothing the segmenter deletes costs anything here, so every point of error a measured run reports belongs to the clustering threshold
+fixture (e) threshold sweep:
+no diarization backend in this build (yap-diarize answers no_backend until YV122), skipping the measured arm (load_models: no_backend)
+ok
+test fixture_f_binary_fallback_der ... fixture (f) mechanism ceilings (9.38s of overlapped speech deleted before embedding):
+  full N-way   : DER 0.2738 (miss 19.67s of 71.82s reference speaker time)
+  enrolled/rest: DER 0.1524 (miss 9.38s of 61.53s)
+no diarization backend in this build (yap-diarize answers no_backend until YV122), skipping the measured arm (load_models: no_backend)
+ok
+test meeting_eval_device_change_fixture_is_ready_for_yv92 ... device-change: format change at 7.59s, native halves present (YV92)
+ok
+test two_track_ordering_fixture_is_hard_by_construction ... two-track fixture: 4 swappable pairs, 290 ppm relative clock error = 3132 ms at the 3 h cap
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.04s
+
+=== cargo test --test meeting_eval every_diarization_measurement_takes_its_threshold_from_a_sweep ===
+running 1 test
+test every_diarization_measurement_takes_its_threshold_from_a_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+=== whole crate ===
+97 binaries: 1135 passed / 0 failed / 18 ignored

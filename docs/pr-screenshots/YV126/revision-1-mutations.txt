@@ -1,0 +1,91 @@
+YV126 — REVISION 1 non-vacuous mutations
+=========================================
+
+Each mutation is applied to the committed tree, the named binary is run, and the
+tree is reverted with `git checkout HEAD -- desktop/src-tauri` (committing first
+is the rule this item learned the hard way in its first pass).
+
+Six mutations, six red. One mutation is reported GREEN, deliberately, with the
+reason — see M7.
+
+
+M1 — binary mode goes back to relabelling the N-way pass's cluster ids
+---------------------------------------------------------------------
+This IS the reviewed defect, restored: `cluster_track`'s binary arm runs
+`assign_clusters` and maps `cluster_index == 3 -> ENROLLED else EVERYONE_ELSE`.
+
+  test binary_mode_refuses_when_there_is_nothing_to_compare ... FAILED
+  test binary_mode_is_not_bounded_by_what_the_n_way_pass_did ... FAILED
+  test result: FAILED. 5 passed; 2 failed
+
+`binary_mode_is_not_bounded_by_what_the_n_way_pass_did` is the one that matters:
+at clustering distance 1.5 the N-way pass yields ONE cluster, so under the
+relabel design the enrolled class is either everybody or nobody, and the test is
+unsatisfiable no matter which id the relabel picks.
+
+
+M2 — a no-embedding binary pass falls back to the child's cluster ids
+---------------------------------------------------------------------
+`label_against_enrolled` keeps `i64::from(s.cluster)` for turns with an empty
+embedding instead of refusing.
+
+  test binary_mode_refuses_when_there_is_nothing_to_compare ... FAILED
+  test result: FAILED. 6 passed; 1 failed
+
+
+M3 — the caller's acceptance band is ignored (`>= -1.0`)
+---------------------------------------------------------
+Every turn becomes the enrolled voice.
+
+  test binary_mode_never_invents_a_speaker_who_was_not_there ... FAILED
+  test the_enrolled_label_lands_on_the_voice_the_profile_describes ... FAILED
+  test the_same_six_cluster_pass_is_six_labels_or_exactly_two ... FAILED
+  test binary_mode_is_not_bounded_by_what_the_n_way_pass_did ... FAILED
+  test result: FAILED. 3 passed; 4 failed
+
+
+M4 — a tuned acceptance band ships as a constant
+-------------------------------------------------
+`pub const DEFAULT_ENROLLMENT_BAND: f32 = 0.70;` in diarize.rs — the bare-`f32`
+shape, i.e. the one that would have sailed past the pre-revision unit check.
+
+  test no_tuned_clustering_constant_ships_in_the_crate ... FAILED
+  test result: FAILED. 4 passed; 1 failed
+
+(The typed shape, `const … : CosineSimilarity`, does not compile in this crate at
+all — `CosineSimilarity::new` is not `const` — which is why the bare-f32 form is
+the mutation worth running.)
+
+
+M5 — the fixture (f) arm goes back to its inline 0.35
+------------------------------------------------------
+`measured_hypothesis(&root, CLASSROOM_6, 0.35, TargetMode::FullClustering)`.
+
+  test every_diarization_measurement_takes_its_threshold_from_a_sweep ... FAILED
+  test result: FAILED. 29 passed; 1 failed
+
+This one fires on a machine with NO backend and NO corpus, which is the point:
+the arm it guards cannot run anywhere yet, so the guard is a source check.
+
+
+M6 — a centroid of the wrong dimension is compared anyway
+-----------------------------------------------------------
+The dimension check in `label_against_enrolled` is forced to `false`.
+
+  test binary_mode_refuses_when_there_is_nothing_to_compare ... FAILED
+  test result: FAILED. 6 passed; 1 failed
+
+
+M7 — the 2-class sweep is scored over the enrollment span too — **GREEN, disclosed**
+-------------------------------------------------------------------------------------
+`tune_enrollment_band`'s `scored_from` is forced to `0.0`, so the enrollment
+material re-enters the score.
+
+  test result: ok. 30 passed; 0 failed
+
+Green, and it is not a claim that the split does not matter — it is that
+`tune_enrollment_band` is UNREACHABLE on this tree. Nothing can embed until
+YV122, so no assertion downstream of a sweep can be mutation-tested here. The
+train/test disjointness is a source-level property today, enforced by review and
+by `enrol_from_first_span`'s own doc comment, and it becomes gateable the day
+YV122's backend lands. Reported rather than dressed up as a seventh kill.
