@@ -1,0 +1,136 @@
+YV134 — non-vacuous mutation transcript
+=======================================
+
+Every assertion this item adds was proved to catch a break: the mutation was
+applied to the working tree, the test was run, the failure recorded, and the
+mutation reverted. A green suite proves nothing on its own; these eight runs are
+what say the green means something.
+
+Run on: aarch64-apple-darwin, corpus present at ~/yap-eval-corpus/meetings.
+Command shape: cargo test --test meeting_eval <name>
+
+-------------------------------------------------------------------------------
+M1 — criterion (c): the unenrolled voice is returned as Named(...) not Anonymous
+     tests/support/mod.rs
+       .map(SegmentSpeaker::Anonymous)  ->  .map(SegmentSpeaker::Named)
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:
+  turn 3: spk_d was matched to a profile it has none of (Named("New — unnamed"))
+  — this is the false accept an enrollment threshold tuned upward produces, and
+  the reason fixture (g) carries an unenrolled voice at all
+
+  Why it matters: `Anonymous` vs `Named` is the whole difference between "a
+  distinct person we have no profile for" and "somebody called New — unnamed".
+  summarize.rs fills an action item's owner field from whatever comes back, so a
+  Named placeholder lands where a reader takes it for a person's name.
+
+-------------------------------------------------------------------------------
+M2 — criterion (a): the unenrolled voice comes back with no label at all
+     tests/support/mod.rs
+       None => self.unenrolled.clone().map(SegmentSpeaker::Anonymous)
+       ->  None => None
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:3853:
+  seg_0004 carries no speaker at all
+
+  Why it matters: criterion (a) is "EVERY segment carries a non-generic label".
+  Silently dropping the hard case is the cheapest way to make (a) pass.
+
+-------------------------------------------------------------------------------
+M3 — criterion (b'): two enrolled voices collapsed onto ONE profile
+     tests/meeting_eval.rs :: irl_close_enrolled
+       every enrolled voice resolves to "Avery"
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:3936:
+  assertion `left == right` failed: turn 1: "Avery" covers both spk_a and spk_b
+  — two people collapsed onto one profile, which is exactly what a loose
+  enrollment threshold produces and what every label being a real name hides
+    left: "spk_a"
+   right: "spk_b"
+
+  NOTE — this mutation is why the (b') arm exists. The first cut of criterion (b)
+  compared each turn's label against the mapping the source was BUILT from, and
+  a rotation applied to both sides passed. That arm was tautological. The
+  bijection arm (four voices in, four distinct labels out, no label shared) is a
+  property of the labelling itself and reduces to nothing — and it is the arm
+  that catches the failure a demo is least likely to notice, because every label
+  the collapsed matcher emits is a real enrolled name.
+
+-------------------------------------------------------------------------------
+M4 — the YV125 branch arm: the shipped renderer calls the mic "Me" in a room
+     src/meetings.rs :: speaker_label
+       ClusterTrackA => UNCLUSTERED_SPEAKER_LABEL  ->  ClusterTrackA => MIC_SPEAKER_LABEL
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:3798:
+  assertion `left == right` failed: the shipped renderer must say "Speaker" on
+  the clustering branch, never "Me": TranscriptLine { segment_id: "segment-0",
+  track: 0, speaker: "Me", offset: "00:00:00", ... }
+    left: "Me"
+   right: "Speaker"
+
+-------------------------------------------------------------------------------
+M5 — the honesty gate, arm 1: YV122's dependency lands
+     yap-diarize/Cargo.toml  +  sherpa-onnx = "=1.13.4"
+
+test yap23_phase_close_names_the_stages_that_are_not_shipped ... FAILED
+panicked at tests/meeting_eval.rs:4057:
+  yap-diarize now depends on sherpa-onnx — YV122 landed. Re-point
+  yap23_e2e_irl_named_speaker_transcript at real clustering output, replace its
+  ground-truth stand-in, and rewrite docs/yap23-phase-demo.md's status table
+  before deleting this arm.
+
+  The arm strips `#` comments before searching, because yap-diarize/Cargo.toml
+  names sherpa-onnx in prose on purpose. Without the strip it would fail on the
+  very state it exists to describe — the same class of mistake as looking for a
+  call site inside a doc comment.
+
+-------------------------------------------------------------------------------
+M6 — criterion (d): summarize stops filling SummaryItem::speaker (YV133 regressed)
+     src/summarize.rs
+       speaker: cited.and_then(|(_, _, who)| who.clone())  ->  speaker: None
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:3959:
+  no action carried a speaker: <followed by the full rendered summary>
+
+-------------------------------------------------------------------------------
+M7 — the honesty gate, arm 2: YV128's table lands
+     src/meetings.rs :: MIGRATION_4_MEETING_KIND
+       + CREATE TABLE IF NOT EXISTS speaker_profiles (id TEXT PRIMARY KEY);
+
+test yap23_phase_close_names_the_stages_that_are_not_shipped ... FAILED
+panicked at tests/meeting_eval.rs:4083:
+  the schema creates speaker_profiles — YV128 landed. YV134's staged enrollment
+  source has a real table to read now.
+
+  Asserted against the DDL `db::migrate` actually runs, not against a grep of
+  meetings.rs — whose doc comments name speaker_profiles and cluster_index
+  precisely because they do not exist yet.
+
+-------------------------------------------------------------------------------
+M8 — THE LOAD-BEARING ONE: the sidecar invents output instead of refusing
+     yap-diarize/src/main.rs
+       backend.is_none() => DiarizeResponse::err(id, ERR_NO_MODELS)
+       ->  backend.is_none() => DiarizeResponse::diarized(id, Vec::new(), 0)
+     (rebuilt and re-staged via `npm run sidecar` before running)
+
+test yap23_e2e_irl_named_speaker_transcript ... FAILED
+panicked at tests/meeting_eval.rs:3773:
+  the sidecar answered Ok([]) for fixture (g). If this is now a segment list,
+  YV122/YV126 landed — re-point this test at the measured clusters, replace the
+  ground-truth stand-in below, and update docs/yap23-phase-demo.md. Do NOT
+  delete this assertion without doing that: it is the only thing stopping the
+  staged half from being read as a measurement.
+
+  This is the assertion that keeps the whole test honest. Without it, the E2E's
+  downstream half — which is driven from fixture (g)'s answer key — could be
+  read as a measurement of a diarizer. With it, the test states in its own
+  failure output that no diarizer ran, and goes red the day one does.
+
+-------------------------------------------------------------------------------
+All eight reverted; the tree is clean and both tests are green (see
+acceptance-tests.txt).

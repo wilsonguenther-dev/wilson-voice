@@ -592,6 +592,9 @@ pub fn segments() -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
 /// changes when the real one lands.
 pub struct EnrolledSpeakers {
     by_segment_id: std::collections::HashMap<String, String>,
+    /// YV134 — what an UNLISTED segment comes back as. See
+    /// [`EnrolledSpeakers::with_new_voice`].
+    unenrolled: Option<String>,
 }
 
 impl EnrolledSpeakers {
@@ -604,7 +607,29 @@ impl EnrolledSpeakers {
                 .iter()
                 .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
                 .collect(),
+            unenrolled: None,
         }
+    }
+
+    /// YV134 — the same, but an unlisted segment comes back as
+    /// `Anonymous(label)` instead of `None`.
+    ///
+    /// This models the *diarized* room, which is a different state from the
+    /// undiarized one [`EnrolledSpeakers::new`] models. Once clustering has run
+    /// (YV126) an unmatched voice is not "no information": the app knows a
+    /// distinct person spoke and knows it has no profile for them, which is
+    /// exactly the state YV129's prompt is raised from. So the label is an
+    /// `Anonymous` one — real separation, explicitly not an identity — and never
+    /// a `Named` guess.
+    ///
+    /// `Anonymous` is load-bearing rather than cosmetic: `summarize.rs` fills
+    /// `SummaryItem::speaker` from whatever the source returns, and a `Named`
+    /// placeholder would put the label into an action item's owner field, where
+    /// a reader would take it for somebody's name.
+    pub fn with_new_voice(pairs: &[(&str, &str)], label: &str) -> Self {
+        let mut me = Self::new(pairs);
+        me.unenrolled = Some(label.to_string());
+        me
     }
 }
 
@@ -613,10 +638,15 @@ impl wilson_voice_lib::summarize::SpeakerSource for EnrolledSpeakers {
         &self,
         segment: &wilson_voice_lib::meetings::MeetingSegment,
     ) -> Option<wilson_voice_lib::summarize::SegmentSpeaker> {
-        self.by_segment_id
-            .get(&segment.id)
-            .cloned()
-            .map(wilson_voice_lib::summarize::SegmentSpeaker::Named)
+        match self.by_segment_id.get(&segment.id) {
+            Some(name) => Some(wilson_voice_lib::summarize::SegmentSpeaker::Named(
+                name.clone(),
+            )),
+            None => self
+                .unenrolled
+                .clone()
+                .map(wilson_voice_lib::summarize::SegmentSpeaker::Anonymous),
+        }
     }
 }
 

@@ -148,15 +148,28 @@ const ROOM_3: &str = "room-3-near-field";
 /// simultaneous), so that "full N-way clustering cannot do this" is a
 /// measurement rather than an opinion.
 const CLASSROOM_6: &str = "classroom-6-far-field";
+/// YV134 fixture (g): the phase-closing IRL fixture. Four people round one mic
+/// in a room, near-field, no overlap — deliberately inside the mechanism ceiling
+/// fixture (f) exists to exceed, because a closing demo has to run the chain the
+/// app is meant to run, not the one it is known to fail.
+///
+/// What makes it fixture (g) rather than a second fixture (e) is the enrollment
+/// ground truth: three of its four voices carry a HELD-OUT enrollment clip and a
+/// name, and the fourth carries neither. So one fixture exercises both the
+/// "known voice, auto-confirm" path and the "new voice, prompt" path — the
+/// backlog's own reason for building it this way, since a closing fixture that
+/// only walked the easy path would prove less than one that does not.
+const IRL_CLOSE: &str = "irl-close-4-enrolled";
 /// Every fixture the manifest must name. Fixture (c) is generated here but
 /// consumed by YV92 (anti-alias + input format change), not by this file's gates.
-const FIXTURE_IDS: [&str; 6] = [
+const FIXTURE_IDS: [&str; 7] = [
     LECTURE,
     SEAM_STRESS,
     DEVICE_CHANGE,
     TWO_TRACK,
     ROOM_3,
     CLASSROOM_6,
+    IRL_CLOSE,
 ];
 
 /// MEASURED (YV93, Parakeet Unified EN 0.6B on Metal, no meeting tuning, clean
@@ -522,6 +535,24 @@ struct FixtureSpeaker {
     /// seats its six speakers at different distances, because a far-field room
     /// where everyone is equally loud is not a far-field room.
     direct_gain: f32,
+    /// YV134 fixture (g): the name this voice is ENROLLED under, or `None` for
+    /// the voice that is deliberately not enrolled.
+    ///
+    /// `None` is the load-bearing value, not the missing one. A closing fixture
+    /// whose every voice was enrolled could not tell "matched correctly" from
+    /// "matched everything", which is the failure mode an enrollment threshold
+    /// tuned upward produces and the one a demo is least likely to notice.
+    #[serde(default)]
+    enrolled_name: Option<String>,
+    /// YV134 fixture (g): a HELD-OUT enrollment clip for this voice, relative to
+    /// the fixture directory — different sentences from any turn in the meeting.
+    ///
+    /// Held out on purpose. Enrolling on audio that is also in the meeting makes
+    /// the match a lookup of a clip against itself, which scores a memcmp rather
+    /// than a speaker embedding, and would report an EER of zero on a model that
+    /// had learned nothing. `None` beside a `None` name is the unenrolled voice.
+    #[serde(default)]
+    enrollment_wav: Option<String>,
 }
 
 /// One marker word in fixture (d): which track said it, when on the SHARED host
@@ -2767,6 +2798,21 @@ const ROOM_3_JER_GATE: Option<f64> = None;
 const CLASSROOM_6_DER_GATE: Option<f64> = None;
 // TODO(YV126): replace once real diarization output exists.
 const CLASSROOM_6_JER_GATE: Option<f64> = None;
+/// YV134 fixture (g)'s gates, `None` for exactly the same reason — and it is
+/// worth being explicit that the PHASE-CLOSING fixture ships ungated too. A
+/// closing item is the most tempting place in a backlog to write a number down
+/// so the phase looks finished; there is still no diarizer, so a number here
+/// would be the same guess wearing a demo's clothes.
+// TODO(YV126): replace once real diarization output exists.
+const IRL_CLOSE_DER_GATE: Option<f64> = None;
+// TODO(YV126): replace once real diarization output exists.
+const IRL_CLOSE_JER_GATE: Option<f64> = None;
+/// The enrollment EER over fixture (g)'s three held-out clips. `None` because
+/// there is no embedding extractor: YV122 adds one and YV124 is the item that
+/// first measures an EER with it, on the anti-alias arm. Named here rather than
+/// left implicit so the phase doc's "unmeasured" row has a constant behind it.
+// TODO(YV124/YV129): replace once CAM++ embeddings exist.
+const IRL_CLOSE_ENROLLMENT_EER_GATE: Option<f64> = None;
 
 /// Fixture (e)'s speakers: three voices, three distances, near-field.
 ///
@@ -2803,6 +2849,134 @@ const CLASSROOM_6_SPEAKERS: [(&str, &str, f32); 6] = [
     ("spk_d", "Ralph", 0.26),
     ("spk_e", "Flo (English (US))", 0.24),
     ("spk_f", "Sandy (English (US))", 0.22),
+];
+
+/// Fixture (g)'s roster: `(id, say voice, direct gain, enrolled name)`.
+///
+/// Four voices drawn from the two rosters above so the measured F0 spread is
+/// already known rather than assumed. On the committed fixture
+/// [`assert_rttm_fits_the_audio`] re-measures it as 170.2 / 103.9 / 210.5 /
+/// 70.2 Hz, whose tightest pair (spk_a/spk_c, 1.237x) clears
+/// [`MIN_SPEAKER_F0_RATIO`] with room to spare — and it is re-measured on the
+/// rendered mix every run, so this comment cannot drift away from the audio.
+///
+/// **`spk_d` has no name and no clip, and that is the fixture.** Three enrolled
+/// voices exercise "known, auto-confirm"; the fourth exercises "new voice,
+/// prompt". A closing fixture with four enrolled voices could be passed by a
+/// matcher that says yes to everyone.
+const IRL_CLOSE_SPEAKERS: [(&str, &str, f32, Option<&str>); 4] = [
+    ("spk_a", "Samantha", 1.00, Some("Avery")),
+    ("spk_b", "Fred", 0.94, Some("Bao")),
+    ("spk_c", "Kathy", 0.88, Some("Cleo")),
+    ("spk_d", "Ralph", 0.83, None),
+];
+
+/// The enrollment clip filename for a fixture-(g) speaker id. One spelling, used
+/// by the writer and by every reader, so a clip cannot be written under a name
+/// nothing looks for.
+fn enrollment_wav_name(id: &str) -> String {
+    format!("enroll-{id}.wav")
+}
+
+/// The room tone under fixture (g). Near-field like fixture (e), so the floor is
+/// (e)'s rather than (f)'s.
+const IRL_CLOSE_TONE: f32 = 0.0015;
+
+/// Fixture (g)'s HELD-OUT enrollment lines — one per enrolled voice, and no
+/// sentence here appears in [`IRL_CLOSE_TURNS`].
+///
+/// Same corpus rule as everything else in this file: invented, mundane, about
+/// nobody, with no names, no digits and no addresses in the spoken text. The
+/// enrolled NAMES live in [`IRL_CLOSE_SPEAKERS`] as metadata and are never
+/// spoken, so no transcript in this corpus contains a person's name.
+const IRL_CLOSE_ENROLLMENT: [(&str, &str); 3] = [
+    (
+        "spk_a",
+        "This is a short recording so the app can learn how my voice sounds when I am talking normally in a quiet room",
+    ),
+    (
+        "spk_b",
+        "I am reading a few sentences aloud at an ordinary pace so there is enough of my voice here to work with later",
+    ),
+    (
+        "spk_c",
+        "Here is a little bit of speech recorded on purpose, long enough to be useful and short enough that nobody minds",
+    ),
+];
+
+/// Fixture (g)'s script: sixteen turns, four people, never the same person
+/// twice in a row.
+///
+/// The content is chosen so a summarizer has something to attribute: several
+/// turns are first-person commitments ("I will …") whose owner is the whole
+/// point of a speaker-attributed action item, and one is an explicit decision.
+/// Without those the phase-closing test's fourth criterion — an evidence-linked
+/// action carrying a resolved name — would have nothing to be about.
+const IRL_CLOSE_TURNS: [(usize, &str); 16] = [
+    (
+        0,
+        "Let us go through what is left before the release and stop there",
+    ),
+    (
+        1,
+        "The onboarding flow still sends people to the wrong screen at the end",
+    ),
+    (
+        2,
+        "I can take the onboarding flow and have a fix ready for review",
+    ),
+    (
+        3,
+        "There is also the older import path that nobody has looked at in a while",
+    ),
+    (
+        0,
+        "I will write up the import path and put it in front of the team",
+    ),
+    (
+        2,
+        "We should decide now whether the export work goes in this cycle or the next",
+    ),
+    (
+        1,
+        "It goes in the next cycle, and that is settled as far as I am concerned",
+    ),
+    (
+        3,
+        "Then the only thing left in this cycle is onboarding and the import path",
+    ),
+    (
+        0,
+        "That matches what I had written down before we started talking",
+    ),
+    (
+        1,
+        "I will update the release notes so they say the export work moved",
+    ),
+    (
+        2,
+        "Someone needs to tell the support side before they hear it elsewhere",
+    ),
+    (
+        3,
+        "I would rather we told them in the same message as the release notes",
+    ),
+    (
+        0,
+        "Agreed, one message, and it goes out the same day the build does",
+    ),
+    (
+        2,
+        "I will draft that message and send it round for a read before it goes",
+    ),
+    (
+        1,
+        "Then we are done, unless anyone has something on the older import path",
+    ),
+    (
+        3,
+        "Nothing from me, I will just wait for the write up and read it then",
+    ),
 ];
 
 /// The RTTM turns of a fixture, in start order.
@@ -3166,6 +3340,12 @@ fn meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate()
         ("ROOM_3_JER_GATE", ROOM_3_JER_GATE),
         ("CLASSROOM_6_DER_GATE", CLASSROOM_6_DER_GATE),
         ("CLASSROOM_6_JER_GATE", CLASSROOM_6_JER_GATE),
+        ("IRL_CLOSE_DER_GATE", IRL_CLOSE_DER_GATE),
+        ("IRL_CLOSE_JER_GATE", IRL_CLOSE_JER_GATE),
+        (
+            "IRL_CLOSE_ENROLLMENT_EER_GATE",
+            IRL_CLOSE_ENROLLMENT_EER_GATE,
+        ),
     ] {
         assert!(
             gate.is_none(),
@@ -3292,7 +3472,7 @@ fn meeting_eval_classroom_6_exceeds_the_segmentation_ceiling_on_purpose() {
 #[test]
 fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
     let Some(root) = corpus() else { return };
-    for id in [ROOM_3, CLASSROOM_6] {
+    for id in [ROOM_3, CLASSROOM_6, IRL_CLOSE] {
         let turns = read_rttm(&root, id);
         let perfect = der(&turns, &turns);
         assert!(
@@ -3342,6 +3522,596 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
         "DER {:.6} is not the hand-derivable {:.6}",
         report.rate(),
         (total - busiest) / total
+    );
+}
+
+// ---------------------------------------------------------------------------
+// YV134 — the phase-closing E2E
+// ---------------------------------------------------------------------------
+
+/// What a segment of fixture (g)'s unenrolled voice is labelled, once clustering
+/// has told it apart from the enrolled ones.
+///
+/// A `SegmentSpeaker::Anonymous` label, never a `Named` one: the app knows a
+/// distinct person spoke and knows it has no profile for them. The backlog's
+/// criterion (a) names exactly this state — "a real enrolled name or an explicit
+/// 'New — unnamed' state, never a bare 'Speaker N' with no path to naming it" —
+/// and the difference from `Speaker N` is that this label is attached to ONE
+/// voice the enrolled ones were told apart from, which is what makes "name this
+/// person" a button rather than a wish.
+const NEW_VOICE_LABEL: &str = "New — unnamed";
+
+/// The staged `yap-diarize`, resolved the same way `diarize_sidecar_handshake.rs`
+/// resolves it. Kept to this file rather than shared, because the two tests want
+/// it for opposite reasons and a shared helper would hide that.
+fn staged_diarize_binary() -> Option<PathBuf> {
+    if let Ok(named) = std::env::var("YAP_DIARIZE_BIN") {
+        let path = PathBuf::from(named);
+        return path.is_file().then_some(path);
+    }
+    if let Some(sibling) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("yap-diarize")))
+        .filter(|p| p.is_file())
+    {
+        return Some(sibling);
+    }
+    let staged = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    fs::read_dir(&staged)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("yap-diarize-"))
+        })
+}
+
+/// Fixture (g)'s enrolled voices, as `(speaker id, name)`.
+fn irl_close_enrolled(meta: &FixtureMeta) -> Vec<(String, String)> {
+    meta.speakers
+        .iter()
+        .filter_map(|s| Some((s.id.clone(), s.enrolled_name.clone()?)))
+        .collect()
+}
+
+/// **The phase-closing E2E.** Fixture (g), through every stage of the chain that
+/// exists, with the stages that do not exist proven absent rather than stepped
+/// over.
+///
+/// ```sh
+/// cargo test --test meeting_eval yap23_e2e_irl_named_speaker_transcript -- --nocapture
+/// ```
+///
+/// ## What this test claims, stated before the code
+///
+/// The backlog sequences YV134 last, after YV122 and YV124–131. On `main` today
+/// **YV120, YV121, YV123, YV125, YV132 and YV133 are merged and YV122, YV124 and
+/// YV126–131 are not**: `yap-diarize` carries no inference crate, so there is no
+/// clustering and no embedding; there is no `speaker_profiles` table, so there is
+/// no enrollment; and there is no correction UX. The mechanism that turns a voice
+/// into a name does not exist in this repository.
+///
+/// So the chain is driven in two halves, and the seam between them is the point
+/// of the test rather than a hole in it:
+///
+/// * **Upstream (real, shipped, exercised here).** Fixture (g)'s audio is decoded
+///   by the SHIPPED ASR through [`Decoder`], one turn at a time, into real
+///   `MeetingSegment` rows. The IRL branch is taken by the shipped
+///   `meetings::diarization_target`. The shipped `render_transcript` labels the
+///   result. The shipped diarization sidecar is spawned and asked to diarize the
+///   fixture, and its refusal is asserted — which is what proves no clustering
+///   ran, so nothing below can be mistaken for a diarizer's output.
+/// * **Downstream (real, shipped, driven from GROUND TRUTH).** Fixture (g)'s own
+///   RTTM plus its `enrolled_name` ground truth stand in for YV126+YV129 — i.e. a
+///   perfect diarizer and a perfect matcher — and the result is pushed through
+///   the shipped `summarize_segments_with` → `SummaryItem::speaker` rail YV133
+///   built. That half is entirely real code; only its INPUT is staged, and the
+///   staging is one function (`support::EnrolledSpeakers::with_new_voice`) which
+///   YV129's matcher replaces.
+///
+/// The four criteria are asserted against the second half, and
+/// `yap23_phase_close_names_the_stages_that_are_not_shipped` asserts, out loud
+/// and mechanically, that the first half cannot yet reach it. That is the same
+/// posture YV132 took when it published three matrix rows whose honest cell was
+/// "the app cannot reach this", and the same one YV133's own E2E took. **This
+/// test is not a claim that the shipped app produces a named-speaker transcript
+/// today. It does not, and `docs/yap23-phase-demo.md` says so in the same
+/// words.**
+///
+/// What it IS: the proof that every seam between the stages fits, so YV126 and
+/// YV129 land into a chain whose ends are already known to meet — and the exact
+/// test that goes red the day they land, because the refusal assertion below
+/// starts failing and this file has to be re-pointed at real output.
+#[test]
+fn yap23_e2e_irl_named_speaker_transcript() {
+    let Some(root) = corpus() else {
+        eprintln!("{CORPUS_ABSENT}");
+        return;
+    };
+    let meta = read_meta(&root, IRL_CLOSE);
+    let turns = read_rttm(&root, IRL_CLOSE);
+    assert_rttm_fits_the_audio(&root, IRL_CLOSE, &turns);
+
+    // ── Fixture (g) is the fixture it says it is ────────────────────────────
+    assert_eq!(rttm_speakers(&turns).len(), 4, "four people in the room");
+    assert_eq!(
+        max_simultaneous(&turns),
+        1,
+        "fixture (g) is the no-overlap case — a closing demo runs the chain the \
+         app is meant to run, not the one fixture (f) proves it cannot"
+    );
+    assert!(max_speakers_in_window(&turns, 10.0) <= 3);
+    let enrolled = irl_close_enrolled(&meta);
+    assert_eq!(
+        enrolled.len(),
+        3,
+        "three enrolled voices, so 'auto-confirm' has something to confirm"
+    );
+    let unenrolled: Vec<&str> = meta
+        .speakers
+        .iter()
+        .filter(|s| s.enrolled_name.is_none())
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(
+        unenrolled.len(),
+        1,
+        "exactly one voice must be unenrolled — a fixture where everyone is \
+         known cannot fail a matcher that says yes to everyone: {unenrolled:?}"
+    );
+    let new_voice = unenrolled[0].to_string();
+
+    // Every enrolled voice has a HELD-OUT clip on disk, and nothing in it is a
+    // sentence from the meeting. Enrolling on meeting audio would score a
+    // memcmp rather than an embedding.
+    let decoder = Decoder::new();
+    let meeting_lines: Vec<String> = meta
+        .utterances
+        .iter()
+        .map(|u| normalize(&u.text).join(" "))
+        .collect();
+    for speaker in meta.speakers.iter().filter(|s| s.enrolled_name.is_some()) {
+        let clip = speaker
+            .enrollment_wav
+            .as_deref()
+            .unwrap_or_else(|| panic!("{} is enrolled with no clip", speaker.id));
+        assert_eq!(clip, enrollment_wav_name(&speaker.id));
+        let path = root.join(IRL_CLOSE).join(clip);
+        assert!(path.is_file(), "missing enrollment clip {}", path.display());
+        let (rate, samples) = read_wav_i16(&path);
+        assert_eq!(rate, TARGET_RATE);
+        let clip_seconds = samples.len() as f64 / TARGET_RATE as f64;
+        assert!(
+            clip_seconds >= 2.0,
+            "{}: {clip_seconds:.2}s is too short to enrol on",
+            speaker.id
+        );
+        let heard = normalize(&decoder.decode(&samples, &format!("enroll-{}", speaker.id))).join(" ");
+        assert!(
+            !heard.trim().is_empty(),
+            "{}: the enrollment clip decodes to nothing",
+            speaker.id
+        );
+        for line in &meeting_lines {
+            assert!(
+                !line.contains(&heard) && !heard.contains(line.as_str()),
+                "{}'s enrollment clip repeats a meeting line — enrolment must be \
+                 HELD OUT:\n  clip: {heard}\n  line: {line}",
+                speaker.id
+            );
+        }
+        eprintln!(
+            "  enrolled {} as {:?} on {clip_seconds:.1}s of held-out audio",
+            speaker.id,
+            speaker.enrolled_name.as_deref().unwrap_or("?")
+        );
+    }
+
+    // ── Capture → ASR: the real decoder, one turn at a time ────────────────
+    // Per TURN rather than per chunk, because what is being built here is what a
+    // perfect diarizer would hand the transcript: one segment per speaker turn.
+    // The ASR is the shipped one and the words are its own.
+    let (rate, audio) = read_wav_i16(&root.join(IRL_CLOSE).join("audio.wav"));
+    assert_eq!(rate, TARGET_RATE);
+    let mut segments: Vec<wilson_voice_lib::meetings::MeetingSegment> = Vec::new();
+    let mut owner_of_segment: Vec<(String, String)> = Vec::new();
+    for (i, turn) in turns.iter().enumerate() {
+        let from = (turn.start_seconds * TARGET_RATE as f64) as usize;
+        let to = ((turn.end_seconds * TARGET_RATE as f64) as usize).min(audio.len());
+        let text = decoder.decode(&audio[from..to], &format!("{IRL_CLOSE}-turn-{i}"));
+        assert!(
+            !text.trim().is_empty(),
+            "turn {i} ({}) decoded to nothing",
+            turn.speaker_id
+        );
+        let id = format!("segment-{i}");
+        owner_of_segment.push((id.clone(), turn.speaker_id.clone()));
+        segments.push(wilson_voice_lib::meetings::MeetingSegment {
+            id,
+            meeting_id: IRL_CLOSE.to_string(),
+            start_seconds: turn.start_seconds,
+            end_seconds: turn.end_seconds,
+            text,
+            confidence: None,
+            created_at: chrono::Utc::now(),
+            // `meetings::MIC_TRACK` (the i64 COLUMN value), not `meeting::MIC_TRACK`
+            // (the usize ring index this file also imports).
+            track: wilson_voice_lib::meetings::MIC_TRACK,
+        });
+    }
+    eprintln!("decoded {} turns of fixture (g)", segments.len());
+
+    // ── YV125: the IRL branch, from the shipped pure function ──────────────
+    assert!(
+        !wilson_voice_lib::meetings::is_two_track(&segments),
+        "fixture (g) is one microphone — there is no second track to have"
+    );
+    assert_eq!(
+        wilson_voice_lib::meetings::diarization_target(MeetingKind::InPerson, false),
+        wilson_voice_lib::meetings::DiarizationTarget::ClusterTrackA,
+        "an in-person meeting must cluster Track A, never file the room as 'Me'"
+    );
+
+    // ── YV121/YV122: the sidecar is asked, and refuses ─────────────────────
+    // This is the assertion that keeps the rest of the test honest. If it ever
+    // stops holding, a diarizer landed and everything below has to be re-pointed
+    // at its output instead of at the ground truth.
+    let wav = root.join(IRL_CLOSE).join("audio.wav");
+    match staged_diarize_binary() {
+        Some(bin) => {
+            let pool = wilson_voice_lib::diarize::DiarizePool::new(
+                Box::new(move || Ok(std::process::Command::new(bin.clone()))),
+                std::time::Duration::from_secs(10),
+            );
+            let outcome = pool.diarize(
+                &wav,
+                wilson_voice_lib::diarize_metrics::CosineDistance::new(0.5),
+            );
+            pool.shutdown();
+            assert!(
+                matches!(&outcome, Err(wilson_voice_lib::diarize::DiarizeError::Refused(tag))
+                    if tag == wilson_voice_lib::diarize_protocol::ERR_NO_MODELS
+                        || tag == wilson_voice_lib::diarize_protocol::ERR_NO_BACKEND),
+                "the sidecar answered {outcome:?} for fixture (g). If this is now \
+                 a segment list, YV122/YV126 landed — re-point this test at the \
+                 measured clusters, replace the ground-truth stand-in below, and \
+                 update docs/yap23-phase-demo.md. Do NOT delete this assertion \
+                 without doing that: it is the only thing stopping the staged \
+                 half from being read as a measurement."
+            );
+            let Err(refusal) = &outcome else { unreachable!() };
+            eprintln!("  sidecar refused as expected: {}", refusal.tag());
+        }
+        None => panic!(
+            "no staged yap-diarize binary — build one with \
+             `cargo build -p yap-diarize`. The refusal above is load-bearing, so \
+             this test may not pass without having asked."
+        ),
+    }
+
+    // ── YV108/YV125: the transcript the app renders TODAY ──────────────────
+    let rendered = render_transcript(&segments, MeetingKind::InPerson);
+    assert_eq!(rendered.len(), segments.len());
+    for line in &rendered {
+        assert_eq!(
+            line.speaker,
+            wilson_voice_lib::meetings::UNCLUSTERED_SPEAKER_LABEL,
+            "the shipped renderer must say {:?} on the clustering branch, never \
+             {MIC_SPEAKER_LABEL:?}: {line:?}",
+            wilson_voice_lib::meetings::UNCLUSTERED_SPEAKER_LABEL
+        );
+    }
+
+    // ── YV133: the only source the app can build declines, on purpose ──────
+    let shipped =
+        wilson_voice_lib::summarize::TrackSpeakers::for_meeting(MeetingKind::InPerson, &segments);
+    for segment in &segments {
+        assert!(
+            wilson_voice_lib::summarize::SpeakerSource::speaker_for(&shipped, segment).is_none(),
+            "TrackSpeakers must decline on the clustering branch rather than \
+             feed the bare word 'Speaker' to a summarizer"
+        );
+    }
+
+    // ── The staged half: a perfect diarizer + a perfect matcher ────────────
+    // Names come from fixture (g)'s ground truth, keyed by the SEGMENT the turn
+    // produced — the same key YV129's matcher will write. One function, and it
+    // is the only staged thing in this test.
+    let by_name: std::collections::HashMap<&str, &str> = enrolled
+        .iter()
+        .map(|(id, name)| (id.as_str(), name.as_str()))
+        .collect();
+    let pairs: Vec<(String, String)> = owner_of_segment
+        .iter()
+        .filter_map(|(seg, speaker)| Some((seg.clone(), by_name.get(speaker.as_str())?.to_string())))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let source = support::EnrolledSpeakers::with_new_voice(&borrowed, NEW_VOICE_LABEL);
+
+    let summary =
+        wilson_voice_lib::summarize::summarize_segments_with(&segments, &irl_close_stub(), &source)
+            .expect("fixture (g) summarizes");
+
+    println!(
+        "---- fixture (g) summary ----\n{}\n-----------------------------",
+        summary.markdown
+    );
+
+    // (a) EVERY segment carries a non-generic label: an enrolled name, or the
+    //     explicit new-voice state. Never a bare "Speaker N".
+    let attributed = wilson_voice_lib::summarize::transcript_lines_with(&segments, &source);
+    assert_eq!(attributed.len(), segments.len());
+    for line in &attributed {
+        let speaker = line
+            .speaker
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} carries no speaker at all", line.label));
+        assert!(
+            speaker.is_named() || speaker.label() == NEW_VOICE_LABEL,
+            "{}: {:?} is neither an enrolled name nor the explicit new-voice \
+             state — a bare voice number is exactly what criterion (a) forbids",
+            line.label,
+            speaker.label()
+        );
+        assert_ne!(
+            speaker.label(),
+            wilson_voice_lib::meetings::UNCLUSTERED_SPEAKER_LABEL
+        );
+    }
+
+    // No turn decoded to nothing (asserted above), so lines and segments are
+    // 1:1 in order and the turn's own ground-truth speaker indexes straight in.
+    let mut new_voice_turns = 0usize;
+    for (i, (_, speaker_id)) in owner_of_segment.iter().enumerate() {
+        let got = attributed[i]
+            .speaker
+            .as_ref()
+            .unwrap_or_else(|| panic!("turn {i} carries no speaker"));
+        match by_name.get(speaker_id.as_str()) {
+            // (b) The pre-enrolled voices resolve to their own names — not
+            //     missed as new, and not swapped for each other.
+            Some(expected) => {
+                assert!(got.is_named(), "{speaker_id} came back anonymous: {got:?}");
+                assert_eq!(
+                    got.label(),
+                    *expected,
+                    "turn {i}: {speaker_id} resolved to the wrong enrolled profile"
+                );
+            }
+            // (c) The deliberately-new voice is flagged new — never matched to a
+            //     profile it has none of.
+            None => {
+                assert_eq!(speaker_id, &new_voice);
+                new_voice_turns += 1;
+                assert!(
+                    !got.is_named(),
+                    "turn {i}: {new_voice} was matched to a profile it has none \
+                     of ({got:?}) — this is the false accept an enrollment \
+                     threshold tuned upward produces, and the reason fixture (g) \
+                     carries an unenrolled voice at all"
+                );
+                assert_eq!(got.label(), NEW_VOICE_LABEL);
+            }
+        }
+    }
+    assert!(
+        new_voice_turns > 0,
+        "the unenrolled voice {new_voice} spoke no turns — the fixture regressed"
+    );
+
+    // (b′) Same voice ⇒ same label; different voices ⇒ different labels.
+    //
+    // The arm above compares each turn's label against the mapping the source
+    // was built from, so it catches a rail that DROPS or REORDERS attributions
+    // — but a matcher that collapsed two people onto one profile would satisfy
+    // it if the mapping collapsed too. This arm is a property of the LABELLING
+    // itself and reduces to nothing: four voices spoke, so four distinct labels
+    // must come out, and no label may be shared. That is the failure an
+    // enrollment threshold tuned loose actually produces, and it is the one a
+    // demo is least likely to notice, because every label it emits is a real
+    // enrolled name.
+    let mut label_of_voice: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    let mut voice_of_label: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    for (i, (_, speaker_id)) in owner_of_segment.iter().enumerate() {
+        let label = attributed[i]
+            .speaker
+            .as_ref()
+            .expect("every turn is labelled")
+            .label();
+        if let Some(prev) = label_of_voice.insert(speaker_id.as_str(), label) {
+            assert_eq!(
+                prev, label,
+                "turn {i}: {speaker_id} was labelled {prev:?} earlier and \
+                 {label:?} here — one voice, two identities"
+            );
+        }
+        if let Some(prev) = voice_of_label.insert(label, speaker_id.as_str()) {
+            assert_eq!(
+                prev, speaker_id,
+                "turn {i}: {label:?} covers both {prev} and {speaker_id} — two \
+                 people collapsed onto one profile, which is exactly what a \
+                 loose enrollment threshold produces and what every label being \
+                 a real name hides"
+            );
+        }
+    }
+    assert_eq!(
+        label_of_voice.len(),
+        rttm_speakers(&turns).len(),
+        "{} voices spoke and {} distinct labels came out",
+        rttm_speakers(&turns).len(),
+        label_of_voice.len()
+    );
+
+    // (d) At least one evidence-linked action carries a resolved name (YV133).
+    let owners: Vec<&str> = summary
+        .actions
+        .iter()
+        .filter_map(|a| a.speaker.as_deref())
+        .collect();
+    assert!(
+        !owners.is_empty(),
+        "no action carried a speaker:\n{}",
+        summary.markdown
+    );
+    let names: Vec<&str> = enrolled.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(
+        owners.iter().any(|o| names.contains(o)),
+        "no action owner is an enrolled name. owners={owners:?} enrolled={names:?}\n{}",
+        summary.markdown
+    );
+    // The new voice may own an action — it spoke — but it may never be rendered
+    // as if it were a person's name.
+    for owner in &owners {
+        assert!(
+            names.contains(owner) || *owner == NEW_VOICE_LABEL,
+            "an action owner is neither an enrolled name nor the new-voice \
+             state: {owner:?}"
+        );
+    }
+    eprintln!("fixture (g): {} action owners {owners:?}", owners.len());
+}
+
+/// A stand-in model that answers strictly out of the chunk it was handed — the
+/// same shape `summarize_e2e_speaker_attributed.rs` uses, and for the same
+/// reason: every citation is a line's own id, so the extraction is grounded by
+/// construction and what is measured is the pipeline rather than the stub.
+///
+/// A real summarizer is not used here because a phase-closing gate must not be
+/// able to fail for a reason the phase does not own. What YV134 closes is the
+/// chain; `summarize_e2e.rs` is where the shipped model is scored.
+fn irl_close_stub() -> support::StubModel {
+    support::StubModel::new(|req| {
+        if req.mode == "reduce" {
+            return Ok(req
+                .text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" "));
+        }
+        let labels = support::labels_in(&req.text);
+        let bodies = support::bodies_in(&req.text);
+        assert!(!labels.is_empty(), "a MAP chunk with no lines");
+        let clause = |i: usize| -> String {
+            bodies
+                .get(i % bodies.len().max(1))
+                .map(|b| b.split_whitespace().take(9).collect::<Vec<_>>().join(" "))
+                .unwrap_or_default()
+        };
+        let at = |i: usize| labels[i % labels.len()].clone();
+        Ok(support::map_answer(
+            &clause(0),
+            &[
+                (clause(2).as_str(), at(2).as_str()),
+                (clause(4).as_str(), at(4).as_str()),
+            ],
+            &[(clause(6).as_str(), at(6).as_str())],
+            &[(clause(1).as_str(), at(1).as_str())],
+        ))
+    })
+}
+
+/// **The gate that keeps the phase honest.** Every stage YV134's headline
+/// criterion needs and this repository does not have, asserted absent — against
+/// the mechanism, not against a comment.
+///
+/// ```sh
+/// cargo test --test meeting_eval yap23_phase_close_names_the_stages_that_are_not_shipped
+/// ```
+///
+/// This is deliberately the inverse of an aspirational test. `docs/yap23-phase-
+/// demo.md` states that yap23 does not yet close, and a document is not
+/// enforceable; this is. The moment any arm below starts failing, the stage it
+/// names landed, and the failure message says what has to happen next.
+///
+/// It costs nothing to delete when the phase really closes — which is the point:
+/// deleting it is a deliberate, reviewable edit that lands in the same PR as the
+/// capability, instead of a claim quietly ageing into truth.
+#[test]
+fn yap23_phase_close_names_the_stages_that_are_not_shipped() {
+    // 1. No inference backend: `yap-diarize` declares no inference crate.
+    let sidecar_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../yap-diarize/Cargo.toml")
+        .canonicalize()
+        .expect("the sidecar manifest is in the workspace");
+    let manifest = fs::read_to_string(&sidecar_manifest).expect("readable");
+    // COMMENTS STRIPPED FIRST. `yap-diarize/Cargo.toml` names `sherpa-onnx` in
+    // prose, deliberately — its dependency block documents what YV122 will add
+    // and why the list is short today. A substring search over the whole file
+    // would read that comment as the dependency and fail on the very state it
+    // exists to describe, which is the same class of mistake as looking for a
+    // call site inside a doc comment (`support/callsite.rs::code_only`).
+    let declared: String = manifest
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !declared.contains("sherpa-onnx"),
+        "yap-diarize now depends on sherpa-onnx — YV122 landed. Re-point \
+         yap23_e2e_irl_named_speaker_transcript at real clustering output, \
+         replace its ground-truth stand-in, and rewrite \
+         docs/yap23-phase-demo.md's status table before deleting this arm."
+    );
+
+    // 2/3. No speaker identity in the schema — asserted against the DDL the app
+    //      actually runs (`db::migrate` walks exactly these four in order up to
+    //      `SCHEMA_VERSION`), not against a grep of the source file, whose doc
+    //      comments name `speaker_profiles` and `cluster_index` precisely
+    //      because they do not exist yet.
+    assert_eq!(
+        wilson_voice_lib::meetings::SCHEMA_VERSION,
+        4,
+        "the schema moved past YV125's migration 4 — if that is YV128's \
+         speaker_profiles table, YV134's staged half has a real source now."
+    );
+    let ddl = [
+        wilson_voice_lib::meetings::MIGRATION_1_MEETINGS,
+        wilson_voice_lib::meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
+        wilson_voice_lib::meetings::MIGRATION_3_TWO_TRACK,
+        wilson_voice_lib::meetings::MIGRATION_4_MEETING_KIND,
+    ]
+    .join("\n");
+    assert!(
+        !ddl.contains("speaker_profiles"),
+        "the schema creates speaker_profiles — YV128 landed. YV134's staged \
+         enrollment source has a real table to read now."
+    );
+    for column in ["cluster_index", "speaker_id", "speaker_label"] {
+        assert!(
+            !ddl.contains(column),
+            "meeting_segments carries {column} — YV126/YV127 landed, so a \
+             transcript can hold a per-voice label and this test's ground-truth \
+             stand-in must be replaced by it."
+        );
+    }
+
+    // 4. The only constructible SpeakerSource never returns a name. Asserted
+    //    against the type, not the source text: a `Named` out of `TrackSpeakers`
+    //    would be a channel number promoted to an identity.
+    let segments = support::segments_from(&["one", "two"]);
+    let shipped =
+        wilson_voice_lib::summarize::TrackSpeakers::for_meeting(MeetingKind::InPerson, &segments);
+    for segment in &segments {
+        let answered = wilson_voice_lib::summarize::SpeakerSource::speaker_for(&shipped, segment);
+        assert!(
+            answered.as_ref().is_none_or(|s| !s.is_named()),
+            "TrackSpeakers returned a NAME ({answered:?}) — a track index is a \
+             channel, not a person."
+        );
+    }
+
+    eprintln!(
+        "yap23 does not close yet: YV122, YV124, YV126–YV131 are unshipped. \
+         See docs/yap23-phase-demo.md."
     );
 }
 
@@ -4379,6 +5149,11 @@ fn generate_room_3(root: &Path) {
                 id: (*id).to_string(),
                 voice: (*voice).to_string(),
                 direct_gain: *gain,
+                // Fixture (e) is the THRESHOLD-TUNING fixture, not an identity
+                // fixture: nobody in it is enrolled, so a DER measured on it is
+                // a statement about clustering alone.
+                enrolled_name: None,
+                enrollment_wav: None,
             })
             .collect(),
     };
@@ -4473,10 +5248,124 @@ fn generate_classroom_6(root: &Path) {
                 id: (*id).to_string(),
                 voice: (*voice).to_string(),
                 direct_gain: *gain,
+                // Same as fixture (e): (f) measures what the mechanism cannot
+                // do, and enrolment would confound that with who it knows.
+                enrolled_name: None,
+                enrollment_wav: None,
             })
             .collect(),
     };
     write_diarization_fixture(root, &meta, &mix);
+}
+
+/// Fixture (g): the phase-closing IRL room — four people, one mic, near-field,
+/// no overlap, three of them enrolled on HELD-OUT audio and the fourth not.
+///
+/// Deliberately inside the mechanism ceiling, unlike fixture (f). The closing
+/// demo of a phase has to run the chain the app is meant to run; a demo staged
+/// on the case the segmentation model is known to fail would be measuring the
+/// ceiling and calling it the feature.
+///
+/// The enrollment clips are rendered from [`IRL_CLOSE_ENROLLMENT`] — sentences
+/// that appear in no turn of the meeting — and written beside the mix as
+/// `enroll-<id>.wav`. See [`FixtureSpeaker::enrollment_wav`] for why held-out is
+/// the only useful kind.
+fn generate_irl_close(root: &Path) {
+    let gap = (SENTENCE_GAP * TARGET_RATE as f64) as usize;
+    let mut mix: Vec<f32> = Vec::new();
+    let mut rttm: Vec<RttmTurn> = Vec::new();
+    let mut utterances: Vec<Utterance> = Vec::new();
+
+    for (who, text) in IRL_CLOSE_TURNS {
+        let (id, voice, gain, _) = IRL_CLOSE_SPEAKERS[who];
+        let spoken = trim_silence(&synthesize_with(text, voice, TARGET_RATE)).to_vec();
+        let start = seconds(mix.len());
+        mix.extend(spoken.iter().map(|s| *s as f32 / 32_768.0 * gain));
+        let end = seconds(mix.len());
+        mix.extend(std::iter::repeat_n(0.0f32, gap));
+        rttm.push(RttmTurn::new(id, start, end));
+        utterances.push(Utterance {
+            text: format!("{id}: {text}"),
+            start_seconds: start,
+            end_seconds: end,
+        });
+    }
+
+    let tone = room_tone(mix.len(), 0x1AC0_5E11, IRL_CLOSE_TONE);
+    for (s, n) in mix.iter_mut().zip(tone.iter()) {
+        *s = (*s + *n).clamp(-1.0, 1.0);
+    }
+
+    // Hard by construction, checked before it is written. Fixture (g) is the
+    // no-overlap case and must stay inside pyannote-segmentation-3.0's 3-per-10s
+    // window ceiling even at four speakers: a closing fixture that drifted over
+    // the ceiling would fail for the mechanism's reason and be read as the
+    // chain's.
+    assert_eq!(max_simultaneous(&rttm), 1, "fixture (g) must not overlap");
+    assert!(max_speakers_in_window(&rttm, 10.0) <= 3);
+
+    let meta = FixtureMeta {
+        id: IRL_CLOSE.to_string(),
+        kind: "in_person_room_4_enrolled".to_string(),
+        sample_rate: TARGET_RATE,
+        duration_seconds: seconds(mix.len()),
+        utterances,
+        boundary_seconds: Vec::new(),
+        seam_keywords: Vec::new(),
+        marker_spans: Vec::new(),
+        chunk_seconds: None,
+        chunk_overlap_seconds: None,
+        device_change_seconds: None,
+        source_rates_hz: vec![TARGET_RATE],
+        two_track: None,
+        rttm,
+        speakers: IRL_CLOSE_SPEAKERS
+            .iter()
+            .map(|(id, voice, gain, name)| FixtureSpeaker {
+                id: (*id).to_string(),
+                voice: (*voice).to_string(),
+                direct_gain: *gain,
+                enrolled_name: name.map(str::to_string),
+                enrollment_wav: name.map(|_| enrollment_wav_name(id)),
+            })
+            .collect(),
+    };
+    write_diarization_fixture(root, &meta, &mix);
+
+    // The held-out enrollment clips, one per enrolled voice, rendered at that
+    // voice's own seat in the room and on the same tone floor as the meeting —
+    // an enrollment clip recorded in a different acoustic from the meeting is a
+    // different experiment from the one this fixture is for.
+    let dir = root.join(IRL_CLOSE);
+    for (id, voice, gain, name) in IRL_CLOSE_SPEAKERS {
+        let Some(name) = name else { continue };
+        let text = IRL_CLOSE_ENROLLMENT
+            .iter()
+            .find(|(who, _)| *who == id)
+            .map(|(_, text)| *text)
+            .unwrap_or_else(|| panic!("{id} is enrolled but has no held-out enrollment line"));
+        let spoken = trim_silence(&synthesize_with(text, voice, TARGET_RATE)).to_vec();
+        let mut clip: Vec<f32> = spoken.iter().map(|s| *s as f32 / 32_768.0 * gain).collect();
+        let tone = room_tone(clip.len(), 0x000E_0110 ^ id.len() as u32, IRL_CLOSE_TONE);
+        for (s, n) in clip.iter_mut().zip(tone.iter()) {
+            *s = (*s + *n).clamp(-1.0, 1.0);
+        }
+        // CAM++ needs something to embed, and so will YV129's matcher. A clip
+        // this short is an enrollment problem, not a threshold problem, and
+        // shipping one would make every later EER a statement about clip length.
+        assert!(
+            seconds(clip.len()) >= 2.0,
+            "{id}: the enrollment clip is only {:.2}s",
+            seconds(clip.len())
+        );
+        let path = dir.join(enrollment_wav_name(id));
+        write_wav_16k_mono(&path, &to_i16(&clip));
+        eprintln!(
+            "wrote {} — {:.1}s enrollment for {name}",
+            path.display(),
+            seconds(clip.len()),
+        );
+    }
 }
 
 /// Regrow ONLY the two diarization fixtures, then re-hash. Their geometry is
@@ -4491,6 +5380,19 @@ fn meeting_eval_generate_diarization_fixtures() {
     fs::create_dir_all(&root).expect("corpus root");
     generate_room_3(&root);
     generate_classroom_6(&root);
+    write_manifest_from(&root);
+}
+
+/// Regrow ONLY YV134's fixture (g), then re-hash. Kept separate from the writer
+/// above for the same reason that one is separate from the lecture: regrowing a
+/// fixture invalidates every number measured against it, so the blast radius of
+/// a writer should be exactly the fixture it is being run for.
+#[test]
+#[ignore = "writer, not a check: renders fixture (g) and its enrollment clips with `say`"]
+fn meeting_eval_generate_irl_close() {
+    let root = corpus_root();
+    fs::create_dir_all(&root).expect("corpus root");
+    generate_irl_close(&root);
     write_manifest_from(&root);
 }
 
