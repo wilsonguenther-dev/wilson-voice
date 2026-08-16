@@ -1,0 +1,238 @@
+YV129 — every gate proved able to FAIL.
+
+Each mutation below was applied to the shipping source (or to the mirrored
+status doc), the named test binary was run, and the source was restored. A gate
+that has never been seen red is a gate nobody has checked.
+
+M1  src/speaker_profiles.rs gains `pub const ENROLLMENT_AUTO_CONFIRM: f32 = 0.70;`
+    — the plan's own blog-sourced number, shipped while the EER is unmeasured.
+    enrollment_thresholds_refuse_an_unmeasured_eer  → FAILED (1 of 8)
+      panicked at tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs:65
+    enrollment_threshold_from_harness               → FAILED (2 of 8)
+      enrollment_threshold_from_harness       :78
+      no_tuned_enrollment_band_ships_in_the_crate :339
+
+M2  check_clustering_tighter_than_enrollment loosened from `>` to `>=`.
+    clustering_tighter_than_enrollment_floor → FAILED (2 of 4)
+      clustering_exactly_at_the_floor_is_rejected                  :80
+      the_ordering_is_a_property_of_the_two_units_not_of_one_lucky_pair :103
+      "floor=0.01 distance=0.99: clustering must be legal exactly when it is
+       strictly tighter than 0.99"
+
+M3  who_is_this_chips stops refusing a meeting that has not ended.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      "a running meeting must not be able to produce a who-is-this row"
+
+M4  the ChipFloor branch is disabled, so every cluster becomes a chip.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      a_six_speaker_classroom_asks_four_questions_not_six :225
+      (six chips instead of four + an Other bucket of two)
+
+M5  bands_from_distribution stops swapping the two edges, so a cleanly
+    separated distribution gets an inverted pair.
+    enrollment_threshold_from_harness → FAILED (2 of 8)
+      a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it :172
+      the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster             :276
+
+M6  src/meeting.rs (the LIVE capture module) gains a function that names
+    `crate::speaker_profiles::SpeakerChip` as code.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      panicked at :115 — "`SpeakerChip` appears as CODE in src/meeting.rs"
+    This is the backlog's own grep criterion, driven by a machine.
+
+M7  match_meeting_clusters_with calls the matcher once per TURN instead of once
+    per cluster — the exact defect the item exists to prevent.
+    match_cluster_runs_once_per_cluster → FAILED (1 of 3)
+      "the matcher ran 48 times over 6 clusters — a six-person class must cost
+       six questions, not one per utterance"
+
+M8  docs/yap23-eer-status.md is edited by hand to claim the EER was measured,
+    instead of being re-copied from the SSOT.
+    enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (1 of 8)
+      the_mirror_has_not_drifted_from_the_ssot :108
+    (This half binds only where the Obsidian note exists — a developer machine,
+     or anywhere YAP23_BACKLOG_PATH points at it. The substance half, M1, binds
+     everywhere including CI.)
+
+Additionally, the scanner behind M1/M8 is itself driven both ways INSIDE the
+test file rather than trusted: the_band_scanner_catches_a_tuned_constant_and_
+ignores_a_type_signature (6 tuned shapes detected, 5 clean shapes not),
+the_constructor_scan_is_paren_balanced_and_crosses_lines,
+unit_endpoints_are_not_tuned_thresholds_but_everything_else_is,
+the_block_extractor_fails_loudly_rather_than_returning_nothing, and
+the_scan_covers_the_module_this_item_added.
+
+===============================================================================
+REVISION (panel audit 2026-08-10). M1 above was NOT enough, and the finding that
+said so is now a committed test.
+===============================================================================
+
+M1 only proved the old scanner caught a band that volunteers its own name. The
+reviewer renamed the constants and put one function between the literals and the
+constructor, and BOTH gates stayed green (8 passed / 8 passed) with the vendor
+pair sitting in shipping source. M9/M10 are that exact probe, now caught twice
+over. Restore between mutations is a file copy, never `git checkout`.
+
+M9  THE REVIEW PROBE, VERBATIM, against the shipping build:
+      const OPENWHISPR_HI: f32 = 0.70;
+      const OPENWHISPR_LO: f32 = 0.55;
+      pub fn shipped_bands() -> EnrollmentBands {
+          EnrollmentBands::new(CosineSimilarity::new(OPENWHISPR_HI),
+                               CosineSimilarity::new(OPENWHISPR_LO)).expect("well ordered")
+      }
+    $ cargo build --release --features custom-protocol   → EXIT 101
+      error[E0599]: no function or associated item named `new` found for struct
+                    `EnrollmentBands` in the current scope
+    The seal, not the scanner: there is no public constructor to call. This is
+    the CI gate that builds the shipping binary, so it binds on every PR.
+
+M10 The same probe through `for_test` — the only literal constructor that
+    exists at all, and one a release build cannot see. In a TEST build it
+    compiles, so the scanner has to be the thing that catches it, and it does —
+    three independent nets, all reported:
+      enrollment_threshold_from_harness → FAILED (2 of 11)
+        speaker_profiles.rs: tuned float constant in the band module — OPENWHISPR_HI: f32 = 0.70
+        speaker_profiles.rs: tuned float constant in the band module — OPENWHISPR_LO: f32 = 0.55
+        speaker_profiles.rs: literal band edge — EnrollmentBands::for_test(
+          CosineSimilarity::new(OPENWHISPR_HI), CosineSimilarity::new(OPENWHISPR_LO))
+          [resolved: CosineSimilarity::new((0.70)), CosineSimilarity::new((0.55))]
+        speaker_profiles.rs: `EnrollmentBands::for_test(` is constructed in
+          `shipped_bands`, which is not a measured producer of EnrollmentBands
+      no_tuned_enrollment_band_ships_in_the_crate and enrollment_threshold_from_harness
+      both red. The probe is also committed as bands::PROBE_SOURCE and driven by
+      the_scanner_catches_the_renamed_indirect_probe, which requires EACH net to
+      fire on its own so no single one can rot behind the others.
+
+M11 docs/yap23-eer-status.md flipped to `EER: 0.1000 (measured)` with the SSOT
+    unreachable — YAP23_BACKLOG_PATH=/nonexistent, i.e. exactly CI.
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (3 of 14)
+        "docs/yap23-eer-status.md claims the anti-alias EER is MEASURED, and the
+         SSOT it is supposed to be a copy of is not reachable from this machine.
+         That combination is a FAILURE, never a skip…"
+        the_mirror_has_not_drifted_from_the_ssot   → FAILED (no longer skips)
+        the_mirror_matches_its_committed_digest    → FAILED
+    Under the version this PR revises, this same edit was GREEN.
+    (Note for anyone repeating it: the marker appears TWICE in the block, and
+     the gate is satisfied by either. A partial flip leaves it unmeasured.)
+
+M12 The same forgery with MIRROR_SHA256 updated in the same diff — the forger
+    doing their homework. SSOT still unreachable.
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (2 of 14)
+      the_mirror_matches_its_committed_digest        → ok (they updated it)
+    The hash was never the gate; the unreachable SSOT is.
+
+M13 The forgery WITH a matching SSOT (YAP23_BACKLOG_PATH pointed at a note that
+    contains the forged block verbatim) plus a provenance record — but one whose
+    numbers no run could have produced (floor moved off the EER point):
+      enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (1 of 14)
+        "the MEASURED block's provenance is not internally consistent, so no run
+         produced it:
+           `new_voice_floor` 0.4 is not the equal-error point 0.59 — the shipped
+           rule places the floor AT the EER operating point"
+
+M14 The SAME record made self-consistent (floor = 0.5900 = the EER threshold):
+      enrollment_thresholds_refuse_an_unmeasured_eer → ok (14 passed)
+    The measured branch is therefore non-vacuous in BOTH directions: it can be
+    satisfied, and only by a record that is arithmetically coherent with its own
+    corpus size, its own ROC and the rule the crate implements.
+    a_forged_measurement_fails_on_its_own_arithmetic drives seven more forgeries
+    (EER not the mean of its FAR/FRR; a rate no 20-pair sample can express; the
+    floor off the EER point; auto-confirm below the floor; a budget finer than
+    the resolution; an operating point missing from the sweep; a sweep whose FAR
+    rises) and requires each to be rejected.
+
+M15 bands_from_distribution's floor taken off the EER point and put back on
+    `min(genuine)` — half of the deleted rule.
+      enrollment_threshold_from_harness → FAILED (3 of 11)
+        bands_bracket_the_overlap_between_the_two_distributions
+        a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it
+        band_edges_do_not_diverge_as_the_sample_grows
+
+M16 The auto-confirm edge's FAR budget replaced by `<= 0.0` — i.e. back to
+    "strictly above every observed impostor", the other half of the deleted rule
+    and the one that makes Known stop firing.
+      enrollment_threshold_from_harness → FAILED (2 of 11)
+        bands_bracket_the_overlap_between_the_two_distributions
+        band_edges_do_not_diverge_as_the_sample_grows
+
+Scanner-internal non-vacuity added with the rewrite:
+  the_scanner_catches_the_renamed_indirect_probe  (every net, driven separately,
+    plus a clean file that only PASSES bands around and must stay clean)
+  only_the_two_test_only_cfgs_are_blanked_from_the_shipping_half
+    (cfg(test) and cfg(any(test, feature="test-bands")) are blanked;
+     cfg(target_os="macos") is NOT; code after a test module is still scanned;
+     line numbers survive)
+  comments_and_string_literals_are_not_code (length-preserving mask)
+  a_consistent_provenance_record_verifies / a_forged_measurement_fails_on_its_own_arithmetic
+
+REVISE-FIRST ROUND 2 — the two BLOCKING findings, each proved able to fail
+--------------------------------------------------------------------------
+
+M17 The reviewer's serde probe, verbatim, injected into shipping source
+    (src/speaker_profiles.rs):
+
+      const OPENWHISPR_BANDS: &str = "{\"autoConfirm\":0.70,\"newVoiceFloor\":0.55}";
+      pub fn shipped_bands() -> Result<EnrollmentBands, serde_json::Error> {
+          serde_json::from_str(OPENWHISPR_BANDS)
+      }
+
+    BEFORE this round it compiled clean and every gate stayed green.
+      $ cargo build --release --features custom-protocol
+      error[E0277]: the trait bound `EnrollmentBands: serde::Deserialize<'de>`
+                    is not satisfied
+        --> src-tauri/src/speaker_profiles.rs:811:5
+      error: could not compile `wilson-voice` (lib) due to 1 previous error
+
+    The seal is now the type, not the scanner: with `Serialize` alone there is
+    no inward path to construct one at all.
+
+M17b The same probe WITH `Deserialize` put back on `EnrollmentBands` — i.e. the
+    exact pre-fix tree — to show the scanner would have caught it too, so the
+    two halves of the fix are independent rather than one dressed as two.
+      $ cargo build --release --features custom-protocol → Finished (as reported)
+      enrollment_threshold_from_harness → FAILED (2 of 11)
+        enrollment_threshold_from_harness           :97
+        no_tuned_enrollment_band_ships_in_the_crate :590
+          speaker_profiles.rs: `EnrollmentBands` derives Deserialize — serde is a
+            public producer that needs no constructor, so a sealed constructor
+            does not seal the type
+          speaker_profiles.rs: `from_str` is called inside `shipped_bands`, which
+            names EnrollmentBands: a band arriving as DATA is still a band nobody
+            measured
+
+M18 The DERIVE ALONE — `Deserialize` back on `EnrollmentBands`, no probe
+    function anywhere in the tree. The door is the derive, so the derive is what
+    the net has to see.
+      enrollment_threshold_from_harness → FAILED (2 of 11), same two tests,
+        derive hit only.
+
+M19 The embedding-model guard removed from `SpeakerProfile::best_match`
+    (`if &self.embedding_model != probe_model { return None; }` deleted).
+      cargo test --lib speaker_profiles → FAILED (2 of 9)
+        a_profile_from_another_embedder_is_skipped_rather_than_scored
+          left: Some((CosineSimilarity(1.0), "laptop"))   right: None
+          — a byte-identical vector from a DIFFERENT embedder scores 1.0 and
+            returns Known: a name written on a stranger, nobody in the loop
+        a_model_mismatch_is_checked_before_the_dimension_panic
+          panicked in diarize_metrics.rs:195 — 8 dims vs 3, i.e. without the
+          guard the cross-model case reaches the dimension assert instead
+      enrollment_threshold_from_harness → FAILED (1 of 11)
+        the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster
+          "an identical vector from another embedding space must never auto-confirm"
+
+M20 `CosineSimilarity` back to a derived `#[serde(transparent)]` Deserialize,
+    i.e. the clamp back off the data path.
+      diarization_metrics → FAILED (1 of 13)
+        deserializing_a_cosine_unit_goes_through_its_clamp
+          left: 9.0   right: 1.0
+          — the reviewer's exact probe value, outside the unit's own MIN/MAX,
+            accepted silently by the derive.
+
+Scanner-internal non-vacuity added with net 4's rewrite:
+  the_scanner_catches_the_renamed_indirect_probe now drives BOTH probes and
+    asserts, separately, that nets 1, 2 and 5 do NOT see the serde one — if they
+    did, net 4 would not be load-bearing and could rot unnoticed.
+  the_data_net_sees_both_doors_and_neither_false_positive
+    (derive above a `pub struct` past a `#[serde]` and a doc comment; a
+     hand-written `impl Deserialize for`; NOT `extend_from_slice` in an
+     unrelated function; NOT the type's own `Serialize` half)

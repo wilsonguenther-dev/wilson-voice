@@ -2787,3 +2787,82 @@ button.primary.big {
   max-height: 260px;
   overflow: auto;
 }
+
+/* ---------------------------------------------------------------------------
+   YV129 — the "who is this?" chip row.
+
+   Inline in the meeting detail, above the transcript, and deliberately quiet:
+   it is an OFFER, not a task list. One row per cluster, the roster laid out
+   horizontally so the whole answer is one click, and the quiet remainder as a
+   single line of meta rather than more chips.
+   --------------------------------------------------------------------------- */
+.speaker-chips .chip-rows {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.speaker-chips .chip-rows li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* The cluster's transcript label, in the pixel voice the app gives data. */
+.speaker-chips .chip-cluster {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+  min-width: 5.5rem;
+}
+
+.speaker-chips .chip-speech {
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 8rem;
+}
+
+.speaker-chips .chip-choices {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.speaker-chips .chip-candidate {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.speaker-chips .chip-candidate:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* The matcher's own guess, pre-selected. Accent-tinted so the eye lands on it
+   first — it is the answer most of the time, and the rest of the row is there
+   for when it is not. */
+.speaker-chips .chip-candidate.suggested {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.speaker-chips .chip-candidate.new {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.speaker-chips .chip-other {
+  margin-top: 10px;
+}

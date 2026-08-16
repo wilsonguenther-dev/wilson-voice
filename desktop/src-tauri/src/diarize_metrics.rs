@@ -59,8 +59,19 @@
 //! enrollment bands), never an input copied from a vendor blog. A `const` in
 //! this file with a number in it would be the whole failure this item exists to
 //! prevent.
+//!
+//! ## Why the two units deserialize by hand
+//!
+//! Both newtypes clamp in their constructors, and for a while both also carried
+//! `#[derive(Deserialize)]` with `#[serde(transparent)]` — which writes the wire
+//! `f32` straight into the field and never calls the constructor. A review probe
+//! deserialized `9.0` and `-4.0` into a `CosineSimilarity`, both outside this
+//! unit's own `MIN`/`MAX`, with no error anywhere. An invariant that holds only
+//! on the constructor path is not an invariant, so `Deserialize` is written out
+//! below and routed through [`CosineSimilarity::new`] /
+//! [`CosineDistance::new`]: the same clamp, on the data path too.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
 // The two cosine units
@@ -74,7 +85,10 @@ use serde::{Deserialize, Serialize};
 /// rather than rejecting: a dot product of two unit vectors legitimately comes
 /// back as `1.0000001` in `f32`, and an eval harness that panicked on floating
 /// point noise would be useless.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+///
+/// `Deserialize` is hand-written below rather than derived, so that clamp is on
+/// the DATA path as well as the constructor path — see the module header.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct CosineSimilarity(f32);
 
@@ -82,9 +96,45 @@ pub struct CosineSimilarity(f32);
 /// **Smaller is more similar.** This is the unit sherpa-onnx's clustering runs
 /// in, and therefore the unit every clustering threshold in this codebase is
 /// expressed in.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+///
+/// `Deserialize` is hand-written below, for [`CosineSimilarity`]'s reason.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct CosineDistance(f32);
+
+/// The wire form of both units, and the one place a bare `f32` becomes one.
+///
+/// A free function rather than two copies: the two impls below differ only in
+/// which constructor they hand the number to, and a divergence between them
+/// would be the kind of asymmetry this whole module exists to make impossible.
+fn deserialize_finite<'de, D: Deserializer<'de>>(d: D, unit: &str) -> Result<f32, D::Error> {
+    let raw = f32::deserialize(d)?;
+    if !raw.is_finite() {
+        return Err(serde::de::Error::custom(format!(
+            "a {unit} must be a finite number, not {raw}"
+        )));
+    }
+    Ok(raw)
+}
+
+impl<'de> Deserialize<'de> for CosineSimilarity {
+    /// Routed through [`CosineSimilarity::new`], so a wire value outside
+    /// `[MIN, MAX]` is clamped exactly as a computed one is.
+    ///
+    /// The derived version (`#[serde(transparent)]`) wrote the wire `f32`
+    /// straight into the field: a review probe deserialized `9.0` and `-4.0`
+    /// into this type, both outside its own `MIN`/`MAX`, and nothing objected.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self::new(deserialize_finite(d, "cosine similarity")?))
+    }
+}
+
+impl<'de> Deserialize<'de> for CosineDistance {
+    /// Routed through [`CosineDistance::new`] — see [`CosineSimilarity`]'s impl.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self::new(deserialize_finite(d, "cosine distance")?))
+    }
+}
 
 impl CosineSimilarity {
     pub const MIN: f32 = -1.0;

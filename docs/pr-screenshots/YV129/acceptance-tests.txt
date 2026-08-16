@@ -1,0 +1,320 @@
+YV129 — acceptance evidence, macOS 26.5.2 / arm64, base origin/main 8086ed9 (YV125).
+Every command below was run in this checkout; output is verbatim.
+
+$ grep -n "who_is_this|SpeakerChip" desktop/src-tauri/src/meeting.rs   → no match (exit 1), the criterion
+$ grep -rn same over src/                                            → desktop/src-tauri/src/speaker_profiles.rs ONLY
+
+=== cargo test --test enrollment_threshold_from_harness -- --nocapture ===
+     Running tests/enrollment_threshold_from_harness.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/enrollment_threshold_from_harness-249ca64a120a0c61)
+
+running 8 tests
+test an_impostor_at_the_ceiling_leaves_no_room_for_an_auto_confirm_edge ... ok
+test a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it ... ok
+test bands_bracket_the_overlap_between_the_two_distributions ... ok
+test every_unordered_pair_is_scored_once_and_labeled_by_whether_the_speakers_match ... ok
+tuned from 9 genuine / 27 impostor pairs: auto_confirm=0.9817 new_voice_floor=0.2860 eer=0.0000 (far_res=0.0370 frr_res=0.1111)
+test an_indistinguishable_distribution_produces_no_bands ... ok
+test the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster ... ok
+enrollment bands: UNMEASURED (no inference backend until YV122; OS-8 also forbids tuning until YV124's EER is measured). 0 tuned band sites in src/.
+test no_tuned_enrollment_band_ships_in_the_crate ... ok
+test enrollment_threshold_from_harness ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+=== cargo test --test enrollment_thresholds_refuse_an_unmeasured_eer -- --nocapture ===
+     Running tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/enrollment_thresholds_refuse_an_unmeasured_eer-dce90945969981c1)
+
+running 8 tests
+test the_block_extractor_fails_loudly_rather_than_returning_nothing ... ok
+test the_band_scanner_catches_a_tuned_constant_and_ignores_a_type_signature ... ok
+test the_unmeasured_marker_is_detected_and_its_absence_is_too ... ok
+test the_constructor_scan_is_paren_balanced_and_crosses_lines ... ok
+test unit_endpoints_are_not_tuned_thresholds_but_everything_else_is ... ok
+test the_scan_covers_the_module_this_item_added ... ok
+test the_mirror_has_not_drifted_from_the_ssot ... ok
+YV124 EER: UNMEASURED — tuned band sites in src/: 0
+test enrollment_thresholds_refuse_an_unmeasured_eer ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+
+=== cargo test --test clustering_tighter_than_enrollment_floor -- --nocapture ===
+     Running tests/clustering_tighter_than_enrollment_floor.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/clustering_tighter_than_enrollment_floor-fa12889f8dd76982)
+
+running 4 tests
+test clustering_exactly_at_the_floor_is_rejected ... ok
+test clustering_tighter_than_enrollment_floor ... ok
+test the_one_conversion_runs_the_direction_finding_20_requires ... ok
+test the_ordering_is_a_property_of_the_two_units_not_of_one_lucky_pair ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== cargo test --test match_cluster_runs_once_per_cluster -- --nocapture ===
+     Running tests/match_cluster_runs_once_per_cluster.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/match_cluster_runs_once_per_cluster-0ff4f99a816c8b25)
+
+running 3 tests
+test each_decision_is_bound_to_its_own_cluster ... ok
+test match_cluster_runs_once_per_cluster ... ok
+test the_shipped_entry_point_is_the_one_that_was_counted ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== cargo test --test who_is_this_never_modal_never_live -- --nocapture ===
+     Running tests/who_is_this_never_modal_never_live.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/who_is_this_never_modal_never_live-74598767bdca8ef8)
+
+running 6 tests
+test an_auto_confirmed_cluster_gets_no_chip ... ok
+test a_cluster_the_user_has_already_answered_is_never_re_offered ... ok
+test a_six_speaker_classroom_asks_four_questions_not_six ... ok
+test a_suggested_cluster_arrives_pre_selected_with_the_rest_of_the_roster_beside_it ... ok
+test who_is_this_never_modal_never_live ... ok
+test the_chip_row_builder_has_no_call_site_on_any_capture_path ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+
+=== flaky check: the five acceptance binaries, three consecutive passes ===
+all five: 'test result: ok' on passes 1, 2 and 3 (8/8, 8/8, 4/4, 3/3, 6/6 each pass)
+
+=== whole suite ===
+$ cargo test  → 99 test binaries, 'test result: ok' in every one, 0 failed (run twice)
+$ npx tsc --noEmit  → exit 0
+$ npm test (vitest) → 12 files, 138 tests passed (incl. speakerChips 9, SpeakerChipRow 4)
+$ npm run build     → built in 680ms
+
+
+===============================================================================
+REVISION (panel audit 2026-08-10 — three BLOCKING findings). Re-run in full.
+===============================================================================
+
+The band-scan tests below are NOT the ones the first pass shipped: the scanner
+was rewritten (type-based, four nets + a compile-time seal), the EER-status gate
+gained a measured branch that cannot self-certify, and bands_from_distribution
+now places its edges off the ROC instead of off the sample extrema. Everything
+here is from this checkout.
+
+$ cargo test --features custom-protocol \
+    --test enrollment_threshold_from_harness \
+    --test enrollment_thresholds_refuse_an_unmeasured_eer \
+    --test clustering_tighter_than_enrollment_floor \
+    --test match_cluster_runs_once_per_cluster \
+    --test who_is_this_never_modal_never_live -- --nocapture
+
+   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv129/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.32s
+     Running tests/clustering_tighter_than_enrollment_floor.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/clustering_tighter_than_enrollment_floor-fd674242725db487)
+
+running 4 tests
+test clustering_exactly_at_the_floor_is_rejected ... ok
+test the_one_conversion_runs_the_direction_finding_20_requires ... ok
+test clustering_tighter_than_enrollment_floor ... ok
+test the_ordering_is_a_property_of_the_two_units_not_of_one_lucky_pair ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/enrollment_threshold_from_harness.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/enrollment_threshold_from_harness-6e2edf889d320aac)
+
+running 11 tests
+hand-worked 20/20: eer=0.1000 @ 0.5900 → floor=0.5900 auto_confirm=0.6100 far=0.0500(res 0.0500) frr@floor=0.1000 frr@auto=0.1000(res 0.0500)
+test an_indistinguishable_distribution_produces_no_bands ... ok
+test a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it ... ok
+test a_budget_finer_than_the_sample_can_express_is_refused ... ok
+test an_impostor_at_the_ceiling_leaves_no_room_for_an_auto_confirm_edge ... ok
+test every_unordered_pair_is_scored_once_and_labeled_by_whether_the_speakers_match ... ok
+test bands_bracket_the_overlap_between_the_two_distributions ... ok
+tuned from 9 genuine / 27 impostor pairs: auto_confirm=0.9817 new_voice_floor=0.6338 eer=0.0000 far=0.0000 (far_res=0.0370 frr_res=0.1111)
+test the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster ... ok
+test the_only_literal_constructor_is_sealed_behind_a_test_cfg ... ok
+n=  40  MEASURED floor=0.5698 auto=0.6314 width=0.0616 (far 0.0500)   ORDER-STATISTIC floor=0.4770 auto=0.6575 width=0.1805
+n= 160  MEASURED floor=0.5810 auto=0.6314 width=0.0504 (far 0.0500)   ORDER-STATISTIC floor=0.4381 auto=0.7086 width=0.2706
+n= 640  MEASURED floor=0.5817 auto=0.6351 width=0.0535 (far 0.0500)   ORDER-STATISTIC floor=0.4218 auto=0.7093 width=0.2875
+one confusable impostor at 0.98: MEASURED auto=0.6354 (a 0.90 match is Known) — ORDER-STATISTIC auto=0.9801 (a 0.90 match is asked about, forever)
+test band_edges_do_not_diverge_as_the_sample_grows ... ok
+enrollment bands: UNMEASURED (no inference backend until YV122; OS-8 also forbids tuning until YV124's EER is measured). 0 tuned band sites in src/.
+test enrollment_threshold_from_harness ... ok
+test no_tuned_enrollment_band_ships_in_the_crate ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/enrollment_thresholds_refuse_an_unmeasured_eer-e60264f5a4c07ed5)
+
+running 14 tests
+test comments_and_string_literals_are_not_code ... ok
+test the_constructor_scan_is_paren_balanced_and_crosses_lines ... ok
+test only_the_two_test_only_cfgs_are_blanked_from_the_shipping_half ... ok
+test the_block_extractor_fails_loudly_rather_than_returning_nothing ... ok
+test the_band_scanner_catches_a_tuned_constant_and_ignores_a_type_signature ... ok
+test a_consistent_provenance_record_verifies ... ok
+test the_scan_covers_the_module_this_item_added ... ok
+test the_scanner_catches_the_renamed_indirect_probe ... ok
+test the_unmeasured_marker_is_detected_and_its_absence_is_too ... ok
+test unit_endpoints_are_not_tuned_thresholds_but_everything_else_is ... ok
+test a_forged_measurement_fails_on_its_own_arithmetic ... ok
+test the_mirror_has_not_drifted_from_the_ssot ... ok
+test the_mirror_matches_its_committed_digest ... ok
+YV124 EER: UNMEASURED — tuned band sites in src/: 0
+test enrollment_thresholds_refuse_an_unmeasured_eer ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/match_cluster_runs_once_per_cluster.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/match_cluster_runs_once_per_cluster-508644256c8f7351)
+
+running 3 tests
+test each_decision_is_bound_to_its_own_cluster ... ok
+test match_cluster_runs_once_per_cluster ... ok
+test the_shipped_entry_point_is_the_one_that_was_counted ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/who_is_this_never_modal_never_live.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/who_is_this_never_modal_never_live-608f5886481f0508)
+
+running 6 tests
+test a_cluster_the_user_has_already_answered_is_never_re_offered ... ok
+test an_auto_confirmed_cluster_gets_no_chip ... ok
+test a_suggested_cluster_arrives_pre_selected_with_the_rest_of_the_roster_beside_it ... ok
+test a_six_speaker_classroom_asks_four_questions_not_six ... ok
+test who_is_this_never_modal_never_live ... ok
+test the_chip_row_builder_has_no_call_site_on_any_capture_path ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+
+$ cargo test --features custom-protocol            → EXIT 0 (whole suite)
+$ cargo build --release --features custom-protocol → EXIT 0
+$ ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+  PASS: no 14.4-era CoreAudio symbol is a hard load-time requirement
+$ npm run build && npm test (desktop/)             → 12 files, 138 tests passed
+
+THE TWO NUMBERS THE THIRD FINDING ASKED FOR, measured rather than argued
+-----------------------------------------------------------------------
+band_edges_do_not_diverge_as_the_sample_grows draws ONE pool and feeds nested
+prefixes of it to both rules, so `max(impostor)` can only rise and
+`min(genuine)` can only fall by construction:
+
+  n         MEASURED (EER floor + FAR-budget edge)      ORDER-STATISTIC (deleted rule)
+  40        floor 0.5698  auto 0.6314  width 0.0616     floor 0.4770  auto 0.6575  width 0.1805
+  160       floor 0.5810  auto 0.6314  width 0.0504     floor 0.4381  auto 0.7086  width 0.2706
+  640       floor 0.5817  auto 0.6351  width 0.0535     floor 0.4218  auto 0.7093  width 0.2875
+
+  The suggest band the deleted rule produces grows 0.1805 → 0.2875 (+59 %) as the
+  corpus grows 16×. The shipped rule's stays flat (0.0616 → 0.0535) and its
+  achieved FAR stays at the requested budget (0.0500) at every size.
+
+  And the failure mode the finding named, reproduced with ONE confusable
+  impostor pair at 0.98 added to the 640-pair sample:
+    MEASURED        auto_confirm 0.6354 — a 0.90 match is Known, asks nothing
+    ORDER-STATISTIC auto_confirm 0.9801 — the same 0.90 match is asked about,
+                                          in every meeting, forever
+
+================================================================
+REVISE-FIRST ROUND 2 — fresh transcripts, same checkout
+================================================================
+
+$ cargo test --lib speaker_profiles
+running 9 tests
+test speaker_profiles::tests::bands_reject_an_inverted_pair ... ok
+test speaker_profiles::tests::a_model_mismatch_is_checked_before_the_dimension_panic ... ok
+test speaker_profiles::tests::an_enrolled_name_with_no_voice_behind_it_is_never_suggested ... ok
+test speaker_profiles::tests::a_profile_from_another_embedder_is_skipped_rather_than_scored ... ok
+test speaker_profiles::tests::a_profile_scores_across_every_centroid_not_just_the_first ... ok
+test speaker_profiles::tests::the_three_bands_are_the_three_outcomes ... ok
+test speaker_profiles::tests::the_ordering_check_accepts_a_tighter_clustering_and_rejects_a_looser_one ... ok
+test speaker_profiles::tests::ties_break_on_profile_id_so_the_answer_does_not_depend_on_roster_order ... ok
+test speaker_profiles::tests::the_embedding_model_id_is_the_catalogs_pinned_digest ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 541 filtered out; finished in 0.00s
+
+$ cargo test --test enrollment_threshold_from_harness
+running 11 tests
+test a_budget_finer_than_the_sample_can_express_is_refused ... ok
+test a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it ... ok
+test an_impostor_at_the_ceiling_leaves_no_room_for_an_auto_confirm_edge ... ok
+test an_indistinguishable_distribution_produces_no_bands ... ok
+test every_unordered_pair_is_scored_once_and_labeled_by_whether_the_speakers_match ... ok
+test bands_bracket_the_overlap_between_the_two_distributions ... ok
+test the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster ... ok
+test the_only_literal_constructor_is_sealed_behind_a_test_cfg ... ok
+test band_edges_do_not_diverge_as_the_sample_grows ... ok
+test no_tuned_enrollment_band_ships_in_the_crate ... ok
+test enrollment_threshold_from_harness ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+$ cargo test --test enrollment_thresholds_refuse_an_unmeasured_eer
+running 15 tests
+test comments_and_string_literals_are_not_code ... ok
+test the_block_extractor_fails_loudly_rather_than_returning_nothing ... ok
+test the_constructor_scan_is_paren_balanced_and_crosses_lines ... ok
+test only_the_two_test_only_cfgs_are_blanked_from_the_shipping_half ... ok
+test the_data_net_sees_both_doors_and_neither_false_positive ... ok
+test a_consistent_provenance_record_verifies ... ok
+test the_band_scanner_catches_a_tuned_constant_and_ignores_a_type_signature ... ok
+test the_unmeasured_marker_is_detected_and_its_absence_is_too ... ok
+test the_scan_covers_the_module_this_item_added ... ok
+test unit_endpoints_are_not_tuned_thresholds_but_everything_else_is ... ok
+test the_mirror_matches_its_committed_digest ... ok
+test the_mirror_has_not_drifted_from_the_ssot ... ok
+test the_scanner_catches_the_renamed_indirect_probe ... ok
+test a_forged_measurement_fails_on_its_own_arithmetic ... ok
+test enrollment_thresholds_refuse_an_unmeasured_eer ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+$ cargo test --test diarization_metrics
+running 13 tests
+test cosine_distance_and_similarity_conversion_round_trips ... ok
+test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
+test deserializing_a_cosine_unit_goes_through_its_clamp ... ok
+test eer_is_near_zero_for_well_separated_scores ... ok
+test eer_is_near_half_for_fully_overlapping_scores ... ok
+test jer_matches_hand_worked_example ... ok
+test jer_exposes_a_speaker_der_hides ... ok
+test der_matches_hand_worked_example ... ok
+test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
+test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+test der_counts_overlapped_reference_speech_once_per_speaker ... ok
+test rttm_turns_round_trip_through_the_standard_line_format ... ok
+test no_threshold_shaped_declaration_takes_a_bare_float ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test match_cluster_runs_once_per_cluster --test who_is_this_never_modal_never_live --test clustering_tighter_than_enrollment_floor
+running 4 tests
+test clustering_exactly_at_the_floor_is_rejected ... ok
+test clustering_tighter_than_enrollment_floor ... ok
+test the_one_conversion_runs_the_direction_finding_20_requires ... ok
+test the_ordering_is_a_property_of_the_two_units_not_of_one_lucky_pair ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 3 tests
+test each_decision_is_bound_to_its_own_cluster ... ok
+test match_cluster_runs_once_per_cluster ... ok
+test the_shipped_entry_point_is_the_one_that_was_counted ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 6 tests
+test a_cluster_the_user_has_already_answered_is_never_re_offered ... ok
+test a_six_speaker_classroom_asks_four_questions_not_six ... ok
+test a_suggested_cluster_arrives_pre_selected_with_the_rest_of_the_roster_beside_it ... ok
+test an_auto_confirmed_cluster_gets_no_chip ... ok
+test who_is_this_never_modal_never_live ... ok
+test the_chip_row_builder_has_no_call_site_on_any_capture_path ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo build --release --features custom-protocol            → EXIT 0
+$ ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
+  PASS: no 14.4-era CoreAudio symbol is a hard load-time requirement
+$ cargo test --features custom-protocol
+  99 test binaries, every one `test result: ok`, 1156 tests passed, 0 failed
+$ npm run build && npm test (desktop/)                        → 12 files, 138 tests passed
+$ cargo fmt --all -- --check
+  zero NEW diffs against the base branch (one pre-existing diff removed);
+  the tree's pre-existing rustfmt drift is untouched and the CI step is `|| true`
+$ cargo clippy --all-targets --features custom-protocol
+  one error, `0.7071` ≈ FRAC_1_SQRT_2 at who_is_this_never_modal_never_live.rs:276 —
+  present on the base branch at the same assertion (line 268 there), informational in CI
