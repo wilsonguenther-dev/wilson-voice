@@ -9,6 +9,7 @@ use crate::meetings::{
     self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
+use crate::speaker_profiles;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -487,6 +488,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
             3 => meetings::MIGRATION_3_TWO_TRACK,
             4 => meetings::MIGRATION_4_MEETING_KIND,
+            5 => meetings::MIGRATION_5_SPEAKER_PROFILES,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1923,6 +1925,331 @@ impl Database {
         }
 
         Ok(stats)
+    }
+
+    // ── YV128 · enrolled voices ─────────────────────────────────────────────
+    //
+    // The rows behind `speaker_profiles.rs`. Every read of a stored embedding
+    // goes through `NormalizedEmbedding::from_blob`, which enforces finding
+    // #19's `blob.len() == embedding_dim * 4` invariant at USE time — a
+    // truncated or half-written BLOB fails here, loudly, with both numbers,
+    // rather than becoming a shorter vector that quietly scores against
+    // everything.
+    //
+    // Nothing in this build calls these yet: enrolment is YV129 (matching) and
+    // YV130 (correction UX). They ship now because the schema they read is what
+    // this item is, and a table with no accessor is a table nobody has proved
+    // round-trips.
+
+    /// Enrol a voice. `embedding_dim` is the width the sidecar REPORTED when it
+    /// loaded the embedding model (`DiarizeResponse::embedding_dim`) — there is
+    /// no default for it in the schema and no constant for it in this codebase,
+    /// which is finding #19's fix in the two places it has to hold.
+    ///
+    /// `embedding_model` is the catalog id the width came from: two 192-dim
+    /// models produce two incomparable 192-dim spaces, so a profile that cannot
+    /// name its model cannot be safely compared against a later one.
+    ///
+    /// `locked` starts `true`. A profile exists because a person put a name to
+    /// a voice; that is a user-confirmed assignment by definition, and the rule
+    /// YV129/YV130 inherit is that an automated pass never overwrites one.
+    pub fn create_speaker_profile(
+        &self,
+        display_name: &str,
+        embedding_dim: u32,
+        embedding_model: &str,
+        is_me: bool,
+    ) -> Result<speaker_profiles::SpeakerProfile, String> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err("a speaker profile needs a name".into());
+        }
+        if embedding_dim == 0 {
+            return Err("embedding_dim must be the width the model reported, not zero".into());
+        }
+        if embedding_model.trim().is_empty() {
+            return Err("a speaker profile needs the embedding model it was enrolled with".into());
+        }
+        let now = Utc::now().to_rfc3339();
+        let row = speaker_profiles::SpeakerProfile {
+            id: Uuid::new_v4().to_string(),
+            display_name: display_name.to_string(),
+            embedding_dim,
+            embedding_model: embedding_model.trim().to_string(),
+            locked: true,
+            is_me,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO speaker_profiles
+             (id, display_name, embedding_dim, embedding_model, locked, is_me, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.id,
+                row.display_name,
+                row.embedding_dim,
+                row.embedding_model,
+                row.locked as i64,
+                row.is_me as i64,
+                row.created_at,
+                row.updated_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(row)
+    }
+
+    /// Every enrolled voice with every centroid it has accumulated — the unit
+    /// [`speaker_profiles::best_match`] scores against.
+    ///
+    /// Fails on the FIRST unreadable blob rather than skipping it. A profile
+    /// silently missing one of its conditions is a profile that quietly stops
+    /// matching on the device that condition came from, which is precisely the
+    /// failure finding #21 is about; a loud error is recoverable, a silent
+    /// degradation is not.
+    pub fn list_speaker_profiles(&self) -> Result<Vec<speaker_profiles::ProfileCentroids>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, display_name, embedding_dim, embedding_model, locked, is_me,
+                        created_at, updated_at
+                 FROM speaker_profiles ORDER BY created_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let profiles: Vec<speaker_profiles::SpeakerProfile> = stmt
+            .query_map([], |r| {
+                Ok(speaker_profiles::SpeakerProfile {
+                    id: r.get(0)?,
+                    display_name: r.get(1)?,
+                    embedding_dim: r.get::<_, i64>(2)?.max(0) as u32,
+                    embedding_model: r.get(3)?,
+                    locked: r.get::<_, i64>(4)? != 0,
+                    is_me: r.get::<_, i64>(5)? != 0,
+                    created_at: r.get(6)?,
+                    updated_at: r.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::with_capacity(profiles.len());
+        for profile in profiles {
+            let centroids = Self::read_centroids(&conn, &profile)?;
+            out.push(speaker_profiles::ProfileCentroids { profile, centroids });
+        }
+        Ok(out)
+    }
+
+    /// One profile, or `None`. Same read-side invariant as the list.
+    pub fn get_speaker_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<speaker_profiles::ProfileCentroids>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let profile = Self::read_profile(&conn, id)?;
+        let Some(profile) = profile else {
+            return Ok(None);
+        };
+        let centroids = Self::read_centroids(&conn, &profile)?;
+        Ok(Some(speaker_profiles::ProfileCentroids { profile, centroids }))
+    }
+
+    /// Fold one newly-heard embedding into the profile's centroid FOR THAT
+    /// CONDITION, creating it if this is the first time the voice has been heard
+    /// under it.
+    ///
+    /// This is the multi-centroid update in one call: a sample recorded on
+    /// AirPods updates the `bluetooth_near` centroid and leaves the
+    /// `laptop_mic_near` one exactly as it was, which is what stops one
+    /// device's samples from dragging the other's average somewhere that
+    /// matches neither.
+    ///
+    /// The sample arrives already L2-normalised (it cannot be anything else —
+    /// [`speaker_profiles::NormalizedEmbedding`]'s constructor IS the
+    /// normalisation), and the stored result is renormalised by
+    /// [`speaker_profiles::Centroid::updated_with`]. Both halves of the
+    /// discipline are types here, not steps a caller could forget.
+    pub fn observe_speaker_embedding(
+        &self,
+        profile_id: &str,
+        condition_key: &str,
+        sample: &speaker_profiles::NormalizedEmbedding,
+    ) -> Result<speaker_profiles::Centroid, String> {
+        let condition_key = condition_key.trim();
+        if condition_key.is_empty() {
+            return Err("a centroid needs a condition key".into());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let profile = Self::read_profile(&conn, profile_id)?
+            .ok_or_else(|| format!("no speaker profile {profile_id}"))?;
+        if sample.dim() != profile.embedding_dim as usize {
+            return Err(format!(
+                "speaker profile {profile_id}: {}",
+                speaker_profiles::EmbeddingError::DimensionMismatch {
+                    expected: profile.embedding_dim as usize,
+                    actual: sample.dim(),
+                }
+            ));
+        }
+
+        let existing: Option<(Vec<u8>, i64)> = conn
+            .query_row(
+                "SELECT embedding, sample_count FROM speaker_centroids
+                 WHERE profile_id = ?1 AND condition_key = ?2",
+                params![profile.id, condition_key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        let updated = match existing {
+            Some((blob, count)) => {
+                let current = Self::decode_centroid(&profile, condition_key, &blob)?;
+                speaker_profiles::Centroid {
+                    condition_key: condition_key.to_string(),
+                    vector: current,
+                    sample_count: count.clamp(1, u32::MAX as i64) as u32,
+                }
+                .updated_with(sample)
+                .map_err(|e| format!("speaker profile {}: {e}", profile.id))?
+            }
+            None => speaker_profiles::Centroid::first(condition_key, sample.clone()),
+        };
+
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO speaker_centroids
+               (profile_id, condition_key, embedding, sample_count, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(profile_id, condition_key) DO UPDATE SET
+               embedding = excluded.embedding,
+               sample_count = excluded.sample_count,
+               updated_at = excluded.updated_at",
+            params![
+                profile.id,
+                updated.condition_key,
+                updated.vector.to_blob(),
+                updated.sample_count as i64,
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE speaker_profiles SET updated_at = ?2 WHERE id = ?1",
+            params![profile.id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(updated)
+    }
+
+    /// Rename an enrolled voice, or (re)confirm it. Renaming is a user action,
+    /// so it locks the profile.
+    pub fn rename_speaker_profile(&self, id: &str, display_name: &str) -> Result<(), String> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err("a speaker profile needs a name".into());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE speaker_profiles SET display_name = ?2, locked = 1, updated_at = ?3
+             WHERE id = ?1",
+            params![id, display_name, Utc::now().to_rfc3339()],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Forget a voice, centroids and all. The `ON DELETE CASCADE` is real here
+    /// (`PRAGMA foreign_keys = ON` is set at open), and the centroids are
+    /// deleted explicitly first anyway so the row count is knowable and
+    /// `secure_delete` runs over both tables regardless of how a given SQLite
+    /// build treats cascade deletes.
+    pub fn delete_speaker_profile(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM speaker_centroids WHERE profile_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("DELETE FROM speaker_profiles WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    fn read_profile(
+        conn: &Connection,
+        id: &str,
+    ) -> Result<Option<speaker_profiles::SpeakerProfile>, String> {
+        conn.query_row(
+            "SELECT id, display_name, embedding_dim, embedding_model, locked, is_me,
+                    created_at, updated_at
+             FROM speaker_profiles WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(speaker_profiles::SpeakerProfile {
+                    id: r.get(0)?,
+                    display_name: r.get(1)?,
+                    embedding_dim: r.get::<_, i64>(2)?.max(0) as u32,
+                    embedding_model: r.get(3)?,
+                    locked: r.get::<_, i64>(4)? != 0,
+                    is_me: r.get::<_, i64>(5)? != 0,
+                    created_at: r.get(6)?,
+                    updated_at: r.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    fn read_centroids(
+        conn: &Connection,
+        profile: &speaker_profiles::SpeakerProfile,
+    ) -> Result<Vec<speaker_profiles::Centroid>, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT condition_key, embedding, sample_count FROM speaker_centroids
+                 WHERE profile_id = ?1 ORDER BY condition_key ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, Vec<u8>, i64)> = stmt
+            .query_map(params![profile.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        rows.into_iter()
+            .map(|(condition_key, blob, count)| {
+                let vector = Self::decode_centroid(profile, &condition_key, &blob)?;
+                Ok(speaker_profiles::Centroid {
+                    condition_key,
+                    vector,
+                    sample_count: count.clamp(1, u32::MAX as i64) as u32,
+                })
+            })
+            .collect()
+    }
+
+    /// The read-side invariant, in the one place every read goes through, with
+    /// the profile and condition named so the error identifies the ROW and not
+    /// just the arithmetic.
+    fn decode_centroid(
+        profile: &speaker_profiles::SpeakerProfile,
+        condition_key: &str,
+        blob: &[u8],
+    ) -> Result<speaker_profiles::NormalizedEmbedding, String> {
+        speaker_profiles::NormalizedEmbedding::from_blob(blob, profile.embedding_dim as usize)
+            .map_err(|e| {
+                format!(
+                    "speaker profile {} ({}) centroid {condition_key}: {e}",
+                    profile.id, profile.display_name
+                )
+            })
     }
 
     /// Starred terms first (always-bias), then usage-ranked by hits (YV47).

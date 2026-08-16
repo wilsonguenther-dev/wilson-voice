@@ -269,6 +269,11 @@ fn the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands() {
         meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
         meetings::MIGRATION_3_TWO_TRACK,
         meetings::MIGRATION_4_MEETING_KIND,
+        // YV128's speaker-profile tables. Listed here for the completeness
+        // assertion below — the expiry still fires on `cluster_index`, which
+        // this step does not add and does not make reachable: an enrolled
+        // profile is who a cluster IS, not the thing that produces clusters.
+        meetings::MIGRATION_5_SPEAKER_PROFILES,
     ];
     assert!(
         !ladder.iter().any(|sql| sql.contains("cluster_index")),

@@ -38,10 +38,11 @@ use serde::{Deserialize, Serialize};
 ///     `meeting_segments.track`).
 /// 4 = YV125's [`MeetingKind`] column (`meetings.kind`), which is what the
 ///     diarization branch reads.
+/// 5 = YV128's [`MIGRATION_5_SPEAKER_PROFILES`] — the enrolled-voice tables.
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -751,6 +752,94 @@ ALTER TABLE meeting_segments ADD COLUMN track INTEGER NOT NULL DEFAULT 0;
 /// with `user_version` written in the same transaction.
 pub const MIGRATION_4_MEETING_KIND: &str = r#"
 ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
+"#;
+
+/// Migration 5 — YV128's enrolled-voice tables: who Yap knows, and what each of
+/// those voices sounds like under each microphone it has been heard on.
+///
+/// Two tables rather than the epic plan's one, and one column of the plan's
+/// deliberately deleted. Both changes are audit findings, not preferences:
+///
+/// **`embedding_dim INTEGER NOT NULL`, with NO DEFAULT (finding #19).** The
+/// plan wrote `DEFAULT 512`, and nothing this backlog ships is 512-dim — the
+/// recommended CAM++ embedder is 192-dim and the ResNet34 fallback the plan
+/// considered is 256-dim. A schema-level default here is a guess made on behalf
+/// of a model the schema has never loaded, and the failure it produces is the
+/// silent kind: every length check downstream passes against the guess. With no
+/// default, a row can ONLY be inserted with a width somebody supplied, and the
+/// only supplier in this codebase is the sidecar's load-time report
+/// (`DiarizeResponse::embedding_dim`, YV121/YV122). `NOT NULL` with no default
+/// is what turns "don't hardcode 512" from a code-review convention into a
+/// constraint SQLite enforces —
+/// `tests/speaker_profile_no_default_dim.rs` inserts without one and requires
+/// the failure.
+///
+/// **No `embedding` column on `speaker_profiles` (finding #21).** The plan gave
+/// each profile one BLOB and one `sample_count`: a single running-mean
+/// centroid. That does not match the same person across a laptop mic and a pair
+/// of AirPods — different transducer, different distance, different noise floor
+/// — which is the exact case this feature was asked for. So the vector moves to
+/// `speaker_centroids`, one row per (profile, condition), and matching scores a
+/// probe against every centroid of every profile
+/// ([`crate::speaker_profiles::best_match`]). `sample_count` moves with it:
+/// enrolling on AirPods must not dilute the laptop-mic centroid.
+/// `condition_key` is a coarse bucket INFERRED from the capture path
+/// ([`crate::speaker_profiles::condition_key_for_capture`]) — never asked of
+/// the user, and never finer than the buckets it can actually evidence.
+///
+/// **`locked` and `is_me` carry over from the plan unchanged.** `locked = 1` is
+/// a user-confirmed profile, never auto-overwritten by an automated pass
+/// (YV129/YV130 both have to respect it). `is_me` is a flag on an enrolled
+/// voice, which is YV125's correction to finding #4: "Me" used to be track
+/// index 0 by construction — true for a virtual call with a clean second track,
+/// false in every room — and is now a property of a voice somebody actually
+/// enrolled.
+///
+/// The blob-length invariant `blob.len() == embedding_dim * 4` is NOT expressed
+/// here, because it spans the two tables and SQLite would need a trigger to say
+/// it. It lives in [`crate::speaker_profiles::NormalizedEmbedding::from_blob`]
+/// and runs on every READ (finding #19's "asserted every time a profile row is
+/// read, not just written") — a truncated blob is caught the moment it is used,
+/// with both numbers in the error.
+///
+/// **Why this is step 5 and not step 6.** The backlog specifies YV128 as
+/// "migration 6", because it was written expecting YV126's `cluster_index`
+/// column to have landed as step 5 first. It has not — YV126 is still an open
+/// PR — and this branch is cut from `main`, where the ladder's top rung is 4.
+/// Shipping a "6" over a hole at 5 is not a cosmetic mismatch: `run_migrations`
+/// walks the ladder one rung at a time and `break`s on a missing arm, so a
+/// build with 6 and no 5 would log an error at 5 and never create these tables
+/// at all. Taking the next free rung also keeps the two items' collision
+/// VISIBLE — both branches edit these same lines, so whichever lands second
+/// gets a merge conflict and renumbers, rather than silently stamping a
+/// database at 5 that then skips the other item's step forever.
+///
+/// `CREATE TABLE IF NOT EXISTS` matches migration 1's shape. The ladder in
+/// `db::run_migrations` already guarantees a step runs exactly once, inside its
+/// own transaction, with `user_version` written in the same transaction; the
+/// clause is the same belt-and-braces migration 1 shipped with, and unlike
+/// `ALTER TABLE … ADD COLUMN` it costs nothing to keep.
+pub const MIGRATION_5_SPEAKER_PROFILES: &str = r#"
+CREATE TABLE IF NOT EXISTS speaker_profiles (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  embedding_dim INTEGER NOT NULL,             -- NO DEFAULT: finding #19
+  embedding_model TEXT NOT NULL,              -- catalog id; invalidate on model change
+  locked INTEGER NOT NULL DEFAULT 1,          -- user-assigned: never auto-overwrite
+  is_me INTEGER NOT NULL DEFAULT 0,           -- a profile flag, not a track index
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS speaker_centroids (
+  profile_id TEXT NOT NULL REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+  condition_key TEXT NOT NULL,                -- coarse device/distance bucket, inferred
+  embedding BLOB NOT NULL,                    -- embedding_dim x f32, little-endian
+  sample_count INTEGER NOT NULL DEFAULT 1,    -- running-mean denominator, per condition
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (profile_id, condition_key)
+);
+CREATE INDEX IF NOT EXISTS idx_speaker_centroids_profile ON speaker_centroids(profile_id);
 "#;
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one

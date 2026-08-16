@@ -1,0 +1,298 @@
+YV128 — acceptance commands, run on feat/yv128 (8086ed9 base 8086ed9)
+Machine: Darwin arm64, rustc rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+$ cargo test --test db_migration_idempotent --test speaker_profile_no_default_dim --test speaker_profile_blob_len_invariant --test speaker_centroid_l2_normalize_before_and_after --test speaker_multi_centroid_best_match
+     Running tests/db_migration_idempotent.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/db_migration_idempotent-4a68e18c2ee6087c)
+
+running 10 tests
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test a_newer_database_is_left_alone ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/speaker_centroid_l2_normalize_before_and_after.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/speaker_centroid_l2_normalize_before_and_after-9822b332c0bb7f7e)
+
+running 4 tests
+test the_centroid_is_a_unit_vector_after_every_update ... ok
+test the_unnormalized_formula_drifts_on_the_same_sequence ... ok
+test a_second_condition_does_not_touch_the_first ... ok
+test the_stored_centroid_stays_unit_length_across_a_round_trip_per_update ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/speaker_multi_centroid_best_match.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/speaker_multi_centroid_best_match-729cd5e2679a6cc1)
+
+running 5 tests
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/speaker_profile_blob_len_invariant.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/speaker_profile_blob_len_invariant-64c361b8c1dc8ee4)
+
+running 4 tests
+test from_blob_is_the_invariant ... ok
+test a_sample_of_the_wrong_width_never_reaches_the_table ... ok
+test an_overlong_blob_is_rejected_too ... ok
+test a_truncated_blob_is_rejected_on_read_with_both_numbers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/speaker_profile_no_default_dim.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/speaker_profile_no_default_dim-3067a4c142efb50f)
+
+running 5 tests
+test the_migration_sql_names_no_embedding_width_at_all ... ok
+test the_column_is_not_null_and_carries_no_default ... ok
+test is_me_is_a_profile_flag ... ok
+test inserting_a_profile_without_a_dimension_fails_at_the_schema_level ... ok
+test any_width_the_caller_supplies_round_trips ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+===========================================================================
+REVISION 3 — re-run of the same commands after the two panel BLOCKING fixes
+(best_match takes the probe's embedding model; the tripwire scans values,
+not `const` declarations). Run 3x back to back, identical every time.
+===========================================================================
+
+=== back-to-back run 1 ===
+
+$ cargo test --features custom-protocol --test speaker_multi_centroid_best_match
+running 6 tests
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_centroids_is_no_match ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --features custom-protocol --test speaker_centroid_l2_normalize_before_and_after
+running 5 tests
+test serde_deserialisation_cannot_bypass_the_normalising_constructor ... ok
+test the_centroid_is_a_unit_vector_after_every_update ... ok
+test the_unnormalized_formula_drifts_on_the_same_sequence ... ok
+test a_second_condition_does_not_touch_the_first ... ok
+test the_stored_centroid_stays_unit_length_across_a_round_trip_per_update ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+$ cargo test --features custom-protocol --test speaker_profile_no_default_dim
+running 5 tests
+test the_migration_sql_names_no_embedding_width_at_all ... ok
+test is_me_is_a_profile_flag ... ok
+test any_width_the_caller_supplies_round_trips ... ok
+test the_column_is_not_null_and_carries_no_default ... ok
+test inserting_a_profile_without_a_dimension_fails_at_the_schema_level ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test speaker_profile_blob_len_invariant
+running 4 tests
+test from_blob_is_the_invariant ... ok
+test a_sample_of_the_wrong_width_never_reaches_the_table ... ok
+test an_overlong_blob_is_rejected_too ... ok
+test a_truncated_blob_is_rejected_on_read_with_both_numbers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test db_migration_idempotent
+running 10 tests
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test a_newer_database_is_left_alone ... ok
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+$ cargo test --features custom-protocol --test meeting_kind_branch
+running 7 tests
+test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
+test the_diarization_target_follows_the_kind_and_the_second_track ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_branch_is_not_vacuous ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+test the_label_follows_the_same_branch_the_target_does ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== back-to-back run 2 ===
+
+$ cargo test --features custom-protocol --test speaker_multi_centroid_best_match
+running 6 tests
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --features custom-protocol --test speaker_centroid_l2_normalize_before_and_after
+running 5 tests
+test serde_deserialisation_cannot_bypass_the_normalising_constructor ... ok
+test the_centroid_is_a_unit_vector_after_every_update ... ok
+test the_unnormalized_formula_drifts_on_the_same_sequence ... ok
+test a_second_condition_does_not_touch_the_first ... ok
+test the_stored_centroid_stays_unit_length_across_a_round_trip_per_update ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+$ cargo test --features custom-protocol --test speaker_profile_no_default_dim
+running 5 tests
+test the_migration_sql_names_no_embedding_width_at_all ... ok
+test the_column_is_not_null_and_carries_no_default ... ok
+test any_width_the_caller_supplies_round_trips ... ok
+test is_me_is_a_profile_flag ... ok
+test inserting_a_profile_without_a_dimension_fails_at_the_schema_level ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test speaker_profile_blob_len_invariant
+running 4 tests
+test from_blob_is_the_invariant ... ok
+test a_sample_of_the_wrong_width_never_reaches_the_table ... ok
+test an_overlong_blob_is_rejected_too ... ok
+test a_truncated_blob_is_rejected_on_read_with_both_numbers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test db_migration_idempotent
+running 10 tests
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test a_newer_database_is_left_alone ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+$ cargo test --features custom-protocol --test meeting_kind_branch
+running 7 tests
+test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
+test the_branch_is_not_vacuous ... ok
+test the_diarization_target_follows_the_kind_and_the_second_track ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+test the_label_follows_the_same_branch_the_target_does ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== back-to-back run 3 ===
+
+$ cargo test --features custom-protocol --test speaker_multi_centroid_best_match
+running 6 tests
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --features custom-protocol --test speaker_centroid_l2_normalize_before_and_after
+running 5 tests
+test serde_deserialisation_cannot_bypass_the_normalising_constructor ... ok
+test the_centroid_is_a_unit_vector_after_every_update ... ok
+test the_unnormalized_formula_drifts_on_the_same_sequence ... ok
+test a_second_condition_does_not_touch_the_first ... ok
+test the_stored_centroid_stays_unit_length_across_a_round_trip_per_update ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+$ cargo test --features custom-protocol --test speaker_profile_no_default_dim
+running 5 tests
+test the_migration_sql_names_no_embedding_width_at_all ... ok
+test any_width_the_caller_supplies_round_trips ... ok
+test inserting_a_profile_without_a_dimension_fails_at_the_schema_level ... ok
+test the_column_is_not_null_and_carries_no_default ... ok
+test is_me_is_a_profile_flag ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test speaker_profile_blob_len_invariant
+running 4 tests
+test from_blob_is_the_invariant ... ok
+test a_sample_of_the_wrong_width_never_reaches_the_table ... ok
+test an_overlong_blob_is_rejected_too ... ok
+test a_truncated_blob_is_rejected_on_read_with_both_numbers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test db_migration_idempotent
+running 10 tests
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test a_newer_database_is_left_alone ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+test migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+$ cargo test --features custom-protocol --test meeting_kind_branch
+running 7 tests
+test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
+test the_branch_is_not_vacuous ... ok
+test the_diarization_target_follows_the_kind_and_the_second_track ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_label_follows_the_same_branch_the_target_does ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- revision 3 final head: acceptance binaries, 3x back to back ---
+=== run 1 ===
+speaker_multi_centroid_best_match              test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+speaker_centroid_l2_normalize_before_and_after test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+speaker_profile_no_default_dim                 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+speaker_profile_blob_len_invariant             test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+db_migration_idempotent                        test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+meeting_kind_branch                            test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== run 2 ===
+speaker_multi_centroid_best_match              test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+speaker_centroid_l2_normalize_before_and_after test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+speaker_profile_no_default_dim                 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+speaker_profile_blob_len_invariant             test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+db_migration_idempotent                        test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+meeting_kind_branch                            test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+=== run 3 ===
+speaker_multi_centroid_best_match              test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+speaker_centroid_l2_normalize_before_and_after test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+speaker_profile_no_default_dim                 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+speaker_profile_blob_len_invariant             test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+db_migration_idempotent                        test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+meeting_kind_branch                            test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

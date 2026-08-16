@@ -1,0 +1,71 @@
+YV128 revision 3 — non-vacuity evidence for the two panel BLOCKING findings.
+
+Five mutations, each applied to desktop/src-tauri/src/speaker_profiles.rs, the
+test binary run, then the file reverted byte-for-byte.
+`grep -c MUTATION src-tauri/src/speaker_profiles.rs` = 0 on the committed head.
+
+  1. delete the `entry.profile.embedding_model != probe_model` skip from
+     `best_match`                        -> RED at the model-skip test (line 222)
+  2. `let _auto_confirm_band = 0.62_f32;` in `best_match`'s body — the panel's
+     own probe, GREEN before this revision
+                                         -> RED at the tripwire (line 306)
+  3. threshold as an inline comparison, no binding, no `const `:
+     `similarity.get() > 0.62`           -> RED at the tripwire (line 306)
+  4. scientific-notation spelling of the same band: `6.2e-1_f32`
+                                         -> RED at the tripwire (line 306)
+  5. rename the `#[cfg(test)]` line the scan cuts at
+                                         -> RED at the fail-closed assert (281),
+                                            i.e. the scan cannot silently stop
+                                            covering the shipped half
+
+Transcript follows.
+
+--- MUTATION 1 ---
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... FAILED
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+thread 'a_profile_of_another_model_at_the_same_width_is_skipped_not_compared' (18478284) panicked at src-tauri/tests/speaker_multi_centroid_best_match.rs:222:5:
+assertion `left == right` failed: a same-width profile enrolled under a different embedding model must be skipped, not scored
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- MUTATION 2 ---
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... FAILED
+thread 'no_tuned_similarity_constant_ships_in_speaker_profiles' (18478861) panicked at src-tauri/tests/speaker_multi_centroid_best_match.rs:306:13:
+line 537 (byte 25861): `0.62` in the shipped half of speaker_profiles.rs is a threshold nobody measured — this module ranks and reports, and every band is YV129's, tuned against YV120's harness:
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- MUTATION 3 ---
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_centroids_is_no_match ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... FAILED
+thread 'no_tuned_similarity_constant_ships_in_speaker_profiles' (18479430) panicked at src-tauri/tests/speaker_multi_centroid_best_match.rs:306:13:
+line 549 (byte 26327): `0.62` in the shipped half of speaker_profiles.rs is a threshold nobody measured — this module ranks and reports, and every band is YV129's, tuned against YV120's harness:
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- MUTATION 4 ---
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... FAILED
+thread 'no_tuned_similarity_constant_ships_in_speaker_profiles' (18480011) panicked at src-tauri/tests/speaker_multi_centroid_best_match.rs:306:13:
+line 537 (byte 25861): `6.2e-1` in the shipped half of speaker_profiles.rs is a threshold nobody measured — this module ranks and reports, and every band is YV129's, tuned against YV120's harness:
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--- MUTATION 5 ---
+test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... ok
+test a_profile_of_another_model_at_the_same_width_is_skipped_not_compared ... ok
+test a_profile_of_another_width_is_skipped_not_compared ... ok
+test no_centroids_is_no_match ... ok
+test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... ok
+test no_tuned_similarity_constant_ships_in_speaker_profiles ... FAILED
+thread 'no_tuned_similarity_constant_ships_in_speaker_profiles' (18480564) panicked at src-tauri/tests/speaker_multi_centroid_best_match.rs:281:5:
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

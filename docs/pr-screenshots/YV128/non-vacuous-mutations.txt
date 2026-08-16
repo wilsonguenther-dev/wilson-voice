@@ -1,0 +1,106 @@
+YV128 — every acceptance test, run against a deliberately broken build.
+
+A test that cannot fail is documentation with a green tick. Each mutation below
+was applied to the shipped source, the named test binary was run, the failure
+recorded, and the source restored (`grep -c MUTATION src/*.rs` = 0 on the commit
+that ships).
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 1 — put the plan's default back.
+
+  src/meetings.rs, MIGRATION_5_SPEAKER_PROFILES:
+  - embedding_dim INTEGER NOT NULL,             -- NO DEFAULT: finding #19
+  + embedding_dim INTEGER NOT NULL DEFAULT 512, -- MUTATION: the plan's default
+
+  $ cargo test --test speaker_profile_no_default_dim
+  test the_migration_sql_names_no_embedding_width_at_all ... FAILED
+  test any_width_the_caller_supplies_round_trips ... ok
+  test the_column_is_not_null_and_carries_no_default ... FAILED
+  test is_me_is_a_profile_flag ... ok
+  test inserting_a_profile_without_a_dimension_fails_at_the_schema_level ... FAILED
+  test result: FAILED. 2 passed; 3 failed
+
+  All three halves of finding #19 go red independently: the INSERT that must be
+  refused succeeds, SQLite reports a default, and the literal is back in the SQL.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 2 — drop the renormalise-AFTER-averaging half of the L2 discipline.
+
+  src/speaker_profiles.rs, Centroid::updated_with:
+  - vector: NormalizedEmbedding::new(&mean)?,
+  + vector: NormalizedEmbedding(mean),   // MUTATION: skip the renormalise
+
+  $ cargo test --test speaker_centroid_l2_normalize_before_and_after
+  test the_centroid_is_a_unit_vector_after_every_update ... FAILED
+  test the_unnormalized_formula_drifts_on_the_same_sequence ... FAILED
+  test a_second_condition_does_not_touch_the_first ... ok
+  test the_stored_centroid_stays_unit_length_across_a_round_trip_per_update ... FAILED
+  test result: FAILED. 1 passed; 3 failed
+
+  Worth recording: on the FIRST version of this file the round-trip test passed
+  under this mutation, because `from_blob` normalises what it reads and the
+  assertion was against what `get_speaker_profile` handed back. The test was
+  rewritten to decode the RAW BYTES out of the `speaker_centroids` row, which is
+  the value the next update actually folds a sample into. The run above is the
+  rewritten test. This is the review the mutation pass exists to produce.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 3 — score only each profile's first/primary centroid (the epic plan's
+             one-running-mean-per-person design).
+
+  src/speaker_profiles.rs, best_match:
+  - for centroid in &entry.centroids {
+  + for centroid in entry.centroids.iter().take(1) {   // MUTATION
+
+  $ cargo test --test speaker_multi_centroid_best_match
+  test a_profile_of_another_width_is_skipped_not_compared ... ok
+  test no_centroids_is_no_match ... ok
+  test no_tuned_similarity_constant_ships_in_speaker_profiles ... ok
+  test the_best_centroid_wins_even_when_the_best_first_centroid_belongs_to_someone_else ... FAILED
+  test a_probe_matches_the_second_centroid_when_that_is_the_closer_one ... FAILED
+  test result: FAILED. 3 passed; 2 failed
+
+  The second failure is the one that matters: under the mutation the AirPods
+  probe is matched to the wrong PERSON, not merely to the wrong condition.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 4 — trust the stored blob's length.
+
+  src/speaker_profiles.rs, NormalizedEmbedding::from_blob:
+  - if bytes.len() != expected { return Err(EmbeddingError::BlobLength { .. }); }
+  + let _ = expected;   // MUTATION: trust the stored length
+
+  $ cargo test --test speaker_profile_blob_len_invariant
+  test from_blob_is_the_invariant ... FAILED
+  test a_sample_of_the_wrong_width_never_reaches_the_table ... ok
+  test an_overlong_blob_is_rejected_too ... FAILED
+  test a_truncated_blob_is_rejected_on_read_with_both_numbers ... FAILED
+  test result: FAILED. 1 passed; 3 failed
+
+  A 500-byte blob under a 192-dim profile is read as a 125-dim vector without
+  complaint — which is exactly the silent degradation the invariant exists for.
+
+────────────────────────────────────────────────────────────────────────────────
+MUTATION 5 — bump SCHEMA_VERSION without wiring the ladder arm.
+
+  src/db.rs, run_migrations:
+  - 5 => meetings::MIGRATION_5_SPEAKER_PROFILES,
+
+  $ cargo test --test db_migration_idempotent
+  test a_newer_database_is_left_alone ... FAILED
+  test a_pre_ladder_database_upgrades_without_losing_rows ... FAILED
+  test a_fresh_database_lands_on_the_current_version_with_every_column_present ... FAILED
+  test opening_the_db_twice_is_a_no_op ... FAILED
+  test migration_one_creates_the_whole_meeting_schema ... ok
+  test migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows ... FAILED
+  test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... FAILED
+  test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+  test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... FAILED
+  test migration_two_adds_diagnostics_without_touching_existing_rows ... FAILED
+  test result: FAILED. 2 passed; 8 failed
+
+  This is also the mechanical proof of the migration-NUMBER decision recorded on
+  MIGRATION_5_SPEAKER_PROFILES: `run_migrations` walks one rung at a time and
+  `break`s on a missing arm, so a build that declared this step "6" over a hole
+  at 5 would never create the tables at all — the failure above, on every test in
+  the file, is what that would look like.
