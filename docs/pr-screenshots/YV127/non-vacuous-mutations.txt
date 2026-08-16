@@ -152,3 +152,49 @@ M11 — isTwoTrack stops ignoring blank spans
       target"` goes GREEN (1 passed / 18 skipped). No pre-existing row in that
       table carries this case — the other `virtual -> true` row has no
       second-track segments at all. Row restored, M11 reverted.
+
+===============================================================================
+Round 2 — the BLOCKING finding was about the item's RECORDED REASON, not its
+shipped artefacts. The claim "overlap is unknowable" was false against sherpa's
+primary source; the decision (no column) stands, the reason is now SCOPE.
+Three mutations against the new Part-5 test, which is what stops the false
+claim coming back and pins where a later item goes looking.
+===============================================================================
+
+M12 — the impossibility claim comes back to meetings.rs
+    desktop/src-tauri/src/meetings.rs: the sentence the reviewer quoted is
+    re-inserted verbatim into the YV127 doc block ("There is no moment in the
+    pipeline at which the app could learn which stored segment sat under two
+    voices").
+    → cargo test --features custom-protocol --test
+      overlap_column_absent_and_documented: 4 passed / 1 FAILED, by name:
+      the_wire_already_carries_what_a_later_overlap_flag_would_read
+      "the impossibility claim came back; the reason for dropping the column is
+       SCOPE — sherpa's per-speaker timelines can intersect and that
+       intersection IS the overlap decision"
+    This is the mutation that matters: the defect this round fixed is a PROSE
+    defect, and prose is exactly what CI normally cannot hold. It can now.
+    Reverted.
+
+M13 — the wire stops carrying WHICH cluster a turn belongs to
+    desktop/src-tauri/src/diarize_protocol.rs: `#[serde(skip)]` on
+    `DiarizeSegment.cluster`, so both turns deserialize as cluster 0 and the
+    `a.cluster != b.cluster` filter matches nothing.
+    → same test FAILED: overlap count left: 0, right: 1.
+    Proves the derivability claim is checked against what survives serde, not
+    against the struct the child happened to build in memory. Reverted.
+
+M14 — the wire stops carrying where a turn ENDS
+    Same file, `#[serde(skip)]` on `DiarizeSegment.end`: both turns decode with
+    end = 0.0, so no interval can intersect.
+    → same test FAILED: overlap count left: 0, right: 1.
+    The three fields the derivation needs — start, end, cluster — are each
+    load-bearing and each independently pinned. If the protocol ever collapses
+    intersecting turns before the parent sees them, the door really does close
+    and CI says so on the way. Reverted.
+
+    NOTE, stated rather than glossed: this test asserts a CAPABILITY, not a
+    feature. Nothing in the shipping app calls the intersection; no column
+    exists for it to fill. It exists because the item's deliverable is a
+    documented REASON, and a reason nothing checks is how the wrong one shipped
+    in the first place.

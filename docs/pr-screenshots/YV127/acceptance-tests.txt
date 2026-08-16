@@ -114,3 +114,86 @@ http://localhost:<port>/dev/meeting-transcript-preview.html#<scene>).
   piece of evidence, so the harness strip now prints `kind=<value>`; the
   committed PNGs are the captures from that build, and the kind is legible in
   the frame instead of only in the caption.
+
+================================================================================
+REVIEW FOLLOW-UP 2 — the recorded REASON, corrected against sherpa's source
+(round-2 BLOCKING: "overlap is unknowable" is false; the decision is unchanged,
+the reason is now SCOPE). Doc/prose in meetings.rs + diarize_protocol.rs, the
+user-facing CHANGELOG sentence, and one new test that pins the open door.
+================================================================================
+
+=== G0. environment
+26.5.2 / arm64 / rustc 1.94.0 (4a4ef493e 2026-03-02)
+2026-08-16T03:18Z
+
+=== G1. the primary source the claim was checked against (not inferred from the API)
+$ curl -sL https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.4/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h
+778 lines. The four call sites that settle it:
+
+  L133  GetChunkSpeakerSampleIndexes(labels)  →  L373 ExcludeOverlap(labels)
+        L446-467: zeroes every frame whose row-sum is >= 2, i.e. drops
+        multi-speaker frames BEFORE embedding.  → the marker string is TRUE.
+
+  L185  ReLabel(labels, …)  — the ORIGINAL labels, NOT ExcludeOverlap's output.
+        ExcludeOverlap guards embedding only; it never touches the labels the
+        result is built from.
+
+  L190  FinalizeLabels(speaker_count, speakers_per_frame)
+        L638-661: for each frame, keeps the top-k clusters where k is
+        speakers_per_frame[i] — the segmentation model's OWN speaker count for
+        that frame (L126, computed on the original labels). k >= 2 is exactly
+        the overlap decision, and it survives into final_labels.
+
+  L192  ComputeResult(final_labels)
+        L663-725: walks each speaker_index's timeline INDEPENDENTLY, with no
+        cross-speaker exclusion. Two clusters active in one frame therefore
+        come back as two turns whose times INTERSECT.
+
+  Conclusion: overlap is not unknowable — it is an interval intersection over
+  turns DiarizeSegment {start, end, cluster} already carries. v1 still ships no
+  column, because a derived flag needs its own tuning and its own acceptance
+  evidence and nothing in yap23 asks for one. Reason restated as scope, in all
+  four places the reviewer named.
+
+=== G2. cargo test --features custom-protocol --test overlap_column_absent_and_documented
+
+running 5 tests
+test the_caveat_is_one_sentence_in_both_languages_and_the_ui_draws_it ... ok
+test the_diarize_wire_carries_no_overlap_flag ... ok
+test the_wire_already_carries_what_a_later_overlap_flag_would_read ... ok
+test meetings_rs_says_on_one_line_where_the_column_went ... ok
+test no_step_in_the_migration_ladder_creates_an_overlap_column ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+  4 -> 5. The new one asserts the CAPABILITY the corrected reason rests on and
+  refuses the impossibility wording. M12/M13/M14 in non-vacuous-mutations.txt
+  show all three of its arms carry weight.
+
+=== G3. grep -n "overlapped" desktop/src-tauri/src/meetings.rs
+773:/// > NO overlap flag — sherpa deletes overlapped frames before embedding
+  Still exactly one line, still the marker, still both halves true. The line
+  number moved (771 -> 773) because the doc block above it grew.
+
+=== G4. npx tsc --noEmit
+exit 0
+
+=== G5. npx vitest run
+ Test Files  10 passed (10)
+      Tests  131 passed (131)
+  Unchanged — no frontend source changed this round.
+
+=== G6. cargo test --features custom-protocol  (whole suite)
+95 test binaries, 1112 passed, 0 failed   (exit 0)
+  1111 -> 1112: exactly the one new test in G2. Nothing skipped or ignored to
+  get there.
+
+=== G7. rustfmt
+  `cargo fmt --check` reports the same 9 pre-existing diarize_protocol.rs
+  hunks with and without this change (verified by stashing) — this round adds
+  none. The tree is not rustfmt-clean on this rustc; CI runs fmt as `|| true`.
+
+=== G8. screenshots
+  Not re-captured, and not stale: no rendering path, no copy on screen and no
+  component changed this round. The only user-facing text touched is
+  docs/CHANGELOG-YAP.md, which the PNGs never showed.

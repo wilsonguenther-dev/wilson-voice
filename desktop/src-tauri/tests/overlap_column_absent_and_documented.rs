@@ -1,11 +1,21 @@
 //! YV127 — the deliverable is an ABSENCE, so this is what holds it.
 //!
 //! Merged finding #22: `meeting_segments.overlapped`, as the plan's §5 schema
-//! specified it, cannot be populated. sherpa's `OfflineSpeakerDiarization`
-//! answers `{start, end, speaker, text}` per turn, and the frames where two
-//! people talked at once are DELETED before the embedding model runs — upstream
-//! of that result type. There is no moment at which the app could learn which
-//! stored segment sat under two voices, so a column would hold `0` and a guess.
+//! specified it, has nothing populating it. sherpa's
+//! `OfflineSpeakerDiarization` answers `{start, end, speaker, text}` per turn,
+//! and the frames where two people talked at once are DELETED before the
+//! embedding model runs — upstream of that result type, so no flag comes back.
+//!
+//! That is a statement about the WIRE, not about what is knowable. sherpa's
+//! `ComputeResult()` walks each speaker's timeline independently, so two
+//! clusters' turns can intersect in time, and that intersection is the
+//! segmentation model's overlap decision — derivable from `DiarizeSegment
+//! {start, end, cluster}` with no new model and no second integration surface.
+//! v1 declines to derive it because a derived flag needs its own tuning and its
+//! own acceptance evidence, and nothing in yap23 asks for one; shipping the
+//! column NOW, with nothing computing it, is what would leave it holding `0` and
+//! a guess. `the_wire_already_carries_what_a_later_overlap_flag_would_read`
+//! below pins where that later item goes looking.
 //!
 //! An absence leaves no code to read, which is the whole problem with shipping
 //! one: the next person to open `meetings.rs` looking for the column finds
@@ -70,8 +80,8 @@ fn no_step_in_the_migration_ladder_creates_an_overlap_column() {
     for (step, sql) in LADDER {
         assert!(
             !sql.to_ascii_lowercase().contains("overlap"),
-            "migration {step} names an overlap column; finding #22 is that it \
-             cannot be populated:\n{sql}"
+            "migration {step} names an overlap column; finding #22 is that \
+             nothing in v1 computes one, so it would ship holding 0:\n{sql}"
         );
     }
 
@@ -232,5 +242,89 @@ fn the_diarize_wire_carries_no_overlap_flag() {
         PROTOCOL_RS.contains("YV127"),
         "diarize_protocol.rs's segments field must point at the decision, or the \
          next reader will file the missing flag as an oversight"
+    );
+}
+
+/// Part 5 — the open door, pinned so the next reader finds it.
+///
+/// The first version of this item wrote its decision down as *impossibility*:
+/// "there is no moment in the pipeline at which the app could learn which stored
+/// segment sat under two voices". That is false, and YV128–YV131 would have
+/// inherited it as settled fact. sherpa's `ComputeResult()` builds each
+/// speaker's timeline independently from `final_labels_t` with no cross-speaker
+/// exclusion, so two clusters' turns CAN intersect in time — and that
+/// intersection is the segmentation model's own overlap decision, arriving on
+/// fields `DiarizeSegment` already has.
+///
+/// This test is not a feature: nothing in the shipping app calls it, and no
+/// column exists for it to fill. It exists so that the claim "overlap is
+/// derivable from this wire" is checked by a machine rather than asserted in a
+/// comment — if `DiarizeSegment` ever loses `start`/`end`/`cluster`, or the
+/// protocol starts collapsing intersecting turns before the parent sees them,
+/// the door really does close and this goes red on the way.
+#[test]
+fn the_wire_already_carries_what_a_later_overlap_flag_would_read() {
+    // Two clusters, turns that intersect over [4.0, 5.5) — the shape sherpa
+    // emits for a stretch its segmentation model called two-voiced.
+    let segments = vec![
+        DiarizeSegment {
+            start: 1.0,
+            end: 5.5,
+            cluster: 0,
+            embedding: vec![0.25; 192],
+        },
+        DiarizeSegment {
+            start: 4.0,
+            end: 9.0,
+            cluster: 1,
+            embedding: vec![0.5; 192],
+        },
+    ];
+
+    // Round-trip first: whatever a later item computes, it computes from what
+    // survives serde, not from the struct the child happened to build.
+    let wire = serde_json::to_string(&DiarizeResponse::diarized(9, segments, 42)).expect("encode");
+    let back: DiarizeResponse = serde_json::from_str(&wire).expect("decode");
+    let turns = back.segments.expect("segments survive the wire");
+
+    // The whole derivation, in the four lines it actually takes. No powerset
+    // output, no second sherpa surface, no model — an interval intersection.
+    let overlap = turns
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| turns[i + 1..].iter().map(move |b| (a, b)))
+        .filter(|(a, b)| a.cluster != b.cluster)
+        .filter_map(|(a, b)| {
+            let (start, end) = (a.start.max(b.start), a.end.min(b.end));
+            (end > start).then_some((start, end))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        overlap.len(),
+        1,
+        "two different clusters overlapping in time is the derivable signal; if \
+         this stops being computable from the wire, YV127's recorded reason \
+         (SCOPE, not impossibility) has stopped being true"
+    );
+    assert!(
+        (overlap[0].0 - 4.0).abs() < 1e-9 && (overlap[0].1 - 5.5).abs() < 1e-9,
+        "expected the intersection [4.0, 5.5), got {:?}",
+        overlap[0]
+    );
+
+    // …and the reason we still ship no column: the derived number would need
+    // tuning (what minimum intersection counts) and acceptance evidence behind
+    // it, which is the thing yap23 does not ask any item to produce.
+    assert!(
+        MEETINGS_RS.contains("not in v1"),
+        "the decision must stay recorded next to the mechanism"
+    );
+    assert!(
+        !MEETINGS_RS.contains("no moment in")
+            && !PROTOCOL_RS.contains("with nothing marking that it happened"),
+        "the impossibility claim came back; the reason for dropping the column \
+         is SCOPE — sherpa's per-speaker timelines can intersect and that \
+         intersection IS the overlap decision"
     );
 }

@@ -263,15 +263,26 @@ pub struct DiarizeResponse {
     pub embedding_dim: Option<u32>,
     /// [`KIND_DIARIZE`]: the turns.
     ///
-    /// YV127 — every turn here names exactly one cluster, and that is the
-    /// child's real answer rather than a field this protocol left out: sherpa
-    /// deletes overlapped frames before embedding, upstream of the result type,
-    /// so a stretch where two people talked at once arrives already attributed
-    /// to one of them (or dropped) with nothing marking that it happened. The
-    /// parent therefore has nothing to store in an overlap column, which is why
-    /// `meetings::OVERLAP_CAVEAT` exists — a sentence on screen — instead of a
-    /// migration. Adding a flag to [`DiarizeSegment`] would mean the child had
-    /// learned something new, not that this struct had been widened.
+    /// YV127 — every turn here names exactly one cluster, and no turn carries an
+    /// overlap flag, because sherpa's result type has none to forward: it
+    /// deletes overlapped frames before embedding, upstream of that type.
+    ///
+    /// **That absence is not the same as the information being gone.** sherpa's
+    /// `ComputeResult()` builds each speaker's timeline independently, so two
+    /// clusters' turns in this vector CAN intersect in time — and where they do,
+    /// that is the segmentation model's own two-voices-at-once decision, carried
+    /// on the `{start, end, cluster}` this struct already ships. Overlap is
+    /// therefore derivable by the parent, from this wire, without a powerset
+    /// pass or a second sherpa surface.
+    ///
+    /// v1 declines to derive it: a derived flag needs its own tuning and its own
+    /// acceptance evidence, and nothing in yap23 asks for one. So
+    /// `meetings::OVERLAP_CAVEAT` ships — a sentence on screen — instead of a
+    /// migration, and `meetings.rs`'s YV127 block records the decision. A later
+    /// item that wants the flag intersects these turns; it does not need
+    /// [`DiarizeSegment`] to grow a field, and a field appearing here would mean
+    /// the CHILD had learned something new rather than that this struct had been
+    /// widened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segments: Option<Vec<DiarizeSegment>>,
     /// [`KIND_EMBED`]: the one embedding.
