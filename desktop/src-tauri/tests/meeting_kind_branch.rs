@@ -122,6 +122,7 @@ fn seg(start: f64, track: i64, text: &str) -> MeetingSegment {
         confidence: None,
         created_at: Utc.with_ymd_and_hms(2026, 8, 15, 17, 0, 0).unwrap(),
         track,
+        cluster_index: None,
     }
 }
 
@@ -240,48 +241,51 @@ fn speaker_label_decides_on_the_target_and_never_on_an_identity_flag() {
     );
 }
 
-/// **YV125's manual acceptance criterion is only HALF met on this base, and
-/// this test is what stops that from being forgotten.**
+/// **YV125's manual acceptance criterion — the second half, now met.**
 ///
 /// The criterion reads: "a synthetic two-speaker `in_person`-kind recording
 /// produces two distinct (unnamed, pre-enrollment) speaker clusters on Track A
 /// — not one 'Me' label swallowing both voices."
 ///
-/// The second clause ships here and is evidenced in the PR: an `in_person`
-/// meeting is routed to `ClusterTrackA` and its transcript carries no "Me" at
-/// all, so nothing swallows the room any more. The FIRST clause — two distinct
-/// clusters — cannot ship here, because on this base there is no clusterer:
-/// YV126 is the item that adds `cluster_track` and the `meeting_segments.
-/// cluster_index` column (migration 5) the clusters are stored in. Producing
-/// "two clusters" today would mean inventing them.
+/// YV125 shipped the second clause (an `in_person` meeting routes to
+/// `ClusterTrackA` and its transcript carries no "Me") and instrumented the
+/// first with an expiring test, because on that base there was no clusterer and
+/// producing "two clusters" would have meant inventing them. YV126 added
+/// `cluster_track` and `meeting_segments.cluster_index` (migration 5), so the
+/// expiry has been redeemed: `tests/meeting_cluster_attribution.rs::
+/// an_in_person_meeting_stores_two_distinct_clusters_on_track_a` is the
+/// two-cluster evidence, end to end through the DB, and the old tripwire is
+/// gone.
 ///
-/// So the gap is instrumented rather than described. This asserts that no
-/// migration in the shipped ladder mentions `cluster_index` — the one condition
-/// under which "there is nothing to count clusters with" is honest. The day
-/// YV126 adds that column, this goes red, on the merge commit, with no corpus,
-/// no model and no audio hardware needed. Closing it means recording the
-/// two-cluster evidence for an `in_person` fixture in YV126's PR and THEN
-/// deleting this test — in that order, not the other one.
+/// What survives here is the part of the ladder this file can still see: the
+/// column exists, exactly once, and the ladder and `SCHEMA_VERSION` were edited
+/// together. Clusters from real AUDIO are `meeting_eval::fixture_e_der_gate`'s
+/// subject and have been measured since YV122 (#137) put a backend in the
+/// sidecar; the gap that genuinely remains is that nothing in the APP calls the
+/// pass, which the changelog states in as many words.
 #[test]
-fn the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands() {
+fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
     let ladder = [
         meetings::MIGRATION_1_MEETINGS,
         meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
         meetings::MIGRATION_3_TWO_TRACK,
         meetings::MIGRATION_4_MEETING_KIND,
+        meetings::MIGRATION_5_CLUSTER_INDEX,
     ];
-    assert!(
-        !ladder.iter().any(|sql| sql.contains("cluster_index")),
-        "`meeting_segments.cluster_index` has landed, so clustering exists and \
-         YV125's manual criterion can finally be met in full. Record the \
-         two-distinct-clusters evidence for an `in_person` fixture in that PR, \
-         then delete this test."
+    let mentions = ladder
+        .iter()
+        .filter(|sql| sql.contains(meetings::CLUSTER_INDEX_COLUMN))
+        .count();
+    assert_eq!(
+        mentions, 1,
+        "`meeting_segments.cluster_index` must be added by exactly one step — a \
+         shipped migration is immutable, so a second mention is an edit to one"
     );
     // The ladder above must be the WHOLE ladder, or this could pass by omission.
     assert_eq!(
         wilson_voice_lib::meetings::SCHEMA_VERSION,
         ladder.len() as i64,
-        "a migration was added without being listed here, so this expiry stopped \
+        "a migration was added without being listed here, so this check stopped \
          looking at the whole schema"
     );
 }

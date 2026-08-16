@@ -617,7 +617,7 @@ pub const ROWS: &[MatrixRow] = &[
     MatrixRow {
         id: "8",
         failure: "Diarization returns garbage — one cluster for five people, or forty clusters",
-        behavior: "A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart. **The degrade half is a requirement on YV126's `diarize::rank_and_floor` (#141, open) that it does not meet today** — there an all-below-floor pass renders as one \"Other\" chip with no degrade and no marker; `matrix_row8_diarize_garbage_clusters` fails the day that gate ships with nothing applying the degrade",
+        behavior: "A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart. YV126 shipped `diarize::rank_and_floor` and made it APPLY this row rather than restate it: the shipping gate calls `cluster_sanity` and carries its verdict, so an all-below-floor pass draws no chips at all. Nothing in the app calls the shipping gate yet, which is what keeps this row unwired",
         // NOT `Test`, for the same reason as row 7 and one more of its own: the
         // gate can only be applied to output, and nothing in the app produces
         // any. The published behaviour is deliberately NOT the plan's original
@@ -626,19 +626,27 @@ pub const ROWS: &[MatrixRow] = &[
         // 8, and a real six-person far-field room legitimately produces 10–15
         // raw clusters before merge, which the rule would throw away whole).
         //
-        // `absent_call_site` stays `cluster_sanity` because that is what this
-        // row's test drives, but the row does NOT rely on it alone: the gate a
-        // meeting will really call is YV126's `diarize::rank_and_floor` (#141),
-        // and a tripwire watching only this module's function would never see
-        // that arrive. The row's own test therefore also asserts
-        // `rank_and_floor`/`cluster_track`/`attribute_clusters` have no callers
-        // — the same two-symbol shape row 7 uses with `diarize::pool` — and
-        // asserts the published degrade against what #141 does with the same
-        // input. See `cluster_sanity`'s docs for that divergence.
+        // `absent_call_site` MOVED from `cluster_sanity` to `rank_and_floor`
+        // when YV126 landed, and the move is the honest half of that landing.
+        // `cluster_sanity` now HAS a caller — `diarize::rank_and_floor` applies
+        // it — so a tripwire watching `cluster_sanity` would fire on the very
+        // change that made the row's published behaviour true, and it would be
+        // firing at the wrong symbol: the thing still absent from the app is
+        // the gate itself.
+        //
+        // The alternative the old tripwire suggested was to promote this row to
+        // `Coverage::Test`. That would be false. `Coverage::Test` means a test
+        // drives code "wired into the shipping app", and nothing in the app
+        // calls `rank_and_floor` — no meeting is ever diarized. Promoting on
+        // "the degrade acquired a caller inside the diarization module" would
+        // publish a reachability this row does not have, which is the exact
+        // failure `PolicyOnly` was added for. So the row stays `PolicyOnly`,
+        // names the symbol that is genuinely absent, and its test now drives the
+        // SHIPPING gate rather than a pure function beside it.
         coverage: Coverage::PolicyOnly {
             test: "matrix_row8_diarize_garbage_clusters.rs",
             wiring_pr: None,
-            absent_call_site: "cluster_sanity",
+            absent_call_site: "rank_and_floor",
         },
     },
     MatrixRow {
@@ -1364,26 +1372,22 @@ pub struct ClusterVerdict {
 /// runtime check. A gate that pretended otherwise would be the more dangerous
 /// failure: a green sanity check standing in for an accuracy claim nobody made.
 ///
-/// **This is a requirement on YV126's gate, not a competing implementation of
-/// it — and today the requirement is unmet.** #141 ships
-/// `diarize::rank_and_floor`, which is the function a meeting will call, and
-/// the two answers to the same forty-fragment pass are not the same answer:
-/// this row degrades to a plain single-speaker transcript marked
-/// [`DIARIZATION_FAILED`], while `rank_and_floor` returns
-/// `surfaced: []`/`other: 40` and renders one "Other" chip with no degrade and
-/// no marker. `rank_and_floor`'s "never reject" half is right and is what
-/// finding #25 asked for; "never reject" is not "never degrade", and a pass in
-/// which *nothing* cleared the floor found no speaker — rendering it as an
-/// "Other" chip presents noise as attribution.
+/// **This is a requirement on YV126's gate, and YV126 met it by CALLING this
+/// function rather than restating it.** [`crate::diarize::rank_and_floor`] is
+/// the gate a meeting will call; it now builds a [`ClusterSummary`] per cluster,
+/// asks this function for the verdict, and carries the answer on
+/// `ClusterRanking::labels`, so `ClusterRanking::chips()` returns nothing for a
+/// pass in which nothing cleared the floor. `rank_and_floor`'s "never reject"
+/// half is untouched and is what finding #25 asked for — every raw cluster is
+/// still present and still correctable by YV130 — because "never reject" is not
+/// "never degrade": a pass in which *nothing* cleared the floor found no
+/// speaker, and rendering it as one "Other" chip presents noise as attribution.
 ///
 /// The matrix is the SSOT for what Yap owes a user on a failure, so it may not
 /// publish a behaviour the mechanism serving it quietly does not implement.
-/// `rank_and_floor` does not exist on this branch — #141 is open — so the
-/// binding is the one that survives that:
-/// `matrix_row8_diarize_garbage_clusters` fails the day that gate ships with
-/// nothing in `src/` applying this degrade, and if something does apply it the
-/// row's absence tripwire fires instead and the row is promoted. Exactly one of
-/// the two goes red, and "row 8 stayed as it was" is not among the outcomes.
+/// There is now exactly one implementation of that behaviour and it is this
+/// one; `matrix_row8_diarize_garbage_clusters` drives it through the shipping
+/// gate as well as directly, and asserts the two cannot disagree.
 pub fn cluster_sanity(clusters: &[ClusterSummary], floor: ClusterFloor) -> ClusterVerdict {
     let mut ranked: Vec<&ClusterSummary> = clusters.iter().filter(|c| floor.admits(c)).collect();
     // Most speech first; ties broken by the diarizer's own index so the order is
@@ -1781,10 +1785,15 @@ mod tests {
                 "matrix_row7_diarize_sidecar_wedge.rs",
                 "diarize_sidecar_degrade",
             ),
+            // Row 8's absent call site is the GATE, not the degrade. YV126
+            // gave `cluster_sanity` a caller (`diarize::rank_and_floor` applies
+            // it, which is how the table and the code stopped giving two
+            // answers to one input); what is still absent from the app is
+            // `rank_and_floor` itself, because no meeting is ever diarized.
             (
                 "8",
                 "matrix_row8_diarize_garbage_clusters.rs",
-                "cluster_sanity",
+                "rank_and_floor",
             ),
             (
                 "13",

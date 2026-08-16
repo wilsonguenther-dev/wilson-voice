@@ -1,0 +1,40 @@
+YV126 revision 2 — evidence for the corrected changelog copy
+Question the copy has to answer honestly: does anything in the shipped app run this pass?
+
+1) call sites outside the module that defines them
+$ grep -rn 'cluster_track|rank_and_floor|attribute_clusters|set_segment_clusters|label_against_enrolled' src | grep -v '^src/diarize.rs'
+src/diarize_metrics.rs:24://! * YV126's `diarize.rs::cluster_track` takes a [`CosineDistance`], not an
+src/meetings.rs:114:/// ([`crate::diarize::rank_and_floor`]): the clusters that carry real speech
+src/meetings.rs:124:/// The rank is a position in [`crate::diarize::rank_and_floor`]'s speech-time
+src/db.rs:1606:    /// every statement: `diarize::attribute_clusters` computes ids from the
+src/db.rs:1615:    pub fn set_segment_clusters(
+
+   diarize_metrics.rs:24, meetings.rs:114, meetings.rs:124, db.rs:1606 -> //! or /// doc comments.
+   db.rs:1615 -> the DEFINITION of set_segment_clusters, not a call to it.
+   ZERO production call sites. Every invocation in the tree is under tests/:
+$ grep -rlE 'cluster_track|rank_and_floor|attribute_clusters|set_segment_clusters|label_against_enrolled' tests
+tests/meeting_kind_branch.rs
+tests/diarize_full_clustering_vs_binary_fallback.rs
+tests/diarize_cluster_distance_threshold.rs
+tests/diarize_cluster_rank_and_floor.rs
+tests/db_migration_idempotent.rs
+tests/meeting_cluster_attribution.rs
+tests/meeting_eval.rs
+
+2) no Tauri command exposes any of it
+$ grep -rn 'tauri::command' -A3 src | grep -iE 'diariz|cluster'
+   (no matches)
+
+3) the sidecar has no engine — every request is refused
+$ grep -nE '^ *sherpa' ../yap-diarize/Cargo.toml
+   (no matches — sherpa-onnx is not a dependency; YV122 / #137 is still OPEN)
+$ grep -n 'ERR_NO_BACKEND' desktop/yap-diarize/src/main.rs
+54:    ERR_BAD_REQUEST, ERR_MISSING_FIELD, ERR_MODEL_NOT_FOUND, ERR_NO_BACKEND, ERR_NO_MODELS,
+84:    Err(ERR_NO_BACKEND)
+181:            DiarizeResponse::err(req.id, ERR_NO_BACKEND)
+230:        assert_eq!(response.err_tag(), Some(ERR_NO_BACKEND));
+   load_backend() is unconditional: `Err(ERR_NO_BACKEND)` at main.rs:84, so load_models
+   always refuses and diarize/embed can never reach a loaded backend.
+
+Conclusion: the grouping, the storage column and the naming rule ship; nothing calls them,
+and the helper process would refuse if something did. The entry now says exactly that.

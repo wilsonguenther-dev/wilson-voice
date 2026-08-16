@@ -91,6 +91,7 @@ fn segments_22a() -> Vec<MeetingSegment> {
             confidence: None,
             created_at: started(),
             track: MIC_TRACK,
+            cluster_index: None,
         })
         .collect()
 }

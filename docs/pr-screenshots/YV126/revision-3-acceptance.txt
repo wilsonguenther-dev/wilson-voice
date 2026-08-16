@@ -1,0 +1,30 @@
+YV126 revision 3 — acceptance transcript
+
+Preconditions (hard, both): npm ci && npm run build (frontendDist) and npm run sidecar
+(externalBin). Without them this crate does not compile.
+
+$ cargo test --features custom-protocol --test diarize_cluster_distance_threshold
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+$ cargo test --features custom-protocol --test diarize_full_clustering_vs_binary_fallback
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+$ cargo test --features custom-protocol --test diarize_cluster_rank_and_floor
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+$ cargo test --features custom-protocol --test meeting_cluster_attribution
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+$ cargo test --features custom-protocol --test db_migration_idempotent
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+$ cargo test --features custom-protocol --test matrix_row8_diarize_garbage_clusters
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+$ cargo test --features custom-protocol --test matrix_coverage
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+$ cargo test --features custom-protocol --test diarization_metrics
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ npx tsc --noEmit    -> 0 errors
+$ npx vitest run      -> 125 passed / 10 files
+
+The two measured arms are in revision-3-tuning-transcript.txt (they take ~9 minutes
+together and need the corpus + the catalog's models).
+
+PRAGMA user_version on the migration test's own DB:
+  5   (migration 5 = meeting_segments.cluster_index, nullable, no default)

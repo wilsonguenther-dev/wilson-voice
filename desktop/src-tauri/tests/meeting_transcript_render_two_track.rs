@@ -41,6 +41,7 @@ fn seg(start: f64, track: i64, text: &str) -> MeetingSegment {
         confidence: None,
         created_at: Utc.with_ymd_and_hms(2026, 8, 14, 17, 0, 0).unwrap(),
         track,
+        cluster_index: None,
     }
 }
 

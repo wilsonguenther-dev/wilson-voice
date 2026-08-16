@@ -1,0 +1,92 @@
+YV126 — the backlog's acceptance commands, run verbatim.
+
+macOS 26.5.2 / arm64, rustc 1.94.0, eval corpus present at ~/yap-eval-corpus/meetings.
+Sidecars staged first, as CI does: cargo build -p yap-polish -p yap-diarize.
+
+$ cargo test --test diarize_cluster_distance_threshold
+running 5 tests
+test one_pair_groups_below_the_threshold_and_splits_above_it ... ok
+test the_public_clustering_api_takes_a_typed_distance ... ok
+test no_tuned_clustering_constant_ships_in_the_crate ... ok
+test without_embeddings_the_childs_own_clusters_are_used_and_they_differ ... ok
+test cluster_track_groups_and_splits_at_the_threshold_it_was_given ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --test diarize_full_clustering_vs_binary_fallback
+running 5 tests
+test assert_the_fixture_really_holds_six_voices ... ok
+test the_collapse_never_invents_a_speaker_who_was_not_there ... ok
+test the_enrolled_cluster_is_the_one_the_caller_named ... ok
+test the_same_six_cluster_pass_is_six_labels_or_exactly_two ... ok
+test the_kind_branch_picks_the_track_and_the_mode_does_not_override_it ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+$ cargo test --test diarize_cluster_rank_and_floor
+running 5 tests
+test the_floors_are_the_ones_the_finding_named ... ok
+test chips_are_numbered_by_rank_not_by_cluster_index ... ok
+test each_floor_can_reject_a_cluster_on_its_own ... ok
+test ranking_never_rejects_however_many_clusters_there_are ... ok
+test twelve_raw_clusters_become_four_chips_and_one_other_bucket ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test meeting_eval fixture_e_der_gate -- --nocapture
+running 1 test
+fixture (e) mechanism ceiling: DER 0.0000, JER 0.0000 — nothing the segmenter deletes costs anything here, so every point of error a measured run reports belongs to the clustering threshold
+fixture (e) threshold sweep:
+no diarization backend in this build (yap-diarize answers no_backend until YV122), skipping the measured arm (load_models: no_backend)
+test fixture_e_der_gate ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+$ cargo test --test meeting_eval fixture_f_binary_fallback_der -- --nocapture
+running 1 test
+fixture (f) mechanism ceilings (9.38s of overlapped speech deleted before embedding):
+  full N-way   : DER 0.2738 (miss 19.67s of 71.82s reference speaker time)
+  enrolled/rest: DER 0.1524 (miss 9.38s of 61.53s)
+no diarization backend in this build (yap-diarize answers no_backend until YV122), skipping the measured arm (load_models: no_backend)
+no diarization backend in this build (yap-diarize answers no_backend until YV122), skipping the measured arm (load_models: no_backend)
+test fixture_f_binary_fallback_der ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+$ cargo test --test db_migration_idempotent
+running 11 tests
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
+test a_newer_database_is_left_alone ... ok
+test migration_one_creates_the_whole_meeting_schema ... ok
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test opening_the_db_twice_is_a_no_op ... ok
+test migration_five_adds_cluster_index_without_touching_existing_rows ... ok
+test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
+test migration_four_adds_kind_as_unknown_without_touching_existing_rows ... ok
+test migration_three_adds_the_two_track_columns_without_touching_existing_rows ... ok
+test migration_two_adds_diagnostics_without_touching_existing_rows ... ok
+test a_database_from_every_rung_climbs_to_five ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+$ cargo test --test meeting_cluster_attribution        # the YV125 two-cluster evidence
+running 4 tests
+test diarize_backend_is_still_absent_so_no_cluster_has_come_from_audio ... ok
+test a_row_takes_the_cluster_it_shares_the_most_time_with ... ok
+test attribution_never_touches_a_track_the_pass_did_not_cluster ... ok
+test an_in_person_meeting_stores_two_distinct_clusters_on_track_a ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+$ # `PRAGMA user_version` on a database this build created and migrated, taken
+$ # from the migration test's own temp dir rather than a hand-built file.
+$ sqlite3 .../yv94-cluster-index-column-*/wilson_voice.db "PRAGMA user_version;"
+5
+$ sqlite3 ... "SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('meeting_segments');"
+id            TEXT     notnull=0  default=NULL
+meeting_id    TEXT     notnull=1  default=NULL
+start_seconds REAL     notnull=1  default=NULL
+end_seconds   REAL     notnull=1  default=NULL
+text          TEXT     notnull=1  default=''
+confidence    REAL     notnull=0  default=NULL
+created_at    TEXT     notnull=1  default=NULL
+track         INTEGER  notnull=1  default=0      <- migration 3: the default IS the fact
+cluster_index INTEGER  notnull=0  default=NULL   <- migration 5: nullable, no default
+$ sqlite3 ... "SELECT id, cluster_index FROM meeting_segments LIMIT 4;"
+44f2f737-dc52-4242-a456-961ebc0062d1|0
+b32d20fe-26fd-478d-a203-1f1913fcd878|1
+e713c873-88e7-4a43-a8a5-872489fdfe75|      <- cleared by a re-run: NULL, not 0
+8f62eec0-e899-4d43-96d8-f99962802dd0|      <- another meeting's row, never touched

@@ -25,6 +25,11 @@ pub mod two_track;
 /// either has the two catalog models or it does not.
 pub mod diarize;
 
+/// YV126 — a `/bin/sh` stub sidecar that answers `diarize` with turns whose
+/// embeddings the test chose, so the clustering path is driven end to end with
+/// zero model bytes.
+pub mod diarize_stub;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -648,6 +653,10 @@ pub fn segments_on_tracks(
                 confidence: None,
                 created_at: chrono::Utc::now(),
                 track: *track,
+                // YV126 — a hand-built row has never been through a clustering
+                // pass, and `None` is what "nobody has attributed this yet"
+                // means. `0` would be a claim about a person.
+                cluster_index: None,
             },
         )
         .collect()
@@ -667,6 +676,7 @@ pub fn segments_from(texts: &[&str]) -> Vec<wilson_voice_lib::meetings::MeetingS
             confidence: None,
             created_at: chrono::Utc::now(),
             track: wilson_voice_lib::meetings::MIC_TRACK,
+            cluster_index: None,
         })
         .collect()
 }

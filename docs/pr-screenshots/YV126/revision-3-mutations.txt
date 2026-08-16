@@ -1,0 +1,37 @@
+YV126 revision 3 — mutations (7 applied, run, reverted; 7 red)
+Machine: this Mac. Baseline committed BEFORE the sweep (YV134's recorded lesson:
+never revert a mutation against an uncommitted tree). Tree verified clean after each.
+
+M1  src/diarize.rs  cluster_track forwards a constant instead of the caller's min_embed
+    -> diarize_cluster_distance_threshold  FAILED 1/6
+       the_callers_min_embed_floor_reaches_the_child_unchanged
+
+M2  src/diarize.rs  assign_clusters files an unembeddable turn as cluster 0 instead of None
+    -> meeting_eval fixture_e_der_gate  FAILED
+       'fixture (e) DER 0.4492 is worse than the recorded gate 0.4465'
+       (the gate is tight enough to see one wrongly-attributed class of turn)
+
+M3  src/diarize.rs  label_against_enrolled scores every turn, comparable or not
+    -> diarize_full_clustering_vs_binary_fallback  FAILED 1/9
+       a_turn_with_no_embedding_is_unattributed_rather_than_everyone_else
+       (this mutation SURVIVED the first sweep; the test above was added to kill it,
+        and is reported here as a survivor-then-closed rather than omitted)
+
+M4  src/diarize.rs  ClusterRanking::chips ignores the row 8 degrade
+    -> matrix_row8_diarize_garbage_clusters  FAILED 1/11
+       the_shipping_gate_degrades_the_same_way_on_the_same_input
+
+M5  tests/support/diarize_stub.rs  the distance-dependent stub answers one body always
+    -> diarize_full_clustering_vs_binary_fallback  FAILED
+       the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it
+       (the non-vacuity arm: a stub that cannot vary makes the test vacuous)
+
+M6  tests/meeting_eval.rs  tune_enrollment_band sweeps ONE distance instead of 19
+    -> meeting_eval fixture_f_binary_fallback_der  FAILED
+       'fixture (f) binary-mode DER 0.5169 is worse than the recorded gate 0.3490'
+       (this is the review's blocking finding as a mutation: a single-distance
+        sweep is exactly the design that shipped before, and it cannot reach the gate)
+
+M7  src/meeting_matrix.rs  row 8's absent_call_site goes back to cluster_sanity
+    -> matrix_coverage  FAILED 2/9
+       unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not

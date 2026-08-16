@@ -53,9 +53,14 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use crate::diarize_metrics::CosineDistance;
+use crate::diarize_metrics::{cosine_similarity, CosineDistance, CosineSimilarity};
 use crate::diarize_protocol::{
     parse_ready, parse_response_for, DiarizeRequest, DiarizeResponse, DiarizeSegment,
+};
+use crate::meeting_matrix::{cluster_sanity, ClusterFloor, ClusterSummary, SpeakerLabels};
+use crate::meetings::{
+    cluster_speaker_label, diarization_target, DiarizationTarget, MeetingKind, MeetingSegment,
+    MIC_TRACK, OTHER_SPEAKER_LABEL, SYSTEM_TRACK,
 };
 
 /// Filename of the bundled sidecar. Tauri strips the target triple from
@@ -618,6 +623,881 @@ impl Sidecar {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// YV126 — clustering: the threshold, the smaller task, and the surfacing floor
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Three things live below, and they are one item because they are one argument
+// about the same mechanism ceiling.
+//
+//   1. **The threshold is a DISTANCE and the clustering that applies it is
+//      OURS.** [`cluster_by_distance_threshold`] is complete-linkage
+//      agglomerative clustering over the per-turn embeddings the wire already
+//      carries. It could have been left to `sherpa-onnx`'s own
+//      `FastClusteringConfig`, and the child is still SENT the threshold so a
+//      backend that must cluster in order to segment can. But the number this
+//      repo tunes against YV120's harness has to be applied by code this repo
+//      can score, step through and fail — merged finding #20's lesson is that a
+//      threshold whose semantics live in somebody else's default is a number
+//      nobody here can check. When the child returns embeddings, the parent's
+//      assignment is the one that ships; when it does not, the child's own
+//      cluster ids are used and that fallback is logged rather than hidden.
+//
+//   2. **Past the mechanism ceiling the fix is a smaller task, not a better
+//      threshold** (merged finding #5). pyannote-segmentation-3.0 caps at 3
+//      speakers per 10 s window and 2 simultaneous, and sherpa's pipeline
+//      deletes every overlapped frame before embedding. A six-person far-field
+//      classroom exceeds that by construction — fixture (f) is built to — so
+//      full N-way clustering there is not mistuned, it is impossible.
+//      [`TargetMode::EnrolledVsEveryoneElse`] is the 2-class problem that is
+//      achievable far-field and is what a student actually wants from a lecture
+//      recording: isolate the instructor.
+//
+//      **And it is a different computation, not a different label on the same
+//      one.** The first cut of this item ran the full N-way pass and then
+//      rewrote its cluster ids to "enrolled / not enrolled", which made binary
+//      mode strictly a POST-HOC RELABEL: its accuracy was capped by whether the
+//      same clustering the item says cannot do a six-person far-field room had
+//      nonetheless isolated the enrolled voice into exactly one cluster, and
+//      complete linkage (item 1 above, and the most split-prone linkage there
+//      is) makes that the less likely outcome. That is not a smaller question,
+//      it is the same question with fewer names printed. So binary mode does
+//      not cluster at all: [`label_against_enrolled`] compares EACH TURN's
+//      embedding against the enrolled centroid in cosine SIMILARITY and answers
+//      per turn. No agglomeration, no linkage, no distance threshold in the
+//      PARENT, and no dependency on the N-way pass's purity — which is
+//      precisely what makes the question smaller.
+//
+//      **The independence stops at the wire, and saying otherwise was a
+//      review-caught over-claim.** sherpa clusters in order to SEGMENT, so the
+//      distance this parent sends changes the turn set that comes back in both
+//      modes — measured, not assumed: YV122's
+//      `a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more`
+//      prints turns and clusters moving together as the distance loosens. Two
+//      speakers' adjacent turns merged into one output segment arrive at
+//      [`label_against_enrolled`] as ONE unit, and one label on a unit carrying
+//      two voices is an error no per-turn rule can undo. So binary mode's error
+//      is a function of the distance too, just not through a cluster id — which
+//      is why `meeting_eval::tune_enrollment_band` sweeps the distance AND the
+//      band for the 2-class task instead of inheriting fixture (e)'s distance.
+//      That second dimension is not free: measured on fixture (f), the 2-class
+//      task wants distance 0.80 and scores DER 0.3489 there, against 0.5146 at
+//      fixture (e)'s tuned 0.30 — the same fixture, the same run, 47 % worse
+//      from inheriting a distance tuned for a different question. And why
+//      `diarize_full_clustering_vs_binary_fallback::the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it`
+//      holds the honest version of the claim to the code.
+
+// A note on what the fixture (f) ceiling numbers are and are not
+// (`meeting_eval::fixture_f_binary_fallback_der`, and the backlog's
+// measurement record): 0.2738 full N-way vs 0.1524 enrolled-vs-rest are
+// CEILINGS computed from ground truth — the DER floor imposed by the frames
+// sherpa deletes, for a hypothetical perfect implementation of each task. They
+// say the 2-class task is the one with more headroom on that fixture. They are
+// not a prediction of what this code scores and they are not evidence that this
+// code approaches them. What binary mode actually SCORES on fixture (f) is a
+// different number entirely, measured by `fixture_f_binary_fallback_der` on a
+// machine with the catalog's models, recorded in the backlog's measurement
+// record, and gated by `CLASSROOM_6_DER_GATE` — never by either ceiling.
+//
+//   3. **A cluster count is not a verdict** (merged finding #25). The original
+//      plan rejected a whole diarization pass when the cluster count exceeded
+//      `max(8, attendees × 2)`; a manually started meeting has no attendee
+//      count, so that cap is 8, and a real six-person room produces 10–15 raw
+//      clusters before any merge. [`rank_and_floor`] replaces the reject with a
+//      ranking and a floor: chips for the clusters carrying real speech, one
+//      "Other" bucket for the rest, and nothing thrown away.
+//
+// Nothing in this section carries a tuned accuracy number. The clustering
+// threshold is a PARAMETER — there is deliberately no default constant for it
+// anywhere in this crate, because the only honest source for one is a
+// measurement against fixture (e), and a measurement belongs in the harness
+// that produced it (`meeting_eval::tune_clustering_threshold`, whose winner is
+// recorded in `ROOM_3_DER_GATE` and in the backlog) rather than as a literal a
+// reader of this file would take on faith. The two numbers that DO appear
+// ([`CHIP_FLOOR_SECONDS`], [`CHIP_FLOOR_TURNS`]) are surfacing floors from the
+// audit's own finding #25, not accuracy thresholds: they change what a person
+// is shown, never what is computed or stored.
+
+/// One clustered turn on one track, ready to be attributed to transcript rows.
+///
+/// Times are seconds from the start of that track's WAV — the same base
+/// `meeting_segments.start_seconds` is on after YV107's host-time rebase, which
+/// is what makes [`attribute_clusters`] a comparison rather than a guess.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiarizedSegment {
+    /// Which recorded track this turn came from: [`MIC_TRACK`] under
+    /// [`DiarizationTarget::ClusterTrackA`], [`SYSTEM_TRACK`] under
+    /// [`DiarizationTarget::MicIsMe`]. Carried so the attribution step cannot
+    /// apply one track's clusters to another track's rows.
+    pub track: i64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    /// The cluster this turn belongs to, local to this meeting and this pass.
+    /// Cluster 0 of two meetings is two different people until an enrolled
+    /// profile says otherwise (YV128/YV129).
+    ///
+    /// **`None` means nobody has attributed this turn**, and it is the same
+    /// argument `meeting_segments.cluster_index` is nullable for: `0` would not
+    /// mean "unattributed", it would mean "speaker zero", a claim about a
+    /// person. The live source of `None` is YV122's per-turn `min_embed` floor —
+    /// a turn whose un-overlapped part is under the floor comes back from the
+    /// child with an EMPTY embedding, because embedding two tenths of a second
+    /// produces a full-width vector that resembles its own speaker less than an
+    /// average stranger does. That turn is real speech at a real time; it simply
+    /// has no evidence attached, and this is what having no evidence looks like.
+    pub cluster_index: Option<i64>,
+}
+
+impl DiarizedSegment {
+    pub fn new(
+        track: i64,
+        start_seconds: f64,
+        end_seconds: f64,
+        cluster_index: Option<i64>,
+    ) -> Self {
+        Self {
+            track,
+            start_seconds,
+            end_seconds,
+            cluster_index,
+        }
+    }
+
+    pub fn duration(&self) -> f64 {
+        (self.end_seconds - self.start_seconds).max(0.0)
+    }
+}
+
+/// The enrolled voice a binary-mode pass is looking for: whose it is, what it
+/// sounds like, and how close a turn has to be to count as it.
+///
+/// The centroid is the load-bearing field. Without it the only thing binary
+/// mode could compare a turn against is a CLUSTER ID out of the N-way pass, and
+/// then "is this the enrolled voice" is answered by the same clustering the
+/// mechanism ceiling says cannot separate six far-field speakers — a relabel,
+/// not a smaller question. With it, each turn is decided on its own evidence.
+///
+/// `accept_at_or_above` is a cosine SIMILARITY (the enrollment side of merged
+/// finding #20's unit split — [`CosineDistance`] is the clustering side, and
+/// the two are different newtypes so they cannot be swapped by accident).
+/// There is deliberately NO default for it in this crate: the band is YV129's
+/// to tune against YV120's `enrollment_eer`, and inventing one here to make a
+/// far-field demo look decisive is exactly the vendor-number failure this
+/// backlog exists to prevent. The caller supplies it; this file applies it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnrolledSpeaker {
+    /// The `speaker_profiles` row (YV128). Carried through so the caller that
+    /// writes the attribution knows whose it is.
+    pub profile_id: i64,
+    /// The profile's voice centroid, in whatever dimension the loaded embedding
+    /// model reports. Nothing here assumes 192 or any other number; a turn
+    /// whose embedding is a different length than this is a mismatch the
+    /// comparison refuses rather than silently truncates.
+    pub centroid: Vec<f32>,
+    /// The minimum cosine similarity to `centroid` at which a turn is called
+    /// the enrolled voice.
+    pub accept_at_or_above: CosineSimilarity,
+}
+
+impl EnrolledSpeaker {
+    /// An enrolled profile with the centroid and acceptance band the caller
+    /// measured. There is no constructor that omits either: a binary-mode pass
+    /// with no centroid has nothing to compare against.
+    pub fn new(profile_id: i64, centroid: Vec<f32>, accept_at_or_above: CosineSimilarity) -> Self {
+        Self {
+            profile_id,
+            centroid,
+            accept_at_or_above,
+        }
+    }
+}
+
+/// What task the clustering pass is being asked to do.
+///
+/// The two arms run DIFFERENT computations, which is the whole point of the
+/// second one existing — see this section's header.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetMode {
+    /// Every distinct voice gets its own cluster, by agglomerating turn
+    /// embeddings under a cosine-distance threshold. Correct where the audio
+    /// stays inside pyannote-segmentation-3.0's ceiling — a near-field room of
+    /// two or three (fixture (e)) — and the default ask.
+    FullClustering,
+    /// Two classes: the enrolled voice, and everyone else.
+    ///
+    /// Merged finding #5's reframe, and a genuinely different question rather
+    /// than full clustering with fewer labels printed. **No clustering runs in
+    /// the parent in this mode.** Each turn is scored against the enrolled
+    /// centroid in cosine similarity and answered on its own, so binary mode
+    /// does not inherit the PARENT's speaker-splitting errors — it is not
+    /// bounded by whether an agglomeration happened to isolate the enrolled
+    /// voice into exactly one cluster.
+    ///
+    /// What it IS bounded by is stated plainly so nobody has to infer it:
+    ///
+    /// * **The child's segmentation, which moves with the distance.** sherpa
+    ///   clusters to segment; a distance loose enough to merge two speakers'
+    ///   adjacent turns delivers one turn carrying two voices, and one label on
+    ///   it is the best this mode can do. Independence from the N-way pass is a
+    ///   statement about the parent's arithmetic, never about the turn set —
+    ///   see this module's YV126 section header for the measurement.
+    /// * Enrollment quality: how representative the centroid is.
+    /// * The acceptance band, which the caller tunes for THIS task in THIS unit.
+    /// * The frames sherpa deleted before embedding — the fixture (f) ceiling of
+    ///   0.1524 DER, a floor on the error of a *perfect* 2-class implementation
+    ///   and not a score this code has been shown to reach.
+    ///
+    /// What this mode really scores on fixture (f) is measured by
+    /// `meeting_eval::fixture_f_binary_fallback_der` and gated there.
+    EnrolledVsEveryoneElse(EnrolledSpeaker),
+}
+
+/// The cluster the enrolled voice is relabelled to in binary mode.
+pub const ENROLLED_CLUSTER: i64 = 0;
+/// The cluster every other voice is relabelled to in binary mode. Not "unknown"
+/// and not one-per-speaker: the claim is precisely "this is not the enrolled
+/// voice", and a mechanism that cannot separate six far-field speakers may not
+/// keep six ids around implying that it did.
+pub const EVERYONE_ELSE_CLUSTER: i64 = 1;
+
+/// Total speech, in seconds, a cluster must carry before it gets a chip of its
+/// own. From merged finding #25's own fix ("show chips only above a floor —
+/// ~30s total, ≥3 turns"), and it is a SURFACING floor, not an accuracy
+/// threshold: a cluster below it is still clustered, still stored, and still
+/// correctable (YV130). Nothing about it is measured against the eval harness
+/// because nothing about it decides who spoke.
+pub const CHIP_FLOOR_SECONDS: f64 = 30.0;
+/// …and how many separate turns, for the same reason. One 45-second monologue
+/// from a passer-by is not a participant; three turns is the cheapest available
+/// evidence that a voice was part of the conversation.
+pub const CHIP_FLOOR_TURNS: usize = 3;
+
+/// The two WAVs a meeting may have, as the clustering stage sees them.
+#[derive(Debug, Clone, Copy)]
+pub struct MeetingTracks<'a> {
+    /// Track A — the microphone. Always present for a recorded meeting.
+    pub mic_wav: &'a Path,
+    /// Track B — the system-audio tap's WAV, when one was recorded and kept.
+    /// `None` is the answer for every in-person meeting, every meeting whose
+    /// tap was denied or revoked, and every meeting whose audio has aged out.
+    pub system_wav: Option<&'a Path>,
+}
+
+/// Cluster the track this meeting's [`MeetingKind`] says has to be clustered.
+///
+/// The branch is YV125's [`diarization_target`], unchanged and un-duplicated:
+///
+/// * [`DiarizationTarget::ClusterTrackA`] — in-person, unknown, or a virtual
+///   meeting whose tap never delivered. The microphone carries the room, so the
+///   microphone is what gets clustered.
+/// * [`DiarizationTarget::MicIsMe`] — a virtual meeting with a live second
+///   track. The microphone is one voice by mechanism (nobody else is in the
+///   room), so the track that needs splitting is Track B, the mixed stream of
+///   every remote participant.
+///
+/// `threshold` is a cosine **distance** and there is no default for it in this
+/// crate: see this section's header. `mode` picks the task
+/// ([`TargetMode`]) — and the two tasks are two computations:
+///
+/// * [`TargetMode::FullClustering`] agglomerates the turn embeddings under
+///   `threshold` ([`cluster_by_distance_threshold`]).
+/// * [`TargetMode::EnrolledVsEveryoneElse`] does not cluster at all
+///   ([`label_against_enrolled`]): each turn is scored against the enrolled
+///   centroid on its own.
+///
+/// **`threshold` reaches the child in BOTH modes, and in both modes it changes
+/// the turns that come back.** sherpa clusters in order to segment, so the
+/// distance decides where one turn ends and the next begins — YV122's own
+/// `a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more` prints
+/// the turn count moving with it. What binary mode is independent of is the
+/// PARENT's assignment: no cluster id decides any label here
+/// ([`label_against_enrolled`]). It is not independent of the child's
+/// segmentation, and it cannot be — a distance loose enough to merge two
+/// speakers' adjacent turns into one output segment hands
+/// [`label_against_enrolled`] one unit carrying two voices, and one label is
+/// then the best any per-turn rule can do. That is why the eval harness tunes
+/// the distance FOR the 2-class task rather than borrowing full clustering's
+/// (`meeting_eval::tune_enrollment_band`), and why
+/// `diarize_full_clustering_vs_binary_fallback::the_childs_segmentation_moves_
+/// with_the_distance_and_binary_mode_inherits_it` exists.
+///
+/// `min_embed` is the shortest stretch of one-person audio the caller considers
+/// worth embedding (YV122). There is no default for it in this crate either,
+/// for the same reason there is none for `threshold`: how much speech is enough
+/// is a measurement, and YV122's truncation sweep showed a fifth of a second
+/// coming back as an ordinary-looking embedding that matches its own speaker
+/// worse than a stranger does.
+///
+/// Errors are the sidecar's, unchanged and un-swallowed — a diarization that
+/// cannot run must fail loudly enough for the caller to leave the transcript
+/// unattributed; returning an empty segment list would read as "nobody spoke".
+pub fn cluster_track(
+    pool: &DiarizePool,
+    tracks: MeetingTracks<'_>,
+    kind: MeetingKind,
+    threshold: CosineDistance,
+    mode: TargetMode,
+    min_embed: Duration,
+) -> Result<Vec<DiarizedSegment>, DiarizeError> {
+    let target = diarization_target(kind, tracks.system_wav.is_some());
+    let (wav, track) = match target {
+        DiarizationTarget::ClusterTrackA => (tracks.mic_wav, MIC_TRACK),
+        // `MicIsMe` is only reachable when `system_wav` is `Some` — that is
+        // literally the input `diarization_target` branched on — so this is a
+        // total match rather than an unwrap on a maybe.
+        DiarizationTarget::MicIsMe => match tracks.system_wav {
+            Some(sys) => (sys, SYSTEM_TRACK),
+            None => (tracks.mic_wav, MIC_TRACK),
+        },
+    };
+
+    let raw = pool.diarize(wav, threshold, min_embed)?;
+
+    match mode {
+        TargetMode::FullClustering => {
+            let clustered = assign_clusters(&raw, threshold);
+            Ok(raw
+                .iter()
+                .zip(clustered)
+                .map(|(seg, cluster_index)| {
+                    DiarizedSegment::new(track, seg.start, seg.end, cluster_index)
+                })
+                .collect())
+        }
+        TargetMode::EnrolledVsEveryoneElse(enrolled) => {
+            label_against_enrolled(track, &raw, &enrolled)
+        }
+    }
+}
+
+/// Assign a cluster to each turn the sidecar returned.
+///
+/// Prefers the parent's own [`cluster_by_distance_threshold`] over the embeddings
+/// on the wire, and falls back to the child's ids only when the child sent none
+/// — a fallback that is logged, because a silent one would make the tuned
+/// threshold stop being the thing that decided the answer.
+fn assign_clusters(raw: &[DiarizeSegment], threshold: CosineDistance) -> Vec<Option<i64>> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    // The width the majority of turns agree on. A turn of a different width is
+    // not comparable to them and is not silently truncated into being: it is
+    // unattributed, exactly like a turn with no embedding at all.
+    let width = raw
+        .iter()
+        .map(|s| s.embedding.len())
+        .filter(|len| *len > 0)
+        .max()
+        .unwrap_or(0);
+
+    let usable: Vec<usize> = raw
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.embedding.len() == width && width > 0)
+        .map(|(i, _)| i)
+        .collect();
+
+    if usable.is_empty() {
+        // NOTHING came back with an embedding: a backend that segments but does
+        // not embed. Its own ids are better than no attribution at all, and the
+        // degrade is logged because a silent one would make "this build's
+        // threshold decided the answer" unfalsifiable.
+        log::warn!(
+            "diarize returned {} turns and not one usable embedding — falling back to the \
+             child's own cluster ids, which were NOT assigned by this build's threshold",
+            raw.len()
+        );
+        return raw.iter().map(|s| Some(i64::from(s.cluster))).collect();
+    }
+
+    // The PARTIAL case, which YV122's per-turn `min_embed` floor makes the
+    // normal one: some turns are under the floor and come back with an empty
+    // embedding. Handing the whole meeting to the child's ids because one turn
+    // was too short would throw away every attribution this build can make; so
+    // the turns that carry evidence are clustered by this build's threshold and
+    // the rest are honestly `None`.
+    let embeddings: Vec<&[f32]> = usable
+        .iter()
+        .map(|i| raw[*i].embedding.as_slice())
+        .collect();
+    let assigned = cluster_by_distance_threshold(&embeddings, threshold);
+    let unattributed = raw.len() - usable.len();
+    if unattributed > 0 {
+        log::info!(
+            "diarize: {unattributed} of {} turns carried no usable embedding and are stored \
+             unattributed; the other {} were clustered at this build's threshold",
+            raw.len(),
+            usable.len()
+        );
+    }
+    let mut out = vec![None; raw.len()];
+    for (slot, cluster) in usable.iter().zip(assigned) {
+        out[*slot] = Some(cluster as i64);
+    }
+    out
+}
+
+/// Complete-linkage agglomerative clustering of embeddings, cut at a cosine
+/// **distance** threshold.
+///
+/// Returns one cluster index per input, numbered by first appearance so the ids
+/// are small, stable and readable in a database row.
+///
+/// **Complete linkage, deliberately.** The threshold then means something a
+/// person can state: *every* pair of turns inside a cluster is within
+/// `threshold` of each other. Single linkage — the other obvious choice, and
+/// what a naive "connect everything closer than t" implementation gives you —
+/// means only that a CHAIN of such pairs exists, and chaining is the dominant
+/// failure mode of exactly this workload: over a 50-minute meeting a slow
+/// acoustic drift (a speaker turning away from the mic, an AGC ramp) links six
+/// people into one cluster through a sequence of near neighbours, each hop
+/// legitimately under the threshold. That failure looks like a mistuned number
+/// and is not one.
+///
+/// The implementation is the standard nearest-neighbour-chain algorithm, which
+/// is O(n²) rather than the naive O(n³) and is exact for complete linkage
+/// (a reducible metric). `nn_chain_agrees_with_brute_force_complete_linkage`
+/// holds it to a brute-force reference over randomised inputs, including ties
+/// and duplicate points, because "clever and exact" is a claim and not a fact.
+pub fn cluster_by_distance_threshold(
+    embeddings: &[&[f32]],
+    threshold: CosineDistance,
+) -> Vec<usize> {
+    let n = embeddings.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![0];
+    }
+    let mut distances = vec![vec![0.0f64; n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let similarity = cosine_similarity(embeddings[i], embeddings[j]);
+            let d = f64::from(CosineDistance::from_similarity(similarity).get());
+            // A degenerate embedding (an all-zero vector, which YV122's backend
+            // can return for a turn it could not embed) makes the cosine 0/0 —
+            // NaN, which compares false against everything and would leave the
+            // nearest-neighbour walk with no neighbour at all. INFINITY is the
+            // honest substitute: a turn nothing can be compared to merges with
+            // nothing, rather than merging with whatever the walk fell over.
+            let d = if d.is_finite() { d } else { f64::INFINITY };
+            distances[i][j] = d;
+            distances[j][i] = d;
+        }
+    }
+    let merges = complete_linkage_merges(&mut distances);
+
+    // Cut the dendrogram: apply every merge at or below the threshold. Complete
+    // linkage produces monotone merge heights, so this is the same partition a
+    // greedy "merge the closest pair while it is within the threshold" produces
+    // — which is what the brute-force reference in the tests actually does.
+    let cut = f64::from(threshold.get());
+    let mut parent: Vec<usize> = (0..n).collect();
+    for (a, b, height) in merges {
+        if height <= cut + 1e-9 {
+            union(&mut parent, a, b);
+        }
+    }
+
+    let mut label_of: Vec<Option<usize>> = vec![None; n];
+    let mut out = Vec::with_capacity(n);
+    let mut next = 0usize;
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        let label = match label_of[root] {
+            Some(l) => l,
+            None => {
+                label_of[root] = Some(next);
+                next += 1;
+                next - 1
+            }
+        };
+        out.push(label);
+    }
+    out
+}
+
+fn find(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
+}
+
+fn union(parent: &mut [usize], a: usize, b: usize) {
+    let (ra, rb) = (find(parent, a), find(parent, b));
+    if ra != rb {
+        parent[rb.max(ra)] = rb.min(ra);
+    }
+}
+
+/// The merge sequence of complete-linkage clustering: `(a, b, height)` with `a`
+/// the surviving representative, in the order the nearest-neighbour chain
+/// produced them.
+fn complete_linkage_merges(distances: &mut [Vec<f64>]) -> Vec<(usize, usize, f64)> {
+    let n = distances.len();
+    let mut active = vec![true; n];
+    let mut remaining = n;
+    let mut chain: Vec<usize> = Vec::with_capacity(n);
+    let mut merges = Vec::with_capacity(n.saturating_sub(1));
+
+    while remaining > 1 {
+        if chain.is_empty() {
+            let seed = (0..n).find(|i| active[*i]).expect("an active cluster");
+            chain.push(seed);
+        }
+        let a = *chain.last().expect("non-empty chain");
+        // The nearest active neighbour of `a`, ties broken by lowest index so
+        // the walk is deterministic and cannot cycle between equidistant pairs.
+        let mut best = usize::MAX;
+        let mut best_distance = f64::INFINITY;
+        for (b, is_active) in active.iter().enumerate() {
+            if !is_active || b == a {
+                continue;
+            }
+            if distances[a][b] < best_distance {
+                best_distance = distances[a][b];
+                best = b;
+            }
+        }
+        if best == usize::MAX {
+            // No comparable neighbour: every remaining distance from `a` is
+            // non-finite. Nothing can merge, so the walk stops rather than
+            // indexing `usize::MAX`. Reachable only through a degenerate
+            // embedding, which the matrix build maps to INFINITY above.
+            break;
+        }
+        let b = best;
+        if chain.len() >= 2 && chain[chain.len() - 2] == b {
+            // Reciprocal nearest neighbours: this pair is a merge in the exact
+            // dendrogram, whichever order the chain reached them in.
+            chain.pop();
+            chain.pop();
+            let (keep, gone) = (a.min(b), a.max(b));
+            merges.push((keep, gone, best_distance));
+            for k in 0..n {
+                if !active[k] || k == keep || k == gone {
+                    continue;
+                }
+                // Lance-Williams for complete linkage: the distance to a merged
+                // cluster is the FARTHEST of the two, which is what makes the
+                // threshold a guarantee about every pair rather than about one.
+                let far = distances[keep][k].max(distances[gone][k]);
+                distances[keep][k] = far;
+                distances[k][keep] = far;
+            }
+            active[gone] = false;
+            remaining -= 1;
+        } else {
+            chain.push(b);
+        }
+    }
+    merges
+}
+
+/// The refusal tag a binary-mode pass returns when the turns it was handed
+/// carry no embedding it can compare against the enrolled centroid.
+///
+/// Tag-shaped (`[a-z0-9_]{1,32}`) like every other tag this parent will echo.
+pub const ERR_NO_EMBEDDINGS: &str = "no_embeddings";
+
+/// Answer the 2-class question one turn at a time: is THIS turn the enrolled
+/// voice, or is it not.
+///
+/// Merged finding #5's reframe, as a computation. Every turn is scored against
+/// [`EnrolledSpeaker::centroid`] with [`cosine_similarity`] and labelled
+/// [`ENROLLED_CLUSTER`] at or above [`EnrolledSpeaker::accept_at_or_above`],
+/// [`EVERYONE_ELSE_CLUSTER`] below it.
+///
+/// **Turn boundaries are passed through unchanged — which is not the same as
+/// their being right.** This function neither splits nor merges what the child
+/// sent; the boundaries are the child's, and the child's segmentation is a
+/// function of the clustering distance [`cluster_track`] forwarded to it. Where
+/// that distance merged two speakers into one turn, this labels the merged unit
+/// once and the error is unrecoverable here. The claim this mode earns is the
+/// narrow one: the LABEL on each unit is decided by that unit's own embedding
+/// and by nothing the parent clustered.
+///
+/// **What this deliberately does not do is look at the cluster ids.** Deciding
+/// the enrolled class by "which raw cluster did the profile match" would make
+/// this mode's accuracy a function of the N-way clustering's purity on the
+/// enrolled speaker — a speaker split across three clusters by complete linkage
+/// would lose two thirds of their speech no matter how good the enrollment was,
+/// and the mode would be a relabel of the pass it exists to replace. Per-turn
+/// scoring has no such dependency; it is why the question is smaller.
+///
+/// # Errors
+///
+/// [`DiarizeError::Refused`] carrying [`ERR_NO_EMBEDDINGS`] in two cases, and
+/// only two: an enrolled profile with no centroid, and a pass in which **not
+/// one** turn carries an embedding of the centroid's width. There is no
+/// fallback for either ON PURPOSE — without any embedding the only thing left
+/// to key on is a cluster id, which carries no identity, so a "fallback" would
+/// be a guess wearing the enrolled speaker's name. A refusal lets the caller
+/// leave the transcript unattributed, which is the honest outcome.
+///
+/// **A turn that individually has no comparable embedding is `None`, not a
+/// refusal and not "everyone else".** That distinction arrived with YV122's
+/// per-turn `min_embed` floor, which makes a partly-embedded pass the normal
+/// case rather than a pathology: a turn under the floor comes back empty, and
+/// answering "this is not the instructor" about a turn nothing was measured on
+/// would be a claim, not an abstention. Refusing the whole pass because one turn
+/// was short would be worse still — it throws away every turn that DID carry
+/// evidence.
+///
+/// A turn whose embedding is a different NON-ZERO width is also `None`: it is
+/// the wrong model's output, and truncating it into comparability would produce
+/// a number that looks like a similarity.
+pub fn label_against_enrolled(
+    track: i64,
+    raw: &[DiarizeSegment],
+    enrolled: &EnrolledSpeaker,
+) -> Result<Vec<DiarizedSegment>, DiarizeError> {
+    if enrolled.centroid.is_empty() {
+        log::warn!(
+            "binary-mode diarization asked for profile {} with an empty centroid — refusing \
+             rather than labelling turns against nothing",
+            enrolled.profile_id
+        );
+        return Err(DiarizeError::Refused(ERR_NO_EMBEDDINGS.to_string()));
+    }
+    if raw.is_empty() {
+        // Nothing was said on this track. There is nothing to refuse about and
+        // nothing to label — an empty answer must not become a speaker.
+        return Ok(Vec::new());
+    }
+    let comparable = |s: &DiarizeSegment| s.embedding.len() == enrolled.centroid.len();
+    if !raw.iter().any(comparable) {
+        log::warn!(
+            "binary-mode diarization got {} turns and not one embedding of the enrolled \
+             centroid's {} dimensions — refusing, because a cluster id is not an identity",
+            raw.len(),
+            enrolled.centroid.len()
+        );
+        return Err(DiarizeError::Refused(ERR_NO_EMBEDDINGS.to_string()));
+    }
+
+    Ok(raw
+        .iter()
+        .map(|s| {
+            let cluster_index = if comparable(s) {
+                let similarity = cosine_similarity(&s.embedding, &enrolled.centroid);
+                Some(if similarity.get() >= enrolled.accept_at_or_above.get() {
+                    ENROLLED_CLUSTER
+                } else {
+                    EVERYONE_ELSE_CLUSTER
+                })
+            } else {
+                None
+            };
+            DiarizedSegment::new(track, s.start, s.end, cluster_index)
+        })
+        .collect())
+}
+
+/// One cluster's weight in a meeting, and what it is called on screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedCluster {
+    pub cluster_index: i64,
+    pub speech_seconds: f64,
+    pub turns: usize,
+    /// 1-based position in speech-time order among the SURFACED clusters, or
+    /// `None` for one below the floor. This is what
+    /// [`cluster_speaker_label`] numbers — never the `cluster_index`.
+    pub rank: Option<usize>,
+    /// `Speaker 1` … or [`OTHER_SPEAKER_LABEL`].
+    pub label: String,
+}
+
+/// The surfacing decision for one clustered track: chips, one bucket, and the
+/// published matrix row 8 verdict for the same pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterRanking {
+    /// Clusters at or above both floors, most speech first.
+    pub surfaced: Vec<RankedCluster>,
+    /// Everything else, most speech first. Present rather than dropped: these
+    /// rows keep their stored `cluster_index`, and YV130's correction UX is how
+    /// one of them gets promoted or merged into a real speaker.
+    pub other: Vec<RankedCluster>,
+    /// **Matrix row 8's answer for this pass, computed by the matrix's own
+    /// [`cluster_sanity`] rather than restated here.**
+    ///
+    /// The published table says a pass in which *nothing* cleared the floor
+    /// degrades to a plain single-speaker transcript marked
+    /// [`DIARIZATION_FAILED`]. An earlier cut of this file answered the same
+    /// forty-fragment input with one "Other" chip and no degrade — two answers
+    /// to one question, one of them published as required behaviour, which
+    /// `matrix_row8_diarize_garbage_clusters` fails on by design.
+    ///
+    /// "Never reject" is not "never degrade", and the distinction is the whole
+    /// point: [`rank_and_floor`] still never throws a pass away — every raw
+    /// cluster is still here in `surfaced`/`other` for YV130 to correct — and a
+    /// pass that found no speaker still may not be RENDERED as one. So the
+    /// verdict rides along and [`ClusterRanking::chips`] respects it.
+    pub labels: SpeakerLabels,
+}
+
+impl ClusterRanking {
+    /// The chips a surface draws, in order. Never more than one per surfaced
+    /// cluster, plus [`OTHER_SPEAKER_LABEL`] when anything landed in the
+    /// bucket — and **none at all** when row 8 says this pass degrades, because
+    /// one "Other" chip over a pile of fragments presents noise as attribution.
+    pub fn chips(&self) -> Vec<String> {
+        if self.labels.is_plain() {
+            return Vec::new();
+        }
+        let mut chips: Vec<String> = self.surfaced.iter().map(|c| c.label.clone()).collect();
+        if !self.other.is_empty() {
+            chips.push(OTHER_SPEAKER_LABEL.to_string());
+        }
+        chips
+    }
+
+    /// What a given stored `cluster_index` is called. Unknown ids read as
+    /// [`OTHER_SPEAKER_LABEL`] rather than panicking: a transcript that renders
+    /// beats one that refuses over a number.
+    pub fn label_for(&self, cluster_index: i64) -> String {
+        self.surfaced
+            .iter()
+            .find(|c| c.cluster_index == cluster_index)
+            .map(|c| c.label.clone())
+            .unwrap_or_else(|| OTHER_SPEAKER_LABEL.to_string())
+    }
+
+    pub fn other_speech_seconds(&self) -> f64 {
+        self.other.iter().map(|c| c.speech_seconds).sum()
+    }
+}
+
+/// Rank a track's clusters by speech time and split them at the surfacing floor
+/// — merged finding #25's replacement for the plan's hard reject.
+///
+/// **Never rejects.** The gate it replaces threw a whole diarization pass away
+/// when the cluster count exceeded `max(8, attendees × 2)`, which fires on a
+/// manually started six-person room (no attendee count ⇒ cap 8, 10–15 raw
+/// clusters) — the case this backlog prioritises, thrown away where it is most
+/// needed. Ranking cannot fail: a pass that produced fifteen clusters shows the
+/// four that carry the conversation and rolls eleven into "Other".
+pub fn rank_and_floor(segments: &[DiarizedSegment]) -> ClusterRanking {
+    let mut totals: Vec<(i64, f64, usize)> = Vec::new();
+    for segment in segments {
+        // An unattributed turn belongs to no cluster and may not invent one.
+        // It is not "Other" either: "Other" is a real voice below the surfacing
+        // floor, and this is a turn nobody measured.
+        let Some(cluster_index) = segment.cluster_index else {
+            continue;
+        };
+        match totals.iter_mut().find(|(id, _, _)| *id == cluster_index) {
+            Some(entry) => {
+                entry.1 += segment.duration();
+                entry.2 += 1;
+            }
+            None => totals.push((cluster_index, segment.duration(), 1)),
+        }
+    }
+    // Most speech first; ties by cluster index so the order is total and a
+    // re-render cannot reshuffle two equal speakers.
+    totals.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    // The floor decision and the degrade are the MATRIX's, applied here rather
+    // than reimplemented: `cluster_sanity` is the published row 8 policy, and a
+    // second copy of it in this file is exactly the "table says one thing, code
+    // does another" failure YV132 tripwired against.
+    let summaries: Vec<ClusterSummary> = totals
+        .iter()
+        .map(|(cluster_index, speech_seconds, turns)| ClusterSummary {
+            cluster: (*cluster_index).max(0) as u32,
+            speech_seconds: *speech_seconds,
+            turns: *turns,
+        })
+        .collect();
+    let verdict = cluster_sanity(
+        &summaries,
+        ClusterFloor {
+            min_speech_seconds: CHIP_FLOOR_SECONDS,
+            min_turns: CHIP_FLOOR_TURNS,
+        },
+    );
+
+    let mut surfaced = Vec::new();
+    let mut other = Vec::new();
+    for (cluster_index, speech_seconds, turns) in totals {
+        let above = verdict.chips.contains(&(cluster_index.max(0) as u32));
+        if above {
+            let rank = surfaced.len() + 1;
+            surfaced.push(RankedCluster {
+                cluster_index,
+                speech_seconds,
+                turns,
+                rank: Some(rank),
+                label: cluster_speaker_label(rank),
+            });
+        } else {
+            other.push(RankedCluster {
+                cluster_index,
+                speech_seconds,
+                turns,
+                rank: None,
+                label: OTHER_SPEAKER_LABEL.to_string(),
+            });
+        }
+    }
+    ClusterRanking {
+        surfaced,
+        other,
+        labels: verdict.labels,
+    }
+}
+
+/// Attribute stored transcript rows to clusters, for
+/// [`crate::db::Database::set_segment_clusters`].
+///
+/// Each transcript segment on the clustered track takes the cluster it shares
+/// the most TIME with — not the one it starts inside, which mis-attributes
+/// every row whose first word lands in the previous speaker's trailing frames.
+/// A row that overlaps no clustered turn at all gets `None`: silence, a
+/// hallucinated span, or audio the segmenter dropped is honestly unattributed,
+/// and `0` there would be a claim about a person.
+///
+/// Rows on OTHER tracks are not returned at all — not even as `None`. One pass
+/// clusters one track, and a virtual meeting's mic rows are filed as "Me" by
+/// the YV125 branch rather than by clustering; emitting `None` for them would
+/// clear an attribution this pass never looked at.
+pub fn attribute_clusters(
+    segments: &[MeetingSegment],
+    diarized: &[DiarizedSegment],
+) -> Vec<(String, Option<i64>)> {
+    let track = match diarized.first() {
+        Some(first) => first.track,
+        None => return Vec::new(),
+    };
+    segments
+        .iter()
+        .filter(|s| s.track == track)
+        .map(|s| {
+            let mut best: Option<(Option<i64>, f64)> = None;
+            for turn in diarized.iter().filter(|t| t.track == track) {
+                let overlap =
+                    turn.end_seconds.min(s.end_seconds) - turn.start_seconds.max(s.start_seconds);
+                if overlap <= 0.0 {
+                    continue;
+                }
+                match best {
+                    Some((_, most)) if most >= overlap => {}
+                    _ => best = Some((turn.cluster_index, overlap)),
+                }
+            }
+            // Two different `None`s collapse to the same stored value and mean
+            // the same thing: nobody has attributed this row. One is "no turn
+            // covers it"; the other is "the turn that covers it carried no
+            // usable embedding". Neither is a person.
+            (s.id.clone(), best.and_then(|(cluster, _)| cluster))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,6 +1608,163 @@ mod tests {
             "a cosine SIMILARITY reached the child where a distance belongs"
         );
         pool.shutdown();
+    }
+
+    // ── YV126 ───────────────────────────────────────────────────────────────
+
+    /// Complete-linkage clustering, done the slow obvious way: merge the
+    /// closest pair while it is within the threshold, recomputing every
+    /// distance from the raw points each round.
+    ///
+    /// This is the DEFINITION the fast implementation has to match. It is
+    /// O(n³) and would be unusable on a three-hour meeting, which is why it
+    /// lives here and not in `src/`.
+    fn brute_force_complete_linkage(points: &[&[f32]], threshold: CosineDistance) -> Vec<usize> {
+        let n = points.len();
+        let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+        let cut = f64::from(threshold.get());
+        loop {
+            let mut best: Option<(usize, usize, f64)> = None;
+            for i in 0..clusters.len() {
+                for j in (i + 1)..clusters.len() {
+                    // Complete linkage: the farthest pair between the two.
+                    let mut far = 0.0f64;
+                    for a in &clusters[i] {
+                        for b in &clusters[j] {
+                            let similarity = cosine_similarity(points[*a], points[*b]);
+                            let d = f64::from(CosineDistance::from_similarity(similarity).get());
+                            far = far.max(d);
+                        }
+                    }
+                    if best.is_none_or(|(_, _, best_d)| far < best_d) {
+                        best = Some((i, j, far));
+                    }
+                }
+            }
+            match best {
+                Some((i, j, d)) if d <= cut + 1e-9 => {
+                    let moved = clusters.remove(j);
+                    clusters[i].extend(moved);
+                }
+                _ => break,
+            }
+        }
+        let mut labels = vec![usize::MAX; n];
+        for (label, cluster) in clusters.iter().enumerate() {
+            for member in cluster {
+                labels[*member] = label;
+            }
+        }
+        // Renumber by first appearance, exactly as the shipped function does,
+        // so two correct answers that differ only in cluster NAMES compare equal.
+        renumber(&labels)
+    }
+
+    fn renumber(labels: &[usize]) -> Vec<usize> {
+        let mut seen: Vec<usize> = Vec::new();
+        labels
+            .iter()
+            .map(|l| match seen.iter().position(|s| s == l) {
+                Some(i) => i,
+                None => {
+                    seen.push(*l);
+                    seen.len() - 1
+                }
+            })
+            .collect()
+    }
+
+    /// A deterministic little PRNG, so a failure is reproducible from the seed
+    /// printed in the assertion rather than "it went red once on CI".
+    fn xorshift(state: &mut u64) -> f32 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        ((*state >> 40) as f32 / 8_388_608.0) - 1.0
+    }
+
+    /// The fast path is the slow path. Randomised, including the two cases an
+    /// NN-chain implementation gets wrong when its tie-break is sloppy:
+    /// duplicate points (distance exactly 0) and quantised coordinates that
+    /// produce many equal distances.
+    #[test]
+    fn nn_chain_agrees_with_brute_force_complete_linkage() {
+        let mut state = 0x5EED_1234_ABCD_0001u64;
+        // Agreement is worthless if every case is trivially all-singletons or
+        // trivially one cluster — two implementations of "return 0..n" agree
+        // too. This counts the cases that actually partitioned.
+        let mut interesting = 0usize;
+        for case in 0..120 {
+            let n = 2 + (case % 11);
+            let dim = 8;
+            let quantise = case % 3 == 0;
+            let mut points: Vec<Vec<f32>> = Vec::new();
+            for i in 0..n {
+                // Every third case repeats an earlier point verbatim, so exact
+                // ties are exercised rather than hoped for.
+                if i > 0 && case % 4 == 0 && i % 3 == 0 {
+                    points.push(points[i - 1].clone());
+                    continue;
+                }
+                let mut v: Vec<f32> = (0..dim).map(|_| xorshift(&mut state)).collect();
+                if quantise {
+                    v = v.iter().map(|x| (x * 4.0).round() / 4.0).collect();
+                }
+                if v.iter().all(|x| *x == 0.0) {
+                    v[0] = 1.0;
+                }
+                points.push(v);
+            }
+            let refs: Vec<&[f32]> = points.iter().map(|p| p.as_slice()).collect();
+            for cut in [0.05f32, 0.2, 0.5, 0.9, 1.4] {
+                let threshold = CosineDistance::new(cut);
+                let fast = cluster_by_distance_threshold(&refs, threshold);
+                let slow = brute_force_complete_linkage(&refs, threshold);
+                assert_eq!(
+                    fast, slow,
+                    "case {case} (n={n}, cut={cut}): the nearest-neighbour chain \
+                     disagreed with the definition"
+                );
+                let groups = fast.iter().max().copied().unwrap_or(0) + 1;
+                if groups > 1 && groups < n {
+                    interesting += 1;
+                }
+            }
+        }
+        assert!(
+            interesting >= 100,
+            "only {interesting} of the randomised cases produced a non-trivial \
+             partition — this comparison is not exercising the algorithm"
+        );
+    }
+
+    /// The threshold is a guarantee about EVERY pair, which is the property
+    /// complete linkage was chosen for: single linkage would chain a slow
+    /// acoustic drift into one cluster whose extremes are nothing like each
+    /// other.
+    #[test]
+    fn a_cluster_never_contains_a_pair_beyond_the_threshold() {
+        // Three points in a line, each hop 0.25 apart in cosine distance but
+        // the ends 0.5 apart — single linkage would call this one cluster.
+        let a = [1.0f32, 0.0, 0.0];
+        let b = [0.75f32, 0.66143783, 0.0];
+        let c = [0.5f32 * 0.75, 0.66143783 * 0.75 + 0.25, 0.0];
+        let points: Vec<&[f32]> = vec![&a, &b, &c];
+        let threshold = CosineDistance::new(0.3);
+        let labels = cluster_by_distance_threshold(&points, threshold);
+        for i in 0..points.len() {
+            for j in (i + 1)..points.len() {
+                if labels[i] != labels[j] {
+                    continue;
+                }
+                let d = CosineDistance::from_similarity(cosine_similarity(points[i], points[j]));
+                assert!(
+                    d.get() <= threshold.get() + 1e-6,
+                    "points {i} and {j} are {} apart but share a cluster",
+                    d.get()
+                );
+            }
+        }
     }
 
     /// Request ids are monotonic per process, which is what makes a stale

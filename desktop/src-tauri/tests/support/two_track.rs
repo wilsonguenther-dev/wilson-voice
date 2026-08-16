@@ -409,6 +409,7 @@ pub fn segments_from_host_spans(meeting_id: &str, spans: &[HostSpan]) -> Vec<Mee
             confidence: None,
             created_at: chrono::Utc::now(),
             track: s.track,
+            cluster_index: None,
         })
         .collect()
 }

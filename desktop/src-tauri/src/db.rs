@@ -487,6 +487,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
             3 => meetings::MIGRATION_3_TWO_TRACK,
             4 => meetings::MIGRATION_4_MEETING_KIND,
+            5 => meetings::MIGRATION_5_CLUSTER_INDEX,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1593,6 +1594,48 @@ impl Database {
         Ok(written)
     }
 
+    /// YV126 — attribute stored transcript segments to speaker clusters.
+    ///
+    /// The clustering pass runs AFTER transcription (it needs the finished
+    /// track's audio), so this is an update of rows that already exist rather
+    /// than a field on the insert — `append_meeting_segments` deliberately keeps
+    /// writing `cluster_index` as NULL, which is what a segment nobody has
+    /// clustered honestly is.
+    ///
+    /// One transaction for the batch, and `meeting_id` is in the WHERE clause of
+    /// every statement: `diarize::attribute_clusters` computes ids from the
+    /// segments of one meeting, and a bug that crossed meetings would relabel a
+    /// stranger's transcript rather than failing. `Some(index)` attributes,
+    /// `None` clears — a re-run of clustering must be able to take an
+    /// attribution back rather than only ever adding one.
+    ///
+    /// Returns the number of rows actually updated, which is how a caller finds
+    /// out that an id it computed is no longer in the table (a meeting deleted
+    /// under a long-running diarization) instead of assuming it landed.
+    pub fn set_segment_clusters(
+        &self,
+        meeting_id: &str,
+        assignments: &[(String, Option<i64>)],
+    ) -> Result<usize, String> {
+        if assignments.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut written = 0usize;
+        for (segment_id, cluster_index) in assignments {
+            written += tx
+                .execute(
+                    "UPDATE meeting_segments SET cluster_index = ?3
+                     WHERE id = ?1 AND meeting_id = ?2",
+                    params![segment_id, meeting_id, cluster_index],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(written)
+    }
+
     /// Meetings newest-first. A non-empty `query` searches segment text through
     /// FTS5 **and** the title, so "yesterday's standup" is findable both by what
     /// it was called and by what was said in it.
@@ -1696,7 +1739,7 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, meeting_id, start_seconds, end_seconds, text, confidence, created_at,
-                        track
+                        track, cluster_index
                  FROM meeting_segments WHERE meeting_id = ?1
                  ORDER BY start_seconds ASC, track ASC, created_at ASC",
             )
@@ -3077,6 +3120,11 @@ fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegme
         confidence: row.get(5)?,
         created_at: parse_dt(row.get(6)?),
         track: row.get(7)?,
+        // YV126 — migration 5. Nullable, and a NULL is the answer for every row
+        // no clusterer has looked at: written before the column existed, on a
+        // meeting whose clustering never ran, or on a track the branch files as
+        // one speaker by mechanism rather than by clustering.
+        cluster_index: row.get(8)?,
     })
 }
 
