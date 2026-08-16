@@ -1,0 +1,90 @@
+YV126 — non-vacuous mutations. Each one is a plausible wrong version of this
+item, applied to the tree, run, and reverted. A green suite under any of them
+would mean the tests describe the change rather than hold it.
+
+macOS 26.5.2 / arm64, rustc 1.94.0. Every mutation was reverted and the full
+suite re-run green afterwards (1132 passed, 0 failed).
+
+M1 — single linkage instead of complete linkage
+    diarize.rs: the Lance-Williams update
+    `distances[keep][k].max(distances[gone][k])` becomes `.min(…)`.
+    This is the whole reason the linkage was chosen: under single linkage the
+    threshold guarantees only that a CHAIN of near neighbours connects two
+    turns, so a fifty-minute meeting with a slow acoustic drift collapses six
+    speakers into one cluster whose extremes are nothing like each other — and
+    it looks exactly like a mistuned threshold.
+    → 2 FAILED (541 passed): diarize::tests::nn_chain_agrees_with_brute_force_
+      complete_linkage, diarize::tests::a_cluster_never_contains_a_pair_beyond_
+      the_threshold.
+
+M2 — the parent forwards the child's cluster ids instead of re-clustering
+    diarize.rs: `assign_clusters`'s `if usable {` becomes `if false {`.
+    The tuned threshold would stop being the thing that decided the answer, and
+    every DER measured later would belong to sherpa's default rather than to a
+    number this repo can score. The stubs deliberately claim the WRONG clusters
+    so this cannot pass by coincidence.
+    → 3 FAILED across 3 binaries: diarize_cluster_distance_threshold::cluster_
+      track_groups_and_splits_at_the_threshold_it_was_given and ::without_
+      embeddings_the_childs_own_clusters_are_used_and_they_differ,
+      meeting_cluster_attribution::an_in_person_meeting_stores_two_distinct_
+      clusters_on_track_a.
+
+M3 — the two surfacing floors become OR instead of AND
+    diarize.rs: `speech_seconds >= CHIP_FLOOR_SECONDS && turns >= CHIP_FLOOR_TURNS`
+    becomes `||`.
+    Finding #25 names both conditions. With OR, a passer-by's single 44-second
+    interjection gets a speaker chip of its own and a 24-second scatter of
+    eight one-word acknowledgements does too — the chip row fills with people
+    who were not in the conversation.
+    → 2 FAILED: diarize_cluster_rank_and_floor::each_floor_can_reject_a_cluster_
+      on_its_own, ::twelve_raw_clusters_become_four_chips_and_one_other_bucket.
+
+M4 — `cluster_index` ships as `NOT NULL DEFAULT 0`
+    meetings.rs: migration 5's `ADD COLUMN cluster_index INTEGER` gains
+    `NOT NULL DEFAULT 0`.
+    The most plausible wrong version of this migration, because it is exactly
+    what migration 3 correctly did for `track`. Here it is a lie: `0` is not
+    "unattributed", it is "speaker zero" — a claim about a person, written onto
+    every transcript row ever recorded and onto every virtual meeting's mic
+    track, which the YV125 branch files as "Me" by mechanism rather than by
+    clustering.
+    → 3 FAILED across 2 binaries: db_migration_idempotent::migration_five_adds_
+      cluster_index_without_touching_existing_rows and ::a_database_from_every_
+      rung_climbs_to_five, meeting_cluster_attribution::attribution_never_
+      touches_a_track_the_pass_did_not_cluster.
+
+M5 — attribution keeps the FIRST overlapping turn instead of the largest
+    diarize.rs: `Some((_, most)) if most >= overlap => {}` becomes `Some(_) => {}`.
+    A transcript row's first word routinely lands inside the previous speaker's
+    trailing frames, so "the first turn this row touches" mis-attributes every
+    turn boundary in the meeting — and does it in a way that looks plausible
+    row by row.
+    → 1 FAILED: meeting_cluster_attribution::a_row_takes_the_cluster_it_shares_
+      the_most_time_with.
+
+M6 — the binary collapse keeps the raw cluster ids
+    diarize.rs: `collapse_to_enrolled_vs_everyone_else` maps every segment to
+    `s.cluster_index`.
+    `EnrolledVsEveryoneElse` would become an alias for full clustering, and
+    finding #5's whole reframe — a smaller task the mechanism can actually do —
+    would silently not exist while the API said it did.
+    → 3 FAILED: diarize_full_clustering_vs_binary_fallback::the_same_six_
+      cluster_pass_is_six_labels_or_exactly_two, ::the_enrolled_cluster_is_the_
+      one_the_caller_named, ::the_collapse_never_invents_a_speaker_who_was_not_
+      there.
+
+M7 — a guessed DER gate is promoted without a measurement
+    meeting_eval.rs: `ROOM_3_DER_GATE: Option<f64> = None` becomes `Some(0.15)`.
+    This is the failure the whole eval-first sequencing exists to prevent, and
+    the one this PR is most exposed to: a plausible number, from nowhere,
+    wearing a gate's clothes.
+    → 2 FAILED: meeting_eval::meeting_eval_diarization_gates_are_unmeasured_
+      until_there_is_output_to_gate (the tripwire), and meeting_eval::fixture_e_
+      der_gate (which asserts a gate cannot outlive the ability to reproduce
+      its measurement).
+
+Not mutated, and why: the mechanism-ceiling arithmetic in `fixture_f_binary_
+fallback_der` is guarded by its own two assertions in the opposite direction —
+it fails if fixture (f) stops exceeding the segmentation ceiling (`full_ceiling
+> 0.15`) or if the 2-class ceiling stops being materially better (`< 0.75x`), so
+a fixture drift or a reversed reframe is caught without a source mutation.
