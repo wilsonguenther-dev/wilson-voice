@@ -126,14 +126,21 @@ jobs:
       # installing models in CI would not change this by itself.
       #
       # What CI DOES hold, with no corpus and no model, is
-      # `meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`:
-      # it asks the shipped `yap-diarize` whether this build has an inference
-      # backend and requires the answer to still be `no_backend`, which is the
-      # one condition under which `EER: UNMEASURED` is honest. The day YV122
-      # merges, that test turns this job red until the EER is measured on a
-      # corpus-equipped machine and written into the backlog. It takes no
-      # configuration, and `meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`
+      # `meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend`.
+      # It asks the shipped `yap-diarize` whether this build has an inference
+      # backend — two ordinary non-model files get past the existence check, so
+      # a real backend answers `model_load_failed` where a build without one
+      # could not answer at all — and the EER numbers written into the backlog
+      # are worth exactly that backend. If sherpa-onnx is ever compiled back
+      # out, this job goes red rather than letting a measurement outlive the
+      # thing that produced it. It takes no configuration, and
+      # `meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`
       # keeps the dead variable from drifting back into this file.
+      #
+      # (That guard replaced the expiring one, which fired as designed: it
+      # required the sidecar to have NO backend, YV122 gave it one, and the EER
+      # was then measured on a corpus-equipped machine. Its deletion was the
+      # last step of closing YV124, not the first.)
       - name: cargo test
         working-directory: desktop/src-tauri
         run: cargo test --features custom-protocol
