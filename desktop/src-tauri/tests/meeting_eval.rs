@@ -3569,6 +3569,17 @@ const ARM_FIXTURES: [&str; 2] = [ROOM_3, CLASSROOM_6];
 /// so on audio with no overlap it excludes nothing at all, and the arm PRINTS
 /// how many spans survived on each fixture so the constant's effect is visible
 /// in the transcript rather than hidden in a header.
+///
+/// **It is spent a second time, on purpose, as the `min_embed` floor YV122 made
+/// mandatory** — and that is one number doing one job, not two. YV122 shipped
+/// `DiarizePool::embed` with no default floor anywhere in either crate, so
+/// every caller has to name one; naming the value this arm already trims to
+/// makes the call an ASSERTION that the trim did its job, because a span that
+/// somehow arrived under it comes back as `audio_too_short` and the arm panics
+/// with the fixture and index that produced it. It still sets no accuracy
+/// threshold: nothing is scored against it, and how much audio is really enough
+/// is a question only real human speech can answer — see YV122's
+/// truncation-stability sweep, which this corpus cannot resolve.
 const ARM_MIN_UTTERANCE_SECONDS: f64 = 2.0;
 
 /// One enrollment utterance: who said it, and the fixture's own samples for the
