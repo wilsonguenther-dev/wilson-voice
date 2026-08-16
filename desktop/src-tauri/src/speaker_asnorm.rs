@@ -186,6 +186,13 @@ impl ImpostorCohort {
     ///
     /// Returns `Err` rather than panicking, because every caller already has a
     /// correct thing to do without a cohort: rank on raw cosine and say so.
+    ///
+    /// **Decode once per session and hold it**, rather than calling this per
+    /// cluster. It parses the manifest and allocates the whole 163,840-byte
+    /// payload into rows each time — cheap, but not free, and pointlessly
+    /// repeated for a constant. The per-cluster cost that is genuinely
+    /// unavoidable is [`ImpostorCohort::statistics`], which is also computed
+    /// once per cluster and once per profile centroid, never per utterance.
     pub fn shipped() -> Result<Self, CohortError> {
         let manifest: CohortManifest = serde_json::from_str(COHORT_JSON)
             .map_err(|e| CohortError::ManifestMismatch(format!("unparseable manifest: {e}")))?;
