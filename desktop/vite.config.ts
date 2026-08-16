@@ -27,6 +27,10 @@ const host = process.env.TAURI_DEV_HOST;
  * transcript, whose interesting state needs a recorded SECOND track — i.e. a
  * live call with the system-audio tap granted.
  *
+ * `dev/speaker-chips-preview.html` does the same for YV129's "who is this?"
+ * row, whose interesting state needs a six-person far-field recording that has
+ * already been clustered and a roster of enrolled voices.
+ *
  *   YAP_DEV_TOOLING=1 npm run build   # then dist/dev/*.html
  */
 // @ts-expect-error process is a nodejs global
@@ -79,6 +83,14 @@ export default defineConfig(async () => ({
               systemAudioPreview: resolve(
                 __dirname,
                 "dev/system-audio-preview.html",
+              ),
+              // YV129 — the "who is this?" chip row. Every state worth looking
+              // at needs a clustered six-person far-field recording and a
+              // roster of enrolled voices, so this is the only way to review
+              // the batching promise (four questions, not six) on screen.
+              speakerChipsPreview: resolve(
+                __dirname,
+                "dev/speaker-chips-preview.html",
               ),
             }
           : {}),

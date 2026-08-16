@@ -1,0 +1,63 @@
+YV129 — every gate proved able to FAIL.
+
+Each mutation below was applied to the shipping source (or to the mirrored
+status doc), the named test binary was run, and the source was restored. A gate
+that has never been seen red is a gate nobody has checked.
+
+M1  src/speaker_profiles.rs gains `pub const ENROLLMENT_AUTO_CONFIRM: f32 = 0.70;`
+    — the plan's own blog-sourced number, shipped while the EER is unmeasured.
+    enrollment_thresholds_refuse_an_unmeasured_eer  → FAILED (1 of 8)
+      panicked at tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs:65
+    enrollment_threshold_from_harness               → FAILED (2 of 8)
+      enrollment_threshold_from_harness       :78
+      no_tuned_enrollment_band_ships_in_the_crate :339
+
+M2  check_clustering_tighter_than_enrollment loosened from `>` to `>=`.
+    clustering_tighter_than_enrollment_floor → FAILED (2 of 4)
+      clustering_exactly_at_the_floor_is_rejected                  :80
+      the_ordering_is_a_property_of_the_two_units_not_of_one_lucky_pair :103
+      "floor=0.01 distance=0.99: clustering must be legal exactly when it is
+       strictly tighter than 0.99"
+
+M3  who_is_this_chips stops refusing a meeting that has not ended.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      "a running meeting must not be able to produce a who-is-this row"
+
+M4  the ChipFloor branch is disabled, so every cluster becomes a chip.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      a_six_speaker_classroom_asks_four_questions_not_six :225
+      (six chips instead of four + an Other bucket of two)
+
+M5  bands_from_distribution stops swapping the two edges, so a cleanly
+    separated distribution gets an inverted pair.
+    enrollment_threshold_from_harness → FAILED (2 of 8)
+      a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_inside_it :172
+      the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster             :276
+
+M6  src/meeting.rs (the LIVE capture module) gains a function that names
+    `crate::speaker_profiles::SpeakerChip` as code.
+    who_is_this_never_modal_never_live → FAILED (1 of 6)
+      panicked at :115 — "`SpeakerChip` appears as CODE in src/meeting.rs"
+    This is the backlog's own grep criterion, driven by a machine.
+
+M7  match_meeting_clusters_with calls the matcher once per TURN instead of once
+    per cluster — the exact defect the item exists to prevent.
+    match_cluster_runs_once_per_cluster → FAILED (1 of 3)
+      "the matcher ran 48 times over 6 clusters — a six-person class must cost
+       six questions, not one per utterance"
+
+M8  docs/yap23-eer-status.md is edited by hand to claim the EER was measured,
+    instead of being re-copied from the SSOT.
+    enrollment_thresholds_refuse_an_unmeasured_eer → FAILED (1 of 8)
+      the_mirror_has_not_drifted_from_the_ssot :108
+    (This half binds only where the Obsidian note exists — a developer machine,
+     or anywhere YAP23_BACKLOG_PATH points at it. The substance half, M1, binds
+     everywhere including CI.)
+
+Additionally, the scanner behind M1/M8 is itself driven both ways INSIDE the
+test file rather than trusted: the_band_scanner_catches_a_tuned_constant_and_
+ignores_a_type_signature (6 tuned shapes detected, 5 clean shapes not),
+the_constructor_scan_is_paren_balanced_and_crosses_lines,
+unit_endpoints_are_not_tuned_thresholds_but_everything_else_is,
+the_block_extractor_fails_loudly_rather_than_returning_nothing, and
+the_scan_covers_the_module_this_item_added.

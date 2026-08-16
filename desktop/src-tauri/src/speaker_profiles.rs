@@ -1,0 +1,986 @@
+//! YV129 — the enrollment decision: is this cluster somebody we already know?
+//!
+//! Two things live here, and they are the same item because the second is the
+//! answer to the first being wrong in the plan.
+//!
+//! ## 1. Not one threshold ships in this file
+//!
+//! The epic plan quoted `0.70` / `0.55` cosine similarity as the auto-confirm /
+//! suggest bands. Those numbers come from a third-party blog post (OpenWhispr)
+//! measuring a **different** pipeline: a different embedder, a different
+//! resampler, a different segmentation front end. Merged finding #21's closing
+//! instruction, and this backlog's standing rule, is that every threshold in
+//! yap23 is an OUTPUT of YV120's harness measured against a fixture, never an
+//! input copied from a vendor's blog.
+//!
+//! So [`EnrollmentBands`] is a **parameter with no default anywhere in this
+//! crate**. There is no `const AUTO_CONFIRM`, no `const NEW_VOICE_FLOOR`, and
+//! `EnrollmentBands` has no `Default`. The only way to obtain one is
+//! [`bands_from_distribution`], which derives both edges from a measured
+//! genuine/impostor distribution through [`crate::diarize_metrics::enrollment_eer`].
+//! `tests/enrollment_threshold_from_harness.rs` asserts the absence, exactly as
+//! YV126 asserts it for the clustering distance.
+//!
+//! **On this base the bands are still unmeasured, and that is enforced rather
+//! than remembered.** OS-8 requires the anti-alias EER to be measured *before*
+//! the enrollment thresholds are tuned, or those thresholds permanently encode
+//! the aliasing. YV124 instrumented that measurement and could not take it —
+//! `yap-diarize` answers `no_backend` until YV122 lands, so there are no CAM++
+//! embeddings on any machine. `docs/yap23-eer-status.md` mirrors YV124's own
+//! record of that, and `tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs`
+//! fails the build if a tuned band constant ever appears in this crate while
+//! that mirror still reads `EER: UNMEASURED`.
+//!
+//! ## 2. One question per cluster — never one per utterance
+//!
+//! A six-person classroom recording contains hundreds of segments and dozens of
+//! speaker turns. Asking "who is this?" per utterance, or per turn, would put
+//! dozens of prompts in front of a user for a recording with six people in it,
+//! which is the failure mode this item was written to prevent.
+//!
+//! [`match_cluster`] therefore takes a **cluster centroid**, not a segment and
+//! not a turn, and [`match_meeting_clusters`] calls it exactly once per cluster.
+//! By the time a cluster reaches here it has already survived YV126's ranking
+//! and floor, so the population is a handful of named-worthy voices rather than
+//! every raw cluster the diarizer emitted — and [`who_is_this_chips`] applies
+//! the same floor a second time on the way to the screen, so the batching
+//! property holds even if it is handed a raw list.
+//!
+//! ## The chip row is a completed-meeting affordance, and that is mechanical
+//!
+//! The plan's F2 flow is an inline chip row in the **meeting-detail** view:
+//! `Speaker 2 → [Jeisil ▾] [Aidan] [+ new]`. Never a modal, never during a
+//! recording. [`who_is_this_chips`] refuses — [`ChipRowError::MeetingStillLive`]
+//! — when handed a meeting that has not ended, and
+//! `tests/who_is_this_never_modal_never_live.rs` additionally asserts that no
+//! symbol in this file appears as code anywhere in `meeting.rs`, the live
+//! capture module. The affordance does not merely go unused mid-meeting; it is
+//! not reachable from there.
+//!
+//! ## What this file deliberately does NOT own
+//!
+//! * **Persistence.** The `speaker_profiles` table, its migration and the
+//!   centroid-update math are YV128's (PR #143, open at the time this landed).
+//!   The types here are the in-memory view a stored row deserializes into, and
+//!   nothing in this file touches SQL.
+//! * **Clustering.** Producing a [`ClusterSummary`] from audio is YV126's
+//!   `diarize::cluster_track` (PR #141, open). This file starts where that ends.
+//! * **Correction.** Reassign / merge / split, and the `locked` rule, are
+//!   YV130's. What this file honours is the half of that rule it can:
+//!   [`who_is_this_chips`] never re-offers a cluster the user has already
+//!   answered.
+
+use serde::{Deserialize, Serialize};
+
+use crate::diarize_metrics::{cosine_similarity, enrollment_eer, CosineDistance, CosineSimilarity};
+
+// ---------------------------------------------------------------------------
+// The stored shapes, as this file sees them
+// ---------------------------------------------------------------------------
+
+/// One speaker embedding — a CAM++ vector, 192-dimensional as the model
+/// reports it.
+///
+/// A newtype rather than a bare `Vec<f32>` for the same reason the cosine units
+/// are newtypes: the two things in this codebase shaped like a float vector are
+/// an embedding and a window of audio samples, and confusing them is a silent
+/// wrong answer rather than a crash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Embedding(Vec<f32>);
+
+impl Embedding {
+    pub fn new(values: Vec<f32>) -> Self {
+        Self(values)
+    }
+
+    pub fn as_slice(&self) -> &[f32] {
+        &self.0
+    }
+
+    pub fn dim(&self) -> usize {
+        self.0.len()
+    }
+
+    /// True when every component is zero — a silent utterance, or an embedder
+    /// that answered without looking. [`cosine_similarity`] returns `0.0` for
+    /// these rather than `NaN`, so they score as maximally uninformative rather
+    /// than poisoning a sweep, but a caller that wants to drop them can ask.
+    pub fn is_degenerate(&self) -> bool {
+        self.0.iter().all(|v| *v == 0.0)
+    }
+}
+
+/// One enrolled centroid, under one recording condition.
+///
+/// `condition_key` is YV128's ("laptop_mic_near", "airpods", …): the same
+/// person through a different microphone at a different distance produces a
+/// measurably different embedding, and one averaged centroid across both is
+/// worse than two. This file only reads the key — it scores across **every**
+/// centroid a profile holds and reports which one won, so a profile enrolled on
+/// a laptop still matches on AirPods if either centroid is close enough.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Centroid {
+    pub condition_key: String,
+    pub vector: Embedding,
+}
+
+impl Centroid {
+    pub fn new(condition_key: impl Into<String>, vector: Embedding) -> Self {
+        Self {
+            condition_key: condition_key.into(),
+            vector,
+        }
+    }
+}
+
+/// One enrolled person.
+///
+/// `is_me` is a flag on a PROFILE, never a track index — merged finding #4's
+/// correction, already spelled out in `meetings::speaker_label`'s doc comment.
+/// Wilson is matched by his voice like anybody else; the flag only says which
+/// enrolled row is his, so a surface can style it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerProfile {
+    pub id: String,
+    pub display_name: String,
+    pub is_me: bool,
+    pub centroids: Vec<Centroid>,
+}
+
+impl SpeakerProfile {
+    /// The best score this profile can offer for `embedding`, across ALL of its
+    /// centroids, and the `condition_key` of the one that won.
+    ///
+    /// `None` for a profile with no centroids — an enrolled name with no voice
+    /// behind it yet, which must never be *suggested* for anything.
+    ///
+    /// # Panics
+    /// If a centroid's dimension differs from `embedding`'s. Comparing a 192-dim
+    /// CAM++ vector against something else is a bug at the call site, and a low
+    /// score would hide it.
+    pub fn best_match(&self, embedding: &Embedding) -> Option<(CosineSimilarity, &str)> {
+        self.centroids
+            .iter()
+            .map(|c| {
+                (
+                    cosine_similarity(embedding.as_slice(), c.vector.as_slice()),
+                    c.condition_key.as_str(),
+                )
+            })
+            .max_by(|a, b| a.0.get().total_cmp(&b.0.get()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The bands — measured, never quoted
+// ---------------------------------------------------------------------------
+
+/// The three-band split of the cosine-similarity line: auto-confirm above
+/// `auto_confirm`, suggest between the two edges, a new voice below
+/// `new_voice_floor`.
+///
+/// Constructed only through [`EnrollmentBands::new`] (which rejects an inverted
+/// pair) or [`bands_from_distribution`] (which measures both edges). There is
+/// deliberately no `Default` and no `const` instance in this crate: see the
+/// module header.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentBands {
+    auto_confirm: CosineSimilarity,
+    new_voice_floor: CosineSimilarity,
+}
+
+/// Why a proposed pair of band edges is not a usable split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandError {
+    /// `auto_confirm` is at or below `new_voice_floor` — there is no "suggest"
+    /// region between them, and the two decisions would contradict each other.
+    Inverted,
+}
+
+impl std::fmt::Display for BandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BandError::Inverted => write!(
+                f,
+                "the auto-confirm edge must sit strictly above the new-voice floor"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BandError {}
+
+impl EnrollmentBands {
+    /// `auto_confirm` must sit **strictly above** `new_voice_floor`. Equal edges
+    /// are rejected rather than collapsed into a two-way decision: a build that
+    /// silently stopped ever suggesting anything would look like a tuning
+    /// result rather than the mistake it is.
+    pub fn new(
+        auto_confirm: CosineSimilarity,
+        new_voice_floor: CosineSimilarity,
+    ) -> Result<Self, BandError> {
+        if auto_confirm.get() <= new_voice_floor.get() {
+            return Err(BandError::Inverted);
+        }
+        Ok(Self {
+            auto_confirm,
+            new_voice_floor,
+        })
+    }
+
+    pub fn auto_confirm(&self) -> CosineSimilarity {
+        self.auto_confirm
+    }
+
+    /// The floor below which a cluster is a NEW voice: nothing enrolled is
+    /// close enough to be worth suggesting.
+    pub fn new_voice_floor(&self) -> CosineSimilarity {
+        self.new_voice_floor
+    }
+}
+
+/// What a tuning run produced, together with what it could and could not
+/// resolve.
+///
+/// The resolution fields exist because YV124 learned the lesson the hard way: a
+/// finite genuine/impostor sample can only express error rates in steps of
+/// `1/n`, and an EER of `0.0000` on eighteen genuine pairs is a floor, not a
+/// measurement. A caller that prints a band without printing the resolution
+/// underneath it is publishing a number it cannot support.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TunedBands {
+    pub bands: EnrollmentBands,
+    /// The measured equal error rate of the distribution the bands came from.
+    pub eer: f64,
+    /// The similarity at the equal-error point — which is exactly where
+    /// [`EnrollmentBands::new_voice_floor`] was placed.
+    pub eer_threshold: CosineSimilarity,
+    /// The observed false-accept rate at the auto-confirm edge, on this sample:
+    /// impostor pairs that would have been given a name with no human in the
+    /// loop. Zero by construction; read it together with `far_resolution`,
+    /// which is the smallest non-zero value it could have taken.
+    pub far_at_auto_confirm: f64,
+    /// The observed false-reject rate at the new-voice floor, on this sample:
+    /// genuine pairs that would have been called a stranger. Zero by
+    /// construction; read it together with `frr_resolution`.
+    pub frr_at_new_voice_floor: f64,
+    /// The smallest non-zero FAR this impostor sample can express: `1/impostor`.
+    pub far_resolution: f64,
+    /// The smallest non-zero FRR this genuine sample can express: `1/genuine`.
+    pub frr_resolution: f64,
+    pub genuine: usize,
+    pub impostor: usize,
+}
+
+/// Why a distribution could not produce bands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TuningError {
+    /// One or both sides of the distribution is empty. An EER over no trials is
+    /// not a number.
+    EmptyDistribution,
+    /// The two distributions are indistinguishable — the equal-error point is a
+    /// coin flip or worse. Bands derived from chance are noise wearing a
+    /// measurement's clothes.
+    ///
+    /// Note this is a *definition* (0.5 is chance for a two-class decision), not
+    /// a tuned acceptance bar. Deciding that, say, an EER of 0.12 is too poor to
+    /// ship would itself be a number that has to come from a measurement, so
+    /// this function reports the EER and refuses only at chance.
+    Indistinguishable { eer: f64 },
+    /// Every impostor scored at or above the ceiling of the similarity line, so
+    /// there is no room above them for an auto-confirm edge.
+    NoRoomAboveImpostors { highest_impostor: f32 },
+    /// The two measured edges landed on the same number, so there is no
+    /// suggest region between them and the split is a single point. A distinct
+    /// error rather than a silently collapsed two-way decision: a build that
+    /// stopped ever asking would look like a tuning result.
+    Degenerate { edge: f32 },
+}
+
+impl std::fmt::Display for TuningError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TuningError::EmptyDistribution => write!(
+                f,
+                "a tuning run needs both a genuine and an impostor distribution"
+            ),
+            TuningError::Indistinguishable { eer } => write!(
+                f,
+                "genuine and impostor scores are indistinguishable (EER {eer:.4} at or above chance)"
+            ),
+            TuningError::NoRoomAboveImpostors { highest_impostor } => write!(
+                f,
+                "the highest impostor scored {highest_impostor:.4}; there is no room above it for \
+                 an auto-confirm edge"
+            ),
+            TuningError::Degenerate { edge } => write!(
+                f,
+                "both measured edges landed on {edge:.4}; there is no suggest region between them"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TuningError {}
+
+/// How far above the highest observed impostor the auto-confirm edge is placed.
+///
+/// This is a floating-point epsilon, not a tuned margin: the decision rule is
+/// `accept if score >= edge`, so the edge has to sit strictly above the highest
+/// impostor for the observed FAR to be zero, and `f32::EPSILON`-scale is the
+/// smallest number that achieves it. Making it larger would be a guess about
+/// unobserved impostors, which is the vendor-blog failure in a different
+/// costume; making it zero would admit the worst impostor in the sample.
+const IMPOSTOR_HEADROOM: f32 = 1e-4;
+
+/// Derive both band edges from a MEASURED genuine/impostor distribution.
+///
+/// This is the only producer of an [`EnrollmentBands`] that is not a literal
+/// pair of numbers written by a caller, and it is what the item means by
+/// "thresholds are an OUTPUT of the harness".
+///
+/// ## The rule, and why it is these two statistics
+///
+/// The **suggest** band is the interval the sample cannot decide, and the two
+/// statistics that bound it are:
+///
+/// * `min(genuine)` — the lowest score a pair of the SAME person produced.
+///   Nothing below it was ever a real match in this sample, so below it "new
+///   voice" costs no measured genuine pair.
+/// * `max(impostor) + ε` — just above the highest score a pair of DIFFERENT
+///   people produced. Nothing at or above it was ever an impostor in this
+///   sample, so auto-confirming there admits no measured impostor.
+///
+/// Those two points bound the ambiguous interval from whichever side the data
+/// puts them on, which is why the rule is `auto_confirm = max(the two)` and
+/// `new_voice_floor = min(the two)` rather than a fixed assignment:
+///
+/// * **Overlapping distributions** (the normal case): `min(genuine)` sits BELOW
+///   `max(impostor)`, and the interval between them is the region where genuine
+///   and impostor pairs genuinely mix. Ask there.
+/// * **Cleanly separated distributions**: `max(impostor)` sits below
+///   `min(genuine)` and the interval between them is a GAP the sample never
+///   produced a score in. Ask there too — the sample says nothing about it, and
+///   a threshold placed anywhere inside it is a guess about unobserved data.
+///
+/// Both edges are therefore statistics of the measured distribution, not
+/// choices. `far_at_auto_confirm` and `frr_at_new_voice_floor` are zero **by
+/// construction** on the sample the bands came from, which is the point — and
+/// exactly why `far_resolution` / `frr_resolution` are returned alongside, so
+/// "no impostor got through" is read as "none of the N impostor pairs we had",
+/// never as a claim about impostors nobody measured. That is the lesson YV124's
+/// saturated-EER discipline already wrote down.
+///
+/// The equal-error point is reported (`eer`, `eer_threshold`) but does **not**
+/// place either edge: the EER is a single operating point for a two-way
+/// decision, and this is a three-way one.
+///
+/// # Errors
+/// [`TuningError`] — see its variants. Every one of them is a condition under
+/// which a returned pair of bands would be fiction.
+pub fn bands_from_distribution(
+    genuine: &[CosineSimilarity],
+    impostor: &[CosineSimilarity],
+) -> Result<TunedBands, TuningError> {
+    if genuine.is_empty() || impostor.is_empty() {
+        return Err(TuningError::EmptyDistribution);
+    }
+    let report = enrollment_eer(genuine, impostor);
+    if report.eer >= 0.5 {
+        return Err(TuningError::Indistinguishable { eer: report.eer });
+    }
+
+    let highest_impostor = impostor
+        .iter()
+        .map(|s| s.get())
+        .fold(f32::NEG_INFINITY, f32::max);
+    let lowest_genuine = genuine.iter().map(|s| s.get()).fold(f32::INFINITY, f32::min);
+
+    let above_impostors = highest_impostor + IMPOSTOR_HEADROOM;
+    if above_impostors > CosineSimilarity::MAX {
+        return Err(TuningError::NoRoomAboveImpostors { highest_impostor });
+    }
+
+    let (upper, lower) = if above_impostors >= lowest_genuine {
+        (above_impostors, lowest_genuine)
+    } else {
+        (lowest_genuine, above_impostors)
+    };
+    let bands = EnrollmentBands::new(CosineSimilarity::new(upper), CosineSimilarity::new(lower))
+        .map_err(|_: BandError| TuningError::Degenerate { edge: upper })?;
+
+    Ok(TunedBands {
+        bands,
+        eer: report.eer,
+        eer_threshold: report.threshold_at_eer,
+        far_at_auto_confirm: impostor
+            .iter()
+            .filter(|s| s.get() >= bands.auto_confirm().get())
+            .count() as f64
+            / impostor.len() as f64,
+        frr_at_new_voice_floor: genuine
+            .iter()
+            .filter(|s| s.get() < bands.new_voice_floor().get())
+            .count() as f64
+            / genuine.len() as f64,
+        far_resolution: 1.0 / impostor.len() as f64,
+        frr_resolution: 1.0 / genuine.len() as f64,
+        genuine: genuine.len(),
+        impostor: impostor.len(),
+    })
+}
+
+/// Turn labeled utterances into the genuine/impostor distribution
+/// [`bands_from_distribution`] needs.
+///
+/// Every unordered pair of utterances is scored once: **genuine** when the two
+/// labels match, **impostor** when they do not. That is the harness's own
+/// definition of the two populations, and it is the whole bridge between "a
+/// fixture with named speakers" and "a measured band" — which is what the item
+/// means by tuning FROM the harness rather than from a blog post.
+///
+/// The caller supplies the utterances. Fixture (e) (three people, near-field,
+/// no overlap) is the intended source once an embedder exists: slice its WAV by
+/// the ground-truth RTTM, embed each span, and hand the labeled vectors here.
+/// That call site is `meeting_eval`'s sweep, which YV126 owns — this function
+/// is the part of it that can be executed today, on any machine, with no model.
+///
+/// # Panics
+/// If two embeddings differ in dimension — see [`cosine_similarity`].
+pub fn labeled_pair_scores(
+    labeled: &[(String, Embedding)],
+) -> (Vec<CosineSimilarity>, Vec<CosineSimilarity>) {
+    let mut genuine = Vec::new();
+    let mut impostor = Vec::new();
+    for (i, (label_a, a)) in labeled.iter().enumerate() {
+        for (label_b, b) in labeled.iter().skip(i + 1) {
+            let score = cosine_similarity(a.as_slice(), b.as_slice());
+            if label_a == label_b {
+                genuine.push(score);
+            } else {
+                impostor.push(score);
+            }
+        }
+    }
+    (genuine, impostor)
+}
+
+/// The two thresholds are in different units and must be ordered, not compared.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrderingViolation {
+    /// The clustering threshold, as configured.
+    pub clustering: CosineDistance,
+    /// The new-voice floor converted into the clustering unit — the number the
+    /// clustering threshold has to stay under.
+    pub floor_as_distance: CosineDistance,
+}
+
+impl std::fmt::Display for OrderingViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "clustering distance {:.4} is not tighter than the new-voice floor \
+             ({:.4} as a distance): clustering would merge two voices that \
+             enrollment would refuse to call the same person",
+            self.clustering.get(),
+            self.floor_as_distance.get()
+        )
+    }
+}
+
+impl std::error::Error for OrderingViolation {}
+
+/// Merged finding #20's second half, as a check rather than a paragraph.
+///
+/// `sherpa_onnx::FastClusteringConfig.threshold` is a **distance** (smaller is
+/// more similar, default `0.5`); the enrollment bands are **similarities**
+/// (larger is more similar). As the plan specified them — clustering at `0.5`
+/// distance, new-voice floor at `0.55` similarity, i.e. `0.45` distance —
+/// clustering was LOOSER than the identity decision it feeds. That is
+/// incoherent: clustering would happily merge two voices into one cluster that
+/// the enrollment matcher, handed the same pair, would refuse to call the same
+/// person, and the merged cluster's centroid is then an average of two people.
+///
+/// So: clustering must be **strictly tighter** — a smaller distance — than the
+/// new-voice floor expressed in the same unit. Both YV120 newtypes are in the
+/// signature, so this can only be called with the units the right way round.
+///
+/// This function is where the ordering is enforced; it is not asserted against
+/// a pair of shipped constants because **neither number ships yet** (YV126's
+/// clustering distance and this item's bands are both parameters with no
+/// default in the crate, for the reasons in the module header). The call site
+/// that first supplies both is where it binds.
+pub fn check_clustering_tighter_than_enrollment(
+    clustering: CosineDistance,
+    bands: &EnrollmentBands,
+) -> Result<(), OrderingViolation> {
+    let floor_as_distance = CosineDistance::from_similarity(bands.new_voice_floor());
+    if floor_as_distance.get() > clustering.get() {
+        Ok(())
+    } else {
+        Err(OrderingViolation {
+            clustering,
+            floor_as_distance,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The match, once per cluster
+// ---------------------------------------------------------------------------
+
+/// What the matcher concluded about one cluster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MatchResult {
+    /// At or above the auto-confirm edge: the name is written, no question is
+    /// asked. `condition_key` names the centroid that won, which is what makes
+    /// a cross-device match legible rather than mysterious.
+    #[serde(rename_all = "camelCase")]
+    Known {
+        profile_id: String,
+        score: CosineSimilarity,
+        condition_key: String,
+    },
+    /// Between the two edges: the best candidate is offered, pre-selected, and
+    /// a human decides.
+    #[serde(rename_all = "camelCase")]
+    Suggested {
+        profile_id: String,
+        score: CosineSimilarity,
+        condition_key: String,
+    },
+    /// Below the new-voice floor, or nothing is enrolled at all: this is
+    /// somebody we do not know.
+    New,
+}
+
+impl MatchResult {
+    pub fn profile_id(&self) -> Option<&str> {
+        match self {
+            MatchResult::Known { profile_id, .. } | MatchResult::Suggested { profile_id, .. } => {
+                Some(profile_id)
+            }
+            MatchResult::New => None,
+        }
+    }
+
+    /// True when a human still has to answer something. [`MatchResult::Known`]
+    /// is the only outcome that asks nothing.
+    pub fn needs_a_human(&self) -> bool {
+        !matches!(self, MatchResult::Known { .. })
+    }
+}
+
+/// Match ONE cluster against the enrolled roster.
+///
+/// **One call per cluster.** Not per utterance, not per turn, not per segment —
+/// see the module header, and `tests/match_cluster_runs_once_per_cluster.rs`,
+/// which counts.
+///
+/// The score is the best any centroid of any profile offers (see
+/// [`SpeakerProfile::best_match`]), so a person enrolled under three
+/// microphones is matched on whichever of the three this recording resembles.
+/// Ties break on the profile id, so the answer is stable across runs rather
+/// than dependent on roster order — a wobbling suggestion is worse than a wrong
+/// one, because the user cannot tell it is the same question.
+pub fn match_cluster(
+    cluster_centroid: &Embedding,
+    profiles: &[SpeakerProfile],
+    bands: EnrollmentBands,
+) -> MatchResult {
+    let best = profiles
+        .iter()
+        .filter_map(|p| p.best_match(cluster_centroid).map(|(s, k)| (p, s, k)))
+        .max_by(|a, b| {
+            a.1.get()
+                .total_cmp(&b.1.get())
+                .then_with(|| b.0.id.cmp(&a.0.id))
+        });
+
+    let Some((profile, score, condition_key)) = best else {
+        return MatchResult::New;
+    };
+
+    if score.get() >= bands.auto_confirm().get() {
+        MatchResult::Known {
+            profile_id: profile.id.clone(),
+            score,
+            condition_key: condition_key.to_string(),
+        }
+    } else if score.get() >= bands.new_voice_floor().get() {
+        MatchResult::Suggested {
+            profile_id: profile.id.clone(),
+            score,
+            condition_key: condition_key.to_string(),
+        }
+    } else {
+        MatchResult::New
+    }
+}
+
+/// One clustered voice in a finished meeting: everything the identity decision
+/// and the chip row need, and nothing about the audio it came from.
+///
+/// `speech_seconds` and `turns` are YV126's ranking inputs, carried here so the
+/// chip row can apply the same floor a second time on the way to the screen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterSummary {
+    pub cluster_index: i64,
+    /// What the transcript currently calls this voice — `Speaker 2`, and the
+    /// text the chip row echoes so the two surfaces name the same thing.
+    pub label: String,
+    pub centroid: Embedding,
+    pub speech_seconds: f64,
+    pub turns: usize,
+}
+
+/// One cluster and what the matcher said about it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterDecision {
+    pub cluster: ClusterSummary,
+    pub result: MatchResult,
+}
+
+/// Match every cluster in a finished meeting — exactly once each.
+pub fn match_meeting_clusters(
+    clusters: &[ClusterSummary],
+    profiles: &[SpeakerProfile],
+    bands: EnrollmentBands,
+) -> Vec<ClusterDecision> {
+    match_meeting_clusters_with(clusters, |centroid| {
+        match_cluster(centroid, profiles, bands)
+    })
+}
+
+/// [`match_meeting_clusters`] with the per-cluster matcher injected.
+///
+/// The seam exists so the once-per-cluster claim can be COUNTED rather than
+/// read: `tests/match_cluster_runs_once_per_cluster.rs` passes a closure that
+/// increments, over a fixture whose six clusters hold dozens of segments, and
+/// asserts six. A test that could only inspect the output would pass just as
+/// happily against an implementation that matched every segment and voted.
+pub fn match_meeting_clusters_with(
+    clusters: &[ClusterSummary],
+    mut matcher: impl FnMut(&Embedding) -> MatchResult,
+) -> Vec<ClusterDecision> {
+    clusters
+        .iter()
+        .map(|cluster| ClusterDecision {
+            result: matcher(&cluster.centroid),
+            cluster: cluster.clone(),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The chip row
+// ---------------------------------------------------------------------------
+
+/// The ranking floor a cluster must clear to be worth a name.
+///
+/// YV126's replacement for the plan's `cluster count > max(8, attendees×2)`
+/// hard reject, which misfires on exactly the case this backlog prioritises: a
+/// manually-started six-person room legitimately produces ten to fifteen raw
+/// clusters, and rejecting the whole pass throws away a good diarization.
+///
+/// Both edges are **parameters with no default in this crate**, for the same
+/// reason the bands are: `30 s / 3 turns` appears in the backlog as a design
+/// sketch, and the value that ships has to come from a measured run against
+/// fixture (f). Everything below the floor rolls into one "Other" bucket
+/// ([`ChipRow::rolled_into_other`]) instead of becoming a chip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChipFloor {
+    pub min_speech_seconds: f64,
+    pub min_turns: usize,
+}
+
+impl ChipFloor {
+    pub fn new(min_speech_seconds: f64, min_turns: usize) -> Self {
+        Self {
+            min_speech_seconds,
+            min_turns,
+        }
+    }
+
+    pub fn admits(&self, cluster: &ClusterSummary) -> bool {
+        cluster.speech_seconds >= self.min_speech_seconds && cluster.turns >= self.min_turns
+    }
+}
+
+/// One name the user can pick for a cluster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChipCandidate {
+    pub profile_id: String,
+    pub display_name: String,
+}
+
+/// The pre-selected candidate on a chip: the matcher's best guess, with the
+/// score that made it a guess rather than an answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChipSuggestion {
+    pub profile_id: String,
+    pub display_name: String,
+    pub score: CosineSimilarity,
+}
+
+/// One "who is this?" question — `Speaker 2 → [Jeisil ▾] [Aidan] [+ new]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerChip {
+    pub cluster_index: i64,
+    /// The label the transcript uses for this voice, echoed verbatim so the
+    /// chip and the transcript cannot name the same cluster differently.
+    pub cluster_label: String,
+    /// Pre-selected when the matcher had a candidate between the bands; `None`
+    /// when it did not, in which case this is a straight "who is this?".
+    pub suggested: Option<ChipSuggestion>,
+    /// The rest of the roster, in roster order, minus whoever is already
+    /// suggested. Never scored — offering a ranked list of everyone would turn
+    /// one question into a leaderboard.
+    pub alternatives: Vec<ChipCandidate>,
+    /// `+ new` is always available: the roster is never assumed complete.
+    pub allow_new: bool,
+    /// Seconds of speech behind this cluster, so the row can say why this voice
+    /// is worth naming and the busiest unknown sorts first.
+    pub speech_seconds: f64,
+}
+
+/// The whole row, plus what it deliberately did not ask about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChipRow {
+    pub chips: Vec<SpeakerChip>,
+    /// Clusters that did not clear [`ChipFloor`] — the "Other" bucket. Counted
+    /// rather than listed, because the number is the honest thing to show
+    /// ("3 quieter voices") and the list would be the spam.
+    pub rolled_into_other: usize,
+}
+
+/// Why a chip row could not be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipRowError {
+    /// The meeting has not ended. The chip row is a meeting-detail affordance;
+    /// asking "who is this?" while a recording is running is the modal,
+    /// mid-meeting interruption the plan's F2 flow rules out.
+    MeetingStillLive,
+}
+
+impl std::fmt::Display for ChipRowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChipRowError::MeetingStillLive => write!(
+                f,
+                "the who-is-this row is a completed-meeting affordance; this meeting has not ended"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChipRowError {}
+
+/// Build the inline "who is this?" row for a **finished** meeting.
+///
+/// The batching rule, which is the item:
+///
+/// 1. `meeting_ended` false ⇒ [`ChipRowError::MeetingStillLive`]. There is no
+///    mid-meeting path, and `who_is_this_never_modal_never_live` proves the
+///    live capture module cannot even name this function.
+/// 2. One chip per **cluster**, never per segment or per turn.
+/// 3. [`MatchResult::Known`] clusters get no chip — the auto-confirm band
+///    exists precisely so a confident match asks nothing.
+/// 4. A cluster whose index appears in `answered` gets no chip. Offered once,
+///    inline, and never again — including the `locked` assignments YV130's
+///    correction UX writes, which is the half of YV128's `locked` rule this
+///    item can honour today.
+/// 5. Clusters below `floor` roll into [`ChipRow::rolled_into_other`]. This is
+///    what keeps a six-person far-field classroom to a handful of questions
+///    rather than one per detected voice change.
+/// 6. The remainder sorts by speech time, descending, tie-broken by cluster
+///    index: the voice that talked most is the one worth naming first.
+pub fn who_is_this_chips(
+    meeting_ended: bool,
+    decisions: &[ClusterDecision],
+    answered: &[i64],
+    roster: &[SpeakerProfile],
+    floor: ChipFloor,
+) -> Result<ChipRow, ChipRowError> {
+    if !meeting_ended {
+        return Err(ChipRowError::MeetingStillLive);
+    }
+
+    let mut chips = Vec::new();
+    let mut rolled_into_other = 0usize;
+
+    for decision in decisions {
+        if answered.contains(&decision.cluster.cluster_index) {
+            continue;
+        }
+        if !decision.result.needs_a_human() {
+            continue;
+        }
+        if !floor.admits(&decision.cluster) {
+            rolled_into_other += 1;
+            continue;
+        }
+
+        let suggested = match &decision.result {
+            MatchResult::Suggested {
+                profile_id, score, ..
+            } => roster
+                .iter()
+                .find(|p| &p.id == profile_id)
+                .map(|p| ChipSuggestion {
+                    profile_id: p.id.clone(),
+                    display_name: p.display_name.clone(),
+                    score: *score,
+                }),
+            _ => None,
+        };
+        let suggested_id = suggested.as_ref().map(|s| s.profile_id.clone());
+        chips.push(SpeakerChip {
+            cluster_index: decision.cluster.cluster_index,
+            cluster_label: decision.cluster.label.clone(),
+            alternatives: roster
+                .iter()
+                .filter(|p| Some(&p.id) != suggested_id.as_ref())
+                .map(|p| ChipCandidate {
+                    profile_id: p.id.clone(),
+                    display_name: p.display_name.clone(),
+                })
+                .collect(),
+            suggested,
+            allow_new: true,
+            speech_seconds: decision.cluster.speech_seconds,
+        });
+    }
+
+    chips.sort_by(|a, b| {
+        b.speech_seconds
+            .total_cmp(&a.speech_seconds)
+            .then_with(|| a.cluster_index.cmp(&b.cluster_index))
+    });
+
+    Ok(ChipRow {
+        chips,
+        rolled_into_other,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bands(auto: f32, floor: f32) -> EnrollmentBands {
+        EnrollmentBands::new(CosineSimilarity::new(auto), CosineSimilarity::new(floor))
+            .expect("well-ordered test bands")
+    }
+
+    fn profile(id: &str, name: &str, vectors: &[(&str, [f32; 3])]) -> SpeakerProfile {
+        SpeakerProfile {
+            id: id.to_string(),
+            display_name: name.to_string(),
+            is_me: false,
+            centroids: vectors
+                .iter()
+                .map(|(k, v)| Centroid::new(*k, Embedding::new(v.to_vec())))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn bands_reject_an_inverted_pair() {
+        assert_eq!(
+            EnrollmentBands::new(CosineSimilarity::new(0.4), CosineSimilarity::new(0.6)),
+            Err(BandError::Inverted)
+        );
+        assert_eq!(
+            EnrollmentBands::new(CosineSimilarity::new(0.5), CosineSimilarity::new(0.5)),
+            Err(BandError::Inverted),
+            "equal edges leave no suggest region and must not pass as a split"
+        );
+    }
+
+    #[test]
+    fn a_profile_scores_across_every_centroid_not_just_the_first() {
+        let p = profile(
+            "p1",
+            "Jeisil",
+            &[("laptop", [1.0, 0.0, 0.0]), ("airpods", [0.0, 1.0, 0.0])],
+        );
+        let (score, key) = p
+            .best_match(&Embedding::new(vec![0.0, 1.0, 0.0]))
+            .expect("a profile with centroids matches");
+        assert!(score.get() > 0.99, "the airpods centroid is an exact match");
+        assert_eq!(key, "airpods");
+    }
+
+    #[test]
+    fn an_enrolled_name_with_no_voice_behind_it_is_never_suggested() {
+        let empty = SpeakerProfile {
+            id: "p1".into(),
+            display_name: "Aidan".into(),
+            is_me: false,
+            centroids: vec![],
+        };
+        assert_eq!(
+            match_cluster(
+                &Embedding::new(vec![1.0, 0.0, 0.0]),
+                &[empty],
+                bands(0.8, 0.5)
+            ),
+            MatchResult::New
+        );
+    }
+
+    #[test]
+    fn the_three_bands_are_the_three_outcomes() {
+        let roster = [profile("p1", "Jeisil", &[("laptop", [1.0, 0.0, 0.0])])];
+        let b = bands(0.90, 0.50);
+        // cos = 1.0
+        assert!(matches!(
+            match_cluster(&Embedding::new(vec![1.0, 0.0, 0.0]), &roster, b),
+            MatchResult::Known { .. }
+        ));
+        // cos = 1/sqrt(2) ≈ 0.707 — between the edges
+        assert!(matches!(
+            match_cluster(&Embedding::new(vec![1.0, 1.0, 0.0]), &roster, b),
+            MatchResult::Suggested { .. }
+        ));
+        // cos = 0.0 — orthogonal
+        assert!(matches!(
+            match_cluster(&Embedding::new(vec![0.0, 1.0, 0.0]), &roster, b),
+            MatchResult::New
+        ));
+    }
+
+    #[test]
+    fn ties_break_on_profile_id_so_the_answer_does_not_depend_on_roster_order() {
+        let a = profile("aaa", "A", &[("laptop", [1.0, 0.0, 0.0])]);
+        let z = profile("zzz", "Z", &[("laptop", [1.0, 0.0, 0.0])]);
+        let target = Embedding::new(vec![1.0, 0.0, 0.0]);
+        let forward = match_cluster(&target, &[a.clone(), z.clone()], bands(0.9, 0.5));
+        let backward = match_cluster(&target, &[z, a], bands(0.9, 0.5));
+        assert_eq!(forward, backward);
+        assert_eq!(forward.profile_id(), Some("aaa"));
+    }
+
+    #[test]
+    fn the_ordering_check_accepts_a_tighter_clustering_and_rejects_a_looser_one() {
+        // floor 0.55 similarity == 0.45 distance; clustering at 0.40 is tighter.
+        let b = bands(0.90, 0.55);
+        assert!(check_clustering_tighter_than_enrollment(CosineDistance::new(0.40), &b).is_ok());
+        // The plan's own pair: sherpa's 0.5 default against a 0.55 floor.
+        let violation = check_clustering_tighter_than_enrollment(CosineDistance::new(0.50), &b)
+            .expect_err("0.50 distance is looser than a 0.45-distance floor");
+        assert!((violation.floor_as_distance.get() - 0.45).abs() < 1e-6);
+    }
+}

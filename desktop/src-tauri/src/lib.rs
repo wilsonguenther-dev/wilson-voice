@@ -132,6 +132,16 @@ mod secure_input;
 // literals.
 pub mod shortcuts;
 mod snippets;
+// YV129 — the enrollment decision: does this CLUSTER belong to somebody already
+// enrolled? Public because every one of its acceptance criteria is an
+// integration test over these pure functions, and because the harness must
+// score the shipped matcher rather than a copy of it. Carries no threshold:
+// `EnrollmentBands` has no `Default` and no `const` instance anywhere in this
+// crate, and `bands_from_distribution` is the only producer that is not a
+// caller's literal — see the module header for why, and
+// `tests/enrollment_thresholds_refuse_an_unmeasured_eer.rs` for the gate that
+// keeps it that way while YV124's EER is still unmeasured.
+pub mod speaker_profiles;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
