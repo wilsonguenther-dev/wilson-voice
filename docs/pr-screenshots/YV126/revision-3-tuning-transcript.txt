@@ -1,0 +1,449 @@
+YV126 revision 3 — the tuning transcript (EVAL DISCIPLINE: every threshold from this harness)
+
+Machine: this Mac (Apple silicon), release sidecars staged, corpus at ~/yap-eval-corpus,
+catalog models installed (512-dim CAM++ + pyannote-segmentation-3.0 per YV123's mirror).
+Command: cargo test --features custom-protocol --test meeting_eval <name> -- --nocapture
+
+======================================================================
+FIXTURE (e) room-3-near-field — full clustering, 19 candidate distances
+======================================================================
+test fixture_e_der_gate ... fixture (e) mechanism ceiling: DER 0.0000, JER 0.0000 — nothing the segmenter deletes costs anything here, so every point of error a measured run reports belongs to the clustering threshold
+diarize backend ready: the catalog's models loaded, 512-dim embeddings — the measured arms below are real
+fixture (e) threshold sweep:
+    (3 of 14 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.05: 11 turns, 10 clusters, DER 0.7112 (miss 4.06s, fa 1.93s, conf 27.14s), JER 0.6658
+    (3 of 15 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.10: 12 turns, 10 clusters, DER 0.6335 (miss 4.06s, fa 2.61s, conf 22.84s), JER 0.5833
+    (4 of 14 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.15: 10 turns, 6 clusters, DER 0.5406 (miss 4.20s, fa 2.49s, conf 18.50s), JER 0.5588
+    (6 of 16 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.20: 10 turns, 7 clusters, DER 0.6128 (miss 4.53s, fa 1.65s, conf 22.37s), JER 0.6020
+    (9 of 19 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.25: 10 turns, 5 clusters, DER 0.5155 (miss 7.11s, fa 1.53s, conf 15.38s), JER 0.5663
+    (11 of 21 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.30: 10 turns, 4 clusters, DER 0.4464 (miss 9.11s, fa 1.54s, conf 10.15s), JER 0.4802
+    (8 of 20 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.35: 12 turns, 6 clusters, DER 0.5372 (miss 6.20s, fa 1.66s, conf 17.17s), JER 0.5788
+    (5 of 17 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.40: 12 turns, 6 clusters, DER 0.5390 (miss 4.01s, fa 1.74s, conf 19.36s), JER 0.5956
+    (4 of 16 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.45: 12 turns, 4 clusters, DER 0.4771 (miss 2.88s, fa 2.08s, conf 17.27s), JER 0.5832
+    (4 of 16 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.50: 12 turns, 3 clusters, DER 0.4751 (miss 2.88s, fa 2.08s, conf 17.18s), JER 0.5964
+    (2 of 14 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.55: 12 turns, 2 clusters, DER 0.5511 (miss 1.68s, fa 1.84s, conf 22.16s), JER 0.7384
+    (2 of 13 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.60: 11 turns, 2 clusters, DER 0.4909 (miss 1.68s, fa 2.20s, conf 19.00s), JER 0.6700
+    (1 of 10 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.65: 9 turns, 1 clusters, DER 0.6895 (miss 1.71s, fa 2.38s, conf 28.04s), JER 0.8812
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.70: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.75: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.80: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.85: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.90: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+    (1 of 2 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.95: 1 turns, 1 clusters, DER 0.7227 (miss 0.03s, fa 3.93s, conf 29.71s), JER 0.8888
+fixture (e) TUNED: clustering distance 0.30 → DER 0.446441, JER 0.480151
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 293.59s
+
+======================================================================
+FIXTURE (f) classroom-6-far-field — 2-class task, 19 distances x 19 bands
+======================================================================
+test fixture_f_binary_fallback_der ... fixture (f) mechanism ceilings (9.38s of overlapped speech deleted before embedding):
+  full N-way   : DER 0.2738 (miss 19.67s of 71.82s reference speaker time)
+  enrolled/rest: DER 0.1524 (miss 9.38s of 61.53s)
+diarize backend ready: the catalog's models loaded, 512-dim embeddings — the measured arms below are real
+fixture (f) 2-class sweep (clustering distance × acceptance band):
+    (17 of 31 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.05 band 0.05: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.10: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.15: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.20: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.25: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.30: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.35: 31 turns, DER 0.6295 (miss 17.11s, fa 0.74s, conf 18.57s), JER 0.8049
+  distance 0.05 band 0.40: 31 turns, DER 0.6295 (miss 17.11s, fa 0.74s, conf 18.57s), JER 0.8049
+  distance 0.05 band 0.45: 31 turns, DER 0.5953 (miss 17.11s, fa 0.74s, conf 16.59s), JER 0.7491
+  distance 0.05 band 0.50: 31 turns, DER 0.5953 (miss 17.11s, fa 0.74s, conf 16.59s), JER 0.7491
+  distance 0.05 band 0.55: 31 turns, DER 0.5897 (miss 17.11s, fa 0.74s, conf 16.26s), JER 0.6988
+  distance 0.05 band 0.60: 31 turns, DER 0.6012 (miss 17.11s, fa 0.74s, conf 16.93s), JER 0.6741
+  distance 0.05 band 0.65: 31 turns, DER 0.6012 (miss 17.11s, fa 0.74s, conf 16.93s), JER 0.6741
+  distance 0.05 band 0.70: 31 turns, DER 0.6429 (miss 17.11s, fa 0.74s, conf 19.34s), JER 0.7729
+  distance 0.05 band 0.75: 31 turns, DER 0.6020 (miss 17.11s, fa 0.74s, conf 16.97s), JER 0.7453
+  distance 0.05 band 0.80: 31 turns, DER 0.5169 (miss 17.11s, fa 0.74s, conf 12.05s), JER 0.6825
+  distance 0.05 band 0.85: 31 turns, DER 0.5169 (miss 17.11s, fa 0.74s, conf 12.05s), JER 0.6825
+  distance 0.05 band 0.90: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+  distance 0.05 band 0.95: 31 turns, DER 0.5601 (miss 17.11s, fa 0.74s, conf 14.55s), JER 0.7696
+    (14 of 28 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.10 band 0.05: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.10: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.15: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.20: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.25: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.30: 28 turns, DER 0.6287 (miss 17.14s, fa 0.67s, conf 18.55s), JER 0.8048
+  distance 0.10 band 0.35: 28 turns, DER 0.6287 (miss 17.14s, fa 0.67s, conf 18.55s), JER 0.8048
+  distance 0.10 band 0.40: 28 turns, DER 0.6287 (miss 17.14s, fa 0.67s, conf 18.55s), JER 0.8048
+  distance 0.10 band 0.45: 28 turns, DER 0.5945 (miss 17.14s, fa 0.67s, conf 16.57s), JER 0.7490
+  distance 0.10 band 0.50: 28 turns, DER 0.6550 (miss 17.14s, fa 0.76s, conf 19.99s), JER 0.7267
+  distance 0.10 band 0.55: 28 turns, DER 0.6605 (miss 17.14s, fa 0.76s, conf 20.31s), JER 0.7557
+  distance 0.10 band 0.60: 28 turns, DER 0.6600 (miss 17.14s, fa 0.76s, conf 20.27s), JER 0.7379
+  distance 0.10 band 0.65: 28 turns, DER 0.6004 (miss 17.14s, fa 0.76s, conf 16.83s), JER 0.6729
+  distance 0.10 band 0.70: 28 turns, DER 0.6421 (miss 17.14s, fa 0.67s, conf 19.32s), JER 0.7728
+  distance 0.10 band 0.75: 28 turns, DER 0.6014 (miss 17.14s, fa 0.67s, conf 16.97s), JER 0.7454
+  distance 0.10 band 0.80: 28 turns, DER 0.5163 (miss 17.14s, fa 0.67s, conf 12.05s), JER 0.6825
+  distance 0.10 band 0.85: 28 turns, DER 0.5163 (miss 17.14s, fa 0.67s, conf 12.05s), JER 0.6825
+  distance 0.10 band 0.90: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+  distance 0.10 band 0.95: 28 turns, DER 0.5595 (miss 17.14s, fa 0.67s, conf 14.55s), JER 0.7696
+    (15 of 28 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.15 band 0.05: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.10: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.15: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.20: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.25: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.30: 28 turns, DER 0.6279 (miss 19.10s, fa 0.65s, conf 16.57s), JER 0.7974
+  distance 0.15 band 0.35: 28 turns, DER 0.6279 (miss 19.10s, fa 0.65s, conf 16.57s), JER 0.7974
+  distance 0.15 band 0.40: 28 turns, DER 0.6279 (miss 19.10s, fa 0.65s, conf 16.57s), JER 0.7974
+  distance 0.15 band 0.45: 28 turns, DER 0.6279 (miss 19.10s, fa 0.65s, conf 16.57s), JER 0.7974
+  distance 0.15 band 0.50: 28 turns, DER 0.6547 (miss 19.10s, fa 0.75s, conf 18.02s), JER 0.7225
+  distance 0.15 band 0.55: 28 turns, DER 0.6604 (miss 19.10s, fa 0.75s, conf 18.35s), JER 0.7318
+  distance 0.15 band 0.60: 28 turns, DER 0.6607 (miss 19.10s, fa 0.75s, conf 18.37s), JER 0.7468
+  distance 0.15 band 0.65: 28 turns, DER 0.6341 (miss 19.10s, fa 0.75s, conf 16.83s), JER 0.7044
+  distance 0.15 band 0.70: 28 turns, DER 0.6341 (miss 19.10s, fa 0.75s, conf 16.83s), JER 0.7044
+  distance 0.15 band 0.75: 28 turns, DER 0.6004 (miss 19.10s, fa 0.65s, conf 14.98s), JER 0.7374
+  distance 0.15 band 0.80: 28 turns, DER 0.5152 (miss 19.10s, fa 0.65s, conf 10.06s), JER 0.6728
+  distance 0.15 band 0.85: 28 turns, DER 0.5152 (miss 19.10s, fa 0.65s, conf 10.06s), JER 0.6728
+  distance 0.15 band 0.90: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+  distance 0.15 band 0.95: 28 turns, DER 0.5584 (miss 19.10s, fa 0.65s, conf 12.55s), JER 0.7608
+    (21 of 35 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.20 band 0.05: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.10: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.15: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.20: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.25: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.30: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.35: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.40: 35 turns, DER 0.6687 (miss 20.66s, fa 0.60s, conf 17.43s), JER 0.8221
+  distance 0.20 band 0.45: 35 turns, DER 0.6735 (miss 20.66s, fa 0.60s, conf 17.70s), JER 0.7329
+  distance 0.20 band 0.50: 35 turns, DER 0.6018 (miss 20.66s, fa 0.60s, conf 13.56s), JER 0.6564
+  distance 0.20 band 0.55: 35 turns, DER 0.5471 (miss 20.66s, fa 0.60s, conf 10.39s), JER 0.5925
+  distance 0.20 band 0.60: 35 turns, DER 0.5828 (miss 20.66s, fa 0.60s, conf 12.46s), JER 0.6521
+  distance 0.20 band 0.65: 35 turns, DER 0.6424 (miss 20.66s, fa 0.60s, conf 15.91s), JER 0.7361
+  distance 0.20 band 0.70: 35 turns, DER 0.6824 (miss 20.66s, fa 0.60s, conf 18.22s), JER 0.7917
+  distance 0.20 band 0.75: 35 turns, DER 0.6415 (miss 20.66s, fa 0.60s, conf 15.85s), JER 0.7636
+  distance 0.20 band 0.80: 35 turns, DER 0.5564 (miss 20.66s, fa 0.60s, conf 10.93s), JER 0.6996
+  distance 0.20 band 0.85: 35 turns, DER 0.5564 (miss 20.66s, fa 0.60s, conf 10.93s), JER 0.6996
+  distance 0.20 band 0.90: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+  distance 0.20 band 0.95: 35 turns, DER 0.5995 (miss 20.66s, fa 0.60s, conf 13.42s), JER 0.7862
+    (20 of 33 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.25 band 0.05: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.10: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.15: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.20: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.25: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.30: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.35: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.40: 33 turns, DER 0.6269 (miss 20.28s, fa 0.59s, conf 15.39s), JER 0.7928
+  distance 0.25 band 0.45: 33 turns, DER 0.6269 (miss 20.28s, fa 0.59s, conf 15.39s), JER 0.7928
+  distance 0.25 band 0.50: 33 turns, DER 0.6742 (miss 20.28s, fa 0.69s, conf 18.02s), JER 0.7391
+  distance 0.25 band 0.55: 33 turns, DER 0.6195 (miss 20.28s, fa 0.69s, conf 14.86s), JER 0.6848
+  distance 0.25 band 0.60: 33 turns, DER 0.6796 (miss 20.28s, fa 0.69s, conf 18.34s), JER 0.7667
+  distance 0.25 band 0.65: 33 turns, DER 0.6796 (miss 20.28s, fa 0.69s, conf 18.34s), JER 0.7667
+  distance 0.25 band 0.70: 33 turns, DER 0.6532 (miss 20.28s, fa 0.69s, conf 16.81s), JER 0.7228
+  distance 0.25 band 0.75: 33 turns, DER 0.5997 (miss 20.28s, fa 0.59s, conf 13.82s), JER 0.7327
+  distance 0.25 band 0.80: 33 turns, DER 0.5146 (miss 20.28s, fa 0.59s, conf 8.89s), JER 0.6670
+  distance 0.25 band 0.85: 33 turns, DER 0.5146 (miss 20.28s, fa 0.59s, conf 8.89s), JER 0.6670
+  distance 0.25 band 0.90: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.25 band 0.95: 33 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+    (21 of 34 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.30 band 0.05: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.10: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.15: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.20: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.25: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.30: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.35: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.40: 34 turns, DER 0.6269 (miss 20.28s, fa 0.59s, conf 15.39s), JER 0.7928
+  distance 0.30 band 0.45: 34 turns, DER 0.6269 (miss 20.28s, fa 0.59s, conf 15.39s), JER 0.7928
+  distance 0.30 band 0.50: 34 turns, DER 0.6742 (miss 20.28s, fa 0.69s, conf 18.02s), JER 0.7391
+  distance 0.30 band 0.55: 34 turns, DER 0.6195 (miss 20.28s, fa 0.69s, conf 14.86s), JER 0.6848
+  distance 0.30 band 0.60: 34 turns, DER 0.6796 (miss 20.28s, fa 0.69s, conf 18.34s), JER 0.7667
+  distance 0.30 band 0.65: 34 turns, DER 0.6796 (miss 20.28s, fa 0.69s, conf 18.34s), JER 0.7667
+  distance 0.30 band 0.70: 34 turns, DER 0.6532 (miss 20.28s, fa 0.69s, conf 16.81s), JER 0.7228
+  distance 0.30 band 0.75: 34 turns, DER 0.5997 (miss 20.28s, fa 0.59s, conf 13.82s), JER 0.7327
+  distance 0.30 band 0.80: 34 turns, DER 0.5146 (miss 20.28s, fa 0.59s, conf 8.89s), JER 0.6670
+  distance 0.30 band 0.85: 34 turns, DER 0.5146 (miss 20.28s, fa 0.59s, conf 8.89s), JER 0.6670
+  distance 0.30 band 0.90: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+  distance 0.30 band 0.95: 34 turns, DER 0.5577 (miss 20.28s, fa 0.59s, conf 11.39s), JER 0.7555
+    (15 of 29 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.35 band 0.05: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.10: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.15: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.20: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.25: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.30: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.35: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.40: 29 turns, DER 0.5807 (miss 15.15s, fa 0.79s, conf 17.65s), JER 0.7798
+  distance 0.35 band 0.45: 29 turns, DER 0.6354 (miss 15.15s, fa 0.79s, conf 20.82s), JER 0.8075
+  distance 0.35 band 0.50: 29 turns, DER 0.6354 (miss 15.15s, fa 0.79s, conf 20.82s), JER 0.8075
+  distance 0.35 band 0.55: 29 turns, DER 0.5786 (miss 15.15s, fa 0.79s, conf 17.53s), JER 0.6617
+  distance 0.35 band 0.60: 29 turns, DER 0.5196 (miss 15.15s, fa 0.79s, conf 14.12s), JER 0.6037
+  distance 0.35 band 0.65: 29 turns, DER 0.6132 (miss 15.15s, fa 0.79s, conf 19.53s), JER 0.6975
+  distance 0.35 band 0.70: 29 turns, DER 0.5987 (miss 15.15s, fa 0.89s, conf 18.59s), JER 0.7879
+  distance 0.35 band 0.75: 29 turns, DER 0.5987 (miss 15.15s, fa 0.89s, conf 18.59s), JER 0.7879
+  distance 0.35 band 0.80: 29 turns, DER 0.5987 (miss 15.15s, fa 0.89s, conf 18.59s), JER 0.7879
+  distance 0.35 band 0.85: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.90: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+  distance 0.35 band 0.95: 29 turns, DER 0.5270 (miss 15.15s, fa 0.79s, conf 14.55s), JER 0.7526
+    (14 of 28 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.40 band 0.05: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.10: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.15: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.20: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.25: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.30: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.35: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.40: 28 turns, DER 0.5813 (miss 15.18s, fa 0.79s, conf 17.65s), JER 0.7801
+  distance 0.40 band 0.45: 28 turns, DER 0.6360 (miss 15.18s, fa 0.79s, conf 20.82s), JER 0.8078
+  distance 0.40 band 0.50: 28 turns, DER 0.6360 (miss 15.18s, fa 0.79s, conf 20.82s), JER 0.8078
+  distance 0.40 band 0.55: 28 turns, DER 0.5100 (miss 15.18s, fa 0.79s, conf 13.53s), JER 0.5863
+  distance 0.40 band 0.60: 28 turns, DER 0.5202 (miss 15.18s, fa 0.79s, conf 14.12s), JER 0.6041
+  distance 0.40 band 0.65: 28 turns, DER 0.6132 (miss 15.18s, fa 0.79s, conf 19.50s), JER 0.6973
+  distance 0.40 band 0.70: 28 turns, DER 0.5993 (miss 15.18s, fa 0.89s, conf 18.59s), JER 0.7882
+  distance 0.40 band 0.75: 28 turns, DER 0.5993 (miss 15.18s, fa 0.89s, conf 18.59s), JER 0.7882
+  distance 0.40 band 0.80: 28 turns, DER 0.5993 (miss 15.18s, fa 0.89s, conf 18.59s), JER 0.7882
+  distance 0.40 band 0.85: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.90: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+  distance 0.40 band 0.95: 28 turns, DER 0.5276 (miss 15.18s, fa 0.79s, conf 14.55s), JER 0.7529
+    (13 of 27 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.45 band 0.05: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.10: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.15: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.20: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.25: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.30: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.35: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.40: 27 turns, DER 0.5799 (miss 15.18s, fa 0.71s, conf 17.65s), JER 0.7797
+  distance 0.45 band 0.45: 27 turns, DER 0.6345 (miss 15.18s, fa 0.71s, conf 20.82s), JER 0.8075
+  distance 0.45 band 0.50: 27 turns, DER 0.6345 (miss 15.18s, fa 0.71s, conf 20.82s), JER 0.8075
+  distance 0.45 band 0.55: 27 turns, DER 0.5086 (miss 15.18s, fa 0.71s, conf 13.53s), JER 0.5856
+  distance 0.45 band 0.60: 27 turns, DER 0.5187 (miss 15.18s, fa 0.71s, conf 14.12s), JER 0.6034
+  distance 0.45 band 0.65: 27 turns, DER 0.6118 (miss 15.18s, fa 0.71s, conf 19.50s), JER 0.6968
+  distance 0.45 band 0.70: 27 turns, DER 0.5978 (miss 15.18s, fa 0.81s, conf 18.59s), JER 0.7879
+  distance 0.45 band 0.75: 27 turns, DER 0.5978 (miss 15.18s, fa 0.81s, conf 18.59s), JER 0.7879
+  distance 0.45 band 0.80: 27 turns, DER 0.5978 (miss 15.18s, fa 0.81s, conf 18.59s), JER 0.7879
+  distance 0.45 band 0.85: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.90: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+  distance 0.45 band 0.95: 27 turns, DER 0.5261 (miss 15.18s, fa 0.71s, conf 14.55s), JER 0.7525
+    (9 of 23 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.50 band 0.05: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.10: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.15: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.20: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.25: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.30: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.35: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.40: 23 turns, DER 0.5788 (miss 13.50s, fa 0.64s, conf 19.34s), JER 0.7859
+  distance 0.50 band 0.45: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.50 band 0.50: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.50 band 0.55: 23 turns, DER 0.4784 (miss 13.50s, fa 0.64s, conf 13.53s), JER 0.5573
+  distance 0.50 band 0.60: 23 turns, DER 0.4885 (miss 13.50s, fa 0.64s, conf 14.12s), JER 0.5725
+  distance 0.50 band 0.65: 23 turns, DER 0.5816 (miss 13.50s, fa 0.64s, conf 19.50s), JER 0.6733
+  distance 0.50 band 0.70: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.50 band 0.75: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.50 band 0.80: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.50 band 0.85: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.90: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.50 band 0.95: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+    (9 of 23 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.55 band 0.05: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.10: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.15: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.20: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.25: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.30: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.35: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.40: 23 turns, DER 0.5788 (miss 13.50s, fa 0.64s, conf 19.34s), JER 0.7859
+  distance 0.55 band 0.45: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.55 band 0.50: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.55 band 0.55: 23 turns, DER 0.4784 (miss 13.50s, fa 0.64s, conf 13.53s), JER 0.5573
+  distance 0.55 band 0.60: 23 turns, DER 0.4885 (miss 13.50s, fa 0.64s, conf 14.12s), JER 0.5725
+  distance 0.55 band 0.65: 23 turns, DER 0.5816 (miss 13.50s, fa 0.64s, conf 19.50s), JER 0.6733
+  distance 0.55 band 0.70: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.55 band 0.75: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.55 band 0.80: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.55 band 0.85: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.90: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.55 band 0.95: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+    (9 of 23 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.60 band 0.05: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.10: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.15: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.20: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.25: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.30: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.35: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.40: 23 turns, DER 0.5788 (miss 13.50s, fa 0.64s, conf 19.34s), JER 0.7859
+  distance 0.60 band 0.45: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.60 band 0.50: 23 turns, DER 0.6221 (miss 13.50s, fa 0.64s, conf 21.85s), JER 0.7151
+  distance 0.60 band 0.55: 23 turns, DER 0.4784 (miss 13.50s, fa 0.64s, conf 13.53s), JER 0.5573
+  distance 0.60 band 0.60: 23 turns, DER 0.4885 (miss 13.50s, fa 0.64s, conf 14.12s), JER 0.5725
+  distance 0.60 band 0.65: 23 turns, DER 0.5816 (miss 13.50s, fa 0.64s, conf 19.50s), JER 0.6733
+  distance 0.60 band 0.70: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.60 band 0.75: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.60 band 0.80: 23 turns, DER 0.5967 (miss 13.50s, fa 0.74s, conf 20.28s), JER 0.7938
+  distance 0.60 band 0.85: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.90: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+  distance 0.60 band 0.95: 23 turns, DER 0.5250 (miss 13.50s, fa 0.64s, conf 16.23s), JER 0.7594
+    (14 of 26 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.65 band 0.05: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.10: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.15: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.20: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.25: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.30: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.35: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.40: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.45: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.50: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.55: 26 turns, DER 0.5990 (miss 18.31s, fa 0.95s, conf 15.38s), JER 0.7759
+  distance 0.65 band 0.60: 26 turns, DER 0.6744 (miss 18.31s, fa 0.95s, conf 19.75s), JER 0.7468
+  distance 0.65 band 0.65: 26 turns, DER 0.6303 (miss 18.31s, fa 0.95s, conf 17.20s), JER 0.7072
+  distance 0.65 band 0.70: 26 turns, DER 0.6735 (miss 18.31s, fa 0.95s, conf 19.69s), JER 0.7544
+  distance 0.65 band 0.75: 26 turns, DER 0.5250 (miss 18.31s, fa 0.95s, conf 11.10s), JER 0.6236
+  distance 0.65 band 0.80: 26 turns, DER 0.4764 (miss 18.31s, fa 0.95s, conf 8.30s), JER 0.6276
+  distance 0.65 band 0.85: 26 turns, DER 0.4764 (miss 18.31s, fa 0.95s, conf 8.30s), JER 0.6276
+  distance 0.65 band 0.90: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.65 band 0.95: 26 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+    (16 of 28 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.70 band 0.05: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.10: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.15: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.20: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.25: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.30: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.35: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.40: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.45: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.50: 28 turns, DER 0.6012 (miss 18.31s, fa 0.93s, conf 15.53s), JER 0.6736
+  distance 0.70 band 0.55: 28 turns, DER 0.6012 (miss 18.31s, fa 0.93s, conf 15.53s), JER 0.6736
+  distance 0.70 band 0.60: 28 turns, DER 0.5251 (miss 18.31s, fa 0.93s, conf 11.13s), JER 0.6042
+  distance 0.70 band 0.65: 28 turns, DER 0.4811 (miss 18.31s, fa 0.93s, conf 8.58s), JER 0.5553
+  distance 0.70 band 0.70: 28 turns, DER 0.5242 (miss 18.31s, fa 0.93s, conf 11.08s), JER 0.6228
+  distance 0.70 band 0.75: 28 turns, DER 0.5846 (miss 18.31s, fa 0.93s, conf 14.57s), JER 0.7157
+  distance 0.70 band 0.80: 28 turns, DER 0.4762 (miss 18.31s, fa 0.93s, conf 8.30s), JER 0.6275
+  distance 0.70 band 0.85: 28 turns, DER 0.4762 (miss 18.31s, fa 0.93s, conf 8.30s), JER 0.6275
+  distance 0.70 band 0.90: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+  distance 0.70 band 0.95: 28 turns, DER 0.5301 (miss 18.31s, fa 0.93s, conf 11.42s), JER 0.7392
+    (18 of 30 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.75 band 0.05: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.10: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.15: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.20: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.25: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.30: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.35: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.40: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.45: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.50: 30 turns, DER 0.6015 (miss 18.31s, fa 0.95s, conf 15.53s), JER 0.6737
+  distance 0.75 band 0.55: 30 turns, DER 0.6015 (miss 18.31s, fa 0.95s, conf 15.53s), JER 0.6737
+  distance 0.75 band 0.60: 30 turns, DER 0.5254 (miss 18.31s, fa 0.95s, conf 11.13s), JER 0.6043
+  distance 0.75 band 0.65: 30 turns, DER 0.4814 (miss 18.31s, fa 0.95s, conf 8.58s), JER 0.5555
+  distance 0.75 band 0.70: 30 turns, DER 0.5245 (miss 18.31s, fa 0.95s, conf 11.08s), JER 0.6230
+  distance 0.75 band 0.75: 30 turns, DER 0.5848 (miss 18.31s, fa 0.95s, conf 14.57s), JER 0.7157
+  distance 0.75 band 0.80: 30 turns, DER 0.4764 (miss 18.31s, fa 0.95s, conf 8.30s), JER 0.6276
+  distance 0.75 band 0.85: 30 turns, DER 0.4764 (miss 18.31s, fa 0.95s, conf 8.30s), JER 0.6276
+  distance 0.75 band 0.90: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+  distance 0.75 band 0.95: 30 turns, DER 0.5304 (miss 18.31s, fa 0.95s, conf 11.42s), JER 0.7393
+    (7 of 19 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.80 band 0.05: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+  distance 0.80 band 0.10: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+  distance 0.80 band 0.15: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+  distance 0.80 band 0.20: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+  distance 0.80 band 0.25: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+  distance 0.80 band 0.30: 19 turns, DER 0.5476 (miss 10.07s, fa 1.09s, conf 20.51s), JER 0.7679
+  distance 0.80 band 0.35: 19 turns, DER 0.5476 (miss 10.07s, fa 1.09s, conf 20.51s), JER 0.7679
+  distance 0.80 band 0.40: 19 turns, DER 0.6014 (miss 10.07s, fa 1.09s, conf 23.62s), JER 0.7941
+  distance 0.80 band 0.45: 19 turns, DER 0.5696 (miss 10.07s, fa 1.09s, conf 21.79s), JER 0.6749
+  distance 0.80 band 0.50: 19 turns, DER 0.5141 (miss 10.07s, fa 1.09s, conf 18.57s), JER 0.6184
+  distance 0.80 band 0.55: 19 turns, DER 0.5141 (miss 10.07s, fa 1.09s, conf 18.57s), JER 0.6184
+  distance 0.80 band 0.60: 19 turns, DER 0.4375 (miss 10.07s, fa 1.09s, conf 14.15s), JER 0.5498
+  distance 0.80 band 0.65: 19 turns, DER 0.4375 (miss 10.07s, fa 1.09s, conf 14.15s), JER 0.5498
+  distance 0.80 band 0.70: 19 turns, DER 0.4375 (miss 10.07s, fa 1.09s, conf 14.15s), JER 0.5498
+  distance 0.80 band 0.75: 19 turns, DER 0.3489 (miss 10.07s, fa 1.09s, conf 9.02s), JER 0.4757
+  distance 0.80 band 0.80: 19 turns, DER 0.3489 (miss 10.07s, fa 1.09s, conf 9.02s), JER 0.4757
+  distance 0.80 band 0.85: 19 turns, DER 0.3489 (miss 10.07s, fa 1.09s, conf 9.02s), JER 0.4757
+  distance 0.80 band 0.90: 19 turns, DER 0.4085 (miss 10.07s, fa 1.09s, conf 12.47s), JER 0.5998
+  distance 0.80 band 0.95: 19 turns, DER 0.4725 (miss 10.07s, fa 1.09s, conf 16.17s), JER 0.7313
+    (6 of 18 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.85 band 0.05: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.85 band 0.10: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.85 band 0.15: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.85 band 0.20: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.85 band 0.25: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.85 band 0.30: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.85 band 0.35: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.85 band 0.40: 18 turns, DER 0.6014 (miss 9.95s, fa 1.09s, conf 23.74s), JER 0.7945
+  distance 0.85 band 0.45: 18 turns, DER 0.5676 (miss 9.95s, fa 1.09s, conf 21.79s), JER 0.6734
+  distance 0.85 band 0.50: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.85 band 0.55: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.85 band 0.60: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.85 band 0.65: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.85 band 0.70: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.85 band 0.75: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.85 band 0.80: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.85 band 0.85: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.85 band 0.90: 18 turns, DER 0.4085 (miss 9.95s, fa 1.09s, conf 12.58s), JER 0.6004
+  distance 0.85 band 0.95: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+    (6 of 18 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.90 band 0.05: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.90 band 0.10: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.90 band 0.15: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.90 band 0.20: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.90 band 0.25: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.90 band 0.30: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.90 band 0.35: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.90 band 0.40: 18 turns, DER 0.6014 (miss 9.95s, fa 1.09s, conf 23.74s), JER 0.7945
+  distance 0.90 band 0.45: 18 turns, DER 0.5676 (miss 9.95s, fa 1.09s, conf 21.79s), JER 0.6734
+  distance 0.90 band 0.50: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.90 band 0.55: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.90 band 0.60: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.90 band 0.65: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.90 band 0.70: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.90 band 0.75: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.90 band 0.80: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.90 band 0.85: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.90 band 0.90: 18 turns, DER 0.4085 (miss 9.95s, fa 1.09s, conf 12.58s), JER 0.6004
+  distance 0.90 band 0.95: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+    (6 of 18 turns are under the 2.0s embedding floor and are stored unattributed — their speech is a MISS in the DER below)
+  distance 0.95 band 0.05: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.95 band 0.10: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.95 band 0.15: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.95 band 0.20: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.95 band 0.25: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+  distance 0.95 band 0.30: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.95 band 0.35: 18 turns, DER 0.5476 (miss 9.95s, fa 1.09s, conf 20.63s), JER 0.7683
+  distance 0.95 band 0.40: 18 turns, DER 0.6014 (miss 9.95s, fa 1.09s, conf 23.74s), JER 0.7945
+  distance 0.95 band 0.45: 18 turns, DER 0.5676 (miss 9.95s, fa 1.09s, conf 21.79s), JER 0.6734
+  distance 0.95 band 0.50: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.95 band 0.55: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.95 band 0.60: 18 turns, DER 0.3830 (miss 9.95s, fa 1.09s, conf 11.11s), JER 0.4716
+  distance 0.95 band 0.65: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.95 band 0.70: 18 turns, DER 0.4375 (miss 9.95s, fa 1.09s, conf 14.26s), JER 0.5503
+  distance 0.95 band 0.75: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.95 band 0.80: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.95 band 0.85: 18 turns, DER 0.3489 (miss 9.95s, fa 1.09s, conf 9.14s), JER 0.4764
+  distance 0.95 band 0.90: 18 turns, DER 0.4085 (miss 9.95s, fa 1.09s, conf 12.58s), JER 0.6004
+  distance 0.95 band 0.95: 18 turns, DER 0.4725 (miss 9.95s, fa 1.09s, conf 16.28s), JER 0.7318
+fixture (f) full-clustering arm — distance Some(0.3) from fixture (e)'s recorded sweep:
+fixture (f) MEASURED: full N-way DER 0.6405 at clustering distance 0.30 (recorded, not gated)
+fixture (f) MEASURED: enrolled/rest DER 0.348913, JER 0.475733 at clustering distance 0.80 and acceptance band 0.75, scored from 4.19s (the enrollment span is excluded); the shipped end-to-end path reproduces it at 0.348913
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 225.24s
