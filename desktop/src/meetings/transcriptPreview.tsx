@@ -22,6 +22,12 @@
  * A, so it must not. Screenshotting the trio therefore shows the caveat
  * appearing AND being withheld, from the shipping component.
  *
+ * The kinds those scenes render at are load-bearing for that claim, not
+ * decoration: `blank-tap` and `two-track` BOTH declare `kind = "virtual"` and
+ * differ only in whether the tap delivered words, which is what makes
+ * `blank-tap` the case a `kind == "virtual"` gate gets wrong rather than a
+ * second copy of `mic-only`. See the `kind` binding in `Preview` below.
+ *
  * Same rules as `license/preview.tsx` and `meetings/preview.tsx`: a BUILD ENTRY
  * behind `YAP_DEV_TOOLING=1`, so no shipped build carries it.
  *
@@ -99,6 +105,19 @@ function Preview() {
   const twoTrack = scene === "two-track";
   const segments =
     scene === "two-track" ? TWO_TRACK : scene === "blank-tap" ? BLANK_TAP : MIC_ONLY;
+  /**
+   * The meeting's DECLARED kind, which is not the same question as how many
+   * tracks carried words. `two-track` and `blank-tap` are both meetings the
+   * user picked "call" for — the difference between them is only that one
+   * tap delivered speech and the other delivered silence — so both render at
+   * `virtual`, and only the `mic-only` scene is the un-picked `unknown`.
+   *
+   * This distinction is the whole point of the `blank-tap` scene under YV127:
+   * at `kind = "virtual"` it is the case a gate written against the kind alone
+   * would get wrong, because the caveat is owed there anyway. Rendering it at
+   * `unknown` would have made it a duplicate of `mic-only`.
+   */
+  const kind = scene === "mic-only" ? "unknown" : "virtual";
 
   return (
     <div className="shell">
@@ -164,13 +183,21 @@ function Preview() {
               </span>
               <span>audio kept</span>
             </p>
-            <TranscriptList segments={segments} kind={twoTrack ? "virtual" : "unknown"} />
+            <TranscriptList segments={segments} kind={kind} />
           </div>
         </div>
       </section>
 
       {/* Harness controls, deliberately unstyled by the app's own classes so
-          they can never be mistaken for product UI in a screenshot. */}
+          they can never be mistaken for product UI in a screenshot.
+
+          The `kind=` readout is here for the same reason the buttons are: a
+          screenshot of this page is used as evidence, and the meeting kind is
+          an INPUT no pixel of the product UI reveals. Printing it in the
+          harness strip means a reviewer reads the kind off the picture instead
+          of off a caption that can drift from the code — which is exactly how
+          `blank-tap.png` came to be captioned `virtual` while the component
+          was being handed `unknown`. */}
       <div
         style={{
           position: "fixed",
@@ -178,11 +205,13 @@ function Preview() {
           bottom: 12,
           zIndex: 999,
           display: "flex",
+          alignItems: "center",
           gap: 6,
           font: "11px ui-monospace, monospace",
           opacity: 0.55,
         }}
       >
+        <span data-testid="harness-kind">kind={kind}</span>
         {SCENES.map((k) => (
           <button
             key={k}

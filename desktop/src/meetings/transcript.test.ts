@@ -323,7 +323,24 @@ describe("showsOverlapCaveat", () => {
         "virtual",
         ROOM,
         true,
-        "a call whose tap never delivered is a microphone carrying the room",
+        "a call the tap never attached to at all: no second-track rows exist",
+      ],
+      [
+        // THE discriminating case, and the one `blank-tap.png` photographs:
+        // the tap DID attach and DID produce rows — the ASR just found no
+        // words in them. The kind says `virtual`, so a gate written against
+        // the kind would withhold the caveat here; `isTwoTrack` looks at the
+        // rows' text instead, resolves to `clusterTrackA`, and the caveat is
+        // owed. Whitespace shapes copied from `transcriptPreview.tsx`'s
+        // `BLANK_TAP` so the picture and this row are the same input.
+        "virtual",
+        [
+          ...ROOM,
+          seg("blank1", 5, SYSTEM_TRACK, "   "),
+          seg("blank2", 7, SYSTEM_TRACK, "\n\t "),
+        ],
+        true,
+        "a call whose tap delivered only blank spans still clusters Track A",
       ],
       [
         "virtual",

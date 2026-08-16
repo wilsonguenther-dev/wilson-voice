@@ -74,3 +74,43 @@ run 3: 95 test binaries, 1111 passed, 0 failed   (exit 0)
   line in a `ClusterTrackA` meeting reads "Speaker", one label for the whole
   track. The caveat is a statement about attribution's limit, not a claim that
   voices are being separated, which is why it is honest now and unchanged later.
+
+================================================================================
+REVIEW FOLLOW-UP — re-run after the `blank-tap` kind correction
+(desktop/src/meetings/transcriptPreview.tsx + one truth-table row + re-captured
+screenshots). No Rust source changed; the whole suite is re-run anyway because
+`overlap_column_absent_and_documented.rs` reads the frontend's `transcript.ts`.
+================================================================================
+
+=== F0. environment
+26.5.2 / arm64 / rustc 1.94.0 (4a4ef493e 2026-03-02)
+2026-08-16T04:38Z
+
+=== F1. npx tsc --noEmit
+exit 0 — no output is the pass
+
+=== F2. npx vitest run
+ Test Files  10 passed (10)
+      Tests  131 passed (131)
+  (unchanged count: the new case is a ROW in `showsOverlapCaveat`'s existing
+   truth table, not a new `it` — see M11 in non-vacuous-mutations.txt for the
+   proof it is the only row that carries that case)
+
+=== F3. cargo test --features custom-protocol  (whole suite, 3x)
+run 1: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 2: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 3: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+  Identical to the pre-correction numbers, which is the expected result: this
+  change is frontend-only, and `transcript.ts` — the file the Rust copy-pin
+  test reads — is byte-identical to what was reviewed.
+
+=== F4. the screenshots
+Re-captured from the corrected preview, same rig (headless Chrome @2x,
+http://localhost:<port>/dev/meeting-transcript-preview.html#<scene>).
+  Recorded honestly: with ONLY the kind corrected, all three PNGs came back
+  BYTE-IDENTICAL to the reviewed ones (blank-tap f74656d1…), because the
+  product UI renders nothing that depends on `kind` once the diarization target
+  resolves the same way. A screenshot that cannot show its own input is a weak
+  piece of evidence, so the harness strip now prints `kind=<value>`; the
+  committed PNGs are the captures from that build, and the kind is legible in
+  the frame instead of only in the caption.

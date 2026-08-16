@@ -109,3 +109,46 @@ NOT MUTATED, and why:
     export deliberately does not carry it (see the PR body), and the export's
     bytes are already pinned by meeting_markdown_export{,_two_track}.rs, so
     adding the sentence there fails those fixtures rather than this item's tests.
+
+================================================================================
+REVIEW FOLLOW-UP (BLOCKING finding: `blank-tap.png` was captioned `kind =
+virtual` while the preview handed the component `unknown`). Three more
+mutations, run against the CORRECTED tree, to show the corrected evidence
+actually discriminates and the old evidence did not.
+================================================================================
+
+M10 — the naive gate the doc claims would get `blank-tap` wrong
+    src/meetings/transcript.ts: showsOverlapCaveat's first line becomes
+    `if (kind === "virtual") return false;` — the gate written against the
+    meeting's declared kind instead of against the diarization target. This is
+    the exact counterfactual `manual-verification.md` names.
+    → vitest: transcript.test.ts FAILED (1 failed / 18 passed) on the truth
+      table's first `virtual` row.
+    → screenshot (YAP_DEV_TOOLING=1 npm run build; headless Chrome @2x;
+      #blank-tap): the caveat is GONE. sha256 45f17c49e119952a0118…, against
+      f74656d17f35ab963753… for the shipped screenshot.
+
+M10b — the same gate, photographed through the PRE-FIX preview
+    M10 still applied, and transcriptPreview.tsx reverted to the line the
+    review flagged: `const kind = twoTrack ? "virtual" : "unknown"`.
+    → screenshot (#blank-tap): sha256 f74656d17f35ab963753… — BYTE-IDENTICAL
+      to the correct, unmutated screenshot. This is the finding, reproduced:
+      the picture that was cited as "the case a `kind == virtual` gate would
+      have got wrong" was taken at kind `unknown`, where that gate behaves
+      exactly like the shipped one. The old evidence could not see the bug.
+      Both mutations reverted; the shipped screenshots are re-captured from the
+      corrected preview and now carry `kind=<value>` in the harness strip.
+
+M11 — isTwoTrack stops ignoring blank spans
+    src/meetings/transcript.ts: `isTwoTrack` becomes
+    `segments.some((s) => trackOf(s) !== MIC_TRACK)` — a tap that recorded
+    silence now counts as a live second track, so a `virtual` meeting with
+    blank tap rows would take the MicIsMe branch and lose the caveat.
+    → vitest: 3 failed / 16 passed, one of them by name:
+      "virtual: a call whose tap delivered only blank spans still clusters
+      Track A: expected false to be true".
+    → and the row is load-bearing, not redundant: with the NEW truth-table row
+      temporarily deleted and M11 still applied, `-t "follows the diarization
+      target"` goes GREEN (1 passed / 18 skipped). No pre-existing row in that
+      table carries this case — the other `virtual -> true` row has no
+      second-track segments at all. Row restored, M11 reverted.
