@@ -160,7 +160,11 @@
 //!   * **Row 8** — [`cluster_sanity`]. A pass that RAN and returned noise
 //!     degrades to the same plain transcript, carrying a different reason, so
 //!     "the sidecar crashed" and "the sidecar answered with rubbish" stay
-//!     diagnosable apart in a log and in a diagnostics row.
+//!     diagnosable apart in a log and in a diagnostics row. **This row's
+//!     degrade is a requirement on YV126's `diarize::rank_and_floor` (#141,
+//!     open), and that requirement is currently unmet** — see the row's cell
+//!     and [`cluster_sanity`]'s own docs for the divergence and for the two
+//!     assertions that make it impossible to leave unreconciled.
 //!   * **Row 13** — [`speaker_detection_gate`]. Models missing or half
 //!     downloaded turns the affordance **off, not broken**, with the combined
 //!     download size in the sentence — and it cannot touch recording, because
@@ -613,7 +617,7 @@ pub const ROWS: &[MatrixRow] = &[
     MatrixRow {
         id: "8",
         failure: "Diarization returns garbage — one cluster for five people, or forty clusters",
-        behavior: "A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart",
+        behavior: "A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart. **The degrade half is a requirement on YV126's `diarize::rank_and_floor` (#141, open) that it does not meet today** — there an all-below-floor pass renders as one \"Other\" chip with no degrade and no marker; `matrix_row8_diarize_garbage_clusters` fails the day that gate ships with nothing applying the degrade",
         // NOT `Test`, for the same reason as row 7 and one more of its own: the
         // gate can only be applied to output, and nothing in the app produces
         // any. The published behaviour is deliberately NOT the plan's original
@@ -621,6 +625,16 @@ pub const ROWS: &[MatrixRow] = &[
         // rule (a manually started meeting has no attendee count, so the cap is
         // 8, and a real six-person far-field room legitimately produces 10–15
         // raw clusters before merge, which the rule would throw away whole).
+        //
+        // `absent_call_site` stays `cluster_sanity` because that is what this
+        // row's test drives, but the row does NOT rely on it alone: the gate a
+        // meeting will really call is YV126's `diarize::rank_and_floor` (#141),
+        // and a tripwire watching only this module's function would never see
+        // that arrive. The row's own test therefore also asserts
+        // `rank_and_floor`/`cluster_track`/`attribute_clusters` have no callers
+        // — the same two-symbol shape row 7 uses with `diarize::pool` — and
+        // asserts the published degrade against what #141 does with the same
+        // input. See `cluster_sanity`'s docs for that divergence.
         coverage: Coverage::PolicyOnly {
             test: "matrix_row8_diarize_garbage_clusters.rs",
             wiring_pr: None,
@@ -1349,6 +1363,27 @@ pub struct ClusterVerdict {
 /// YV126's DER gate on the eval fixtures, which is a measurement and not a
 /// runtime check. A gate that pretended otherwise would be the more dangerous
 /// failure: a green sanity check standing in for an accuracy claim nobody made.
+///
+/// **This is a requirement on YV126's gate, not a competing implementation of
+/// it — and today the requirement is unmet.** #141 ships
+/// `diarize::rank_and_floor`, which is the function a meeting will call, and
+/// the two answers to the same forty-fragment pass are not the same answer:
+/// this row degrades to a plain single-speaker transcript marked
+/// [`DIARIZATION_FAILED`], while `rank_and_floor` returns
+/// `surfaced: []`/`other: 40` and renders one "Other" chip with no degrade and
+/// no marker. `rank_and_floor`'s "never reject" half is right and is what
+/// finding #25 asked for; "never reject" is not "never degrade", and a pass in
+/// which *nothing* cleared the floor found no speaker — rendering it as an
+/// "Other" chip presents noise as attribution.
+///
+/// The matrix is the SSOT for what Yap owes a user on a failure, so it may not
+/// publish a behaviour the mechanism serving it quietly does not implement.
+/// `rank_and_floor` does not exist on this branch — #141 is open — so the
+/// binding is the one that survives that:
+/// `matrix_row8_diarize_garbage_clusters` fails the day that gate ships with
+/// nothing in `src/` applying this degrade, and if something does apply it the
+/// row's absence tripwire fires instead and the row is promoted. Exactly one of
+/// the two goes red, and "row 8 stayed as it was" is not among the outcomes.
 pub fn cluster_sanity(clusters: &[ClusterSummary], floor: ClusterFloor) -> ClusterVerdict {
     let mut ranked: Vec<&ClusterSummary> = clusters.iter().filter(|c| floor.admits(c)).collect();
     // Most speech first; ties broken by the diarizer's own index so the order is

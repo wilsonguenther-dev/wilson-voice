@@ -1,0 +1,56 @@
+YV132 — revision 1 acceptance transcript (aarch64-apple-darwin)
+
+Preconditions (this repo's `bundle.externalBin` makes both a precondition of
+COMPILING the crate, not only of bundling it):
+
+    $ cd desktop && npm ci && npm run build            # desktop/dist
+    $ cargo build -p yap-polish -p yap-diarize
+    $ cp target/debug/yap-polish  src-tauri/binaries/yap-polish-aarch64-apple-darwin
+    $ cp target/debug/yap-diarize src-tauri/binaries/yap-diarize-aarch64-apple-darwin
+
+────────────────────────────────────────────────────────────────────────────
+1. Row 8's own suite — 9 tests before this revision, 10 now.
+
+    $ cargo test --features custom-protocol --test matrix_row8_diarize_garbage_clusters
+    test a_high_cluster_count_is_not_by_itself_a_rejection ... ok
+    test a_real_room_keeps_its_speakers_instead_of_being_rejected_for_being_busy ... ok
+    test under_clustering_is_not_detectable_here_and_the_gate_does_not_pretend ... ok
+    test the_floor_is_two_conditions_and_both_of_them_matter ... ok
+    test a_pass_with_nothing_above_the_floor_degrades_to_a_plain_transcript ... ok
+    test a_crashed_sidecar_and_a_noisy_one_are_distinguishable_in_the_log ... ok
+    test an_empty_cluster_set_degrades_rather_than_implying_a_single_speaker ... ok
+    test the_floor_is_the_callers_number_and_this_module_declares_none ... ok
+    test the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge ... ok
+    test nothing_in_the_app_applies_the_sanity_gate_yet ... ok
+    test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+────────────────────────────────────────────────────────────────────────────
+2. The published 18-binary sweep, in one run, unchanged command.
+
+    $ cargo test --features custom-protocol --test matrix_coverage \
+        --test matrix_row1_tap_permission_denied ... --test matrix_phase_offline
+    18 × `test result: ok`, 0 failed
+    (matrix_coverage 9 passed — including
+     `the_committed_matrix_document_matches_the_code`, which is what proves the
+     doc's row-8 line was regenerated from `ROWS` rather than hand-edited, and
+     `unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not`,
+     whose inventory of 7 unowned policy rows is unchanged by this revision.)
+
+────────────────────────────────────────────────────────────────────────────
+3. The row-count acceptance criterion is unmoved by this revision.
+
+    $ grep -c '| [0-9]' docs/yap22a-error-matrix.md
+    28                                   (25 on main; +3 for rows 7, 8 and 13)
+
+────────────────────────────────────────────────────────────────────────────
+4. Whole crate, frontend, formatting, lints.
+
+    $ cargo test --features custom-protocol --no-fail-fast
+    exit 0 · 97 binaries · 1129 passed · 0 failed
+
+    $ npx tsc --noEmit            → 0 errors
+    $ npm test                    → 125 passed / 10 files
+    $ rustfmt --edition 2021 --check src/meeting_matrix.rs \
+        tests/matrix_row8_diarize_garbage_clusters.rs      → no hunks
+    $ cargo clippy --features custom-protocol --tests
+        → no warning in either touched file

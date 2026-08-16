@@ -61,7 +61,7 @@ itself.
 | 12b | …and the sentence the gate produces has to reach a Notetaker surface | The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12 | `cargo test --test matrix_row12_macos_144_gate` — drives `NotetakerStatus` in `lib.rs` |
 | 14 | Output device changes mid-meeting (AirPods connect) | Tear down and rebuild the aggregate around the new output device, splice the spill, log a `device_change` marker — this happens constantly in real use and is not an edge case | **Policy only** — the enforcement (`watch_output`) lands with #123 (YV100); `cargo test --test matrix_row14_output_device_change` covers only the part this branch owns |
 | 7 | Diarize sidecar OOM, panic or wedge | Deadline + kill + restart budget 1; on give-up a plain single-speaker transcript, the meeting `complete` with `diarization_failed` — never `failed`, because the user still gets their notes | **Policy only, NOT WIRED** — `cargo test --test matrix_row7_diarize_sidecar_wedge` covers the decision; **nothing calls `diarize_sidecar_degrade`**, so the app does not do this yet |
-| 8 | Diarization returns garbage — one cluster for five people, or forty clusters | A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart | **Policy only, NOT WIRED** — `cargo test --test matrix_row8_diarize_garbage_clusters` covers the decision; **nothing calls `cluster_sanity`**, so the app does not do this yet |
+| 8 | Diarization returns garbage — one cluster for five people, or forty clusters | A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart. **The degrade half is a requirement on YV126's `diarize::rank_and_floor` (#141, open) that it does not meet today** — there an all-below-floor pass renders as one "Other" chip with no degrade and no marker; `matrix_row8_diarize_garbage_clusters` fails the day that gate ships with nothing applying the degrade | **Policy only, NOT WIRED** — `cargo test --test matrix_row8_diarize_garbage_clusters` covers the decision; **nothing calls `cluster_sanity`**, so the app does not do this yet |
 | 13 | Diarization model missing, or partially downloaded | The same gate the polish stage uses — the speaker-detection affordance is OFF, not broken, naming the combined download; recording and transcripts are untouched | **Policy only, NOT WIRED** — `cargo test --test matrix_row13_diarize_model_missing` covers the decision; **nothing calls `speaker_detection_gate`**, so the app does not do this yet |
 
 ## Where the plan's other rows are
@@ -302,6 +302,32 @@ only when nothing survives. And it says out loud what it cannot see: *one cluste
 for five people* clears every floor and is undetectable without ground truth —
 that half is YV126's DER gate on the eval fixtures, which is a measurement, not a
 runtime check.
+
+**Row 8's degrade is a requirement on YV126's gate, and it is unmet today.**
+This is the one place in the table where the published behaviour and the code
+that will serve it are known to disagree, so it is stated rather than left for a
+reader to discover. #141 ships `diarize::rank_and_floor` — the gate a meeting
+will actually call — and on the identical forty-fragment pass this row
+publishes, the two answers are:
+
+| | row 8 (`meeting_matrix::cluster_sanity`) | #141 (`diarize::rank_and_floor`) |
+|---|---|---|
+| labels | `Plain(Clusters { raw_clusters: 40 })` | `ClusterRanking { surfaced: [], other: 40 }` |
+| chips | none | `["Other"]` |
+| marker | `diarization_failed` | none |
+| transcript | plain, single speaker | diarized, every line "Other" |
+
+`rank_and_floor`'s *never reject* half is right and is exactly what finding #25
+asked for. But never reject is not never degrade: a pass in which nothing at all
+cleared the floor found no speaker, and rendering that as one "Other" chip
+presents noise as attribution. Two assertions keep the disagreement from
+outliving this PR. The row's absence tripwire now names the shipping symbols
+(`rank_and_floor`, `cluster_track`, `attribute_clusters`) alongside
+`cluster_sanity`, so wiring YV126's gate reddens row 8 rather than sailing past a
+tripwire aimed at a function nobody will call; and
+`the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge`
+goes red the day `rank_and_floor` lands with nothing in `src/` applying the
+degrade. Exactly one of the two fires, and neither outcome leaves row 8 as it is.
 
 **Not one accuracy number is declared for these rows.** `cluster_sanity` takes
 its floor as an argument; `meeting_matrix.rs` holds no threshold constant, and
