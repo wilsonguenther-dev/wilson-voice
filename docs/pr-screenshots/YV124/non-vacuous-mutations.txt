@@ -1,0 +1,113 @@
+YV124 — non-vacuity, FINISHER pass (rebased onto YV122 @ c3fd5d8)
+================================================================================
+Twelve mutations, twelve red. Every one was applied to a COMMITTED baseline,
+built, run, recorded, and reverted with `git checkout --` against that baseline.
+(An earlier run in this loop lost uncommitted work to exactly that command; the
+rule since is commit first, mutate second.) The whole sweep is driven by one
+script so the transcript below cannot drift from the order it was produced in.
+
+M26 and M27 mutate the SIDECAR (`yap-diarize/src/main.rs`), which means a full
+`npm run sidecar` rebuild and re-stage per mutation — and a re-stage again after
+the revert. A sidecar mutation that is not re-staged tests the previous binary,
+which is a harness lesson this loop has already paid for once.
+
+TWO MUTATIONS SURVIVED THE FIRST SWEEP AND ARE RECORDED AS DEFECTS, NOT DROPPED
+--------------------------------------------------------------------------------
+* The first cut of `meeting_eval_antialias_both_fold_gates_spend_one_constant`
+  counted its OWN filter line as a fold gate — three gates instead of two — and
+  because the test's name says `antialias` while every filter used while writing
+  it said `anti_alias`, that broken version had never once executed. A
+  source-reading test has to be told explicitly not to read itself; the needle
+  is now joined at runtime. M21 below is the re-run against the fixed test, and
+  it now names the offending line in its failure.
+* The first cut of the "d′ is deliberately ACCEPTED" assertion built a case in
+  which d′ did not regress against the pre-fix arm at all, so a re-added d′ gate
+  passed it and M20 survived. Fixed, with an `assert!` in front of the case that
+  it really does regress d′ — a negative assertion is only worth the premise
+  underneath it.
+
+A THIRD MUTATION IS RECORDED AS SURVIVING BY CONSTRUCTION, AND IS NOT LISTED
+--------------------------------------------------------------------------------
+* Widening the backend guard's own match arm to accept ANY refusal tag leaves it
+  green, because on a correct build the answer already is `model_load_failed`.
+  That is a mutation of the TEST rather than of its subject, and every test can
+  be weakened by editing it. The subject here is the sidecar — M26 and M27
+  mutate that instead, and both fire.
+
+--------------------------------------------------------------------------------
+--- M16  the shipped column is silently the pre-fix decimator
+    filter: cargo test --test meeting_eval anti_alias_eer_regression
+    meeting_eval anti_alias_eer embed_floor_seconds=2.0 half_length_clip=Refused("audio_too_short") — the floor refuses, so passing it below is a live assertion that the overlap trim did its job
+    thread 'meeting_eval_anti_alias_eer_regression' (22089541) panicked at src-tauri/tests/meeting_eval.rs:4264:13:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 7.19s
+
+--- M17  the control is the noisy shipped arm — there is no reference left
+    filter: cargo test --test meeting_eval anti_alias_eer_regression
+    meeting_eval anti_alias_eer embed_floor_seconds=2.0 half_length_clip=Refused("audio_too_short") — the floor refuses, so passing it below is a live assertion that the overlap trim did its job
+    thread 'meeting_eval_anti_alias_eer_regression' (22089833) panicked at src-tauri/tests/meeting_eval.rs:4264:13:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 7.24s
+
+--- M18  the margin comparison is dropped from the gate
+    filter: cargo test --test meeting_eval the_gate_rejects
+    thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22090121) panicked at src-tauri/tests/meeting_eval.rs:4728:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M19  the premise check (the two clean arms must agree) is dropped
+    filter: cargo test --test meeting_eval the_gate_rejects
+    thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22090369) panicked at src-tauri/tests/meeting_eval.rs:4753:10:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M20  d′ is quietly re-added to the gate
+    filter: cargo test --test meeting_eval the_gate_rejects
+    thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22090622) panicked at src-tauri/tests/meeting_eval.rs:4779:5:
+    assertion `left == right` failed: d′ is gating again. It is printed, not gated, and two measurements say why — read them before re-adding the arm.
+    left: Err("[dprime] regressed")
+    right: Ok(())
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M21  the WER arm asserts a bare 20.0 again
+    filter: cargo test --test meeting_eval both_fold_gates
+    thread 'meeting_eval_antialias_both_fold_gates_spend_one_constant' (22090862) panicked at src-tauri/tests/meeting_eval.rs:4910:9:
+    a fold gate asserts on something other than FOLD_REJECTION_DB: `removed_db >= 20.0,`. Both arms exist to agree about what "the anti-alias fix works" means on the same measurement, and two literals that happen to be equal today are not agreement.
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s
+
+--- M22  unoverlapped_spans masks on turn index, so a speaker interrupts himself
+    filter: cargo test --test meeting_eval a_speaker_does_not_contaminate
+    thread 'meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself' (22091121) panicked at src-tauri/tests/meeting_eval.rs:5153:5:
+    assertion `left == right` failed: a speaker's own neighbouring turn was treated as an interruption
+    left: ["spk_a 0.0..3.0", "spk_a 4.0..6.0"]
+    right: ["spk_a 0.0..4.0", "spk_a 3.0..6.0"]
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M23  the blindness model adds jitter at full scale (models additive noise, not a fold)
+    filter: cargo test --test meeting_eval dprime_is_blind
+    thread 'meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts' (22091432) panicked at src-tauri/tests/meeting_eval.rs:4433:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M24  the floor handed to embed() is Duration::ZERO — nothing is ever refused
+    filter: cargo test --test meeting_eval anti_alias_eer_regression
+    thread 'meeting_eval_anti_alias_eer_regression' (22091674) panicked at src-tauri/tests/meeting_eval.rs:4188:27:
+    a clip half the length of the floor came back as a 512-float vector instead of a refusal, so the floor this arm passes below is inert and every embedding under it is a number nobody measured
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 4.73s
+
+--- M25  fixture (f) classroom-6-far-field is dropped from the scored set
+    filter: cargo test --test meeting_eval scores_every_multi_speaker
+    thread 'meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture' (22091978) panicked at src-tauri/tests/meeting_eval.rs:4669:5:
+    assertion `left == right` failed: the arm scores ["room-3-near-field"] but the corpus can carry an EER on ["classroom-6-far-field", "room-3-near-field"]
+    left: ["room-3-near-field"]
+    right: ["classroom-6-far-field", "room-3-near-field"]
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+--- M26  SIDECAR: load_backend answers model_not_found for a file that exists
+    filter: cargo test --test meeting_eval measurement_stays_backed
+    thread 'meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend' (22092909) panicked at src-tauri/tests/meeting_eval.rs:5035:74:
+    the probe is broken, not the build: `yap-diarize` answered `model_not_found` for two files this test just wrote to "/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/tmp/yv94-yv124-backend-probe-48929-0". Nothing about the backend was tested. Fix the probe before reading anything into a green run here.
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.49s
+
+--- M27  SIDECAR: load_backend reports a different refusal tag (no_models)
+    filter: cargo test --test meeting_eval measurement_stays_backed
+    thread 'meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend' (22094047) panicked at src-tauri/tests/meeting_eval.rs:5040:44:
+    `yap-diarize` answered `no_models` where a build with an inference backend answers `model_load_failed`. If the backend has been compiled out, YV124's MEASURED block is quoting numbers no machine can now reproduce — either put the backend back, or re-open `EER: UNMEASURED` in the backlog and say why.
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.60s
+
+12 mutations applied, 12 red, 0 survived.

@@ -1,0 +1,100 @@
+YV124 — acceptance transcripts, FINISHER pass (rebased onto YV122 @ c3fd5d8)
+================================================================================
+macOS 26.5.2 / arm64. Eval corpus present at ~/yap-eval-corpus/meetings. Both
+catalog diarization models installed (sherpa-onnx-pyannote-segmentation-3-0 +
+wespeaker_en_voxceleb_CAM++), so the EER half RUNS — it did not, and could not,
+on any machine before YV122 merged.
+
+`YAP_EER_UNMEASURED_OK` is UNSET for every run below (`env -u`). On this machine
+that is the strict setting: the arm may not skip, and it does not.
+
+The four arms per fixture, in the order they are printed:
+  control_shipped  the same utterances with NOTHING above 8 kHz added, through
+                   the shipped 8th-order Butterworth decimator. The reference.
+  control_linear   the same, through the pre-fix linear decimation. With nothing
+                   to fold these two must agree, and the gate asserts it.
+  pre_fix          >8 kHz comb added, decimated the pre-fix way.
+  shipped          >8 kHz comb added, decimated the shipped way.
+The criterion is which of the last two lands closer to the first — see
+`distance_from_control`, printed per fixture.
+
+--------------------------------------------------------------------------------
+1. cargo test --features custom-protocol --test meeting_eval anti_alias -- --nocapture
+--------------------------------------------------------------------------------
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
+
+running 12 tests
+test meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself ... ok
+test meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches ... ok
+test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... ok
+test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... ok
+meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
+meeting_eval anti_alias_eer resolution genuine=18 impostor=48 frr_step=0.0556 far_step=0.0208 eer_step=0.0104 eer_clean=0.0000 eer_barely_worse=0.0000 margin_clean=0.993759 margin_barely_worse=0.976564 dprime_clean=14.5170 dprime_barely_worse=14.2246 auc_clean=1.0000 auc_barely_worse=1.0000
+test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
+test meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away ... ok
+test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
+meeting_eval anti_alias_eer dprime_blindness margin 0.993759 → 0.002976 (334x) dprime 14.5170 → 11.7876 (1.23x) auc 1.0000 → 1.0000 eer 0.0000 → 0.0000 mean_impostor -0.0545 → 0.9968
+test meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts ... ok
+test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... ok
+test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... ok
+meeting_eval anti_alias_eer backend_probe=model_load_failed — a real inference backend read two non-model files and rejected them, so the EER numbers in YV124's MEASURED block still have a backend behind them
+test meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend ... ok
+meeting_eval anti_alias_eer fixture=room-3-near-field rttm_turns=12 unoverlapped_spans=12 speakers=3 min_span_seconds=2.0 genuine_pairs=18 impostor_pairs=48 frr_step=0.0556 far_step=0.0208
+meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
+meeting_eval anti_alias_eer fixture=classroom-6-far-field rttm_turns=21 unoverlapped_spans=14 speakers=6 min_span_seconds=2.0 genuine_pairs=19 impostor_pairs=72 frr_step=0.0526 far_step=0.0139
+meeting_eval anti_alias_eer fixture=classroom-6-far-field in_band_fold_linear=0.040976 in_band_fold_antialiased=0.001406 removed_db=29.3
+  embedder ready: 512-dimensional embeddings
+meeting_eval anti_alias_eer embed_floor_seconds=2.0 half_length_clip=Refused("audio_too_short") — the floor refuses, so passing it below is a live assertion that the overlap trim did its job
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=control_shipped eer=0.2743 mean_genuine=0.673963 mean_impostor=0.506375 margin=0.167587 dprime=0.8836 auc=0.7361 threshold_at_eer=0.5677 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=control_linear eer=0.2743 mean_genuine=0.671920 mean_impostor=0.510220 margin=0.161700 dprime=0.8458 auc=0.7292 threshold_at_eer=0.5754 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=pre_fix eer=0.3924 mean_genuine=0.858646 mean_impostor=0.784492 margin=0.074154 dprime=0.8354 auc=0.7269 threshold_at_eer=0.8329 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=shipped eer=0.2743 mean_genuine=0.611678 mean_impostor=0.446141 margin=0.165537 dprime=0.7346 auc=0.7060 threshold_at_eer=0.5008 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field distance_from_control eer_shipped=0.0000 eer_pre_fix=0.1181 margin_shipped=0.002051 margin_pre_fix=0.093434 control_spread_margin=0.005888
+  room-3-near-field control (no >8 kHz added, Butterworth): ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5677372), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6739627851380242, mean_impostor: 0.5063753112529715, margin: 0.16758747388505268, d_prime: 0.8836123518629897, auc: 0.7361111111111112, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field control (no >8 kHz added, linear):      ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5754039), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6719201174047258, mean_impostor: 0.5102201846117774, margin: 0.16169993279294836, d_prime: 0.8458189930933497, auc: 0.7291666666666666, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field pre-fix (linear decimation):            ArmScore { eer: EerReport { eer: 0.3923611111111111, threshold_at_eer: CosineSimilarity(0.8329115), far_at_eer: 0.3958333333333333, frr_at_eer: 0.3888888888888889, genuine: 18, impostor: 48 }, mean_genuine: 0.8586457404825423, mean_impostor: 0.7844919674098492, margin: 0.07415377307269311, d_prime: 0.8353682421283023, auc: 0.7268518518518519, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field shipped (Butterworth):                  ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5008047), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6116776474648051, mean_impostor: 0.4461407063839336, margin: 0.16553694108087152, d_prime: 0.7345899240238268, auc: 0.7060185185185185, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  NOTE: no threshold_at_eer above is a shipped threshold, and the control's is not one either. YV129 tunes the enrollment bands, against post-fix embeddings only, and not on this corpus — see YV122's `diarize_embed_smoke`.
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=control_shipped eer=0.3176 mean_genuine=0.719072 mean_impostor=0.542839 margin=0.176233 dprime=1.0863 auc=0.7617 threshold_at_eer=0.5884 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=control_linear eer=0.3176 mean_genuine=0.716033 mean_impostor=0.535989 margin=0.180044 dprime=1.1127 auc=0.7697 threshold_at_eer=0.5751 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=pre_fix eer=0.0610 mean_genuine=0.847188 mean_impostor=0.549431 margin=0.297757 dprime=2.5773 auc=0.9635 threshold_at_eer=0.7349 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=shipped eer=0.2635 mean_genuine=0.718794 mean_impostor=0.548766 margin=0.170028 dprime=1.1653 auc=0.7880 threshold_at_eer=0.6005 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field distance_from_control eer_shipped=0.0541 eer_pre_fix=0.2566 margin_shipped=0.006205 margin_pre_fix=0.121524 control_spread_margin=0.003811
+  classroom-6-far-field control (no >8 kHz added, Butterworth): ArmScore { eer: EerReport { eer: 0.31761695906432746, threshold_at_eer: CosineSimilarity(0.5883768), far_at_eer: 0.3194444444444444, frr_at_eer: 0.3157894736842105, genuine: 19, impostor: 72 }, mean_genuine: 0.719071974879817, mean_impostor: 0.5428393917779127, margin: 0.17623258310190426, d_prime: 1.0862861618096855, auc: 0.7616959064327485, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field control (no >8 kHz added, linear):      ArmScore { eer: EerReport { eer: 0.31761695906432746, threshold_at_eer: CosineSimilarity(0.5751256), far_at_eer: 0.3194444444444444, frr_at_eer: 0.3157894736842105, genuine: 19, impostor: 72 }, mean_genuine: 0.7160325254264631, mean_impostor: 0.5359888991547955, margin: 0.1800436262716676, d_prime: 1.112698180348898, auc: 0.7697368421052632, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field pre-fix (linear decimation):            ArmScore { eer: EerReport { eer: 0.06103801169590643, threshold_at_eer: CosineSimilarity(0.73488915), far_at_eer: 0.06944444444444445, frr_at_eer: 0.05263157894736842, genuine: 19, impostor: 72 }, mean_genuine: 0.8471881245311937, mean_impostor: 0.5494310789638095, margin: 0.29775704556738425, d_prime: 2.5773371485134815, auc: 0.9634502923976608, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field shipped (Butterworth):                  ArmScore { eer: EerReport { eer: 0.2635233918128655, threshold_at_eer: CosineSimilarity(0.6005072), far_at_eer: 0.2638888888888889, frr_at_eer: 0.2631578947368421, genuine: 19, impostor: 72 }, mean_genuine: 0.7187936196201726, mean_impostor: 0.5487661014000574, margin: 0.1700275182201152, d_prime: 1.165328241146871, auc: 0.7880116959064327, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  NOTE: no threshold_at_eer above is a shipped threshold, and the control's is not one either. YV129 tunes the enrollment bands, against post-fix embeddings only, and not on this corpus — see YV122's `diarize_embed_smoke`.
+test meeting_eval_anti_alias_eer_regression ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 10.16s
+
+
+--------------------------------------------------------------------------------
+2. cargo test --features custom-protocol --test meeting_eval antialias -- --nocapture
+   (acceptance criterion 2 — the WER arm, evidenced against its real name; no
+   test carries the substring `anti_alias_wer_regression`, and the criterion as
+   written matches zero tests, which a cargo name filter reports as a pass over
+   zero tests. The only change to this arm in the whole item is the bare `20.0`
+   in its fold assert becoming FOLD_REJECTION_DB — same value, same behaviour,
+   and the WER numbers below are unchanged from `origin/main`.)
+--------------------------------------------------------------------------------
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
+
+running 2 tests
+test meeting_eval_antialias_both_fold_gates_spend_one_constant ... ok
+meeting_eval antialias in_band_fold_linear=0.094703 in_band_fold_antialiased=0.003846 removed_db=27.8
+  [alias-linear] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [alias-filtered] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
+  linear (pre-YV92): WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  anti-aliased:      WER 0.0417 (1 errors over 24 reference words: 1 sub / 0 del / 0 ins)
+  [clean-linear] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+  [clean-filtered] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
+meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
+test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 3.84s
+

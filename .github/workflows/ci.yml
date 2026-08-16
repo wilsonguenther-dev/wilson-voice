@@ -113,6 +113,34 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./scripts/assert-weak-linked-14_4-symbols.sh desktop/target/release/wilson-voice
 
+      # YV124. This step deliberately sets NOTHING for the anti-alias EER arm.
+      #
+      # An earlier revision exported `YAP_EER_UNMEASURED_OK: "1"` here and said
+      # CI was therefore held to that arm's expiring skip. It was not, and could
+      # not be: `meeting_eval_anti_alias_eer_regression` opens on `corpus()`,
+      # and the corpus is `say`-generated audio under `~/yap-eval-corpus` that
+      # no runner has and no checkout carries. The arm returns on its first line
+      # here — before the fold assert, before the embedder request, and before
+      # the declaration would be read. The two catalog diarization models were
+      # never the precondition the old comment named; the CORPUS is, and
+      # installing models in CI would not change this by itself.
+      #
+      # What CI DOES hold, with no corpus and no model, is
+      # `meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend`.
+      # It asks the shipped `yap-diarize` whether this build has an inference
+      # backend — two ordinary non-model files get past the existence check, so
+      # a real backend answers `model_load_failed` where a build without one
+      # could not answer at all — and the EER numbers written into the backlog
+      # are worth exactly that backend. If sherpa-onnx is ever compiled back
+      # out, this job goes red rather than letting a measurement outlive the
+      # thing that produced it. It takes no configuration, and
+      # `meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`
+      # keeps the dead variable from drifting back into this file.
+      #
+      # (That guard replaced the expiring one, which fired as designed: it
+      # required the sidecar to have NO backend, YV122 gave it one, and the EER
+      # was then measured on a corpus-equipped machine. Its deletion was the
+      # last step of closing YV124, not the first.)
       - name: cargo test
         working-directory: desktop/src-tauri
         run: cargo test --features custom-protocol
