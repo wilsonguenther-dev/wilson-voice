@@ -39,6 +39,14 @@ const REQUEST_BUDGET: Duration = Duration::from_secs(5);
 
 /// A path that certainly does not exist, in a directory that certainly does not
 /// either — nothing here may depend on the machine it runs on.
+/// The embedding floor these requests carry, in seconds.
+///
+/// A fixture. `min_embed_seconds` has no default anywhere in either crate, so a
+/// request has to state one — and every request in this file is refused before
+/// the floor is ever consulted, which is the point: the refusal ORDER (no
+/// models, then the file, then the floor) is what these tests hold.
+const TEST_FLOOR: f32 = 2.0;
+
 const MISSING_MODEL: &str = "/nonexistent/yap-diarize-fixture/segmentation.onnx";
 
 /// The built `yap-diarize`, wherever this checkout has one.
@@ -160,7 +168,10 @@ fn the_sidecar_announces_itself_before_any_model_is_loaded() {
         "spawn → ready took {elapsed:?}, past the parent's {READY_BUDGET:?} budget"
     );
     // Printed so the PR carries the measured headroom rather than a claim.
-    println!("yap-diarize v{}: spawn → ready in {elapsed:?}", ready.version);
+    println!(
+        "yap-diarize v{}: spawn → ready in {elapsed:?}",
+        ready.version
+    );
 }
 
 /// A `load_models` naming a path that is not there is a clean refusal — and the
@@ -169,12 +180,18 @@ fn the_sidecar_announces_itself_before_any_model_is_loaded() {
 #[test]
 fn a_missing_model_is_refused_cleanly_and_the_child_survives_it() {
     let mut sidecar = Spawned::start();
-    assert!(parse_ready(&sidecar.read_line()).is_some(), "handshake first");
+    assert!(
+        parse_ready(&sidecar.read_line()).is_some(),
+        "handshake first"
+    );
 
     let missing = std::path::Path::new(MISSING_MODEL);
     let started = Instant::now();
     let response = sidecar.exchange(&DiarizeRequest::load_models(1, missing, missing));
-    assert!(started.elapsed() < REQUEST_BUDGET, "a path check is not slow");
+    assert!(
+        started.elapsed() < REQUEST_BUDGET,
+        "a path check is not slow"
+    );
 
     assert!(!response.ok, "a model that is not there did not load");
     assert_eq!(response.err_tag(), Some(ERR_MODEL_NOT_FOUND));
@@ -188,7 +205,7 @@ fn a_missing_model_is_refused_cleanly_and_the_child_survives_it() {
 
     // Still alive, still answering, still holding no models — a crash would
     // fail the next exchange rather than this assertion.
-    let after = sidecar.exchange(&DiarizeRequest::embed(2, missing));
+    let after = sidecar.exchange(&DiarizeRequest::embed(2, missing, TEST_FLOOR));
     assert_eq!(after.err_tag(), Some(ERR_NO_MODELS));
 }
 
@@ -198,7 +215,10 @@ fn a_missing_model_is_refused_cleanly_and_the_child_survives_it() {
 #[test]
 fn a_malformed_line_is_answered_rather_than_swallowed() {
     let mut sidecar = Spawned::start();
-    assert!(parse_ready(&sidecar.read_line()).is_some(), "handshake first");
+    assert!(
+        parse_ready(&sidecar.read_line()).is_some(),
+        "handshake first"
+    );
 
     // Valid JSON, unparseable as a request, but the id is recoverable.
     let answer = sidecar.exchange_raw(r#"{"id":3,"kind":42}"#);
@@ -208,7 +228,9 @@ fn a_malformed_line_is_answered_rather_than_swallowed() {
     // A kind this build does not implement — an app/sidecar version skew.
     let skew = sidecar.exchange_raw(r#"{"id":4,"kind":"transcribe"}"#);
     assert_eq!(
-        parse_response_for(&skew, 4).expect("an answer for id 4").err_tag(),
+        parse_response_for(&skew, 4)
+            .expect("an answer for id 4")
+            .err_tag(),
         Some(ERR_UNSUPPORTED_KIND)
     );
 
@@ -219,9 +241,16 @@ fn a_malformed_line_is_answered_rather_than_swallowed() {
     writeln!(sidecar.stdin, r#"{{"kind":"embed"}}"#).expect("write");
     writeln!(sidecar.stdin).expect("write");
     sidecar.stdin.flush().expect("flush");
-    let alive = sidecar.exchange(&DiarizeRequest::embed(5, std::path::Path::new("/nope.wav")));
+    let alive = sidecar.exchange(&DiarizeRequest::embed(
+        5,
+        std::path::Path::new("/nope.wav"),
+        TEST_FLOOR,
+    ));
     assert_eq!(alive.err_tag(), Some(ERR_NO_MODELS));
-    assert_eq!(alive.id, 5, "the answer is for the request that could be read");
+    assert_eq!(
+        alive.id, 5,
+        "the answer is for the request that could be read"
+    );
 }
 
 /// The sidecar takes no model on argv. A caller that passes one is a version
@@ -235,7 +264,10 @@ fn an_argument_is_refused_rather_than_guessed_at() {
         .stdin(Stdio::null())
         .output()
         .expect("the sidecar runs");
-    assert!(!output.status.success(), "an unknown argument is not accepted");
+    assert!(
+        !output.status.success(),
+        "an unknown argument is not accepted"
+    );
     assert!(
         output.stdout.is_empty(),
         "a refusal must not put anything on the protocol stream: {:?}",

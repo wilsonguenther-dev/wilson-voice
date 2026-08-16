@@ -28,6 +28,15 @@ use wilson_voice_lib::diarize::{
 use wilson_voice_lib::diarize_metrics::CosineDistance;
 use wilson_voice_lib::diarize_protocol::{DiarizeRequest, ERR_MODEL_NOT_FOUND};
 
+/// The minimum-embeddable-audio floor these tests pass.
+///
+/// A FIXTURE, not a shipped value. `min_embed_seconds` has no default anywhere
+/// in either crate — the sweep that says a floor is necessary is in YV122's PR
+/// and the measurement that would say where it goes needs real speech — so
+/// every caller states one, and these tests state this one. Nothing is asserted
+/// about the number itself; the stubs never look at it.
+const TEST_FLOOR: Duration = Duration::from_secs(2);
+
 /// A stub sidecar: `/bin/sh` running `script`.
 fn stub(script: &'static str) -> DiarizeLauncher {
     Box::new(move || {
@@ -194,7 +203,7 @@ fn a_refusal_is_not_a_death() {
     // Ten more refusals: still one process, still not failed.
     for _ in 0..10 {
         assert!(matches!(
-            pool.embed(Path::new("/a.wav")),
+            pool.embed(Path::new("/a.wav"), TEST_FLOOR),
             Err(DiarizeError::Refused(_))
         ));
     }
@@ -292,7 +301,7 @@ fn a_silent_child_is_killed_at_the_readiness_budget() {
 #[test]
 fn a_response_for_another_id_is_never_returned_to_this_caller() {
     let pool = ready_pool(WRONG_ID_STUB);
-    let req = DiarizeRequest::embed(1, Path::new("/a.wav"));
+    let req = DiarizeRequest::embed(1, Path::new("/a.wav"), TEST_FLOOR.as_secs_f32());
     let started = Instant::now();
     let answer = pool.request_with_deadline(&req, Duration::from_millis(400));
     assert_eq!(answer, Err(DiarizeError::Deadline));
@@ -381,7 +390,7 @@ fn the_clustering_threshold_crosses_the_wire_as_a_distance() {
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
 
     let segments = pool
-        .diarize(Path::new("/a.wav"), CosineDistance::new(0.35))
+        .diarize(Path::new("/a.wav"), CosineDistance::new(0.35), TEST_FLOOR)
         .expect("the echo stub answers every diarize");
     assert_eq!(segments.len(), 1, "one echoed turn");
     // The child was SENT 0.35. Both the `start` and the embedding element are
@@ -403,7 +412,7 @@ fn the_clustering_threshold_crosses_the_wire_as_a_distance() {
     // …and a second, different threshold, so a stub (or a parent) that answers
     // with a constant 0.35 cannot pass this test either.
     let segments = pool
-        .diarize(Path::new("/b.wav"), CosineDistance::new(0.20))
+        .diarize(Path::new("/b.wav"), CosineDistance::new(0.20), TEST_FLOOR)
         .expect("the echo stub answers every diarize");
     let sent = segments[0].start;
     assert!(
@@ -422,7 +431,7 @@ fn a_success_carrying_no_segments_is_a_protocol_failure_not_a_silent_meeting() {
     let (segmentation, embedding) = model_pair();
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
     assert_eq!(
-        pool.diarize(Path::new("/a.wav"), CosineDistance::new(0.35)),
+        pool.diarize(Path::new("/a.wav"), CosineDistance::new(0.35), TEST_FLOOR),
         Err(DiarizeError::Protocol)
     );
     pool.shutdown();

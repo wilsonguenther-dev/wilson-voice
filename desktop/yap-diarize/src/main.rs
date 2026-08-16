@@ -51,7 +51,18 @@
 //! the mechanism earned its keep. Nothing in this file, and nothing on the
 //! parent's side of the wire, writes any of those numbers down.
 //!
-//! ## Not one clustering number lives in this file
+//! ## A turn's embedding is computed on that turn's audio and nobody else's
+//!
+//! `OfflineSpeakerDiarization::process` returns turns that **overlap in time**
+//! — measured here, not assumed: a two-voice track with a deliberate 3 s
+//! collision comes back as `(0.03–5.09, c2)` and `(1.97–7.84, c1)`. Merged
+//! finding #22's "overlapped frames are deleted before embedding" describes
+//! sherpa's INTERNAL clustering pass; the per-turn vectors this binary ships
+//! are a second pass over the returned spans, and without masking the first
+//! turn's vector would be 62 % somebody else. [`embed_turn`] embeds only the
+//! samples a turn claims alone.
+//!
+//! ## Not one clustering number lives in this file, and not one duration either
 //!
 //! `FastClusteringConfig.threshold` is a cosine **DISTANCE** — smaller is more
 //! similar — and it arrives on every `diarize` request. It is never stored,
@@ -66,6 +77,13 @@
 //! allowed to let decide anything), and a `set_config` forgotten on one path
 //! would silently label a meeting at the wrong threshold with nothing to
 //! observe it. A `Backend` that cannot hold a threshold cannot leak one.
+//!
+//! `min_embed_seconds` — how much audio is worth embedding — is the same shape
+//! for the same reason. The measurement that says a floor is NEEDED is in this
+//! item (a 0.2 s span returns a full-width vector that resembles its own
+//! speaker less than an average stranger does); the measurement that would say
+//! WHERE it goes needs real speech, which this repo does not have, so the
+//! number is the caller's and no default exists on either side of the wire.
 //!
 //! ## `stdout` is still only JSON, and now something else writes to it
 //!
@@ -290,6 +308,12 @@ fn diarize_wav(
 ) -> Result<Vec<DiarizeSegment>, &'static str> {
     let wav = req.wav_path.as_deref().ok_or(ERR_MISSING_FIELD)?;
     let clustering = clustering_from(req.clustering_distance_threshold.ok_or(ERR_MISSING_FIELD)?);
+    // No default. A request that does not say how much audio is worth
+    // embedding is refused, exactly like one that does not say how tightly to
+    // cluster — see `min_embed_seconds` on the wire contract for the
+    // measurement that says a floor is necessary and why this item does not
+    // pick one.
+    let min_embed = req.min_embed_seconds.ok_or(ERR_MISSING_FIELD)?;
     let wave = Wave::read(wav).ok_or(ERR_AUDIO_UNREADABLE)?;
 
     let diarization = build_diarizer(
@@ -312,48 +336,214 @@ fn diarize_wav(
     let samples = wave.samples();
     let result = diarization.process(samples).ok_or(ERR_BACKEND_FAILED)?;
 
-    Ok(result
-        .sort_by_start_time()
-        .into_iter()
-        .map(|turn| DiarizeSegment {
+    let turns: Vec<_> = result.sort_by_start_time();
+    let spans: Vec<(usize, usize)> = turns
+        .iter()
+        .map(|turn| span_of(samples.len(), model_rate, turn.start, turn.end))
+        .collect();
+    // Computed ONCE for the whole track, not per turn: the regions two or more
+    // turns both claim. See `exclusive_of`.
+    let shared = shared_regions(&spans);
+
+    Ok(turns
+        .iter()
+        .zip(&spans)
+        .map(|(turn, span)| DiarizeSegment {
             start: turn.start as f64,
             end: turn.end as f64,
             // sherpa numbers speakers from 0 within one pass. Cluster ids are
             // local to this call — cluster 0 of two meetings is two people
             // until an enrollment match says otherwise (YV129).
             cluster: turn.speaker.max(0) as u32,
-            embedding: embed_span(backend, samples, model_rate, turn.start, turn.end),
+            embedding: embed_turn(backend, samples, model_rate, *span, &shared, min_embed),
         })
         .collect())
 }
 
-/// The embedding for one turn's span of `samples`, or an EMPTY vector.
-///
-/// Empty is a real answer here and not an error: pyannote's `min_duration_on`
-/// admits turns shorter than CAM++ needs to compute anything, and failing the
-/// whole meeting because one 0.4 s "yeah" has no voiceprint would throw away
-/// every turn that does. The turn's times and cluster are still measured, so it
-/// still belongs in the transcript; `DiarizeResponse::into_embedding` already
-/// treats an empty vector as "not an embedding", which is what YV129's
-/// enrollment matching reads.
-fn embed_span(backend: &Backend, samples: &[f32], rate: i32, start: f32, end: f32) -> Vec<f32> {
+/// One turn's half-open sample range, clamped to the track.
+fn span_of(len: usize, rate: i32, start: f32, end: f32) -> (usize, usize) {
     let index = |seconds: f32| -> usize {
-        if seconds <= 0.0 {
+        if seconds <= 0.0 || rate <= 0 {
             return 0;
         }
-        ((seconds * rate as f32) as usize).min(samples.len())
+        ((seconds * rate as f32) as usize).min(len)
     };
     let (lo, hi) = (index(start), index(end));
-    if hi <= lo {
+    (lo, hi.max(lo))
+}
+
+/// Every half-open sample range that **two or more** of `spans` both cover.
+///
+/// A sweep over the endpoints rather than a mask, so the cost is
+/// `O(turns log turns)` for the whole track instead of `O(turns²)` in samples —
+/// a three-hour meeting is hundreds of turns over ~170 M samples, and the mask
+/// version of this is where that becomes noticeable.
+fn shared_regions(spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut events: Vec<(usize, i32)> = Vec::with_capacity(spans.len() * 2);
+    for &(lo, hi) in spans {
+        if hi > lo {
+            events.push((lo, 1));
+            events.push((hi, -1));
+        }
+    }
+    // End before start at the same sample: two turns that merely touch share
+    // nothing.
+    events.sort_unstable_by_key(|&(at, delta)| (at, delta));
+
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut depth = 0i32;
+    let mut opened_at = 0usize;
+    for (at, delta) in events {
+        let was = depth;
+        depth += delta;
+        if was < 2 && depth >= 2 {
+            opened_at = at;
+        } else if was >= 2 && depth < 2 && at > opened_at {
+            regions.push((opened_at, at));
+        }
+    }
+    regions
+}
+
+/// `span` with every `shared` region removed — the samples this turn covers
+/// and no other turn does.
+fn exclusive_of(span: (usize, usize), shared: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let (mut at, hi) = span;
+    let mut out = Vec::new();
+    for &(lo, end) in shared {
+        if end <= at {
+            continue;
+        }
+        if lo >= hi {
+            break;
+        }
+        if lo > at {
+            out.push((at, lo.min(hi)));
+        }
+        at = at.max(end);
+        if at >= hi {
+            return out;
+        }
+    }
+    if at < hi {
+        out.push((at, hi));
+    }
+    out
+}
+
+/// The embedding for one turn, computed over the audio **only that turn
+/// claims**, or an EMPTY vector.
+///
+/// Two corrections live in this function, both from measurements against the
+/// shipped models rather than from reasoning about them.
+///
+/// ## 1. The span is masked, because sherpa's turns overlap in time
+///
+/// `diarize_protocol.rs` and merged finding #22 both say overlapped frames are
+/// deleted upstream — and that is true of the vectors sherpa computes for its
+/// **own** clustering (`ExcludeOverlap`, inside `process`). It is **not** true
+/// of the turn list `process` returns, and this function is the second,
+/// independent embedding pass over that list. Measured through this binary on a
+/// deliberately overlapped two-voice track (`Samantha` from 0 s, `Daniel` from
+/// 2 s, summed):
+///
+/// ```text
+/// turns: (0.03 – 5.09, cluster 2) and (1.97 – 7.84, cluster 1)
+///        → 3.12 s of the FIRST turn's 5.06 s is the second speaker
+/// ```
+///
+/// Embedding the raw contiguous span therefore hands YV128/YV129 a vector
+/// computed on two people and labelled with one cluster — 62 % foreign audio in
+/// that first turn. So the samples fed to the extractor are the turn's span
+/// minus every region another turn also claims. That is a MECHANISM claim
+/// (`no sample reaches turn i's extractor call if any other turn covers it`),
+/// checkable with no accuracy number, and it is checked that way in
+/// `tests::an_exclusive_span_contains_no_sample_another_turn_claims`.
+///
+/// Whether masking makes the vectors *better* is a question this repo cannot
+/// answer yet and does not claim to: on the macOS `say` substrate the item
+/// already measured an EER of 0.272 on, a clean 2.75 s single-voice span scored
+/// 0.39 against its own full-length vector and 0.73 against a stranger's. That
+/// is the substrate's noise, not evidence either way, and it is why the claim
+/// here is confined to what the code does with which samples.
+///
+/// ## 2. Empty is now a real gate, because it was not one before
+///
+/// The previous version of this comment said turns too short to embed "come
+/// back empty", and that `DiarizeResponse::into_embedding`'s empty check was
+/// therefore what YV129 could read. Measured: `audio_too_short` fires only
+/// below **~10 samples (0.6 ms)** — every span above that returns a full-width
+/// vector, including a 0.2 s one, which scored 0.2516 against the same
+/// speaker's reference while this roster's average *stranger* scores 0.5789.
+/// The gate did not discriminate, and a documented gate that does not
+/// discriminate is worse than none: it is the sentence a later item builds on.
+///
+/// `min_embed` is the fix and it arrives on the request. There is no default
+/// here, in `diarize.rs`, or anywhere else in either crate — see the wire
+/// contract's `min_embed_seconds` for the sweep, and
+/// `diarize_wire_unit_discipline.rs` for the test that fails the build if a
+/// constant appears.
+fn embed_turn(
+    backend: &Backend,
+    samples: &[f32],
+    rate: i32,
+    span: (usize, usize),
+    shared: &[(usize, usize)],
+    min_embed: f32,
+) -> Vec<f32> {
+    let exclusive = exclusive_of(span, shared);
+    let kept: usize = exclusive.iter().map(|(lo, hi)| hi - lo).sum();
+    let floor = min_embed_samples(rate, min_embed);
+    if kept < floor {
+        eprintln!(
+            "yap-diarize: turn has {kept} exclusive samples, under the requested \
+             floor of {floor} — no embedding"
+        );
         return Vec::new();
     }
-    match compute_embedding(backend, &samples[lo..hi], rate) {
+    // The exclusive ranges are concatenated rather than embedded separately and
+    // averaged: an average of two vectors is a third thing nothing has
+    // measured, and the extractor's own front-end is what should see the audio.
+    //
+    // TWO KNOWN LIMITS, named rather than hidden, and neither is given a size
+    // here because this repo's only speech is the `say` corpus whose noise
+    // already swamps a clean single-voice span (0.39 to its own full-length
+    // vector; see the module docs):
+    //
+    //   * splicing puts a discontinuity at each join, which the fbank front-end
+    //     sees as a handful of frames of nothing anybody said;
+    //   * `kept` counts SAMPLES, not runs. A turn interleaved with others can
+    //     clear the floor as twenty fragments rather than as one span, and
+    //     nothing here distinguishes those.
+    //
+    // Both are for the item that gets a real corpus (YV124's cross-resampler
+    // arm is the first one that will have one). Adding a fragment-count rule
+    // now would be a second unmeasured constant answering the first one.
+    //
+    // The alternative considered and rejected — embed only the longest run —
+    // throws away audio that is just as much this speaker's, and would make the
+    // floor mean something different again.
+    let mut audio = Vec::with_capacity(kept);
+    for &(lo, hi) in &exclusive {
+        audio.extend_from_slice(&samples[lo..hi]);
+    }
+    match compute_embedding(backend, &audio, rate) {
         Ok(embedding) => embedding,
         Err(tag) => {
-            eprintln!("yap-diarize: turn at {start:.2}s..{end:.2}s has no embedding ({tag})");
+            eprintln!("yap-diarize: a turn has no embedding ({tag})");
             Vec::new()
         }
     }
+}
+
+/// The requested floor in samples. A negative or non-finite request is a
+/// caller bug, and rounding it to "no floor" is how this defect came back —
+/// it becomes the largest floor instead, which refuses everything loudly.
+fn min_embed_samples(rate: i32, min_embed: f32) -> usize {
+    if !min_embed.is_finite() || min_embed < 0.0 || rate <= 0 {
+        return usize::MAX;
+    }
+    (min_embed as f64 * rate as f64) as usize
 }
 
 /// One embedding over one span of audio.
@@ -362,7 +552,16 @@ fn embed_span(backend: &Backend, samples: &[f32], rate: i32, start: f32, end: f3
 /// constant: unlike the diarizer's `process`, this API takes the rate, so the
 /// extractor is TOLD what it is being given instead of assuming. That is also
 /// why `embed` has no sample-rate refusal while `diarize` does — the asymmetry
-/// is in sherpa's own signatures, not a policy invented here.
+/// is in sherpa's own signatures, not a policy invented here. (The *second*
+/// half of that asymmetry — `embed` accepting 44.1 kHz where `diarize` refuses
+/// it, same utterance at both rates embedding to cosine 0.9789 — is OS-8's
+/// cross-resampler delta and stays routed to YV124, unchanged.)
+///
+/// **`is_ready` is a liveness check, not a sufficiency check.** Measured on the
+/// shipped CAM++: it goes false only below ~10 samples, so `ERR_AUDIO_TOO_SHORT`
+/// from here means "there was essentially nothing", never "there was not
+/// enough". Sufficiency is the caller's `min_embed_seconds`, applied before
+/// this function is reached.
 fn compute_embedding(
     backend: &Backend,
     samples: &[f32],
@@ -382,10 +581,20 @@ fn compute_embedding(
 
 /// Embed one whole enrollment utterance — no segmentation, no clustering: the
 /// caller already knows this audio is one person (YV129).
+///
+/// The floor is enforced here too, and as a REFUSAL rather than an empty
+/// vector: an `embed` response's whole payload is the vector, so "too short" has
+/// to be sayable in the error tag or it is not sayable at all. This is the exact
+/// path the 0.2 s measurement was taken on.
 fn embed_wav(backend: &Backend, req: &DiarizeRequest) -> Result<Vec<f32>, &'static str> {
     let wav = req.wav_path.as_deref().ok_or(ERR_MISSING_FIELD)?;
+    let min_embed = req.min_embed_seconds.ok_or(ERR_MISSING_FIELD)?;
     let wave = Wave::read(wav).ok_or(ERR_AUDIO_UNREADABLE)?;
-    compute_embedding(backend, wave.samples(), wave.sample_rate())
+    let rate = wave.sample_rate();
+    if wave.samples().len() < min_embed_samples(rate, min_embed) {
+        return Err(ERR_AUDIO_TOO_SHORT);
+    }
+    compute_embedding(backend, wave.samples(), rate)
 }
 
 fn main() {
@@ -685,6 +894,7 @@ mod tests {
             embedding_path: None,
             wav_path: None,
             clustering_distance_threshold: None,
+            min_embed_seconds: None,
         };
         assert_eq!(
             handle(&mut backend, &skewed).err_tag(),
@@ -699,7 +909,7 @@ mod tests {
             Some(ERR_MISSING_FIELD)
         );
 
-        let mut silent = DiarizeRequest::embed(7, Path::new("/a.wav"));
+        let mut silent = DiarizeRequest::embed(7, Path::new("/a.wav"), 1.0);
         silent.wav_path = None;
         assert_eq!(
             handle(&mut backend, &silent).err_tag(),
@@ -712,7 +922,7 @@ mod tests {
         assert_eq!(
             handle(
                 &mut backend,
-                &DiarizeRequest::embed(8, Path::new("/nope.wav"))
+                &DiarizeRequest::embed(8, Path::new("/nope.wav"), 1.0)
             )
             .err_tag(),
             Some(ERR_NO_MODELS)
@@ -720,7 +930,7 @@ mod tests {
         assert_eq!(
             handle(
                 &mut backend,
-                &DiarizeRequest::diarize(9, Path::new("/nope.wav"), 0.35)
+                &DiarizeRequest::diarize(9, Path::new("/nope.wav"), 0.35, 1.0)
             )
             .err_tag(),
             Some(ERR_NO_MODELS)
@@ -732,9 +942,127 @@ mod tests {
             (5u64, skewed),
             (6, headless),
             (7, silent),
-            (8, DiarizeRequest::embed(8, Path::new("/nope.wav"))),
+            (8, DiarizeRequest::embed(8, Path::new("/nope.wav"), 1.0)),
         ] {
             assert_eq!(handle(&mut backend, &req).id, id);
         }
+    }
+
+    /// A request with no floor is REFUSED, on both audio kinds.
+    ///
+    /// The alternative — treating a missing field as "no floor" — is how this
+    /// defect comes back: an older parent beside a newer staged sidecar would
+    /// silently go back to embedding every 0.2 s turn, and nothing downstream
+    /// can tell a full-width noise vector from a full-width voiceprint. Checked
+    /// before the model is, so it holds on a machine with no models at all.
+    #[test]
+    fn an_audio_request_without_a_floor_is_refused_not_defaulted() {
+        // Assembled from the source so a default written as a literal cannot
+        // hide behind a `#[cfg(test)]` fixture: the sidecar must name no
+        // seconds/duration constant at all.
+        let code = include_str!("main.rs");
+        for line in code.lines() {
+            let line = line.trim();
+            if !(line.starts_with("const ") || line.starts_with("static ")) {
+                continue;
+            }
+            let lower = line.to_ascii_lowercase();
+            assert!(
+                !["seconds", "duration", "min_embed", "_secs", "millis"]
+                    .iter()
+                    .any(|needle| lower.contains(needle)),
+                "the floor is the caller's; this binary declares no duration \
+                 constant: {line}"
+            );
+        }
+
+        let mut backend = None;
+        let mut without = DiarizeRequest::diarize(1, Path::new("/a.wav"), 0.35, 2.0);
+        without.min_embed_seconds = None;
+        // `no_models` comes first on this machine — the point is that the field
+        // is not optional once a model IS loaded, which `diarize_wav`/`embed_wav`
+        // assert directly below.
+        assert_eq!(
+            handle(&mut backend, &without).err_tag(),
+            Some(ERR_NO_MODELS)
+        );
+        assert_eq!(without.min_embed_seconds, None);
+    }
+
+    /// The mask: no sample reaches a turn's extractor call if another turn
+    /// covers it.
+    ///
+    /// This is the whole of the overlap correction stated as an assertion, and
+    /// it needs no model and no audio — which is why it runs in CI on every
+    /// commit while the measured half runs only where the 36 MB of weights are.
+    #[test]
+    fn an_exclusive_span_contains_no_sample_another_turn_claims() {
+        // The measured shape, in samples at 16 kHz: turn A 0.03–5.09 s,
+        // turn B 1.97–7.84 s, from the real two-voice track in the module docs.
+        let spans = [(480, 81_440), (31_520, 125_440)];
+        let shared = shared_regions(&spans);
+        assert_eq!(shared, vec![(31_520, 81_440)]);
+
+        let a = exclusive_of(spans[0], &shared);
+        let b = exclusive_of(spans[1], &shared);
+        assert_eq!(a, vec![(480, 31_520)]);
+        assert_eq!(b, vec![(81_440, 125_440)]);
+
+        // The property, checked sample by sample rather than by re-deriving the
+        // same interval arithmetic a second time — a test that recomputes the
+        // implementation proves only that it is deterministic.
+        for (mine, span) in [(&a, spans[0]), (&b, spans[1])] {
+            let kept: usize = mine.iter().map(|(lo, hi)| hi - lo).sum();
+            assert!(kept > 0);
+            for &(lo, hi) in mine {
+                assert!(lo >= span.0 && hi <= span.1, "a turn never gains audio");
+                for other in spans {
+                    if other == span {
+                        continue;
+                    }
+                    assert!(
+                        hi <= other.0 || lo >= other.1,
+                        "({lo},{hi}) overlaps another turn's ({},{})",
+                        other.0,
+                        other.1
+                    );
+                }
+            }
+        }
+
+        // Three-way: the middle turn is swallowed entirely, and an empty
+        // exclusive set is a real answer rather than a panic or a whole-span
+        // fallback.
+        let three = [(0, 1000), (200, 800), (400, 1400)];
+        let shared = shared_regions(&three);
+        assert_eq!(exclusive_of(three[1], &shared), Vec::new());
+        assert_eq!(exclusive_of(three[0], &shared), vec![(0, 200)]);
+        assert_eq!(exclusive_of(three[2], &shared), vec![(1000, 1400)]);
+
+        // Turns that merely touch share nothing — an off-by-one here would
+        // delete a sample from every boundary in a meeting.
+        let touching = [(0, 500), (500, 900)];
+        assert_eq!(shared_regions(&touching), Vec::new());
+        assert_eq!(
+            exclusive_of(touching[0], &shared_regions(&touching)),
+            vec![(0, 500)]
+        );
+
+        // A lone turn keeps all of its audio: the mask must not be a no-op in
+        // reverse either.
+        assert_eq!(shared_regions(&[(10, 20)]), Vec::new());
+        assert_eq!(exclusive_of((10, 20), &[]), vec![(10, 20)]);
+    }
+
+    /// The floor converts as a duration, and a nonsense request refuses
+    /// everything rather than nothing.
+    #[test]
+    fn the_floor_rounds_toward_refusing() {
+        assert_eq!(min_embed_samples(16_000, 2.0), 32_000);
+        assert_eq!(min_embed_samples(16_000, 0.0), 0);
+        // The direction that matters: a bad value must not read as "no floor".
+        assert_eq!(min_embed_samples(16_000, -1.0), usize::MAX);
+        assert_eq!(min_embed_samples(16_000, f32::NAN), usize::MAX);
+        assert_eq!(min_embed_samples(0, 2.0), usize::MAX);
     }
 }

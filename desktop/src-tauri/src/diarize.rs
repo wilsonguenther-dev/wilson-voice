@@ -369,20 +369,38 @@ impl DiarizePool {
     /// `clustering` is a cosine **distance** — smaller is more similar. The
     /// newtype is the whole point: this is the one place in the crate where it
     /// becomes a bare `f32`, and it becomes one on the way OUT, into JSON.
+    ///
+    /// `min_embed` is the shortest span of audio the caller considers worth
+    /// embedding, and it is a `Duration` for the same reason `clustering` is a
+    /// newtype: "2.0" is a plausible-looking value in seconds and in
+    /// milliseconds, and only one of them is a turn. **There is deliberately no
+    /// default** — not here, not in `yap-diarize`, not in `catalog.json`. A
+    /// turn whose exclusive audio falls under it comes back with an empty
+    /// embedding rather than a full-width vector nothing measured; see
+    /// `min_embed_seconds` on the wire contract for the sweep behind that, and
+    /// `diarize_wire_unit_discipline.rs` for the guard that keeps a constant
+    /// from appearing before somebody measures one on real speech.
     pub fn diarize(
         &self,
         wav: &Path,
         clustering: CosineDistance,
+        min_embed: Duration,
     ) -> Result<Vec<DiarizeSegment>, DiarizeError> {
-        let req = DiarizeRequest::diarize(next_id(), wav, clustering.get());
+        let req =
+            DiarizeRequest::diarize(next_id(), wav, clustering.get(), min_embed.as_secs_f32());
         self.request(&req)?
             .into_segments()
             .ok_or(DiarizeError::Protocol)
     }
 
     /// Embed one enrollment utterance.
-    pub fn embed(&self, wav: &Path) -> Result<Vec<f32>, DiarizeError> {
-        let req = DiarizeRequest::embed(next_id(), wav);
+    ///
+    /// Same floor, same absence of a default. Enrollment gets a REFUSAL rather
+    /// than an empty vector when the clip is under it — an `embed` response is
+    /// nothing but the vector, so "too short" has to arrive as `audio_too_short`
+    /// or it does not arrive.
+    pub fn embed(&self, wav: &Path, min_embed: Duration) -> Result<Vec<f32>, DiarizeError> {
+        let req = DiarizeRequest::embed(next_id(), wav, min_embed.as_secs_f32());
         self.request(&req)?
             .into_embedding()
             .ok_or(DiarizeError::Protocol)
@@ -604,6 +622,14 @@ impl Sidecar {
 mod tests {
     use super::*;
 
+    /// The floor this module's requests carry.
+    ///
+    /// A test fixture and nothing more. `min_embed_seconds` has no default in
+    /// `src/` — `diarize_wire_unit_discipline.rs` fails the build if one
+    /// appears — so a test that needs a request has to state one, exactly like
+    /// a caller does.
+    const TEST_FLOOR: Duration = Duration::from_secs(2);
+
     /// A tag from the child can be logged; a sentence, a path or a transcript
     /// cannot. The sidecar's own `err` constructor takes a `&'static str`, so
     /// this is defence in depth against a corrupted or half-written line.
@@ -653,7 +679,12 @@ mod tests {
     #[test]
     fn the_clustering_threshold_reaches_the_wire_as_a_distance() {
         let distance = CosineDistance::new(0.35);
-        let req = DiarizeRequest::diarize(1, Path::new("/a.wav"), distance.get());
+        let req = DiarizeRequest::diarize(
+            1,
+            Path::new("/a.wav"),
+            distance.get(),
+            TEST_FLOOR.as_secs_f32(),
+        );
         assert_eq!(req.clustering_distance_threshold, Some(0.35));
         // The similarity that pairs with it is a DIFFERENT number, and nothing
         // in this file can put it on the wire — `diarize()` takes the distance
@@ -685,7 +716,7 @@ mod tests {
             Duration::from_secs(10),
         );
         let segments = pool
-            .diarize(Path::new("/a.wav"), distance)
+            .diarize(Path::new("/a.wav"), distance, TEST_FLOOR)
             .expect("the echo stub answers");
         let sent = segments[0].start;
         assert!(

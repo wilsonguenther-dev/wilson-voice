@@ -289,11 +289,48 @@ fn diarize_sidecar_pins_sherpa_onnx_exactly() {
     // statically-linked onnxruntime in `wilson-voice`; sherpa-onnx brings a
     // second. CI proves they never meet by building both, but a manifest line
     // is where it would happen, so it is asserted here too.
+    //
+    // Asserted over the manifest with COMMENTS STRIPPED, and that is a
+    // correction rather than a refinement. The first version of this line was
+    // `!CARGO_TOML.contains("sherpa-onnx")`, and it went red on this branch for
+    // a reason that has nothing to do with linking: YV123 landed a comment in
+    // `src-tauri/Cargo.toml` explaining that the segmentation model ships as
+    // `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2`. A guard that a *comment*
+    // can trip is a guard somebody deletes the day it cries wolf — and the same
+    // substring check would have been satisfied by commenting a real dependency
+    // out and re-adding it under `[target.'cfg(...)'.dependencies]`. The
+    // property is about the resolved manifest, so the check is too.
+    let app_lines: Vec<&str> = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.contains("sherpa"))
+        .collect();
     assert!(
-        !CARGO_TOML.contains("sherpa-onnx"),
+        app_lines.is_empty(),
         "sherpa-onnx belongs to the sidecar's link unit — moving it into \
          src-tauri is the duplicate-symbol failure that forced yap-polish out \
-         of process"
+         of process: {app_lines:?}"
+    );
+    assert_eq!(
+        sherpa_onnx_pin_verdict(CARGO_TOML),
+        SherpaPin::Absent,
+        "the app declares no sherpa-onnx dependency"
+    );
+    // Non-vacuity, both ways: the check must see a real declaration, and must
+    // NOT see the comment that broke its first version.
+    assert!(
+        !"[dependencies]\nsherpa-onnx = \"=1.13.4\"\n"
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#') && l.contains("sherpa"))
+            .collect::<Vec<_>>()
+            .is_empty(),
+        "the scan must still catch a dependency that really is declared"
+    );
+    assert!(
+        CARGO_TOML.contains("sherpa-onnx-pyannote-segmentation-3-0"),
+        "the YV123 comment this check had to learn to ignore is still there — \
+         without it, the correction above is untested"
     );
 }
 

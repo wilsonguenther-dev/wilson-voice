@@ -217,6 +217,46 @@ pub struct DiarizeRequest {
     /// here and nowhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clustering_distance_threshold: Option<f32>,
+    /// [`KIND_DIARIZE`] / [`KIND_EMBED`]: the shortest span of audio worth
+    /// embedding, in seconds. **Required on both kinds**, and there is no
+    /// default on either side of this wire.
+    ///
+    /// # Why this is a field and not a constant
+    ///
+    /// The embedding extractor has no minimum of its own worth the name.
+    /// Measured on the shipped CAM++ through this protocol: `audio_too_short`
+    /// fires only below **~10 samples (0.6 ms)**, and everything above that
+    /// returns a full-width, non-empty vector — a 0.2 s span embeds to a
+    /// perfectly ordinary-looking 512 floats. So "empty means unusable" was
+    /// never a gate, and a caller reading `into_embedding().is_some()` as
+    /// "this is a voiceprint" is reading noise as evidence.
+    ///
+    /// Measured on this repo's own substrate (6 macOS `say` voices × 3
+    /// utterances, centred windows, each window's vector scored against the
+    /// SAME utterance's full-length vector with YV120's `cosine_similarity`;
+    /// transcript in `docs/pr-screenshots/YV122/min-embed-sweep.txt`):
+    ///
+    /// ```text
+    ///   T       n   min self   mean self      the roster's own impostor mean is 0.5789
+    /// 0.20 s   18     0.0075      0.2615      every window below its own full-length vector
+    /// 0.50 s   18     0.0362      0.2828      by MORE than an average stranger is
+    /// 1.00 s   18     0.0185      0.3172      — i.e. the answer is about the length
+    /// 1.50 s   18     0.2077      0.5222      and not about the speaker
+    /// 1.75 s   18     0.3566      0.6619
+    /// 3.00 s   18     0.3109      0.6847
+    /// ```
+    ///
+    /// The sweep proves a floor is **necessary**. It does not establish where
+    /// it goes: `say` voices are the substrate this item already measured an
+    /// EER of 0.272 on and then forbade anyone from tuning against, and the
+    /// minimum column never clears the impostor mean at any length this
+    /// corpus can produce. So this item ships the parameter and **not one
+    /// number** — the same posture YV126 takes with the clustering distance,
+    /// and for the same reason. The item that can measure it on real speech
+    /// sets it; `diarize_wire_unit_discipline.rs` fails the build if a default
+    /// appears anywhere in the crate before then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_embed_seconds: Option<f32>,
 }
 
 impl DiarizeRequest {
@@ -236,12 +276,22 @@ impl DiarizeRequest {
             embedding_path: Some(embedding.to_string_lossy().into_owned()),
             wav_path: None,
             clustering_distance_threshold: None,
+            min_embed_seconds: None,
         }
     }
 
     /// Diarize one track. `clustering_distance_threshold` is a DISTANCE — the
     /// caller holds a `CosineDistance` and unwraps it here.
-    pub fn diarize(id: u64, wav: &std::path::Path, clustering_distance_threshold: f32) -> Self {
+    ///
+    /// `min_embed_seconds` is spent from a `std::time::Duration` for the same
+    /// reason: seconds-as-a-bare-float is how a millisecond figure ends up in
+    /// a field that means seconds.
+    pub fn diarize(
+        id: u64,
+        wav: &std::path::Path,
+        clustering_distance_threshold: f32,
+        min_embed_seconds: f32,
+    ) -> Self {
         Self {
             id,
             kind: KIND_DIARIZE.to_string(),
@@ -249,11 +299,17 @@ impl DiarizeRequest {
             embedding_path: None,
             wav_path: Some(wav.to_string_lossy().into_owned()),
             clustering_distance_threshold: Some(clustering_distance_threshold),
+            min_embed_seconds: Some(min_embed_seconds),
         }
     }
 
     /// Embed one enrollment utterance.
-    pub fn embed(id: u64, wav: &std::path::Path) -> Self {
+    ///
+    /// Carries the same floor as [`Self::diarize`], because the hole is the
+    /// same one: this path is where a 0.2 s clip was measured coming back as a
+    /// full-width vector, and enrollment is the consumer with the least
+    /// context to notice.
+    pub fn embed(id: u64, wav: &std::path::Path, min_embed_seconds: f32) -> Self {
         Self {
             id,
             kind: KIND_EMBED.to_string(),
@@ -261,6 +317,7 @@ impl DiarizeRequest {
             embedding_path: None,
             wav_path: Some(wav.to_string_lossy().into_owned()),
             clustering_distance_threshold: None,
+            min_embed_seconds: Some(min_embed_seconds),
         }
     }
 }
@@ -471,24 +528,40 @@ mod tests {
             load
         );
 
-        let diarize = DiarizeRequest::diarize(2, Path::new("/a.wav"), 0.35);
+        let diarize = DiarizeRequest::diarize(2, Path::new("/a.wav"), 0.35, 2.0);
         let encoded = serde_json::to_string(&diarize).expect("encode");
         assert_eq!(
             encoded,
-            r#"{"id":2,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35}"#
+            r#"{"id":2,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35,"min_embed_seconds":2.0}"#
         );
         assert_eq!(
             serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
             diarize
         );
 
-        let embed = DiarizeRequest::embed(3, Path::new("/b.wav"));
+        let embed = DiarizeRequest::embed(3, Path::new("/b.wav"), 2.0);
         let encoded = serde_json::to_string(&embed).expect("encode");
-        assert_eq!(encoded, r#"{"id":3,"kind":"embed","wav_path":"/b.wav"}"#);
+        assert_eq!(
+            encoded,
+            r#"{"id":3,"kind":"embed","wav_path":"/b.wav","min_embed_seconds":2.0}"#
+        );
         assert_eq!(
             serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
             embed
         );
+
+        // A `diarize` line from a sidecar-era before this field existed decodes
+        // as `None` rather than as a zero — which is what makes "the floor is
+        // missing" answerable with `missing_field` instead of silently meaning
+        // "no floor at all". The compatibility direction that matters is the
+        // one where an OLD parent meets a NEW child: `bundle.externalBin`
+        // stages the sidecar beside the app, but an updater can leave them a
+        // version apart, and the honest answer there is a refusal.
+        let legacy: DiarizeRequest = serde_json::from_str(
+            r#"{"id":4,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35}"#,
+        )
+        .expect("decode");
+        assert_eq!(legacy.min_embed_seconds, None);
     }
 
     /// Successes carry their kind's payload and nothing else; a refusal carries

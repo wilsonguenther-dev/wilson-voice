@@ -39,6 +39,7 @@
 //! `diarize_embed_smoke.rs`, which read the value back off the far side.
 
 use std::path::Path;
+use std::time::Duration;
 
 use wilson_voice_lib::diarize::{DiarizeError, DiarizePool};
 use wilson_voice_lib::diarize_metrics::{CosineDistance, CosineSimilarity};
@@ -46,13 +47,30 @@ use wilson_voice_lib::diarize_protocol::DiarizeSegment;
 
 // ── The types, checked by the compiler ─────────────────────────────────────
 
-/// The clustering API takes a DISTANCE. Written as a function pointer so that
-/// widening it to `f32` — or, worse, to `CosineSimilarity` — does not compile.
-const _CLUSTERING_API_TAKES_A_DISTANCE: fn(
+/// The clustering API takes a DISTANCE, and the embedding floor takes a
+/// `Duration`. Written as a function pointer so that widening either one to
+/// `f32` — or, worse, dropping the floor back to a default — does not compile.
+///
+/// The floor is here for the same reason the distance is: "2.0" is a plausible
+/// value in seconds and in milliseconds, and a bare float that means seconds is
+/// how the wrong one of those reaches an extractor.
+#[allow(clippy::type_complexity)] // the point IS the exact signature
+const _CLUSTERING_API_TAKES_A_DISTANCE_AND_A_DURATION: fn(
     &DiarizePool,
     &Path,
     CosineDistance,
-) -> Result<Vec<DiarizeSegment>, DiarizeError> = DiarizePool::diarize;
+    Duration,
+) -> Result<
+    Vec<DiarizeSegment>,
+    DiarizeError,
+> = DiarizePool::diarize;
+
+/// Enrollment carries the same floor, and it is not optional there either.
+const _ENROLLMENT_API_TAKES_A_DURATION: fn(
+    &DiarizePool,
+    &Path,
+    Duration,
+) -> Result<Vec<f32>, DiarizeError> = DiarizePool::embed;
 
 /// The one sanctioned conversion, in each direction, and nothing else. If a
 /// second `from_*` appears these signatures stop being the whole story, and the
@@ -231,6 +249,96 @@ fn no_unsanctioned_bare_float_threshold_exists_on_the_diarization_surface() {
             !census.iter().any(|(f, _, _)| f == file),
             "{file} has `CosineDistance`/`CosineSimilarity` in scope; a bare \
              float threshold there is a choice, not a boundary"
+        );
+    }
+}
+
+/// The production half of a source file — everything above `#[cfg(test)]`.
+///
+/// A test fixture that states a floor is the CORRECT shape (a caller has to
+/// state one), so a scan that counted it would be a scan nobody could satisfy.
+fn production_half<'a>(source: &'a str, file: &str) -> &'a str {
+    let (production, tests) = source.split_once("#[cfg(test)]").unwrap_or((source, ""));
+    // Non-vacuity for the split itself: a file whose test module moved, or was
+    // renamed, would silently shrink this scan to nothing.
+    if file == "diarize.rs" || file == "main.rs" {
+        assert!(
+            !tests.is_empty(),
+            "{file} has no `#[cfg(test)]` module any more — this scan just \
+             became the whole file, or nothing"
+        );
+    }
+    production
+}
+
+/// **No `min_embed_seconds` default exists anywhere on this surface.**
+///
+/// The gate that shipped in YV122's first three rounds did not discriminate:
+/// measured on the shipped CAM++, `audio_too_short` fires only below ~10
+/// samples, so a 0.2 s span came back as a full-width vector that scored 0.2516
+/// against its own speaker's reference while this roster's average *stranger*
+/// scores 0.5789. `embed_span`'s doc comment nonetheless told YV129 that an
+/// empty vector was the "too short" signal.
+///
+/// The fix is a real floor, and the floor is the CALLER's — the same posture
+/// YV126 takes with the clustering distance, and for the same reason: the sweep
+/// in this PR proves a floor is necessary and cannot say where it goes, because
+/// the only speech in this repo is macOS `say` output this very item measured an
+/// EER of 0.272 on and then forbade tuning against.
+///
+/// This test is what stops the number being invented anyway. A `const` or
+/// `static` naming an embedding floor, in production code, in any of the four
+/// files that make up the diarization surface, is a build failure.
+#[test]
+fn no_default_embedding_floor_is_written_down_anywhere() {
+    let mut declared: Vec<String> = Vec::new();
+    for (file, source) in SURFACE {
+        for line in production_half(source, file).lines() {
+            let code = line.split("//").next().unwrap_or_default().trim();
+            if !(code.starts_with("const ") || code.starts_with("static ")) {
+                continue;
+            }
+            let Some(name) = code
+                .trim_start_matches("const ")
+                .trim_start_matches("static ")
+                .split(':')
+                .next()
+            else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("embed") || lower.contains("floor") || lower.contains("min_dur") {
+                declared.push(format!("{file}: {code}"));
+            }
+        }
+    }
+    assert!(
+        declared.is_empty(),
+        "the shortest span worth embedding is the caller's number, not this \
+         crate's — nothing here has measured one on real speech. Declared: \
+         {declared:?}"
+    );
+
+    // Non-vacuity: the scanner sees a floor when one is written down.
+    let planted = "const MIN_EMBED_SECONDS: Duration = Duration::from_secs(2);\n#[cfg(test)]\n";
+    let seen: Vec<&str> = production_half(planted, "planted")
+        .lines()
+        .filter(|l| l.contains("MIN_EMBED"))
+        .collect();
+    assert_eq!(
+        seen.len(),
+        1,
+        "the scan's own input must contain the defect"
+    );
+
+    // …and the sanctioned durations in `diarize.rs` are still there, so the
+    // rule above is a rule about embedding floors and not a ban on constants.
+    let pool = include_str!("../src/diarize.rs");
+    for liveness in ["READY_BUDGET", "IDLE_UNLOAD", "DEFAULT_REQUEST_DEADLINE"] {
+        assert!(
+            pool.contains(liveness),
+            "{liveness} is a liveness budget, not an accuracy number, and this \
+             test must not have swept it away"
         );
     }
 }

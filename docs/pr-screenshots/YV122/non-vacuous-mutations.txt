@@ -145,3 +145,62 @@ inflated to 0.7154 by three identical voices), NOT from the new guard. That
 is substrate luck — it depends on the fallback voice being in the roster and
 on Rishi being weak — and it is not evidence for the new assertion. Hence
 M17 above, which removes that luck and shows the new guard firing alone.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+REVIEW FIX #3 — the two blocking findings on head a2aedcd, plus the rebase
+M18-M25.  8 mutations, 8 caught, 0 survivors.
+
+Every sidecar mutation is rebuilt AND RE-STAGED into src-tauri/binaries before
+the test runs (bundle.externalBin means the app's integration tests execute the
+STAGED binary — a rebuild alone reads as a survivor; that is this item's own
+harness learning from round 1).
+
+M18 embed_turn ignores the mask:  `let exclusive = vec![span];`
+    — the defect finding 2 describes, restored exactly.
+    CAUGHT  diarize_embed_smoke.rs:554
+            "a floor above every turn's exclusive audio must leave no vector
+             at all, got [512, 512]" — with the mask off, both turns keep
+            their full 5.06 s / 5.87 s spans and clear a floor set above the
+            longest EXCLUSIVE span (2.75 s).
+
+M19 shared_regions counts depth >= 1 instead of >= 2
+    — "shared" becomes "covered at all", so every turn loses all of its audio.
+    CAUGHT  yap-diarize/src/main.rs:988
+            left [(480, 125440)] vs right [(31520, 81440)].
+
+M20 exclusive_of returns the whole span unconditionally
+    CAUGHT  yap-diarize/src/main.rs (same test), right [(480, 31520)].
+
+M21 min_embed_samples returns 0 (instead of usize::MAX) for a negative, NaN
+    or rate-less request — i.e. a bad floor silently means "no floor".
+    CAUGHT  tests::the_floor_rounds_toward_refusing, right 18446744073709551615.
+
+M22 diarize_wav defaults a missing floor: `.unwrap_or(0.0)`
+    — the compatibility hole: an older parent beside a newer staged sidecar
+    goes back to embedding every fragment, silently.
+    CAUGHT  diarize_embed_smoke.rs "a diarize request with no floor must be
+            refused, never defaulted" (left None, right Some("missing_field")).
+
+M23 embed_wav skips the floor entirely (the enrollment path)
+    CAUGHT  diarize_embed_smoke.rs "with a floor, the same clip is a refusal
+            that says why" (left None, right Some("audio_too_short")).
+
+M24 a default is written down anyway:
+    `const MIN_EMBED_DEFAULT: Duration = Duration::from_secs(2);` in diarize.rs
+    CAUGHT  diarize_wire_unit_discipline.rs::no_default_embedding_floor_is_
+            written_down_anywhere — names the file and the line it found.
+
+M25 the app manifest declares `sherpa-onnx = "=1.13.4"`
+    — the guard the rebase broke and this round rewrote. The old version was
+    `!CARGO_TOML.contains("sherpa-onnx")`, which went red on a YV123 COMMENT
+    naming sherpa-onnx-pyannote-segmentation-3-0.tar.bz2 and would have been
+    satisfied by commenting a real dependency out. The comment-stripped version
+    ignores the comment and still catches the dependency.
+    CAUGHT  supply_chain.rs:308, printing the offending line.
+
+NOT A MUTATION, but recorded because it is the same class: the compile-time
+guard `_CLUSTERING_API_TAKES_A_DISTANCE_AND_A_DURATION` in
+diarize_wire_unit_discipline.rs means "drop the floor parameter back to a
+default" is a COMPILE error in the test file, not a runtime finding. Same for
+`_ENROLLMENT_API_TAKES_A_DURATION` on the embed path.

@@ -83,6 +83,18 @@ use wilson_voice_lib::diarize_protocol::DiarizeRequest;
 /// Asserted against what the loaded model reports rather than trusted.
 const RATE_HZ: u32 = 16_000;
 
+/// The shortest span of audio these tests consider worth embedding, in seconds.
+///
+/// **A fixture, not a shipped threshold.** `min_embed_seconds` is a request
+/// field with no default anywhere in either crate; the sweep in this PR shows a
+/// floor is necessary and cannot say where it belongs, because the only speech
+/// this repo has is the macOS `say` output this very file measures an EER of
+/// 0.272 on. 2.0 s is what these tests pass so that the gate is exercised in
+/// both directions — nothing here asserts the number is right for real speech,
+/// and `no_default_embedding_floor_is_written_down_anywhere` is what stops it
+/// migrating into `src/`.
+const TEST_FLOOR: f32 = 2.0;
+
 /// Six voices spanning the two macOS synthesizers, deliberately including the
 /// pair that confuses CAM++ worst (`Fred`/`Ralph`, both legacy MacinTalk). A
 /// roster picked for separability would have hidden the finding above.
@@ -126,7 +138,7 @@ fn camplus_embeddings_track_the_speaker_across_utterances() {
         for (n, text) in UTTERANCES.iter().enumerate() {
             let wav = models::synthesize(&dir, voice, &n.to_string(), text, RATE_HZ);
             let vector = sidecar
-                .ask(&DiarizeRequest::embed(id, &wav))
+                .ask(&DiarizeRequest::embed(id, &wav, TEST_FLOOR))
                 .into_embedding()
                 .unwrap_or_else(|| panic!("{voice} utterance {n} produced no embedding"));
             assert_eq!(
@@ -301,7 +313,7 @@ fn a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more() {
     let loose = 1.2f32;
     let clusters_at = |sidecar: &mut models::Spawned, id: u64, distance: f32| -> usize {
         let segments = sidecar
-            .ask(&DiarizeRequest::diarize(id, &track, distance))
+            .ask(&DiarizeRequest::diarize(id, &track, distance, TEST_FLOOR))
             .into_segments()
             .unwrap_or_else(|| panic!("diarize at {distance} produced no segments"));
         assert!(
@@ -353,13 +365,262 @@ fn a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more() {
     // times that still look like times — a whole meeting attributed to the
     // wrong moments, with nothing downstream in a position to notice.
     let wrong_rate = models::synthesize(&dir, VOICES[0], "44k", UTTERANCES[0], 44_100);
-    let response = sidecar.ask(&DiarizeRequest::diarize(4, &wrong_rate, 0.35));
+    let response = sidecar.ask(&DiarizeRequest::diarize(4, &wrong_rate, 0.35, TEST_FLOOR));
     assert_eq!(
         response.err_tag(),
         Some(wilson_voice_lib::diarize_protocol::ERR_SAMPLE_RATE),
         "a rate the segmentation model does not run at is a refusal; \
          resampling belongs upstream, behind the anti-alias filter (OS-8)"
     );
+}
+
+/// The turns sherpa returns OVERLAP IN TIME, and a turn is embedded on the
+/// audio no other turn claims — or on nothing at all.
+///
+/// # The two defects this test exists for
+///
+/// **1. `process` does not return disjoint turns.** `diarize_protocol.rs` and
+/// merged finding #22 both say overlapped frames are deleted before embedding.
+/// That is true of the vectors sherpa computes for its OWN clustering
+/// (`ExcludeOverlap`, inside `process`) and false of the turn list it hands
+/// back. The per-turn embeddings this repo ships are a second pass over that
+/// list, so before the fix, a turn's "voiceprint" was computed on whatever
+/// audio its span covered — including another speaker.
+///
+/// **2. an empty vector was not a gate.** `audio_too_short` fires below ~10
+/// samples on the shipped CAM++; a 0.2 s clip returns a full 512 floats. The
+/// second half of this test measures that directly, because it is the reason a
+/// floor has to exist at all.
+///
+/// # Why the numbers here are derived and not written down
+///
+/// Every threshold in this test is computed from the turns this run produced.
+/// The floor is a request field with no default in either crate (see
+/// `diarize_wire_unit_discipline.rs::no_default_embedding_floor_is_written_down_anywhere`),
+/// and this file is the one that measured why nobody may tune a speaker number
+/// on `say` voices — so it does not tune one. Three arms, one track:
+/// floor below everything, floor above everything, floor between.
+#[test]
+fn a_turn_is_embedded_on_its_own_audio_and_the_floor_is_what_decides() {
+    let Some((segmentation, embedding_model)) = models::models() else {
+        return;
+    };
+    let dir = models::scratch("overlap");
+    models::assert_voices_are_distinct(&dir, &VOICES[..2]);
+    let mut sidecar = models::Spawned::start();
+    let dim = sidecar
+        .ask(&DiarizeRequest::load_models(
+            1,
+            &segmentation,
+            &embedding_model,
+        ))
+        .into_embedding_dim()
+        .expect("both models load") as usize;
+
+    // Two voices, summed, with the second starting 2 s into the first — a
+    // deliberate collision, which is exactly the case the segmentation model's
+    // own ceiling says it cannot resolve and therefore the case where the
+    // returned spans overlap.
+    const SECOND_VOICE_ENTERS_AT: f64 = 2.0;
+    let a = models::synthesize(&dir, VOICES[0], "ov0", UTTERANCES[0], RATE_HZ);
+    let b = models::synthesize(&dir, VOICES[1], "ov1", UTTERANCES[1], RATE_HZ);
+    let (pcm_a, pcm_b) = (read_wav_i16(&a, RATE_HZ), read_wav_i16(&b, RATE_HZ));
+
+    // With models LOADED, a request that omits the floor is refused. The
+    // sidecar's own unit test can only reach the `no_models` arm; this is the
+    // one that proves the field is not quietly optional once there is a backend
+    // to run — i.e. that an older parent beside a newer staged sidecar cannot
+    // silently go back to embedding every fragment.
+    let mut floorless = DiarizeRequest::diarize(90, &a, 0.35, 1.0);
+    floorless.min_embed_seconds = None;
+    assert_eq!(
+        sidecar.ask(&floorless).err_tag(),
+        Some(wilson_voice_lib::diarize_protocol::ERR_MISSING_FIELD),
+        "a diarize request with no floor must be refused, never defaulted"
+    );
+    let mut floorless = DiarizeRequest::embed(91, &a, 1.0);
+    floorless.min_embed_seconds = None;
+    assert_eq!(
+        sidecar.ask(&floorless).err_tag(),
+        Some(wilson_voice_lib::diarize_protocol::ERR_MISSING_FIELD),
+        "an embed request with no floor must be refused, never defaulted"
+    );
+
+    let offset = (SECOND_VOICE_ENTERS_AT * RATE_HZ as f64) as usize;
+    let mut mixed = vec![0i32; pcm_a.len().max(offset + pcm_b.len())];
+    for (i, s) in pcm_a.iter().enumerate() {
+        mixed[i] += i32::from(*s) / 2;
+    }
+    for (i, s) in pcm_b.iter().enumerate() {
+        mixed[offset + i] += i32::from(*s) / 2;
+    }
+    let mixed: Vec<i16> = mixed
+        .into_iter()
+        .map(|s| s.clamp(-32768, 32767) as i16)
+        .collect();
+    let track = dir.join("overlapped.wav");
+    write_wav_i16(&track, &mixed, RATE_HZ);
+
+    // A floor of zero: nothing is gated, so this run is the turn list itself.
+    let turns = sidecar
+        .ask(&DiarizeRequest::diarize(2, &track, 0.35, 0.0))
+        .into_segments()
+        .expect("the overlapped track diarizes");
+    assert!(turns.len() >= 2, "two voices, at least two turns");
+    for turn in &turns {
+        eprintln!(
+            "turn {:.2}-{:.2}s cluster {} embedding {}",
+            turn.start,
+            turn.end,
+            turn.cluster,
+            turn.embedding.len()
+        );
+    }
+
+    // The premise, asserted rather than assumed. If sherpa ever starts
+    // returning disjoint turns, the masking below becomes a no-op and this test
+    // would otherwise keep passing while proving nothing.
+    let overlap: f64 = turns
+        .iter()
+        .enumerate()
+        .flat_map(|(i, x)| {
+            turns
+                .iter()
+                .skip(i + 1)
+                .map(move |y| (x.end.min(y.end) - x.start.max(y.start)).max(0.0))
+        })
+        .sum();
+    assert!(
+        overlap > 0.5,
+        "the turns sherpa returned do not overlap in time ({overlap:.2}s total), \
+         so this track no longer exercises the masking it was built for — \
+         rebuild the fixture before trusting the assertions below"
+    );
+
+    // Exclusive seconds per turn, computed HERE from the returned times, so the
+    // sidecar's arithmetic is checked against a second implementation rather
+    // than against itself.
+    let exclusive: Vec<f64> = turns
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| {
+            let mut seconds = turn.end - turn.start;
+            for (j, other) in turns.iter().enumerate() {
+                if i != j {
+                    seconds -= (turn.end.min(other.end) - turn.start.max(other.start)).max(0.0);
+                }
+            }
+            seconds.max(0.0)
+        })
+        .collect();
+    eprintln!("exclusive seconds per turn: {exclusive:?}");
+    assert!(
+        exclusive.iter().any(|s| *s > 0.0),
+        "at least one turn has audio of its own"
+    );
+
+    // At a floor of zero, every turn with exclusive audio embedded. That is
+    // what makes an empty vector in the next two arms attributable to the
+    // floor and not to a broken masking path.
+    for (turn, seconds) in turns.iter().zip(&exclusive) {
+        if *seconds > 0.0 {
+            assert_eq!(
+                turn.embedding.len(),
+                dim,
+                "a turn with {seconds:.2}s of its own audio embedded to nothing \
+                 at a floor of zero"
+            );
+        } else {
+            assert!(
+                turn.embedding.is_empty(),
+                "a turn with no audio of its own must not produce a vector"
+            );
+        }
+    }
+
+    let longest = exclusive.iter().cloned().fold(0.0f64, f64::max);
+    let embedded_at = |sidecar: &mut models::Spawned, id: u64, floor: f64| -> Vec<usize> {
+        sidecar
+            .ask(&DiarizeRequest::diarize(id, &track, 0.35, floor as f32))
+            .into_segments()
+            .expect("diarize")
+            .iter()
+            .map(|t| t.embedding.len())
+            .collect()
+    };
+
+    // Above everything: not one turn may embed.
+    let above = embedded_at(&mut sidecar, 3, longest + 1.0);
+    assert!(
+        above.iter().all(|len| *len == 0),
+        "a floor above every turn's exclusive audio must leave no vector at \
+         all, got {above:?}"
+    );
+
+    // Between: exactly the turns at or above the floor embed. Derived from this
+    // run's own turn list, so `say`'s timing can move without making this test
+    // flaky or making it vacuous.
+    let mut sorted: Vec<f64> = exclusive.iter().cloned().filter(|s| *s > 0.0).collect();
+    sorted.sort_by(|x, y| x.partial_cmp(y).expect("no NaN"));
+    if sorted.len() >= 2 && sorted[0] < sorted[sorted.len() - 1] {
+        let between = (sorted[0] + sorted[sorted.len() - 1]) / 2.0;
+        let lens = embedded_at(&mut sidecar, 4, between);
+        eprintln!("floor {between:.2}s -> embedding widths {lens:?}");
+        for (len, seconds) in lens.iter().zip(&exclusive) {
+            let expected = if *seconds >= between { dim } else { 0 };
+            assert_eq!(
+                *len,
+                expected,
+                "a turn with {seconds:.2}s of exclusive audio against a {between:.2}s \
+                 floor must {} — the empty/non-empty answer is the gate now, and it \
+                 has to mean what it says",
+                if expected == 0 {
+                    "come back empty"
+                } else {
+                    "embed"
+                }
+            );
+        }
+        assert!(
+            lens.contains(&0) && lens.contains(&dim),
+            "this arm proves nothing unless the floor actually split the turns: {lens:?}"
+        );
+    }
+
+    // ── And the measurement the floor exists for ────────────────────────────
+    //
+    // A 0.2 s clip through the enrollment path. At a floor of zero it comes
+    // back as a full-width vector — which is the defect: nothing about that
+    // answer says "there was not enough audio", and `into_embedding()` reports
+    // it as a voiceprint. With a floor it is a refusal that names itself.
+    let clip = dir.join("fragment.wav");
+    let short = read_wav_i16(&a, RATE_HZ);
+    let from = short.len() / 2;
+    write_wav_i16(
+        &clip,
+        &short[from..(from + (0.2 * RATE_HZ as f64) as usize).min(short.len())],
+        RATE_HZ,
+    );
+    let ungated = sidecar
+        .ask(&DiarizeRequest::embed(5, &clip, 0.0))
+        .into_embedding()
+        .expect("a 0.2s clip is not refused by the extractor");
+    assert_eq!(
+        ungated.len(),
+        dim,
+        "0.2s of audio returns a FULL-WIDTH vector — this is the measurement \
+         that makes `audio_too_short` a liveness check and not a sufficiency \
+         one, and it is why the floor is a request field"
+    );
+    assert_eq!(
+        sidecar
+            .ask(&DiarizeRequest::embed(6, &clip, TEST_FLOOR))
+            .err_tag(),
+        Some(wilson_voice_lib::diarize_protocol::ERR_AUDIO_TOO_SHORT),
+        "with a floor, the same clip is a refusal that says why"
+    );
+
+    sidecar.assert_stdout_is_only_protocol();
 }
 
 // ── Minimal WAV I/O, so this file owns its own fixture ─────────────────────
