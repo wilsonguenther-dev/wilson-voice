@@ -1,0 +1,93 @@
+YV132 — revision 1 (adversarial review, 2 BLOCKING, both row 8)
+Non-vacuity for the two assertions this revision adds.
+
+Machine: aarch64-apple-darwin. Precondition for every run below (this repo's
+`bundle.externalBin` makes them a precondition of compiling, not of bundling):
+
+    cd desktop && npm ci && npm run build
+    cargo build -p yap-polish -p yap-diarize
+    cp target/debug/yap-polish  src-tauri/binaries/yap-polish-aarch64-apple-darwin
+    cp target/debug/yap-diarize src-tauri/binaries/yap-diarize-aarch64-apple-darwin
+
+Baseline, unmutated head:
+
+    $ cargo test --features custom-protocol --test matrix_row8_diarize_garbage_clusters
+    test result: ok. 10 passed; 0 failed; 0 ignored          (9 before this revision)
+
+    $ cargo test --features custom-protocol --test matrix_coverage
+    test result: ok. 9 passed; 0 failed; 0 ignored
+
+The three mutations below are the three states the world can be in once YV126
+(#141) merges. They are run as source edits because `diarize::rank_and_floor`
+does not exist on this branch — a test naming the symbol would not compile, so
+the binding has to be one that survives the symbol's absence.
+
+────────────────────────────────────────────────────────────────────────────
+M11 — #141 lands, and NOTHING applies row 8's degrade.
+      `pub fn rank_and_floor(..) -> ClusterRanking` appended to src/diarize.rs
+      (returning `surfaced: []`, `other: <everything>`, which is what #141's
+      real one does for an all-below-floor pass). No caller anywhere.
+
+    test the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge ... FAILED
+    test nothing_in_the_app_applies_the_sanity_gate_yet ... ok
+    test result: FAILED. 9 passed; 1 failed
+
+    assertion `left != right` failed: DIVERGENCE — matrix row 8:
+    `diarize::rank_and_floor` now ships, and nothing in `src/` applies this
+    row's degrade. The table publishes that a pass with nothing above the floor
+    becomes a PLAIN single-speaker transcript on a meeting marked
+    `diarization_failed`; `rank_and_floor` answers the same input with
+    `surfaced: []`, `other: <all of them>` and a single "Other" chip — a
+    diarized transcript, no degrade, no marker. […]
+      left: Diverged
+     right: Diverged
+
+    ⇒ This is BLOCKING #2. Before this revision, this state was GREEN: the
+      matrix went on publishing a required behaviour the shipping gate does not
+      implement, with nothing comparing the two.
+
+────────────────────────────────────────────────────────────────────────────
+M12 — M11 plus a production caller: `crate::diarize::rank_and_floor(&[])` from
+      src/lib.rs, i.e. YV126's gate wired into the app.
+
+    test nothing_in_the_app_applies_the_sanity_gate_yet ... FAILED
+    test the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge ... FAILED
+    test result: FAILED. 8 passed; 2 failed
+
+    TRIPWIRE — matrix row 8: `diarize::rank_and_floor` is now code in
+    [".../src/lib.rs"], so the SHIPPING rank+floor path acquired a caller. Row 8
+    is the published behaviour of that path, so it is no longer a policy nothing
+    can reach: promote it to `Coverage::Test` […]
+
+    ⇒ This is BLOCKING #1. Before this revision the row's only tripwire watched
+      `meeting_matrix::cluster_sanity`, which nothing will ever call, so this
+      exact state — YV126's gate wired into a meeting — left row 8 publishing
+      "nothing calls `cluster_sanity`, so the app does not do this yet" and left
+      `matrix_coverage::unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not`
+      green.
+
+────────────────────────────────────────────────────────────────────────────
+M13 — the RECONCILED state: M11 plus `rank_and_floor` applying
+      `meeting_matrix::cluster_sanity` to its own result.
+
+    test nothing_in_the_app_applies_the_sanity_gate_yet ... FAILED
+    test the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge ... ok
+    test result: FAILED. 9 passed; 1 failed
+
+    TRIPWIRE — matrix row 8: `cluster_sanity` is now code in
+    [".../src/diarize.rs"], so somebody wired it. That row is no longer
+    `PolicyOnly`: promote it to `Coverage::Test` […]
+
+    ⇒ The divergence assertion goes green (the two no longer disagree, because
+      there is only one implementation) and the promotion tripwire goes red
+      instead. Exactly one of the two fires in every arm, which is the property
+      the row's docs claim: "row 8 stayed as it was" is not among the outcomes.
+
+────────────────────────────────────────────────────────────────────────────
+Non-vacuity of the predicate itself, asserted inside the test rather than only
+demonstrated here — `reconciliation()` is pure and all three of its verdicts are
+exercised on synthetic sources in the same test body, including the exclusion a
+`///` line does not count as a landing.
+
+All three mutations reverted; `git status --porcelain` after the run lists only
+the three files this revision changes.
