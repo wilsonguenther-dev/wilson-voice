@@ -132,6 +132,12 @@ mod secure_input;
 // literals.
 pub mod shortcuts;
 mod snippets;
+// YV128 — what an enrolled voice IS: the multi-centroid profile shape behind
+// `meetings::MIGRATION_5_SPEAKER_PROFILES`, and the L2 discipline that keeps a
+// centroid comparable to the samples it is made of. Public because all five of
+// its acceptance criteria are integration tests over these pure functions and
+// the rows `db.rs` stores them in.
+pub mod speaker_profiles;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.

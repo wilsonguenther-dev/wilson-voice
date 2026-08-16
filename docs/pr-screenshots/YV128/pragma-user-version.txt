@@ -1,0 +1,41 @@
+YV128 — the schema, read out of a real SQLite file (the DB a fresh install lands on)
+DB: $CARGO_TARGET_TMPDIR/yv94-fresh-three-55225-1/wilson_voice.db
+
+$ sqlite3 $DB 'PRAGMA user_version'
+5
+
+$ sqlite3 $DB '.schema speaker_profiles'
+CREATE TABLE speaker_profiles (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  embedding_dim INTEGER NOT NULL,             -- NO DEFAULT: finding #19
+  embedding_model TEXT NOT NULL,              -- catalog id; invalidate on model change
+  locked INTEGER NOT NULL DEFAULT 1,          -- user-assigned: never auto-overwrite
+  is_me INTEGER NOT NULL DEFAULT 0,           -- a profile flag, not a track index
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+$ sqlite3 $DB '.schema speaker_centroids'
+CREATE TABLE speaker_centroids (
+  profile_id TEXT NOT NULL REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+  condition_key TEXT NOT NULL,                -- coarse device/distance bucket, inferred
+  embedding BLOB NOT NULL,                    -- embedding_dim x f32, little-endian
+  sample_count INTEGER NOT NULL DEFAULT 1,    -- running-mean denominator, per condition
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (profile_id, condition_key)
+);
+CREATE INDEX idx_speaker_centroids_profile ON speaker_centroids(profile_id);
+
+$ sqlite3 $DB "SELECT name, type, notnull, dflt_value FROM pragma_table_info('speaker_profiles')"
+name|type|notnull|dflt_value
+id|TEXT|0|
+display_name|TEXT|1|
+embedding_dim|INTEGER|1|
+embedding_model|TEXT|1|
+locked|INTEGER|1|1
+is_me|INTEGER|1|0
+created_at|TEXT|1|
+updated_at|TEXT|1|
+
+embedding_dim: notnull=1, dflt_value empty (NULL) — finding #19's fix, as SQLite reports it.

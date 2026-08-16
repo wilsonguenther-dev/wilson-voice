@@ -19,8 +19,10 @@ use support::{open_db, temp_dir};
 /// second step is the first one that had to run against databases the first step
 /// already wrote. 3 = YV106's two-track columns (`sys_wav_path`,
 /// `tap_rebuilds`, `meeting_segments.track`). 4 = YV125's `meetings.kind`, the
-/// column the diarization branch reads.
-const EXPECTED_VERSION: i64 = 4;
+/// column the diarization branch reads. 5 = YV128's `speaker_profiles` +
+/// `speaker_centroids` — the first step that adds TABLES rather than columns
+/// since step 1, and the first whose rewind therefore drops rather than alters.
+const EXPECTED_VERSION: i64 = 5;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -32,6 +34,14 @@ const EXPECTED_VERSION: i64 = 4;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 5 {
+        // Migration 5 creates tables, so its rewind drops them — child table
+        // first, because the FK points that way.
+        sql.push_str(
+            "DROP TABLE IF EXISTS speaker_centroids;\n\
+             DROP TABLE IF EXISTS speaker_profiles;\n",
+        );
+    }
     if version < 4 {
         sql.push_str("ALTER TABLE meetings DROP COLUMN kind;\n");
     }
@@ -428,6 +438,104 @@ fn migration_four_adds_kind_as_unknown_without_touching_existing_rows() {
         db.get_meeting(&id).unwrap().unwrap().kind(),
         MeetingKind::Unknown
     );
+}
+
+// ── YV128 · migration 5 ──────────────────────────────────────────────────────
+
+/// The step this item owns, against a database that already has meetings in it.
+///
+/// Two new tables, nothing altered, nothing backfilled — the tables are empty on
+/// every existing install because nobody has enrolled a voice yet, and that is
+/// the honest starting state rather than a hole. What the upgrade must NOT do is
+/// disturb the four rungs below it, so the meeting seeded at version 4 is read
+/// back in full afterwards.
+#[test]
+fn migration_five_adds_the_speaker_profile_tables_without_touching_existing_rows() {
+    let dir = temp_dir("speaker-profile-tables");
+    let path = dir.join("wilson_voice.db");
+
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before YV128", &["hello there"]);
+        drop(db);
+        rewind_to(&path, 4);
+        id
+    };
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN
+                   ('speaker_profiles', 'speaker_centroids')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "the rewind must actually remove the tables, or this proves nothing"
+        );
+    }
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV128");
+    assert_eq!(m.segment_count, 1, "its segments are untouched");
+    assert!(m.mic_wav_path.is_some(), "its audio is still there");
+
+    // The tables, the index and the FK are all real.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for (kind, name) in [
+        ("table", "speaker_profiles"),
+        ("table", "speaker_centroids"),
+        ("index", "idx_speaker_centroids_profile"),
+    ] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                rusqlite::params![kind, name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "migration 5 must create {kind} {name}");
+    }
+    drop(conn);
+
+    assert!(
+        db.list_speaker_profiles().unwrap().is_empty(),
+        "an upgraded install knows no voices yet — that is the honest state, \
+         not a hole to fill"
+    );
+
+    // The tables are usable, and deleting a profile takes its centroids.
+    let profile = db
+        .create_speaker_profile("Wilson", 192, "wespeaker-en-voxceleb-campplus", true)
+        .unwrap();
+    let sample =
+        wilson_voice_lib::speaker_profiles::NormalizedEmbedding::new(&vec![0.5_f32; 192]).unwrap();
+    db.observe_speaker_embedding(&profile.id, "laptop_mic_near", &sample)
+        .unwrap();
+    assert_eq!(db.list_speaker_profiles().unwrap()[0].centroids.len(), 1);
+    assert!(db.delete_speaker_profile(&profile.id).unwrap());
+    assert!(db.list_speaker_profiles().unwrap().is_empty());
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM speaker_centroids", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a deleted profile leaves no centroids behind");
+    }
+
+    // Re-opening does not re-run the step.
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert_eq!(db.get_meeting(&id).unwrap().unwrap().segment_count, 1);
 }
 
 /// The acceptance line in full: a synthetic VIRTUAL meeting — two recorded
