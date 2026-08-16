@@ -4177,13 +4177,21 @@ fn meeting_eval_anti_alias_eer_regression() {
         let short = dir.join("under-the-floor.wav");
         let samples = vec![0.0f32; (TARGET_RATE as f64 * ARM_MIN_UTTERANCE_SECONDS / 2.0) as usize];
         write_wav_16k_mono(&short, &to_i16(&samples));
-        let refused = pool
-            .embed(&short, Duration::from_secs_f64(ARM_MIN_UTTERANCE_SECONDS))
-            .expect_err(
-                "a clip half the length of the floor was embedded rather than refused, so \
-                 the floor this arm passes below is inert and every vector under it is \
-                 unmeasured",
-            );
+        let answer = pool.embed(&short, Duration::from_secs_f64(ARM_MIN_UTTERANCE_SECONDS));
+        let refused = match answer {
+            Err(e) => e,
+            // Reported as a WIDTH rather than as the vector: a 512-float dump
+            // buries the sentence that matters, and the width is the whole
+            // point — YV122 measured that a fifth of a second comes back as a
+            // perfectly ordinary-looking full-width vector that matches its own
+            // speaker worse than an average stranger does.
+            Ok(vector) => panic!(
+                "a clip half the length of the floor came back as a {}-float vector instead \
+                 of a refusal, so the floor this arm passes below is inert and every \
+                 embedding under it is a number nobody measured",
+                vector.len()
+            ),
+        };
         println!(
             "meeting_eval anti_alias_eer embed_floor_seconds={ARM_MIN_UTTERANCE_SECONDS:.1} \
              half_length_clip={refused:?} — the floor refuses, so passing it below is a \
