@@ -34,6 +34,14 @@
 //! ([`best_match`]). That is what makes cross-device recognition possible
 //! without asking the user to enrol again on each device.
 //!
+//! **A different microphone, yes. A different model, never.** "Every centroid of
+//! every profile" is scoped to the profiles enrolled under the SAME embedding
+//! model as the probe: [`best_match`] takes the probe's model id and skips a
+//! profile whose [`SpeakerProfile::embedding_model`] differs. Width alone cannot
+//! stand in for that check — two 192-dim models produce two incomparable
+//! 192-dim spaces, and a cosine between them is a number with no meaning that
+//! YV129 would then put a threshold on.
+//!
 //! ## The L2 discipline, enforced by a type rather than by remembering
 //!
 //! The plan's running-mean formula (`new_avg = (avg × n + emb) / (n + 1)`) is
@@ -446,7 +454,12 @@ impl Centroid {
 /// `embedding_dim` is the width the SIDECAR reported when it loaded the
 /// embedding model, stored per profile so a later model change is detectable
 /// rather than silently mixed. `embedding_model` is the catalog id for the same
-/// reason: two 192-dim models produce two incomparable 192-dim spaces.
+/// reason: two 192-dim models produce two incomparable 192-dim spaces, so width
+/// cannot stand in for space identity. That is not a caveat a caller has to
+/// remember — [`best_match`] takes the probe's model id and skips any profile
+/// whose `embedding_model` differs, and
+/// `a_profile_of_another_model_at_the_same_width_is_skipped_not_compared`
+/// (in `tests/speaker_multi_centroid_best_match.rs`) is what holds it there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpeakerProfile {
     pub id: String,
@@ -495,18 +508,31 @@ pub struct CentroidMatch {
 /// on AirPods — because the AirPods centroid, once it exists, is scored too,
 /// and until it exists the laptop one still gets its chance.
 ///
+/// **Two skips, and the second is not implied by the first.** `probe_model` is
+/// the catalog id of the embedding model that produced `probe`, and a profile
+/// enrolled under a different one is SKIPPED rather than scored — a cosine
+/// between two different models' outputs is arithmetic, not a similarity, no
+/// matter how well the widths happen to agree. Width is checked too, per
+/// centroid, because `cosine_similarity` panics on mismatched lengths by design
+/// and truncating to make the shapes agree would invent a score across two
+/// unrelated spaces. Neither check subsumes the other: the width check alone
+/// lets CAM++ be compared against any other 192-dim embedder (and against
+/// this same catalog id re-vendored to different weights), which is exactly the
+/// contamination the model check exists to stop.
+///
 /// **No threshold.** The answer is a ranking and a number; whether that number
 /// is high enough to put a name on a transcript is YV129's decision, tuned
-/// against YV120's harness. A profile whose centroids are a different width
-/// (a different embedding model) is SKIPPED, not compared: `cosine_similarity`
-/// panics on mismatched lengths by design, and truncating to compare would
-/// invent a score across two unrelated spaces.
+/// against YV120's harness.
 pub fn best_match(
     profiles: &[ProfileCentroids],
     probe: &NormalizedEmbedding,
+    probe_model: &str,
 ) -> Option<CentroidMatch> {
     let mut best: Option<CentroidMatch> = None;
     for entry in profiles {
+        if entry.profile.embedding_model != probe_model {
+            continue;
+        }
         for centroid in &entry.centroids {
             if centroid.vector.dim() != probe.dim() {
                 continue;
