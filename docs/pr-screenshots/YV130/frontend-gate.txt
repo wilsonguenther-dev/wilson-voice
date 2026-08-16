@@ -1,0 +1,29 @@
+$ npx tsc --noEmit
+exit: 0
+
+$ npm test
+
+> wilson-voice@0.8.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop
+
+ ✓ src/meetings/transcript.test.ts (16 tests) 3ms
+ ✓ src/pill/meeting.test.ts (14 tests) 2ms
+ ✓ src/license/status.test.ts (17 tests) 3ms
+ ✓ src/meetings/systemAudio.test.ts (15 tests) 13ms
+ ✓ src/meetings/TranscriptList.test.tsx (5 tests) 6ms
+ ✓ src/meetings/consent.test.ts (13 tests) 11ms
+ ✓ src/support/bundle.test.ts (7 tests) 2ms
+ ✓ src/meetings/corrections.test.ts (16 tests) 6ms
+ ✓ src/meetings/RelabelOffer.test.tsx (8 tests) 8ms
+ ✓ src/pill/live.test.ts (26 tests) 75ms
+ ✓ src/meetings/consentWatch.test.ts (8 tests) 60ms
+ ✓ src/errors.test.ts (4 tests) 1ms
+
+ Test Files  12 passed (12)
+      Tests  149 passed (149)
+   Start at  04:17:00
+   Duration  397ms (transform 254ms, setup 0ms, collect 516ms, tests 189ms, environment 1ms, prepare 436ms)
+

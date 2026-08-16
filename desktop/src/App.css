@@ -2787,3 +2787,115 @@ button.primary.big {
   max-height: 260px;
   overflow: auto;
 }
+
+/* ── YV130 · correction ──────────────────────────────────────────────────────
+   The two affordances a wrong attribution needs, styled to read as edits rather
+   than as chrome.
+
+   The correction menu borrows the transcript's own gutter typography, so a menu
+   that opens against a turn looks like part of that turn and not like a dialog
+   that arrived over it. Nothing here has a busy/loading variant: every one of
+   these actions is an UPDATE against segments the model already embedded, and a
+   spinner would be a UI claiming work that does not happen. */
+.seg-correct {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-card) 85%, transparent);
+  max-width: 22rem;
+}
+.seg-correct-heading {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.seg-correct-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.seg-correct-item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.seg-correct-item:hover,
+.seg-correct-split:hover {
+  background: color-mix(in srgb, var(--accent-ink) 12%, transparent);
+}
+/* The current attribution is marked, never hidden: a menu that removes the
+   option you already chose makes "put it back" impossible to find. */
+.seg-correct-item.current {
+  font-weight: 600;
+  color: var(--accent-data-ink);
+}
+.seg-correct-split {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The retroactive-relabel offer: an inline strip under the transcript, not a
+   sheet over it. A modal that interrupts a naming flow to ask a second question
+   gets dismissed reflexively, which for THIS prompt would mean "Not now" every
+   time and a feature nobody ever sees work (finding #31). */
+.relabel-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 30%, transparent);
+  max-width: 88ch;
+}
+.relabel-question {
+  margin: 0;
+  flex: 1 1 20rem;
+  line-height: 1.45;
+}
+.relabel-actions {
+  display: flex;
+  gap: 8px;
+}
+/* Apply and "Not now" are the same size and the same weight on purpose. A
+   dismissal styled as the lesser option is a dismissal the user is being nudged
+   away from, in the one prompt whose entire value is that saying no is free. */
+.relabel-apply,
+.relabel-dismiss,
+.relabel-undo {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.relabel-apply:hover,
+.relabel-dismiss:hover,
+.relabel-undo:hover {
+  background: color-mix(in srgb, var(--accent-ink) 12%, transparent);
+}
+.relabel-offer.applied {
+  border-color: color-mix(in srgb, var(--accent-data-ink) 30%, transparent);
+}

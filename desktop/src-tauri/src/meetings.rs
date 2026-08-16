@@ -18,7 +18,9 @@
 //!     one-time notice", so a single `settings_kv` key records it app-wide
 //!     (YV96). A per-row column with no reader is worse than nothing.
 //!   * no `speaker_id` / `speaker_label` / `cluster_index` / `overlapped` —
-//!     diarization is yap23. They arrive as migration 2, additive-only.
+//!     diarization is yap23. (`speaker_id` and `cluster_index` did arrive, as
+//!     part of yap23's migration 5, additive-only exactly as promised; the
+//!     step number is the only thing 22-A guessed wrong.)
 //!   * no `track` column — 22-A captures one mic track. 22-B adds it (and
 //!     `sys_wav_path`) as its own migration step.
 //!   * retention is **time-based, 7 days** (finding #28), not
@@ -38,10 +40,13 @@ use serde::{Deserialize, Serialize};
 ///     `meeting_segments.track`).
 /// 4 = YV125's [`MeetingKind`] column (`meetings.kind`), which is what the
 ///     diarization branch reads.
+/// 5 = YV130's [`MIGRATION_5_SEGMENT_ATTRIBUTION`] — the segment-attribution
+///     columns the correction surface edits, and the relabel history one undo
+///     reads back.
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -751,6 +756,94 @@ ALTER TABLE meeting_segments ADD COLUMN track INTEGER NOT NULL DEFAULT 0;
 /// with `user_version` written in the same transaction.
 pub const MIGRATION_4_MEETING_KIND: &str = r#"
 ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
+"#;
+
+/// Migration 5 — YV130's correction surface: what a segment is attributed to,
+/// what it was attributed to before, and the vector that lets a bad merge be
+/// undone without asking the model anything.
+///
+/// Four additive columns on `meeting_segments` and one new table, and every one
+/// of them exists because correction is a **database** operation (finding #25).
+/// A merge, a reassign and a split are label edits on segments that were already
+/// embedded and already clustered; none of them re-runs inference, and the
+/// schema is what makes that possible rather than aspirational:
+///
+///   * `cluster_index INTEGER` — which offline cluster a segment landed in.
+///     Nullable: a segment that was never clustered has no cluster, and `0` is a
+///     real cluster, so a default here would invent membership.
+///   * `speaker_id TEXT` — the enrolled voice a segment is attributed to.
+///     Nullable, and the NULL is load-bearing: "was never labelled" is a state
+///     [`crate::speaker_corrections::undo_relabel_batch`] has to be able to
+///     restore, which is why `speaker_relabel_history.prior_speaker_id` below is
+///     also nullable rather than using a sentinel string.
+///   * `speaker_locked INTEGER NOT NULL DEFAULT 0` — a person decided THIS
+///     segment. `0` for every row in the wild is not a guess: nothing before this
+///     build could ask, so nothing before this build was answered. A retroactive
+///     relabel batch never includes a locked segment and never sets the flag,
+///     because a batch is a decision about a VOICE, not a confirmation of each
+///     segment it touches.
+///   * `embedding BLOB` — the cluster-assignment embedding, little-endian f32,
+///     retained on the segment row. 192 floats at CAM++'s reported width is 768
+///     bytes per segment; a 3-hour meeting with a segment every four seconds is
+///     ~2,700 segments, so ~2 MB — the price of `split_cluster` being a local
+///     re-partition instead of a full re-diarize. Nullable, and a segment
+///     without one is honestly un-splittable rather than silently guessed at.
+///
+/// `speaker_relabel_history` is one row per touched segment per retroactive
+/// relabel batch. It stores the PRIOR value, not the new one alone, which is the
+/// whole mechanism: one `batch_id` is one undo, restoring every segment the
+/// batch overwrote to exactly what it held before — including the ones that held
+/// nothing. `PRIMARY KEY (batch_id, segment_id)` makes a batch idempotent
+/// against itself, and `new_speaker_id` is stored so undo can tell "nobody has
+/// touched this since" from "the user has since decided otherwise" and decline
+/// to clobber the second (see [`crate::speaker_corrections::undo_relabel_batch`]).
+///
+/// There is no foreign key to `speaker_profiles`. That table is YV128's, it is
+/// not in this build, and a `REFERENCES` clause naming a table SQLite cannot see
+/// fails at write time, not at migration time — the worst possible moment. The
+/// id is opaque here on purpose; the constraint arrives with the table.
+///
+/// **Why this is step 5 and not the backlog's step 7.** YV130's section was
+/// written expecting YV126's `cluster_index` (step 5) and YV128's speaker tables
+/// (step 6) to have landed first. Neither has — both are open PRs — and this
+/// branch is cut from `main`, whose ladder tops out at 4. `run_migrations` walks
+/// one rung at a time and `break`s on a missing arm, so a build stamped 7 over
+/// holes at 5 and 6 would log an error at 5 and never create any of this. The
+/// next free rung is the only rung that works, and it is the same call YV128's
+/// branch made for the same reason. **`cluster_index` is deliberately spelled
+/// exactly as YV126 spells it** so that whichever branch lands second deletes a
+/// duplicate `ADD COLUMN` line and changes nothing else — the collision is a
+/// merge conflict on `SCHEMA_VERSION` and this match arm, which is visible, and
+/// not two rungs that both try to add the same column, which is a startup
+/// failure in the field.
+///
+/// `ALTER TABLE … ADD COLUMN` is an O(1) header rewrite in SQLite (the one with
+/// a default is constant, so no row is touched); it has no `IF NOT EXISTS`
+/// clause, and does not need one, because the ladder runs a step exactly once
+/// inside its own transaction with `user_version` written in the same
+/// transaction. The `CREATE`s carry `IF NOT EXISTS` to match migration 1's shape.
+pub const MIGRATION_5_SEGMENT_ATTRIBUTION: &str = r#"
+ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
+ALTER TABLE meeting_segments ADD COLUMN speaker_id TEXT;
+ALTER TABLE meeting_segments ADD COLUMN speaker_locked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meeting_segments ADD COLUMN embedding BLOB;
+
+CREATE INDEX IF NOT EXISTS idx_segments_cluster
+  ON meeting_segments(meeting_id, cluster_index);
+CREATE INDEX IF NOT EXISTS idx_segments_speaker
+  ON meeting_segments(speaker_id);
+
+CREATE TABLE IF NOT EXISTS speaker_relabel_history (
+  batch_id TEXT NOT NULL,
+  segment_id TEXT NOT NULL,
+  prior_speaker_id TEXT,                      -- NULL = was never labelled
+  prior_speaker_locked INTEGER NOT NULL,
+  new_speaker_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (batch_id, segment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_relabel_history_segment
+  ON speaker_relabel_history(segment_id);
 "#;
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one

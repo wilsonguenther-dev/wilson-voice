@@ -255,13 +255,27 @@ fn speaker_label_decides_on_the_target_and_never_on_an_identity_flag() {
 /// cluster_index` column (migration 5) the clusters are stored in. Producing
 /// "two clusters" today would mean inventing them.
 ///
-/// So the gap is instrumented rather than described. This asserts that no
-/// migration in the shipped ladder mentions `cluster_index` — the one condition
-/// under which "there is nothing to count clusters with" is honest. The day
-/// YV126 adds that column, this goes red, on the merge commit, with no corpus,
-/// no model and no audio hardware needed. Closing it means recording the
-/// two-cluster evidence for an `in_person` fixture in YV126's PR and THEN
-/// deleting this test — in that order, not the other one.
+/// So the gap is instrumented rather than described. The day the clusterer
+/// lands, this goes red, on the merge commit, with no corpus, no model and no
+/// audio hardware needed. Closing it means recording the two-distinct-clusters
+/// evidence for an `in_person` fixture in YV126's PR and THEN deleting this test
+/// — in that order, not the other one.
+///
+/// **YV130 corrected what this watches for, and made it stricter.** YV125 wrote
+/// the trip as "no migration mentions `cluster_index`", because on that base the
+/// column and the clusterer were the same event. They are not: YV130 (correction
+/// UX) needs a cluster id it can merge and split, so it adds the column as
+/// migration 5 while YV126 — the pass that FILLS it — is still an open PR. Under
+/// the old wording this test would have gone red on a branch that ships no
+/// clustering whatsoever, and the only ways out would have been to delete the
+/// guard (losing the reminder entirely) or to fabricate two-cluster evidence
+/// from a build that cannot produce clusters. Both are worse than being precise.
+///
+/// So the trip now watches the clusterer itself — `diarize.rs::cluster_track`,
+/// the function `diarize_metrics.rs` already names as YV126's — which is the
+/// thing whose arrival actually makes YV125's criterion meetable. That is a
+/// STRONGER proxy than the column, not a weaker one: a column is where an answer
+/// is stored, and the criterion is about producing the answer.
 #[test]
 fn the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands() {
     let ladder = [
@@ -269,20 +283,33 @@ fn the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands() {
         meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
         meetings::MIGRATION_3_TWO_TRACK,
         meetings::MIGRATION_4_MEETING_KIND,
+        meetings::MIGRATION_5_SEGMENT_ATTRIBUTION,
     ];
-    assert!(
-        !ladder.iter().any(|sql| sql.contains("cluster_index")),
-        "`meeting_segments.cluster_index` has landed, so clustering exists and \
-         YV125's manual criterion can finally be met in full. Record the \
-         two-distinct-clusters evidence for an `in_person` fixture in that PR, \
-         then delete this test."
-    );
-    // The ladder above must be the WHOLE ladder, or this could pass by omission.
+    // The ladder must be the WHOLE ladder, or the schema half of this expiry
+    // could pass by omission.
     assert_eq!(
         wilson_voice_lib::meetings::SCHEMA_VERSION,
         ladder.len() as i64,
         "a migration was added without being listed here, so this expiry stopped \
          looking at the whole schema"
+    );
+    // YV130's column is a place to PUT a cluster, added by the item that edits
+    // clusters. It is expected here, and its presence is not the trip.
+    assert!(
+        ladder.iter().any(|sql| sql.contains("cluster_index")),
+        "the correction surface needs a cluster id it can merge and split"
+    );
+
+    let diarize = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/diarize.rs"),
+    )
+    .expect("read diarize.rs");
+    assert!(
+        !diarize.contains("fn cluster_track"),
+        "`diarize.rs::cluster_track` has landed, so clustering exists and YV125's \
+         manual criterion can finally be met in full. Record the \
+         two-distinct-clusters evidence for an `in_person` fixture in that PR, \
+         then delete this test."
     );
 }
 

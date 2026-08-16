@@ -231,6 +231,28 @@ fn diarize_binary() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Every request made of every [`DiarizePool`] in this process, ever.
+///
+/// YV130 — the falsifiable half of "correction is a database operation, not an
+/// inference one" (finding #25). `request_with_deadline` is the only way into
+/// the child, by this module's own construction (`load_models`, `diarize` and
+/// `embed` all funnel through it), so a counter there is a complete record of
+/// whether anything asked the model for anything. It counts ATTEMPTS, before
+/// spawn and before any failure branch: a call that could not find the sidecar
+/// binary still asked, and a purity claim that only held when the sidecar was
+/// missing would be worth nothing.
+///
+/// Global rather than per-pool on purpose — the assertion the correction tests
+/// make is about the process, and a per-pool counter would be silent about a
+/// call that reached the app-wide [`pool()`] instead of the test's own.
+static SIDECAR_REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+/// Read [`SIDECAR_REQUESTS`]. Cheap, monotonic, and never reset — callers take
+/// a reading before and after and compare, rather than trusting an absolute.
+pub fn sidecar_requests() -> u64 {
+    SIDECAR_REQUESTS.load(Ordering::Relaxed)
+}
+
 /// The app-wide pool, built on first use so the production launcher can be
 /// swapped for a stub in the tests.
 pub fn pool() -> &'static DiarizePool {
@@ -402,6 +424,9 @@ impl DiarizePool {
         req: &DiarizeRequest,
         deadline: Duration,
     ) -> Result<DiarizeResponse, DiarizeError> {
+        // Before the lock, before the spawn, before every failure branch: see
+        // `SIDECAR_REQUESTS`. This line is what YV130's purity tests read.
+        SIDECAR_REQUESTS.fetch_add(1, Ordering::Relaxed);
         let mut held = self.slot.lock();
         // Stamped before any of the work below, so a request that FAILS still
         // counts as use: the idle sweep is for a child nobody is diarizing at,
