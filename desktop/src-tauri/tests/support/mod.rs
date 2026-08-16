@@ -653,6 +653,10 @@ pub fn segments_on_tracks(
                 confidence: None,
                 created_at: chrono::Utc::now(),
                 track: *track,
+                // YV126 — a hand-built row has never been through a clustering
+                // pass, and `None` is what "nobody has attributed this yet"
+                // means. `0` would be a claim about a person.
+                cluster_index: None,
             },
         )
         .collect()

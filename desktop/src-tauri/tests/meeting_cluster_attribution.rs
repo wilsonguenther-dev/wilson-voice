@@ -14,17 +14,18 @@
 //! level: real `cluster_track`, real `attribute_clusters`, real migration-5
 //! column, real SQLite round trip.
 //!
-//! What it does NOT close — stated here rather than left to be discovered — is
-//! the same criterion on real AUDIO. The embeddings here come from a stub
-//! process, because `yap-diarize`'s `load_backend` still answers `no_backend` on
-//! this base: YV122 is the item that puts sherpa-onnx in the sidecar, and
-//! `diarize_backend_is_still_absent_so_no_cluster_has_come_from_audio` is the
-//! tripwire that expires when it lands.
+//! The embeddings here come from a stub process on purpose: this file's subject
+//! is the WRITE path — which turn's cluster lands on which transcript row, in
+//! which column, on which track — and a real model would make every assertion
+//! about that path depend on what the model happened to think. The same
+//! criterion on real AUDIO is `meeting_eval::fixture_e_der_gate`, which since
+//! YV122 (#137) landed does run and does produce a measured DER;
+//! `the_sidecar_has_a_real_backend_and_may_not_regress_to_refusing` at the
+//! bottom of this file is what keeps that true.
 
 mod support;
 
-
-use support::diarize_stub::{stub_returning, StubTurn};
+use support::diarize_stub::{stub_returning, StubTurn, STUB_MIN_EMBED};
 use support::{open_db, temp_dir};
 use wilson_voice_lib::diarize::{
     attribute_clusters, cluster_track, rank_and_floor, DiarizePool, DiarizedSegment, MeetingTracks,
@@ -61,7 +62,11 @@ fn an_in_person_meeting_stores_two_distinct_clusters_on_track_a() {
     let dir = temp_dir("cluster-attribution");
     let db = open_db(&dir);
     let meeting = db
-        .create_meeting_with_kind("Design review, in the room", "manual", MeetingKind::InPerson)
+        .create_meeting_with_kind(
+            "Design review, in the room",
+            "manual",
+            MeetingKind::InPerson,
+        )
         .unwrap();
 
     // Eight transcript rows on the mic track, one per spoken turn.
@@ -97,6 +102,7 @@ fn an_in_person_meeting_stores_two_distinct_clusters_on_track_a() {
         MeetingKind::InPerson,
         CosineDistance::new(0.35),
         TargetMode::FullClustering,
+        STUB_MIN_EMBED,
     )
     .expect("the stub answers");
     pool.shutdown();
@@ -151,8 +157,8 @@ fn an_in_person_meeting_stores_two_distinct_clusters_on_track_a() {
 #[test]
 fn a_row_takes_the_cluster_it_shares_the_most_time_with() {
     let diarized = vec![
-        DiarizedSegment::new(MIC_TRACK, 0.0, 10.0, 0),
-        DiarizedSegment::new(MIC_TRACK, 10.0, 30.0, 1),
+        DiarizedSegment::new(MIC_TRACK, 0.0, 10.0, Some(0)),
+        DiarizedSegment::new(MIC_TRACK, 10.0, 30.0, Some(1)),
     ];
     let dir = temp_dir("attribution-overlap");
     let db = open_db(&dir);
@@ -203,8 +209,8 @@ fn attribution_never_touches_a_track_the_pass_did_not_cluster() {
 
     // A pass over Track B (which is what `MicIsMe` clusters).
     let diarized = vec![
-        DiarizedSegment::new(SYSTEM_TRACK, 5.0, 10.0, 0),
-        DiarizedSegment::new(SYSTEM_TRACK, 10.0, 15.0, 1),
+        DiarizedSegment::new(SYSTEM_TRACK, 5.0, 10.0, Some(0)),
+        DiarizedSegment::new(SYSTEM_TRACK, 10.0, 15.0, Some(1)),
     ];
     let stored = db.list_meeting_segments(&meeting.id).unwrap();
     let assignments = attribute_clusters(&stored, &diarized);
@@ -230,22 +236,35 @@ fn attribution_never_touches_a_track_the_pass_did_not_cluster() {
     assert_eq!(lines[0].speaker, MIC_SPEAKER_LABEL);
 }
 
-/// **The half of YV125's criterion that is still open, instrumented rather than
-/// described.**
+/// **The tripwire that expired, and the guard that replaced it.**
 ///
-/// Every cluster above came from embeddings a `/bin/sh` stub was told to
-/// produce. Nothing in this tree has yet turned AUDIO into an embedding: the
-/// sidecar's `load_backend` returns `no_backend`, which is YV121's honest
-/// scaffold answer, and YV122 is the item that replaces it with sherpa-onnx.
+/// This test used to assert the OPPOSITE: that `yap-diarize`'s `load_backend`
+/// was an unconditional `Err(ERR_NO_BACKEND)`, so that nothing in the tree could
+/// turn audio into an embedding and the eval gates in `meeting_eval.rs` had to
+/// stay `None`. Its own instructions said how to close it — measure fixture (e),
+/// record the tuned threshold and its DER/JER, THEN delete it — and YV122
+/// (#137) landing while this branch was open is what made that possible.
+/// `ROOM_3_DER_GATE` and `CLASSROOM_6_DER_GATE` now carry measured numbers, so
+/// the tripwire is spent.
 ///
-/// Until then no DER can be measured on fixture (e), and the eval gates in
-/// `meeting_eval.rs` stay `None` — a number there today would be the
-/// vendor-blog threshold problem in a different file. The day the backend lands
-/// this test goes red with no corpus, no models and no audio hardware needed:
-/// close it by measuring fixture (e), recording the tuned threshold and its
-/// DER/JER, and THEN deleting this test — in that order.
+/// What replaces it is the standing version of the same claim: the sidecar has
+/// a real backend, and it may not quietly go back to refusing. A regression
+/// there would not fail loudly — the eval arms would print a skip and the
+/// suite would stay green while measuring nothing, which is the exact posture
+/// this file spent two items getting out of.
 #[test]
-fn diarize_backend_is_still_absent_so_no_cluster_has_come_from_audio() {
+fn the_sidecar_has_a_real_backend_and_may_not_regress_to_refusing() {
+    let manifest = include_str!("../../yap-diarize/Cargo.toml");
+    assert!(
+        manifest
+            .lines()
+            .any(|l| l.trim_start().starts_with("sherpa-onnx")),
+        "yap-diarize no longer depends on sherpa-onnx — without an inference \
+         backend every diarization measurement in meeting_eval.rs degrades to a \
+         printed skip, and the DER gates would be checking nothing while staying \
+         green"
+    );
+
     let sidecar = include_str!("../../yap-diarize/src/main.rs");
     let load = sidecar
         .split("fn load_backend")
@@ -253,11 +272,14 @@ fn diarize_backend_is_still_absent_so_no_cluster_has_come_from_audio() {
         .expect("yap-diarize still has a load_backend");
     let body = load.split("\nfn ").next().unwrap_or_default();
     assert!(
-        body.contains("ERR_NO_BACKEND"),
-        "`yap-diarize` can load a model now, so audio can become an embedding \
-         and a real DER can finally be measured on fixture (e). Tune the \
-         clustering threshold against YV120's harness, set ROOM_3_DER_GATE / \
-         ROOM_3_JER_GATE from that measurement, record the tuning run in the \
-         PR — then delete this test."
+        !body.contains("ERR_NO_BACKEND"),
+        "`load_backend` refuses with a no-backend tag again. YV122 retired that \
+         tag: a machine either has the catalog's two models or it does not, and \
+         those are `model_not_found` / `model_load_failed`."
+    );
+    assert!(
+        body.contains("SpeakerEmbeddingExtractor::create"),
+        "`load_backend` no longer builds an embedding extractor — the thing that \
+         makes a cluster come from audio rather than from a stub"
     );
 }

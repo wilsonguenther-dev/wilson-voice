@@ -32,7 +32,7 @@ fn cluster(cluster: i64, turns: usize, each: f64, from: f64) -> Vec<DiarizedSegm
     (0..turns)
         .map(|i| {
             let start = from + i as f64 * (each + 1.0);
-            DiarizedSegment::new(MIC_TRACK, start, start + each, cluster)
+            DiarizedSegment::new(MIC_TRACK, start, start + each, Some(cluster))
         })
         .collect()
 }
@@ -46,13 +46,13 @@ fn cluster(cluster: i64, turns: usize, each: f64, from: f64) -> Vec<DiarizedSegm
 fn twelve_raw_clusters() -> Vec<DiarizedSegment> {
     let mut segments = Vec::new();
     // Four real participants: comfortably past both floors.
-    segments.extend(cluster(0, 12, 20.0, 0.0));   // 240s, 12 turns — the instructor
-    segments.extend(cluster(1, 6, 15.0, 300.0));  //  90s,  6 turns
-    segments.extend(cluster(2, 4, 12.0, 500.0));  //  48s,  4 turns
-    segments.extend(cluster(3, 3, 10.5, 600.0));  //  31.5s, 3 turns — barely in
-    // Eight that are not participants:
-    segments.extend(cluster(4, 8, 3.0, 700.0));   //  24s,  8 turns — enough turns, not enough speech
-    segments.extend(cluster(5, 2, 22.0, 800.0));  //  44s,  2 turns — enough speech, not enough turns
+    segments.extend(cluster(0, 12, 20.0, 0.0)); // 240s, 12 turns — the instructor
+    segments.extend(cluster(1, 6, 15.0, 300.0)); //  90s,  6 turns
+    segments.extend(cluster(2, 4, 12.0, 500.0)); //  48s,  4 turns
+    segments.extend(cluster(3, 3, 10.5, 600.0)); //  31.5s, 3 turns — barely in
+                                                 // Eight that are not participants:
+    segments.extend(cluster(4, 8, 3.0, 700.0)); //  24s,  8 turns — enough turns, not enough speech
+    segments.extend(cluster(5, 2, 22.0, 800.0)); //  44s,  2 turns — enough speech, not enough turns
     for id in 6..12i64 {
         segments.extend(cluster(id, 2, 4.0, 900.0 + (id as f64 * 20.0))); // 8s, 2 turns
     }
@@ -171,12 +171,33 @@ fn ranking_never_rejects_however_many_clusters_there_are() {
     let ranking = rank_and_floor(&noise);
     assert!(ranking.surfaced.is_empty(), "none of them is a participant");
     assert_eq!(ranking.other.len(), 40, "…and none of them is thrown away");
-    assert_eq!(ranking.chips(), vec![OTHER_SPEAKER_LABEL.to_string()]);
+    // **Never reject is not never degrade.** Every one of the forty is still
+    // here, keyed by its stored index, for YV130 to promote or merge — that is
+    // the "never rejects" property, and it is what the old hard gate did not
+    // have. What a person is SHOWN is a different question, and matrix row 8
+    // publishes the answer: a pass in which nothing cleared the floor found no
+    // speaker, so it draws no chips at all. One "Other" chip over forty
+    // fragments would present noise as attribution, and an earlier cut of this
+    // file asserted exactly that — `matrix_row8_diarize_garbage_clusters` is
+    // where the two answers were caught disagreeing.
+    assert!(ranking.chips().is_empty(), "{:?}", ranking.chips());
+    assert!(ranking.labels.is_plain());
 
     // The empty pass: no clusters, no chips, no panic.
     let empty = rank_and_floor(&[]);
     assert!(empty.surfaced.is_empty() && empty.other.is_empty());
     assert!(empty.chips().is_empty());
+
+    // …and the bucket chip is still drawn when something DID clear the floor,
+    // so the assertion above is about the degrade rather than about "Other"
+    // having quietly stopped working.
+    let mut mixed = cluster(0, 4, 40.0, 0.0);
+    mixed.extend(cluster(1, 1, 2.0, 1000.0));
+    let mixed = rank_and_floor(&mixed);
+    assert_eq!(
+        mixed.chips(),
+        vec!["Speaker 1".to_string(), OTHER_SPEAKER_LABEL.to_string()]
+    );
 
     // A stored index nobody surfaced still renders as something a person can
     // read rather than panicking.

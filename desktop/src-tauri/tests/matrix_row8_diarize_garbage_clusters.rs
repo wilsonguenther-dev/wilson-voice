@@ -276,146 +276,144 @@ fn under_clustering_is_not_detectable_here_and_the_gate_does_not_pretend() {
 /// The row's own tripwire: row 8 is `Policy only, NOT WIRED` until something
 /// applies a rank+floor gate to real output.
 ///
-/// **Two symbols, for the reason row 7 already checks two.** Watching only
-/// `cluster_sanity` would make this row blind to the code that is actually
-/// going to be wired: YV126 (#141, open) ships `diarize::rank_and_floor` with
-/// its own `CHIP_FLOOR_SECONDS`/`CHIP_FLOOR_TURNS`, and that — not this
-/// module's function — is the gate a meeting will call. A row whose only
-/// tripwire names a symbol nobody will ever call is a row that can publish
-/// "the app does not do this yet" for as long as anybody cares to leave it
-/// there. So the shipping symbols are named too, exactly as row 7 names
-/// `diarize::pool` alongside `diarize_sidecar_degrade`.
+/// **The symbol this watches MOVED when YV126 landed, and that is the point of
+/// the move rather than a loosening.** It used to watch `cluster_sanity`, on
+/// the reasoning that a caller for it would mean somebody had wired the row.
+/// YV126 gave it one — `diarize::rank_and_floor` now applies it, which is how
+/// the two stopped being two answers to one question — so watching
+/// `cluster_sanity` would fire on the change that made the published behaviour
+/// TRUE, and it would be watching the wrong symbol anyway: the thing still
+/// absent from the app is the GATE.
+///
+/// So this asserts the two halves separately. `rank_and_floor`, `cluster_track`
+/// and `attribute_clusters` have no caller in `src/` outside `diarize.rs` — no
+/// meeting is ever diarized, so there is no pass for any gate to be applied to,
+/// and that is what keeps the row `PolicyOnly`. And `cluster_sanity` DOES have
+/// one, which is asserted rather than assumed: if the shipping gate ever stops
+/// applying the published degrade, the divergence comes back and this says so
+/// at the point where it happened.
 #[test]
 fn nothing_in_the_app_applies_the_sanity_gate_yet() {
-    let found = call_sites("cluster_sanity", &["meeting_matrix.rs"]);
-    assert!(
-        found.is_empty(),
-        "{}",
-        promote_the_row("8", "cluster_sanity", &found)
-    );
-
-    // The stronger statement, and the one that makes the row honest rather than
-    // merely unwired: YV126's clustering stage has no caller either, so there is
-    // no pass whose output any rank+floor gate could be applied to.
     for shipping in ["rank_and_floor", "cluster_track", "attribute_clusters"] {
         let wired = call_sites(shipping, &["diarize.rs"]);
         assert!(
             wired.is_empty(),
-            "TRIPWIRE — matrix row 8: `diarize::{shipping}` is now code in {wired:?}, so the \
-             SHIPPING rank+floor path acquired a caller. Row 8 is the published behaviour of that \
-             path, so it is no longer a policy nothing can reach: promote it to `Coverage::Test` \
-             in src/meeting_matrix.rs naming `diarize.rs` as the subject module, and rewrite this \
-             file to drive the shipping gate instead of a pure function beside it."
+            "{}",
+            promote_the_row("8", shipping, &wired)
         );
     }
+
+    let applies: Vec<String> = call_sites("cluster_sanity", &["meeting_matrix.rs"])
+        .iter()
+        .map(|p| {
+            PathBuf::from(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect();
+    assert_eq!(
+        applies,
+        vec!["diarize.rs".to_string()],
+        "the published row 8 degrade must be applied by the shipping gate and by \
+         nothing else. Found: {applies:?}. If `diarize.rs` has stopped calling \
+         `cluster_sanity`, `rank_and_floor` has gone back to answering an \
+         all-below-floor pass with one \"Other\" chip while this table publishes a \
+         plain transcript and a `diarization_failed` marker — two answers to one \
+         question, which is the state this file exists to make impossible."
+    );
 }
 
-/// What `src/diarize.rs` says about the case row 8 publishes: a pass with
-/// nothing above the floor.
-#[derive(Debug, PartialEq, Eq)]
-enum Reconciliation {
-    /// YV126's gate has not landed on this branch's `main` yet — the state
-    /// today, with #141 open.
-    NotLandedYet,
-    /// It landed, and this module's degrade has a caller somewhere in `src/`.
-    /// The absence tripwire above owns that case and says "promote the row".
-    TheDegradeHasACaller,
-    /// It landed, and nothing in the shipping tree applies row 8's degrade —
-    /// so the published required behaviour and the mechanism that serves it
-    /// disagree about the same input.
-    Diverged,
-}
-
-/// Pure so both of its interesting verdicts can be exercised on synthetic input
-/// today, on a branch where only one of them is reachable from the real tree.
-fn reconciliation(diarize_src: &str, degrade_call_sites: &[String]) -> Reconciliation {
-    let landed = diarize_src
-        .lines()
-        .any(|line| callsite::code_only(line).contains("fn rank_and_floor"));
-    if !landed {
-        Reconciliation::NotLandedYet
-    } else if degrade_call_sites.is_empty() {
-        Reconciliation::Diverged
-    } else {
-        Reconciliation::TheDegradeHasACaller
-    }
-}
-
-/// **The published degrade is a requirement ON YV126's `rank_and_floor`, and
-/// this is the assertion that fails if the two ever disagree about it.**
+/// **The shipping gate gives row 8's answer, driven through the shipping type.**
 ///
-/// For the identical forty-fragment pass the test at the top of this file
-/// publishes, the two answers on the table today are not the same answer:
+/// The pure-function tests above establish what the policy IS. This establishes
+/// that the code a meeting will call performs it — on the identical
+/// forty-fragment input, through `diarize::rank_and_floor`, on
+/// `diarize::DiarizedSegment`s rather than on `ClusterSummary`s built by hand.
 ///
-/// | | this row (`cluster_sanity`) | #141 (`diarize::rank_and_floor`) |
-/// |---|---|---|
-/// | labels | `Plain(Clusters { raw_clusters: 40 })` | `ClusterRanking { surfaced: [], other: 40 }` |
-/// | chips | none | `["Other"]` |
-/// | marker | `diarization_failed` | none |
-/// | transcript | plain, single speaker | diarized, every line "Other" |
-///
-/// `rank_and_floor` never rejects — deliberately, and that half is right
-/// (merged finding #25). But "never reject" is not "never degrade": a pass in
-/// which *nothing at all* clears the floor produced no speaker, and rendering
-/// it as one "Other" chip presents noise as attribution. That is the behaviour
-/// this row requires and #141 does not implement yet.
-///
-/// The matrix is the SSOT for what Yap owes a user on failure, so it may not
-/// publish a required behaviour whose mechanism silently does something else.
-/// Until #141 merges there is no `rank_and_floor` to assert against — the
-/// symbol does not exist on this branch and a test naming it would not compile
-/// — so the binding is the one that survives that: the day the shipping gate
-/// lands, this goes red unless the degrade has a caller, and if it does have
-/// one the tripwire above goes red instead and the row is promoted. Exactly one
-/// of the two fires, and neither outcome is "row 8 quietly stayed as it is".
+/// The old version of this file could not do this: `rank_and_floor` did not
+/// exist on `main`, so the binding had to be a source-level reconciliation
+/// check. It exists now, so the row is held to the real thing.
 #[test]
-fn the_published_degrade_is_a_requirement_on_yv126s_gate_and_the_two_may_not_diverge() {
-    // Non-vacuity first: all three verdicts are reachable, and comments do not
-    // count as a landing — the same exclusion `call_sites` learned the hard way.
-    let none: Vec<String> = Vec::new();
-    let a_caller = vec!["src/meeting.rs".to_string()];
-    assert_eq!(
-        reconciliation("pub fn cluster_track() {}\n", &none),
-        Reconciliation::NotLandedYet
+fn the_shipping_gate_degrades_the_same_way_on_the_same_input() {
+    use wilson_voice_lib::diarize::{rank_and_floor, DiarizedSegment, CHIP_FLOOR_SECONDS};
+    use wilson_voice_lib::meetings::MIC_TRACK;
+
+    // Forty fragments of 1.5 s, one turn each — the same pass
+    // `a_pass_with_nothing_above_the_floor_degrades_to_a_plain_transcript`
+    // hands the pure function.
+    let confetti: Vec<DiarizedSegment> = (0..40)
+        .map(|i| {
+            let start = i as f64 * 2.0;
+            DiarizedSegment::new(MIC_TRACK, start, start + 1.5, Some(i))
+        })
+        .collect();
+    let ranking = rank_and_floor(&confetti);
+
+    assert!(
+        ranking.surfaced.is_empty(),
+        "nothing clears the floor: {:?}",
+        ranking.surfaced
     );
+    assert_eq!(ranking.other.len(), 40, "and nothing is thrown away either");
     assert_eq!(
-        reconciliation("/// pub fn rank_and_floor(x: &[u8]) {}\n", &none),
-        Reconciliation::NotLandedYet
+        ranking.labels,
+        SpeakerLabels::Plain(DegradeReason::Clusters { raw_clusters: 40 })
     );
-    assert_eq!(
-        reconciliation(
-            "pub fn rank_and_floor(x: &[u8]) -> ClusterRanking {}\n",
-            &none
-        ),
-        Reconciliation::Diverged
-    );
-    assert_eq!(
-        reconciliation(
-            "pub fn rank_and_floor(x: &[u8]) -> ClusterRanking {}\n",
-            &a_caller
-        ),
-        Reconciliation::TheDegradeHasACaller
+    assert_eq!(ranking.labels.marker(), Some(DIARIZATION_FAILED));
+    assert!(
+        ranking.chips().is_empty(),
+        "the published behaviour is NO chips for a pass that found no speaker — \
+         one \"Other\" chip over forty fragments presents noise as attribution: {:?}",
+        ranking.chips()
     );
 
+    // Non-vacuity: the same gate on a pass that DOES clear the floor still
+    // surfaces a speaker, so the assertion above is about the degrade and not
+    // about `rank_and_floor` having stopped working.
+    let a_real_speaker: Vec<DiarizedSegment> = (0..4)
+        .map(|i| {
+            let start = i as f64 * 20.0;
+            DiarizedSegment::new(
+                MIC_TRACK,
+                start,
+                start + CHIP_FLOOR_SECONDS / 3.0 + 1.0,
+                Some(0),
+            )
+        })
+        .collect();
+    let ranking = rank_and_floor(&a_real_speaker);
+    assert_eq!(ranking.labels, SpeakerLabels::Attributed);
+    assert_eq!(ranking.chips(), vec!["Speaker 1".to_string()]);
+}
+
+/// **Why the reconciliation test that used to live here is gone.**
+///
+/// It asserted that `src/diarize.rs`'s rank+floor gate and this row's degrade
+/// could not diverge, and it could only assert it at the level of source text —
+/// `rank_and_floor` did not exist on `main` when it was written, so a test
+/// naming the symbol would not have compiled. It has now been discharged in the
+/// way it asked for: the shipping gate applies `cluster_sanity`, so there is one
+/// implementation of the behaviour instead of two, and
+/// `the_shipping_gate_degrades_the_same_way_on_the_same_input` drives the real
+/// type on the real input instead of comparing two descriptions of it. The
+/// source-text check is deleted rather than left beside its own replacement —
+/// which is what its own instructions said to do, and the same discipline YV125's
+/// expiring test was closed under.
+#[test]
+fn the_reconciliation_is_discharged_by_the_shipping_gate_not_by_a_source_scan() {
+    // The claim in one line, checked rather than asserted in prose: this file
+    // holds row 8 to the shipping type, and the module it lives in is the one
+    // that applies the published degrade.
     let diarize_src =
         fs::read_to_string(callsite::src_dir().join("diarize.rs")).expect("read src/diarize.rs");
-    let verdict = reconciliation(
-        &diarize_src,
-        &call_sites("cluster_sanity", &["meeting_matrix.rs"]),
+    assert!(
+        callsite::mentions_as_code(&diarize_src, "cluster_sanity("),
+        "src/diarize.rs no longer applies `cluster_sanity`, so the published row 8 \
+         degrade and the gate a meeting will call have come apart again"
     );
-    assert_ne!(
-        verdict,
-        Reconciliation::Diverged,
-        "DIVERGENCE — matrix row 8: `diarize::rank_and_floor` now ships, and nothing in `src/` \
-         applies this row's degrade. The table publishes that a pass with nothing above the floor \
-         becomes a PLAIN single-speaker transcript on a meeting marked `diarization_failed`; \
-         `rank_and_floor` answers the same input with `surfaced: []`, `other: <all of them>` and \
-         a single \"Other\" chip — a diarized transcript, no degrade, no marker. Two answers to \
-         one question, one of them published as required behaviour. Reconcile before this row is \
-         allowed to stay: either have the shipping gate apply `meeting_matrix::cluster_sanity` to \
-         its own result (which also fires the tripwire above, and the row gets promoted), or \
-         delete `cluster_sanity`, republish row 8 against `diarize::ClusterRanking`, and rewrite \
-         this file to assert the all-below-floor case on the shipping type. What is not available \
-         is leaving the matrix saying one thing while the code does another."
+    assert!(
+        callsite::mentions_as_code(&diarize_src, "fn rank_and_floor"),
+        "the shipping gate is gone"
     );
 }

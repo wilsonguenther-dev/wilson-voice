@@ -23,17 +23,26 @@
 //! one that would have caught it.
 //!
 //! What this file deliberately does not prove is that binary mode scores better
-//! on real audio — that is a measurement, it belongs in `meeting_eval.rs`
-//! against fixture (f), and it is blocked on a sidecar with an inference
-//! backend in it (YV122). The 0.1524 figure quoted around this item is a
-//! CEILING from ground truth, not a score anything here has reached. See
-//! `meeting_eval::fixture_f_binary_fallback_der`.
+//! on real audio — that is a measurement and it belongs in `meeting_eval.rs`
+//! against fixture (f), where `fixture_f_binary_fallback_der` now makes it
+//! (DER 0.3489 at clustering distance 0.80, acceptance band 0.75). The 0.1524
+//! figure quoted around this item is a CEILING from ground truth and not a
+//! score anything reaches.
+//!
+//! And what this file proves about independence is the PARENT's half only. The
+//! child clusters in order to segment, so the distance moves the turn set and
+//! binary mode inherits whatever merges that causes;
+//! `the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it`
+//! is that half, and a review was right that an earlier revision stated the
+//! independence without it.
 
 mod support;
 
 use std::path::Path;
 
-use support::diarize_stub::{stub_returning, stub_with_body, StubTurn};
+use support::diarize_stub::{
+    stub_returning, stub_segmenting_by_distance, stub_with_body, StubTurn, STUB_MIN_EMBED,
+};
 use wilson_voice_lib::diarize::{
     cluster_track, label_against_enrolled, DiarizeError, DiarizePool, DiarizedSegment,
     EnrolledSpeaker, MeetingTracks, TargetMode, ENROLLED_CLUSTER, ERR_NO_EMBEDDINGS,
@@ -174,7 +183,7 @@ fn assert_the_fixture_really_holds_six_voices() {
 }
 
 fn distinct_labels(segments: &[DiarizedSegment]) -> Vec<i64> {
-    let mut ids: Vec<i64> = segments.iter().map(|s| s.cluster_index).collect();
+    let mut ids: Vec<i64> = segments.iter().filter_map(|s| s.cluster_index).collect();
     ids.sort_unstable();
     ids.dedup();
     ids
@@ -208,6 +217,7 @@ fn the_same_six_cluster_pass_is_six_labels_or_exactly_two() {
             MeetingKind::InPerson,
             CosineDistance::new(SEPARATING),
             mode,
+            STUB_MIN_EMBED,
         )
         .expect("the stub answers");
         pool.shutdown();
@@ -248,6 +258,7 @@ fn the_enrolled_label_lands_on_the_voice_the_profile_describes() {
         MeetingKind::InPerson,
         CosineDistance::new(SEPARATING),
         TargetMode::EnrolledVsEveryoneElse(enrolled_profile()),
+        STUB_MIN_EMBED,
     )
     .expect("the stub answers");
     pool.shutdown();
@@ -258,7 +269,7 @@ fn the_enrolled_label_lands_on_the_voice_the_profile_describes() {
     );
     let enrolled: Vec<f64> = out
         .iter()
-        .filter(|s| s.cluster_index == ENROLLED_CLUSTER)
+        .filter(|s| s.cluster_index == Some(ENROLLED_CLUSTER))
         .map(|s| s.start_seconds)
         .collect();
     assert_eq!(
@@ -283,6 +294,19 @@ fn the_enrolled_label_lands_on_the_voice_the_profile_describes() {
 ///
 /// Under the relabel design this test is unsatisfiable: at 1.5 there is only
 /// cluster 0 to name, so the enrolled cluster is either everybody or nobody.
+///
+/// **What this test deliberately holds still, and why that is a limit and not a
+/// cheat.** The stub answers the same twelve turns at every distance, so the
+/// only thing varying across the three arms is the PARENT's arithmetic — which
+/// is the subject. The real child's turn set is not fixed: it clusters in order
+/// to segment, so the distance moves the boundaries too, and binary mode
+/// inherits whatever merges that produces. That half is a different claim with
+/// a different test —
+/// [`the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it`]
+/// — and the two together are the honest statement. An earlier revision of this
+/// item stated the independence without that qualifier, and a review was right
+/// to call it an over-claim: a distance-invariant stub cannot see the child's
+/// half, so this test could never have been the evidence for it.
 #[test]
 fn binary_mode_is_not_bounded_by_what_the_n_way_pass_did() {
     let turns = six_speakers();
@@ -305,6 +329,7 @@ fn binary_mode_is_not_bounded_by_what_the_n_way_pass_did() {
             MeetingKind::InPerson,
             CosineDistance::new(distance),
             TargetMode::FullClustering,
+            STUB_MIN_EMBED,
         )
         .expect("the stub answers");
         pool.shutdown();
@@ -325,13 +350,14 @@ fn binary_mode_is_not_bounded_by_what_the_n_way_pass_did() {
             MeetingKind::InPerson,
             CosineDistance::new(distance),
             TargetMode::EnrolledVsEveryoneElse(enrolled_profile()),
+            STUB_MIN_EMBED,
         )
         .expect("the stub answers");
         pool.shutdown();
 
         let enrolled: Vec<f64> = binary
             .iter()
-            .filter(|s| s.cluster_index == ENROLLED_CLUSTER)
+            .filter(|s| s.cluster_index == Some(ENROLLED_CLUSTER))
             .map(|s| s.start_seconds)
             .collect();
         assert_eq!(
@@ -418,6 +444,7 @@ fn binary_mode_refuses_when_there_is_nothing_to_compare() {
         MeetingKind::InPerson,
         CosineDistance::new(SEPARATING),
         TargetMode::EnrolledVsEveryoneElse(enrolled_profile()),
+        STUB_MIN_EMBED,
     );
     pool.shutdown();
     assert_eq!(
@@ -438,6 +465,7 @@ fn binary_mode_refuses_when_there_is_nothing_to_compare() {
         MeetingKind::InPerson,
         CosineDistance::new(SEPARATING),
         TargetMode::FullClustering,
+        STUB_MIN_EMBED,
     )
     .expect("full clustering forwards the child's ids");
     pool.shutdown();
@@ -506,6 +534,7 @@ fn the_kind_branch_picks_the_track_and_the_mode_does_not_override_it() {
                 kind,
                 CosineDistance::new(SEPARATING),
                 mode,
+                STUB_MIN_EMBED,
             )
             .expect("the stub answers");
             pool.shutdown();
@@ -516,4 +545,135 @@ fn the_kind_branch_picks_the_track_and_the_mode_does_not_override_it() {
             );
         }
     }
+}
+
+/// **The other half of the reframe's honesty, and the one an earlier revision
+/// of this item got wrong.**
+///
+/// `binary_mode_is_not_bounded_by_what_the_n_way_pass_did` proves the PARENT's
+/// clustering decides nothing about binary mode's labels. It cannot prove that
+/// binary mode is independent of the distance, because the distance also goes
+/// to the child — and sherpa clusters in order to SEGMENT, so the turn set that
+/// comes back moves with it. YV122's own
+/// `a_two_voice_track_diarizes_and_a_tighter_distance_never_merges_more` prints
+/// that movement on real audio.
+///
+/// The consequence is the thing that must not be quietly dropped: when a loose
+/// distance merges two speakers' adjacent turns into ONE output segment, binary
+/// mode gets one unit carrying two voices and puts one label on it. No per-turn
+/// rule can undo that. So the error binary mode makes IS a function of the
+/// distance, and the eval harness has to tune the distance for the 2-class task
+/// rather than borrow full clustering's.
+///
+/// This drives the shipped `cluster_track` in binary mode against a stub that
+/// segments the way the real child does — two turns at a tight distance, one
+/// merged turn at a loose one — and asserts:
+///
+/// 1. the two arms really did come back with different turn sets (or the test
+///    is vacuous, and a `cutoff` that never separated them would make it so);
+/// 2. binary mode passed those boundaries through unchanged in both arms;
+/// 3. the loose arm labels the merged unit ONCE, so one of the two voices in it
+///    is attributed wrongly — the error class the old doc comment disclaimed.
+#[test]
+fn the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it() {
+    let mic = Path::new("/tmp/does-not-need-to-exist.wav");
+    let enrolled = enrolled_profile();
+    let voice = |speaker: usize| {
+        let mut embedding = vec![0.0f32; 6];
+        embedding[speaker] = 1.0;
+        embedding
+    };
+
+    // TIGHT: the enrolled voice's turn and a stranger's turn, separately.
+    let tight = vec![
+        StubTurn::new(0.0, 8.0, 0, voice(ENROLLED_VOICE)),
+        StubTurn::new(8.0, 16.0, 1, voice(0)),
+    ];
+    // LOOSE: the same 16 seconds, but the child merged the two into one turn
+    // and embedded the merged span — which, being two voices averaged, is
+    // exactly what a merged embedding looks like.
+    let merged: Vec<f32> = voice(ENROLLED_VOICE)
+        .iter()
+        .zip(voice(0).iter())
+        .map(|(a, b)| (a + b) / 2.0)
+        .collect();
+    let loose = vec![StubTurn::new(0.0, 16.0, 0, merged)];
+
+    let cutoff = 0.50f64;
+    let run = |distance: f32| {
+        let pool = DiarizePool::new(
+            stub_segmenting_by_distance(loose.clone(), tight.clone(), cutoff),
+            READY,
+        );
+        let out = cluster_track(
+            &pool,
+            MeetingTracks {
+                mic_wav: mic,
+                system_wav: None,
+            },
+            MeetingKind::InPerson,
+            CosineDistance::new(distance),
+            TargetMode::EnrolledVsEveryoneElse(enrolled.clone()),
+            STUB_MIN_EMBED,
+        )
+        .expect("the stub answers");
+        pool.shutdown();
+        out
+    };
+
+    let tight_out = run(0.30);
+    let loose_out = run(0.80);
+
+    // 1 — non-vacuity: the child really did answer differently.
+    let spans = |out: &[DiarizedSegment]| -> Vec<(f64, f64)> {
+        out.iter()
+            .map(|s| (s.start_seconds, s.end_seconds))
+            .collect()
+    };
+    assert_ne!(
+        spans(&tight_out),
+        spans(&loose_out),
+        "the stub answered the same turns at both distances — this test would \
+         then be independent by construction, which is the exact defect it exists \
+         to close"
+    );
+
+    // 2 — the boundaries are the CHILD's, passed through untouched.
+    assert_eq!(spans(&tight_out), vec![(0.0, 8.0), (8.0, 16.0)]);
+    assert_eq!(spans(&loose_out), vec![(0.0, 16.0)]);
+
+    // 3 — and the merged unit gets exactly one label, so 8 of the 16 seconds
+    // are attributed to the wrong class no matter what the band is.
+    assert_eq!(
+        tight_out
+            .iter()
+            .filter(|s| s.cluster_index == Some(ENROLLED_CLUSTER))
+            .map(|s| s.duration())
+            .sum::<f64>(),
+        8.0,
+        "at the tight distance the enrolled voice's 8 s is its own turn"
+    );
+    assert_eq!(
+        loose_out.len(),
+        1,
+        "at the loose distance there is one unit and therefore one label — \
+         binary mode cannot recover a boundary the child did not draw"
+    );
+    let loose_label = loose_out[0].cluster_index;
+    assert!(
+        loose_label == Some(ENROLLED_CLUSTER) || loose_label == Some(EVERYONE_ELSE_CLUSTER),
+        "the merged unit still gets one of the two classes"
+    );
+    // Whichever class it landed in, 8 s of the other voice went with it.
+    assert_eq!(
+        loose_out[0].duration(),
+        16.0,
+        "8 s of the {} class is inside this one label — the error the distance \
+         caused, which no acceptance band can undo",
+        if loose_label == Some(ENROLLED_CLUSTER) {
+            "everyone-else"
+        } else {
+            "enrolled"
+        }
+    );
 }

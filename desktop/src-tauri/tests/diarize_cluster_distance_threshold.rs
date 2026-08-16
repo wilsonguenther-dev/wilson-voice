@@ -23,7 +23,10 @@ mod support;
 
 use std::path::Path;
 
-use support::diarize_stub::{angle_for_distance, ray, stub_returning, stub_with_body, StubTurn};
+use support::diarize_stub::{
+    angle_for_distance, ray, stub_echoing_min_embed, stub_returning, stub_with_body, StubTurn,
+    STUB_MIN_EMBED,
+};
 use wilson_voice_lib::diarize::{
     cluster_by_distance_threshold, cluster_track, DiarizePool, MeetingTracks, TargetMode,
 };
@@ -101,17 +104,17 @@ fn cluster_track_groups_and_splits_at_the_threshold_it_was_given() {
     for (threshold, expected, note) in [
         (
             0.35f32,
-            vec![0i64, 0, 1],
+            vec![Some(0i64), Some(0), Some(1)],
             "two voices: the near pair merges, the far turn does not",
         ),
         (
             0.05,
-            vec![0, 1, 2],
+            vec![Some(0), Some(1), Some(2)],
             "a threshold under every gap: three singletons",
         ),
         (
             0.95,
-            vec![0, 0, 0],
+            vec![Some(0), Some(0), Some(0)],
             "a threshold over every gap: one cluster, correctly",
         ),
     ] {
@@ -126,11 +129,12 @@ fn cluster_track_groups_and_splits_at_the_threshold_it_was_given() {
             MeetingKind::InPerson,
             CosineDistance::new(threshold),
             TargetMode::FullClustering,
+            STUB_MIN_EMBED,
         )
         .expect("the stub answers");
         pool.shutdown();
 
-        let got: Vec<i64> = out.iter().map(|s| s.cluster_index).collect();
+        let got: Vec<Option<i64>> = out.iter().map(|s| s.cluster_index).collect();
         assert_eq!(got, expected, "threshold {threshold}: {note}");
         // The turn boundaries and the track survive clustering untouched — the
         // pass attributes speech, it does not re-cut it.
@@ -168,12 +172,13 @@ fn without_embeddings_the_childs_own_clusters_are_used_and_they_differ() {
         MeetingKind::InPerson,
         threshold,
         TargetMode::FullClustering,
+        STUB_MIN_EMBED,
     )
     .expect("the stub answers");
     pool.shutdown();
     assert_eq!(
         fallback.iter().map(|s| s.cluster_index).collect::<Vec<_>>(),
-        vec![7, 7, 9],
+        vec![Some(7), Some(7), Some(9)],
         "with no embeddings the child's own ids are passed through verbatim"
     );
 
@@ -191,12 +196,13 @@ fn without_embeddings_the_childs_own_clusters_are_used_and_they_differ() {
         MeetingKind::InPerson,
         threshold,
         TargetMode::FullClustering,
+        STUB_MIN_EMBED,
     )
     .expect("the stub answers");
     pool.shutdown();
     assert_eq!(
         ours.iter().map(|s| s.cluster_index).collect::<Vec<_>>(),
-        vec![0, 1, 0],
+        vec![Some(0), Some(1), Some(0)],
         "turns 1 and 3 are 0.05 apart and turn 2 is 0.80 away — the child said \
          the opposite, and the child is not who decides"
     );
@@ -314,6 +320,87 @@ fn no_tuned_clustering_constant_ships_in_the_crate() {
              diarize.rs. If it is an accuracy threshold it may not ship — it is \
              an OUTPUT of the eval harness. If it is a surfacing floor, name it \
              in SURFACING_FLOORS and say why."
+        );
+    }
+}
+
+/// **A rebase guard.** The caller's `min_embed` floor reaches the WIRE, and
+/// nothing in this crate supplies one on the caller's behalf.
+///
+/// YV122 landed after this item's branch was cut and made the floor a mandatory
+/// parameter of `DiarizePool::diarize` with no default anywhere in either
+/// crate — deliberately, because its own truncation sweep found two tenths of a
+/// second coming back as an ordinary-looking embedding that matched its own
+/// speaker worse than an average stranger did. The failure this test exists for
+/// is the cheap way to resolve that rebase: `cluster_track` accepting a floor
+/// and then passing a convenient constant of its own to the child. No assertion
+/// on `cluster_track`'s return value could see that, so the stub echoes back
+/// the `min_embed_seconds` it received as a turn boundary and the assertion is
+/// made on the number that crossed the pipe.
+#[test]
+fn the_callers_min_embed_floor_reaches_the_child_unchanged() {
+    let mic = Path::new("/tmp/does-not-need-to-exist.wav");
+    // Two different floors, so a stub echoing a constant of its own would fail
+    // one of them.
+    for seconds in [1.25f64, 3.5] {
+        let pool = DiarizePool::new(stub_echoing_min_embed(), READY);
+        let out = cluster_track(
+            &pool,
+            MeetingTracks {
+                mic_wav: mic,
+                system_wav: None,
+            },
+            MeetingKind::InPerson,
+            CosineDistance::new(0.35),
+            TargetMode::FullClustering,
+            std::time::Duration::from_secs_f64(seconds),
+        )
+        .expect("the stub answers");
+        pool.shutdown();
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].end_seconds - seconds).abs() < 1e-6,
+            "the child was sent min_embed_seconds {} but the caller asked for \
+             {seconds} — a floor `cluster_track` substituted for the caller's is \
+             a default with no measurement behind it",
+            out[0].end_seconds
+        );
+    }
+
+    // …and no such default exists to substitute: the SHIPPING half of
+    // `diarize.rs` has no `Duration` constant a caller could be silently given
+    // other than the three liveness budgets, none of which describes audio.
+    //
+    // The scan stops at the unit-test module, and it fails CLOSED if it cannot
+    // find where that starts — YV128's lesson, that a source scanner anchored on
+    // a substring its own documentation will one day contain scans the wrong
+    // half and reports green. The `#[cfg(test)]` module's own `TEST_FLOOR` is a
+    // fixture and is exactly what a scan of the whole file would false-positive
+    // on.
+    let whole = include_str!("../src/diarize.rs");
+    let (src, _) = whole
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .expect("src/diarize.rs still has a `#[cfg(test)] mod tests` to stop at");
+    assert!(
+        src.contains("pub fn cluster_track("),
+        "the scanned half no longer contains the shipping API — the split landed \
+         in the wrong place and this guard is scanning nothing"
+    );
+    for line in src.lines() {
+        let line = line.trim();
+        if !line.starts_with("const ") && !line.starts_with("pub const ") {
+            continue;
+        }
+        if !line.contains("Duration") {
+            continue;
+        }
+        assert!(
+            line.contains("DEFAULT_REQUEST_DEADLINE")
+                || line.contains("READY_BUDGET")
+                || line.contains("IDLE_UNLOAD"),
+            "a new Duration constant appeared in diarize.rs: `{line}` — if it is \
+             a min_embed floor it is a tuned audio threshold with no measurement \
+             behind it, and YV122 spent an item making that impossible"
         );
     }
 }
