@@ -17,10 +17,10 @@
 //! headline capability was not delivered by anything that shipped.
 //!
 //! This file asks the question the spec asks — *is the right person offered, or
-//! missed?* — of two held-out SIMULATED conditions, and
-//! compares the shipped [`NormalizedBand`] against the fairest possible cosine
-//! band: one chosen by the same rule, on the same tuning split, at the same
-//! equal-error operating point. Nothing here is a synthetic geometry; every
+//! missed?* — of two held-out SIMULATED conditions, and compares the shipped
+//! [`NormalizedBand`] against the fairest possible cosine band: one chosen by
+//! the same rule, on the same tuning split, at the same equal-error operating
+//! point. Nothing here is a synthetic geometry; every
 //! trial is a real LibriSpeech speaker embedded by the real CAM++.
 //!
 //! **The honest gap, restated where it is easiest to miss.** The condition

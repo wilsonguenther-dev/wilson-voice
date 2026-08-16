@@ -26,7 +26,7 @@
 //! // → stdin: load a vendored model pair (YV123 supplies the paths)
 //! {"id":1,"kind":"load_models","segmentation_path":"…","embedding_path":"…"}
 //! // ← stdout
-//! {"id":1,"ok":true,"embedding_dim":192}
+//! {"id":1,"ok":true,"embedding_dim":512}   // whatever the child read off the file
 //! // → stdin: diarize one track's audio (YV126 wires this to Track A/B)
 //! {"id":2,"kind":"diarize","wav_path":"…","clustering_distance_threshold":0.35}
 //! // ← stdout
