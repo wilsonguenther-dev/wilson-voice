@@ -10,31 +10,27 @@
 //!
 //! # The geometry, and why it is the honest one
 //!
-//! Building this test surfaced a structural fact worth writing down, because it
-//! decides what the test can prove. Within ONE cluster, every candidate is
-//! scored against the SAME test embedding, so the test-side normalization term
-//! is identical for all of them — it is a monotone affine map of the raw score
-//! and therefore cannot change who wins. **Only the enrollment-side term can
-//! reorder candidates.** A test that claimed the test-side term flipped a
-//! ranking would be claiming something arithmetically impossible.
+//! Building this test surfaced the structural fact that eventually decided what
+//! the module ships. Within ONE cluster, every candidate is scored against the
+//! SAME test embedding, so the test-side term of symmetric AS-norm is identical
+//! for all of them — a monotone affine map of the raw score, which cannot change
+//! who wins. **Only the enrollment-side term can reorder candidates.** A test
+//! that claimed otherwise would be claiming something arithmetically impossible;
+//! a first draft of this file did, and had to be rebuilt.
 //!
-//! So the scenario is built on what the enrollment side actually corrects:
-//! HUBNESS. An identity direction, a condition direction, and the observation
-//! that a profile enrolled under the same condition as the test recording sits
-//! close to *every stranger ever recorded under that condition* — not because
-//! it is the right person, but because they share a microphone. That shared,
-//! non-identity mass is exactly what the cohort measures and what AS-norm
-//! subtracts. The true match, enrolled on a different device, has less of it
-//! and is penalised for it by a raw comparison.
-//!
-//! Both sides of the symmetric formula still ship: the enrollment side is what
-//! reorders a ranking, the test side is what keeps the resulting scores
-//! comparable ACROSS clusters and meetings, which is what YV129's bands need if
-//! they are ever expressed in normalized units.
+//! The design sweep later removed the test side entirely (it lost on the tuning
+//! split, see the module header), so what is left is exactly what this scenario
+//! was already built on: HUBNESS. An identity direction, a condition direction,
+//! and the observation that a profile enrolled under the same condition as the
+//! test recording sits close to *every stranger ever recorded under that
+//! condition* — not because it is the right person, but because they share a
+//! microphone. That shared, non-identity mass is what the cohort measures and
+//! what the normalization subtracts. The true match, enrolled on a different
+//! device, has less of it and is penalised for it by a raw comparison.
 
 use wilson_voice_lib::diarize_metrics::{cosine_similarity, CosineSimilarity};
 use wilson_voice_lib::speaker_asnorm::{
-    as_norm_score, rank_within_meeting, Candidate, ImpostorCohort, RankingBasis,
+    as_norm_score, rank_within_meeting, Candidate, ImpostorCohort, NormalizedBand, RankingBasis,
 };
 
 const DIM: usize = 24;
@@ -75,7 +71,7 @@ fn cohort() -> ImpostorCohort {
         rows.push(embed(identity, AIRPODS, weight));
         rows.push(embed(identity, LAPTOP_MIC_NEAR, weight));
     }
-    ImpostorCohort::from_rows(rows, 4, EMBEDDER).expect("cohort builds")
+    ImpostorCohort::from_rows(rows, 4, NormalizedBand::new(0.0), EMBEDDER).expect("cohort builds")
 }
 
 /// Wilson enrolled on the laptop microphone, distinctive: identity carries.
@@ -116,16 +112,13 @@ fn as_norm_improves_cross_condition_matching() {
 
     // ---- AS-norm gets it right --------------------------------------------
     let cohort = cohort();
-    let test_stats = cohort.statistics(&cluster).expect("test stats");
     let as_true = as_norm_score(
         raw_true,
         &cohort.statistics(&wilson_enrolled()).expect("enrolled stats"),
-        &test_stats,
     );
     let as_impostor = as_norm_score(
         raw_impostor,
         &cohort.statistics(&jeisil_enrolled()).expect("enrolled stats"),
-        &test_stats,
     );
 
     assert!(
@@ -157,7 +150,7 @@ fn the_whole_ranking_flips_not_just_the_pair() {
         },
     ];
 
-    let without = rank_within_meeting(&cluster, &candidates, None);
+    let without = rank_within_meeting(&candidates, None);
     assert_eq!(without.basis, RankingBasis::RawCosine);
     assert_eq!(
         without.best().unwrap().profile_id,
@@ -166,7 +159,7 @@ fn the_whole_ranking_flips_not_just_the_pair() {
     );
 
     let cohort = cohort();
-    let with = rank_within_meeting(&cluster, &candidates, Some(&cohort));
+    let with = rank_within_meeting(&candidates, Some(&cohort));
     assert_eq!(with.basis, RankingBasis::AsNorm);
     assert_eq!(
         with.best().unwrap().profile_id,
@@ -183,8 +176,8 @@ fn as_norm_is_not_a_cosine_similarity() {
     // score routinely lands outside [-1, 1], which is why it has its own type
     // and cannot be handed to an enrollment band expressed in cosine.
     let cohort = cohort();
-    let stats = cohort.statistics(&wilson_on_airpods()).expect("stats");
-    let score = as_norm_score(CosineSimilarity::new(1.0), &stats, &stats);
+    let stats = cohort.statistics(&wilson_enrolled()).expect("stats");
+    let score = as_norm_score(CosineSimilarity::new(1.0), &stats);
     assert!(
         score.get() > 1.0,
         "a perfect match should exceed the cosine range once normalized, got {}",

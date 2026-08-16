@@ -15,7 +15,7 @@
 
 use wilson_voice_lib::diarize_metrics::{cosine_similarity, CosineSimilarity};
 use wilson_voice_lib::speaker_asnorm::{
-    rank_within_meeting, Candidate, ImpostorCohort, RankingBasis,
+    rank_within_meeting, Candidate, ImpostorCohort, NormalizedBand, RankingBasis,
 };
 
 const DIM: usize = 16;
@@ -45,21 +45,27 @@ fn cohort() -> ImpostorCohort {
     let rows: Vec<Vec<f32>> = (6..14)
         .map(|i| unit(&[(i, 1.0), (1, 0.55 + 0.05 * (i as f32 - 6.0))]))
         .collect();
-    ImpostorCohort::from_rows(rows, 3, EMBEDDER).expect("cohort builds")
+    ImpostorCohort::from_rows(rows, 3, NormalizedBand::new(0.0), EMBEDDER).expect("cohort builds")
 }
 
 #[test]
 fn the_cohort_actually_has_spread_here() {
+    // The normalization divides by the spread of a PROFILE's cohort scores, so
+    // the helper above has to give each enrolled centroid a cohort that overlaps
+    // it and varies. A cohort orthogonal to the candidates would hand every one
+    // of them a standard deviation of zero, and the ranking would silently
+    // become "input order" — which is exactly what a first cut of this file did.
     let cohort = cohort();
-    let cluster = unit(&[(1, 1.0), (2, 0.55)]);
-    let stats = cohort.statistics(&cluster).expect("statistics");
-    assert!(
-        stats.std_dev() > 1e-3,
-        "a cohort with no spread against the cluster normalizes every candidate \
-         to the same number and ranks nothing: sigma {:.3e}",
-        stats.std_dev()
-    );
-    assert!(stats.mean() > 0.0, "and it must actually overlap: mean {:.4}", stats.mean());
+    for centroid in [unit(&[(1, 1.0), (2, 0.30)]), unit(&[(1, 1.0), (2, 0.52)])] {
+        let stats = cohort.statistics(&centroid).expect("statistics");
+        assert!(
+            stats.std_dev() > 1e-3,
+            "a cohort with no spread against a profile normalizes it to a \
+             constant and ranks nothing: sigma {:.3e}",
+            stats.std_dev()
+        );
+        assert!(stats.mean() > 0.0, "and it must actually overlap: mean {:.4}", stats.mean());
+    }
 }
 
 fn candidates(cluster: &[f32], profiles: &[(&str, Vec<f32>)]) -> Vec<Candidate> {
@@ -91,7 +97,7 @@ fn within_meeting_ranking_prefers_best_candidate() {
     assert!((hi - lo).abs() < 0.05, "and near each other: {lo:.4} / {hi:.4}");
 
     let cohort = cohort();
-    let ranking = rank_within_meeting(&cluster, &cands, Some(&cohort));
+    let ranking = rank_within_meeting(&cands, Some(&cohort));
 
     // ONE answer for one voice.
     assert_eq!(
@@ -135,7 +141,7 @@ fn six_plausible_profiles_still_produce_one_suggestion() {
     );
 
     let cohort = cohort();
-    let ranking = rank_within_meeting(&cluster, &cands, Some(&cohort));
+    let ranking = rank_within_meeting(&cands, Some(&cohort));
 
     assert_eq!(ranking.ordered.len(), 6);
     assert_eq!(
@@ -159,7 +165,7 @@ fn ranking_is_deterministic_and_stable_on_ties() {
     ];
     let cohort = cohort();
     for _ in 0..8 {
-        let r = rank_within_meeting(&cluster, &cands, Some(&cohort));
+        let r = rank_within_meeting(&cands, Some(&cohort));
         assert_eq!(r.best().unwrap().profile_id, "first");
         assert_eq!(r.margin().unwrap(), 0.0, "a tie has zero margin, honestly reported");
     }
@@ -179,7 +185,7 @@ fn no_cohort_still_ranks_and_says_why() {
     ];
     let cands = candidates(&cluster, &profiles);
 
-    let ranking = rank_within_meeting(&cluster, &cands, None);
+    let ranking = rank_within_meeting(&cands, None);
     assert_eq!(ranking.basis, RankingBasis::RawCosine);
     assert!(ranking.degraded_because.is_some(), "a degrade is always explained");
     assert_eq!(ranking.best().unwrap().profile_id, "jeisil");
@@ -200,9 +206,9 @@ fn a_wrong_width_cohort_degrades_instead_of_scoring_nonsense() {
         &cluster,
         &[("aidan", unit(&[(1, 1.0), (2, 0.30)])), ("jeisil", unit(&[(1, 1.0), (2, 0.52)]))],
     );
-    let narrow = ImpostorCohort::from_rows(vec![vec![1.0, 0.0, 0.0, 0.0]; 6], 3, EMBEDDER).unwrap();
+    let narrow = ImpostorCohort::from_rows(vec![vec![1.0, 0.0, 0.0, 0.0]; 6], 3, NormalizedBand::new(0.0), EMBEDDER).unwrap();
 
-    let ranking = rank_within_meeting(&cluster, &cands, Some(&narrow));
+    let ranking = rank_within_meeting(&cands, Some(&narrow));
     assert_eq!(ranking.basis, RankingBasis::RawCosine);
     assert!(ranking
         .degraded_because
@@ -233,7 +239,7 @@ fn an_unnormalizable_candidate_never_outranks_a_measured_one() {
         },
     ];
     let cohort = cohort();
-    let ranking = rank_within_meeting(&cluster, &cands, Some(&cohort));
+    let ranking = rank_within_meeting(&cands, Some(&cohort));
 
     assert_eq!(
         ranking.best().unwrap().profile_id,
@@ -265,7 +271,7 @@ fn an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one() {
         },
     ];
     let cohort = cohort();
-    let ranking = rank_within_meeting(&cluster, &cands, Some(&cohort));
+    let ranking = rank_within_meeting(&cands, Some(&cohort));
 
     assert_eq!(ranking.basis, RankingBasis::AsNorm);
     assert_eq!(ranking.best().unwrap().profile_id, "measured");
@@ -280,7 +286,7 @@ fn an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one() {
         &cluster,
         &[("aidan", unit(&[(1, 1.0), (2, 0.30)])), ("jeisil", unit(&[(1, 1.0), (2, 0.52)]))],
     );
-    let ok = rank_within_meeting(&cluster, &both, Some(&cohort));
+    let ok = rank_within_meeting(&both, Some(&cohort));
     let m = ok.margin().expect("two measured candidates have a margin");
     assert!(m.is_finite() && m > 0.0, "margin {m}");
 }

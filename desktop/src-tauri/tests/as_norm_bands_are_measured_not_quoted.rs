@@ -1,25 +1,31 @@
-//! YV131 — this item ships no tuned decision threshold, and a machine says so.
+//! YV131 — this item ships exactly one decision band, and it is measured.
 //!
-//! The rule this backlog is built on: every threshold is an OUTPUT of YV120's
-//! harness, never an input copied from a vendor blog. YV131's answer is
-//! stronger than "we measured ours" — it is "we added none". AS-norm changes
-//! the ORDER of candidates and the SCALE of scores; the accept/reject bands
-//! stay in cosine units where YV129 measured them.
+//! This file used to be called `as_norm_ships_no_tuned_threshold.rs`, and the
+//! rename is the honest part of this change. "We added no threshold" is a
+//! stronger-sounding claim than "we measured ours", and it was the wrong claim:
+//! a module that only reorders candidates cannot convert an absolute band into
+//! a relative one, which is the thing merged finding #21 asks for and the thing
+//! Wilson's laptop-vs-AirPods case needs. So YV131 does ship a band, in AS-norm
+//! units, and the rule this backlog actually runs on is unchanged —
 //!
-//! That claim is only worth anything if it cannot rot. The same posture YV126
-//! and YV130 already took (`*_ships_no_tuned_threshold.rs`): scan the shipped
-//! module and fail on a float literal that looks like a decision boundary.
+//!   **every threshold is an OUTPUT of YV120's harness, never an input copied
+//!   from a vendor blog.**
 //!
-//! # Why a type is the real guard and this is the backstop
+//! That is what this file enforces now. Three things have to hold:
 //!
-//! The load-bearing protection is that [`NormalizedScore`] is not a
-//! [`CosineSimilarity`], so a normalized score cannot be compared against an
-//! enrollment band without a compile error. This file catches the other way in:
-//! somebody introducing a NEW constant in normalized units — `if score > 1.8`.
-//! A grep cannot understand code, so it errs toward complaining, and every
-//! number that legitimately belongs here is listed below with its reason.
+//! 1. The band is DATA, not a code constant — it lives in the cohort manifest
+//!    beside the rows it was measured against, with the split and rule that
+//!    produced it, so it cannot drift from the cohort or be edited without
+//!    regenerating what it describes.
+//! 2. No OTHER float in the shipped module is a decision boundary. The scan
+//!    below is the tripwire; the allow-list carries a reason per number.
+//! 3. The vendor-blog cosine bands still appear nowhere, and there is still no
+//!    conversion between a normalized score and a cosine similarity — the band
+//!    is compared in the unit it was measured in, which is the entire point.
 
 use std::path::PathBuf;
+
+use wilson_voice_lib::speaker_asnorm::{shipped_manifest_json, ImpostorCohort};
 
 /// The SHIPPED half of the module: everything above `#[cfg(test)]`.
 ///
@@ -42,7 +48,6 @@ fn module_source() -> String {
 /// Numbers that are allowed to appear in the module, each with the reason it is
 /// not a decision threshold. Anything else with a decimal point fails the scan.
 const ALLOWED: &[(&str, &str)] = &[
-    ("0.5", "the symmetric average of the two AS-norm sides — the '/2' in (a+b)/2"),
     ("1e-6", "DEGENERATE_SPREAD: the width of f32 arithmetic, not a decision"),
     ("1.0", "used only to test a norm against unity in assertions/normalization"),
     ("0.0", "zero"),
@@ -96,9 +101,10 @@ fn no_float_literal_in_the_module_is_an_undocumented_decision_boundary() {
     assert!(
         offenders.is_empty(),
         "speaker_asnorm.rs grew a float constant that is not in the allow-list. \
-         If it is a DECISION threshold it does not belong in this item at all — \
-         YV131 ships none, and the bands live in YV129's cosine units. If it is \
-         arithmetic, add it to ALLOWED with the reason:\n  {}",
+         If it is a DECISION boundary it does not belong in the source at all — \
+         the one this item ships lives in the cohort manifest with the split and \
+         rule that measured it. If it is arithmetic, add it to ALLOWED with the \
+         reason:\n  {}",
         offenders.join("\n  ")
     );
 }
@@ -107,7 +113,8 @@ fn no_float_literal_in_the_module_is_an_undocumented_decision_boundary() {
 fn the_module_never_names_the_blog_bands() {
     // The specific numbers finding #16 objected to: 0.70 / 0.55, quoted from
     // OpenWhispr's post about a different pipeline. If they ever appear in this
-    // module they were copied, because nothing here measures in cosine units.
+    // module they were copied — nothing here is measured in cosine units, and
+    // the band that IS shipped is a z-score that came out of a sweep.
     let src = module_source();
     for banned in ["0.70", "0.55", "0.7_", "0.65"] {
         for (n, line) in src.lines().enumerate() {
@@ -116,8 +123,8 @@ fn the_module_never_names_the_blog_bands() {
             }
             assert!(
                 !line.contains(banned),
-                "line {}: `{banned}` is a vendor-blog enrollment band, and this \
-                 module does not make accept/reject decisions at all: {}",
+                "line {}: `{banned}` is a vendor-blog enrollment band, and every \
+                 decision number in this item came out of YV120's harness: {}",
                 n + 1,
                 line.trim()
             );
@@ -126,23 +133,37 @@ fn the_module_never_names_the_blog_bands() {
 }
 
 #[test]
-fn the_tuned_hyperparameter_lives_in_the_manifest_not_the_code() {
-    // K — how many cohort scores enter the mean and standard deviation — IS
-    // tuned, on dev-clean, reported on dev-other. It is data about the shipped
-    // cohort, so it travels with the cohort rather than being a constant
-    // somebody can change without regenerating what it describes.
+fn the_tuned_numbers_live_in_the_manifest_not_the_code() {
+    // K, the distinctness gate and the admission band are all tuned. They are
+    // data about the shipped cohort, so they travel with the cohort rather than
+    // being constants somebody can change without regenerating what they
+    // describe — a band that drifts from the rows it was measured against is a
+    // silent accuracy regression, and the type system cannot see it.
     let src = module_source();
+    for forbidden in ["const TOP_K", "const DEFAULT_K", "const BAND", "const ADMISSION"] {
+        assert!(
+            !src.contains(forbidden),
+            "`{forbidden}` puts a tuned number in the source, away from the \
+             cohort it was measured against"
+        );
+    }
+
+    let manifest: serde_json::Value = serde_json::from_str(shipped_manifest_json()).unwrap();
+    assert!(manifest["top_k"].as_u64().is_some(), "K must be in the manifest");
     assert!(
-        !src.contains("const TOP_K") && !src.contains("const DEFAULT_K"),
-        "top-K belongs to the cohort manifest, not to the code — a K that can \
-         drift from the cohort it was measured against is a silent regression"
+        manifest["tuning"]["admission"]["normalized_band"].as_f64().is_some(),
+        "the admission band must be in the manifest"
+    );
+    assert!(
+        manifest["tuning"]["distinctness"]["gate"].as_f64().is_some(),
+        "the distinctness gate must be in the manifest"
     );
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(wilson_voice_lib::speaker_asnorm::shipped_manifest_json()).unwrap();
-    assert!(
-        manifest["top_k"].as_u64().is_some(),
-        "and it must actually be in the manifest"
+    // And the band the app admits with is the one the transcript describes.
+    let cohort = ImpostorCohort::shipped().expect("shipped cohort decodes");
+    assert_eq!(
+        cohort.admission_band().get(),
+        manifest["tuning"]["admission"]["normalized_band"].as_f64().unwrap() as f32,
     );
 }
 
@@ -150,12 +171,15 @@ fn the_tuned_hyperparameter_lives_in_the_manifest_not_the_code() {
 fn normalized_scores_cannot_reach_a_cosine_band() {
     // The type-level guard, asserted as a property of the public API rather
     // than as prose: there is no conversion, in either direction, between the
-    // unit this module scores in and the unit enrollment bands are expressed
-    // in. If someone adds one, this catches it in review as a source change.
+    // unit this module scores in and the unit YV129's bands are expressed in.
+    // A band in this item had to be MEASURED in normalized units; it could not
+    // be converted from a cosine one, and that is not a limitation, it is the
+    // reason the item exists.
     let src = module_source();
     for forbidden in [
         "impl From<NormalizedScore> for CosineSimilarity",
         "impl From<CosineSimilarity> for NormalizedScore",
+        "impl From<CosineSimilarity> for NormalizedBand",
         "fn as_cosine",
         "fn to_cosine",
     ] {

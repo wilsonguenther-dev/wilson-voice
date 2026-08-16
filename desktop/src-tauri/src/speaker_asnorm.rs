@@ -14,40 +14,87 @@
 //!
 //! # The two mechanisms
 //!
-//! **(1) AS-norm.** An incoming embedding is scored against a small shipped
-//! cohort of voices that are definitely nobody's enrolled profile, and the
-//! target score is expressed in units of that impostor distribution:
-//! *how far above a stranger is this, measured in strangers?* A shift in the
-//! recording condition moves the target score and the cohort scores together,
-//! so the ratio survives what the raw number does not.
+//! **(1) AS-norm.** A profile's score is expressed in units of how that profile
+//! scores against a small shipped cohort of voices that are definitely nobody's
+//! enrolled speaker: *how far above a stranger is this, measured in strangers?*
+//! A raw cosine carries a per-profile offset that has nothing to do with
+//! identity — some enrolled centroids sit in a dense part of the space and
+//! score high against everybody — and a fixed band cannot see that offset,
+//! which is why the band moves when the recording condition does. Dividing the
+//! offset out is what lets ONE band survive a condition change.
 //!
 //! **(2) Within-meeting ranking.** When several enrolled profiles are plausible
 //! for one cluster, they are ranked against each other and the best one is
 //! offered — once. The right question in a six-person meeting is "which of
-//! these people is this", not "does each of them independently clear 0.70",
+//! these people is this", not "does each of them independently clear a floor",
 //! which asks the user six questions about one voice.
 //!
-//! # What this module does NOT contain
+//! # Which normalization, and how that was decided
 //!
-//! **No threshold.** Not one. [`NormalizedScore`] is deliberately not a
-//! [`CosineSimilarity`] and cannot be compared to one — the accept/reject bands
-//! stay where YV129 put them, measured, in cosine units, and this module only
-//! decides ORDER. `tests/as_norm_ships_no_tuned_threshold.rs` enforces that by
-//! scanning this file. The one tuned number here, `top_k` in the cohort
-//! manifest, is how many cohort scores enter a mean and a standard deviation;
-//! it decides nothing on its own, and it was chosen on one LibriSpeech split
-//! and reported on another (docs/yap23-asnorm-measurement.md).
+//! The literature form of AS-norm is SYMMETRIC — an enrollment-side term and a
+//! test-side term, averaged (Matejka et al., Interspeech 2017) — and the epic
+//! plan asks for the test side by name ("the impostor-score distribution for
+//! that specific recording condition"). This module ships the **enrollment side
+//! only**, and that is a measurement, not a shortcut.
+//!
+//! An adversarial review of the first draft found that the test-side term had
+//! no observable consequence anywhere in the shipped code: within one cluster
+//! every candidate is scored against the same test embedding, so the term is
+//! identical across them — a monotone affine map of the raw score, which cannot
+//! reorder anything — and deleting it left every test green. So all three forms
+//! (enrollment-only, test-only, symmetric) were swept against YV120's harness on
+//! the tuning split, across two cohort variants and every K, and the transcript
+//! is committed in `docs/yap23-asnorm-measurement.json`. Enrollment-only won,
+//! and it won on the arm this item exists for. Symmetric was 0.4 points of EER
+//! behind; test-only was 2 points behind.
+//!
+//! Half a formula that no test can falsify does not ship because a paper uses
+//! it. That is the whole point of the eval discipline this backlog runs on:
+//! numbers are outputs of the harness, and so are designs.
+//!
+//! # The band, and why this module ships one
+//!
+//! An earlier draft of this item shipped **no** accept/reject band: it
+//! normalized, it ranked, and it left admission in cosine units where YV129
+//! measured it. That was the wrong call, and the reason is the finding itself.
+//! Ranking only ever reorders candidates something else already admitted, so a
+//! laptop-mic profile whose cross-device cosine falls under a fixed band is
+//! still missed as `New` — which is exactly the failure finding #21 describes
+//! and exactly the case Wilson asked about. Converting the absolute question
+//! into a relative one is the deliverable, and a conversion nothing consumes is
+//! not a conversion.
+//!
+//! So there is one band, [`NormalizedBand`], in AS-norm units. It is **tuned**,
+//! and this module says so rather than hiding behind "we ship no thresholds":
+//! it is the equal-error crossing of the AS-norm score distribution on
+//! LibriSpeech `dev-clean`, frozen there, and reported on `dev-other`. It
+//! travels in the cohort manifest beside `top_k` and the distinctness gate —
+//! all three tuned numbers carry the split, the rule and the operating point
+//! that produced them, because a band whose provenance is a code comment is a
+//! band nobody can re-derive. See `docs/yap23-asnorm-measurement.md`.
+//!
+//! [`NormalizedScore`] is still deliberately not a [`CosineSimilarity`], and
+//! there is still no conversion between them: the band is compared to the score
+//! in the unit the score is measured in, which is the entire point.
 //!
 //! # Measured, on the harness, not quoted
 //!
-//! Held out on LibriSpeech `dev-other`, 33 speakers the design was never tuned
-//! against, through a simulated headset-to-laptop channel: equal error rate
-//! **15.15% raw → 12.12% AS-norm**, a 20% relative reduction, and AS-norm is
-//! ahead in all ten split-by-channel cells measured. The full ladder, including
-//! the far-field conditions where the benefit shrinks toward nothing, is in
-//! `docs/yap23-asnorm-measurement.md`; the per-trial scores are committed, and
-//! `tests/as_norm_cross_condition_measured.rs` recomputes both numbers through
-//! YV120's `enrollment_eer` rather than trusting the line you just read.
+//! Held out on LibriSpeech `dev-other` — speakers the design was never tuned
+//! against — through a simulated headset-to-laptop channel, AS-norm reduces the
+//! equal error rate, with a speaker-level bootstrap interval published beside
+//! the point estimate because an EER delta without an interval is a number of
+//! unknown size. It also **costs** a little in the matched-condition control,
+//! where there is no condition shift to correct for; that rung is published too,
+//! and the full ladder — including the far-field ones where the benefit shrinks
+//! toward nothing — is in `docs/yap23-asnorm-measurement.md`.
+//!
+//! `tests/as_norm_cross_condition_measured.rs` does not trust any of that: the
+//! measurement JSON commits the raw PRIMITIVES (speaker ids, per-side cohort
+//! statistics, raw cosines) and the tests recompute every published number
+//! through [`as_norm_score`] — the arithmetic that actually ships — and through
+//! YV120's `eer_sweep`. Change the formula and the published numbers move and
+//! the test goes red. That is the property the first draft lacked, and it is why
+//! the transcript commits primitives rather than finished scores.
 
 use crate::diarize_metrics::{cosine_similarity, eer_sweep, CosineSimilarity, EerSweep};
 use serde::Deserialize;
@@ -78,6 +125,34 @@ impl NormalizedScore {
     /// The raw number. One greppable escape from the type, same as YV120's.
     pub fn get(self) -> f32 {
         self.0
+    }
+}
+
+/// The accept/reject band, in the same units as [`NormalizedScore`].
+///
+/// A separate type from the score for the reason YV120 gives everywhere else: a
+/// band and an observation are not interchangeable even when they share a unit,
+/// and the compiler is a cheaper reviewer than a person. There is deliberately
+/// no `From<CosineSimilarity>` — a cosine band cannot be converted into this
+/// one, it has to be MEASURED in this unit, which is the work
+/// `scripts/yv131-build-impostor-cohort.py` does on the tuning split.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct NormalizedBand(f32);
+
+impl NormalizedBand {
+    pub fn new(value: f32) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+
+    /// `accept if score >= band` — the same decision rule YV120's `eer_sweep`
+    /// sweeps, so the band it reports can be shipped verbatim without anybody
+    /// re-deriving which side of the comparison is which.
+    pub fn admits(self, score: NormalizedScore) -> bool {
+        score.get() >= self.0
     }
 }
 
@@ -128,7 +203,22 @@ struct CohortManifest {
     count: usize,
     dim: usize,
     top_k: usize,
+    /// Where the three tuned numbers came from. Only the admission band is read
+    /// at runtime; the rest is the provenance
+    /// `tests/as_norm_cohort_is_provenanced.rs` checks, and it lives beside the
+    /// value rather than in a doc somebody can forget to update.
+    tuning: CohortTuning,
     embedder: CohortEmbedder,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CohortTuning {
+    admission: CohortAdmission,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CohortAdmission {
+    normalized_band: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -178,6 +268,7 @@ pub struct ImpostorCohort {
     rows: Vec<Vec<f32>>,
     dim: usize,
     top_k: usize,
+    band: NormalizedBand,
     embedder_sha256: String,
 }
 
@@ -234,10 +325,16 @@ impl ImpostorCohort {
                     .collect::<Vec<f32>>(),
             );
         }
+        if !manifest.tuning.admission.normalized_band.is_finite() {
+            return Err(CohortError::ManifestMismatch(
+                "the admission band is not a finite number".into(),
+            ));
+        }
         Ok(Self {
             rows,
             dim: manifest.dim,
             top_k: manifest.top_k,
+            band: NormalizedBand::new(manifest.tuning.admission.normalized_band),
             embedder_sha256: manifest.embedder.model_sha256.clone(),
         })
     }
@@ -245,7 +342,12 @@ impl ImpostorCohort {
     /// Build a cohort in memory. Tests use this; nothing in the app does, which
     /// is why it takes the same invariants the decoder enforces rather than
     /// trusting its caller.
-    pub fn from_rows(rows: Vec<Vec<f32>>, top_k: usize, embedder_sha256: impl Into<String>) -> Result<Self, CohortError> {
+    pub fn from_rows(
+        rows: Vec<Vec<f32>>,
+        top_k: usize,
+        band: NormalizedBand,
+        embedder_sha256: impl Into<String>,
+    ) -> Result<Self, CohortError> {
         let dim = rows.first().map(|r| r.len()).unwrap_or(0);
         if rows.is_empty() || dim == 0 {
             return Err(CohortError::ManifestMismatch(
@@ -262,7 +364,16 @@ impl ImpostorCohort {
                 rows.len()
             )));
         }
-        Ok(Self { rows, dim, top_k, embedder_sha256: embedder_sha256.into() })
+        Ok(Self { rows, dim, top_k, band, embedder_sha256: embedder_sha256.into() })
+    }
+
+    /// The measured accept/reject band this cohort was tuned with.
+    ///
+    /// It belongs to the cohort, not to the code, for the same reason `top_k`
+    /// does: it was measured against THESE rows, and a band that can drift from
+    /// the cohort it was measured against is a silent accuracy regression.
+    pub fn admission_band(&self) -> NormalizedBand {
+        self.band
     }
 
     pub fn len(&self) -> usize {
@@ -348,6 +459,20 @@ pub struct CohortStatistics {
 }
 
 impl CohortStatistics {
+    /// Rebuild one side's statistics from numbers computed elsewhere.
+    ///
+    /// This exists for the measured arm. `docs/yap23-asnorm-measurement.json`
+    /// commits the PRIMITIVES a trial was built from — each side's top-K mean
+    /// and standard deviation, and the raw cosine — rather than the finished
+    /// AS-norm score, so `tests/as_norm_cross_condition_measured.rs` can push
+    /// them back through the SHIPPED [`as_norm_score`] and recompute every
+    /// published number. Committing finished scores instead, which the first
+    /// draft did, leaves the shipped arithmetic untested by the one arm that
+    /// exists to justify it.
+    pub fn new(mean: f32, std_dev: f32, k: usize) -> Self {
+        Self { mean, std_dev, k }
+    }
+
     pub fn mean(&self) -> f32 {
         self.mean
     }
@@ -376,26 +501,29 @@ impl CohortStatistics {
     }
 }
 
-/// Symmetric adaptive score normalization.
+/// Adaptive score normalization, enrollment side.
 ///
-/// `0.5 * [ (s - mu_e)/sigma_e + (s - mu_t)/sigma_t ]`, the standard AS-norm of
-/// Matejka et al. (Interspeech 2017), with the enrollment side and the test side
-/// each normalized by their own top-K cohort statistics.
+/// `(s - mu_e) / sigma_e`, where `mu_e` and `sigma_e` are the enrolled
+/// centroid's top-K impostor-cohort statistics: *how many strangers above a
+/// stranger is this profile's score?*
 ///
-/// Both sides are load-bearing and they close different holes. The
-/// ENROLLMENT-side term removes hubness: some enrolled centroids sit in a dense
-/// part of the space and score high against everybody, so they win rankings they
-/// should lose. The TEST-side term is the cross-condition one this item exists
-/// for: a recording condition that depresses every score depresses the cohort
-/// scores too, and dividing it out is what turns "is this ≥ 0.70" into "is this
-/// meaningfully closer than a stranger, in this exact condition".
-pub fn as_norm_score(
-    raw: CosineSimilarity,
-    enrollment: &CohortStatistics,
-    test: &CohortStatistics,
-) -> NormalizedScore {
-    let s = raw.get();
-    NormalizedScore::new(0.5 * (enrollment.z(s) + test.z(s)))
+/// What it corrects is **hubness**. Some enrolled centroids sit in a dense part
+/// of the embedding space and score high against everybody — a profile enrolled
+/// on the recording's own device is close to every stranger recorded on that
+/// device — and a raw cosine cannot tell that apart from being the right
+/// person. Dividing it out does two things at once: it lets the right profile
+/// win a ranking it was losing on shared-microphone mass alone, and it removes
+/// the per-profile offset that makes a FIXED cosine band mean different things
+/// for different people and different recording conditions. The second is what
+/// makes [`NormalizedBand`] possible.
+///
+/// **The test-side term of symmetric AS-norm is deliberately absent**, and the
+/// module header explains why at length: it was swept against the harness, on
+/// the tuning split, in both directions and at every K, and it lost. Adding it
+/// back is a design change that has to beat `docs/yap23-asnorm-measurement.json`
+/// before it is a design change worth making.
+pub fn as_norm_score(raw: CosineSimilarity, enrollment: &CohortStatistics) -> NormalizedScore {
+    NormalizedScore::new(enrollment.z(raw.get()))
 }
 
 /// The equal-error point of a labelled distribution of AS-NORM scores.
@@ -464,6 +592,33 @@ pub struct Ranking {
     pub degraded_because: Option<String>,
 }
 
+/// What to do with one cluster, once its candidates are ranked and the winner
+/// has been asked whether it clears the band.
+///
+/// This is the type that makes YV131 a cross-device fix rather than a reordering
+/// of whatever some other gate already admitted. The spec's third acceptance
+/// criterion is the case where a profile enrolled on a laptop microphone is
+/// **missed as `New`** when the same person turns up on AirPods; that only stops
+/// happening if something compares a condition-normalized score to a
+/// condition-normalized band, which is what [`Ranking::suggestion`] does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Suggestion<'a> {
+    /// The best candidate cleared the band. Offer it — once, for the whole
+    /// cluster.
+    Suggested(&'a RankedCandidate),
+    /// Nobody cleared it. This is a new voice, and saying so is a decision, not
+    /// a failure to make one.
+    NewVoice,
+    /// The ranking degraded to raw cosine (no cohort, wrong embedder, wrong
+    /// width, no spread), so there is no normalized score to compare and this
+    /// module has no admission opinion. The caller falls back to the absolute
+    /// cosine band it used before this item existed. Carried as its own variant
+    /// rather than folded into `NewVoice`, because "this is a stranger" and "I
+    /// could not tell" are different answers and a user-facing prompt should not
+    /// confuse them.
+    NoNormalizedOpinion { because: String },
+}
+
 impl Ranking {
     /// The one candidate to offer the user for this cluster.
     ///
@@ -493,6 +648,49 @@ impl Ranking {
             RankingBasis::RawCosine => Some(a.raw.get() - b.raw.get()),
         }
     }
+
+    /// Admit the winner, or call the cluster a new voice.
+    ///
+    /// The accept/reject decision this item exists to move out of cosine units.
+    /// A cluster recorded on a different device than the profile was enrolled on
+    /// scores low in raw cosine — but so does every stranger recorded on that
+    /// device, and the band is expressed relative to them, so the true match
+    /// still clears it. That is the whole mechanism, and
+    /// `tests/as_norm_admits_across_conditions.rs` measures how often it
+    /// actually rescues a match a fixed cosine band drops, on the held-out
+    /// split, at a published false-accept rate.
+    ///
+    /// Only the WINNER is tested against the band. A cluster is one voice, so it
+    /// gets one question — testing every candidate independently is precisely
+    /// the "six questions about one voice" behaviour this item's second
+    /// mechanism replaced.
+    pub fn suggestion(&self, band: NormalizedBand) -> Suggestion<'_> {
+        if self.basis == RankingBasis::RawCosine {
+            return Suggestion::NoNormalizedOpinion {
+                because: self
+                    .degraded_because
+                    .clone()
+                    .unwrap_or_else(|| "ranking is not in normalized units".into()),
+            };
+        }
+        match self.ordered.first() {
+            // `rank_within_meeting` degrades to `RawCosine` when NOTHING could
+            // be normalized, and sorts normalized candidates ahead of
+            // un-normalized ones, so an `AsNorm` winner always carries a score.
+            // The `None` arm is defensive rather than reachable: an invariant a
+            // reader has to reconstruct from two other functions is not one to
+            // answer a user-facing question on, and "I could not tell" is the
+            // only honest answer if it is ever violated.
+            Some(best) => match best.normalized {
+                Some(score) if band.admits(score) => Suggestion::Suggested(best),
+                Some(_) => Suggestion::NewVoice,
+                None => Suggestion::NoNormalizedOpinion {
+                    because: "no candidate could be normalized against the cohort".into(),
+                },
+            },
+            None => Suggestion::NewVoice,
+        }
+    }
 }
 
 /// Rank enrolled profiles against one cluster, relative to each other.
@@ -506,12 +704,18 @@ impl Ranking {
 /// The cohort is optional and its absence is not an error: with no cohort, or
 /// with one built by a different embedder, the ranking falls back to raw cosine
 /// and records why. The user still gets a ranked suggestion; it is simply
-/// computed the way it would have been before this item existed.
-pub fn rank_within_meeting(
-    cluster_embedding: &[f32],
-    candidates: &[Candidate],
-    cohort: Option<&ImpostorCohort>,
-) -> Ranking {
+/// computed the way it would have been before this item existed — and
+/// [`Ranking::suggestion`] then declines to make an admission decision rather
+/// than making one in the wrong unit.
+///
+/// **It does not take the cluster embedding.** It used to, for the test-side
+/// normalization term the design sweep removed, and carrying a parameter the
+/// score no longer reads would be an invitation to believe it still does. The
+/// raw cosine each candidate carries is the only thing about the cluster this
+/// function needs; computing it — and checking the live embedding against
+/// [`ImpostorCohort::require_embedder`] — belongs to the caller that has the
+/// embedding in the first place.
+pub fn rank_within_meeting(candidates: &[Candidate], cohort: Option<&ImpostorCohort>) -> Ranking {
     let raw_only = |why: Option<String>| -> Ranking {
         let mut ordered: Vec<RankedCandidate> = candidates
             .iter()
@@ -529,35 +733,53 @@ pub fn rank_within_meeting(
     let Some(cohort) = cohort else {
         return raw_only(Some("no impostor cohort supplied".into()));
     };
-    let test_stats = match cohort.statistics(cluster_embedding) {
-        Ok(s) => s,
-        Err(e) => return raw_only(Some(e.to_string())),
-    };
-    // A cohort with no spread against this cluster normalizes every candidate to
-    // the same number, and a ranking in which every score is identical is not a
-    // ranking — it silently becomes "whatever order the sort happened to leave
-    // them in". Degrading here is what makes that failure loud: it is how this
-    // very test file caught a cohort that was orthogonal to the space its
-    // candidates lived in, which had produced a confident, meaningless order.
-    if test_stats.std_dev() < DEGENERATE_SPREAD {
-        return raw_only(Some(format!(
-            "impostor cohort has no spread against this cluster (sigma {:.2e})",
-            test_stats.std_dev()
-        )));
-    }
 
     let mut ordered = Vec::with_capacity(candidates.len());
+    let mut first_error: Option<String> = None;
+    let mut normalized_count = 0usize;
     for c in candidates {
-        let normalized = c
-            .centroid
-            .as_deref()
-            .and_then(|centroid| cohort.statistics(centroid).ok())
-            .map(|enrollment_stats| as_norm_score(c.raw, &enrollment_stats, &test_stats));
+        let stats = match c.centroid.as_deref() {
+            None => None,
+            Some(centroid) => match cohort.statistics(centroid) {
+                // A cohort with no spread against this centroid normalizes it to
+                // a constant, and a score that is the same number whatever the
+                // trial was is not a score. Degrading is what makes that failure
+                // loud: it is how this module's own tests caught a cohort
+                // orthogonal to the space its candidates lived in, which had been
+                // producing a confident, meaningless order. `CohortStatistics::z`
+                // returns 0.0 there, which is the right value and the wrong
+                // silence.
+                Ok(s) if s.std_dev() < DEGENERATE_SPREAD => {
+                    return raw_only(Some(format!(
+                        "impostor cohort has no spread against profile `{}` (sigma {:.2e})",
+                        c.profile_id,
+                        s.std_dev()
+                    )));
+                }
+                Ok(s) => Some(s),
+                Err(e) => {
+                    first_error.get_or_insert(e.to_string());
+                    None
+                }
+            },
+        };
+        if stats.is_some() {
+            normalized_count += 1;
+        }
         ordered.push(RankedCandidate {
             profile_id: c.profile_id.clone(),
             raw: c.raw,
-            normalized,
+            normalized: stats.map(|s| as_norm_score(c.raw, &s)),
         });
+    }
+    // Not one candidate could be normalized — a cohort of the wrong width, or
+    // no retained centroids at all. Calling that an AS-norm ranking would be
+    // labelling raw cosine as something it is not, and `Ranking::suggestion`
+    // would then admit or reject on a band nothing was measured against.
+    if normalized_count == 0 {
+        return raw_only(Some(first_error.unwrap_or_else(|| {
+            "no candidate carried a centroid to normalize against the cohort".into()
+        })));
     }
 
     // A candidate with no normalized score sorts below every candidate that has
@@ -610,10 +832,42 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_band_is_finite_and_comes_from_the_manifest() {
+        let cohort = ImpostorCohort::shipped().unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(COHORT_JSON).unwrap();
+        assert!(cohort.admission_band().get().is_finite());
+        assert_eq!(
+            cohort.admission_band().get(),
+            manifest["tuning"]["admission"]["normalized_band"].as_f64().unwrap() as f32,
+            "the band the app admits with must be the one the manifest recorded \
+             the tuning transcript for"
+        );
+    }
+
+    #[test]
+    fn a_degraded_ranking_has_no_admission_opinion() {
+        // The distinction the enum exists for: with no cohort there is no
+        // normalized score, so the answer is "ask the caller's absolute band",
+        // never "this is a stranger".
+        let ranking = rank_within_meeting(
+            &[Candidate {
+                profile_id: "a".into(),
+                raw: CosineSimilarity::new(0.9),
+                centroid: Some(vec![1.0, 0.0, 0.0]),
+            }],
+            None,
+        );
+        assert!(matches!(
+            ranking.suggestion(NormalizedBand::new(0.0)),
+            Suggestion::NoNormalizedOpinion { .. }
+        ));
+    }
+
+    #[test]
     fn zero_spread_contributes_nothing_rather_than_infinity() {
         let stats = CohortStatistics { mean: 0.5, std_dev: 0.0, k: 4 };
         assert_eq!(stats.z(0.9), 0.0);
-        let s = as_norm_score(CosineSimilarity::new(0.9), &stats, &stats);
+        let s = as_norm_score(CosineSimilarity::new(0.9), &stats);
         assert_eq!(s.get(), 0.0);
         assert!(s.get().is_finite());
     }

@@ -1,119 +1,233 @@
 YV131 — non-vacuous mutation evidence
-Generated 2026-08-16T11:18:59Z, commit base 8086ed9
+Generated 2026-08-16T13:16:38Z, commit base 8086ed9
+Harness: scripts-free, in this PR's history — see the panel revision notes. It
+restores every mutated file from a FILE COPY, never from the git index. That is
+this item's own hard-won lesson: an earlier pass reverted with
+`git checkout -- src/` while a fix was still only in the working tree, and
+committed the TEST without the FIX. Red on the pushed head, green locally.
 
 Every acceptance test in this item was checked by breaking the thing it claims
-to protect and confirming it goes red. Seven mutations: six red, one DISCLOSED
-GREEN, described at the bottom rather than quietly dropped.
+to protect and confirming it goes red. TWELVE mutations, twelve red, zero
+disclosed green.
+
+The previous round reported "7 mutations: 6 red, 1 disclosed green", and an
+adversarial review was right that the count flattered the coverage: the mutation
+that would have mattered most — deleting the test-side term of the formula this
+item is named for — was never run, and when the reviewer ran it, it was green.
+Two things changed as a result. The measurement transcript now commits the raw
+PRIMITIVES rather than finished scores, so ANY change to `as_norm_score` moves
+the published EERs and mutations 1-3 below go red by construction. And the
+test-side term was swept against the harness, lost, and no longer ships — so
+mutation 2 is "put it back", not "take it away".
+
+One mutation in this round WAS green on the first pass — inverting
+`Suggested`/`NewVoice`, which nothing checked the direction of. It is listed
+below as red because the gap was closed with
+`the_band_answers_suggested_above_it_and_new_voice_below_it` rather than
+disclosed. A coverage gap a mutation finds is a test to write.
 
 =================================================================
-MUTATION: as_norm_score returns the raw score unchanged (AS-norm becomes a no-op)
-  fails:  cargo test --test as_norm_improves_cross_condition_matching
-test a_hub_profile_loses_the_advantage_it_never_earned ... ok
-test as_norm_improves_cross_condition_matching ... FAILED
-test as_norm_is_not_a_cosine_similarity ... FAILED
-test the_whole_ranking_flips_not_just_the_pair ... FAILED
-test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: test failed, to rerun pass `--test as_norm_improves_cross_condition_matching`
-
+MUTATION 1: as_norm_score returns the raw cosine unchanged (normalization becomes a no-op)
+  -> RED (caught)
+  cargo test --test as_norm_improves_cross_condition_matching
+    test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+    test the_whole_ranking_flips_not_just_the_pair ... FAILED
+    test as_norm_improves_cross_condition_matching ... FAILED
+    test as_norm_is_not_a_cosine_similarity ... FAILED
+    thread 'the_whole_ranking_flips_not_just_the_pair' (20362264) panicked at src-tauri/tests/as_norm_improves_cross_condition_matching.rs:164:5:
+    thread 'as_norm_improves_cross_condition_matching' (20362262) panicked at src-tauri/tests/as_norm_improves_cross_condition_matching.rs:124:5:
+    thread 'as_norm_is_not_a_cosine_similarity' (20362263) panicked at src-tauri/tests/as_norm_improves_cross_condition_matching.rs:181:5:
+    test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `--test as_norm_improves_cross_condition_matching`
+  cargo test --test as_norm_cross_condition_measured
+    test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
+    test the_arm_is_large_enough_to_mean_something ... ok
+    test the_tune_and_report_splits_are_different_corpora ... ok
+    test the_measured_scores_do_not_fit_in_the_cosine_range ... FAILED
+    test the_committed_ladder_is_what_the_shipped_formula_computes ... FAILED
+    test as_norm_beats_raw_cosine_on_the_held_out_arm ... FAILED
+    test the_effect_is_published_with_a_speaker_level_interval ... FAILED
+    test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+    thread 'the_measured_scores_do_not_fit_in_the_cosine_range' (20362444) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:244:5:
+    thread 'the_committed_ladder_is_what_the_shipped_formula_computes' (20362439) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:101:9:
+    thread 'as_norm_beats_raw_cosine_on_the_held_out_arm' (20362437) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:128:5:
+    thread 'the_effect_is_published_with_a_speaker_level_interval' (20362441) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:157:5:
+    test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.68s
+    error: test failed, to rerun pass `--test as_norm_cross_condition_measured`
 =================================================================
-MUTATION: drop the ENROLLMENT side, keep only the test side (the half that cannot reorder)
-  fails:  cargo test --test as_norm_improves_cross_condition_matching
-test as_norm_is_not_a_cosine_similarity ... ok
-test a_hub_profile_loses_the_advantage_it_never_earned ... ok
-test as_norm_improves_cross_condition_matching ... FAILED
-test the_whole_ranking_flips_not_just_the_pair ... FAILED
-test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: test failed, to rerun pass `--test as_norm_improves_cross_condition_matching`
-
+MUTATION 2: re-add the test-side term the design sweep removed (back to symmetric AS-norm)
+  -> RED (caught)
+  cargo test --test as_norm_cross_condition_measured
+    test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+    test the_tune_and_report_splits_are_different_corpora ... ok
+    test the_arm_is_large_enough_to_mean_something ... ok
+    test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
+    test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
+    test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+    test the_committed_ladder_is_what_the_shipped_formula_computes ... ok
+    test the_effect_is_published_with_a_speaker_level_interval ... ok
+    test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+    test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.29s
+  cargo test --test as_norm_admits_across_conditions
+    test a_scores_distribution_reports_both_error_rates ... ok
+    test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
+    test the_band_answers_suggested_above_it_and_new_voice_below_it ... ok
+    test the_published_operating_point_is_what_the_shipped_band_actually_does ... FAILED
+    test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... ok
+    test one_band_means_one_thing_under_two_conditions ... ok
+    test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... ok
+    thread 'the_published_operating_point_is_what_the_shipped_band_actually_does' (20364268) panicked at src-tauri/tests/as_norm_admits_across_conditions.rs:214:9:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.64s
+    error: test failed, to rerun pass `--test as_norm_admits_across_conditions`
 =================================================================
-MUTATION: rank_within_meeting sorts ascending (worst candidate first)
-  fails:  cargo test --test within_meeting_ranking_prefers_best_candidate
-test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
-test no_cohort_still_ranks_and_says_why ... ok
-test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
-test the_cohort_actually_has_spread_here ... ok
-test ranking_is_deterministic_and_stable_on_ties ... ok
-test within_meeting_ranking_prefers_best_candidate ... FAILED
-test six_plausible_profiles_still_produce_one_suggestion ... FAILED
-test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: test failed, to rerun pass `--test within_meeting_ranking_prefers_best_candidate`
-
+MUTATION 3: divide by the cohort mean instead of its standard deviation
+  -> RED (caught)
+  cargo test --test as_norm_cross_condition_measured
+    test the_tune_and_report_splits_are_different_corpora ... ok
+    test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
+    test the_arm_is_large_enough_to_mean_something ... ok
+    test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+    test the_measured_scores_do_not_fit_in_the_cosine_range ... FAILED
+    test the_committed_ladder_is_what_the_shipped_formula_computes ... FAILED
+    test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+    test the_effect_is_published_with_a_speaker_level_interval ... FAILED
+    test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+    thread 'the_measured_scores_do_not_fit_in_the_cosine_range' (20364904) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:244:5:
+    thread 'the_committed_ladder_is_what_the_shipped_formula_computes' (20364899) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:101:9:
+    thread 'the_effect_is_published_with_a_speaker_level_interval' (20364901) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:158:5:
+    test result: FAILED. 6 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.16s
+    error: test failed, to rerun pass `--test as_norm_cross_condition_measured`
 =================================================================
-MUTATION: flip one byte in the committed cohort payload
-  fails:  cargo test --test as_norm_cohort_is_provenanced
-test the_voices_are_attributed_and_license_clear ... ok
-test the_cohort_is_the_size_and_shape_the_module_documents ... ok
-test the_cohort_was_built_by_the_model_the_app_downloads ... ok
-test every_cohort_row_is_a_unit_vector ... ok
-test the_payload_hashes_to_what_the_manifest_claims ... FAILED
-test no_two_cohort_speakers_are_the_same_voice ... ok
-test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
-
+MUTATION 4: rank_within_meeting sorts ascending (worst candidate first)
+  -> RED (caught)
+  cargo test --test within_meeting_ranking_prefers_best_candidate
+    test the_cohort_actually_has_spread_here ... ok
+    test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
+    test ranking_is_deterministic_and_stable_on_ties ... ok
+    test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
+    test no_cohort_still_ranks_and_says_why ... ok
+    test six_plausible_profiles_still_produce_one_suggestion ... FAILED
+    test within_meeting_ranking_prefers_best_candidate ... FAILED
+    test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... FAILED
+    thread 'six_plausible_profiles_still_produce_one_suggestion' (20365951) panicked at src-tauri/tests/within_meeting_ranking_prefers_best_candidate.rs:147:5:
+    thread 'within_meeting_ranking_prefers_best_candidate' (20365953) panicked at src-tauri/tests/within_meeting_ranking_prefers_best_candidate.rs:103:5:
+    thread 'an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one' (20365947) panicked at src-tauri/tests/within_meeting_ranking_prefers_best_candidate.rs:291:5:
+    test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `--test within_meeting_ranking_prefers_best_candidate`
 =================================================================
-MUTATION: point the manifest at a different embedder digest
-  fails:  cargo test --test as_norm_cohort_is_provenanced
-test the_voices_are_attributed_and_license_clear ... ok
-test the_cohort_was_built_by_the_model_the_app_downloads ... FAILED
-test the_cohort_is_the_size_and_shape_the_module_documents ... ok
-test every_cohort_row_is_a_unit_vector ... ok
-test the_payload_hashes_to_what_the_manifest_claims ... ok
-test no_two_cohort_speakers_are_the_same_voice ... ok
-test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
-
+MUTATION 5: the admission band admits everything (band -> negative infinity)
+  -> RED (caught)
+  cargo test --test as_norm_admits_across_conditions
+    test a_scores_distribution_reports_both_error_rates ... ok
+    test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
+    test the_band_answers_suggested_above_it_and_new_voice_below_it ... FAILED
+    test the_published_operating_point_is_what_the_shipped_band_actually_does ... FAILED
+    test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... ok
+    test one_band_means_one_thing_under_two_conditions ... ok
+    test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... ok
+    thread 'the_band_answers_suggested_above_it_and_new_voice_below_it' (20366530) panicked at src-tauri/tests/as_norm_admits_across_conditions.rs:260:5:
+    thread 'the_published_operating_point_is_what_the_shipped_band_actually_does' (20366533) panicked at src-tauri/tests/as_norm_admits_across_conditions.rs:214:9:
+    test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+    error: test failed, to rerun pass `--test as_norm_admits_across_conditions`
 =================================================================
-MUTATION: introduce a tuned decision threshold constant in the shipped module
-  fails:  cargo test --test as_norm_ships_no_tuned_threshold
-test normalized_scores_cannot_reach_a_cosine_band ... ok
-test the_tuned_hyperparameter_lives_in_the_manifest_not_the_code ... ok
-test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... FAILED
-test the_module_never_names_the_blog_bands ... ok
-test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: test failed, to rerun pass `--test as_norm_ships_no_tuned_threshold`
-
+MUTATION 6: Suggestion::NewVoice is returned where the band admits (accept/reject inverted)
+  -> RED (caught)
+  cargo test --test as_norm_admits_across_conditions
+    test a_scores_distribution_reports_both_error_rates ... ok
+    test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
+    test the_band_answers_suggested_above_it_and_new_voice_below_it ... FAILED
+    test the_published_operating_point_is_what_the_shipped_band_actually_does ... ok
+    test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... ok
+    test one_band_means_one_thing_under_two_conditions ... ok
+    test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... ok
+    thread 'the_band_answers_suggested_above_it_and_new_voice_below_it' (20367311) panicked at src-tauri/tests/as_norm_admits_across_conditions.rs:259:5:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.64s
+    error: test failed, to rerun pass `--test as_norm_admits_across_conditions`
 =================================================================
-MUTATION: score AS-norm trials through the COSINE-clamping enrollment_eer
-  fails:  cargo test --test as_norm_cross_condition_measured
-test the_tune_and_report_splits_are_different_corpora ... ok
-test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
-test the_arm_is_large_enough_to_mean_something ... ok
-test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
-
+MUTATION 7: restore the +inf margin when the runner-up cannot be normalized
+  -> RED (caught)
+  cargo test --test within_meeting_ranking_prefers_best_candidate
+    test the_cohort_actually_has_spread_here ... ok
+    test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
+    test six_plausible_profiles_still_produce_one_suggestion ... ok
+    test within_meeting_ranking_prefers_best_candidate ... ok
+    test no_cohort_still_ranks_and_says_why ... ok
+    test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
+    test ranking_is_deterministic_and_stable_on_ties ... ok
+    test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... FAILED
+    thread 'an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one' (20367928) panicked at src-tauri/tests/within_meeting_ranking_prefers_best_candidate.rs:278:5:
+    test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `--test within_meeting_ranking_prefers_best_candidate`
 =================================================================
-DISCLOSED GREEN — mutation 7, and what it actually tells us
+MUTATION 8: introduce a tuned decision threshold constant in the shipped module
+  -> RED (caught)
+  cargo test --test as_norm_bands_are_measured_not_quoted
+    test normalized_scores_cannot_reach_a_cosine_band ... ok
+    test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... FAILED
+    test the_module_never_names_the_blog_bands ... ok
+    test the_tuned_numbers_live_in_the_manifest_not_the_code ... ok
+    thread 'no_float_literal_in_the_module_is_an_undocumented_decision_boundary' (20368506) panicked at src-tauri/tests/as_norm_bands_are_measured_not_quoted.rs:101:5:
+    test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    error: test failed, to rerun pass `--test as_norm_bands_are_measured_not_quoted`
 =================================================================
-Mutation: route the AS-norm trials through `enrollment_eer`, the COSINE-typed
-entry point, whose `CosineSimilarity::new` clamps every input to [-1, 1].
-
-Result: the suite stayed GREEN. The equal error rate is identical either way.
-
-Why, and why the guard still ships:
-  * Clamping is monotone non-decreasing, and on this arm the equal-error
-    crossing lands INSIDE [-1, 1], where the ordering of scores survives it.
-    The EER is a rank statistic, so it does not move.
-  * That is a property of this cohort, this channel and this corpus — not a
-    theorem. The crossing point is free to fall outside the surviving region
-    for the next one, and then the clamp silently reports a wrong number in
-    the one place this epic measures itself.
-  * The inputs are emphatically not in range: 82.7% of the 2,178 committed
-    scores lie outside [-1, 1], spanning -18.98 to +6.46. The clamp fuses
-    them into ties at the boundary and discards the distribution.
-
-So `the_measured_scores_do_not_fit_in_the_cosine_range` was added to assert the
-part that is not luck: that the scores overflow the cosine range, and that
-clamping visibly collapses the number of distinct values. That test IS red if
-the normalized scores ever become cosine-shaped, which is the real regression
-this guard is for.
-
-Reported here rather than counted as a win, because a mutation that did not
-fail is evidence about the test, and hiding it would make this file worthless.
-
+MUTATION 9: flip one byte in the committed cohort payload
+  -> RED (caught)
+  cargo test --test as_norm_cohort_is_provenanced
+    test the_voices_are_attributed_and_license_clear ... ok
+    test every_cohort_row_is_a_unit_vector ... FAILED
+    test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+    test the_cohort_was_built_by_the_model_the_app_downloads ... ok
+    test the_payload_hashes_to_what_the_manifest_claims ... FAILED
+    test every_tuned_number_carries_the_split_and_rule_that_chose_it ... ok
+    test the_distinctness_gate_is_measured_and_actually_holds ... ok
+    test no_two_cohort_speakers_are_the_same_voice ... ok
+    thread 'every_cohort_row_is_a_unit_vector' (20369097) panicked at src-tauri/tests/as_norm_cohort_is_provenanced.rs:211:9:
+    thread 'the_payload_hashes_to_what_the_manifest_claims' (20369103) panicked at src-tauri/tests/as_norm_cohort_is_provenanced.rs:26:5:
+    test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+    error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
 =================================================================
-MUTATION 8 (added with the margin fix): restore the +inf margin
-  fails:  cargo test --test within_meeting_ranking_prefers_best_candidate
-Reverting `margin()` to subtract f32::NEG_INFINITY when the runner-up has no
-normalized score:
-test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... FAILED
-test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+MUTATION 10: point the cohort manifest at a different embedder digest
+  -> RED (caught)
+  cargo test --test as_norm_cohort_is_provenanced
+    test the_voices_are_attributed_and_license_clear ... ok
+    test the_cohort_was_built_by_the_model_the_app_downloads ... FAILED
+    test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+    test every_cohort_row_is_a_unit_vector ... ok
+    test the_payload_hashes_to_what_the_manifest_claims ... ok
+    test every_tuned_number_carries_the_split_and_rule_that_chose_it ... ok
+    test no_two_cohort_speakers_are_the_same_voice ... ok
+    test the_distinctness_gate_is_measured_and_actually_holds ... ok
+    thread 'the_cohort_was_built_by_the_model_the_app_downloads' (20369685) panicked at src-tauri/tests/as_norm_cohort_is_provenanced.rs:236:5:
+    test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+    error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
+=================================================================
+MUTATION 11: loosen the distinctness gate in the manifest so it no longer matches its own quantile
+  -> RED (caught)
+  cargo test --test as_norm_cohort_is_provenanced
+    test the_voices_are_attributed_and_license_clear ... ok
+    test the_distinctness_gate_is_measured_and_actually_holds ... FAILED
+    test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+    test the_cohort_was_built_by_the_model_the_app_downloads ... ok
+    test every_cohort_row_is_a_unit_vector ... ok
+    test the_payload_hashes_to_what_the_manifest_claims ... ok
+    test every_tuned_number_carries_the_split_and_rule_that_chose_it ... ok
+    test no_two_cohort_speakers_are_the_same_voice ... ok
+    thread 'the_distinctness_gate_is_measured_and_actually_holds' (20370285) panicked at src-tauri/tests/as_norm_cohort_is_provenanced.rs:136:5:
+    test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+    error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
+=================================================================
+MUTATION 12: ship a K the tuning sweep did not select
+  -> RED (caught)
+  cargo test --test as_norm_cross_condition_measured
+    test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+    test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... FAILED
+    test the_tune_and_report_splits_are_different_corpora ... ok
+    test the_arm_is_large_enough_to_mean_something ... ok
+    test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
+    test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+    test the_committed_ladder_is_what_the_shipped_formula_computes ... ok
+    test the_effect_is_published_with_a_speaker_level_interval ... ok
+    test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+    thread 'the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin' (20370871) panicked at src-tauri/tests/as_norm_cross_condition_measured.rs:336:5:
+    test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.19s
+    error: test failed, to rerun pass `--test as_norm_cross_condition_measured`

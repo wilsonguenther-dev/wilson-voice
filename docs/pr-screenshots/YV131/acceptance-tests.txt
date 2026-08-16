@@ -1,170 +1,108 @@
 YV131 — acceptance transcript
-2026-08-16T11:47:22Z  aarch64-apple-darwin  rustc 1.94.0 (4a4ef493e 2026-03-02)
+Regenerated at the FINAL head of this branch, never an earlier one — this
+item's own harness lesson: a transcript generated mid-branch once claimed 7
+passing tests for a suite that had 8, which is how a test-without-its-fix
+reached a pushed commit.
 
-### Backlog acceptance criterion 1
-$ cargo test --test as_norm_improves_cross_condition_matching
-test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+$ cd desktop && npm run build && npm test   # dist/ is a precondition of the crate
+   vitest: 10 files, 125 passed
+   tsc --noEmit: clean
+
+$ cargo test --features custom-protocol --test as_norm_cohort_is_provenanced -- --nocapture
+test the_voices_are_attributed_and_license_clear ... ok
+test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+test every_cohort_row_is_a_unit_vector ... ok
+test the_cohort_was_built_by_the_model_the_app_downloads ... ok
+test the_payload_hashes_to_what_the_manifest_claims ... ok
+test every_tuned_number_carries_the_split_and_rule_that_chose_it ... ok
+test no_two_cohort_speakers_are_the_same_voice ... ok
+test the_distinctness_gate_is_measured_and_actually_holds ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+$ cargo test --features custom-protocol --test as_norm_cross_condition_measured -- --nocapture
+dev-clean|A clean (control)                    raw 8.85%  AS-norm 9.58%  band FAR 9.20% FRR 9.58%
+dev-clean|B1 headset->laptop, mild             raw 15.46%  AS-norm 11.67%  band FAR 11.67% FRR 11.67%
+dev-clean|B2 across-desk, moderate             raw 23.66%  AS-norm 21.99%  band FAR 8.49% FRR 47.92%
+dev-clean|B3 far-field room                    raw 32.08%  AS-norm 30.83%  band FAR 5.34% FRR 76.67%
+dev-clean|B4 telephone band                    raw 32.08%  AS-norm 31.25%  band FAR 2.99% FRR 89.17%
+dev-other+test-other|A clean (control)         raw 10.00%  AS-norm 11.25%  band FAR 8.33% FRR 13.30%
+dev-other+test-other|B1 headset->laptop, mild  raw 18.20%  AS-norm 14.06%  band FAR 8.81% FRR 18.16%
+dev-other+test-other|B2 across-desk, moderate  raw 25.58%  AS-norm 24.30%  band FAR 6.67% FRR 49.62%
+dev-other+test-other|B3 far-field room         raw 32.23%  AS-norm 30.69%  band FAR 3.93% FRR 80.56%
+dev-other+test-other|B4 telephone band         raw 35.04%  AS-norm 33.50%  band FAR 2.44% FRR 91.82%
+test the_tune_and_report_splits_are_different_corpora ... ok
+test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+18132/25806 AS-norm scores (70.3%) lie outside the cosine range; min -10.245, max 6.766; the shipped band is 1.223
+test the_arm_is_large_enough_to_mean_something ... ok
+test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
+test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
+held-out dev-other+test-other|B1 headset->laptop, mild: raw EER 18.20% (391 genuine, 25415 impostor, 66 speakers) -> AS-norm EER 14.06%
+test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+test the_committed_ladder_is_what_the_shipped_formula_computes ... ok
+test the_effect_is_published_with_a_speaker_level_interval ... ok
+test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.04s
+
+$ cargo test --features custom-protocol --test as_norm_admits_across_conditions -- --nocapture
+test a_scores_distribution_reports_both_error_rates ... ok
+test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
+test the_band_answers_suggested_above_it_and_new_voice_below_it ... ok
+test the_published_operating_point_is_what_the_shipped_band_actually_does ... ok
+dev-other+test-other|B1 headset->laptop, mild: 73 of 391 genuine cross-condition trials that a fixed cosine band misses are admitted by the normalized band; 4 go the other way
+test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... ok
+normalized band 1.223: FRR 13.3% clean / 18.2% shifted (spread 4.9 pp)
+cosine band     0.843: FRR 14.3% clean / 35.8% shifted (spread 21.5 pp)
+test one_band_means_one_thing_under_two_conditions ... ok
+test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+
+$ cargo test --features custom-protocol --test as_norm_improves_cross_condition_matching -- --nocapture
 test as_norm_is_not_a_cosine_similarity ... ok
 test as_norm_improves_cross_condition_matching ... ok
+test a_hub_profile_loses_the_advantage_it_never_earned ... ok
 test the_whole_ranking_flips_not_just_the_pair ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-### Backlog acceptance criterion 2
-$ cargo test --test within_meeting_ranking_prefers_best_candidate
+$ cargo test --features custom-protocol --test within_meeting_ranking_prefers_best_candidate -- --nocapture
 test the_cohort_actually_has_spread_here ... ok
-test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
-test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
 test within_meeting_ranking_prefers_best_candidate ... ok
+test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
 test no_cohort_still_ranks_and_says_why ... ok
-test six_plausible_profiles_still_produce_one_suggestion ... ok
+test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
 test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... ok
 test ranking_is_deterministic_and_stable_on_ties ... ok
+test six_plausible_profiles_still_produce_one_suggestion ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-### The cross-device criterion — manual in the spec, runnable here
-$ cargo test --test as_norm_cross_condition_measured -- --nocapture
-dev-clean|A clean (control)                  raw 3.75%  AS-norm 2.66%
-dev-clean|B1 headset->laptop, mild           raw 12.50%  AS-norm 10.27%
-dev-clean|B2 across-desk, moderate           raw 21.25%  AS-norm 19.95%
-dev-clean|B3 far-field room                  raw 30.99%  AS-norm 27.50%
-dev-clean|B4 telephone band                  raw 31.09%  AS-norm 28.89%
-dev-other|A clean (control)                  raw 6.01%  AS-norm 4.55%
-dev-other|B1 headset->laptop, mild           raw 15.15%  AS-norm 12.12%
-dev-other|B2 across-desk, moderate           raw 23.96%  AS-norm 22.73%
-dev-other|B3 far-field room                  raw 32.17%  AS-norm 31.96%
-dev-other|B4 telephone band                  raw 35.18%  AS-norm 35.09%
-test the_tune_and_report_splits_are_different_corpora ... ok
-test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
-1801/2178 AS-norm scores (82.7%) lie outside the cosine range; min -18.980, max 6.461
-test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
-test the_arm_is_large_enough_to_mean_something ... ok
-held-out dev-other / B1 headset->laptop, mild: raw EER 15.15% (66 genuine, 2112 impostor) -> AS-norm EER 12.12%
-test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
-
-### The shipped cohort is what its manifest says
-$ cargo test --test as_norm_cohort_is_provenanced
-test the_voices_are_attributed_and_license_clear ... ok
-test the_cohort_is_the_size_and_shape_the_module_documents ... ok
-test the_cohort_was_built_by_the_model_the_app_downloads ... ok
-test every_cohort_row_is_a_unit_vector ... ok
-test the_payload_hashes_to_what_the_manifest_claims ... ok
-test no_two_cohort_speakers_are_the_same_voice ... ok
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-
-### This item ships no tuned decision threshold
-$ cargo test --test as_norm_ships_no_tuned_threshold
+$ cargo test --features custom-protocol --test as_norm_bands_are_measured_not_quoted -- --nocapture
 test normalized_scores_cannot_reach_a_cosine_band ... ok
-test the_tuned_hyperparameter_lives_in_the_manifest_not_the_code ... ok
 test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... ok
 test the_module_never_names_the_blog_bands ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test the_tuned_numbers_live_in_the_manifest_not_the_code ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-### Whole suite
-$ cargo test
-   Compiling wilson-voice v0.8.0 (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv131/desktop/src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.96s
-     Running unittests src/lib.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/wilson_voice_lib-96a9cc6b3affc1b7)
-     Running unittests src/main.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/wilson_voice-f749db92ff133e32)
-     Running tests/aggregate_rebuild_debounce.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/aggregate_rebuild_debounce-6f03ac13b26a61ce)
-     Running tests/aggregate_rebuild_idempotent_teardown.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/aggregate_rebuild_idempotent_teardown-71c7f10968d8c889)
-     Running tests/as_norm_cohort_is_provenanced.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/as_norm_cohort_is_provenanced-2b3446b38ffb058f)
-     Running tests/as_norm_cross_condition_measured.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/as_norm_cross_condition_measured-9a8cc9c5a4db9de1)
-     Running tests/as_norm_improves_cross_condition_matching.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/as_norm_improves_cross_condition_matching-acaab59834777416)
-     Running tests/as_norm_ships_no_tuned_threshold.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/as_norm_ships_no_tuned_threshold-6bfd0050a982f22a)
-     Running tests/asr_capabilities_probe.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/asr_capabilities_probe-71fb733561bb217c)
-     Running tests/biquad_lowpass_response.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/biquad_lowpass_response-7ac3447f6bb38f94)
-     Running tests/capture_engine_is_installed.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/capture_engine_is_installed-5985a9e027faeed0)
-     Running tests/capture_journal_recovery.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/capture_journal_recovery-55f6eee712e1c87a)
-     Running tests/consent_sheet_shown_once.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/consent_sheet_shown_once-28fa36c5c3f3dd98)
-     Running tests/db_migration_idempotent.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/db_migration_idempotent-4a68e18c2ee6087c)
-     Running tests/diarization_metrics.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarization_metrics-1a80e1b4121c1a6c)
-     Running tests/diarize_catalog_shape.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_catalog_shape-d46d9f73ecef85ad)
-     Running tests/diarize_model_install_e2e.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_model_install_e2e-5cc6c9e27d0a49b0)
-     Running tests/diarize_sidecar_handshake.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_sidecar_handshake-97381515dde303c2)
-yap-diarize ready: v0.1.0
-yap-diarize ready: v0.1.0
-yap-diarize ready: v0.1.0
-     Running tests/diarize_sidecar_pool.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/diarize_sidecar_pool-a0b6b17c72db4b1a)
-     Running tests/extract_tar_bz2.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/extract_tar_bz2-a7e238adb62ba555)
-     Running tests/formatting_fixtures.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/formatting_fixtures-f06aa8086605cfa5)
-     Running tests/gate_corpus.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/gate_corpus-830cdbc935a3410b)
-     Running tests/input_format_change_handler.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/input_format_change_handler-73d4da237f15c1b7)
-     Running tests/license_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/license_gate-87072c061f5239bb)
-     Running tests/matrix_coverage.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_coverage-9834f8ca76401e07)
-     Running tests/matrix_new_asr_chunk_timeout.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_new_asr_chunk_timeout-8020cd9ee89c6eb5)
-     Running tests/matrix_new_quit_mid_processing.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_new_quit_mid_processing-17aba771cc05cfa4)
-     Running tests/matrix_phase_offline.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_phase_offline-4f1f93014ccb9742)
-     Running tests/matrix_row12_macos_144_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row12_macos_144_gate-6e82fa5b239e3e2e)
-     Running tests/matrix_row14_output_device_change.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row14_output_device_change-7992cd008f87de0d)
-     Running tests/matrix_row15_single_instance.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row15_single_instance-6d392db0b9fba1ea)
-     Running tests/matrix_row16_sleep_wake.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row16_sleep_wake-09a6b12a49e36a95)
-     Running tests/matrix_row17_meeting_cap.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row17_meeting_cap-700165a09cccc075)
-     Running tests/matrix_row1_tap_permission_denied.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row1_tap_permission_denied-4a03dabe3f557cc9)
-     Running tests/matrix_row2_tap_revoked_mid_meeting.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row2_tap_revoked_mid_meeting-1f1fb535becd70e7)
-     Running tests/matrix_row3_mic_denied_system_only.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row3_mic_denied_system_only-129b98462f67c20c)
-     Running tests/matrix_row4_disk_preflight.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row4_disk_preflight-443f1a9728627158)
-     Running tests/matrix_row5_journal_backpressure.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row5_journal_backpressure-06ab132f645c1ba5)
-     Running tests/matrix_row6_orphan_recovery.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/matrix_row6_orphan_recovery-418625136516c94b)
-     Running tests/meeting_audio_retention.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_audio_retention-4c2da804a191d8f6)
-     Running tests/meeting_availability_144_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_availability_144_gate-0f678c95795b889e)
-     Running tests/meeting_capture_memory.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_capture_memory-c54d4104545b2de4)
-     Running tests/meeting_capture_rt_safety.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_capture_rt_safety-2c11cc0d138fe09d)
-     Running tests/meeting_delete_cascade.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_delete_cascade-f8c77fdf2f3994c3)
-     Running tests/meeting_diagnostics_row.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_diagnostics_row-5e74eff3c091d127)
-     Running tests/meeting_dictation_fanout.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_dictation_fanout-49022f5ba7d0d2ca)
-     Running tests/meeting_dictation_preempts_transcription.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_dictation_preempts_transcription-fc13796c0145e8a6)
-     Running tests/meeting_english_only_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_english_only_gate-317ce9436b0978f3)
-     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
-     Running tests/meeting_event_contract.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_event_contract-7ebc5859dee0da58)
-     Running tests/meeting_fts_search.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_fts_search-6749e088c3776ca3)
-     Running tests/meeting_kind_branch.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_kind_branch-f68ae111b730b55a)
-     Running tests/meeting_kind_default_on_skip.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_kind_default_on_skip-d05d156f5695afe8)
-     Running tests/meeting_manual_start_stop.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_manual_start_stop-3a62452c59565c2f)
-     Running tests/meeting_markdown_export.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_markdown_export-33cd30b467616bc3)
-     Running tests/meeting_markdown_export_two_track.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_markdown_export_two_track-95582b886e169d91)
-     Running tests/meeting_no_automute.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_no_automute-937ee98a2bde3d98)
-     Running tests/meeting_no_model_resident.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_no_model_resident-bae16ce92d7581b7)
-     Running tests/meeting_power_assertion.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_power_assertion-9423acc148ffbfed)
-     Running tests/meeting_stats_rollup.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_stats_rollup-f7338e122ec0a60c)
-     Running tests/meeting_track_b_wiring.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_track_b_wiring-7cbffe5e55b64d02)
-     Running tests/meeting_transcript_render_single_track_unchanged.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_transcript_render_single_track_unchanged-21654dc4a6d4c7eb)
-     Running tests/meeting_transcript_render_two_track.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_transcript_render_two_track-85e72ca365a4aa57)
-     Running tests/pill_idle_tick_during_recording.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/pill_idle_tick_during_recording-4a07cf956fe918ba)
-     Running tests/settings_kv.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/settings_kv-b450b41207b97cf9)
-     Running tests/summarize_e2e.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_e2e-16339897c41fc1d1)
-     Running tests/summarize_empty_is_never_stored.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_empty_is_never_stored-80b54644ee176454)
-     Running tests/summarize_grammar_chain.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_grammar_chain-89e8eadc3305b016)
-     Running tests/summarize_map_extraction.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_map_extraction-ab0952fda07bf390)
-     Running tests/summarize_reduce_budget.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_reduce_budget-a29fc649f78465c0)
-     Running tests/summarize_token_chunking.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_token_chunking-f6c0b8774f8ebd24)
-     Running tests/summarize_validators_v1_v7.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_validators_v1_v7-d975fcb42350c7ea)
-     Running tests/supply_chain.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/supply_chain-bca8d5c6f8135645)
-     Running tests/support_bundle_contents.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/support_bundle_contents-15980a48e3fb59fa)
-     Running tests/support_bundle_redaction.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/support_bundle_redaction-db1674f216dc4976)
-     Running tests/syscapture_aggregate_dict.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_aggregate_dict-cdf5f01bb4d0cd87)
-     Running tests/syscapture_format_binding.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_format_binding-3e7165e029a311bf)
-     Running tests/syscapture_ghost_watchdog_false_positives.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_false_positives-6e1db7d31e117f02)
-     Running tests/syscapture_ghost_watchdog_rebuild_budget.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_rebuild_budget-f3ca8023192028d2)
-     Running tests/syscapture_ghost_watchdog_rebuild_first.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ghost_watchdog_rebuild_first-f1348d1bf42548f8)
-     Running tests/syscapture_ioproc_catch_unwind.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ioproc_catch_unwind-725645aa0212e016)
-     Running tests/syscapture_ioproc_rt_safety.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_ioproc_rt_safety-402ffbd1e26d355f)
-     Running tests/syscapture_manual_smoke.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_manual_smoke-81a40817f0cdca3c)
-     Running tests/syscapture_never_delivered_denied_state.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_never_delivered_denied_state-53fc3097cbecf832)
-     Running tests/syscapture_never_zero_discriminator.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_never_zero_discriminator-a62526b3b94fe75f)
-     Running tests/syscapture_os_gate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_os_gate-d059d4a2025c5924)
-     Running tests/syscapture_prewarm_tap.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_prewarm_tap-b76b66f6773eb8b1)
-     Running tests/syscapture_teardown_order.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/syscapture_teardown_order-bb0196b8156b984f)
-     Running tests/tray_hotkey_no_collision.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/tray_hotkey_no_collision-e5746c79237756d0)
-     Running tests/two_track_capture_consumer.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_capture_consumer-662550481f413c28)
-     Running tests/two_track_journal_round_trip.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_journal_round_trip-719ae881793e50fa)
-     Running tests/two_track_merge_no_regression_single_track.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_merge_no_regression_single_track-38a822ffab6a6f1c)
-     Running tests/two_track_merge_ordering.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_merge_ordering-837bf9c8c9cc0c61)
-     Running tests/two_track_merge_synthetic_drift.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_merge_synthetic_drift-7e3cb78143ced469)
-     Running tests/two_track_phase_e2e.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_phase_e2e-acd06856189e9fbc)
-     Running tests/two_track_true_rate_logging.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/two_track_true_rate_logging-f6f8be966659ecd2)
-     Running tests/vocab_corpus_is_literals_only.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/vocab_corpus_is_literals_only-04a3ba53f1ed741a)
-     Running tests/within_meeting_ranking_prefers_best_candidate.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/within_meeting_ranking_prefers_best_candidate-d9375a9d9d8179dd)
-   Doc-tests wilson_voice_lib
-  99 test binaries, all ok
-  1138 tests passed, 0 failed
+$ cargo test --features custom-protocol --test diarization_metrics -- --nocapture
+test cosine_distance_and_similarity_conversion_round_trips ... ok
+test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
+test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+test eer_is_near_zero_for_well_separated_scores ... ok
+test jer_matches_hand_worked_example ... ok
+test der_matches_hand_worked_example ... ok
+test der_counts_overlapped_reference_speech_once_per_speaker ... ok
+test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
+test jer_exposes_a_speaker_der_hides ... ok
+test eer_is_near_half_for_fully_overlapping_scores ... ok
+test rttm_turns_round_trip_through_the_standard_line_format ... ok
+test no_threshold_shaped_declaration_takes_a_bare_float ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --features custom-protocol --test meeting_kind_branch -- --nocapture
+test the_branch_is_not_vacuous ... ok
+test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_diarization_target_follows_the_kind_and_the_second_track ... ok
+test the_label_follows_the_same_branch_the_target_does ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
