@@ -46,7 +46,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::diarize_metrics::{cosine_similarity, CosineDistance};
+use crate::diarize_metrics::{cosine_similarity, is_zero_norm, CosineDistance};
 
 /// Bytes per stored embedding component. The BLOB is little-endian `f32`, the
 /// same encoding the sidecar's JSON numbers land in once parsed, and the same
@@ -239,16 +239,30 @@ pub struct SplitPartition {
 /// Why a split did not happen. A refusal, never a guess.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SplitRefusal {
-    /// Fewer than two members carry a retained embedding, so there is nothing to
-    /// re-partition BY. This is what a pre-migration-5 meeting looks like, and
-    /// saying so is the honest answer.
+    /// Fewer than two members carry a USABLE retained embedding, so there is
+    /// nothing to re-partition BY. This is what a pre-migration-5 meeting looks
+    /// like, and saying so is the honest answer.
     NotEnoughEmbeddings { with_embedding: usize },
     /// Two members are of different widths, so they are not in the same vector
     /// space and the distance between them would be a number with no meaning.
     WidthMismatch { expected: usize, found: usize },
+    /// One or more members carry an all-zero embedding, which is not a position
+    /// in the space — it is the absence of one.
+    ///
+    /// This is its own refusal and not a low score because of a unit trap:
+    /// `cosine_similarity` answers `0.0` for a zero-norm vector meaning "no
+    /// information", and `CosineDistance::from_similarity(0.0)` is `1.0`, which
+    /// in the distance unit means "further than almost anything". Left
+    /// unchecked, one silent-utterance embedding wins farthest-pair seeding
+    /// against every real voice in the cluster and the two people who actually
+    /// needed separating stay together. [`split_cluster`] never surfaces this
+    /// variant — it drops degenerate members into `unpartitioned` first, so one
+    /// bad vector cannot disable split for a whole cluster — but
+    /// [`split_partition`] refuses rather than partition around one.
+    DegenerateEmbedding { ids: Vec<String> },
     /// Every member is at distance zero from every other. Real embeddings of two
-    /// different people are not; this is a fixture, a duplicated row, or a
-    /// degenerate all-zero vector, and any partition of it would be arbitrary.
+    /// different people are not; this is a fixture or a duplicated row, and any
+    /// partition of it would be arbitrary.
     Indistinguishable,
 }
 
@@ -256,8 +270,13 @@ impl SplitRefusal {
     pub fn message(&self) -> String {
         match self {
             SplitRefusal::NotEnoughEmbeddings { with_embedding } => format!(
-                "this cluster has {with_embedding} segment(s) with a retained embedding; \
+                "this cluster has {with_embedding} segment(s) with a usable retained embedding; \
                  splitting needs at least two"
+            ),
+            SplitRefusal::DegenerateEmbedding { ids } => format!(
+                "{} segment(s) in this cluster carry an all-zero embedding, which says \
+                 nothing about who spoke; splitting cannot place them",
+                ids.len()
             ),
             SplitRefusal::WidthMismatch { expected, found } => format!(
                 "this cluster mixes embedding widths ({expected} and {found}); \
@@ -283,6 +302,15 @@ impl SplitRefusal {
 /// A or to B" — so the function holds no threshold, and both parts are non-empty
 /// by construction because each seed is in its own.
 ///
+/// **A zero-norm member is refused, not measured.** Farthest-pair seeding is
+/// only sound if every input is a position in the space, and an all-zero
+/// embedding is not one: `cosine_similarity` reports `0.0` for it meaning "no
+/// information", which becomes distance `1.0` meaning "far", so a single
+/// degenerate vector would out-seed two genuinely different speakers and the
+/// split would silently fail to separate them. See
+/// [`SplitRefusal::DegenerateEmbedding`]; [`split_cluster`] filters these out
+/// before it ever gets here.
+///
 /// Deterministic on every tie, which matters because a correction the user
 /// repeats must land the same way twice: the seed pair is the first maximal pair
 /// in index order, and a member equidistant from both seeds goes to the seed
@@ -299,6 +327,14 @@ pub fn split_partition(members: &[(String, Vec<f32>)]) -> Result<SplitPartition,
             expected: width,
             found: odd.len(),
         });
+    }
+    let degenerate: Vec<String> = members
+        .iter()
+        .filter(|(_, v)| is_zero_norm(v))
+        .map(|(id, _)| id.clone())
+        .collect();
+    if !degenerate.is_empty() {
+        return Err(SplitRefusal::DegenerateEmbedding { ids: degenerate });
     }
 
     let distance =
@@ -349,8 +385,9 @@ pub struct SplitOutcome {
     pub new_cluster_index: i64,
     pub kept: usize,
     pub moved: usize,
-    /// Members with no retained embedding. They stay on the original cluster
-    /// and are named here rather than assigned by coin-flip.
+    /// Members with no USABLE retained embedding — no BLOB at all, or an
+    /// all-zero one, which says nothing about who spoke. They stay on the
+    /// original cluster and are named here rather than assigned by coin-flip.
     pub unpartitioned: Vec<String>,
 }
 
@@ -372,12 +409,18 @@ pub fn split_cluster(
             "meeting {meeting_id} has no segments in cluster {cluster_index}"
         ));
     }
+    // A zero-norm vector is filed with the un-embedded, not with the usable.
+    // "The row has no BLOB" and "the BLOB says nothing" are the same fact about
+    // whether this segment can be placed, and treating the second as a position
+    // is what lets one silent utterance out-seed two real speakers. Dropping
+    // them here re-checks the two-usable-members floor for free: `split_partition`
+    // refuses with `NotEnoughEmbeddings` if too few survive.
     let mut with_embedding: Vec<(String, Vec<f32>)> = Vec::new();
     let mut unpartitioned: Vec<String> = Vec::new();
     for seg in &members {
         match &seg.embedding {
-            Some(v) => with_embedding.push((seg.id.clone(), v.clone())),
-            None => unpartitioned.push(seg.id.clone()),
+            Some(v) if !is_zero_norm(v) => with_embedding.push((seg.id.clone(), v.clone())),
+            _ => unpartitioned.push(seg.id.clone()),
         }
     }
     let partition = split_partition(&with_embedding).map_err(|r| r.message())?;

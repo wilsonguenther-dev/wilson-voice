@@ -131,12 +131,36 @@ impl CosineDistance {
     }
 }
 
+/// Does this embedding carry no direction at all?
+///
+/// The companion of [`cosine_similarity`]'s zero-norm convention, and the
+/// reason it exists as a named predicate rather than an inline check: `0.0`
+/// coming back from `cosine_similarity` means **absent information**, but
+/// `CosineDistance::from_similarity(0.0)` is `1.0`, which in the distance unit
+/// means **far**. Any caller that ranks or partitions by distance therefore has
+/// to ask this question BEFORE it measures, or it will read "we know nothing
+/// about this vector" as "this vector is further away than anything else" —
+/// which is how a single all-zero embedding hijacks farthest-pair seeding.
+///
+/// The rule is exactly the one [`cosine_similarity`] guards with (`norm <= 0`),
+/// accumulated in `f64` for the same reason, so the two can never disagree
+/// about which vectors are degenerate.
+pub fn is_zero_norm(v: &[f32]) -> bool {
+    let mut norm = 0.0f64;
+    for x in v {
+        norm += (*x as f64) * (*x as f64);
+    }
+    norm <= 0.0
+}
+
 /// The cosine similarity of two embeddings.
 ///
 /// Zero-norm input (a silent utterance, an all-zero embedding) returns `0.0`
 /// rather than `NaN`: an orthogonal, maximally uninformative answer is the
 /// honest one, and a `NaN` propagating into an EER sweep would sort as neither
-/// genuine nor impostor.
+/// genuine nor impostor. A caller that needs to tell "uninformative" apart from
+/// "orthogonal" — anything ranking by distance — must ask [`is_zero_norm`]
+/// first; this function cannot say it in its return type.
 ///
 /// # Panics
 /// If the two embeddings are of different length — comparing a 192-dim CAM++

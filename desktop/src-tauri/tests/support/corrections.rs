@@ -39,6 +39,19 @@ pub fn voice(speaker: usize, n: usize) -> Vec<f32> {
     v
 }
 
+/// An all-zero embedding of the same width — a vector with no direction at all.
+///
+/// Not a hypothetical: this codebase already documents two ways to get one. A
+/// segment over silence embeds to nothing, and OS-4's ghost tap (see
+/// `syscapture.rs`) delivers all-zero buffers while the meeting looks healthy.
+/// Nothing upstream rejects it either — `record_segment_clustering` only refuses
+/// an EMPTY slice — so a zero vector reaches `meeting_segments.embedding`
+/// through the production accessor, which is why these fixtures write it that
+/// way rather than poking the row.
+pub fn silent() -> Vec<f32> {
+    vec![0.0f32; FIXTURE_WIDTH]
+}
+
 /// One segment's worth of fixture: what it says, which cluster it was assigned
 /// to, and (optionally) the embedding it was assigned by.
 pub struct Utterance {

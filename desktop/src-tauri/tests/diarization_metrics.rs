@@ -31,8 +31,8 @@
 //! a newtype declared in a test crate cannot be the type in a `src/` signature).
 
 use wilson_voice_lib::diarize_metrics::{
-    cosine_similarity, der, enrollment_eer, jer, optimal_speaker_mapping, CosineDistance,
-    CosineSimilarity, RttmTurn,
+    cosine_similarity, der, enrollment_eer, is_zero_norm, jer, optimal_speaker_mapping,
+    CosineDistance, CosineSimilarity, RttmTurn,
 };
 
 /// Floating point equality for numbers that came out of an interval sum.
@@ -320,6 +320,44 @@ fn cosine_similarity_is_bounded_and_survives_a_zero_embedding() {
     assert!(cosine_similarity(&a, &c).get().abs() < 1e-6);
     assert!((cosine_similarity(&a, &[-1.0f32, 0.0, 0.0]).get() + 1.0).abs() < 1e-6);
     assert_eq!(cosine_similarity(&a, &[0.0f32; 3]).get(), 0.0);
+}
+
+/// The trap that answer sets, and the predicate that exists to defuse it.
+///
+/// `0.0` from `cosine_similarity` means "no information", but converted into the
+/// distance unit it is `1.0` — "far" — so any caller that RANKS by distance
+/// (YV130's farthest-pair split seeding, first of several) would read a silent
+/// utterance as the most distinctive voice in the room. `is_zero_norm` is the
+/// question those callers must ask first, and it has to agree exactly with the
+/// guard inside `cosine_similarity` or the two disagree about which vectors are
+/// degenerate.
+#[test]
+fn is_zero_norm_agrees_with_the_similarity_guard_it_defuses() {
+    assert!(is_zero_norm(&[0.0f32; 3]));
+    assert!(is_zero_norm(&[]), "no components is no direction");
+    assert!(is_zero_norm(&[-0.0f32, 0.0, -0.0]), "signed zeros are still zero");
+    assert!(!is_zero_norm(&[1.0f32, 0.0, 0.0]));
+    assert!(
+        !is_zero_norm(&[f32::MIN_POSITIVE, 0.0, 0.0]),
+        "a tiny direction is still a direction: the f64 accumulator must not \
+         round it away, or a real embedding would be discarded as degenerate"
+    );
+
+    // The agreement, stated as the property: exactly the vectors `is_zero_norm`
+    // calls degenerate are the ones `cosine_similarity` answers 0.0 for against
+    // a vector they are otherwise parallel to.
+    for v in [
+        vec![0.0f32; 3],
+        vec![1.0f32, 0.0, 0.0],
+        vec![f32::MIN_POSITIVE, 0.0, 0.0],
+    ] {
+        let parallel_similarity = cosine_similarity(&v, &[1.0f32, 0.0, 0.0]).get();
+        assert_eq!(
+            is_zero_norm(&v),
+            parallel_similarity == 0.0,
+            "disagreement about {v:?}: similarity {parallel_similarity}"
+        );
+    }
 }
 
 /// The unit discipline, enforced mechanically rather than by review.

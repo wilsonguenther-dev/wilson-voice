@@ -14,7 +14,7 @@
 
 mod support;
 
-use support::corrections::{attribution_of, seed_clustered_meeting, voice, Utterance};
+use support::corrections::{attribution_of, seed_clustered_meeting, silent, voice, Utterance};
 use support::{open_db, temp_dir};
 
 use wilson_voice_lib::diarize::sidecar_requests;
@@ -133,7 +133,7 @@ fn a_cluster_with_no_retained_embeddings_refuses_to_split() {
         "a refusal must not become a quiet re-diarize"
     );
     assert!(
-        err.contains("0 segment(s) with a retained embedding"),
+        err.contains("0 segment(s) with a usable retained embedding"),
         "the refusal has to name the reason: {err}"
     );
 }
@@ -194,10 +194,155 @@ fn the_partition_is_deterministic_and_both_parts_are_non_empty() {
     assert!(moved.contains(&"b1".to_string()) && moved.contains(&"b2".to_string()));
 }
 
+// ── the degenerate vector ────────────────────────────────────────────────────
+//
+// An all-zero embedding is the absence of a position, but the arithmetic reads
+// it as a far one: `cosine_similarity` answers 0.0 for zero-norm input meaning
+// "no information", and `CosineDistance::from_similarity(0.0)` is 1.0 meaning
+// "far". Farthest-pair seeding is exactly the algorithm that trusts "far", so
+// this is the input class that can make split lie about having worked. Both
+// probes below were red before the fix.
+
+/// A cluster of nothing but zero vectors used to return `Ok`, with an arbitrary
+/// halving — the outcome `Indistinguishable`'s own doc claimed was refused. It
+/// is refused now, by name, and the pure function says which members are the
+/// reason.
+#[test]
+fn an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved() {
+    let members: Vec<(String, Vec<f32>)> = vec![
+        ("a".into(), silent()),
+        ("b".into(), silent()),
+        ("c".into(), silent()),
+    ];
+    let err = split_partition(&members).unwrap_err();
+    assert_eq!(
+        err,
+        SplitRefusal::DegenerateEmbedding {
+            ids: vec!["a".into(), "b".into(), "c".into()]
+        },
+        "three vectors that say nothing cannot be partitioned into two groups \
+         that mean something"
+    );
+    assert!(err.message().contains("all-zero embedding"), "{}", err.message());
+}
+
+/// The same cluster through the database path: split refuses, names every
+/// member as unplaceable via the usable-embedding floor, and leaves the rows
+/// exactly where they were. No sidecar call, because a refusal is not a
+/// re-diarize.
+#[test]
+fn an_all_zero_cluster_refuses_through_the_database_path_too() {
+    let dir = temp_dir("split-all-zero");
+    let db = open_db(&dir);
+    let (meeting_id, ids) = seed_clustered_meeting(
+        &db,
+        &dir,
+        "Three segments of silence",
+        &[
+            Utterance::new("a", 0, silent()),
+            Utterance::new("b", 0, silent()),
+            Utterance::new("c", 0, silent()),
+        ],
+    );
+
+    let before = sidecar_requests();
+    let err = db.split_cluster(&meeting_id, 0).unwrap_err();
+    assert_eq!(sidecar_requests(), before);
+    assert!(
+        err.contains("0 segment(s) with a usable retained embedding"),
+        "a zero vector is not a usable embedding, and the refusal counts it as \
+         one it cannot use: {err}"
+    );
+    for id in &ids {
+        assert_eq!(
+            attribution_of(&dir, id).0,
+            Some(0),
+            "a refused split moves nothing"
+        );
+    }
+}
+
+/// The failure that mattered most: ONE zero vector among two real speakers used
+/// to win farthest-pair seeding — it sits at distance 1.0 from everyone, further
+/// apart than the two real voices are from each other — so the partition came
+/// back `kept: [a1, a2, b1, b2] / moved: [zero]`. The split reported success and
+/// the two people the user was trying to separate stayed together.
+///
+/// Now the degenerate member is filed with the un-embedded, the two speakers
+/// separate, and the unplaceable segment is NAMED rather than silently deciding
+/// the outcome for everybody else.
+#[test]
+fn one_degenerate_vector_does_not_hijack_the_seeding() {
+    let dir = temp_dir("split-one-zero");
+    let db = open_db(&dir);
+    let (meeting_id, ids) = seed_clustered_meeting(
+        &db,
+        &dir,
+        "Two people and one silence",
+        &[
+            Utterance::new("a-one", 0, voice(0, 1)),
+            Utterance::new("b-one", 0, voice(1, 1)),
+            Utterance::new("a-two", 0, voice(0, 2)),
+            Utterance::new("b-two", 0, voice(1, 2)),
+            Utterance::new("…", 0, silent()),
+        ],
+    );
+
+    let outcome = db.split_cluster(&meeting_id, 0).unwrap();
+    assert_eq!(
+        outcome.unpartitioned,
+        vec![ids[4].clone()],
+        "the zero vector is named as unplaceable, not used as a seed"
+    );
+    assert_eq!(outcome.kept + outcome.moved, 4, "the four real voices partition");
+    assert_eq!(
+        attribution_of(&dir, &ids[4]).0,
+        Some(0),
+        "…and it stays on the original cluster, like every other member split \
+         cannot place"
+    );
+
+    let cluster_of = |i: usize| attribution_of(&dir, &ids[i]).0.expect("clustered");
+    assert_eq!(
+        cluster_of(0),
+        cluster_of(2),
+        "speaker A's two utterances are together"
+    );
+    assert_eq!(
+        cluster_of(1),
+        cluster_of(3),
+        "speaker B's two utterances are together"
+    );
+    assert_ne!(
+        cluster_of(0),
+        cluster_of(1),
+        "and A and B are SEPARATED — the whole point of the correction"
+    );
+}
+
+/// The pure function refuses the mixed case rather than dropping members on its
+/// own initiative: deciding a segment cannot be placed is a report `split_cluster`
+/// owes the user (`unpartitioned`), not something a partitioner does quietly.
+#[test]
+fn the_partition_refuses_a_single_zero_vector_among_real_ones() {
+    let members: Vec<(String, Vec<f32>)> = vec![
+        ("a1".into(), voice(0, 1)),
+        ("zero".into(), silent()),
+        ("b1".into(), voice(1, 1)),
+    ];
+    assert_eq!(
+        split_partition(&members),
+        Err(SplitRefusal::DegenerateEmbedding {
+            ids: vec!["zero".into()]
+        })
+    );
+}
+
 /// Identical vectors are refused. Real embeddings of two different people are
-/// not at distance zero from each other; anything that is, is a fixture, a
-/// duplicated row or a degenerate all-zero vector, and any partition of it would
-/// be arbitrary.
+/// not at distance zero from each other; anything that is, is a fixture or a
+/// duplicated row, and any partition of it would be arbitrary. The all-zero case
+/// is a DIFFERENT refusal ([`SplitRefusal::DegenerateEmbedding`]) and is pinned
+/// above — this variant's doc no longer claims it.
 #[test]
 fn an_indistinguishable_cluster_is_refused_rather_than_halved() {
     let members: Vec<(String, Vec<f32>)> = vec![
