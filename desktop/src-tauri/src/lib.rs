@@ -132,6 +132,12 @@ mod secure_input;
 // literals.
 pub mod shortcuts;
 mod snippets;
+// YV130 — reassign / merge / split and the retroactive-relabel batch, all of
+// them `UPDATE` statements over segments the model already embedded. Public
+// because all five acceptance criteria are integration tests over it, and
+// because one of them asserts a call-graph property (no sidecar request) that
+// can only be read from outside the crate.
+pub mod speaker_corrections;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
@@ -3252,6 +3258,90 @@ fn delete_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), Str
     state.db.delete_meeting_with_audio(&id)
 }
 
+// ── YV130 · correction ───────────────────────────────────────────────────────
+//
+// Six commands, all of them thin. Deliberately NOT `async fn`, for the same
+// reason `delete_meeting` is not: Tauri dispatches a non-async command onto a
+// worker thread, so the webview keeps painting — and unlike `delete_meeting`
+// these finish in microseconds anyway, because each one is a single `UPDATE`
+// over segments the model already embedded (finding #25).
+//
+// The Meetings detail view cannot call these YET: rendering a per-segment
+// reassign affordance needs the transcript payload to carry `cluster_index` and
+// `speaker_id`, and the pass that fills those columns is YV126, which is an open
+// PR and not in this build. The components and their rules ship here with tests
+// (`corrections.ts`, `SegmentCorrectionMenu.tsx`, `RelabelOffer.tsx`) and the
+// IPC surface ships here reachable; the wiring is one prop away once the
+// clustering pass lands. This is the same posture YV128 shipped its tables in,
+// and it is stated rather than implied.
+
+/// This turn is the wrong person — or nobody. See
+/// [`speaker_corrections::reassign_segment`] for why `None` still locks.
+#[tauri::command]
+fn reassign_speaker_segment(
+    state: State<'_, Arc<AppState>>,
+    segment_id: String,
+    speaker_id: Option<String>,
+) -> Result<speaker_corrections::Reassignment, String> {
+    state
+        .db
+        .reassign_segment(&segment_id, speaker_id.as_deref())
+}
+
+/// One person, two clusters.
+#[tauri::command]
+fn merge_speaker_clusters(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    into_cluster: i64,
+    from_cluster: i64,
+) -> Result<speaker_corrections::MergeOutcome, String> {
+    state
+        .db
+        .merge_clusters(&meeting_id, into_cluster, from_cluster)
+}
+
+/// Undo a bad merge, from the retained embeddings.
+#[tauri::command]
+fn split_speaker_cluster(
+    state: State<'_, Arc<AppState>>,
+    meeting_id: String,
+    cluster_index: i64,
+) -> Result<speaker_corrections::SplitOutcome, String> {
+    state.db.split_cluster(&meeting_id, cluster_index)
+}
+
+/// The OFFER — *"this voice appears in N earlier meetings — label them too?"*.
+/// Reads only. Nothing here writes, which is what makes "Not now" free.
+#[tauri::command]
+fn plan_speaker_relabel(
+    state: State<'_, Arc<AppState>>,
+    speaker_id: String,
+    candidate_segment_ids: Vec<String>,
+) -> Result<speaker_corrections::RelabelPlan, String> {
+    state
+        .db
+        .plan_retroactive_relabel(&speaker_id, &candidate_segment_ids)
+}
+
+/// **Apply** — one batch write, one undo handle.
+#[tauri::command]
+fn apply_speaker_relabel(
+    state: State<'_, Arc<AppState>>,
+    plan: speaker_corrections::RelabelPlan,
+) -> Result<speaker_corrections::RelabelBatch, String> {
+    state.db.apply_retroactive_relabel(&plan)
+}
+
+/// **Undo** — the exact prior state of the whole batch, in one call.
+#[tauri::command]
+fn undo_speaker_relabel(
+    state: State<'_, Arc<AppState>>,
+    batch_id: String,
+) -> Result<speaker_corrections::UndoOutcome, String> {
+    state.db.undo_relabel_batch(&batch_id)
+}
+
 /// Export one meeting as Markdown into Application Support, alongside the
 /// transcript export (YV77). Same temp-file-then-rename discipline: a reader
 /// never sees a half-written file under the final name.
@@ -4319,6 +4409,12 @@ pub fn run() {
             meeting_status,
             toggle_meeting_recording,
             meeting_kind_choices,
+            reassign_speaker_segment,
+            merge_speaker_clusters,
+            split_speaker_cluster,
+            plan_speaker_relabel,
+            apply_speaker_relabel,
+            undo_speaker_relabel,
             start_meeting,
             stop_meeting,
             export_history,

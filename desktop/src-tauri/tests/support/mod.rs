@@ -16,6 +16,11 @@
 /// code it is scoring.
 pub mod two_track;
 
+/// YV130 — the correction acceptance tests' shared fixture: a meeting whose
+/// segments already carry a cluster and a retained embedding, seeded through the
+/// same accessor the real clustering pass uses.
+pub mod corrections;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -19,8 +19,10 @@ use support::{open_db, temp_dir};
 /// second step is the first one that had to run against databases the first step
 /// already wrote. 3 = YV106's two-track columns (`sys_wav_path`,
 /// `tap_rebuilds`, `meeting_segments.track`). 4 = YV125's `meetings.kind`, the
-/// column the diarization branch reads.
-const EXPECTED_VERSION: i64 = 4;
+/// column the diarization branch reads. 5 = YV130's segment-attribution columns
+/// (`cluster_index`, `speaker_id`, `speaker_locked`, `embedding`) and the
+/// `speaker_relabel_history` table one undo reads back.
+const EXPECTED_VERSION: i64 = 5;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -32,6 +34,17 @@ const EXPECTED_VERSION: i64 = 4;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 5 {
+        sql.push_str(
+            "DROP TABLE IF EXISTS speaker_relabel_history;\n\
+             DROP INDEX IF EXISTS idx_segments_cluster;\n\
+             DROP INDEX IF EXISTS idx_segments_speaker;\n\
+             ALTER TABLE meeting_segments DROP COLUMN cluster_index;\n\
+             ALTER TABLE meeting_segments DROP COLUMN speaker_id;\n\
+             ALTER TABLE meeting_segments DROP COLUMN speaker_locked;\n\
+             ALTER TABLE meeting_segments DROP COLUMN embedding;\n",
+        );
+    }
     if version < 4 {
         sql.push_str("ALTER TABLE meetings DROP COLUMN kind;\n");
     }
@@ -189,24 +202,31 @@ fn migration_one_creates_the_whole_meeting_schema() {
     }
 
     // The columns NO phase has shipped yet: consent_ack (finding #13 — one
-    // settings_kv key instead) and the diarization set (yap23). If one shows up
-    // here, someone shipped it early and this is the tripwire.
+    // settings_kv key instead) and the diarization names still outstanding.
     //
     // `sys_wav_path` and `meeting_segments.track` USED to be on this list. They
     // are migration 3's now (YV106), which is the step this list was waiting
     // for, so they moved to
     // `migration_three_adds_the_two_track_columns_without_touching_existing_rows`
-    // — asserted present rather than asserted absent. Nothing was loosened: the
-    // yap23 names below are still refused.
+    // — asserted present rather than asserted absent.
+    //
+    // `speaker_id` and `cluster_index` moved the same way in YV130 (migration
+    // 5), to
+    // `migration_five_adds_the_correction_columns_without_touching_existing_rows`.
+    // `speaker_label` and `overlapped` did NOT move and are still refused:
+    // there is no denormalised label column (the label is
+    // `speaker_id` → `speaker_profiles.display_name`), and YV127's whole
+    // finding is that a per-segment `overlapped` flag is a column the
+    // segmentation model cannot honestly fill.
     let path = dir.join("wilson_voice.db");
     let cols = columns(&path, "meetings");
     assert!(!cols.contains(&"consent_ack".to_string()), "{cols:?}");
 
     let cols = columns(&path, "meeting_segments");
-    for banned in ["speaker_id", "speaker_label", "cluster_index", "overlapped"] {
+    for banned in ["speaker_label", "overlapped"] {
         assert!(
             !cols.contains(&banned.to_string()),
-            "{banned} is a later phase's column (yap23), not this one's: {cols:?}"
+            "{banned} is a column this schema deliberately does not have: {cols:?}"
         );
     }
 }
@@ -352,7 +372,16 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
     ] {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
-    assert!(columns(&path, "meeting_segments").contains(&"track".to_string()));
+    let segments = columns(&path, "meeting_segments");
+    for col in [
+        "track",
+        "cluster_index",
+        "speaker_id",
+        "speaker_locked",
+        "embedding",
+    ] {
+        assert!(segments.contains(&col.to_string()), "{col}: {segments:?}");
+    }
 }
 
 // ── YV125 · migration 4 ──────────────────────────────────────────────────────
@@ -508,4 +537,143 @@ fn a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments() {
         db2
     };
     drop(db2);
+}
+
+// ── YV130 · migration 5 ──────────────────────────────────────────────────────
+
+/// The step this item owns, against a database that already has meetings in it.
+///
+/// Three of the four new columns are nullable with no default, and that is the
+/// claim worth testing: a segment recorded before this build was never
+/// clustered, never attributed and never embedded, and the schema has to be able
+/// to SAY that rather than defaulting it to cluster 0 / speaker "" / a zero
+/// vector — every one of which is a value the correction surface would then
+/// treat as real. `speaker_locked` is the exception and takes `DEFAULT 0`
+/// because "nobody has confirmed this segment" is a fact about every row that
+/// existed before there was a way to confirm one.
+#[test]
+fn migration_five_adds_the_correction_columns_without_touching_existing_rows() {
+    let dir = temp_dir("correction-columns");
+    let path = dir.join("wilson_voice.db");
+
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(&db, &dir, "Recorded before YV130", &["hello there"]);
+        drop(db);
+        rewind_to(&path, 4);
+        id
+    };
+    let before = columns(&path, "meeting_segments");
+    for col in ["cluster_index", "speaker_id", "speaker_locked", "embedding"] {
+        assert!(
+            !before.contains(&col.to_string()),
+            "the rewind must actually remove {col}, or this proves nothing: {before:?}"
+        );
+    }
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV130");
+    assert_eq!(m.segment_count, 1, "its segments are untouched");
+
+    let segments = db.list_meeting_segments(&id).unwrap();
+    assert_eq!(segments.len(), 1);
+    let seg = &segments[0];
+    assert_eq!(seg.text, "hello there", "the transcript itself is untouched");
+
+    // Read the new columns raw: a pre-YV130 row is unclustered, unattributed,
+    // unconfirmed and un-embedded, and every one of those is a NULL rather than
+    // a stand-in value.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (cluster, speaker, locked, embedding): (
+        Option<i64>,
+        Option<String>,
+        i64,
+        Option<Vec<u8>>,
+    ) = conn
+        .query_row(
+            "SELECT cluster_index, speaker_id, speaker_locked, embedding
+             FROM meeting_segments WHERE id = ?1",
+            rusqlite::params![seg.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert!(cluster.is_none(), "never clustered is not cluster 0");
+    assert!(speaker.is_none(), "never attributed is not speaker ''");
+    assert_eq!(locked, 0, "nobody confirmed a segment before YV130 existed");
+    assert!(embedding.is_none(), "never embedded is not a zero vector");
+    drop(conn);
+
+    // The columns are real and writable through the accessor the clustering
+    // pass will use.
+    db.record_segment_clustering(&seg.id, 0, &[0.5, 0.25, 0.125])
+        .unwrap();
+    let members = db.cluster_members(&m.id, 0).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(
+        members[0].embedding.as_deref(),
+        Some(&[0.5f32, 0.25, 0.125][..]),
+        "the retained vector round-trips through the BLOB byte for byte"
+    );
+
+    // The history table exists, is empty, and is keyed the way one undo needs.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM speaker_relabel_history", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0);
+    drop(conn);
+
+    // Re-opening does not re-run the step (an `ALTER TABLE … ADD COLUMN` that
+    // ran twice would be an error, not a no-op).
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert_eq!(db.cluster_members(&m.id, 0).unwrap().len(), 1);
+}
+
+/// The objects migration 5 claims to create are all there, by name.
+#[test]
+fn migration_five_creates_the_history_table_and_its_indexes() {
+    let dir = temp_dir("correction-objects");
+    let _db = open_db(&dir);
+
+    let conn = rusqlite::Connection::open(dir.join("wilson_voice.db")).unwrap();
+    for (kind, name) in [
+        ("table", "speaker_relabel_history"),
+        ("index", "idx_segments_cluster"),
+        ("index", "idx_segments_speaker"),
+        ("index", "idx_relabel_history_segment"),
+    ] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                rusqlite::params![kind, name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "migration 5 must create {kind} {name}");
+    }
+
+    // There is no `speaker_profiles` foreign key, on purpose: that table is
+    // YV128's and is not in this build, and a REFERENCES clause naming a table
+    // SQLite cannot see fails at WRITE time rather than at migration time.
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'speaker_relabel_history'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        !sql.contains("REFERENCES"),
+        "migration 5 must not reference a table this build does not create: {sql}"
+    );
 }

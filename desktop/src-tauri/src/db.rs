@@ -9,6 +9,7 @@ use crate::meetings::{
     self, Meeting, MeetingConsent, MeetingSegment, MeetingStats, NewMeetingSegment, SCHEMA_VERSION,
 };
 use crate::snippets::SnippetRule;
+use crate::speaker_corrections;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -487,6 +488,7 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             2 => meetings::MIGRATION_2_MEETING_DIAGNOSTICS,
             3 => meetings::MIGRATION_3_TWO_TRACK,
             4 => meetings::MIGRATION_4_MEETING_KIND,
+            5 => meetings::MIGRATION_5_SEGMENT_ATTRIBUTION,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -1763,6 +1765,19 @@ impl Database {
         };
 
         let tx = conn.transaction().map_err(|e| e.to_string())?;
+        // YV130 — before the segments, because this reads them. A relabel
+        // history row names a speaker and a segment of a meeting the user has
+        // just asked to be gone; leaving it behind would keep "who was in that
+        // meeting" in the database after the meeting itself was deleted, which
+        // is the same half-delete `delete_meeting_with_audio` exists to refuse.
+        // No foreign key does this for us: migration 5 deliberately has none
+        // (see `MIGRATION_5_SEGMENT_ATTRIBUTION`), so the cascade is here.
+        tx.execute(
+            "DELETE FROM speaker_relabel_history
+             WHERE segment_id IN (SELECT id FROM meeting_segments WHERE meeting_id = ?1)",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
         tx.execute(
             "DELETE FROM meeting_segments WHERE meeting_id = ?1",
             params![id],
@@ -1923,6 +1938,136 @@ impl Database {
         }
 
         Ok(stats)
+    }
+
+    // ── YV130 · correction ──────────────────────────────────────────────────
+    //
+    // Thin locks over `speaker_corrections`, which holds the SQL as well as the
+    // reasoning: the mechanism this item is judged on is "no model call", and
+    // splitting the statements away from the doc comments that promise that is
+    // how the promise goes stale. Every one of these is an `UPDATE` or an
+    // `INSERT`; none of them can reach `diarize.rs`, and
+    // `tests/reassign_and_merge_are_pure_db_ops.rs` proves it from the request
+    // counter rather than from this sentence.
+
+    /// Record what the offline clustering pass decided about one segment: which
+    /// cluster it landed in, and the embedding it was assigned BY.
+    ///
+    /// The vector is retained (finding #25 / migration 5) for exactly one
+    /// reason: [`speaker_corrections::split_cluster`] re-partitions a cluster
+    /// from these bytes, so undoing a bad merge stays a local recompute instead
+    /// of a second diarization run.
+    pub fn record_segment_clustering(
+        &self,
+        segment_id: &str,
+        cluster_index: i64,
+        embedding: &[f32],
+    ) -> Result<(), String> {
+        if embedding.is_empty() {
+            return Err("a cluster assignment needs the embedding it was made from".into());
+        }
+        let blob = speaker_corrections::encode_embedding(embedding);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meeting_segments SET cluster_index = ?2, embedding = ?3 WHERE id = ?1",
+                params![segment_id, cluster_index, blob],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("no segment {segment_id}"));
+        }
+        Ok(())
+    }
+
+    /// Every segment of one cluster, embeddings decoded.
+    pub fn cluster_members(
+        &self,
+        meeting_id: &str,
+        cluster_index: i64,
+    ) -> Result<Vec<speaker_corrections::SegmentAttribution>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::cluster_members(&conn, meeting_id, cluster_index)
+    }
+
+    /// The attribution rows behind an arbitrary candidate set — what the
+    /// retroactive-relabel offer is computed from.
+    pub fn segment_attributions(
+        &self,
+        segment_ids: &[String],
+    ) -> Result<Vec<speaker_corrections::SegmentAttribution>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::attributions_for(&conn, segment_ids)
+    }
+
+    /// Attribute one segment to a voice, or to nobody. See
+    /// [`speaker_corrections::reassign_segment`] for why this always locks.
+    pub fn reassign_segment(
+        &self,
+        segment_id: &str,
+        speaker_id: Option<&str>,
+    ) -> Result<speaker_corrections::Reassignment, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::reassign_segment(&conn, segment_id, speaker_id)
+    }
+
+    /// One person split into two clusters becomes one cluster.
+    pub fn merge_clusters(
+        &self,
+        meeting_id: &str,
+        into_cluster: i64,
+        from_cluster: i64,
+    ) -> Result<speaker_corrections::MergeOutcome, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::merge_clusters(&conn, meeting_id, into_cluster, from_cluster)
+    }
+
+    /// Undo a bad merge, from the retained embeddings and nothing else.
+    pub fn split_cluster(
+        &self,
+        meeting_id: &str,
+        cluster_index: i64,
+    ) -> Result<speaker_corrections::SplitOutcome, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::split_cluster(&conn, meeting_id, cluster_index)
+    }
+
+    /// The **offer**: what Apply would write, and what it would refuse to.
+    /// Reads only — this is the question, not the answer.
+    pub fn plan_retroactive_relabel(
+        &self,
+        speaker_id: &str,
+        candidate_segment_ids: &[String],
+    ) -> Result<speaker_corrections::RelabelPlan, String> {
+        let candidates = self.segment_attributions(candidate_segment_ids)?;
+        Ok(speaker_corrections::plan_retroactive_relabel(
+            speaker_id,
+            &candidates,
+        ))
+    }
+
+    /// **Apply**: one batch write, one undo handle.
+    pub fn apply_retroactive_relabel(
+        &self,
+        plan: &speaker_corrections::RelabelPlan,
+    ) -> Result<speaker_corrections::RelabelBatch, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::apply_retroactive_relabel(&mut conn, plan)
+    }
+
+    /// **Undo**: the exact prior state of the whole batch, in one call.
+    pub fn undo_relabel_batch(
+        &self,
+        batch_id: &str,
+    ) -> Result<speaker_corrections::UndoOutcome, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::undo_relabel_batch(&mut conn, batch_id)
+    }
+
+    /// How many history rows a batch still holds — `0` once it has been undone.
+    pub fn relabel_batch_size(&self, batch_id: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        speaker_corrections::relabel_batch_size(&conn, batch_id)
     }
 
     /// Starred terms first (always-bias), then usage-ranked by hits (YV47).
