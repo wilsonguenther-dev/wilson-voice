@@ -50,7 +50,13 @@ fn the_cohort_is_the_size_and_shape_the_module_documents() {
     // teaches nobody anything. What must not drift is payload vs manifest vs
     // decoded shape, and that is what is checked.
     assert_eq!(shipped_payload().len(), cohort.len() * cohort.dim() * 4);
-    assert_eq!(cohort.dim(), 512, "CAM++ measures 512 wide, not the plan's guessed 192");
+    // The width's provenance is the pinned artefact itself: the file
+    // `src/catalog.json` pins by sha256 `c46fad10…` carries ONNX metadata
+    // `output_dim = 512` and a graph output `embs [B, 512]`, reproducible from
+    // the digest with `onnx.load`. The plan guessed 192 and audit finding #19
+    // repeated it; neither describes this file. Nothing here depends on YV122,
+    // which is unmerged.
+    assert_eq!(cohort.dim(), 512, "the pinned CAM++ ONNX declares output_dim = 512");
     assert!(
         shipped_payload().len() < 512 * 1024,
         "the whole argument for compiling this in rather than downloading it is \

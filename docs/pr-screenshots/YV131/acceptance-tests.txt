@@ -1,26 +1,56 @@
 YV131 — acceptance transcript
+
 Regenerated at the FINAL head of this branch, never an earlier one — this
 item's own harness lesson: a transcript generated mid-branch once claimed 7
 passing tests for a suite that had 8, which is how a test-without-its-fix
 reached a pushed commit.
 
+Panel round 3 was answered with documentation and comment corrections only; no
+shipped arithmetic changed, and every measured number below reproduces the
+previous head's to the digit. Re-run rather than asserted, which is the point.
+
+Run with `--test-threads=1` this time: the previous transcript was captured
+under the default parallelism and one `--nocapture` line arrived interleaved.
+
 $ cd desktop && npm run build && npm test   # dist/ is a precondition of the crate
    vitest: 10 files, 125 passed
    tsc --noEmit: clean
 
-$ cargo test --features custom-protocol --test as_norm_cohort_is_provenanced -- --nocapture
-test the_voices_are_attributed_and_license_clear ... ok
-test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+$ cd desktop/src-tauri && cargo test --features custom-protocol   # CI's step
+   100 binaries, 1153 tests, 0 failed
+
+$ cd desktop && cargo test --features custom-protocol              # whole workspace
+   102 binaries, 1173 tests, 0 failed
+   (the extra 2 binaries / 20 tests are yap-polish and yap-diarize, which CI
+    runs as their own steps)
+
+The previous PR body said 1153's number was 1152. This round changed comments
+and documents only — no test was added or removed — so that was an arithmetic
+slip in the body, not a change in the tree. Recounted rather than repeated.
+
+$ cargo test --features custom-protocol --test as_norm_cohort_is_provenanced -- --nocapture --test-threads=1
+running 8 tests
 test every_cohort_row_is_a_unit_vector ... ok
-test the_cohort_was_built_by_the_model_the_app_downloads ... ok
-test the_payload_hashes_to_what_the_manifest_claims ... ok
 test every_tuned_number_carries_the_split_and_rule_that_chose_it ... ok
 test no_two_cohort_speakers_are_the_same_voice ... ok
+test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+test the_cohort_was_built_by_the_model_the_app_downloads ... ok
 test the_distinctness_gate_is_measured_and_actually_holds ... ok
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test the_payload_hashes_to_what_the_manifest_claims ... ok
+test the_voices_are_attributed_and_license_clear ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-$ cargo test --features custom-protocol --test as_norm_cross_condition_measured -- --nocapture
-dev-clean|A clean (control)                    raw 8.85%  AS-norm 9.58%  band FAR 9.20% FRR 9.58%
+$ cargo test --features custom-protocol --test as_norm_cross_condition_measured -- --nocapture --test-threads=1
+running 9 tests
+test as_norm_beats_raw_cosine_on_the_held_out_arm ... held-out dev-other+test-other|B1 headset->laptop, mild: raw EER 18.20% (391 genuine, 25415 impostor, 66 speakers) -> AS-norm EER 14.06%
+ok
+test the_arm_is_large_enough_to_mean_something ... ok
+test the_committed_ladder_is_what_the_shipped_formula_computes ... ok
+test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
+test the_effect_is_published_with_a_speaker_level_interval ... held-out EER reduction 4.14 pp, speaker-level bootstrap 95% CI [0.25, 7.99] pp over 2000 resamples of 66 speakers, P(delta <= 0) = 1.9%
+ok
+test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
+test the_full_ladder_is_committed_not_only_the_flattering_rung ... dev-clean|A clean (control)                    raw 8.85%  AS-norm 9.58%  band FAR 9.20% FRR 9.58%
 dev-clean|B1 headset->laptop, mild             raw 15.46%  AS-norm 11.67%  band FAR 11.67% FRR 11.67%
 dev-clean|B2 across-desk, moderate             raw 23.66%  AS-norm 21.99%  band FAR 8.49% FRR 47.92%
 dev-clean|B3 far-field room                    raw 32.08%  AS-norm 30.83%  band FAR 5.34% FRR 76.67%
@@ -30,79 +60,81 @@ dev-other+test-other|B1 headset->laptop, mild  raw 18.20%  AS-norm 14.06%  band 
 dev-other+test-other|B2 across-desk, moderate  raw 25.58%  AS-norm 24.30%  band FAR 6.67% FRR 49.62%
 dev-other+test-other|B3 far-field room         raw 32.23%  AS-norm 30.69%  band FAR 3.93% FRR 80.56%
 dev-other+test-other|B4 telephone band         raw 35.04%  AS-norm 33.50%  band FAR 2.44% FRR 91.82%
+ok
+test the_measured_scores_do_not_fit_in_the_cosine_range ... 18132/25806 AS-norm scores (70.3%) lie outside the cosine range; min -10.245, max 6.766; the shipped band is 1.223
+ok
 test the_tune_and_report_splits_are_different_corpora ... ok
-test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
-18132/25806 AS-norm scores (70.3%) lie outside the cosine range; min -10.245, max 6.766; the shipped band is 1.223
-test the_arm_is_large_enough_to_mean_something ... ok
-test the_design_sweep_is_committed_and_the_shipped_design_is_its_argmin ... ok
-test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
-held-out dev-other+test-other|B1 headset->laptop, mild: raw EER 18.20% (391 genuine, 25415 impostor, 66 speakers) -> AS-norm EER 14.06%
-test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
-test the_committed_ladder_is_what_the_shipped_formula_computes ... ok
-test the_effect_is_published_with_a_speaker_level_interval ... ok
-test the_fast_sweep_agrees_with_the_harness_on_every_committed_arm ... ok
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.04s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.01s
 
-$ cargo test --features custom-protocol --test as_norm_admits_across_conditions -- --nocapture
+$ cargo test --features custom-protocol --test as_norm_admits_across_conditions -- --nocapture --test-threads=1
+running 7 tests
 test a_scores_distribution_reports_both_error_rates ... ok
-test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
-test the_band_answers_suggested_above_it_and_new_voice_below_it ... ok
-test the_published_operating_point_is_what_the_shipped_band_actually_does ... ok
-dev-other+test-other|B1 headset->laptop, mild: 73 of 391 genuine cross-condition trials that a fixed cosine band misses are admitted by the normalized band; 4 go the other way
-test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... ok
-normalized band 1.223: FRR 13.3% clean / 18.2% shifted (spread 4.9 pp)
+test cross_condition_matches_a_cosine_band_misses_are_recovered_and_counted ... dev-other+test-other|B1 headset->laptop, mild: 73 of 391 genuine cross-condition trials that a fixed cosine band misses are admitted by the normalized band; 4 go the other way
+ok
+test one_band_means_one_thing_under_two_conditions ... normalized band 1.223: FRR 13.3% clean / 18.2% shifted (spread 4.9 pp)
 cosine band     0.843: FRR 14.3% clean / 35.8% shifted (spread 21.5 pp)
-test one_band_means_one_thing_under_two_conditions ... ok
-test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... ok
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+ok
+test the_band_answers_suggested_above_it_and_new_voice_below_it ... ok
+test the_band_is_a_decision_and_the_degrade_paths_do_not_make_one ... ok
+test the_normalized_band_beats_a_cosine_band_on_the_cross_device_arm ... dev-other+test-other|B1 headset->laptop, mild:
+  cosine band tuned the same way (0.843): FAR 6.19% FRR 35.81%
+  cosine band matched to the normalized FAR (0.824): FAR 8.81% FRR 29.16%
+  normalized band (1.223): FAR 8.81% FRR 18.16%
+ok
+test the_published_operating_point_is_what_the_shipped_band_actually_does ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
 
-$ cargo test --features custom-protocol --test as_norm_improves_cross_condition_matching -- --nocapture
-test as_norm_is_not_a_cosine_similarity ... ok
-test as_norm_improves_cross_condition_matching ... ok
+$ cargo test --features custom-protocol --test as_norm_improves_cross_condition_matching -- --nocapture --test-threads=1
+running 4 tests
 test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+test as_norm_improves_cross_condition_matching ... ok
+test as_norm_is_not_a_cosine_similarity ... ok
 test the_whole_ranking_flips_not_just_the_pair ... ok
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-$ cargo test --features custom-protocol --test within_meeting_ranking_prefers_best_candidate -- --nocapture
-test the_cohort_actually_has_spread_here ... ok
-test within_meeting_ranking_prefers_best_candidate ... ok
-test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
-test no_cohort_still_ranks_and_says_why ... ok
+$ cargo test --features custom-protocol --test within_meeting_ranking_prefers_best_candidate -- --nocapture --test-threads=1
+running 8 tests
 test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
 test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... ok
+test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
+test no_cohort_still_ranks_and_says_why ... ok
 test ranking_is_deterministic_and_stable_on_ties ... ok
 test six_plausible_profiles_still_produce_one_suggestion ... ok
+test the_cohort_actually_has_spread_here ... ok
+test within_meeting_ranking_prefers_best_candidate ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-$ cargo test --features custom-protocol --test as_norm_bands_are_measured_not_quoted -- --nocapture
-test normalized_scores_cannot_reach_a_cosine_band ... ok
+$ cargo test --features custom-protocol --test as_norm_bands_are_measured_not_quoted -- --nocapture --test-threads=1
+running 4 tests
 test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... ok
+test normalized_scores_cannot_reach_a_cosine_band ... ok
 test the_module_never_names_the_blog_bands ... ok
 test the_tuned_numbers_live_in_the_manifest_not_the_code ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-$ cargo test --features custom-protocol --test diarization_metrics -- --nocapture
+$ cargo test --features custom-protocol --test diarization_metrics -- --nocapture --test-threads=1
+running 12 tests
 test cosine_distance_and_similarity_conversion_round_trips ... ok
 test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
-test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
-test eer_is_near_zero_for_well_separated_scores ... ok
-test jer_matches_hand_worked_example ... ok
-test der_matches_hand_worked_example ... ok
 test der_counts_overlapped_reference_speech_once_per_speaker ... ok
 test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
-test jer_exposes_a_speaker_der_hides ... ok
+test der_matches_hand_worked_example ... ok
 test eer_is_near_half_for_fully_overlapping_scores ... ok
-test rttm_turns_round_trip_through_the_standard_line_format ... ok
+test eer_is_near_zero_for_well_separated_scores ... ok
+test jer_exposes_a_speaker_der_hides ... ok
+test jer_matches_hand_worked_example ... ok
 test no_threshold_shaped_declaration_takes_a_bare_float ... ok
+test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+test rttm_turns_round_trip_through_the_standard_line_format ... ok
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-$ cargo test --features custom-protocol --test meeting_kind_branch -- --nocapture
-test the_branch_is_not_vacuous ... ok
+$ cargo test --features custom-protocol --test meeting_kind_branch -- --nocapture --test-threads=1
+running 7 tests
 test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
-test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
-test the_system_track_is_never_this_user_under_either_branch ... ok
+test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_branch_is_not_vacuous ... ok
 test the_diarization_target_follows_the_kind_and_the_second_track ... ok
 test the_label_follows_the_same_branch_the_target_does ... ok
-test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
+test the_system_track_is_never_this_user_under_either_branch ... ok
+test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-

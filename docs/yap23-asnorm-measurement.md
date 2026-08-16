@@ -62,8 +62,8 @@ loses its transcript.
 | | |
 |---|---|
 | Embedder | `wespeaker_en_voxceleb_CAM++`, sha256 `c46fad10…`, the catalog.json entry the app downloads |
-| Extractor | `sherpa-onnx 1.13.4` — the exact pin `desktop/yap-diarize/Cargo.toml` carries |
-| Embedding width | **512**, measured. The plan guessed 192; YV122 measured 512 and this agrees |
+| Extractor | Python `sherpa-onnx==1.13.4`, the version `scripts/yv131-build-impostor-cohort.py` refuses to run without (it compares `sherpa_onnx.__version__` and aborts) |
+| Embedding width | **512**, read off the pinned model itself — see below |
 | Cohort | LibriSpeech `test-clean`, 40 speakers |
 | Design chosen on | LibriSpeech `dev-clean`, 40 speakers |
 | Design reported on | LibriSpeech `dev-other` + `test-other`, 66 speakers, 391 genuine / 25,415 impostor trials |
@@ -73,6 +73,40 @@ loses its transcript.
 The four speaker sets are disjoint. That is the point: a cohort sharing speakers
 with the targets is not measuring what it claims to, and a design chosen and
 reported on one split is not measured, it is fitted.
+
+### The embedding width, and where the 192 came from
+
+The whole 160 KB asset is 78 rows of exactly this width, so it is worth saying
+where the number comes from. It comes from the model file, reproducibly:
+
+```bash
+curl -L -o campp.onnx \
+  "https://huggingface.co/wilsonguenther/yap-diarize-models/resolve/c0f5026b16bf2cac9b5f9e6e2a36da6c6a8628ec/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
+shasum -a 256 campp.onnx   # c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef
+python3 -c "import onnx; m=onnx.load('campp.onnx'); \
+print([(k.key,k.value) for k in m.metadata_props]); \
+print([(o.name,[d.dim_param or d.dim_value for d in o.type.tensor_type.shape.dim]) for o in m.graph.output])"
+```
+
+Output: metadata `output_dim = 512`, graph output `embs ['B', 512]`. The digest
+is the one `src/catalog.json` pins and the one
+`scripts/yv131-build-impostor-cohort.py` re-verifies before it embeds anything,
+so this is the file the app downloads and not a lookalike.
+
+**The 192 in audit finding #19 does not describe this file.** Four comments in
+the tree still assert it (`src/diarize_protocol.rs`, `src/diarize.rs`,
+`yap-diarize/src/main.rs`, `tests/diarize_sidecar_pool.rs`); this revision
+corrects them and says why in place. The mechanism those comments defend — the
+sidecar reports `embedding_dim` at load time and no Rust constant names a width
+— is unaffected and still right; it is only the illustrative number that was
+wrong, which is precisely the drift that would have silently degraded every
+ranking to raw cosine through `CohortError::DimMismatch`.
+
+This document previously cited "YV122 measured 512" and "the exact pin
+`desktop/yap-diarize/Cargo.toml` carries". Neither is true in this tree: YV122
+(#137) is unmerged, that manifest declares `serde` and `serde_json` only, and
+`tests/supply_chain.rs` actively asserts the sidecar carries no inference crate
+yet. The pin that governs *this* asset is the Python one in the build script.
 
 ## The design sweep — including the half that did not survive it
 
@@ -110,7 +144,10 @@ hypothesis, which is what the harness is for.
 The three-condition cohort variant exists because the same review pointed out
 that a cohort spanning only {clean, telephone-band} gives the adaptive top-K
 nothing condition-appropriate to select for a mild headset shift. Adding a
-headset-shaped condition was measured too. It also lost.
+headset-shaped condition was measured too. It also lost — which is consistent
+with the shipped form: with the test side gone, the top-K is selected against the
+**enrolment** centroid, so the cohort's condition coverage is chosen relative to
+the enrolment condition and has no channel to track on the test side anyway.
 
 ## The channel ladder, and what AS-norm costs when there is no shift
 
@@ -140,18 +177,61 @@ trade, and the test now pins it as one: `the_full_ladder_is_committed_not_only_t
 requires a win on every *shifted* channel and expects the control to regress.
 
 **The benefit also shrinks as the channel gets destructive** — B3 and B4 recover
-1.5 points where B1 recovers 4.1. AS-norm corrects for a condition shift; it
-cannot recover identity information the channel has removed. The band's FRR at
-B4 is 91.82%, which is not a working feature at that severity, and saying so
-here is cheaper than a user discovering it.
+1.5 points where B1 recovers 4.1. The recalibration below cannot recover identity
+information the channel has removed. The band's FRR at B4 is 91.82%, which is not
+a working feature at that severity, and saying so here is cheaper than a user
+discovering it.
+
+## What the shipped form does, and what it does not
+
+The measured numbers above are not in dispute. The *explanation* attached to them
+in the previous revision was wrong, and it is the explanation a maintainer would
+act on, so it is corrected here rather than quietly dropped.
+
+`as_norm_score(raw, enrollment)` reads the raw cosine and the **enrolment**
+centroid's top-K cohort statistics. **Nothing about the live recording enters the
+normalization.** For a fixed profile `μₑ` and `σₑ` are constants, so the shipped
+decision is exactly
+
+```text
+accept  ⟺  cos ≥ μₑ + 1.2229 · σₑ
+```
+
+— a per-**profile** absolute cosine band, identical for every microphone. The
+cohort strangers are LibriSpeech rows scored against the enrolment centroid;
+their scores do not move when the cluster's device moves. The previous revision
+said the band was "expressed relative to strangers recorded on that device" and
+that the score answers "a question the microphone cannot skew"; both described
+the **test-side** term that the design sweep measured and deleted, and neither is
+true of what ships. The shipped decision is condition-blind.
+
+**So why do the cross-condition numbers move?** Because what is removed is the
+per-profile (**hubness**) offset. Some enrolled centroids sit in a dense part of
+the embedding space and score high against everybody, so one fixed cosine number
+is a different strictness for each enrolled person. Dividing that offset out
+makes one band mean the same thing across enrolled people, and the FRR *spread*
+between a matched channel and a shifted one narrows because inter-speaker score
+variance has left the decision — not because the score follows the channel. The
+benefit is per-speaker offset calibration; condition tracking is not shipped and
+would require the test-side term back, which would have to beat
+`yap23-asnorm-measurement.json` first.
+
+The ranking side is a genuine second effect and survives intact: within one
+cluster the raw cosine is shared, but each candidate carries its own `μₑ`/`σₑ`,
+so normalization reorders candidates that a raw cosine ordered by their offsets.
 
 ## The cross-device claim, as a decision rather than a score
 
 The spec's third acceptance criterion is that a profile enrolled on a laptop
 microphone is *offered*, not silently missed as `New`, when the same person
-appears on AirPods. Scores do not deliver that; a band does.
-`cargo test --test as_norm_admits_across_conditions` measures it three ways on
-the held-out arm.
+appears on AirPods. **That criterion is OPEN.** It is written as a manual check
+against a real recording; what is measured below is four simulated filters on
+LibriSpeech, and no cross-device recording has been made. It also cannot be
+satisfied yet for a structural reason: `speaker_asnorm` has no caller outside
+test binaries, so no enrolment and no `Suggested` prompt exists end to end (see
+"Not measured" below). Scores do not deliver the criterion; a band does — and the
+band is measured here, on simulated channels, three ways on the held-out arm by
+`cargo test --test as_norm_admits_across_conditions`.
 
 **One band, two conditions.** Holding one band fixed across the clean control
 and the shifted channel:
@@ -295,3 +375,12 @@ The second gap is scale: 66 held-out speakers is enough to separate this effect
 from zero and not enough to characterise it finely. The confidence interval on
 the headline spans 0.25 to 7.99 percentage points, which is a factor of thirty.
 Anyone reading "22.7% relative" as a precise quantity is reading it wrong.
+
+The third gap is that **none of this is wired to anything**. Outside test
+binaries the only reference to `speaker_asnorm` in the tree is
+`pub mod speaker_asnorm;` in `lib.rs`. The spec's integration point,
+`speaker_profiles.rs::match_cluster` (YV129, "extended, not forked"), does not
+exist here — YV126/128/129/130 are unmerged and `main` is at YV125. So this item
+ships a measured scoring component, not a user-visible behaviour, and spec
+acceptance 3 stays OPEN until enrolment exists and a real recording is run
+against it.

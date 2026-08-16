@@ -12,16 +12,44 @@
 //! into a relative one; within a meeting, rank candidates rather than threshold
 //! absolutely."
 //!
+//! # What the shipped form actually is — read this before the claims
+//!
+//! **The shipped normalization is enrollment-side only, and it is therefore
+//! CONDITION-BLIND.** `as_norm_score(raw, enrollment)` reads the raw cosine and
+//! the ENROLLED centroid's cohort statistics. Nothing about the live recording
+//! enters it. For a fixed profile `μₑ` and `σₑ` are constants, so
+//! [`Ranking::suggestion`] is algebraically
+//!
+//! ```text
+//! accept  ⟺  cos ≥ μₑ + band · σₑ
+//! ```
+//!
+//! — a **per-profile absolute cosine band**, computing the same number whatever
+//! microphone the cluster was recorded on. Whoever reads this module next should
+//! have that fact before they have any of its numbers, because an earlier
+//! revision of this header, of the PR body and of the user-facing changelog all
+//! described the *test-side* term that the design sweep deleted, and a
+//! maintainer acting on that description would look for condition tracking that
+//! is not here.
+//!
 //! # The two mechanisms
 //!
-//! **(1) AS-norm.** A profile's score is expressed in units of how that profile
-//! scores against a small shipped cohort of voices that are definitely nobody's
-//! enrolled speaker: *how far above a stranger is this, measured in strangers?*
-//! A raw cosine carries a per-profile offset that has nothing to do with
-//! identity — some enrolled centroids sit in a dense part of the space and
-//! score high against everybody — and a fixed band cannot see that offset,
-//! which is why the band moves when the recording condition does. Dividing the
-//! offset out is what lets ONE band survive a condition change.
+//! **(1) AS-norm, enrollment side.** A profile's score is expressed in units of
+//! how *that profile* scores against a small shipped cohort of voices that are
+//! definitely nobody's enrolled speaker. What that removes is the per-PROFILE
+//! offset — **hubness**: some enrolled centroids sit in a dense part of the
+//! space and score high against everybody, so a single fixed cosine band is a
+//! different strictness for each enrolled person. Dividing that offset out is
+//! what lets ONE band mean the same thing across enrolled people. It is not what
+//! lets a band follow a microphone; nothing here follows a microphone.
+//!
+//! The cross-condition benefit this item was written for is real and measured,
+//! and this is the honest account of where it comes from: removing the
+//! inter-speaker component of score variance shrinks the FRR *spread* between a
+//! matched channel and a shifted one (21.5 pp for a cosine band tuned the same
+//! way, 4.9 pp for this one), because the decision no longer inherits each
+//! speaker's own offset on top of the channel's. The score does not adapt to the
+//! test condition. It is a better-calibrated absolute band, per person.
 //!
 //! **(2) Within-meeting ranking.** When several enrolled profiles are plausible
 //! for one cluster, they are ranked against each other and the best one is
@@ -60,9 +88,11 @@
 //! Ranking only ever reorders candidates something else already admitted, so a
 //! laptop-mic profile whose cross-device cosine falls under a fixed band is
 //! still missed as `New` — which is exactly the failure finding #21 describes
-//! and exactly the case Wilson asked about. Converting the absolute question
-//! into a relative one is the deliverable, and a conversion nothing consumes is
-//! not a conversion.
+//! and exactly the case Wilson asked about. Moving admission into per-profile
+//! calibrated units is the deliverable, and a band nothing consumes is not a
+//! band. (Note what that sentence does NOT say: the band is not relative to the
+//! test condition. It is one band per enrolled profile, in that profile's own
+//! calibrated units, and it is the same number for every microphone.)
 //!
 //! So there is one band, [`NormalizedBand`], in AS-norm units. It is **tuned**,
 //! and this module says so rather than hiding behind "we ship no thresholds":
@@ -76,6 +106,19 @@
 //! [`NormalizedScore`] is still deliberately not a [`CosineSimilarity`], and
 //! there is still no conversion between them: the band is compared to the score
 //! in the unit the score is measured in, which is the entire point.
+//!
+//! # Where this is wired: nowhere yet, and that is a fact not a hedge
+//!
+//! `grep -rn speaker_asnorm desktop --include='*.rs'` outside `tests/` returns
+//! exactly one line — `pub mod speaker_asnorm;` in `lib.rs`. The spec's
+//! integration point is `speaker_profiles.rs::match_cluster` (YV129, "extended,
+//! not forked"), and that function is not in this tree: YV126/128/129/130 are
+//! unmerged and `main` is at YV125. So there is no enrollment, no `Suggested`
+//! prompt reaching a user, and no end-to-end cross-device path — this module is
+//! a measured scoring component waiting for its caller, and every number below
+//! is measured on the harness rather than on a running app. Anything that reads
+//! like a shipped user-visible behaviour anywhere else should be read against
+//! this paragraph.
 //!
 //! # Measured, on the harness, not quoted
 //!
@@ -167,9 +210,12 @@ impl NormalizedBand {
 /// not a mechanism.
 ///
 /// The actual number, since "small enough to embed in the binary" is a number
-/// and not a feeling: **163,840 bytes** — 80 entries (40 LibriSpeech speakers
-/// under 2 conditions) at 512 `f32` each. That is 0.16 MB against a CAM++ model
-/// the user downloads at 29.3 MB.
+/// and not a feeling: **159,744 bytes** — 78 entries at 512 `f32` each (40
+/// LibriSpeech speakers under 2 conditions, minus the 2 rows the distinctness
+/// gate dropped). That is 0.16 MB against a CAM++ model the user downloads at
+/// 29.3 MB. `tests/as_norm_cohort_is_provenanced.rs` checks the payload against
+/// the manifest rather than against this sentence, which is why this sentence
+/// was allowed to go stale at 163,840 / 80 for one revision.
 const COHORT_BIN: &[u8] = include_bytes!("../assets/yv131-impostor-cohort.bin");
 
 /// The manifest describing [`COHORT_BIN`] — digest, dim, count, provenance.
@@ -279,7 +325,7 @@ impl ImpostorCohort {
     /// correct thing to do without a cohort: rank on raw cosine and say so.
     ///
     /// **Decode once per session and hold it**, rather than calling this per
-    /// cluster. It parses the manifest and allocates the whole 163,840-byte
+    /// cluster. It parses the manifest and allocates the whole 159,744-byte
     /// payload into rows each time — cheap, but not free, and pointlessly
     /// repeated for a constant. The per-cluster cost that is genuinely
     /// unavoidable is [`ImpostorCohort::statistics`], which is also computed
@@ -507,15 +553,23 @@ impl CohortStatistics {
 /// centroid's top-K impostor-cohort statistics: *how many strangers above a
 /// stranger is this profile's score?*
 ///
-/// What it corrects is **hubness**. Some enrolled centroids sit in a dense part
-/// of the embedding space and score high against everybody — a profile enrolled
-/// on the recording's own device is close to every stranger recorded on that
-/// device — and a raw cosine cannot tell that apart from being the right
-/// person. Dividing it out does two things at once: it lets the right profile
-/// win a ranking it was losing on shared-microphone mass alone, and it removes
-/// the per-profile offset that makes a FIXED cosine band mean different things
-/// for different people and different recording conditions. The second is what
-/// makes [`NormalizedBand`] possible.
+/// What it corrects is **hubness**, and nothing else. Some enrolled centroids
+/// sit in a dense part of the embedding space and score high against everybody;
+/// a raw cosine cannot tell that apart from being the right person. Dividing it
+/// out does two things at once: it lets the right profile win a ranking it was
+/// losing on its rival's offset alone (candidates in one cluster share the
+/// cluster, but each carries its OWN `μₑ`/`σₑ`, which is why normalization can
+/// reorder them), and it removes the per-profile offset that makes a FIXED
+/// cosine band a different strictness for each enrolled person. The second is
+/// what makes [`NormalizedBand`] possible.
+///
+/// **It does not correct for the recording condition, and cannot.** `raw` is the
+/// only argument that carries anything about the live audio, and it is not used
+/// to compute `μₑ` or `σₑ` — those are properties of the enrolled centroid
+/// against the fixed shipped cohort, identical for every microphone. This is a
+/// per-profile recalibration of an absolute cosine band, not a condition-adaptive
+/// score. The cross-condition numbers in `docs/yap23-asnorm-measurement.md` are
+/// what that recalibration buys; they are not evidence of condition tracking.
 ///
 /// **The test-side term of symmetric AS-norm is deliberately absent**, and the
 /// module header explains why at length: it was swept against the harness, on
@@ -595,12 +649,16 @@ pub struct Ranking {
 /// What to do with one cluster, once its candidates are ranked and the winner
 /// has been asked whether it clears the band.
 ///
-/// This is the type that makes YV131 a cross-device fix rather than a reordering
-/// of whatever some other gate already admitted. The spec's third acceptance
-/// criterion is the case where a profile enrolled on a laptop microphone is
-/// **missed as `New`** when the same person turns up on AirPods; that only stops
-/// happening if something compares a condition-normalized score to a
-/// condition-normalized band, which is what [`Ranking::suggestion`] does.
+/// This is the type that gives this module an admission opinion at all, rather
+/// than leaving it a reordering of whatever some other gate already admitted.
+/// The spec's third acceptance criterion is the case where a profile enrolled on
+/// a laptop microphone is **missed as `New`** when the same person turns up on
+/// AirPods; what moves that case is a band calibrated per profile instead of one
+/// fixed cosine number shared by everybody — not a score that adapts to the
+/// microphone, which is not what ships. See [`Ranking::suggestion`] for the
+/// algebra, and note that acceptance 3 is a MANUAL check against a real
+/// recording that has not been run: the automated arm is four simulated
+/// channels.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Suggestion<'a> {
     /// The best candidate cleared the band. Offer it — once, for the whole
@@ -651,14 +709,28 @@ impl Ranking {
 
     /// Admit the winner, or call the cluster a new voice.
     ///
-    /// The accept/reject decision this item exists to move out of cosine units.
-    /// A cluster recorded on a different device than the profile was enrolled on
-    /// scores low in raw cosine — but so does every stranger recorded on that
-    /// device, and the band is expressed relative to them, so the true match
-    /// still clears it. That is the whole mechanism, and
-    /// `tests/as_norm_admits_across_conditions.rs` measures how often it
-    /// actually rescues a match a fixed cosine band drops, on the held-out
-    /// split, at a published false-accept rate.
+    /// The accept/reject decision this item exists to move out of raw cosine
+    /// units into per-profile calibrated ones.
+    ///
+    /// **What this is, stated so nobody has to derive it.** The score being
+    /// compared is `(cos − μₑ)/σₑ` with `μₑ`/`σₑ` fixed by the enrolled centroid
+    /// (see [`as_norm_score`]), so this test is exactly
+    /// `cos ≥ μₑ + band · σₑ`: an absolute cosine band, chosen per profile. It
+    /// is **condition-blind** — the cohort strangers are scored against the
+    /// ENROLLMENT centroid, and their scores do not move when the cluster's
+    /// microphone does. An earlier version of this comment claimed the band was
+    /// expressed relative to strangers recorded on the cluster's own device;
+    /// that described the test-side term the design sweep deleted, and it was
+    /// wrong about the code beneath it.
+    ///
+    /// **What it buys, measured rather than argued.** Because the per-profile
+    /// offset is divided out, one band is the same strictness for every enrolled
+    /// person, and the FRR gap between a matched channel and a shifted one
+    /// narrows (21.5 pp → 4.9 pp) — inter-speaker variance leaves the decision,
+    /// the channel shift itself does not.
+    /// `tests/as_norm_admits_across_conditions.rs` measures how often this
+    /// rescues a match a fixed cosine band drops, on the held-out split, at a
+    /// published false-accept rate.
     ///
     /// Only the WINNER is tested against the band. A cluster is one voice, so it
     /// gets one question — testing every candidate independently is precisely
@@ -708,13 +780,19 @@ impl Ranking {
 /// [`Ranking::suggestion`] then declines to make an admission decision rather
 /// than making one in the wrong unit.
 ///
-/// **It does not take the cluster embedding.** It used to, for the test-side
+/// **It does not take the cluster embedding**, and that is the whole reason the
+/// resulting decision is condition-blind. It used to, for the test-side
 /// normalization term the design sweep removed, and carrying a parameter the
 /// score no longer reads would be an invitation to believe it still does. The
 /// raw cosine each candidate carries is the only thing about the cluster this
 /// function needs; computing it — and checking the live embedding against
 /// [`ImpostorCohort::require_embedder`] — belongs to the caller that has the
 /// embedding in the first place.
+///
+/// What normalization changes here is the ORDER, and it can change it because
+/// each candidate brings its own centroid and therefore its own `μₑ`/`σₑ`. The
+/// shared raw cosine cancels out of a comparison only if the two candidates
+/// happen to have identical cohort statistics, which enrolled people do not.
 pub fn rank_within_meeting(candidates: &[Candidate], cohort: Option<&ImpostorCohort>) -> Ranking {
     let raw_only = |why: Option<String>| -> Ranking {
         let mut ordered: Vec<RankedCandidate> = candidates
@@ -803,7 +881,12 @@ mod tests {
     #[test]
     fn shipped_cohort_decodes_and_matches_its_manifest() {
         let cohort = ImpostorCohort::shipped().expect("shipped cohort decodes");
-        assert_eq!(cohort.dim(), 512, "CAM++ measured 512 wide in YV122");
+        // 512 is the pinned model's own answer, not a downstream claim: the file
+        // catalog.json pins by sha256 `c46fad10…` declares ONNX metadata
+        // `output_dim = 512` and a graph output `embs [B, 512]`. Reproduce with
+        // `onnx.load(...)` over the digest-verified download. (This assertion
+        // used to cite "YV122 measured 512"; YV122 is unmerged and cannot have.)
+        assert_eq!(cohort.dim(), 512, "the pinned CAM++ ONNX declares output_dim = 512");
         assert!(cohort.len() >= 20, "a cohort of {} is not a cohort", cohort.len());
         assert!(cohort.top_k() <= cohort.len());
         for row in &cohort.rows {

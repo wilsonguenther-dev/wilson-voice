@@ -84,11 +84,17 @@ USAGE
     --test-segments N       test segments per speaker (default 6)
 
   Needs `sherpa-onnx==1.13.4`, `numpy`, `scipy` and `soundfile`. 1.13.4 is not a
-  nearby version — it is the exact pin `desktop/yap-diarize/Cargo.toml` carries,
-  so these embeddings come out of the same feature extractor and the same
-  inference code the shipped sidecar runs. A cohort embedded by a different
-  pipeline than the one that embeds the live utterance is not a cohort, it is
-  noise in the same shape.
+  nearby version: it is the version YV122 is specified to add to
+  `desktop/yap-diarize/Cargo.toml` as `sherpa-onnx = "=1.13.4"`, so that these
+  embeddings come out of the same feature extractor and the same inference code
+  the sidecar will run. A cohort embedded by a different pipeline than the one
+  that embeds the live utterance is not a cohort, it is noise in the same shape.
+
+  Stated precisely, because a previous revision of this header overstated it:
+  YV122 is UNMERGED, that manifest currently declares `serde` + `serde_json` and
+  nothing else, and `tests/supply_chain.rs` asserts it carries no inference crate
+  yet. So 1.13.4 is a pin this script enforces on ITSELF and a commitment YV122
+  has to honour — not a pin the shipped sidecar links today.
 
   LibriSpeech subsets (openslr.org/12): test-clean for the cohort, dev-clean to
   choose every tuned number, dev-other + test-other pooled to report them. All
@@ -320,7 +326,8 @@ class Embedder:
         if sherpa_onnx.__version__ != SHERPA_PIN:  # pragma: no cover - env guard
             raise SystemExit(
                 f"sherpa-onnx {sherpa_onnx.__version__} is installed; this cohort must be built "
-                f"with the pinned {SHERPA_PIN} that desktop/yap-diarize/Cargo.toml uses"
+                f"with {SHERPA_PIN}, the version YV122 is specified to pin in "
+                f"desktop/yap-diarize/Cargo.toml (that crate carries no inference dependency yet)"
             )
         self.version = sherpa_onnx.__version__
         self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(
