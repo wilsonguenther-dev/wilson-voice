@@ -677,3 +677,87 @@ fn the_childs_segmentation_moves_with_the_distance_and_binary_mode_inherits_it()
         }
     );
 }
+
+/// **A turn nothing was measured on is `None`, not "everyone else".**
+///
+/// YV122's per-turn `min_embed` floor makes a partly-embedded pass the normal
+/// case: a turn whose un-overlapped part is under the floor comes back from the
+/// child with an EMPTY embedding, and on the corpus's own fixtures that is
+/// several turns in every pass. Two wrong answers are available for such a turn
+/// and this test rules out both.
+///
+/// Answering `EVERYONE_ELSE_CLUSTER` would be a claim — "this is not the
+/// instructor" — about audio nobody compared to anything, and it is what falls
+/// out of scoring an empty vector against the centroid (cosine of nothing lands
+/// under any band). Refusing the whole pass would throw away the turns that DID
+/// carry evidence. Both modes therefore answer per turn, and the unmeasured one
+/// is `None`.
+#[test]
+fn a_turn_with_no_embedding_is_unattributed_rather_than_everyone_else() {
+    let mic = Path::new("/tmp/does-not-need-to-exist.wav");
+    let voice = |speaker: usize| {
+        let mut embedding = vec![0.0f32; 6];
+        embedding[speaker] = 1.0;
+        embedding
+    };
+    // Three turns: the enrolled voice, a stranger, and one the child could not
+    // embed (empty vector — what a sub-floor span comes back as).
+    let turns = vec![
+        StubTurn::new(0.0, 8.0, 0, voice(ENROLLED_VOICE)),
+        StubTurn::new(8.0, 16.0, 1, voice(0)),
+        StubTurn::new(16.0, 17.0, 2, Vec::new()),
+    ];
+
+    let pool = DiarizePool::new(stub_returning(turns.clone()), READY);
+    let binary = cluster_track(
+        &pool,
+        MeetingTracks {
+            mic_wav: mic,
+            system_wav: None,
+        },
+        MeetingKind::InPerson,
+        CosineDistance::new(SEPARATING),
+        TargetMode::EnrolledVsEveryoneElse(enrolled_profile()),
+        STUB_MIN_EMBED,
+    )
+    .expect("a pass with SOME evidence is answered, not refused");
+    pool.shutdown();
+
+    assert_eq!(
+        binary
+            .iter()
+            .map(|s| s.cluster_index)
+            .collect::<Vec<Option<i64>>>(),
+        vec![Some(ENROLLED_CLUSTER), Some(EVERYONE_ELSE_CLUSTER), None],
+        "the enrolled turn, the stranger's turn, and the turn nobody measured"
+    );
+    // The short turn is still THERE — it is real speech at a real time, and a
+    // pass that dropped it would silently shorten the meeting.
+    assert_eq!(binary.len(), 3);
+    assert_eq!(binary[2].start_seconds, 16.0);
+
+    // Full clustering answers the same way about the same turn: the two that
+    // carry evidence are clustered by this build's threshold, the third is not
+    // invented into cluster 0.
+    let pool = DiarizePool::new(stub_returning(turns), READY);
+    let full = cluster_track(
+        &pool,
+        MeetingTracks {
+            mic_wav: mic,
+            system_wav: None,
+        },
+        MeetingKind::InPerson,
+        CosineDistance::new(SEPARATING),
+        TargetMode::FullClustering,
+        STUB_MIN_EMBED,
+    )
+    .expect("the stub answers");
+    pool.shutdown();
+    assert_eq!(
+        full.iter()
+            .map(|s| s.cluster_index)
+            .collect::<Vec<Option<i64>>>(),
+        vec![Some(0), Some(1), None],
+        "one short turn must not send the whole pass to the child's own cluster ids"
+    );
+}
