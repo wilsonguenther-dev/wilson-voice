@@ -1,0 +1,138 @@
+YV134 — backlog acceptance criteria, each with the command that runs it
+=======================================================================
+
+Run on aarch64-apple-darwin. Corpus present at ~/yap-eval-corpus/meetings.
+
+-------------------------------------------------------------------------------
+$ ls ~/yap-eval-corpus/meetings/
+classroom-6-far-field
+device-change
+irl-close-4-enrolled
+lecture-15min
+room-3-near-field
+seam-stress
+two-track-ordering
+
+$ ls ~/yap-eval-corpus/meetings/irl-close-4-enrolled/
+audio.wav
+enroll-spk_a.wav
+enroll-spk_b.wav
+enroll-spk_c.wav
+meta.json
+reference.txt
+
+-------------------------------------------------------------------------------
+$ (cd ~/yap-eval-corpus/meetings && shasum -a 256 -c .../meeting_eval_manifest.sha256)
+irl-close-4-enrolled/audio.wav: OK
+irl-close-4-enrolled/enroll-spk_a.wav: OK
+irl-close-4-enrolled/enroll-spk_b.wav: OK
+irl-close-4-enrolled/enroll-spk_c.wav: OK
+irl-close-4-enrolled/meta.json: OK
+irl-close-4-enrolled/reference.txt: OK
+  (…21 other lines: all OK; exit 0, no FAILED lines anywhere)
+
+-------------------------------------------------------------------------------
+THE PHASE-CLOSING DELIVERABLE
+$ cargo test --test meeting_eval yap23_e2e_irl_named_speaker_transcript -- --nocapture
+
+running 1 test
+irl-close-4-enrolled: measured median F0 — spk_a 170.2 Hz, spk_b 103.9 Hz, spk_c 210.5 Hz, spk_d 70.2 Hz
+  enrolled spk_a as "Avery" on 5.6s of held-out audio
+  enrolled spk_b as "Bao" on 6.8s of held-out audio
+  enrolled spk_c as "Cleo" on 7.7s of held-out audio
+decoded 16 turns of fixture (g)
+  sidecar refused as expected: no_models
+---- fixture (g) summary ----
+Let us go through what is left before the
+
+### Action items
+
+- I could take the onboarding flow and have a (Cleo, 00:00:08)
+- I will write up the import path and put (Avery, 00:00:17)
+
+### Decisions
+
+- It goes in the next cycle, and that is (Bao, 00:00:25)
+
+### Open questions
+
+- The onboarding flow still sends people to the wrong (Bao, 00:00:03)
+-----------------------------
+fixture (g): 2 action owners ["Cleo", "Avery"]
+test yap23_e2e_irl_named_speaker_transcript ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 7.98s
+
+
+-------------------------------------------------------------------------------
+THE GATE THAT KEEPS THE PHASE HONEST
+$ cargo test --test meeting_eval yap23_phase_close_names_the_stages_that_are_not_shipped -- --nocapture
+
+running 1 test
+yap23 does not close yet: YV122, YV124, YV126–YV131 are unshipped. See docs/yap23-phase-demo.md.
+test yap23_phase_close_names_the_stages_that_are_not_shipped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+-------------------------------------------------------------------------------
+CORPUS-ABSENT POSTURE (what CI and a fresh clone do) — extended, not replaced
+$ grep -n "meeting eval corpus not found" desktop/src-tauri/tests/meeting_eval.rs
+133:const CORPUS_ABSENT: &str = "meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping";
+
+$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval -- --nocapture
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skippingtest meeting_eval_generate_seam_stress ... ignored, writer, not a check: renders the seam fixture with `say`
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping
+meeting eval corpus not found at ~/yap-eval-corpus/meetings, skippingtest seam_gate_catches_a_duplicated_boundary_word ... ok
+test yap23_e2e_irl_named_speaker_transcript ... ok
+test yap23_phase_close_names_the_stages_that_are_not_shipped ... ok
+test result: ok. 29 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+-------------------------------------------------------------------------------
+MEASURED DER/JER — the numbers docs/yap23-phase-demo.md states
+$ cargo test --test meeting_eval meeting_eval_diarization -- --nocapture
+test meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate ... ok
+room-3-near-field: one-cluster baseline DER 0.6384 JER 0.8795
+classroom-6-far-field: one-cluster baseline DER 0.7218 JER 0.9459
+irl-close-4-enrolled: one-cluster baseline DER 0.7273 JER 0.9318
+test meeting_eval_diarization_metrics_score_the_real_fixtures ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+$ cargo test --test meeting_eval meeting_eval_room_3 meeting_eval_classroom_6 -- --nocapture
+room-3-near-field: one-cluster baseline DER 0.6384 JER 0.8795
+classroom-6-far-field: one-cluster baseline DER 0.7218 JER 0.9459
+irl-close-4-enrolled: one-cluster baseline DER 0.7273 JER 0.9318
+room-3-near-field: measured median F0 — spk_a 170.2 Hz, spk_b 103.9 Hz, spk_c 216.2 Hz
+fixture (e): 12 turns, 11 speaker changes, 50.4s
+classroom-6-far-field: measured median F0 — spk_a 170.2 Hz, spk_b 105.3 Hz, spk_c 210.5 Hz, spk_d 77.7 Hz, spk_e 250.0 Hz, spk_f 296.3 Hz
+fixture (f): 21 turns, 3 simultaneous at peak, 5 distinct speakers in one 10s window, 9.4s overlapped
+
+-------------------------------------------------------------------------------
+FULL SUITE, 3 CONSECUTIVE RUNS (flaky-prone discipline)
+$ cargo test    # 100 test binaries
+RUN 1 EXIT=0  ok=100  failed=0  meeting_eval: 29 passed; 0 failed; 6 ignored (51.25s)
+RUN 2 EXIT=0  ok=100  failed=0  meeting_eval: 29 passed; 0 failed; 6 ignored (53.57s)
+RUN 3 EXIT=0  ok=100  failed=0  meeting_eval: 29 passed; 0 failed; 6 ignored (53.63s)
+
+$ npx tsc --noEmit    # exit 0
+
+-------------------------------------------------------------------------------
+REGRESSION: the YV133 rail this item builds on is untouched
+$ cargo test --test summarize_e2e_speaker_attributed --test summarize_grammar_unchanged_shape \
+             --test summarize_speaker_attribution_from_lookup --test summarize_validators_v1_v7
+     Running tests/summarize_e2e_speaker_attributed.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_e2e_speaker_attributed-32ba3105689011f3)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/summarize_grammar_unchanged_shape.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_grammar_unchanged_shape-3312193d1cd050a4)
+     Running tests/summarize_speaker_attribution_from_lookup.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_speaker_attribution_from_lookup-b72e199158054b75)
+     Running tests/summarize_validators_v1_v7.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/summarize_validators_v1_v7-d975fcb42350c7ea)

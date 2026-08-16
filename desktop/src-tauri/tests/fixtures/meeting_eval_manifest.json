@@ -7,7 +7,8 @@
     "device-change",
     "two-track-ordering",
     "room-3-near-field",
-    "classroom-6-far-field"
+    "classroom-6-far-field",
+    "irl-close-4-enrolled"
   ],
   "synthesis": {
     "tool": "macOS `say` -> `afconvert` (no network, no third-party asset)",
@@ -55,6 +56,36 @@
       "path": "device-change/segment-b-24000hz.wav",
       "bytes": 401738,
       "sha256": "cd4f7f4077ec941c24964359e6d04ddb8880be99ceb87848f38315dc86e17c8d"
+    },
+    {
+      "path": "irl-close-4-enrolled/audio.wav",
+      "bytes": 2257794,
+      "sha256": "448ad55f38814c77936c24806ac9009da6a33abe756bdf225fc57857d9579406"
+    },
+    {
+      "path": "irl-close-4-enrolled/enroll-spk_a.wav",
+      "bytes": 180750,
+      "sha256": "6e051f6c44fb1f95c4a46854eca7ba2244754012ee9131215624bba19036ba7d"
+    },
+    {
+      "path": "irl-close-4-enrolled/enroll-spk_b.wav",
+      "bytes": 218726,
+      "sha256": "8949a49c8b616a81d661f7e8697a99a4ddf9986e1e4cb490b1d5587bfd412aef"
+    },
+    {
+      "path": "irl-close-4-enrolled/enroll-spk_c.wav",
+      "bytes": 245440,
+      "sha256": "56d065a5179fcca08661f00a5d50ecf5bbae797d537d4f7e5df0d644166c8976"
+    },
+    {
+      "path": "irl-close-4-enrolled/meta.json",
+      "bytes": 5471,
+      "sha256": "d26ac1d49c99b71a64a73a49781a22aaed4d611ee2084ffaf94d17ac0e9a705f"
+    },
+    {
+      "path": "irl-close-4-enrolled/reference.txt",
+      "bytes": 1209,
+      "sha256": "1fd74762acab37868481eaf88aa50977e3a3fa4fb1e21660f89eb04771c3e08c"
     },
     {
       "path": "lecture-15min/audio.wav",

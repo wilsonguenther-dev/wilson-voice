@@ -592,6 +592,9 @@ pub fn segments() -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
 /// changes when the real one lands.
 pub struct EnrolledSpeakers {
     by_segment_id: std::collections::HashMap<String, String>,
+    /// YV134 — what an UNLISTED segment comes back as. See
+    /// [`EnrolledSpeakers::with_new_voice`].
+    unenrolled: Option<String>,
 }
 
 impl EnrolledSpeakers {
@@ -604,7 +607,46 @@ impl EnrolledSpeakers {
                 .iter()
                 .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
                 .collect(),
+            unenrolled: None,
         }
+    }
+
+    /// YV134 — the same, but an unlisted segment comes back as
+    /// `Anonymous(label)` instead of `None`.
+    ///
+    /// This models the *diarized* room, which is a different state from the
+    /// undiarized one [`EnrolledSpeakers::new`] models. Once clustering has run
+    /// (YV126) an unmatched voice is not "no information": the app knows a
+    /// distinct person spoke and knows it has no profile for them, which is
+    /// exactly the state YV129's prompt is raised from. So the label is an
+    /// `Anonymous` one — real separation, explicitly not an identity — and never
+    /// a `Named` guess.
+    ///
+    /// The `Named`/`Anonymous` split is a **type-level seam that today's
+    /// summarize rail flattens**, not a boundary anything enforces. The
+    /// evidence table in `summarize.rs` is built with an unconditional
+    /// `l.speaker.as_ref().map(|s| s.label().to_string())` — no `is_named()`
+    /// filter — and `SummaryItem::speaker` is a bare `Option<String>`. So
+    /// `Anonymous("New — unnamed")` reaches an action item's owner field
+    /// byte-identically to a `Named` label of the same text, and renders the
+    /// same way. What keeps it from reading as a person's name is the *string
+    /// content*, not the variant — which is exactly why `meeting_eval.rs`'s
+    /// criterion-(d) loop has to allow `owner == NEW_VOICE_LABEL` by name to
+    /// pass.
+    ///
+    /// So the variant is still the honest thing to return here (a source must
+    /// never claim an identity it does not have), but it buys a *readable
+    /// contract*, not a guard.
+    ///
+    /// TODO(YV129/YV130): the enforcement is owed by whichever of those items
+    /// first makes the unmatched-voice state user-visible — either filter the
+    /// evidence table on `is_named()` or hand `SummaryItem::speaker` the enum
+    /// instead of a `String`. Deliberately not done in YV134: it would change
+    /// YV133's shipped behaviour, which is out of this item's scope.
+    pub fn with_new_voice(pairs: &[(&str, &str)], label: &str) -> Self {
+        let mut me = Self::new(pairs);
+        me.unenrolled = Some(label.to_string());
+        me
     }
 }
 
@@ -613,10 +655,15 @@ impl wilson_voice_lib::summarize::SpeakerSource for EnrolledSpeakers {
         &self,
         segment: &wilson_voice_lib::meetings::MeetingSegment,
     ) -> Option<wilson_voice_lib::summarize::SegmentSpeaker> {
-        self.by_segment_id
-            .get(&segment.id)
-            .cloned()
-            .map(wilson_voice_lib::summarize::SegmentSpeaker::Named)
+        match self.by_segment_id.get(&segment.id) {
+            Some(name) => Some(wilson_voice_lib::summarize::SegmentSpeaker::Named(
+                name.clone(),
+            )),
+            None => self
+                .unenrolled
+                .clone()
+                .map(wilson_voice_lib::summarize::SegmentSpeaker::Anonymous),
+        }
     }
 }
 
