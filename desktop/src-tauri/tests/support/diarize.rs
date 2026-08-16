@@ -9,18 +9,28 @@
 //! reason when there is no backend to embed with.
 //!
 //! That distinction matters for an eval arm. A gate that quietly returns early
-//! whenever anything is missing measures nothing and says nothing; [`backend`]
-//! returns exactly one of three states, and only two of them are a skip. A
-//! spawn failure, a protocol error or a wedged child are **not** among them —
-//! those panic, because they are bugs in the thing under test rather than a
-//! machine that has no model on it.
+//! whenever anything is missing measures nothing and says nothing; [`embedder`]
+//! returns exactly one of two states, and only one of them is a skip. A spawn
+//! failure, a protocol error or a wedged child are **not** among them — those
+//! panic, because they are bugs in the thing under test rather than a machine
+//! that has no model on it.
+//!
+//! **This file lost a state when YV122 merged, and that is the point of the
+//! item.** It carried a third variant, `NoBackend`, for the era when
+//! `yap-diarize` was YV121's scaffold and answered `load_models` with
+//! `no_backend` on every machine on earth. YV122 compiled sherpa-onnx into the
+//! sidecar and RETIRED that tag from `diarize_protocol.rs` outright, so the
+//! variant is deleted rather than left unreachable: the only honest way to
+//! have no embedder now is not to have the model files, and that is one state,
+//! not two. The rebase turned the missing constant into a compile error, which
+//! is exactly the behaviour YV122 was aiming for when it spent the tag.
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
 use wilson_voice_lib::diarize::{DiarizeError, DiarizeLauncher, DiarizePool};
-use wilson_voice_lib::diarize_protocol::{ERR_MODEL_NOT_FOUND, ERR_NO_BACKEND};
+use wilson_voice_lib::diarize_protocol::ERR_MODEL_NOT_FOUND;
 use wilson_voice_lib::models::{
     diarize_model_for_role, diarize_model_path, is_diarize_downloaded, DiarizeModelRole,
 };
@@ -79,8 +89,8 @@ pub fn launcher() -> DiarizeLauncher {
 /// What a test asking for real embeddings gets back.
 ///
 /// Named for what the caller wants rather than for the sidecar's internals: a
-/// test needs an EMBEDDER, and two of these three states are the honest ways a
-/// machine can fail to have one.
+/// test needs an EMBEDDER, and exactly one of these two states is the honest
+/// way a machine can fail to have one.
 pub enum Embedder {
     /// A real inference backend, with the embedding width the CHILD reported —
     /// never a constant on this side of the wire (`models.rs` explains why that
@@ -89,14 +99,12 @@ pub enum Embedder {
         pool: DiarizePool,
         embedding_dim: u32,
     },
-    /// The sidecar answered, honestly, that this build has no inference backend
-    /// compiled in. YV121 shipped the process shape with zero model bytes and
-    /// YV122 is the item that replaces `load_backend`; until it lands, this is
-    /// the state every machine is in, CI included.
-    NoBackend,
     /// The catalog's diarization models are not installed on this machine.
-    /// Carries which one is missing, so "no model" and "no backend" can never
-    /// be confused for each other in a skip line.
+    /// Carries which one is missing, so the skip line names a file rather than
+    /// shrugging.
+    ///
+    /// Since YV122 this is the ONLY skip. The sidecar always has a backend now;
+    /// a machine either has the two model files or it does not.
     ModelsMissing(String),
 }
 
@@ -111,14 +119,14 @@ impl Embedder {
     /// `YAP_EER_UNMEASURED_OK` before the anti-alias EER arm will pass.
     ///
     /// Naming the REASON rather than a bare `1` is what stops a declaration
-    /// from outliving the state it described: an `export
-    /// YAP_EER_UNMEASURED_OK=no_backend` left in a shell profile stops counting
-    /// the moment `yap-diarize` gains a backend and this machine's reason
-    /// becomes `models_missing`.
+    /// from outliving the state it described. That mechanism has now been
+    /// exercised in anger: a stale `export YAP_EER_UNMEASURED_OK=no_backend`
+    /// stopped counting the day YV122 landed, because `no_backend` is not a
+    /// reason any machine can have any more — `skip_tag` cannot return it, and
+    /// `diarize_protocol.rs` no longer defines the tag it was named after.
     pub fn skip_tag(&self) -> Option<&'static str> {
         match self {
             Embedder::Ready { .. } => None,
-            Embedder::NoBackend => Some("no_backend"),
             Embedder::ModelsMissing(_) => Some("models_missing"),
         }
     }
@@ -127,10 +135,6 @@ impl Embedder {
     pub fn skip_reason(&self) -> Option<String> {
         match self {
             Embedder::Ready { .. } => None,
-            Embedder::NoBackend => Some(format!(
-                "no inference backend in yap-diarize (load_models answered \
-                 '{ERR_NO_BACKEND}')"
-            )),
             Embedder::ModelsMissing(what) => {
                 Some(format!("diarization model not installed: {what}"))
             }
@@ -141,10 +145,12 @@ impl Embedder {
 /// Spawn the shipped sidecar and hand it the shipped catalog's model pair.
 ///
 /// # Panics
-/// On anything that is not one of [`Embedder`]'s three states — a failed spawn,
+/// On anything that is not one of [`Embedder`]'s two states — a failed spawn,
 /// a missed deadline, a garbled response, or a refusal with a tag this function
 /// does not know. Those are defects, and a defect that presents as a skipped
-/// eval arm is worse than a red test.
+/// eval arm is worse than a red test. `model_load_failed` is deliberately among
+/// them: since YV122 a build that cannot open the catalog's own pinned models
+/// is a broken install, not a machine without them.
 pub fn embedder() -> Embedder {
     let mut paths = Vec::new();
     for role in [DiarizeModelRole::Segmentation, DiarizeModelRole::Embedding] {
@@ -163,10 +169,6 @@ pub fn embedder() -> Embedder {
             pool,
             embedding_dim,
         },
-        Err(DiarizeError::Refused(tag)) if tag == ERR_NO_BACKEND => {
-            pool.shutdown();
-            Embedder::NoBackend
-        }
         Err(DiarizeError::Refused(tag)) if tag == ERR_MODEL_NOT_FOUND => {
             pool.shutdown();
             // The catalog said the files are there and the child says they are

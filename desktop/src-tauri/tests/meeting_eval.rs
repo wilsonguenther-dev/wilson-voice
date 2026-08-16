@@ -80,6 +80,7 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2663,10 +2664,20 @@ fn meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise() {
     println!(
         "meeting_eval antialias in_band_fold_linear={folded_linear:.6} in_band_fold_antialiased={folded_filtered:.6} removed_db={removed_db:.1}"
     );
+    // YV124: this was a bare `20.0` and the EER arm below had its own,
+    // identical literal, while both the PR body and the backlog claimed the two
+    // arms shared "one constant, asserted in two places". They did not — two
+    // independent numbers, and moving one moved nothing else. The claim is made
+    // TRUE here rather than deleted, because the drift it described is a real
+    // hazard: the WER arm and the EER arm exist to agree about what "the fix
+    // works" means on the same measurement. The VALUE is unchanged, so this
+    // arm's behaviour is unchanged — see
+    // `meeting_eval_antialias_both_fold_gates_spend_one_constant` for the guard
+    // that keeps a literal from creeping back in beside it.
     assert!(
-        removed_db >= 20.0,
-        "the anti-aliased decimator must keep ≥20 dB more of the >8 kHz band out of the \
-         speech band on real fixture audio, got {removed_db:.1} dB"
+        removed_db >= FOLD_REJECTION_DB,
+        "the anti-aliased decimator must keep ≥{FOLD_REJECTION_DB:.0} dB more of the >8 kHz \
+         band out of the speech band on real fixture audio, got {removed_db:.1} dB"
     );
 
     let before = wer(
@@ -3440,48 +3451,47 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
 // two honest "this machine has no embedder" states, so a broken sidecar can
 // never present here as a green arm.
 //
-// ## The skip EXPIRES — and WHERE it expires, which the first fix got wrong
+// ## The skip expired, and this is what the expiry produced
 //
 // The first shipped version of this arm returned quietly on `NoBackend` and on
 // `ModelsMissing`, which made it a permanently self-skipping gate: it would
 // have stayed green forever without ever computing an EER, including after
-// YV122 lands. Nothing mechanical enforced OS-8's ordering requirement; it
+// YV122 landed. Nothing mechanical enforced OS-8's ordering requirement; it
 // rested on a human remembering to come back.
 //
 // The first fix turned that skip into a DECLARATION — a machine with no
 // embedder has to name its reason in [`EER_UNMEASURED_OK`] or this arm PANICS —
-// and then claimed CI was held to it. **CI is not, and cannot be.** This test
-// opens on `corpus()`, and the corpus is `say`-generated audio under
+// and then claimed CI was held to it. **CI was not, and could not be.** This
+// test opens on `corpus()`, and the corpus is `say`-generated audio under
 // `~/yap-eval-corpus/meetings` that no CI runner has and no repo carries. On a
 // corpus-less machine the arm returns at its first line: before the fold
 // assert, before `embedder()`, and before the declaration is ever consulted.
 // The models were never the precondition — the CORPUS is, and installing the
-// two catalog models in CI would change nothing on its own. That claim is
+// two catalog models in CI would have changed nothing on its own. That claim is
 // deleted rather than softened, and `ci.yml` no longer exports a variable
 // nothing there reads (see
 // [`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`],
 // which keeps the dead configuration from coming back).
 //
-// So the expiry is enforced in two places, and only the second of them is
-// automated:
+// The second fix added a gate that needed neither: a probe that asked the
+// shipped sidecar whether this build had an inference backend at all, and
+// required the answer to still be `no_backend` — the one condition under which
+// `EER: UNMEASURED` was an honest thing to write down. **That gate has now
+// done its job.** YV122 merged, the sidecar gained sherpa-onnx, the probe went
+// red on the rebase, and the EER below is the number that was owed. What
+// remains of it is the inverse guard,
+// [`meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend`]:
+// the measured numbers are only worth the backend that produced them, so the
+// same probe now requires a real backend to still be there.
 //
-//  1. **The declaration, on a corpus-equipped machine.** Today that is one
-//     machine in the world — the one this item's numbers were measured on. It
-//     is a real gate there (`cargo test` is red until the reason is named or
-//     the EER is measured) and it is honest to say it reaches nowhere else.
-//  2. **The backend probe, everywhere, CI included** —
-//     [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`].
-//     It needs no corpus and no model: it asks the shipped sidecar directly
-//     whether this build has an inference backend, and requires the answer to
-//     still be `no_backend`. That is the exact condition under which `EER:
-//     UNMEASURED` is an honest state, so the moment YV122 lands on `main` CI
-//     goes red and stays red until someone runs the arm on a corpus machine and
-//     pastes the numbers. No environment variable can turn it off.
-//
-// The declaration also names the REASON (`no_backend` / `models_missing`)
-// rather than a bare `1`, so the `export` that gets pasted into a shell profile
-// and forgotten expires by itself: it stops counting as soon as the machine's
-// reason changes underneath it.
+// One gate stayed exactly as it was, and it is the one that still has work to
+// do: a machine with no models installed cannot measure this, and it must NAME
+// that reason in [`EER_UNMEASURED_OK`] rather than skip quietly. The
+// declaration carries the REASON (`models_missing`) rather than a bare `1`, so
+// an `export` pasted into a shell profile and forgotten expires by itself — the
+// stale `no_backend` declarations this item's own transcripts contain stopped
+// counting the day YV122 landed, because no machine can have that reason any
+// more and the tag no longer exists in `diarize_protocol.rs` to name.
 //
 // ## Two fixtures, and a statistic that does not saturate — review fix #2
 //
@@ -3560,10 +3570,21 @@ fn unoverlapped_spans(turns: &[RttmTurn], min_seconds: f64) -> Vec<(String, f64,
     let mut kept = Vec::new();
     for (i, turn) in turns.iter().enumerate() {
         // Every other turn, clipped to this one's span.
+        // Blocked by ANOTHER PERSON, not by another ROW. A review advisory:
+        // this filtered on turn index alone, so a speaker with two adjacent
+        // turns of their own would have been treated as contaminating himself.
+        // That direction is safe — it discards clean audio rather than
+        // admitting dirty audio — but it is still wrong about what the mask is
+        // for, and it is the kind of wrong that a later fixture with
+        // back-to-back turns would silently make expensive.
+        // `meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself`
+        // pins the corrected behaviour; on the two corpus fixtures scored here
+        // the two definitions agree exactly, because neither RTTM has a
+        // speaker overlapping himself, so no number in this item moved.
         let mut blocked: Vec<(f64, f64)> = turns
             .iter()
             .enumerate()
-            .filter(|(j, _)| *j != i)
+            .filter(|(j, other)| *j != i && other.speaker_id != turn.speaker_id)
             .map(|(_, other)| {
                 (
                     other.start_seconds.max(turn.start_seconds),
@@ -3809,49 +3830,139 @@ fn arm_score(embeddings: &[(String, Vec<f32>)]) -> ArmScore {
     }
 }
 
-/// **OS-8's question, as one function.** `Ok` when the shipped decimator's
-/// embeddings are no worse than the pre-fix ones on every statistic the arm
-/// computes; `Err` with the line that names which one regressed.
+/// **OS-8's question, as one function — and it is not the question this arm
+/// asked before it had a backend.**
 ///
-/// It is a function rather than three `assert!`s inline because the arm's
-/// `pool.embed()` loop cannot run until YV122 lands, and a gate that has never
-/// executed is not a gate. This half executes on every machine, in both
-/// directions, from
+/// The first version of this gate asserted `shipped_eer <= pre_fix_eer`: the
+/// shipped decimator must not make speaker embeddings worse. The first real
+/// measurement falsified that as a criterion, and not by a hair. On fixture (e)
+/// the shipped decimator was better (EER 0.3924 → 0.2743); **on fixture (f) the
+/// PRE-FIX one was better, on every statistic** (EER 0.0610 vs 0.2635, margin
+/// 0.2978 vs 0.1700, d′ 2.577 vs 1.165, AUC 0.9635 vs 0.7880). One experiment,
+/// two fixtures, opposite verdicts.
+///
+/// The CONTROL is what resolves it, and it costs nothing because the arm
+/// already computes the audio it needs: decimate the SAME utterances with
+/// nothing above 8 kHz added, each way. With no ultrasonic content there is
+/// nothing to fold, so the two decimators must agree — and measured, they do,
+/// to the digit: EER 0.2743 vs 0.2743 on (e) and 0.3176 vs 0.3176 on (f), with
+/// margins inside 0.006 of each other. That is the score these voices earn on
+/// this corpus, and it is the reference both noisy arms are then compared
+/// against.
+///
+/// Against it the (f) result reads correctly. The pre-fix arm did not become a
+/// better speaker recogniser — it moved AWAY from the control in the flattering
+/// direction, inflating same-speaker similarity (mean genuine 0.716 → 0.847)
+/// while leaving different-speaker similarity where it was (0.536 → 0.549). The
+/// folded 58-tone comb is deterministic and identical in every utterance, so
+/// two clips that both carry it look more like each other; the embedding is
+/// partly fingerprinting the artifact instead of the voice. On (e) the same
+/// fold moved the same arm away from the control in the other direction —
+/// impostor similarity inflated 0.506 → 0.784, everyone starting to sound like
+/// everyone else, which is the collapse OS-8's finding actually predicts. The
+/// shipped arm, on both fixtures, lands back on the control.
+///
+/// **So the criterion is FIDELITY TO THE CONTROL, not the sign of a
+/// difference.** An anti-alias filter's job is to make the >8 kHz content leave
+/// no trace; a filter that traded one distortion for a flattering one would
+/// pass a `<=` gate and fail this one. That is the whole reason the sign test
+/// was the wrong shape: an EER arm that only asks "did the number get worse"
+/// would have reported the ALIASED path as better on (f) and licensed YV129 to
+/// tune enrollment bands on it.
+///
+/// Every comparison below is between two distances, so **there is no tolerance
+/// constant anywhere in this function** — nothing to tune, nothing copied from
+/// anywhere, and nothing that has to be re-derived on another machine.
+///
+/// It is a function rather than inline `assert!`s because the arm's
+/// `pool.embed()` loop needs the corpus AND both catalog models, and a gate
+/// that only executes on one laptop is not a gate. This half executes on every
+/// machine, in both directions, from
 /// [`meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm`].
 ///
-/// The message is tagged `[eer]` / `[margin]` / `[dprime]` so a test can pin
-/// WHICH statistic rejected without matching on prose that mentions all three.
-///
-/// **No tolerance is subtracted from any comparison**, because any tolerance
-/// would be a number nobody measured — the eval-discipline rule this backlog
-/// runs under. If the first real run lands inside float noise of equality, THAT
-/// run is what tunes one, in a transcript, on purpose.
-fn arm_is_not_worse(pre_fix: &ArmScore, shipped: &ArmScore) -> Result<(), String> {
-    if shipped.eer.eer > pre_fix.eer.eer {
+/// The message is tagged `[premise]` / `[eer]` / `[margin]` so a test can pin
+/// WHICH comparison rejected without matching on prose.
+fn shipped_arm_tracks_the_control(
+    control: &ArmScore,
+    control_alt: &ArmScore,
+    pre_fix: &ArmScore,
+    shipped: &ArmScore,
+) -> Result<(), String> {
+    let eer_from = |a: &ArmScore| (a.eer.eer - control.eer.eer).abs();
+    let margin_from = |a: &ArmScore| (a.margin - control.margin).abs();
+
+    // ── the premise ──────────────────────────────────────────────────────────
+    // The control is only a reference if the decimator choice does not move it.
+    // Asserted rather than assumed, and asserted in the units of the thing it
+    // is a reference FOR: the two clean arms must agree with each other more
+    // closely than the pre-fix arm agrees with either. If a future corpus has
+    // in-band content the two filters treat differently, this is what says so
+    // instead of silently redefining "control".
+    let control_spread = (control.margin - control_alt.margin).abs();
+    if control_spread >= margin_from(pre_fix) {
         return Err(format!(
-            "[eer] the shipped decimator must not make speaker embeddings worse: EER \
-             {:.4} (pre-fix) → {:.4} (shipped)",
-            pre_fix.eer.eer, shipped.eer.eer
+            "[premise] with nothing above 8 kHz to fold, the two decimators must agree: \
+             the clean arms' margins differ by {control_spread:.6}, which is not smaller \
+             than the {:.6} the pre-fix arm differs from the control by. There is no \
+             reference here to compare either noisy arm against.",
+            margin_from(pre_fix)
         ));
     }
-    if shipped.margin < pre_fix.margin {
+    if (control.eer.eer - control_alt.eer.eer).abs() > control.eer_step() {
         return Err(format!(
-            "[margin] the shipped decimator must not shrink the genuine/impostor \
-             margin: {:.6} \
-             (pre-fix) → {:.6} (shipped). This is the comparison that carries the \
-             fixture when both EERs sit at the {:.4} quantisation floor.",
-            pre_fix.margin,
+            "[premise] the two clean arms' EERs differ by more than the {:.4} quantum this \
+             distribution can express ({:.4} vs {:.4}) — the decimator is changing the \
+             score on audio that has nothing to fold, so it is not an aliasing effect \
+             being measured below.",
+            control.eer_step(),
+            control.eer.eer,
+            control_alt.eer.eer
+        ));
+    }
+
+    // ── the gate ─────────────────────────────────────────────────────────────
+    if eer_from(shipped) > eer_from(pre_fix) {
+        return Err(format!(
+            "[eer] the shipped decimator must leave the added >8 kHz band without a trace, \
+             and it is further from the no-ultrasonic control than the pre-fix decimator \
+             is: control {:.4}, shipped {:.4} (Δ {:.4}), pre-fix {:.4} (Δ {:.4})",
+            control.eer.eer,
+            shipped.eer.eer,
+            eer_from(shipped),
+            pre_fix.eer.eer,
+            eer_from(pre_fix)
+        ));
+    }
+    if margin_from(shipped) >= margin_from(pre_fix) {
+        return Err(format!(
+            "[margin] same test on the genuine/impostor margin, which is the statistic that \
+             carries this when both EERs sit at the {:.4} quantisation floor: control \
+             {:.6}, shipped {:.6} (Δ {:.6}), pre-fix {:.6} (Δ {:.6})",
+            control.eer_step(),
+            control.margin,
             shipped.margin,
-            shipped.eer_step()
+            margin_from(shipped),
+            pre_fix.margin,
+            margin_from(pre_fix)
         ));
     }
-    if shipped.d_prime < pre_fix.d_prime {
-        return Err(format!(
-            "[dprime] the shipped decimator must not shrink d′: {:.4} (pre-fix) → {:.4} \
-             (shipped)",
-            pre_fix.d_prime, shipped.d_prime
-        ));
-    }
+
+    // **d′ and ROC-AUC are printed beside these two and deliberately NOT gated,
+    // and the reason is measured twice over.** First:
+    // `meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts`
+    // needs neither corpus nor model to show that folded energy does not ADD to
+    // an embedding, it takes over part of one — so it compresses within-speaker
+    // spread by the same factor as between-speaker margin, and d′ is the ratio
+    // of exactly those two. Under a model that compresses both, the margin
+    // falls by more than two orders of magnitude while d′ falls by under a
+    // quarter and AUC does not move at all. Second, on the real fixtures: on
+    // (e) both statistics rank the ALIASED arm as closer to the control (d′
+    // 0.835 vs 0.735 against a control 0.884; AUC 0.727 vs 0.706 against
+    // 0.736) while the EER and the margin both rank the shipped arm closer, and
+    // on (f) they agree with the EER and the margin. A statistic that answers
+    // differently per fixture on a mechanism question is a diagnostic. It stays
+    // in the transcript — a d′ that moves while the margin does not is a spread
+    // story worth reading — and out of the gate, because it cannot carry one.
     Ok(())
 }
 
@@ -3864,9 +3975,13 @@ fn arm_is_not_worse(pre_fix: &ArmScore, shipped: &ArmScore) -> Result<(), String
 /// deliberately set nowhere in the repo — `ci.yml` used to export it, which was
 /// dead configuration on a runner that never reaches this line, and
 /// [`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches`]
-/// keeps it from coming back. The automated half of the expiry is
-/// [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`],
-/// which needs neither the corpus nor a model and cannot be declared away.
+/// keeps it from coming back.
+///
+/// Since YV122 landed there is exactly ONE value this can honestly take —
+/// `models_missing` — because a build with no inference backend no longer
+/// exists. The `no_backend` declarations in this item's own earlier transcripts
+/// stopped counting on that merge, which is the self-expiry the reason-naming
+/// was for.
 const EER_UNMEASURED_OK: &str = "YAP_EER_UNMEASURED_OK";
 
 /// Whether a given value of [`EER_UNMEASURED_OK`] counts as a declaration of
@@ -3936,12 +4051,12 @@ fn require_declared_unmeasured_eer(why: &str, reason_tag: &str) {
 /// The last two need an embedder; see the section header for what a machine
 /// without one has to declare before this test will pass.
 ///
-/// **All three need the CORPUS**, which is the whole reason this arm's expiry
-/// reaches only a corpus-equipped developer machine. On every other machine —
-/// CI included — the very first line below returns, and the automated half of
-/// the expiry is
-/// [`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`]
-/// instead.
+/// **All three need the CORPUS**, which is why the numbers this arm produces
+/// are measured on a corpus-equipped developer machine and pasted into the
+/// backlog rather than recomputed per run. On every other machine — CI
+/// included — the very first line below returns, and what binds there is
+/// [`meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend`],
+/// which needs neither corpus nor model.
 #[test]
 fn meeting_eval_anti_alias_eer_regression() {
     let Some(root) = corpus() else {
@@ -3951,8 +4066,8 @@ fn meeting_eval_anti_alias_eer_regression() {
         // declaration gate.
         println!(
             "meeting_eval anti_alias_eer UNRUN reason=no corpus at {} — fold, EER and the \
-             {EER_UNMEASURED_OK} gate all need it; the expiry that binds without a corpus is \
-             meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend",
+             {EER_UNMEASURED_OK} gate all need it; the gate that binds without a corpus is \
+             meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend",
             corpus_root().display()
         );
         return;
@@ -4048,18 +4163,71 @@ fn meeting_eval_anti_alias_eer_regression() {
     eprintln!("  embedder ready: {embedding_dim}-dimensional embeddings");
 
     let dir = support::temp_dir("yv124-anti-alias-eer");
+
+    // ── the embedding floor is LIVE on this path, proved once per run ─────────
+    // Every span this arm embeds is trimmed to at least
+    // [`ARM_MIN_UTTERANCE_SECONDS`], so the floor passed to `embed` below never
+    // fires on these fixtures — which would make it a parameter nobody could
+    // tell from `Duration::ZERO`. YV122 shipped it as a REFUSAL precisely so
+    // that "the engine gave us something" stops being evidence that it gave us
+    // anything, and a floor that has never refused anything here is a claim
+    // this arm has not earned. So it is exercised: half the floor, in the same
+    // process, against the same child, and it must come back as a refusal.
+    {
+        let short = dir.join("under-the-floor.wav");
+        let samples = vec![0.0f32; (TARGET_RATE as f64 * ARM_MIN_UTTERANCE_SECONDS / 2.0) as usize];
+        write_wav_16k_mono(&short, &to_i16(&samples));
+        let refused = pool
+            .embed(&short, Duration::from_secs_f64(ARM_MIN_UTTERANCE_SECONDS))
+            .expect_err(
+                "a clip half the length of the floor was embedded rather than refused, so \
+                 the floor this arm passes below is inert and every vector under it is \
+                 unmeasured",
+            );
+        println!(
+            "meeting_eval anti_alias_eer embed_floor_seconds={ARM_MIN_UTTERANCE_SECONDS:.1} \
+             half_length_clip={refused:?} — the floor refuses, so passing it below is a \
+             live assertion that the overlap trim did its job"
+        );
+    }
+
+    // Every fixture is scored and PRINTED before any of them is allowed to
+    // fail. A gate that panics inside the loop hides the second fixture's
+    // numbers, and on this arm the second fixture is the one that disagreed
+    // with the first — the transcript that made the control necessary would
+    // never have existed.
+    let mut verdicts: Vec<(&str, Result<(), String>)> = Vec::new();
     for (id, pairs, _) in &prepared {
+        // Four arms, not two. The two `*_clean` decimations are of the SAME
+        // utterances with no >8 kHz content added, so they are what these
+        // voices score when there is nothing to fold — the reference both noisy
+        // arms are measured against. They cost two more embed calls per
+        // utterance and they are the difference between a sign test and a
+        // measurement (see `shipped_arm_tracks_the_control`).
+        let mut control_shipped_e = Vec::new();
+        let mut control_linear_e = Vec::new();
         let mut linear_embeddings = Vec::new();
         let mut shipped_embeddings = Vec::new();
         for (i, pair) in pairs.iter().enumerate() {
             for (arm, samples, out) in [
+                ("control-shipped", &pair.shipped_clean, &mut control_shipped_e),
+                ("control-linear", &pair.linear_clean, &mut control_linear_e),
                 ("linear", &pair.linear, &mut linear_embeddings),
                 ("shipped", &pair.shipped, &mut shipped_embeddings),
             ] {
                 let path = dir.join(format!("{id}-{arm}-{i:02}.wav"));
                 write_wav_16k_mono(&path, &to_i16(samples));
+                // The floor YV122 made mandatory, spent here as the SAME
+                // number this arm already trims its spans to. Passing
+                // [`ARM_MIN_UTTERANCE_SECONDS`] is not a second threshold: it
+                // is the assertion that the trim above did its job, because a
+                // span that reached here under the floor comes back as
+                // `audio_too_short` and this `unwrap_or_else` panics with the
+                // fixture and the index that produced it. No accuracy number
+                // is set anywhere in this arm — see the `NOTE` printed below
+                // every fixture's scores.
                 let embedding = pool
-                    .embed(&path)
+                    .embed(&path, Duration::from_secs_f64(ARM_MIN_UTTERANCE_SECONDS))
                     .unwrap_or_else(|e| panic!("embed {id} {arm}-{i:02}: {e:?}"));
                 assert_eq!(
                     embedding.len() as u32,
@@ -4071,76 +4239,243 @@ fn meeting_eval_anti_alias_eer_regression() {
             }
         }
 
-        // The two arms fed the embedder DIFFERENT audio, so they must have got
-        // different vectors back. Identical ones would mean the two decimations
+        // The arms fed the embedder DIFFERENT audio, so they must have got
+        // different vectors back. Identical ones would mean the decimations
         // never reached the child — every comparison below would then be a
         // vector compared against itself, and every assertion trivially true.
-        assert!(
-            linear_embeddings
-                .iter()
-                .zip(shipped_embeddings.iter())
-                .any(|((_, a), (_, b))| a != b),
-            "{id}: both arms produced byte-identical embeddings, so nothing under test \
-             reached the embedder"
-        );
+        // Checked for the noisy pair AND for noisy-against-control, because it
+        // is the control that carries the criterion now.
+        for (what, a, b) in [
+            ("the two noisy arms", &linear_embeddings, &shipped_embeddings),
+            (
+                "the shipped arm and its control",
+                &shipped_embeddings,
+                &control_shipped_e,
+            ),
+        ] {
+            assert!(
+                a.iter().zip(b.iter()).any(|((_, x), (_, y))| x != y),
+                "{id}: {what} produced byte-identical embeddings, so nothing under test \
+                 reached the embedder"
+            );
+        }
 
+        let control = arm_score(&control_shipped_e);
+        let control_alt = arm_score(&control_linear_e);
         let pre_fix = arm_score(&linear_embeddings);
         let shipped = arm_score(&shipped_embeddings);
+        for (arm, score) in [
+            ("control_shipped", &control),
+            ("control_linear", &control_alt),
+            ("pre_fix", &pre_fix),
+            ("shipped", &shipped),
+        ] {
+            println!(
+                "meeting_eval anti_alias_eer fixture={id} arm={arm} eer={:.4} \
+                 mean_genuine={:.6} mean_impostor={:.6} margin={:.6} dprime={:.4} \
+                 auc={:.4} threshold_at_eer={:.4} genuine={} impostor={} eer_step={:.4}",
+                score.eer.eer,
+                score.mean_genuine,
+                score.mean_impostor,
+                score.margin,
+                score.d_prime,
+                score.auc,
+                score.eer.threshold_at_eer.get(),
+                score.eer.genuine,
+                score.eer.impostor,
+                score.eer_step(),
+            );
+        }
+        // The criterion itself, in the two numbers it compares, so a reader of
+        // the transcript never has to recompute a distance by hand.
         println!(
-            "meeting_eval anti_alias_eer fixture={id} eer_pre_fix={:.4} eer_shipped={:.4} \
-             mean_genuine_pre_fix={:.6} mean_impostor_pre_fix={:.6} \
-             mean_genuine_shipped={:.6} mean_impostor_shipped={:.6} \
-             margin_pre_fix={:.6} margin_shipped={:.6} dprime_pre_fix={:.4} \
-             dprime_shipped={:.4} auc_pre_fix={:.4} auc_shipped={:.4} \
-             threshold_pre_fix={:.4} threshold_shipped={:.4} genuine={} impostor={} \
-             frr_step={:.4} far_step={:.4} eer_step={:.4}",
-            pre_fix.eer.eer,
-            shipped.eer.eer,
-            pre_fix.mean_genuine,
-            pre_fix.mean_impostor,
-            shipped.mean_genuine,
-            shipped.mean_impostor,
-            pre_fix.margin,
-            shipped.margin,
-            pre_fix.d_prime,
-            shipped.d_prime,
-            pre_fix.auc,
-            shipped.auc,
-            pre_fix.eer.threshold_at_eer.get(),
-            shipped.eer.threshold_at_eer.get(),
-            shipped.eer.genuine,
-            shipped.eer.impostor,
-            shipped.frr_step,
-            shipped.far_step,
-            shipped.eer_step(),
+            "meeting_eval anti_alias_eer fixture={id} distance_from_control \
+             eer_shipped={:.4} eer_pre_fix={:.4} margin_shipped={:.6} \
+             margin_pre_fix={:.6} control_spread_margin={:.6}",
+            (shipped.eer.eer - control.eer.eer).abs(),
+            (pre_fix.eer.eer - control.eer.eer).abs(),
+            (shipped.margin - control.margin).abs(),
+            (pre_fix.margin - control.margin).abs(),
+            (control.margin - control_alt.margin).abs(),
         );
-        eprintln!("  {id} pre-fix (linear decimation): {pre_fix:?}");
-        eprintln!("  {id} shipped (Butterworth):       {shipped:?}");
+        eprintln!("  {id} control (no >8 kHz added, Butterworth): {control:?}");
+        eprintln!("  {id} control (no >8 kHz added, linear):      {control_alt:?}");
+        eprintln!("  {id} pre-fix (linear decimation):            {pre_fix:?}");
+        eprintln!("  {id} shipped (Butterworth):                  {shipped:?}");
         if pre_fix.eer_is_saturated() && shipped.eer_is_saturated() {
             println!(
                 "meeting_eval anti_alias_eer fixture={id} EER=SATURATED both arms sit at the \
-                 {:.4} floor this many pairs can express — the margin and d′ comparisons \
-                 below are what carry this fixture",
+                 {:.4} floor this many pairs can express — the margin comparison is what \
+                 carries this fixture",
                 shipped.eer_step()
             );
         }
         eprintln!(
-            "  NOTE: neither threshold_at_eer above is a shipped threshold. YV129 tunes the \
-             enrollment bands, against post-fix embeddings only."
+            "  NOTE: no threshold_at_eer above is a shipped threshold, and the control's is \
+             not one either. YV129 tunes the enrollment bands, against post-fix embeddings \
+             only, and not on this corpus — see YV122's `diarize_embed_smoke`."
         );
 
-        arm_is_not_worse(&pre_fix, &shipped).unwrap_or_else(|why| panic!("{id}: {why}"));
+        verdicts.push((
+            id,
+            shipped_arm_tracks_the_control(&control, &control_alt, &pre_fix, &shipped),
+        ));
     }
     pool.shutdown();
+
+    let failed: Vec<String> = verdicts
+        .iter()
+        .filter_map(|(id, verdict)| verdict.as_ref().err().map(|why| format!("{id}: {why}")))
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{} of {} fixtures failed OS-8's arm:\n  {}",
+        failed.len(),
+        verdicts.len(),
+        failed.join("\n  ")
+    );
+}
+
+/// **d′ is near-blind to the degradation OS-8 predicts, and this is the
+/// experiment that says so.**
+///
+/// A previous revision of this arm added d′ as a third gate beside the EER and
+/// the margin, on the reasoning that the EER quantises and a continuous
+/// statistic cannot. The first half of that is right and
+/// [`meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away`]
+/// still holds it. The second half picked the wrong continuous statistic, and
+/// the real measurement is what exposed it: fixture (e)'s shipped arm improved
+/// the EER by 30 % and more than doubled the margin while d′ went DOWN.
+///
+/// The mechanism, and it is not subtle once stated. Folded energy is not noise
+/// laid on top of an embedding — the fold happens in the audio, so the
+/// corrupted component is INSIDE the vector the model returns, taking over part
+/// of it. It therefore compresses the within-speaker spread by the same factor
+/// as the between-speaker margin. d′ is `margin / pooled_sd`: numerator and
+/// denominator both shrink, and the ratio barely moves. ROC-AUC is worse still
+/// for this purpose — it reads only the ORDER of the scores, and a
+/// common-mode component that crushes every cosine toward every other one can
+/// leave the order completely intact.
+///
+/// So the model below scales the per-utterance jitter with the speaker
+/// centroid, which is what the physics does and what
+/// [`synthetic_embeddings`] deliberately does not (it adds jitter at full
+/// scale afterwards — a fine model of *additive* noise, and the reason d′
+/// appeared to work when it was only ever tested against that one).
+///
+/// **Neither model is "the real one" and no number here is a measurement of
+/// the resampler.** The claim is narrow and it is about a statistic: there
+/// exists a physically motivated common-mode corruption under which the margin
+/// falls by more than two orders of magnitude, d′ falls by under a quarter, and
+/// AUC does not move at all. That is enough to disqualify d′ as a gate for this
+/// specific effect, which is all this test is used for.
+#[test]
+fn meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts() {
+    // The same generator as `synthetic_embeddings`, with ONE change: the jitter
+    // is compressed along with the centroid instead of being added at full
+    // scale on top of the corrupted vector.
+    fn common_mode_inside_the_vector(common_mode: f32) -> Vec<(String, Vec<f32>)> {
+        let mut state = 0x5eed_1234u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        let shared: Vec<f32> = (0..SYNTHETIC_DIM).map(|_| next()).collect();
+        let mut out = Vec::new();
+        for s in 0..SYNTHETIC_SPEAKERS {
+            let centroid: Vec<f32> = (0..SYNTHETIC_DIM).map(|_| next()).collect();
+            for _ in 0..SYNTHETIC_UTTERANCES {
+                let vector: Vec<f32> = centroid
+                    .iter()
+                    .zip(shared.iter())
+                    .map(|(c, k)| {
+                        (c + next() * SYNTHETIC_JITTER) * (1.0 - common_mode) + k * common_mode
+                    })
+                    .collect();
+                out.push((format!("spk_{s}"), vector));
+            }
+        }
+        out
+    }
+
+    let clean = arm_score(&common_mode_inside_the_vector(0.0));
+    let swamped = arm_score(&common_mode_inside_the_vector(0.95));
+    println!(
+        "meeting_eval anti_alias_eer dprime_blindness margin {:.6} → {:.6} ({:.0}x) \
+         dprime {:.4} → {:.4} ({:.2}x) auc {:.4} → {:.4} eer {:.4} → {:.4} \
+         mean_impostor {:.4} → {:.4}",
+        clean.margin,
+        swamped.margin,
+        clean.margin / swamped.margin,
+        clean.d_prime,
+        swamped.d_prime,
+        clean.d_prime / swamped.d_prime,
+        clean.auc,
+        swamped.auc,
+        clean.eer.eer,
+        swamped.eer.eer,
+        clean.mean_impostor,
+        swamped.mean_impostor,
+    );
+
+    // The premise: this really is a severe common-mode corruption. Two
+    // different speakers end up scoring as almost the same person.
+    assert!(
+        swamped.mean_impostor > 0.99,
+        "the corruption is not severe enough for this test to be about a severe \
+         corruption: impostor pairs mean {:.4}",
+        swamped.mean_impostor
+    );
+
+    // What the margin sees: a collapse of more than two orders of magnitude.
+    assert!(
+        clean.margin / swamped.margin > 100.0,
+        "the margin must see this corruption: {:.6} → {:.6}",
+        clean.margin,
+        swamped.margin
+    );
+
+    // What d′ sees: almost nothing. Stated as a ratio so the assertion is about
+    // the SIZE of the blindness rather than about a direction that a float
+    // wobble could satisfy.
+    assert!(
+        clean.d_prime / swamped.d_prime < 1.5,
+        "d′ tracked this corruption after all ({:.4} → {:.4}) — if that is now true, \
+         the reason `arm_is_not_worse` stopped gating on it no longer holds and the \
+         gate should get it back",
+        clean.d_prime,
+        swamped.d_prime
+    );
+
+    // What AUC sees: nothing whatsoever. The order is untouched.
+    assert_eq!(
+        clean.auc, swamped.auc,
+        "AUC moved under a pure common-mode corruption, which is the one thing a rank \
+         statistic should be invariant to"
+    );
+
+    // And the EER agrees with AUC here, which is the honest limit of this
+    // experiment: a corruption that preserves ORDER is invisible to both. That
+    // is not a reason to drop the EER — on the real fixtures it is nowhere near
+    // saturated and it moved by 30 % — it is the reason the margin is gated
+    // BESIDE it rather than instead of it.
+    assert_eq!(
+        clean.eer.eer, swamped.eer.eer,
+        "the EER moved under a corruption that preserves the ranking, so this test's \
+         account of why the margin is the gate is wrong somewhere"
+    );
 }
 
 /// **The arm's scoring path, proved able to fail — with no corpus and no
 /// model.**
 ///
-/// The gate above cannot report an EER on this base, so the machinery between
-/// "two sets of embeddings" and "the assertion" would otherwise never execute
-/// anywhere. It executes here, on the SAME [`genuine_and_impostor`] and the
-/// SAME `enrollment_eer` the arm calls, over vectors this test builds.
+/// The gate above needs the corpus AND the two catalog models, so on every
+/// machine that has neither the machinery between "two sets of embeddings" and
+/// "the assertion" would never execute. It executes here, on the SAME
+/// [`genuine_and_impostor`] and the SAME `enrollment_eer` the arm calls, over
+/// vectors this test builds.
 ///
 /// **These vectors are not CAM++ output and nothing here is a measurement of
 /// the resampler.** They are a model of one specific thing: what folded
@@ -4151,6 +4486,15 @@ fn meeting_eval_anti_alias_eer_regression() {
 /// the clean set plus exactly that common-mode component, and the assertion is
 /// that the arm's own scoring reports it as worse. An arm that could not tell
 /// these two apart could not tell the two decimators apart either.
+///
+/// **Read this model's LIMIT alongside it.** It adds the common-mode component
+/// on top of a per-utterance jitter left at full scale, which makes it a model
+/// of additive noise rather than of energy that has taken over part of the
+/// vector.
+/// [`meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts`]
+/// is the same idea with the jitter compressed too, and the two models
+/// disagree about d′ — which is exactly how d′ came to be a printed diagnostic
+/// here rather than a gate.
 #[test]
 fn meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts() {
     let clean = synthetic_embeddings(0.0);
@@ -4260,9 +4604,18 @@ fn meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away() {
         clean.margin,
         barely_worse.margin
     );
+    // d′ orders these two as well — UNDER THIS MODEL, which adds its jitter at
+    // full scale on top of the corruption. Asserted here because it is true
+    // here and because the contrast is the point: swap in the model where the
+    // jitter is compressed too and d′ stops ordering anything
+    // (`meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts`).
+    // A statistic that answers correctly only for the corruption model you
+    // happen to write down is a diagnostic, not a gate, and `arm_is_not_worse`
+    // treats it as one.
     assert!(
         clean.d_prime > barely_worse.d_prime,
-        "d′ cannot see a degradation the EER quantised away: {:.4} → {:.4}",
+        "d′ cannot see a degradation the EER quantised away, even in the additive \
+         model: {:.4} → {:.4}",
         clean.d_prime,
         barely_worse.d_prime
     );
@@ -4312,58 +4665,101 @@ fn meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture() {
     );
 }
 
-/// **The arm's whole gate, run in both directions, with no model on the
-/// machine.**
+/// **The arm's whole gate, run in both directions, with no model and no corpus
+/// on the machine.**
 ///
-/// [`arm_is_not_worse`] is the ~10 lines the arm's `pool.embed()` loop feeds,
-/// and that loop cannot run until YV122 lands. This test runs the gate itself
-/// on the same [`ArmScore`] type the arm builds, so the comparison is executed
-/// and falsified here rather than waiting on a merge — and each of the three
-/// statistics is regressed on its own, so none of them can be silently dropped
-/// from the gate without a red test.
+/// [`shipped_arm_tracks_the_control`] is the ~40 lines the arm's `pool.embed()`
+/// loop feeds, and that loop needs the eval corpus and both catalog models.
+/// This test runs the gate itself on the same [`ArmScore`] type the arm builds,
+/// so the criterion is executed and falsified everywhere rather than on one
+/// laptop — and each comparison is regressed on its own, so none of them can be
+/// silently dropped without a red test.
+///
+/// The scores are built from [`synthetic_embeddings`] rather than typed in, so
+/// the objects the gate sees are the objects [`arm_score`] produces.
 #[test]
 fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
-    let clean = arm_score(&synthetic_embeddings(0.0));
+    // The control: what these vectors score with nothing folded into them. Both
+    // "decimations" of it are the same clean set, which is the measured
+    // situation — on the real fixtures the two clean arms scored an identical
+    // EER and margins within 0.006 of each other.
+    let control = arm_score(&synthetic_embeddings(0.0));
+    let control_alt = arm_score(&synthetic_embeddings(0.001));
+    // A noisy arm that lands back on the control, and one that does not.
+    let faithful = arm_score(&synthetic_embeddings(0.01));
     let degraded = arm_score(&synthetic_embeddings(0.9));
 
-    // The direction the arm asserts: pre-fix worse, shipped better.
-    assert_eq!(arm_is_not_worse(&degraded, &clean), Ok(()));
-    // …and identical arms are "not worse", so the gate is a `<=` and not a `<`.
-    assert_eq!(arm_is_not_worse(&clean, &clean), Ok(()));
+    // The direction the arm asserts: the shipped arm tracks the control, the
+    // pre-fix one has wandered off it.
+    assert_eq!(
+        shipped_arm_tracks_the_control(&control, &control_alt, &degraded, &faithful),
+        Ok(())
+    );
 
     // Swapped, it must reject — and it must reject on the EER, which is the
     // statistic that CAN see a corruption this large.
-    let rejected = arm_is_not_worse(&clean, &degraded)
-        .expect_err("the gate accepts a shipped arm whose EER is worse, so it gates nothing");
+    let rejected = shipped_arm_tracks_the_control(&control, &control_alt, &faithful, &degraded)
+        .expect_err("the gate accepts a shipped arm that has wandered off the control");
     assert!(rejected.starts_with("[eer]"), "{rejected}");
 
-    // Now the case the second review finding is about: a degradation too small
-    // for the EER to express. The EER comparison passes and the MARGIN
-    // comparison is what rejects — which is the whole reason it was added.
-    let barely_worse = arm_score(&synthetic_embeddings(0.05));
-    assert_eq!(clean.eer.eer, barely_worse.eer.eer);
-    let rejected = arm_is_not_worse(&clean, &barely_worse).expect_err(
-        "a degradation below the EER quantum is accepted, so this arm would record \
-         'no difference' as OS-8's answer",
-    );
+    // **The finding that forced this shape**: a "shipped" arm that is BETTER
+    // than the control on every statistic is still rejected, because an
+    // anti-alias filter that flatters the score has not left the >8 kHz content
+    // without a trace — it has traded one distortion for a nicer-looking one.
+    // This is fixture (f)'s real result in miniature, and the `<=` gate this
+    // replaced would have waved it through.
+    let flattered = ArmScore {
+        eer: EerReport {
+            eer: control.eer.eer * 0.2,
+            ..control.eer.clone()
+        },
+        margin: control.margin * 1.6,
+        ..control.clone()
+    };
+    let rejected = shipped_arm_tracks_the_control(&control, &control_alt, &faithful, &flattered)
+        .expect_err(
+            "a shipped arm that scores far BETTER than the no-ultrasonic control is \
+             accepted — that is the fixture (f) result, and reading it as a pass is what \
+             would license YV129 to tune enrollment bands on an artifact",
+        );
     assert!(
-        !rejected.starts_with("[eer]"),
-        "the EER cannot have caught a degradation it cannot express: {rejected}"
+        rejected.starts_with("[eer]") || rejected.starts_with("[margin]"),
+        "{rejected}"
     );
 
-    // Each continuous statistic is then regressed ON ITS OWN, so neither can be
+    // Each comparison on its own, with the other held equal, so neither can be
     // dropped from the gate and covered for by the other.
-    let mut narrower = clean;
-    narrower.margin = clean.margin - 0.01;
-    let rejected = arm_is_not_worse(&clean, &narrower)
-        .expect_err("the margin is in the report but not in the gate");
+    let mut off_on_margin_only = faithful.clone();
+    off_on_margin_only.margin = control.margin + (faithful.margin - control.margin) * 40.0;
+    let rejected =
+        shipped_arm_tracks_the_control(&control, &control_alt, &faithful, &off_on_margin_only)
+            .expect_err("the margin is in the report but not in the gate");
     assert!(rejected.starts_with("[margin]"), "{rejected}");
 
-    let mut wider = clean;
-    wider.d_prime = clean.d_prime - 1.0;
-    let rejected =
-        arm_is_not_worse(&clean, &wider).expect_err("d′ is in the report but not in the gate");
-    assert!(rejected.starts_with("[dprime]"), "{rejected}");
+    // And the premise: without a control the two decimators agree on, there is
+    // nothing to measure either arm against, and the gate says so rather than
+    // quietly picking one.
+    let mut disagreeing = control_alt.clone();
+    disagreeing.margin = control.margin - (degraded.margin - control.margin).abs() * 2.0;
+    let rejected = shipped_arm_tracks_the_control(&control, &disagreeing, &degraded, &faithful)
+        .expect_err("a control the two decimators disagree about is accepted as a reference");
+    assert!(rejected.starts_with("[premise]"), "{rejected}");
+
+    // **d′ on its own is deliberately ACCEPTED.** This assertion exists to stop
+    // the gate quietly growing that arm back: d′ was a gate in an earlier
+    // revision, and it is out for two measured reasons — see
+    // `meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts`
+    // and the (e)/(f) split recorded on `shipped_arm_tracks_the_control`. If
+    // somebody decides it belongs back, this line is where they have to say so
+    // on purpose.
+    let mut worse_dprime = faithful.clone();
+    worse_dprime.d_prime = control.d_prime * 0.1;
+    assert_eq!(
+        shipped_arm_tracks_the_control(&control, &control_alt, &degraded, &worse_dprime),
+        Ok(()),
+        "d′ is gating again. It is printed, not gated, and two measurements say why — \
+         read them before re-adding the arm."
+    );
 }
 
 /// **The declaration expires by itself.** The local half of the policy, as a
@@ -4389,10 +4785,13 @@ fn meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration() {
         "models_missing"
     ));
 
-    // The stale-export case, in both directions: a declaration written for one
-    // world does not carry into the next one. `no_backend` left over from
-    // today stops counting the day YV122 lands and the reason becomes
-    // `models_missing`.
+    // The stale-export case, and it is no longer hypothetical. A declaration
+    // written for one world does not carry into the next one: the
+    // `YAP_EER_UNMEASURED_OK=no_backend` this item's own earlier transcripts
+    // told a developer to export stopped counting the day YV122 landed and the
+    // only reason a machine can now have became `models_missing`. The tag it
+    // named is not merely stale — `diarize_protocol.rs` no longer defines it
+    // and `Embedder` no longer has a variant that could return it.
     assert!(!unmeasured_eer_is_declared(
         Some("no_backend"),
         "models_missing"
@@ -4420,20 +4819,89 @@ fn meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration() {
         );
     }
 
-    // The tags are the `Embedder` states' own, so the value a developer is told
-    // to export is the value the arm will compare against.
-    assert_eq!(
-        support::diarize::Embedder::NoBackend.skip_tag(),
-        Some("no_backend")
-    );
+    // The tag is the `Embedder` state's own, so the value a developer is told
+    // to export is the value the arm will compare against — and there is now
+    // exactly ONE such value, because a build with no inference backend is not
+    // a state any machine can be in since YV122.
     assert_eq!(
         support::diarize::Embedder::ModelsMissing("x".into()).skip_tag(),
         Some("models_missing")
+    );
+    assert_eq!(
+        support::diarize::Embedder::ModelsMissing("x".into())
+            .skip_reason()
+            .as_deref(),
+        Some("diarization model not installed: x")
     );
 
     // The variable is named in exactly one place in the test tree, so a rename
     // cannot leave a workflow exporting a name nothing reads.
     assert_eq!(EER_UNMEASURED_OK, "YAP_EER_UNMEASURED_OK");
+}
+
+/// This file's own source, read at compile time.
+///
+/// Same `include_str!` trick as [`CI_WORKFLOW`] below, pointed at the test file
+/// rather than the workflow, and for the same reason: a claim about what the
+/// tests SAY has to be checked against what they say, not against what the
+/// author remembers writing.
+const THIS_FILE: &str = include_str!("meeting_eval.rs");
+
+/// **Both fold gates spend one constant, and this is what makes that true.**
+///
+/// A review finding, accepted: the PR body and the backlog both claimed
+/// "the same bar the WER arm holds on the same measurement, so the two arms
+/// cannot drift apart" while the WER arm asserted a bare `20.0` literal and the
+/// EER arm asserted [`FOLD_REJECTION_DB`]. Two independent numbers wearing one
+/// sentence. The literal is gone; this keeps it gone.
+///
+/// It reads the source rather than the behaviour because that is where the
+/// defect lived — both arms passed the whole time, and would have gone on
+/// passing while somebody moved one number and not the other.
+#[test]
+fn meeting_eval_antialias_both_fold_gates_spend_one_constant() {
+    // Comment lines are stripped: the paragraph explaining this rule at the WER
+    // arm's assert names the old literal on purpose, and a rule a comment can
+    // trip is a rule somebody deletes the day it cries wolf.
+    let code: Vec<&str> = THIS_FILE
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect();
+
+    let gates: Vec<&&str> = code
+        .iter()
+        .filter(|line| line.contains("removed_db >="))
+        .collect();
+    assert_eq!(
+        gates.len(),
+        2,
+        "expected exactly two fold gates — the WER arm's and the EER arm's — found {}: {gates:#?}. \
+         If a third arm has landed it belongs on the same constant; if one has gone, this \
+         count is the thing to update deliberately.",
+        gates.len()
+    );
+    for gate in &gates {
+        assert!(
+            gate.contains("FOLD_REJECTION_DB"),
+            "a fold gate asserts on something other than FOLD_REJECTION_DB: `{}`. Both arms \
+             exist to agree about what \"the anti-alias fix works\" means on the same \
+             measurement, and two literals that happen to be equal today are not agreement.",
+            gate.trim()
+        );
+    }
+
+    // Non-vacuity, in the same test: the substring this searches for has to be
+    // the one the asserts actually use, and the constant has to be a number
+    // rather than a name that resolves to nothing.
+    assert!(
+        FOLD_REJECTION_DB > 0.0,
+        "FOLD_REJECTION_DB is not a positive dB figure"
+    );
+    assert!(
+        code.iter().any(|line| line.contains("const FOLD_REJECTION_DB")),
+        "FOLD_REJECTION_DB is not defined in this file, so the two gates above are not \
+         reading the constant this test thinks they are"
+    );
 }
 
 /// The workflow this repo actually runs, read at compile time — the same
@@ -4477,36 +4945,43 @@ fn meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches() {
          declaration is never read. Dead configuration that reads like a gate is worse \
          than no configuration: either give CI the corpus (and then this test steps \
          aside), or leave the variable out and let \
-         `meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend` \
-         be CI's half of the expiry."
+         `meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend` be the \
+         gate CI does hold."
     );
 }
 
-/// **The half of the expiry that binds with no corpus and no model — including
-/// in CI.**
+/// **The regression guard that replaced the expiry, once the expiry fired.**
 ///
-/// `EER: UNMEASURED` is an honest state under exactly one condition: this build
-/// of `yap-diarize` has no inference backend compiled in, so there are no CAM++
-/// embeddings on ANY machine to compute an EER from. That condition is
-/// checkable without the eval corpus and without either catalog model, by
-/// asking the shipped sidecar itself — which is what this does.
+/// This test used to be
+/// `meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`,
+/// and it did the job it was written for. `EER: UNMEASURED` was honest under
+/// exactly one condition — this build of `yap-diarize` has no inference
+/// backend, so no machine anywhere can produce a CAM++ embedding — and it
+/// asserted that condition still held. **YV122 merged, the condition stopped
+/// holding, and the assertion went red on the rebase.** The EER was then
+/// measured on a corpus machine and written into the backlog's MEASURED block,
+/// which is what closes OS-8's deferred half.
 ///
-/// `yap-diarize`'s `load_backend` validates that both paths exist BEFORE it
-/// answers, so two ordinary files that are not models separate the two states
-/// this has to tell apart: `model_not_found` would mean the probe was wrong,
-/// and `no_backend` means the build genuinely has none. Every other outcome —
-/// a load that succeeds, a refusal with a different tag, or a backend that
-/// chokes on the probe files — means a backend now exists, and therefore that
-/// YV124's EER is measurable and overdue.
+/// What is left to guard is the inverse, and it is worth guarding: the numbers
+/// in that block are only worth the backend that produced them. So the same
+/// probe now runs with the opposite expectation. `load_backend` checks that
+/// both paths EXIST before it looks at them, so two ordinary files that are not
+/// models separate the answers cleanly — `model_not_found` would mean the probe
+/// itself was wrong, and `model_load_failed` means a real backend looked at
+/// real bytes and rejected them. That is the answer a build WITH sherpa-onnx in
+/// it gives, and it is the answer this test requires.
 ///
-/// So this test is red from the moment YV122 merges until someone runs the arm
-/// on a corpus machine with the models installed and pastes the numbers into
-/// the backlog. No environment variable turns it off; there is no declaration
-/// to make. This is the gate the first revision claimed to have and did not.
+/// If the backend is ever compiled back out — a feature flag, a dependency
+/// dropped, a sidecar rebuilt from an older tree — this goes red on a machine
+/// with no corpus and no model in a fraction of a second, and the EER numbers
+/// in the backlog have to be re-earned rather than quietly inherited. It is
+/// deliberately NOT keyed on `no_backend`: that tag was retired from
+/// `diarize_protocol.rs` by YV122, so naming it here would be naming a string
+/// no build can produce.
 #[test]
-fn meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend() {
+fn meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend() {
     use wilson_voice_lib::diarize::{DiarizeError, DiarizePool};
-    use wilson_voice_lib::diarize_protocol::ERR_NO_BACKEND;
+    use wilson_voice_lib::diarize_protocol::{ERR_MODEL_LOAD_FAILED, ERR_MODEL_NOT_FOUND};
 
     let dir = support::temp_dir("yv124-backend-probe");
     let segmentation = dir.join("not-a-segmentation-model.onnx");
@@ -4524,36 +4999,35 @@ fn meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backe
     pool.shutdown();
 
     match answer {
-        Err(DiarizeError::Refused(tag)) if tag == ERR_NO_BACKEND => {
+        Err(DiarizeError::Refused(tag)) if tag == ERR_MODEL_LOAD_FAILED => {
             println!(
-                "meeting_eval anti_alias_eer backend_probe={ERR_NO_BACKEND} — no build on this \
-                 machine can produce a CAM++ embedding, so `EER: UNMEASURED` is still the \
-                 honest state and this gate stays green"
+                "meeting_eval anti_alias_eer backend_probe={ERR_MODEL_LOAD_FAILED} — a real \
+                 inference backend read two non-model files and rejected them, so the EER \
+                 numbers in YV124's MEASURED block still have a backend behind them"
             );
         }
+        Err(DiarizeError::Refused(tag)) if tag == ERR_MODEL_NOT_FOUND => panic!(
+            "the probe is broken, not the build: `yap-diarize` answered `{tag}` for two \
+             files this test just wrote to {dir:?}. Nothing about the backend was tested. \
+             Fix the probe before reading anything into a green run here."
+        ),
         Err(DiarizeError::Refused(tag)) => panic!(
-            "the expiry has FIRED: `yap-diarize` answered `{tag}` rather than \
-             `{ERR_NO_BACKEND}`, which means this build has an inference backend and the \
-             probe files were merely rejected by it.\n\
-             \nYV124's EER is now measurable, so `EER: UNMEASURED` in the backlog is no \
-             longer an honest state. Close it: install the two catalog diarization models \
-             on a machine that has the eval corpus, run\n\
-             \n  cargo test --test meeting_eval anti_alias_eer_regression -- --nocapture\n\
-             \nand paste eer/margin/d′ for both fixtures and both arms into YV124's \
-             MEASURED block. Then delete this test — it exists only to make sure that \
-             happens, and its deletion is the last step of the item, not the first."
+            "`yap-diarize` answered `{tag}` where a build with an inference backend answers \
+             `{ERR_MODEL_LOAD_FAILED}`. If the backend has been compiled out, YV124's \
+             MEASURED block is quoting numbers no machine can now reproduce — either put \
+             the backend back, or re-open `EER: UNMEASURED` in the backlog and say why."
         ),
         Ok(embedding_dim) => panic!(
-            "the expiry has FIRED: `yap-diarize` LOADED a backend from two files that are \
-             not models and reported {embedding_dim}-dimensional embeddings. Whatever else \
-             that is, it is not `{ERR_NO_BACKEND}` — measure YV124's EER (see the sibling \
-             panic message) rather than leaving `EER: UNMEASURED` standing."
+            "`yap-diarize` LOADED a backend from two files that are not models and reported \
+             {embedding_dim}-dimensional embeddings. Whatever that build is doing, it is not \
+             reading the bytes it was handed, and no embedding it produces can be trusted — \
+             YV124's measured EER included."
         ),
         Err(other) => panic!(
             "the backend probe got no answer at all: {other:?} (status {status:?}). A spawn \
              failure, a missed deadline or a garbled frame is a defect in the sidecar, not a \
-             machine without a model — and while it stands, nothing here can vouch for \
-             `EER: UNMEASURED` either."
+             machine without a model — and while it stands, nothing here can vouch for the \
+             measured EER either."
         ),
     }
 }
@@ -4619,6 +5093,60 @@ fn meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label() {
             (who, *from, *to)
         );
     }
+}
+
+/// **A speaker does not contaminate himself.**
+///
+/// A review advisory, accepted and fixed: [`unoverlapped_spans`] used to mask
+/// on turn INDEX, so two back-to-back turns by the same person blocked each
+/// other. The error is in the safe direction — clean audio thrown away, never
+/// dirty audio kept — which is exactly why it needed a test rather than a
+/// second reading: nothing it did could ever turn an arm red.
+///
+/// The case below is the one the old code got wrong, and it cannot be
+/// constructed out of either corpus fixture, which is the other half of the
+/// advisory's answer: on `room-3-near-field` and `classroom-6-far-field` the
+/// two definitions return identical spans (no speaker in either RTTM overlaps
+/// himself), so this correction moved no number this item publishes. It is here
+/// so the next fixture — a real recording, where one person's turns really do
+/// abut — does not silently lose most of its speech.
+#[test]
+fn meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself() {
+    // One person, talking for six seconds, split across two RTTM rows that
+    // overlap by a second. It is one voice throughout: masking either row
+    // against the other removes audio that is already this speaker's own.
+    let self_overlap = vec![
+        RttmTurn::new("spk_a", 0.0, 4.0),
+        RttmTurn::new("spk_a", 3.0, 6.0),
+    ];
+    let kept = unoverlapped_spans(&self_overlap, ARM_MIN_UTTERANCE_SECONDS);
+    let rendered: Vec<String> = kept
+        .iter()
+        .map(|(who, from, to)| format!("{who} {from:.1}..{to:.1}"))
+        .collect();
+    assert_eq!(
+        rendered,
+        vec!["spk_a 0.0..4.0".to_string(), "spk_a 3.0..6.0".to_string()],
+        "a speaker's own neighbouring turn was treated as an interruption"
+    );
+
+    // Non-vacuity: the very same shape with the second row spoken by somebody
+    // else DOES get trimmed, so the assertion above is about who is speaking
+    // and not about the mask having been switched off.
+    let other_overlap = vec![
+        RttmTurn::new("spk_a", 0.0, 4.0),
+        RttmTurn::new("spk_b", 3.0, 6.0),
+    ];
+    let kept = unoverlapped_spans(&other_overlap, ARM_MIN_UTTERANCE_SECONDS);
+    let rendered: Vec<String> = kept
+        .iter()
+        .map(|(who, from, to)| format!("{who} {from:.1}..{to:.1}"))
+        .collect();
+    assert_eq!(
+        rendered,
+        vec!["spk_a 0.0..3.0".to_string(), "spk_b 4.0..6.0".to_string()],
+        "a second speaker's overlap must still be cut out"
+    );
 }
 
 /// The pair labelling, which is where an EER arm silently goes wrong: a genuine
