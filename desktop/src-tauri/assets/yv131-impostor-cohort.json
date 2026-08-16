@@ -1,0 +1,814 @@
+{
+  "asset": "yv131-impostor-cohort.bin",
+  "sha256": "0ad9bc18e37a768eefe725a7616ba8e8dbdad4ec9b24c89bff02657eba93f61b",
+  "bytes": 159744,
+  "count": 78,
+  "dim": 512,
+  "layout": "count * dim little-endian f32, row-major, each row L2-normalized",
+  "top_k": 40,
+  "normalization_form": "enrollment-only",
+  "tuning": {
+    "design": {
+      "cohort_variant": "clean+bandlimited",
+      "normalization_form": "enrollment-only",
+      "top_k": 40,
+      "chosen_on": "dev-clean",
+      "channel": "B1 headset->laptop, mild",
+      "rule": "argmin AS-norm EER over the committed cohort-variant x form x K sweep; ties to fewer cohort conditions, then the simpler form (enrollment-only < test-only < symmetric), then the smaller K",
+      "sweep": [
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 5,
+          "as_norm_eer": 0.1281517094017094
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 10,
+          "as_norm_eer": 0.12425213675213675
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 15,
+          "as_norm_eer": 0.12457264957264957
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 20,
+          "as_norm_eer": 0.12142094017094018
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 25,
+          "as_norm_eer": 0.12403846153846154
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 30,
+          "as_norm_eer": 0.1216880341880342
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 40,
+          "as_norm_eer": 0.11666666666666668
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 50,
+          "as_norm_eer": 0.11666666666666668
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 60,
+          "as_norm_eer": 0.12019230769230771
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "enrollment-only",
+          "k": 70,
+          "as_norm_eer": 0.12104700854700856
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 5,
+          "as_norm_eer": 0.15833333333333333
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 10,
+          "as_norm_eer": 0.15416666666666667
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 15,
+          "as_norm_eer": 0.14583333333333337
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 20,
+          "as_norm_eer": 0.1448183760683761
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 25,
+          "as_norm_eer": 0.14268162393162395
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 30,
+          "as_norm_eer": 0.14262820512820515
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 40,
+          "as_norm_eer": 0.1416666666666667
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 50,
+          "as_norm_eer": 0.141025641025641
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 60,
+          "as_norm_eer": 0.13749999999999998
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "test-only",
+          "k": 70,
+          "as_norm_eer": 0.14145299145299148
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 5,
+          "as_norm_eer": 0.13749999999999998
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 10,
+          "as_norm_eer": 0.13402777777777775
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 15,
+          "as_norm_eer": 0.13274572649572647
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 20,
+          "as_norm_eer": 0.12959401709401708
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 25,
+          "as_norm_eer": 0.1298076923076923
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 30,
+          "as_norm_eer": 0.1333333333333333
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 40,
+          "as_norm_eer": 0.12467948717948718
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 50,
+          "as_norm_eer": 0.12083333333333335
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 60,
+          "as_norm_eer": 0.12029914529914532
+        },
+        {
+          "cohort": "clean+bandlimited",
+          "form": "symmetric",
+          "k": 70,
+          "as_norm_eer": 0.12040598290598292
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 5,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 10,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 15,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 20,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 25,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 30,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 40,
+          "as_norm_eer": 0.12916666666666665
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 50,
+          "as_norm_eer": 0.1282051282051282
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 60,
+          "as_norm_eer": 0.125
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 70,
+          "as_norm_eer": 0.12467948717948718
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 80,
+          "as_norm_eer": 0.125
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "enrollment-only",
+          "k": 100,
+          "as_norm_eer": 0.125
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 5,
+          "as_norm_eer": 0.15833333333333333
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 10,
+          "as_norm_eer": 0.15416666666666667
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 15,
+          "as_norm_eer": 0.15000000000000002
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 20,
+          "as_norm_eer": 0.149732905982906
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 25,
+          "as_norm_eer": 0.14583333333333337
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 30,
+          "as_norm_eer": 0.14583333333333337
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 40,
+          "as_norm_eer": 0.14567307692307696
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 50,
+          "as_norm_eer": 0.14583333333333337
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 60,
+          "as_norm_eer": 0.14583333333333337
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 70,
+          "as_norm_eer": 0.14524572649572653
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 80,
+          "as_norm_eer": 0.1416666666666667
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "test-only",
+          "k": 100,
+          "as_norm_eer": 0.14150641025641028
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 5,
+          "as_norm_eer": 0.1416666666666667
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 10,
+          "as_norm_eer": 0.1333333333333333
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 15,
+          "as_norm_eer": 0.13749999999999998
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 20,
+          "as_norm_eer": 0.13408119658119655
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 25,
+          "as_norm_eer": 0.13285256410256407
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 30,
+          "as_norm_eer": 0.1332264957264957
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 40,
+          "as_norm_eer": 0.1332264957264957
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 50,
+          "as_norm_eer": 0.1299145299145299
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 60,
+          "as_norm_eer": 0.1283653846153846
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 70,
+          "as_norm_eer": 0.12083333333333335
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 80,
+          "as_norm_eer": 0.1199252136752137
+        },
+        {
+          "cohort": "clean+bandlimited+headset",
+          "form": "symmetric",
+          "k": 100,
+          "as_norm_eer": 0.12083333333333335
+        }
+      ]
+    },
+    "distinctness": {
+      "gate": 0.93347,
+      "chosen_on": "dev-clean",
+      "rule": "q0.999 of the cross-speaker cosine distribution",
+      "cross_speaker": {
+        "n": 3120,
+        "mean": 0.6257100895477029,
+        "median": 0.6369057595729828,
+        "p90": 0.8233786165714264,
+        "p99": 0.900566965341568,
+        "p999": 0.9334696573615073,
+        "max": 0.953303337097168,
+        "min": 0.10895141959190369
+      },
+      "same_speaker": {
+        "n": 40,
+        "mean": 0.9673860803246498,
+        "median": 0.9743318557739258,
+        "p90": 0.9873010694980622,
+        "p99": 0.9925039958953857,
+        "p999": 0.9935892219543457,
+        "max": 0.9937098026275635,
+        "min": 0.9067947864532471
+      },
+      "dropped": [
+        {
+          "speaker": 8455,
+          "condition": "bandlimited",
+          "reason": "cross-speaker similarity above gate 0.9335"
+        },
+        {
+          "speaker": 7176,
+          "condition": "clean",
+          "reason": "cross-speaker similarity above gate 0.9335"
+        }
+      ],
+      "max_cross_speaker_similarity_after_gate": 0.932765
+    },
+    "admission": {
+      "normalized_band": 1.222861,
+      "chosen_on": "dev-clean",
+      "channel": "B1 headset->laptop, mild",
+      "rule": "equal-error crossing of the AS-norm score distribution on the tuning split",
+      "tuning_split_operating_point": {
+        "eer": 0.11666666666666668,
+        "far": 0.1166666666666667,
+        "frr": 0.11666666666666667,
+        "genuine": 240,
+        "impostor": 9360
+      },
+      "note": "This is a decision band and it is tuned. It is measured on the tuning split and reported on the held-out split in docs/yap23-asnorm-measurement.json; it is expressed in AS-norm units, which is the whole point \u2014 a band in cosine units cannot follow a recording condition, and finding #21 is that it does not."
+    }
+  },
+  "embedder": {
+    "model_id": "wespeaker-en-voxceleb-campplus",
+    "model_sha256": "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef",
+    "extractor": "sherpa-onnx 1.13.4 SpeakerEmbeddingExtractor"
+  },
+  "source": {
+    "corpus": "LibriSpeech ASR corpus",
+    "subset": "test-clean",
+    "url": "https://www.openslr.org/12",
+    "license": "CC-BY-4.0",
+    "attribution": "LibriSpeech (c) 2014 Vassil Panayotov, CC-BY-4.0",
+    "note": "512-float embeddings only; no audio is redistributed and an embedding is not invertible to one.",
+    "segment_seconds": 30.0
+  },
+  "conditions": [
+    "clean",
+    "bandlimited"
+  ],
+  "entries": [
+    {
+      "speaker": 61,
+      "condition": "clean"
+    },
+    {
+      "speaker": 121,
+      "condition": "clean"
+    },
+    {
+      "speaker": 237,
+      "condition": "clean"
+    },
+    {
+      "speaker": 260,
+      "condition": "clean"
+    },
+    {
+      "speaker": 672,
+      "condition": "clean"
+    },
+    {
+      "speaker": 908,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1089,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1188,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1221,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1284,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1320,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1580,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1995,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2094,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2300,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2830,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2961,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3570,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3575,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3729,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4077,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4446,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4507,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4970,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4992,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5105,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5142,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5639,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5683,
+      "condition": "clean"
+    },
+    {
+      "speaker": 6829,
+      "condition": "clean"
+    },
+    {
+      "speaker": 6930,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7021,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7127,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7729,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8224,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8230,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8455,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8463,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8555,
+      "condition": "clean"
+    },
+    {
+      "speaker": 61,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 121,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 237,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 260,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 672,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 908,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1089,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1188,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1221,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1284,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1320,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1580,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1995,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2094,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2300,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2830,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2961,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3570,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3575,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3729,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4077,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4446,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4507,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4970,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4992,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5105,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5142,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5639,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5683,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 6829,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 6930,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7021,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7127,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7176,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7729,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8224,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8230,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8463,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8555,
+      "condition": "bandlimited"
+    }
+  ],
+  "max_cross_speaker_similarity": 0.932765,
+  "clean_cross_speaker_cosine": {
+    "n": 741,
+    "mean": 0.6620519878129084,
+    "median": 0.6836226582527161,
+    "p90": 0.8631000518798828,
+    "p99": 0.9147024273872376,
+    "p999": 0.9282528758049011,
+    "max": 0.9327650666236877,
+    "min": 0.22362281382083893
+  },
+  "generator": "scripts/yv131-build-impostor-cohort.py"
+}

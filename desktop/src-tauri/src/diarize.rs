@@ -352,10 +352,14 @@ impl DiarizePool {
     /// Load a segmentation + embedding model pair.
     ///
     /// Returns the embedding dimension **the child reported**. There is no
-    /// dimension constant anywhere on this side of the wire: the plan assumed
-    /// 512 and the shipped CAM++ is 192 (finding #19), and a parent that held
-    /// an opinion about a model it has not opened is how that discrepancy
-    /// stayed invisible.
+    /// dimension constant anywhere on this side of the wire, and the reason is
+    /// sharper than it used to read: finding #19 said the shipped CAM++ was 192
+    /// against a plan that assumed 512, and the pinned artefact measures **512**
+    /// (`output_dim = 512` in its own ONNX metadata — see
+    /// `docs/yap23-asnorm-measurement.md`), so the audit's number was the wrong
+    /// one. A parent that held an opinion about a model it has not opened would
+    /// have baked whichever number was fashionable; asking the child is what
+    /// makes that class of error impossible rather than merely unlikely.
     pub fn load_models(
         &self,
         segmentation: &Path,

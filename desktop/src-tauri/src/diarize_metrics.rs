@@ -654,6 +654,27 @@ pub struct EerReport {
     pub impostor: usize,
 }
 
+/// The equal-error point in whatever unit its inputs were measured in.
+///
+/// [`EerReport`] is this plus a cosine-typed threshold and the trial counts;
+/// this is the part that is true regardless of unit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EerSweep {
+    pub eer: f64,
+    /// The score at the crossing point, in WHATEVER unit the caller passed in.
+    ///
+    /// Deliberately not called a threshold. `no_threshold_shaped_declaration_takes_a_bare_float`
+    /// forbids a threshold-shaped name on a bare float, and it is right to: a
+    /// bare-float threshold is how a similarity ends up compared against a
+    /// distance. This number is not a threshold — it is an OBSERVATION about a
+    /// distribution, and it becomes a threshold only when a typed wrapper
+    /// re-attaches the unit it was measured in, which is what
+    /// [`enrollment_eer`] does one function up.
+    pub score_at_crossing: f64,
+    pub far: f64,
+    pub frr: f64,
+}
+
 /// Sweep the equal-error point over a labeled genuine/impostor distribution.
 ///
 /// Candidate thresholds are every observed score plus the midpoint between
@@ -679,6 +700,37 @@ pub fn enrollment_eer(
     );
     let genuine: Vec<f64> = genuine_scores.iter().map(|s| s.get() as f64).collect();
     let impostor: Vec<f64> = impostor_scores.iter().map(|s| s.get() as f64).collect();
+    let swept = eer_sweep(&genuine, &impostor);
+    EerReport {
+        eer: swept.eer,
+        threshold_at_eer: CosineSimilarity::new(swept.score_at_crossing as f32),
+        far_at_eer: swept.far,
+        frr_at_eer: swept.frr,
+        genuine: genuine.len(),
+        impostor: impostor.len(),
+    }
+}
+
+/// The unit-free equal-error sweep underneath [`enrollment_eer`].
+///
+/// It exists because YV131 scores in a unit that is NOT a cosine similarity.
+/// An AS-norm score is a z-score: routinely outside `[-1, 1]`, which is exactly
+/// the range [`CosineSimilarity::new`] clamps to. Feeding normalized scores
+/// through the typed entry point would silently collapse every strong match to
+/// `1.0` and every strong rejection to `-1.0`, fusing distinct scores into ties
+/// and moving the crossing point — a wrong number, arrived at quietly, in the
+/// one place this epic measures itself. So the arithmetic lives here in plain
+/// `f64`, and each unit gets its own typed wrapper over it.
+///
+/// # Panics
+/// If either distribution is empty, for [`enrollment_eer`]'s reason.
+pub fn eer_sweep(genuine: &[f64], impostor: &[f64]) -> EerSweep {
+    assert!(
+        !genuine.is_empty() && !impostor.is_empty(),
+        "an EER needs both a genuine and an impostor distribution: got {} genuine, {} impostor",
+        genuine.len(),
+        impostor.len()
+    );
 
     let mut observed: Vec<f64> = genuine.iter().chain(impostor.iter()).copied().collect();
     observed.sort_by(f64::total_cmp);
@@ -692,14 +744,7 @@ pub fn enrollment_eer(
     candidates.push(*observed.last().expect("non-empty"));
     candidates.push(observed.last().expect("non-empty") + 1e-6);
 
-    let mut best = EerReport {
-        eer: 1.0,
-        threshold_at_eer: CosineSimilarity::new(0.0),
-        far_at_eer: 1.0,
-        frr_at_eer: 1.0,
-        genuine: genuine.len(),
-        impostor: impostor.len(),
-    };
+    let mut best = EerSweep { eer: 1.0, score_at_crossing: 0.0, far: 1.0, frr: 1.0 };
     let mut best_gap = f64::INFINITY;
     for threshold in candidates {
         let far =
@@ -711,14 +756,7 @@ pub fn enrollment_eer(
         // all cross equally reports the best point in it rather than the first.
         if gap < best_gap - 1e-12 || ((gap - best_gap).abs() <= 1e-12 && eer < best.eer) {
             best_gap = gap;
-            best = EerReport {
-                eer,
-                threshold_at_eer: CosineSimilarity::new(threshold as f32),
-                far_at_eer: far,
-                frr_at_eer: frr,
-                genuine: genuine.len(),
-                impostor: impostor.len(),
-            };
+            best = EerSweep { eer, score_at_crossing: threshold, far, frr };
         }
     }
     best

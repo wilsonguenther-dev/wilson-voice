@@ -35,8 +35,11 @@
 //! paths and then answers `{"ok":false,"err":"no_backend"}`, and `diarize` /
 //! `embed` answer `no_models`. It never invents a plausible `embedding_dim` or
 //! a plausible segment list: a scaffold that answered as though it had run
-//! would make every test above it vacuous, and YV122's first real assertion
-//! (`embedding_dim == 192`, audit finding #19) would already be "passing".
+//! would make every test above it vacuous, and YV122's first real assertion —
+//! whatever width it ends up asserting — would already be "passing" against
+//! nothing. (Audit finding #19 put that width at 192; the artefact
+//! `src-tauri/src/catalog.json` pins measures **512** in its own ONNX metadata,
+//! so YV122 should assert what it reads, not what the audit said.)
 //!
 //! YV122 replaces exactly one function — [`load_backend`] — plus the two arms
 //! that call into it. Everything else here is the shape that ships.
@@ -57,9 +60,11 @@ use diarize_protocol::{
 
 /// The loaded model pair, once there is a backend that can load one.
 ///
-/// `embedding_dim` is read off the model, never assumed: the plan's schema
-/// assumed 512 and the shipped CAM++ is 192 (finding #19), and the only place
-/// that discrepancy can be caught is here, where the file actually is.
+/// `embedding_dim` is read off the model, never assumed. Finding #19 and the
+/// plan's schema disagreed about the width (192 vs 512) and the audit's 192 is
+/// the one that does not describe the pinned file — which is the argument for
+/// reading it here, where the file actually is, rather than trusting either
+/// document.
 struct Backend {
     embedding_dim: u32,
 }
@@ -216,8 +221,9 @@ mod tests {
 
     /// The scaffold answers HONESTLY. A `load_models` against files that exist
     /// must not report a dimension this build did not read off a model — that
-    /// answer would make YV122's `embedding_dim == 192` assertion pass against
-    /// nothing at all.
+    /// answer would make YV122's `embedding_dim` assertion pass against nothing
+    /// at all, whichever width YV122 ends up reading (the pinned model's own
+    /// metadata says 512, not finding #19's 192).
     #[test]
     fn a_backendless_build_never_reports_a_dimension_it_did_not_measure() {
         let mut backend = None;

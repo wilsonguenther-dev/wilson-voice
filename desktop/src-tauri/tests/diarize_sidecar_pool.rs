@@ -50,8 +50,9 @@ fn counted_stub(script: &'static str, launches: Arc<AtomicUsize>) -> DiarizeLaun
 /// Announce readiness, then answer every request with the id it carried.
 ///
 /// The reply is `embedding_dim: 7` on purpose: no real model is 7-dimensional,
-/// so a parent that hard-coded 192 (or 512, which is what the plan's schema
-/// assumed — finding #19) would fail the assertion that reads it back.
+/// so a parent that hard-coded 512 (the width the pinned CAM++ actually reports)
+/// or 192 (finding #19's figure, which does not describe that file) would fail
+/// the assertion that reads it back.
 const READY_STUB: &str = concat!(
     r#"printf '{"type":"ready","version":"stub"}\n'"#,
     "\n",
@@ -136,11 +137,12 @@ fn ready_pool(script: &'static str) -> DiarizePool {
 /// The dimension is the CHILD's to report — audit finding #19's fix, as a
 /// mechanism rather than as a comment.
 ///
-/// The plan's §5 schema assumed 512-dimension embeddings; the model yap23
-/// actually ships is 192. The way that class of error survives is a parent that
-/// "knows" the width. This stub reports **7**, and the pool reports 7 — so a
-/// constant anywhere on the Rust side of the wire fails here, whichever number
-/// somebody picked.
+/// The plan's §5 schema assumed 512-dimension embeddings and finding #19 said
+/// the shipped model was 192; the artefact `catalog.json` pins measures **512**,
+/// so the audit was the document that drifted. The way that class of error
+/// survives is a parent that "knows" the width. This stub reports **7**, and the
+/// pool reports 7 — so a constant anywhere on the Rust side of the wire fails
+/// here, whichever number somebody picked.
 #[test]
 fn the_embedding_dimension_comes_from_the_child_never_from_the_parent() {
     let pool = ready_pool(READY_STUB);

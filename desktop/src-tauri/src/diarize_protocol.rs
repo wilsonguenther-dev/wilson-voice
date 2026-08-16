@@ -26,7 +26,7 @@
 //! // → stdin: load a vendored model pair (YV123 supplies the paths)
 //! {"id":1,"kind":"load_models","segmentation_path":"…","embedding_path":"…"}
 //! // ← stdout
-//! {"id":1,"ok":true,"embedding_dim":192}
+//! {"id":1,"ok":true,"embedding_dim":512}   // whatever the child read off the file
 //! // → stdin: diarize one track's audio (YV126 wires this to Track A/B)
 //! {"id":2,"kind":"diarize","wav_path":"…","clustering_distance_threshold":0.35}
 //! // ← stdout
@@ -54,12 +54,21 @@
 //!
 //! ## `embedding_dim` is reported, never assumed
 //!
-//! The plan's §5 schema assumed 512-dimension embeddings; the model yap23
-//! actually ships (`wespeaker_en_voxceleb_CAM++`) is **192** (audit finding
-//! #19). So the dimension is a value the CHILD reports at load time and the
-//! parent stores — there is no dimension constant on the Rust side of this
-//! wire, and `tests/diarize_sidecar_pool.rs` holds the parent to that by
-//! answering with a number no model has.
+//! Audit finding #19 said the shipped `wespeaker_en_voxceleb_CAM++` was **192**
+//! wide against the plan's assumed 512. **That is wrong about the file this
+//! catalog actually pins.** Read off the artefact `src/catalog.json` pins by
+//! sha256 `c46fad10…`, the ONNX metadata says `output_dim = 512` and the graph
+//! output is `embs [B, 512]`; the reproduction command is in
+//! `docs/yap23-asnorm-measurement.md`. Wherever 192 came from, it does not
+//! describe this model.
+//!
+//! **The mechanism is unchanged and was never the part that was wrong.** The
+//! dimension is a value the CHILD reports at load time and the parent stores —
+//! there is no dimension constant on the Rust side of this wire, and
+//! `tests/diarize_sidecar_pool.rs` holds the parent to that by answering with a
+//! number no model has. That discipline is exactly why a wrong number in a
+//! comment cost nothing: had 192 been a constant, every YV131 ranking would have
+//! degraded silently to raw cosine through `CohortError::DimMismatch`.
 //!
 //! ## `clustering_distance_threshold` is a DISTANCE
 //!
@@ -330,7 +339,9 @@ impl DiarizeResponse {
     /// The embedding dimension a successful [`KIND_LOAD_MODELS`] reports.
     /// `None` on any failure and on a success that omitted it — a load that
     /// cannot say how wide its vectors are has not told the parent what it
-    /// needs, and inventing 192 here is the exact bug finding #19 is about.
+    /// needs, and inventing a width here — 192, 512 or anything else — is the
+    /// exact bug finding #19 is about. (The pinned model measures 512; finding
+    /// #19's 192 does not describe it. Neither number belongs in this file.)
     pub fn into_embedding_dim(self) -> Option<u32> {
         self.ok.then_some(self.embedding_dim).flatten()
     }
