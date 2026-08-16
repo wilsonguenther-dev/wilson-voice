@@ -21,9 +21,20 @@ panicked at tests/meeting_eval.rs:
   the reason fixture (g) carries an unenrolled voice at all
 
   Why it matters: `Anonymous` vs `Named` is the whole difference between "a
-  distinct person we have no profile for" and "somebody called New — unnamed".
-  summarize.rs fills an action item's owner field from whatever comes back, so a
-  Named placeholder lands where a reader takes it for a person's name.
+  distinct person we have no profile for" and "somebody called New — unnamed",
+  and it is what a speaker source is REQUIRED to get right — it must never claim
+  an identity it does not have.
+
+  (Annotation corrected after review. An earlier revision of this line said the
+  variant mattered because "summarize.rs fills an action item's owner field from
+  whatever comes back, so a Named placeholder lands where a reader takes it for
+  a person's name". That is false about the mechanism: summarize.rs:1164 calls
+  `s.label().to_string()` unconditionally, with no is_named() filter, so an
+  Anonymous label reaches the owner field byte-identically to a Named one. The
+  split is a type-level seam this rail flattens; what M1 actually catches is a
+  SOURCE that lies about identity, which is the thing under test here. See the
+  TODO(YV129/YV130) in tests/support/mod.rs. The test output above is unchanged
+  and was not re-run for this correction.)
 
 -------------------------------------------------------------------------------
 M2 — criterion (a): the unenrolled voice comes back with no label at all

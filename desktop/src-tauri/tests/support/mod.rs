@@ -622,10 +622,27 @@ impl EnrolledSpeakers {
     /// `Anonymous` one — real separation, explicitly not an identity — and never
     /// a `Named` guess.
     ///
-    /// `Anonymous` is load-bearing rather than cosmetic: `summarize.rs` fills
-    /// `SummaryItem::speaker` from whatever the source returns, and a `Named`
-    /// placeholder would put the label into an action item's owner field, where
-    /// a reader would take it for somebody's name.
+    /// The `Named`/`Anonymous` split is a **type-level seam that today's
+    /// summarize rail flattens**, not a boundary anything enforces. The
+    /// evidence table in `summarize.rs` is built with an unconditional
+    /// `l.speaker.as_ref().map(|s| s.label().to_string())` — no `is_named()`
+    /// filter — and `SummaryItem::speaker` is a bare `Option<String>`. So
+    /// `Anonymous("New — unnamed")` reaches an action item's owner field
+    /// byte-identically to a `Named` label of the same text, and renders the
+    /// same way. What keeps it from reading as a person's name is the *string
+    /// content*, not the variant — which is exactly why `meeting_eval.rs`'s
+    /// criterion-(d) loop has to allow `owner == NEW_VOICE_LABEL` by name to
+    /// pass.
+    ///
+    /// So the variant is still the honest thing to return here (a source must
+    /// never claim an identity it does not have), but it buys a *readable
+    /// contract*, not a guard.
+    ///
+    /// TODO(YV129/YV130): the enforcement is owed by whichever of those items
+    /// first makes the unmatched-voice state user-visible — either filter the
+    /// evidence table on `is_named()` or hand `SummaryItem::speaker` the enum
+    /// instead of a `String`. Deliberately not done in YV134: it would change
+    /// YV133's shipped behaviour, which is out of this item's scope.
     pub fn with_new_voice(pairs: &[(&str, &str)], label: &str) -> Self {
         let mut me = Self::new(pairs);
         me.unenrolled = Some(label.to_string());

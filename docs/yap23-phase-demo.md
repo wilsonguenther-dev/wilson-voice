@@ -134,10 +134,27 @@ The four criteria are asserted against the downstream half:
 `New — unnamed` is a `SegmentSpeaker::Anonymous` label, never `Named`. The
 difference from a bare `Speaker N` is that it is attached to **one** voice the
 enrolled ones were told apart from, which is what makes "name this person" a
-button rather than a wish. It is `Anonymous` rather than `Named` because
-`summarize.rs` fills an action item's owner field from whatever the source
-returns, and a `Named` placeholder would put the label where a reader takes it
-for somebody's name.
+button rather than a wish.
+
+**Read the `Named`/`Anonymous` split correctly before building on it.** It is a
+type-level seam that the shipped summarize rail *flattens*, not a boundary
+anything enforces. `summarize.rs` builds its evidence table with an
+unconditional `l.speaker.as_ref().map(|s| s.label().to_string())` — there is no
+`is_named()` filter on that path — and `SummaryItem::speaker` is a bare
+`Option<String>`. An `Anonymous("New — unnamed")` label therefore lands in an
+action item's owner field byte-identically to a `Named` label of the same text
+and renders the same way. What keeps it from reading as somebody's name is the
+**string content**, not the variant; the proof is in this item's own E2E, whose
+criterion-(d) loop has to allow `owner == NEW_VOICE_LABEL` explicitly to pass.
+Returning `Anonymous` is still the honest thing for a speaker source to do — it
+must never claim an identity it does not have — but what it buys today is a
+readable contract, not a guard.
+
+**TODO(YV129/YV130).** The enforcement is owed by whichever of those items first
+makes the unmatched-voice state user-visible: either filter the evidence table
+on `is_named()`, or give `SummaryItem::speaker` the enum instead of a `String`.
+YV134 deliberately does not do it — it would change YV133's shipped behaviour,
+which is outside this item's scope.
 
 **With the corpus absent** — CI, a fresh clone — the test prints
 `meeting eval corpus not found at ~/yap-eval-corpus/meetings, skipping` and
