@@ -13,6 +13,13 @@
  * are on their own track); everywhere else the microphone is the track being
  * clustered and its lines say only that somebody spoke.
  *
+ * YV127 — and where the microphone IS the clustered track, the list carries one
+ * sentence under it saying that speech during overlapping talk is credited to a
+ * single speaker. Overlapped frames are deleted before the speaker model ever
+ * sees them, so there is no overlap flag to store and nothing to draw per line;
+ * the honest surface for a mechanism-wide limit is one line of copy next to the
+ * thing it limits.
+ *
  * It is a component rather than JSX inlined in `App.tsx` so the dev-tooling
  * preview (`dev/meeting-transcript-preview.html`) renders the REAL thing: a
  * two-track meeting needs a second recorded track to look at, which means a
@@ -21,7 +28,9 @@
 import {
   isTwoTrack,
   orderedTranscript,
+  showsOverlapCaveat,
   MIC_TRACK,
+  OVERLAP_CAVEAT,
   type TranscriptSegment,
 } from "./transcript";
 
@@ -38,23 +47,33 @@ export default function TranscriptList<S extends TranscriptSegment>({
   kind?: string | null;
 }) {
   return (
-    // Both the class and the rows come from the same rendering rules the export
-    // uses: a track that contributes no lines is not a second speaker, so it
-    // does not widen the gutter either.
-    <ol className={isTwoTrack(segments) ? "transcript two-track" : "transcript"}>
-      {orderedTranscript(segments, kind).map(({ segment, track, speaker, offset, text }) => (
-        <li key={segment.id}>
-          {/* Timestamp and speaker are DATA, so they wear the pixel voice the
-              rest of the app gives numbers. */}
-          <span className="seg-time">{offset}</span>
-          <span className={track === MIC_TRACK ? "seg-who" : "seg-who them"}>
-            {speaker}
-          </span>
-          {/* The line's collapsed text, never `segment.text` — the export
-              renders the collapsed form and the screen must not differ. */}
-          <span className="seg-text">{text}</span>
-        </li>
-      ))}
-    </ol>
+    <>
+      {/* Both the class and the rows come from the same rendering rules the
+          export uses: a track that contributes no lines is not a second
+          speaker, so it does not widen the gutter either. */}
+      <ol className={isTwoTrack(segments) ? "transcript two-track" : "transcript"}>
+        {orderedTranscript(segments, kind).map(({ segment, track, speaker, offset, text }) => (
+          <li key={segment.id}>
+            {/* Timestamp and speaker are DATA, so they wear the pixel voice the
+                rest of the app gives numbers. */}
+            <span className="seg-time">{offset}</span>
+            <span className={track === MIC_TRACK ? "seg-who" : "seg-who them"}>
+              {speaker}
+            </span>
+            {/* The line's collapsed text, never `segment.text` — the export
+                renders the collapsed form and the screen must not differ. */}
+            <span className="seg-text">{text}</span>
+          </li>
+        ))}
+      </ol>
+      {/* YV127 — the caveat lives UNDER the lines it qualifies, not on a
+          settings page and not in a tooltip: overlap is dropped rather than
+          flagged, and the only place that fact can reach the person reading the
+          transcript is the transcript. One sentence, no control, no link — it
+          is a limit being stated, not a feature being offered. */}
+      {showsOverlapCaveat(segments, kind) && (
+        <p className="transcript-caveat">{OVERLAP_CAVEAT}</p>
+      )}
+    </>
   );
 }

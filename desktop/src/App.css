@@ -2466,6 +2466,24 @@ button.star.on {
   word-break: break-word;
 }
 
+/* YV127 · the overlap caveat.
+   Under the transcript, inside its measure, aligned to the TEXT column rather
+   than to the timestamp gutter — it qualifies the words, not the clock. Muted
+   and small because it is a footing note that should be findable when the
+   attribution looks wrong, and invisible while the reader is reading; it is
+   never a warning colour, because nothing has gone wrong. */
+.transcript-caveat {
+  max-width: 88ch;
+  margin: 10px 0 0;
+  padding-left: calc(4.6rem + 2.6rem + 20px);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.transcript.two-track + .transcript-caveat {
+  padding-left: calc(4.6rem + 3.4rem + 20px);
+}
+
 /* The Insights strip: a full-width panel above the existing grid, with its own
    four tiles. `.stats-row`'s bottom margin is dropped here — the kv list under
    it supplies the spacing. */
@@ -2483,6 +2501,15 @@ button.star.on {
   .transcript li {
     grid-template-columns: 4.2rem 2.4rem 1fr;
     gap: 8px;
+  }
+  /* The caveat tracks the narrower gutter so it stays under the words. The
+     two-track case keeps the WIDE first two columns here — `.transcript
+     .two-track li` outranks the rule above it — so only the gap narrows. */
+  .transcript-caveat {
+    padding-left: calc(4.2rem + 2.4rem + 16px);
+  }
+  .transcript.two-track + .transcript-caveat {
+    padding-left: calc(4.6rem + 3.4rem + 16px);
   }
   .meeting-strip .stats-row {
     grid-template-columns: repeat(2, 1fr);

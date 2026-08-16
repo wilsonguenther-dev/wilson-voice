@@ -1,0 +1,199 @@
+YV127 — acceptance commands, run on macOS 26.5.2 / arm64
+target dir: scratchpad/yap-target   rustc: rustc 1.94.0 (4a4ef493e 2026-03-02)
+sidecars staged (npm run sidecar) and frontend built (npm run build) first — tauri.conf.json's
+externalBin and frontendDist are preconditions of every cargo test in this crate.
+
+=== 0. environment
+26.5.2
+arm64
+rustc 1.94.0 (4a4ef493e 2026-03-02)
+2026-08-16T02:07:08Z
+
+=== 1. grep -n "overlapped" desktop/src-tauri/src/meetings.rs
+771:/// > NO overlap flag — sherpa deletes overlapped frames before embedding
+(one line, a doc comment, and it names the mechanism — no column definition anywhere)
+
+=== 1b. the same grep over the migration SQL only
+(no match — no migration creates the column)
+
+=== 2. cargo test --test overlap_column_absent_and_documented
+
+running 4 tests
+test the_caveat_is_one_sentence_in_both_languages_and_the_ui_draws_it ... ok
+test the_diarize_wire_carries_no_overlap_flag ... ok
+test meetings_rs_says_on_one_line_where_the_column_went ... ok
+test no_step_in_the_migration_ladder_creates_an_overlap_column ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+=== 3. the schema on a REAL fresh install (the ladder's own head)
+user_version = 4
+$ sqlite3 <db> "SELECT name FROM pragma_table_info('meeting_segments');"
+id meeting_id start_seconds end_seconds text confidence created_at track 
+(no overlapped column — this is the database the test above just built and inspected)
+
+=== 4. npx tsc --noEmit
+exit 0 — no output is the pass
+
+=== 5. npx vitest run (the UI half of the manual criterion, automated)
+ ✓ src/meetings/systemAudio.test.ts (15 tests) 12ms
+ ✓ src/meetings/transcript.test.ts (19 tests) 3ms
+ ✓ src/support/bundle.test.ts (7 tests) 2ms
+ ✓ src/meetings/consent.test.ts (13 tests) 13ms
+ ✓ src/pill/meeting.test.ts (14 tests) 3ms
+ ✓ src/license/status.test.ts (17 tests) 4ms
+ ✓ src/errors.test.ts (4 tests) 2ms
+ ✓ src/meetings/TranscriptList.test.tsx (8 tests) 8ms
+ ✓ src/pill/live.test.ts (26 tests) 65ms
+ ✓ src/meetings/consentWatch.test.ts (8 tests) 57ms
+ Test Files  10 passed (10)
+      Tests  131 passed (131)
+
+=== 6. cargo test --features custom-protocol  (whole suite, 3x — flaky-prone discipline)
+
+run 1: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 2: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 3: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+
+  `main` (8086ed9) runs 1107; this item adds exactly 4 — the four in §2. No test
+  was modified, skipped or ignored to get there: `grep "test result: FAILED"`
+  matches nothing in any of the three logs, and every run reports the same 95
+  binaries.
+
+  Runs 1 and 2 were taken before two rustfmt-only line wraps (the `OVERLAP_CAVEAT`
+  declaration and one closure in the new test file); run 3 is byte-identical to
+  the pushed tree. Both edits are whitespace — `rustfmt --check` is clean on
+  meetings.rs and on the new test file, and the pre-existing rustfmt diffs
+  elsewhere in diarize_protocol.rs are untouched (this tree is not rustfmt-clean;
+  CI runs fmt as `|| true`, and `cargo fmt` would reformat 18 unrelated files).
+
+=== 7. what is NOT claimed here
+
+  Clustering does not run on this base — YV126 is PR #141, open. Every microphone
+  line in a `ClusterTrackA` meeting reads "Speaker", one label for the whole
+  track. The caveat is a statement about attribution's limit, not a claim that
+  voices are being separated, which is why it is honest now and unchanged later.
+
+================================================================================
+REVIEW FOLLOW-UP — re-run after the `blank-tap` kind correction
+(desktop/src/meetings/transcriptPreview.tsx + one truth-table row + re-captured
+screenshots). No Rust source changed; the whole suite is re-run anyway because
+`overlap_column_absent_and_documented.rs` reads the frontend's `transcript.ts`.
+================================================================================
+
+=== F0. environment
+26.5.2 / arm64 / rustc 1.94.0 (4a4ef493e 2026-03-02)
+2026-08-16T04:38Z
+
+=== F1. npx tsc --noEmit
+exit 0 — no output is the pass
+
+=== F2. npx vitest run
+ Test Files  10 passed (10)
+      Tests  131 passed (131)
+  (unchanged count: the new case is a ROW in `showsOverlapCaveat`'s existing
+   truth table, not a new `it` — see M11 in non-vacuous-mutations.txt for the
+   proof it is the only row that carries that case)
+
+=== F3. cargo test --features custom-protocol  (whole suite, 3x)
+run 1: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 2: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+run 3: 95 test binaries, 1111 passed, 0 failed   (exit 0)
+  Identical to the pre-correction numbers, which is the expected result: this
+  change is frontend-only, and `transcript.ts` — the file the Rust copy-pin
+  test reads — is byte-identical to what was reviewed.
+
+=== F4. the screenshots
+Re-captured from the corrected preview, same rig (headless Chrome @2x,
+http://localhost:<port>/dev/meeting-transcript-preview.html#<scene>).
+  Recorded honestly: with ONLY the kind corrected, all three PNGs came back
+  BYTE-IDENTICAL to the reviewed ones (blank-tap f74656d1…), because the
+  product UI renders nothing that depends on `kind` once the diarization target
+  resolves the same way. A screenshot that cannot show its own input is a weak
+  piece of evidence, so the harness strip now prints `kind=<value>`; the
+  committed PNGs are the captures from that build, and the kind is legible in
+  the frame instead of only in the caption.
+
+================================================================================
+REVIEW FOLLOW-UP 2 — the recorded REASON, corrected against sherpa's source
+(round-2 BLOCKING: "overlap is unknowable" is false; the decision is unchanged,
+the reason is now SCOPE). Doc/prose in meetings.rs + diarize_protocol.rs, the
+user-facing CHANGELOG sentence, and one new test that pins the open door.
+================================================================================
+
+=== G0. environment
+26.5.2 / arm64 / rustc 1.94.0 (4a4ef493e 2026-03-02)
+2026-08-16T03:18Z
+
+=== G1. the primary source the claim was checked against (not inferred from the API)
+$ curl -sL https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.4/sherpa-onnx/csrc/offline-speaker-diarization-pyannote-impl.h
+778 lines. The four call sites that settle it:
+
+  L133  GetChunkSpeakerSampleIndexes(labels)  →  L373 ExcludeOverlap(labels)
+        L446-467: zeroes every frame whose row-sum is >= 2, i.e. drops
+        multi-speaker frames BEFORE embedding.  → the marker string is TRUE.
+
+  L185  ReLabel(labels, …)  — the ORIGINAL labels, NOT ExcludeOverlap's output.
+        ExcludeOverlap guards embedding only; it never touches the labels the
+        result is built from.
+
+  L190  FinalizeLabels(speaker_count, speakers_per_frame)
+        L638-661: for each frame, keeps the top-k clusters where k is
+        speakers_per_frame[i] — the segmentation model's OWN speaker count for
+        that frame (L126, computed on the original labels). k >= 2 is exactly
+        the overlap decision, and it survives into final_labels.
+
+  L192  ComputeResult(final_labels)
+        L663-725: walks each speaker_index's timeline INDEPENDENTLY, with no
+        cross-speaker exclusion. Two clusters active in one frame therefore
+        come back as two turns whose times INTERSECT.
+
+  Conclusion: overlap is not unknowable — it is an interval intersection over
+  turns DiarizeSegment {start, end, cluster} already carries. v1 still ships no
+  column, because a derived flag needs its own tuning and its own acceptance
+  evidence and nothing in yap23 asks for one. Reason restated as scope, in all
+  four places the reviewer named.
+
+=== G2. cargo test --features custom-protocol --test overlap_column_absent_and_documented
+
+running 5 tests
+test the_caveat_is_one_sentence_in_both_languages_and_the_ui_draws_it ... ok
+test the_diarize_wire_carries_no_overlap_flag ... ok
+test the_wire_already_carries_what_a_later_overlap_flag_would_read ... ok
+test meetings_rs_says_on_one_line_where_the_column_went ... ok
+test no_step_in_the_migration_ladder_creates_an_overlap_column ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+  4 -> 5. The new one asserts the CAPABILITY the corrected reason rests on and
+  refuses the impossibility wording. M12/M13/M14 in non-vacuous-mutations.txt
+  show all three of its arms carry weight.
+
+=== G3. grep -n "overlapped" desktop/src-tauri/src/meetings.rs
+773:/// > NO overlap flag — sherpa deletes overlapped frames before embedding
+  Still exactly one line, still the marker, still both halves true. The line
+  number moved (771 -> 773) because the doc block above it grew.
+
+=== G4. npx tsc --noEmit
+exit 0
+
+=== G5. npx vitest run
+ Test Files  10 passed (10)
+      Tests  131 passed (131)
+  Unchanged — no frontend source changed this round.
+
+=== G6. cargo test --features custom-protocol  (whole suite)
+95 test binaries, 1112 passed, 0 failed   (exit 0)
+  1111 -> 1112: exactly the one new test in G2. Nothing skipped or ignored to
+  get there.
+
+=== G7. rustfmt
+  `cargo fmt --check` reports the same 9 pre-existing diarize_protocol.rs
+  hunks with and without this change (verified by stashing) — this round adds
+  none. The tree is not rustfmt-clean on this rustc; CI runs fmt as `|| true`.
+
+=== G8. screenshots
+  Not re-captured, and not stale: no rendering path, no copy on screen and no
+  component changed this round. The only user-facing text touched is
+  docs/CHANGELOG-YAP.md, which the PNGs never showed.

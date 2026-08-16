@@ -43,6 +43,24 @@ export const SYSTEM_SPEAKER_LABEL = "Them";
  */
 export const UNCLUSTERED_SPEAKER_LABEL = "Speaker";
 
+/**
+ * YV127 — mirrors `meetings::OVERLAP_CAVEAT`, byte for byte (the Rust test
+ * `overlap_column_absent_and_documented` compares the two strings).
+ *
+ * There is no `overlapped` column in the schema and there is no overlap flag on
+ * the diarization wire: sherpa deletes overlapped frames before embedding, so a
+ * stretch where two people talked at once arrives attributed to one of them,
+ * with nothing recording that it happened. That is a real limit of the
+ * mechanism, and the choice this item makes is to say so on the screen the
+ * limit applies to rather than to leave it in a design document.
+ *
+ * It states a limit and claims no ability — which is why it is honest on a
+ * build where clustering (YV126) has not landed and every microphone line still
+ * reads [`UNCLUSTERED_SPEAKER_LABEL`].
+ */
+export const OVERLAP_CAVEAT =
+  "Speech during overlapping talk is attributed to only one speaker.";
+
 /** Mirrors `meetings::MeetingKind` — the `meetings.kind` column's values. */
 export type MeetingKind = "virtual" | "in_person" | "unknown";
 
@@ -222,4 +240,39 @@ export function orderedTranscript<S extends TranscriptSegment>(
     startSeconds,
     text,
   }));
+}
+
+/**
+ * YV127 — does [`OVERLAP_CAVEAT`] apply to this meeting's transcript?
+ *
+ * Two conditions, both about what actually happened rather than about what was
+ * configured:
+ *
+ *   1. the microphone track is the one being CLUSTERED
+ *      (`diarizationTarget(...) === "clusterTrackA"`). A `virtual` meeting whose
+ *      second track really did record the other participants takes the
+ *      `micIsMe` branch, its microphone is never split, and a caveat about
+ *      splitting it would be describing work the app did not do. That is the
+ *      "does not render for a virtual+tap meeting" half of the acceptance, and
+ *      it is the same branch the speaker labels take, so the sentence and the
+ *      labels can never disagree about which mechanism ran.
+ *   2. at least one microphone line survived to the screen. The caveat
+ *      qualifies those lines; under a transcript that has none of them (a room
+ *      recording whose microphone produced nothing, an in-person meeting with
+ *      only tap rows) it would qualify nothing. Asked of the RENDERED lines,
+ *      like [`isTwoTrack`], so a microphone row whose text collapses to nothing
+ *      cannot summon a caveat for a line the reader cannot see.
+ *
+ * Deliberately NOT a condition: whether clustering has actually shipped. The
+ * sentence is a limit on attribution, not a claim of it, so it is true of a
+ * `clusterTrackA` transcript on this base — where every microphone line reads
+ * [`UNCLUSTERED_SPEAKER_LABEL`] — and stays exactly as true once YV126 splits
+ * those lines into speakers.
+ */
+export function showsOverlapCaveat(
+  segments: readonly TranscriptSegment[],
+  kind: string | null | undefined,
+): boolean {
+  if (diarizationTarget(kind, isTwoTrack(segments)) !== "clusterTrackA") return false;
+  return segments.some((s) => trackOf(s) === MIC_TRACK && oneLine(s.text) !== "");
 }

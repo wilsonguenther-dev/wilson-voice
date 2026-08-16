@@ -1,0 +1,200 @@
+YV127 — non-vacuous mutations. Each one is a plausible wrong version of this
+item, applied to the tree, run, and reverted. This item ships an ABSENCE and one
+sentence of copy, which is the shape of change most likely to be "tested" by
+assertions that cannot fail — so every assertion below was made to fail on
+purpose before it was trusted.
+
+macOS 26.5.2 / arm64, rustc 1.94.0 (4a4ef493e 2026-03-02), vitest 3.2.7. Every
+mutation was reverted and the suites re-run green afterwards (cargo: 1111
+passed / 0 failed; vitest: 131 passed / 0 failed).
+
+M1 — the caveat is written but never drawn
+    src/meetings/TranscriptList.tsx: `{showsOverlapCaveat(segments, kind) && (`
+    becomes `{false && (`.
+    The failure mode this item is most exposed to: a constant, a doc comment, a
+    mirror, a truth table — and nothing on screen. Everything about the absence
+    would still be documented, and the person reading a lecture transcript would
+    still be told nothing.
+    → vitest: TranscriptList > the overlap caveat > "appears under a transcript
+      whose microphone is the clustered track" FAILED (1 failed, 62 passed).
+    → cargo: overlap_column_absent_and_documented::the_caveat_is_one_sentence_in_both_languages_and_the_ui_draws_it
+      FAILED — "the caveat must be gated on the diarization branch" (3 passed, 1 failed).
+
+M2 — the caveat renders on every meeting
+    TranscriptList.tsx: `{showsOverlapCaveat(segments, kind) && (` becomes
+    `{true && (`.
+    The tempting simplification, and the one that turns a caveat into a
+    disclaimer: a virtual meeting whose second track really did record the other
+    participants never clustered Track A, so the sentence would be describing
+    work the app did not do.
+    → vitest: 2 FAILED — "stays off a call whose second track really did record
+      the others" and "does not caption a transcript that has no microphone
+      lines" (2 failed, 61 passed).
+
+M3 — the gate reads the wrong branch
+    src/meetings/transcript.ts: `showsOverlapCaveat`'s guard flips
+    `!== "clusterTrackA"` to `!== "micIsMe"` — the caveat now appears on exactly
+    the one meeting kind it must never appear on, and nowhere else.
+    → vitest: 4 FAILED, on BOTH sides of the seam — showsOverlapCaveat > "follows
+      the diarization target, row for row", "needs a microphone line on the
+      screen to qualify", and both TranscriptList cases (4 failed, 59 passed).
+
+M4 — the second condition is dropped
+    transcript.ts: the mic-line check becomes `return true`, so the caveat is
+    decided by the meeting's kind alone.
+    A transcript with no microphone lines on it — a room recording whose mic
+    produced nothing, an in-person meeting carrying only tap rows — would be
+    captioned about attribution of lines it does not contain.
+    → vitest: 2 FAILED — "needs a microphone line on the screen to qualify" and
+      "does not caption a transcript that has no microphone lines" (2 failed,
+      61 passed).
+
+M5 — the copy drifts in ONE language
+    transcript.ts: `OVERLAP_CAVEAT` becomes "Overlapping speech is flagged on the
+    lines it affects." — which is both a different sentence and a false capability
+    claim (nothing is flagged per line; that is the column this item refused).
+    Rust's constant is untouched, so this is exactly the drift a cross-language
+    mirror invites.
+    → vitest: showsOverlapCaveat > "says what it says" FAILED (1 failed, 62 passed).
+    → cargo: the_caveat_is_one_sentence_in_both_languages_and_the_ui_draws_it
+      FAILED — "src/meetings/transcript.ts no longer holds the caveat verbatim;
+      the screen and this constant have drifted".
+
+M6 — the column ships anyway, inside the ladder
+    src-tauri/src/meetings.rs: `MIGRATION_4_MEETING_KIND` gains
+    `ALTER TABLE meeting_segments ADD COLUMN overlapped INTEGER NOT NULL DEFAULT 0;`
+    — the version of this item that "keeps the option open" and leaves a column
+    of zeros that every later query reads as a measurement.
+    → cargo: 2 FAILED —
+      no_step_in_the_migration_ladder_creates_an_overlap_column ("migration 4
+      (kind) names an overlap column") and
+      meetings_rs_says_on_one_line_where_the_column_went (the word now appears on
+      two lines, so a grep no longer lands on the explanation).
+
+M7 — the column ships OUTSIDE the ladder
+    src-tauri/src/db.rs: an extra `conn.execute_batch("ALTER TABLE
+    meeting_segments ADD COLUMN overlapped …")` after the migration loop. The
+    string check over the LADDER constants cannot see this one — it is the reason
+    the test also opens a real database and reads `pragma_table_info`.
+    → cargo: no_step_in_the_migration_ladder_creates_an_overlap_column FAILED —
+      "meeting_segments grew an overlap column: [… \"track\", \"overlapped\"]"
+      (3 passed, 1 failed). M6 and M7 together are what prove BOTH arms of that
+      test carry weight rather than one covering for the other.
+
+M8 — the marker stops naming the mechanism
+    meetings.rs: the marker line becomes "there is no overlapped flag on the
+    result type". Still true, still greppable, and it no longer says WHY — the
+    frames are deleted before embedding, which is the fact that makes the column
+    impossible rather than merely absent from one struct.
+    → cargo: meetings_rs_says_on_one_line_where_the_column_went FAILED —
+      "meetings.rs:771 is the marker line but does not state the mechanism".
+
+M9 — the wire grows an overlap field
+    src-tauri/src/diarize_protocol.rs: `DiarizeResponse` gains
+    `overlapped_turns: Vec<u32>`, i.e. the child now claims it can tell which
+    turns were overlapped. If that were ever true, finding #22's second option
+    (drive the segmentation model directly for powerset output) would have been
+    taken, and this item's decision would have to be revisited deliberately
+    rather than inherited.
+    → cargo: the_diarize_wire_carries_no_overlap_flag FAILED — "the diarize
+      response gained an overlap field" (3 passed, 1 failed).
+    NOTE: the first attempt at this mutation added the field to `DiarizeSegment`
+    instead and did not compile (`missing field `overlapped` in initializer`),
+    which is a refusal by the type system rather than by a test — so it was
+    redone on the response envelope, where it compiles and the assertion is the
+    only thing standing in the way.
+
+NOT MUTATED, and why:
+  * "the caveat is missing from the Markdown export" is not a mutation — the
+    export deliberately does not carry it (see the PR body), and the export's
+    bytes are already pinned by meeting_markdown_export{,_two_track}.rs, so
+    adding the sentence there fails those fixtures rather than this item's tests.
+
+================================================================================
+REVIEW FOLLOW-UP (BLOCKING finding: `blank-tap.png` was captioned `kind =
+virtual` while the preview handed the component `unknown`). Three more
+mutations, run against the CORRECTED tree, to show the corrected evidence
+actually discriminates and the old evidence did not.
+================================================================================
+
+M10 — the naive gate the doc claims would get `blank-tap` wrong
+    src/meetings/transcript.ts: showsOverlapCaveat's first line becomes
+    `if (kind === "virtual") return false;` — the gate written against the
+    meeting's declared kind instead of against the diarization target. This is
+    the exact counterfactual `manual-verification.md` names.
+    → vitest: transcript.test.ts FAILED (1 failed / 18 passed) on the truth
+      table's first `virtual` row.
+    → screenshot (YAP_DEV_TOOLING=1 npm run build; headless Chrome @2x;
+      #blank-tap): the caveat is GONE. sha256 45f17c49e119952a0118…, against
+      f74656d17f35ab963753… for the shipped screenshot.
+
+M10b — the same gate, photographed through the PRE-FIX preview
+    M10 still applied, and transcriptPreview.tsx reverted to the line the
+    review flagged: `const kind = twoTrack ? "virtual" : "unknown"`.
+    → screenshot (#blank-tap): sha256 f74656d17f35ab963753… — BYTE-IDENTICAL
+      to the correct, unmutated screenshot. This is the finding, reproduced:
+      the picture that was cited as "the case a `kind == virtual` gate would
+      have got wrong" was taken at kind `unknown`, where that gate behaves
+      exactly like the shipped one. The old evidence could not see the bug.
+      Both mutations reverted; the shipped screenshots are re-captured from the
+      corrected preview and now carry `kind=<value>` in the harness strip.
+
+M11 — isTwoTrack stops ignoring blank spans
+    src/meetings/transcript.ts: `isTwoTrack` becomes
+    `segments.some((s) => trackOf(s) !== MIC_TRACK)` — a tap that recorded
+    silence now counts as a live second track, so a `virtual` meeting with
+    blank tap rows would take the MicIsMe branch and lose the caveat.
+    → vitest: 3 failed / 16 passed, one of them by name:
+      "virtual: a call whose tap delivered only blank spans still clusters
+      Track A: expected false to be true".
+    → and the row is load-bearing, not redundant: with the NEW truth-table row
+      temporarily deleted and M11 still applied, `-t "follows the diarization
+      target"` goes GREEN (1 passed / 18 skipped). No pre-existing row in that
+      table carries this case — the other `virtual -> true` row has no
+      second-track segments at all. Row restored, M11 reverted.
+
+===============================================================================
+Round 2 — the BLOCKING finding was about the item's RECORDED REASON, not its
+shipped artefacts. The claim "overlap is unknowable" was false against sherpa's
+primary source; the decision (no column) stands, the reason is now SCOPE.
+Three mutations against the new Part-5 test, which is what stops the false
+claim coming back and pins where a later item goes looking.
+===============================================================================
+
+M12 — the impossibility claim comes back to meetings.rs
+    desktop/src-tauri/src/meetings.rs: the sentence the reviewer quoted is
+    re-inserted verbatim into the YV127 doc block ("There is no moment in the
+    pipeline at which the app could learn which stored segment sat under two
+    voices").
+    → cargo test --features custom-protocol --test
+      overlap_column_absent_and_documented: 4 passed / 1 FAILED, by name:
+      the_wire_already_carries_what_a_later_overlap_flag_would_read
+      "the impossibility claim came back; the reason for dropping the column is
+       SCOPE — sherpa's per-speaker timelines can intersect and that
+       intersection IS the overlap decision"
+    This is the mutation that matters: the defect this round fixed is a PROSE
+    defect, and prose is exactly what CI normally cannot hold. It can now.
+    Reverted.
+
+M13 — the wire stops carrying WHICH cluster a turn belongs to
+    desktop/src-tauri/src/diarize_protocol.rs: `#[serde(skip)]` on
+    `DiarizeSegment.cluster`, so both turns deserialize as cluster 0 and the
+    `a.cluster != b.cluster` filter matches nothing.
+    → same test FAILED: overlap count left: 0, right: 1.
+    Proves the derivability claim is checked against what survives serde, not
+    against the struct the child happened to build in memory. Reverted.
+
+M14 — the wire stops carrying where a turn ENDS
+    Same file, `#[serde(skip)]` on `DiarizeSegment.end`: both turns decode with
+    end = 0.0, so no interval can intersect.
+    → same test FAILED: overlap count left: 0, right: 1.
+    The three fields the derivation needs — start, end, cluster — are each
+    load-bearing and each independently pinned. If the protocol ever collapses
+    intersecting turns before the parent sees them, the door really does close
+    and CI says so on the way. Reverted.
+
+    NOTE, stated rather than glossed: this test asserts a CAPABILITY, not a
+    feature. Nothing in the shipping app calls the intersection; no column
+    exists for it to fill. It exists because the item's deliverable is a
+    documented REASON, and a reason nothing checks is how the wrong one shipped
+    in the first place.
