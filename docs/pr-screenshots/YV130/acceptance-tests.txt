@@ -66,12 +66,14 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 $ cargo test --test retroactive_relabel_never_touches_locked
      Running tests/retroactive_relabel_never_touches_locked.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/retroactive_relabel_never_touches_locked-ff7cde9556b03587)
 
-running 3 tests
+running 5 tests
 test a_hand_correction_is_what_makes_a_segment_ineligible ... ok
 test a_segment_locked_after_the_offer_is_still_excluded_by_apply ... ok
+test undo_never_clears_a_lock_it_did_not_set ... ok
 test a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly ... ok
+test a_segment_confirmed_to_the_batchs_own_answer_survives_undo ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
 
 
 $ cargo test --test correction_ships_no_tuned_threshold

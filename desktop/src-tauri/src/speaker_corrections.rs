@@ -695,6 +695,10 @@ pub struct UndoOutcome {
     /// Segments the batch wrote that somebody has since changed by hand. Their
     /// prior value is NOT restored — undoing a batch must not silently discard a
     /// decision made after it — and they are named so the UI can say so.
+    ///
+    /// "Changed by hand" means changed **or confirmed**: a segment the user
+    /// hand-confirmed to the batch's own answer is locked now and was not
+    /// before, and belongs here too. Its value alone would look untouched.
     pub skipped_changed: Vec<String>,
 }
 
@@ -708,6 +712,16 @@ pub struct UndoOutcome {
 /// An unknown or already-undone `batch_id` is `Ok` with `restored: 0`, not an
 /// error. Undo is a user gesture, and a second click on it should be a no-op,
 /// not a failure dialog.
+///
+/// **"Has somebody touched this since?" is asked of the lock, not only of the
+/// value.** A batch always writes `speaker_locked = 0` (see
+/// [`apply_retroactive_relabel`]) and is only ever applied to unlocked rows, so
+/// a row that is locked NOW carries a confirmation that did not exist when the
+/// batch ran — including the case where the user hand-confirmed the batch's own
+/// answer, which a value-only comparison cannot see at all. That row is a hand
+/// correction, is named in `skipped_changed`, and is not restored. The
+/// invariant that falls out of it, and the one the spec states absolutely:
+/// **undo never writes `speaker_locked = 0` over a row that is currently 1.**
 pub fn undo_relabel_batch(conn: &mut Connection, batch_id: &str) -> Result<UndoOutcome, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let rows: Vec<(String, Option<String>, i64, String)> = {
@@ -731,18 +745,25 @@ pub fn undo_relabel_batch(conn: &mut Connection, batch_id: &str) -> Result<UndoO
     let mut restored = 0usize;
     let mut skipped_changed = Vec::new();
     for (segment_id, prior_speaker_id, prior_locked, new_speaker_id) in rows {
-        let current: Option<Option<String>> = tx
+        let current: Option<(Option<String>, i64)> = tx
             .query_row(
-                "SELECT speaker_id FROM meeting_segments WHERE id = ?1",
+                "SELECT speaker_id, speaker_locked FROM meeting_segments WHERE id = ?1",
                 params![segment_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some(current) = current else {
+        let Some((current, current_locked)) = current else {
             continue; // segment deleted since; nothing to restore it to
         };
-        if current.as_deref() != Some(new_speaker_id.as_str()) {
+        // Changed by value: somebody named a different speaker after the batch.
+        let value_changed = current.as_deref() != Some(new_speaker_id.as_str());
+        // Changed by confirmation: the row is locked now and was not when the
+        // batch recorded it. Only a person locks a segment, and only after the
+        // batch — this catches the hand correction that agreed with the batch,
+        // which the value comparison above is blind to by construction.
+        let newly_locked = current_locked != 0 && prior_locked == 0;
+        if value_changed || newly_locked {
             skipped_changed.push(segment_id);
             continue;
         }

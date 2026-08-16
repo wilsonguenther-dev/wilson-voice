@@ -248,3 +248,24 @@ because they close different halves of the failure.
       test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
       error: test failed, to rerun pass `--test diarization_metrics`
 
+
+=== M13 — undo asks "has this changed?" of the VALUE only (the lock check removed)
+    Reproduces the panel's finding exactly: a segment the user hand-confirmed to
+    the batch's OWN answer holds the value the batch wrote, so a value-only
+    comparison cannot see the confirmation, reverts the row, and writes
+    speaker_locked = 0 over a 1.
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test retroactive_relabel_never_touches_locked
+    exit: 101
+      test undo_never_clears_a_lock_it_did_not_set ... ok
+      test a_hand_correction_is_what_makes_a_segment_ineligible ... ok
+      test a_segment_locked_after_the_offer_is_still_excluded_by_apply ... ok
+      test a_segment_confirmed_to_the_batchs_own_answer_survives_undo ... FAILED
+      test a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly ... ok
+      ---- a_segment_confirmed_to_the_batchs_own_answer_survives_undo stdout ----
+      thread 'a_segment_confirmed_to_the_batchs_own_answer_survives_undo' (19600959) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:213:5:
+      assertion `left == right` failed: only the two segments nobody had confirmed were reverted
+        left: 3
+       right: 2
+      test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+      error: test failed, to rerun pass `--test retroactive_relabel_never_touches_locked`
