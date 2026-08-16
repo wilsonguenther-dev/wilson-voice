@@ -2,7 +2,8 @@
 
 **Items:** YV99 · closed the yap22-A phase. **YV105** · added 22-B's five
 tap-scoped rows to this same table. **YV110** · wired the tap into a live
-meeting, which promoted rows 1 and 2.
+meeting, which promoted rows 1 and 2. **YV132** · added yap23's three
+diarization rows (7, 8, 13), all three as `Policy only`.
 **Source:** the Notetaker epic plan's §6 matrix, plus the two rows finding #3 added.
 
 The plan's §6 is seventeen rows of prose. Prose does not fail a build, so the
@@ -59,21 +60,26 @@ itself.
 | 12 | macOS older than 14.4 | The system-audio track is refused with one plain sentence naming the requirement, and mic-only meeting recording keeps working all the way down to Yap's macOS 12 floor | `cargo test --test matrix_row12_macos_144_gate` — drives `meeting_availability_for` in `meeting_asr.rs` |
 | 12b | …and the sentence the gate produces has to reach a Notetaker surface | The Notetaker's system-audio control is visible and disabled, carrying that sentence — the plan's own wording for row 12 | `cargo test --test matrix_row12_macos_144_gate` — drives `NotetakerStatus` in `lib.rs` |
 | 14 | Output device changes mid-meeting (AirPods connect) | Tear down and rebuild the aggregate around the new output device, splice the spill, log a `device_change` marker — this happens constantly in real use and is not an edge case | **Policy only** — the enforcement (`watch_output`) lands with #123 (YV100); `cargo test --test matrix_row14_output_device_change` covers only the part this branch owns |
+| 7 | Diarize sidecar OOM, panic or wedge | Deadline + kill + restart budget 1; on give-up a plain single-speaker transcript, the meeting `complete` with `diarization_failed` — never `failed`, because the user still gets their notes | **Policy only, NOT WIRED** — `cargo test --test matrix_row7_diarize_sidecar_wedge` covers the decision; **nothing calls `diarize_sidecar_degrade`**, so the app does not do this yet |
+| 8 | Diarization returns garbage — one cluster for five people, or forty clusters | A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart | **Policy only, NOT WIRED** — `cargo test --test matrix_row8_diarize_garbage_clusters` covers the decision; **nothing calls `cluster_sanity`**, so the app does not do this yet |
+| 13 | Diarization model missing, or partially downloaded | The same gate the polish stage uses — the speaker-detection affordance is OFF, not broken, naming the combined download; recording and transcripts are untouched | **Policy only, NOT WIRED** — `cargo test --test matrix_row13_diarize_model_missing` covers the decision; **nothing calls `speaker_detection_gate`**, so the app does not do this yet |
 
-## Why these thirteen failures and not the other four
+## Where the plan's other rows are
 
-Six of the plan's §6 rows are still not here, and each is absent for its own
+Three of the plan's §6 rows are still not here, and each is absent for its own
 reason. Listing a row with no mechanism behind it makes the matrix look more
 covered than it is; not saying why it is absent makes the boundary look like an
-oversight instead of a decision.
+oversight instead of a decision. The two rows this table used to hold and no
+longer does are kept in it, pointing at where they went, because a boundary that
+moves is worth recording rather than quietly deleting.
 
-| Plan row | Belongs to | Why not here |
+| Plan row | Belongs to | Where it is |
 |---|---|---|
-| 7, 8 | yap23 | Diarization sidecar OOM and its cluster sanity gate. Diarization does not exist yet to fail. |
+| 7, 8 | yap23 · YV132 | **In the table above.** Diarization exists to fail now: YV121 shipped the `yap-diarize` sidecar and its pool, YV123 shipped the two vendored models. Both rows are `Policy only` — no meeting is ever diarized — which is [explained below](#the-yap23-rows--7-8-and-13-and-why-none-of-them-is-test). |
 | 9 | YV93 | Per-chunk ASR isolation — already general-purpose in the shipped chunker and published here as row `3b`, which is the same failure stated with the timeout that causes it. It applies identically to a tap track, so there is nothing tap-specific to add. |
 | 10 | YV97 | The summarizer's own degrade ladder, tested with the summarizer, and track-agnostic. |
 | 11 | yap24 | Calendar/EventKit. Calendar does not exist yet to be revoked. |
-| 13 | — | Model missing / partially downloaded. 22-B introduces no new downloadable model; the only model-gated feature in the epic is diarization, which is yap23's. |
+| 13 | yap23 · YV132 | **In the table above.** 22-B introduced no downloadable model, so this row had nothing to gate; yap23's two diarization models are that something, and `models::is_diarize_downloaded` is the gate over them. `Policy only`: no Notetaker surface offers speaker detection to switch off. |
 
 Rows 1, 2, 3, 12 and 14 **were** on this list until YV105. They are in the table
 above now — four of them as `Policy only`, which is the finding of that item and
@@ -81,7 +87,7 @@ is explained below.
 
 ## Which rows the app actually performs today
 
-**Ten of the sixteen cells are a claim that the shipped app handles the
+**Ten of the nineteen cells are a claim that the shipped app handles the
 failure.** Read this section before quoting a row as done.
 
 | Cell | What it means | Rows |
@@ -89,7 +95,7 @@ failure.** Read this section before quoting a row as done.
 | `cargo test --test …` | The behaviour is implemented, wired into the app, and exercised end to end by that test — against the named shipping symbol. | 1, 2, 4, 5, 6, 12, `12b`, 17, `3a`, `3b` |
 | **Manual repro** | No in-process test can produce the failure. A human follows the script and records the result. | 15 |
 | **Policy only** (an owning PR named) | The decision ships and is tested; the thing that would *produce* the event it decides about is in an open PR. | 14 |
-| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, 16, `17b` |
+| **Policy only, NOT WIRED** | The *decision* is implemented and tested as pure state. The *call site that would put it in effect does not exist, and no open PR brings it*. The app does not do this yet. | 3, `5b`, 16, `17b`, 7, 8, 13 |
 
 ### Manual — row 15, and why its three green tests are not its coverage
 
@@ -252,6 +258,84 @@ that `start_system_tap` is still CALLED from `src/`, so a refactor that drops th
 call turns both rows red instead of leaving them published as `Test` about a
 meeting with no second track. Row 14 still asserts its own call site is absent.
 
+## The yap23 rows — 7, 8 and 13, and why none of them is `Test`
+
+`ROWS` reserved these three for "yap23, which does not exist yet to fail". It
+exists now — **YV121** shipped the `yap-diarize` sidecar and `diarize::DiarizePool`
+(readiness handshake, deadline, one-restart budget, idle sweep), **YV123** shipped
+the two vendored models and `models::is_diarize_downloaded` over them — so the
+reservation is spent and the rows are published.
+
+**All three are `Policy only, NOT WIRED`, and that is this item's finding rather
+than a shortfall in it.** Nothing in the shipping app runs a diarization pass:
+`diarize::pool()` has no caller anywhere in `src/`, no meeting is handed to a
+sidecar, and no surface offers speaker detection to turn on or off. A `Test` cell
+on row 7 would tell a reader *"if the diarizer wedges, your meeting still
+completes with a plain transcript"* — about a meeting that never asks a diarizer
+anything. That is the false-capability claim rows 1 and 2 were held back from
+through four merges, and the rule does not get an exemption for the phase this
+table has only just started covering.
+
+**Row 7 — the sidecar wedges, OOMs or panics.** The budget half genuinely ships:
+`matrix_row7_diarize_sidecar_wedge` drives the real pool against **stub
+processes** (a `/bin/sh` script that never answers; one that announces itself and
+dies), and asserts the wedge is killed at the readiness budget and the crash is
+respawned exactly once. The half that is not wired is what the meeting becomes:
+`meeting_matrix::diarize_sidecar_degrade` maps every `DiarizeError` to a plain
+single-speaker transcript on a **complete** meeting marked `diarization_failed`.
+The mapping is exhaustive over the error enum rather than a catch-all, so a new
+failure mode is a compile error and a decision, and `SpeakerLabels` has **no
+variant that fails or discards a meeting** — "the user still gets their notes" is
+a property of the type, not a branch somebody has to remember.
+
+**Row 8 — the pass ran and returned noise.** Same artifact, different reason, and
+that difference is the whole of the row: a crashed sidecar and a noisy one are
+two different bugs, and one undifferentiated `diarization_failed` makes them one
+line in a log that tells nobody which happened. **The published behaviour is not
+the plan's.** §6 says "cluster count > `max(8, attendees×2)` ⇒ reject"; merged
+finding #25 killed that rule, because a manually started meeting has no attendee
+count (so the cap is 8) and a real six-person far-field room legitimately
+produces 10–15 raw clusters — the case yap23 prioritises would have its whole
+diarization thrown away by the gate meant to protect it. `cluster_sanity` ranks,
+applies the caller's floor, rolls the rest into one "Other" bucket, and degrades
+only when nothing survives. And it says out loud what it cannot see: *one cluster
+for five people* clears every floor and is undetectable without ground truth —
+that half is YV126's DER gate on the eval fixtures, which is a measurement, not a
+runtime check.
+
+**Not one accuracy number is declared for these rows.** `cluster_sanity` takes
+its floor as an argument; `meeting_matrix.rs` holds no threshold constant, and
+`matrix_row8_diarize_garbage_clusters` asserts that from both ends — the source
+carries no such `const`, and the same cluster set flips verdict under two
+different floors. Those numbers are YV126's to measure against `diarize_metrics`
+on the eval fixtures. A plausible-looking constant here would be a vendor-blog
+threshold entering the tree through the file that renders the published matrix,
+which is the worst available door for one.
+
+**Row 13 — the model is missing, or half of it is.** The gate's input ships:
+`is_diarize_downloaded` compares the extracted graph against the size the catalog
+states, so an interrupted download reads as *missing* rather than as
+present-and-corrupt, and `matrix_row13_diarize_model_missing` drives that against
+a real file on disk at three lengths (absent, short, exact). What does not exist
+is the affordance — `NotetakerStatus` carries no speaker-detection field and no
+surface renders one — so the sentence is decided and reaches nobody.
+**The size in it is computed, and the plan's number was wrong:** §6 row 13 says
+"download 37 MB", written before the assets were vendored; the two entries YV123
+pinned are 6,958,444 B + 29,292,684 B = 36.25 MB, so the sentence says **36 MB**,
+rounded the same way `ModelSetup.tsx` renders every other catalog size. Passing
+`models::diarize_download_bytes()` in is what keeps it true the day a model is
+re-pinned. Its other half — *recording is unaffected* — is asserted three ways,
+including that `meeting_asr.rs` never reads the diarization catalog as code: the
+moment the recording gate consults it, a 36 MB download becomes a precondition
+for recording a meeting at all, which is row 12's leak with a different door.
+
+**What YV132 changed in the rules: nothing.** Two assertions in
+`tests/matrix_coverage.rs` moved — the list of row ids, and the count of policies
+with no owner — and both are inventories of the phase's scope rather than rules,
+which is exactly the pair YV105 moved for the same reason. Every tripwire applied
+to the three new rows unchanged, and all three had to satisfy them to be
+published at all.
+
 ## Every tripwire in this matrix is a CI gate
 
 An earlier revision kept some of them behind `#[ignore]` as a merge checklist,
@@ -287,6 +371,9 @@ cargo test --test matrix_coverage \
            --test matrix_row15_single_instance \
            --test matrix_row16_sleep_wake \
            --test matrix_row17_meeting_cap \
+           --test matrix_row7_diarize_sidecar_wedge \
+           --test matrix_row8_diarize_garbage_clusters \
+           --test matrix_row13_diarize_model_missing \
            --test matrix_new_quit_mid_processing \
            --test matrix_new_asr_chunk_timeout \
            --test matrix_phase_offline

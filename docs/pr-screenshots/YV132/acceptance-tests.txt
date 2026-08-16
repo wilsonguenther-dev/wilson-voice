@@ -1,0 +1,92 @@
+YV132 — acceptance commands, run on macOS 26.5.2 / arm64, 2026-08-16T15:09:38Z
+target dir: scratchpad/yap-target   rustc: rustc 1.94.0 (4a4ef493e 2026-03-02)
+branch: feat/yv132   base: 8086ed9 (origin/main)
+
+=== 1. cargo test --test matrix_row7_diarize_sidecar_wedge
+running 5 tests
+test the_give_up_logs_as_a_sidecar_failure_and_says_the_transcript_survived ... ok
+test no_sidecar_failure_can_produce_a_failed_meeting ... ok
+test the_restart_budget_is_one_and_giving_up_is_still_a_complete_meeting ... ok
+test nothing_in_the_app_diarizes_a_meeting_yet ... ok
+test a_wedged_sidecar_is_killed_and_the_meeting_still_completes ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+=== 2. cargo test --test matrix_row8_diarize_garbage_clusters
+running 9 tests
+test a_high_cluster_count_is_not_by_itself_a_rejection ... ok
+test a_crashed_sidecar_and_a_noisy_one_are_distinguishable_in_the_log ... ok
+test a_pass_with_nothing_above_the_floor_degrades_to_a_plain_transcript ... ok
+test an_empty_cluster_set_degrades_rather_than_implying_a_single_speaker ... ok
+test a_real_room_keeps_its_speakers_instead_of_being_rejected_for_being_busy ... ok
+test the_floor_is_two_conditions_and_both_of_them_matter ... ok
+test under_clustering_is_not_detectable_here_and_the_gate_does_not_pretend ... ok
+test the_floor_is_the_callers_number_and_this_module_declares_none ... ok
+test nothing_in_the_app_applies_the_sanity_gate_yet ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+=== 3. cargo test --test matrix_row13_diarize_model_missing
+running 5 tests
+test the_affordance_reports_itself_unavailable_with_the_combined_size ... ok
+test the_size_in_the_sentence_comes_from_the_catalog_and_not_from_a_literal ... ok
+test a_partial_download_reads_as_missing_and_only_the_full_size_reads_as_present ... ok
+test a_missing_diarization_model_does_not_touch_recording_or_transcripts ... ok
+test no_notetaker_surface_offers_speaker_detection_yet ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+=== 4. cargo test --test matrix_coverage  (existing suite; only its two INVENTORY assertions moved, no rule)
+running 9 tests
+test every_row_names_a_test_the_acceptance_sweep_can_reach ... ok
+test the_matrix_still_covers_every_failure_22a_22b_and_yap23_own ... ok
+test the_phase_demo_script_is_committed_and_says_wifi_off ... ok
+test the_committed_matrix_document_matches_the_code ... ok
+test the_published_sweep_is_runnable_and_complete ... ok
+test every_matrix_row_is_covered_by_something_that_exists ... ok
+test the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module ... ok
+test test_rows_drive_the_shipping_code_they_name ... ok
+test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+=== 4b. the module's own inventory tests
+running 13 tests
+test meeting_matrix::tests::policy_only_cells_say_the_app_does_not_do_this_yet ... ok
+test meeting_matrix::tests::coverage_cells_name_the_runnable_thing_and_the_code_it_drives ... ok
+test meeting_matrix::tests::no_test_row_certifies_this_modules_own_policy_as_shipping_behaviour ... ok
+test meeting_matrix::tests::row_5b_admits_the_quality_note_reaches_no_surface ... ok
+test meeting_matrix::tests::row_17_ships_the_cap_and_admits_it_does_not_ship_the_continuation ... ok
+test meeting_matrix::tests::row_16_admits_that_nobody_owns_its_wiring ... ok
+test meeting_matrix::tests::the_three_yap23_rows_admit_that_no_meeting_is_ever_diarized ... ok
+test meeting_matrix::tests::the_wired_rows_are_the_ones_whose_mechanism_shipped ... ok
+test meeting_matrix::tests::the_unwired_rows_are_the_ones_whose_call_site_is_missing ... ok
+test meeting_matrix::tests::matrix_ids_are_unique_and_nonempty ... ok
+test meeting_matrix::tests::the_row_7_cell_and_the_row_7_policy_agree_that_the_meeting_completes ... ok
+test meeting_matrix::tests::the_rows_nobody_owns_are_5b_16_17b_and_3 ... ok
+test meeting_matrix::tests::rendered_table_has_a_line_per_row ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 530 filtered out; finished in 0.00s
+
+=== 5. the reservation language is replaced, not left stale
+$ grep -n "does not exist yet to fail" desktop/src-tauri/src/meeting_matrix.rs
+(no match — the ROWS doc comment now says rows 7, 8 and 13 are wired; rows 9, 10, 11 keep their own stated reasons)
+
+=== 6. grep -c '| [0-9]' docs/yap22a-error-matrix.md increases by exactly 3
+  origin/main: 25
+  this branch: 28
+
+=== 7. the published acceptance sweep, run verbatim from docs/yap22a-error-matrix.md
+     1	test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+     2	test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+     3	test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     4	test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     5	test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+     6	test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     7	test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     8	test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     9	test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    10	test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    11	test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+    12	test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+    13	test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+    14	test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+    15	test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+    16	test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+    17	test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+    18	test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s

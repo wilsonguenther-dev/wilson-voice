@@ -1,0 +1,94 @@
+YV132 — non-vacuous mutation log. Every new assertion was shown to go RED against a
+plausible wrong implementation; the mutation was reverted after each run.
+
+1. row 7 — one error variant is allowed to keep its labels (`Refused` -> Attributed)
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row7_diarize_sidecar_wedge
+  test no_sidecar_failure_can_produce_a_failed_meeting ... FAILED
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+  => RED (good)
+
+2. row 7 — a diarization failure is allowed to fail the meeting
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row7_diarize_sidecar_wedge
+  test no_sidecar_failure_can_produce_a_failed_meeting ... FAILED
+  test the_restart_budget_is_one_and_giving_up_is_still_a_complete_meeting ... FAILED
+  test a_wedged_sidecar_is_killed_and_the_meeting_still_completes ... FAILED
+  test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+  test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+  => RED (good)
+
+3. row 8 — the plan's original hard reject, restored (`count > max(8, attendees*2)`)
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row8_diarize_garbage_clusters
+  test a_real_room_keeps_its_speakers_instead_of_being_rejected_for_being_busy ... FAILED
+  test a_high_cluster_count_is_not_by_itself_a_rejection ... FAILED
+  test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  => RED (good)
+
+4. row 8 — the floor becomes this module's number instead of the caller's
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row8_diarize_garbage_clusters
+  test the_floor_is_the_callers_number_and_this_module_declares_none ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+  => RED (good)
+
+5. row 8 — the two failure modes log as one word
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row8_diarize_garbage_clusters
+  test a_crashed_sidecar_and_a_noisy_one_are_distinguishable_in_the_log ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  => RED (good)
+
+6. row 13 — the download size becomes a literal (the plan's 37 MB)
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test matrix_row13_diarize_model_missing
+  test the_size_in_the_sentence_comes_from_the_catalog_and_not_from_a_literal ... FAILED
+  test the_affordance_reports_itself_unavailable_with_the_combined_size ... FAILED
+  test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  => RED (good)
+
+7. row 13 — the model gate stops reading the file's size (a partial download reads as installed)
+  mutation in desktop/src-tauri/src/models.rs
+  $ cargo test --test matrix_row13_diarize_model_missing
+  test a_partial_download_reads_as_missing_and_only_the_full_size_reads_as_present ... FAILED
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  => RED (good)
+
+8. the table promotes row 7 to `Test` while nothing calls the degrade
+  mutation in desktop/src-tauri/src/meeting_matrix.rs
+  $ cargo test --test --lib meeting_matrix
+  test meeting_matrix::tests::the_unwired_rows_are_the_ones_whose_call_site_is_missing ... FAILED
+  test meeting_matrix::tests::the_wired_rows_are_the_ones_whose_mechanism_shipped ... FAILED
+  test meeting_matrix::tests::the_rows_nobody_owns_are_5b_16_17b_and_3 ... FAILED
+  test meeting_matrix::tests::the_three_yap23_rows_admit_that_no_meeting_is_ever_diarized ... FAILED
+  test result: FAILED. 9 passed; 4 failed; 0 ignored; 0 measured; 530 filtered out; finished in 0.00s
+  test result: FAILED. 9 passed; 4 failed; 0 ignored; 0 measured; 530 filtered out; finished in 0.00s
+  => RED (good)
+
+9. something in the app calls the row-13 gate (the promotion tripwire)
+  mutation in desktop/src-tauri/src/lib.rs
+  $ cargo test --test matrix_row13_diarize_model_missing --test matrix_coverage
+  test unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not ... FAILED
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+  test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+  => RED (good)
+
+9b. the same mutation, run against row 13's OWN tripwire alone
+    (cargo stops after the first failing binary, so #9 above only observed
+     matrix_coverage's sweep; this is the row's own test)
+  mutation in desktop/src-tauri/src/lib.rs (notetaker_status calls the gate)
+  $ cargo test --test matrix_row13_diarize_model_missing
+  test no_notetaker_surface_offers_speaker_detection_yet ... FAILED
+  test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+  => RED (good)
+
+Both directions of every row are therefore checked: the decision goes red when it
+is implemented wrongly, and the row's PUBLISHED cell goes red the day somebody
+wires the decision up — which is the only event that may promote it to `Test`.

@@ -344,8 +344,8 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
         checked += 1;
     }
     assert_eq!(
-        checked, 4,
-        "rows 5b, 16, 17b and 3 are the policies NOBODY owns; if that set changed, the \
+        checked, 7,
+        "rows 5b, 16, 17b, 3, 7, 8 and 13 are the policies NOBODY owns; if that set changed, the \
          change is a claim about what the app now does and belongs in the table's tests too. \
          (Row 14 is policy-only as well, but it names an open PR as the owner of its wiring and \
          asserts its own call site's absence in its own test — this tripwire is for the rows with \
@@ -353,7 +353,10 @@ fn unowned_policy_rows_are_still_unwired_and_go_red_the_day_they_are_not() {
          YV110, and they left it the way this tripwire is designed to make them leave: something \
          finally called `start_system_tap` inside a meeting, both rows' absence tests went red, \
          and the fix was to promote the rows and rewrite their tests to drive the shipping \
-         surface — never to relax the assertion."
+         surface — never to relax the assertion. Rows 7, 8 and 13 JOINED it with YV132: their \
+         mechanisms merged (YV121's sidecar pool, YV123's model catalog) and nothing in the app \
+         calls either, so each is a decision with no caller — the state this variant exists to \
+         publish."
     );
 }
 
@@ -406,16 +409,22 @@ fn the_three_hour_cap_is_declared_in_exactly_one_place_and_it_is_not_this_module
 /// table, with row 12 splitting into `12`/`12b` the way rows 5 and 17 already
 /// had — the gate runs, the sentence it produces reaches no surface. Every
 /// *rule* in this file applied to them unchanged; this assertion and the
-/// unowned-policy count below are inventories of the phase's scope rather than
+/// unowned-policy count above are inventories of the phase's scope rather than
 /// rules, which is why they are the two that moved.
+///
+/// **YV132 moved exactly the same two, and nothing else.** Rows 7, 8 and 13 —
+/// yap23's — are appended here; no rule in this file was touched, relaxed or
+/// given an exemption for them, and all three had to satisfy every one of those
+/// rules to be published at all (which is why all three are `PolicyOnly`: their
+/// mechanisms merged with YV121/YV123, and nothing in the app calls either).
 #[test]
-fn the_matrix_still_covers_every_failure_22a_and_22b_own() {
+fn the_matrix_still_covers_every_failure_22a_22b_and_yap23_own() {
     let ids: Vec<&str> = ROWS.iter().map(|r| r.id).collect();
     assert_eq!(
         ids,
         vec![
             "4", "5", "5b", "6", "15", "16", "17", "17b", "3a", "3b", "1", "2", "3", "12", "12b",
-            "14"
+            "14", "7", "8", "13"
         ]
     );
 }

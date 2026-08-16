@@ -129,6 +129,51 @@
 //! executed — see that row's cell for why, and `syscapture`'s YV110 section for
 //! the clock-continuity reason it is a separate item.
 //!
+//! ## YV132 — the three yap23 rows (7, 8, 13)
+//!
+//! The `ROWS` doc comment reserved rows 7, 8 and 13 for "yap23, which does not
+//! exist yet to fail". It exists now: YV121 shipped `diarize::DiarizePool` (the
+//! readiness handshake, the deadline, the one-restart budget, the idle sweep),
+//! YV123 shipped the two vendored models and `models::is_diarize_downloaded` /
+//! `is_diarize_ready` over them. So the reservation is spent and the three rows
+//! are published.
+//!
+//! **All three are `PolicyOnly`, and that is this item's finding rather than a
+//! shortfall in it.** Nothing in the shipping app runs a diarization pass:
+//! `diarize::pool()` has no caller, no meeting is ever handed to a sidecar, and
+//! no surface anywhere offers speaker detection to turn on or off. A `Test`
+//! cell on row 7 would tell a reader "if the diarizer wedges, your meeting
+//! still completes with a plain transcript" — about a meeting that never asks a
+//! diarizer anything. That is the false-capability claim rows 1 and 2 were held
+//! back from for four merges, and the same rule applies to a phase this
+//! module's own table is the first to touch.
+//!
+//! What each row therefore owes the reader is the *decision*, written once and
+//! tested, plus a tripwire that fires the day it acquires a caller:
+//!
+//!   * **Row 7** — [`diarize_sidecar_degrade`]. Every way the sidecar can fail
+//!     to answer maps to the same outcome: a plain single-speaker transcript on
+//!     a **complete** meeting, marked [`DIARIZATION_FAILED`]. The type is what
+//!     enforces the plan's governing principle here — [`SpeakerLabels`] has no
+//!     variant that fails or discards a meeting, so "the user still gets their
+//!     notes" cannot be lost to a branch somebody forgot to take.
+//!   * **Row 8** — [`cluster_sanity`]. A pass that RAN and returned noise
+//!     degrades to the same plain transcript, carrying a different reason, so
+//!     "the sidecar crashed" and "the sidecar answered with rubbish" stay
+//!     diagnosable apart in a log and in a diagnostics row.
+//!   * **Row 13** — [`speaker_detection_gate`]. Models missing or half
+//!     downloaded turns the affordance **off, not broken**, with the combined
+//!     download size in the sentence — and it cannot touch recording, because
+//!     the gate's own type has nothing to say about recording at all.
+//!
+//! **Not one accuracy number is declared here, and that is load-bearing.**
+//! [`cluster_sanity`] takes its floor as an argument; this module holds no
+//! opinion about how many seconds or turns a cluster needs. Those numbers are
+//! YV126's to MEASURE against `diarize_metrics` on the eval fixtures, and a
+//! plausible-looking `const` here would be exactly the vendor-blog threshold
+//! this phase was sequenced eval-first to avoid — with the extra twist that the
+//! published matrix row would then be where it entered the codebase.
+//!
 //! **And it does not re-declare a threshold that ships somewhere else.** The
 //! 3 h cap and its 2 h 45 m warning are `meeting::MEETING_HARD_CAP` /
 //! `meeting::MEETING_CAP_WARN_AT`, enforced by `meeting::watchdog_tick` — the
@@ -139,6 +184,16 @@
 //! session does *not* build — [`continuation_title`] — and both
 //! `tests/matrix_row17_meeting_cap.rs` and `tests/matrix_coverage.rs` fail the
 //! build if a cap threshold is ever re-declared here.
+
+// The only two imports this module has, both added by YV132 and both types
+// rather than behaviour: the error the sidecar pool already reports
+// (`diarize::DiarizeError`, so row 7's mapping is exhaustive over the real set
+// and a new variant is a compile error here) and the state a meeting already
+// has (`meetings::MeetingState`, so row 7's "complete, never failed" is stated
+// in the shipping enum instead of in a second copy of its strings). Everything
+// below is still pure: no clock, no disk, no CoreAudio, no Tauri handle.
+use crate::diarize::DiarizeError;
+use crate::meetings::MeetingState;
 
 // ── The matrix, as data ─────────────────────────────────────────────────────
 
@@ -239,15 +294,20 @@ pub struct MatrixRow {
 /// `matrix_coverage::every_row_names_a_test_the_acceptance_sweep_can_reach`.
 pub const REQUIRED_TEST_PREFIX: &str = "matrix_";
 
-/// The thirteen failures of the plan's §6 matrix that 22-A and 22-B own, as
-/// sixteen cells (rows 5, 12 and 17 each have two halves with different truth
-/// values — see the module docs).
+/// The sixteen failures of the plan's §6 matrix that 22-A, 22-B and yap23 own,
+/// as nineteen cells (rows 5, 12 and 17 each have two halves with different
+/// truth values — see the module docs).
 ///
-/// **Rows 7, 8, 9, 10, 11 and 13 are NOT here, and each has a different reason
-/// — stated so the boundary is a decision rather than an omission:**
+/// **Rows 7, 8 and 13 joined this table with YV132**, and what earned them the
+/// entry is that their subject now exists to fail: YV121 shipped the
+/// `yap-diarize` sidecar and its pool, YV123 shipped the two vendored models
+/// and the `is_diarize_downloaded` gate over them. All three are
+/// [`Coverage::PolicyOnly`] and that is the finding of the item rather than a
+/// shortfall in it — see the module docs' YV132 section.
 ///
-///   * **7, 8** (diarization sidecar OOM/panic; garbage clusters) — diarization
-///     is yap23 and does not exist yet to fail.
+/// **Rows 9, 10 and 11 are still NOT here, and each has a different reason —
+/// stated so the boundary is a decision rather than an omission:**
+///
 ///   * **9** (an ASR chunk fails) — already general-purpose in the shipped
 ///     chunker and published as row `3b`, which is the same failure stated with
 ///     the timeout that causes it. It applies identically to a tap track, so
@@ -256,9 +316,6 @@ pub const REQUIRED_TEST_PREFIX: &str = "matrix_";
 ///   * **10** (summarizer OOM/deadline/invalid JSON) — YV97's own degrade
 ///     ladder owns it, and that ladder is track-agnostic.
 ///   * **11** (calendar access revoked) — calendar is yap24 and does not exist.
-///   * **13** (model missing / partially downloaded) — 22-B introduces no new
-///     downloadable model; the only model-gated feature in the epic is
-///     diarization, which is yap23's.
 ///
 /// Listing any of them here with no mechanism behind it would make the matrix
 /// look more covered than it is, which is the one thing this table must never
@@ -527,6 +584,65 @@ pub const ROWS: &[MatrixRow] = &[
             test: "matrix_row14_output_device_change.rs",
             wiring_pr: Some("#123 (YV100)"),
             absent_call_site: "watch_output",
+        },
+    },
+    // ── yap23 · the three diarization rows (YV132) ──────────────────────────
+    //
+    // Appended, like `3a`/`3b` and 22-B's five were, so a reader who knows the
+    // table sees what arrived rather than having to diff it.
+    MatrixRow {
+        id: "7",
+        failure: "Diarize sidecar OOM, panic or wedge",
+        behavior: "Deadline + kill + restart budget 1; on give-up a plain single-speaker transcript, the meeting `complete` with `diarization_failed` — never `failed`, because the user still gets their notes",
+        // NOT `Test`, and the half that IS shipping is what makes the other half
+        // worth its own honest cell. `diarize::DiarizePool` really does hold the
+        // deadline, the kill and the one-restart budget — YV121 ported all four
+        // policies from `polish.rs` and `tests/diarize_sidecar_pool.rs` drives
+        // them against a stub process. What does not exist is a meeting that
+        // ever asks it anything: `diarize::pool()` has no caller in `src/`, so
+        // no meeting can be marked `diarization_failed` because no meeting is
+        // ever diarized. The decision below says what a meeting BECOMES when
+        // the pool gives up; the day something calls it, this row is a `Test`
+        // row and `matrix_coverage`'s tripwire says so out loud.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row7_diarize_sidecar_wedge.rs",
+            wiring_pr: None,
+            absent_call_site: "diarize_sidecar_degrade",
+        },
+    },
+    MatrixRow {
+        id: "8",
+        failure: "Diarization returns garbage — one cluster for five people, or forty clusters",
+        behavior: "A ranking + floor, never a hard reject: clusters under the caller's floor roll into one bucket, and a pass with nothing above it degrades to the same plain transcript as row 7 — logged distinctly, so a crashed sidecar and a noisy one stay diagnosable apart",
+        // NOT `Test`, for the same reason as row 7 and one more of its own: the
+        // gate can only be applied to output, and nothing in the app produces
+        // any. The published behaviour is deliberately NOT the plan's original
+        // `count > max(8, attendees×2)` reject — merged finding #25 killed that
+        // rule (a manually started meeting has no attendee count, so the cap is
+        // 8, and a real six-person far-field room legitimately produces 10–15
+        // raw clusters before merge, which the rule would throw away whole).
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row8_diarize_garbage_clusters.rs",
+            wiring_pr: None,
+            absent_call_site: "cluster_sanity",
+        },
+    },
+    MatrixRow {
+        id: "13",
+        failure: "Diarization model missing, or partially downloaded",
+        behavior: "The same gate the polish stage uses — the speaker-detection affordance is OFF, not broken, naming the combined download; recording and transcripts are untouched",
+        // NOT `Test`. The gate's INPUT ships: `models::is_diarize_downloaded`
+        // checks the extracted graph at its full expected size (so a half
+        // download reads as missing rather than as present-and-corrupt), and
+        // `models::diarize_download_bytes` adds the two catalog entries up. What
+        // is missing is the affordance: no Notetaker surface offers speaker
+        // detection at all, so there is nothing yet to switch off politely, and
+        // `NotetakerStatus` carries no field for it. The sentence is decided
+        // here and reaches nobody, which is `PolicyOnly` exactly.
+        coverage: Coverage::PolicyOnly {
+            test: "matrix_row13_diarize_model_missing.rs",
+            wiring_pr: None,
+            absent_call_site: "speaker_detection_gate",
         },
     },
 ];
@@ -1014,6 +1130,327 @@ pub fn meeting_start_plan(
     }
 }
 
+// ── Rows 7 and 8 · what a meeting becomes when diarization does not ─────────
+//
+// The sidecar is NOT here, and neither is the clusterer. `diarize::DiarizePool`
+// holds the deadline, the kill, the one-restart budget and the idle sweep;
+// YV126's `cluster_track` will hold the clustering. What is here is the half
+// neither of them owns — *given that the speaker labels did not arrive, what is
+// the meeting?* — because that is a decision about a MEETING, and the module
+// that talks to a child process over a pipe is the wrong place to make it.
+//
+// Both rows resolve to the same artifact, and the plan's §6 preamble is why:
+// "always degrade to the next-best artifact… diarization fails ⇒ keep the plain
+// transcript". They differ in the reason they carry, and that difference is the
+// whole of row 8's separate existence: a sidecar that crashed and a sidecar that
+// ran and produced noise are two different bugs with two different fixes, and a
+// single `diarization_failed` with no reason attached makes them one line in a
+// log that tells nobody which one happened.
+
+/// The marker a meeting row carries when its transcript is real and its speaker
+/// labels are not.
+///
+/// Deliberately a marker and NOT a `meetings.state`: the state says whether the
+/// recording and the transcription finished, which is a different question that
+/// diarization has no vote in. See [`SpeakerLabels::meeting_state_after`].
+pub const DIARIZATION_FAILED: &str = "diarization_failed";
+
+/// Why a meeting ended up with no speaker labels — row 7's failure and row 8's,
+/// kept apart on purpose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DegradeReason {
+    /// **Row 7.** The sidecar never produced an answer: it would not start, it
+    /// died past its restart budget, it blew the deadline, or it answered
+    /// something that is not a response. Carries `DiarizeError::tag`'s own short
+    /// word rather than a second vocabulary invented here, so the log line and
+    /// the pool's diagnostics agree by construction.
+    Sidecar { tag: String },
+    /// **Row 8.** The sidecar ran, answered, and the answer is unusable —
+    /// nothing in it cleared the caller's floor. `raw_clusters` is what it
+    /// returned, which is the number worth having in the log: 1 and 40 are both
+    /// this case, and they are not the same bug.
+    Clusters { raw_clusters: usize },
+}
+
+impl DegradeReason {
+    /// The word that separates the two failure modes in a log or a diagnostics
+    /// row. Short, fixed, and never a path or a sentence.
+    pub fn log_tag(&self) -> &'static str {
+        match self {
+            DegradeReason::Sidecar { .. } => "sidecar",
+            DegradeReason::Clusters { .. } => "clusters",
+        }
+    }
+
+    /// The one line this degrade writes to the log — the two failure modes
+    /// distinguishable by a human reading it, which is the acceptance criterion
+    /// row 8 is really about.
+    pub fn log_line(&self) -> String {
+        match self {
+            DegradeReason::Sidecar { tag } => format!(
+                "{DIARIZATION_FAILED} reason=sidecar detail={tag} — the transcript is intact and \
+                 the meeting is complete"
+            ),
+            DegradeReason::Clusters { raw_clusters } => format!(
+                "{DIARIZATION_FAILED} reason=clusters raw_clusters={raw_clusters} — the diarizer \
+                 answered and nothing it returned cleared the floor; the transcript is intact and \
+                 the meeting is complete"
+            ),
+        }
+    }
+}
+
+/// What a finished meeting's transcript carries for speaker attribution.
+///
+/// **There is deliberately no variant that fails, discards or truncates a
+/// meeting**, and that absence is the mechanism behind the plan's governing
+/// principle for this row ("the user still gets their notes"). A degrade path
+/// that is a branch somebody has to remember to take is a degrade path that is
+/// one refactor from being lost; a degrade path that is the only inhabitable
+/// state of the return type is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpeakerLabels {
+    /// Diarization ran and produced something worth showing.
+    Attributed,
+    /// The plain single-speaker transcript, plus the reason the labels are
+    /// missing.
+    Plain(DegradeReason),
+}
+
+impl SpeakerLabels {
+    /// The marker the meeting row gains, or `None` when there is nothing to
+    /// say.
+    pub fn marker(&self) -> Option<&'static str> {
+        match self {
+            SpeakerLabels::Attributed => None,
+            SpeakerLabels::Plain(_) => Some(DIARIZATION_FAILED),
+        }
+    }
+
+    pub fn is_plain(&self) -> bool {
+        matches!(self, SpeakerLabels::Plain(_))
+    }
+
+    pub fn reason(&self) -> Option<&DegradeReason> {
+        match self {
+            SpeakerLabels::Attributed => None,
+            SpeakerLabels::Plain(reason) => Some(reason),
+        }
+    }
+
+    /// The meeting's state, after diarization has had its say — which is the
+    /// state it already had.
+    ///
+    /// **This is the identity function on purpose**, and it is the smallest
+    /// honest way to write row 7's load-bearing half. The state answers "did the
+    /// recording and the transcription finish", which diarization does not
+    /// participate in: a meeting that transcribed cleanly is `Complete` whether
+    /// or not the diarizer wedged, and one that lost chunks to YV93's per-chunk
+    /// timeout is `Partial` for that reason and not this one. Expressing it as a
+    /// function of the state the caller already holds means the call site
+    /// *cannot* write `MeetingState::Failed` here without deleting this — which
+    /// is a diff, in a file whose tests are about exactly this claim.
+    pub fn meeting_state_after(&self, transcription_outcome: MeetingState) -> MeetingState {
+        transcription_outcome
+    }
+}
+
+/// **Row 7.** Every way the sidecar can fail to answer, mapped to the one thing
+/// the meeting becomes.
+///
+/// The match is exhaustive over [`DiarizeError`] rather than a catch-all, so a
+/// new failure mode added to the pool is a compile error here — a decision
+/// somebody has to make about a meeting, instead of a variant that silently
+/// inherits whatever the wildcard arm happened to say.
+///
+/// `Refused` is included and that is not an oversight. A refusal is the protocol
+/// working (a missing model file, a request kind this build cannot serve), and
+/// it must not spend the restart budget — which is `DiarizePool`'s rule and
+/// stays `DiarizePool`'s rule. From the MEETING's point of view, though, a
+/// refusal and a wedge are the same event: no labels arrived. The tag is what
+/// keeps them apart afterwards.
+pub fn diarize_sidecar_degrade(err: &DiarizeError) -> SpeakerLabels {
+    let tag = match err {
+        DiarizeError::Unavailable
+        | DiarizeError::Deadline
+        | DiarizeError::Protocol
+        | DiarizeError::Refused(_) => err.tag().to_string(),
+    };
+    SpeakerLabels::Plain(DegradeReason::Sidecar { tag })
+}
+
+/// One cluster, as the sanity gate sees it. Total speech and turn count are the
+/// two figures a ranking can be built from without asking anything about
+/// identity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClusterSummary {
+    /// The diarizer's own cluster index — passed through, never renumbered
+    /// here.
+    pub cluster: u32,
+    pub speech_seconds: f64,
+    pub turns: usize,
+}
+
+/// The floor a cluster must clear to earn a speaker chip.
+///
+/// **Both numbers belong to the caller, and this module holds no opinion about
+/// either.** The plan's illustrative "30 s and 3 turns" is not a `const` here,
+/// and neither is anything else: YV126 measures the floor against
+/// `diarize_metrics` on the eval fixtures, and a number typed into the module
+/// that renders the published matrix row would be a guess that arrives wearing
+/// the authority of the table. `matrix_row8_diarize_garbage_clusters` asserts
+/// the absence, from both ends — no threshold constant in this file, and the
+/// same cluster set flipping verdict under two different floors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClusterFloor {
+    pub min_speech_seconds: f64,
+    pub min_turns: usize,
+}
+
+impl ClusterFloor {
+    /// Does this cluster earn a chip?
+    pub fn admits(&self, cluster: &ClusterSummary) -> bool {
+        cluster.speech_seconds >= self.min_speech_seconds && cluster.turns >= self.min_turns
+    }
+}
+
+/// What the UI does with one diarization pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterVerdict {
+    /// Row 7's and row 8's shared artifact question: labels, or the plain
+    /// transcript and why.
+    pub labels: SpeakerLabels,
+    /// The clusters that earned a chip, ranked by total speech, most first.
+    /// Empty exactly when `labels` is [`SpeakerLabels::Plain`].
+    pub chips: Vec<u32>,
+    /// How many raw clusters rolled into the single "Other" bucket — the
+    /// number the plan's "never show 40 speaker chips" is really about.
+    pub other: usize,
+}
+
+/// **Row 8.** Rank the clusters, apply the caller's floor, and degrade only when
+/// nothing survives it.
+///
+/// **This is deliberately NOT the plan's original rule.** §6 row 8 says "cluster
+/// count > `max(8, attendees×2)` ⇒ reject", and merged finding #25 is why that
+/// rule is not implemented: a manually started meeting has no attendee count, so
+/// the cap is 8, and a genuine six-person far-field room routinely produces
+/// 10–15 raw clusters before any merge — the exact case yap23 prioritises would
+/// have its whole diarization pass thrown away by the sanity gate meant to
+/// protect it. Ranking with a floor keeps that room's four real speakers and
+/// puts the confetti in one "Other" bucket, and the forty-cluster pass the plan
+/// was worried about still degrades, because forty clusters of noise are forty
+/// clusters that are each too short to clear any floor.
+///
+/// **What this gate cannot see, said plainly.** The other half of the plan's row
+/// 8 — "one cluster for five people" — is not detectable here and no threshold
+/// makes it so: one long cluster clears every floor, and telling it apart from a
+/// genuinely single-speaker recording needs ground truth. That half belongs to
+/// YV126's DER gate on the eval fixtures, which is a measurement and not a
+/// runtime check. A gate that pretended otherwise would be the more dangerous
+/// failure: a green sanity check standing in for an accuracy claim nobody made.
+pub fn cluster_sanity(clusters: &[ClusterSummary], floor: ClusterFloor) -> ClusterVerdict {
+    let mut ranked: Vec<&ClusterSummary> = clusters.iter().filter(|c| floor.admits(c)).collect();
+    // Most speech first; ties broken by the diarizer's own index so the order is
+    // total and a chip row cannot reshuffle between two identical passes.
+    ranked.sort_by(|a, b| {
+        b.speech_seconds
+            .partial_cmp(&a.speech_seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cluster.cmp(&b.cluster))
+    });
+
+    if ranked.is_empty() {
+        return ClusterVerdict {
+            labels: SpeakerLabels::Plain(DegradeReason::Clusters {
+                raw_clusters: clusters.len(),
+            }),
+            chips: Vec::new(),
+            other: clusters.len(),
+        };
+    }
+
+    let chips: Vec<u32> = ranked.iter().map(|c| c.cluster).collect();
+    ClusterVerdict {
+        other: clusters.len() - chips.len(),
+        chips,
+        labels: SpeakerLabels::Attributed,
+    }
+}
+
+// ── Row 13 · the model that is not there ────────────────────────────────────
+//
+// The catalog half ships and is NOT re-declared here: `models::is_diarize_ready`
+// is `is_diarize_downloaded` over both roles, and `is_diarize_downloaded`
+// compares the file on disk against the size the catalog states — which is what
+// makes "partially downloaded" read as missing rather than as present. This
+// module takes the answer as a bool and the size as a number, so there is no
+// second copy of either and nothing here touches a disk.
+
+/// Whether the Notetaker can offer speaker detection, and the sentence it shows
+/// when it cannot.
+///
+/// Two variants, and neither of them says anything about recording. That is the
+/// type carrying row 13's other half: "the feature is off, not broken" is only
+/// true if the gate is physically unable to express "and recording is off too",
+/// which is the failure row 12 had to spend most of its test budget guarding
+/// against with a boolean that COULD say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpeakerDetection {
+    /// Both halves of the model pair are installed at their full expected size.
+    Available,
+    /// Off. The affordance is visible and disabled, carrying this sentence —
+    /// the same shape the 14.4 gate's row `12b` already ships.
+    NeedsDownload { megabytes: u64, message: String },
+}
+
+impl SpeakerDetection {
+    pub fn is_available(&self) -> bool {
+        matches!(self, SpeakerDetection::Available)
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            SpeakerDetection::Available => None,
+            SpeakerDetection::NeedsDownload { message, .. } => Some(message),
+        }
+    }
+}
+
+/// Megabytes as every other download size in this app is spelled.
+///
+/// `ModelSetup.tsx` renders a catalog size as `Math.round(bytes / 1e6)` and
+/// `cli.rs` prints `bytes / 1e6` to zero decimals; a third convention here would
+/// mean the same 36 MB download is "36 MB" in the model list and "35 MB" (MiB,
+/// rounded) in the speaker-detection sentence, which reads as two downloads.
+fn megabytes(bytes: u64) -> u64 {
+    ((bytes as f64) / 1_000_000.0).round() as u64
+}
+
+/// **Row 13.** The gate, as one pure function over the two facts `models.rs`
+/// already computes.
+///
+/// **The size is computed, never typed**, and the correction is worth recording
+/// because the number in the plan is wrong. §6 row 13 says "download 37 MB to
+/// enable speaker detection", written before the assets were vendored; the two
+/// entries YV123 actually pinned are 6,958,444 B + 29,292,684 B = 36.25 MB, so
+/// the sentence says **36 MB**. Passing `models::diarize_download_bytes()` in is
+/// what keeps it true the day a model is re-pinned — a literal would have been
+/// wrong twice: once against the plan, and again against the next catalog edit.
+pub fn speaker_detection_gate(models_ready: bool, download_bytes: u64) -> SpeakerDetection {
+    if models_ready {
+        return SpeakerDetection::Available;
+    }
+    let megabytes = megabytes(download_bytes);
+    SpeakerDetection::NeedsDownload {
+        megabytes,
+        message: format!(
+            "Download {megabytes} MB to enable speaker detection. Meeting recording and \
+             transcripts work without it."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,11 +1467,12 @@ mod tests {
         }
         assert_eq!(
             ROWS.len(),
-            16,
-            "22-A owns eight matrix failures and 22-B's YV105 wires five more, \
-             published as sixteen cells — three of them (5, 12 and 17) have a \
-             wired half and an unwired half, and one cell each way is the only \
-             way to state both truthfully"
+            19,
+            "22-A owns eight matrix failures, 22-B's YV105 wires five more and \
+             YV132 wires yap23's three (7, 8, 13), published as nineteen cells \
+             — three of them (5, 12 and 17) have a wired half and an unwired \
+             half, and one cell each way is the only way to state both \
+             truthfully"
         );
     }
 
@@ -1117,11 +1555,14 @@ mod tests {
             .collect();
         assert_eq!(
             unwired,
-            vec!["5b", "16", "17b", "3", "14"],
-            "22-A's three unwired policies, plus the four YV105 rows whose \
-             mechanism has merged and whose producer has not. `12b` left this \
-             list with YV102: the 14.4 sentence reaches the Settings step, \
-             which is the one thing that row was waiting for."
+            vec!["5b", "16", "17b", "3", "14", "7", "8", "13"],
+            "22-A's three unwired policies, the four YV105 rows whose mechanism \
+             has merged and whose producer has not, and YV132's three yap23 \
+             rows — whose mechanism (the sidecar pool, the model catalog) has \
+             merged and which nothing in the app can reach, because no meeting \
+             is ever diarized. `12b` left this list with YV102: the 14.4 \
+             sentence reaches the Settings step, which is the one thing that \
+             row was waiting for."
         );
     }
 
@@ -1130,6 +1571,14 @@ mod tests {
     /// `wiring_pr` is an `Option`, and stating it here means an open PR that
     /// merges without promoting its rows shows up as a stale `Some` a reader
     /// can act on rather than a claim nobody re-checks.
+    ///
+    /// **YV132's three rows join the unowned set, and that was checked rather
+    /// than assumed.** yap23 has open PRs (YV126's clustering among them), so
+    /// `Some("#141")` was the tempting cell — but the PR that brings a
+    /// mechanism is not the PR that brings a CALL SITE, which is the only thing
+    /// `wiring_pr` is about, and #141 states in its own evidence that it adds no
+    /// production callers. Naming it here would have been the stale `Some` row
+    /// 14 already demonstrates, planted deliberately.
     #[test]
     fn the_rows_nobody_owns_are_5b_16_17b_and_3() {
         let unowned: Vec<&str> = ROWS
@@ -1155,7 +1604,7 @@ mod tests {
         // Row 3 stays: a meeting whose MIC is denied still cannot start on the
         // tap alone, because `MeetingSession::start` holds one `CaptureStream`
         // and a `hold()` that fails is the end of the meeting.
-        assert_eq!(unowned, vec!["5b", "16", "17b", "3"]);
+        assert_eq!(unowned, vec!["5b", "16", "17b", "3", "7", "8", "13"]);
 
         let owned: Vec<(&str, &str)> = ROWS
             .iter()
@@ -1188,9 +1637,9 @@ mod tests {
     }
 
     /// The rows the shipping app actually performs, spelled out, because this
-    /// is the number every reader of the table is really asking for. Eight
-    /// cells are `Test`, one is a manual repro, and the remaining seven are
-    /// decisions nothing in the app can reach.
+    /// is the number every reader of the table is really asking for. Ten cells
+    /// are `Test`, one is a manual repro, and the remaining eight are decisions
+    /// nothing in the app can reach.
     ///
     /// Row 12 was the only one of YV105's five that made it into this list on
     /// its own, because the 14.4 gate needs no tap to be in effect: it is a
@@ -1282,6 +1731,66 @@ mod tests {
                 wiring_pr: None,
                 absent_call_site: "NSWorkspaceWillSleepNotification",
             }
+        );
+    }
+
+    /// YV132's three rows are published as decisions with no caller, and each
+    /// names the symbol whose appearance promotes it. Stated as a test so that
+    /// wiring diarization into a meeting cannot land without this file changing
+    /// — the same device rows `5b`, 16 and `17b` have carried since YV99.
+    #[test]
+    fn the_three_yap23_rows_admit_that_no_meeting_is_ever_diarized() {
+        for (id, test, call_site) in [
+            (
+                "7",
+                "matrix_row7_diarize_sidecar_wedge.rs",
+                "diarize_sidecar_degrade",
+            ),
+            (
+                "8",
+                "matrix_row8_diarize_garbage_clusters.rs",
+                "cluster_sanity",
+            ),
+            (
+                "13",
+                "matrix_row13_diarize_model_missing.rs",
+                "speaker_detection_gate",
+            ),
+        ] {
+            let row = ROWS.iter().find(|r| r.id == id).unwrap_or_else(|| {
+                panic!("row {id} left the table; yap23's failures did not stop existing")
+            });
+            assert_eq!(
+                row.coverage,
+                Coverage::PolicyOnly {
+                    test,
+                    wiring_pr: None,
+                    absent_call_site: call_site,
+                },
+                "row {id}"
+            );
+            let cell = row.coverage.cell();
+            assert!(cell.contains("NOT WIRED"), "{cell}");
+            assert!(cell.contains(call_site), "{cell}");
+        }
+    }
+
+    /// Row 7's published sentence and row 7's code agree on the one thing that
+    /// sentence promises: the meeting still completes.
+    #[test]
+    fn the_row_7_cell_and_the_row_7_policy_agree_that_the_meeting_completes() {
+        let row = ROWS.iter().find(|r| r.id == "7").expect("row 7");
+        assert!(
+            row.behavior.contains(DIARIZATION_FAILED),
+            "row 7 publishes a marker it does not name: {}",
+            row.behavior
+        );
+        let labels = diarize_sidecar_degrade(&DiarizeError::Deadline);
+        assert_eq!(labels.marker(), Some(DIARIZATION_FAILED));
+        assert_eq!(
+            labels.meeting_state_after(MeetingState::Complete),
+            MeetingState::Complete,
+            "the published row says `complete`, never `failed`"
         );
     }
 
