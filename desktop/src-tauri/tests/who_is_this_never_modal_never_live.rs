@@ -24,7 +24,7 @@
 use wilson_voice_lib::diarize_metrics::CosineSimilarity;
 use wilson_voice_lib::speaker_profiles::{
     match_meeting_clusters, who_is_this_chips, Centroid, ChipFloor, ChipRowError, ClusterDecision,
-    ClusterSummary, Embedding, EnrollmentBands, MatchResult, SpeakerProfile,
+    ClusterSummary, Embedding, EmbeddingModelId, EnrollmentBands, MatchResult, SpeakerProfile,
 };
 
 #[path = "support/callsite.rs"]
@@ -71,18 +71,26 @@ fn cluster(index: i64, speech_seconds: f64, turns: usize, voice: usize) -> Clust
     }
 }
 
+/// The embedder this fixture's roster and clusters share. A stand-in for
+/// `catalog.json`'s pinned sha256 of the loaded embedding model.
+fn model() -> EmbeddingModelId {
+    EmbeddingModelId::new("sha256-fixture-embedder")
+}
+
 fn roster() -> Vec<SpeakerProfile> {
     vec![
         SpeakerProfile {
             id: "p_jeisil".into(),
             display_name: "Jeisil".into(),
             is_me: false,
+            embedding_model: model(),
             centroids: vec![Centroid::new("laptop_mic_near", dims(0))],
         },
         SpeakerProfile {
             id: "p_aidan".into(),
             display_name: "Aidan".into(),
             is_me: false,
+            embedding_model: model(),
             centroids: vec![Centroid::new("laptop_mic_near", dims(1))],
         },
     ]
@@ -166,7 +174,7 @@ fn an_auto_confirmed_cluster_gets_no_chip() {
         cluster(0, 200.0, 12, 0), // exactly Jeisil's centroid
         cluster(1, 150.0, 10, 7), // orthogonal to everyone enrolled
     ];
-    let decisions = match_meeting_clusters(&clusters, &roster(), bands());
+    let decisions = match_meeting_clusters(&clusters, &model(), &roster(), bands());
     assert!(matches!(decisions[0].result, MatchResult::Known { .. }));
     assert_eq!(decisions[1].result, MatchResult::New);
 
@@ -219,7 +227,7 @@ fn a_six_speaker_classroom_asks_four_questions_not_six() {
         cluster(4, 12.0, 3, 6), // under the 30 s floor
         cluster(5, 44.0, 2, 7), // over on seconds, under on turns
     ];
-    let decisions = match_meeting_clusters(&clusters, &roster(), bands());
+    let decisions = match_meeting_clusters(&clusters, &model(), &roster(), bands());
     let row = who_is_this_chips(true, &decisions, &[], &roster(), floor()).expect("finished");
 
     assert_eq!(row.chips.len(), 4, "{:#?}", row.chips);
@@ -256,7 +264,7 @@ fn a_suggested_cluster_arrives_pre_selected_with_the_rest_of_the_roster_beside_i
         speech_seconds: 88.0,
         turns: 9,
     };
-    let decisions = match_meeting_clusters(&[between], &roster(), bands());
+    let decisions = match_meeting_clusters(&[between], &model(), &roster(), bands());
     assert!(matches!(decisions[0].result, MatchResult::Suggested { .. }));
 
     let row = who_is_this_chips(true, &decisions, &[], &roster(), floor()).expect("finished");

@@ -21,7 +21,7 @@ use std::cell::Cell;
 use wilson_voice_lib::diarize_metrics::CosineSimilarity;
 use wilson_voice_lib::speaker_profiles::{
     match_cluster, match_meeting_clusters, match_meeting_clusters_with, ClusterSummary, Embedding,
-    EnrollmentBands, MatchResult, SpeakerProfile,
+    EmbeddingModelId, EnrollmentBands, MatchResult, SpeakerProfile,
 };
 
 /// Six speakers, forty-eight segments — the shape of a real classroom pass
@@ -65,6 +65,14 @@ fn clusters() -> Vec<ClusterSummary> {
         .collect()
 }
 
+/// The embedder this fixture's centroids and profiles both came from. Stands in
+/// for `catalog.json`'s pinned sha256; what matters here is only that the probe
+/// and the roster agree, so the count under test is not quietly a count of
+/// skipped profiles.
+fn model() -> EmbeddingModelId {
+    EmbeddingModelId::new("sha256-fixture-embedder")
+}
+
 fn bands() -> EnrollmentBands {
     EnrollmentBands::for_test(CosineSimilarity::new(0.90), CosineSimilarity::new(0.50))
         .expect("well-ordered test bands")
@@ -85,7 +93,7 @@ fn match_cluster_runs_once_per_cluster() {
     let calls = Cell::new(0usize);
     let decisions = match_meeting_clusters_with(&clusters, |centroid| {
         calls.set(calls.get() + 1);
-        match_cluster(centroid, &[], bands())
+        match_cluster(centroid, &model(), &[], bands())
     });
 
     assert_eq!(
@@ -102,7 +110,7 @@ fn match_cluster_runs_once_per_cluster() {
     let per_segment = Cell::new(0usize);
     for (cluster_index, _) in segments() {
         per_segment.set(per_segment.get() + 1);
-        let _ = match_cluster(&voice(cluster_index), &[], bands());
+        let _ = match_cluster(&voice(cluster_index), &model(), &[], bands());
     }
     assert_eq!(per_segment.get(), SEGMENTS);
     assert!(
@@ -123,15 +131,16 @@ fn the_shipped_entry_point_is_the_one_that_was_counted() {
         id: "p1".into(),
         display_name: "Jeisil".into(),
         is_me: false,
+        embedding_model: model(),
         centroids: vec![wilson_voice_lib::speaker_profiles::Centroid::new(
             "laptop_mic_near",
             voice(2),
         )],
     }];
 
-    let shipped = match_meeting_clusters(&clusters, &roster, bands());
+    let shipped = match_meeting_clusters(&clusters, &model(), &roster, bands());
     let counted =
-        match_meeting_clusters_with(&clusters, |c| match_cluster(c, &roster, bands()));
+        match_meeting_clusters_with(&clusters, |c| match_cluster(c, &model(), &roster, bands()));
     assert_eq!(shipped, counted);
 
     // And the one enrolled voice is found, exactly once, in the cluster that
@@ -162,7 +171,7 @@ fn the_shipped_entry_point_is_the_one_that_was_counted() {
 #[test]
 fn each_decision_is_bound_to_its_own_cluster() {
     let clusters = clusters();
-    let decisions = match_meeting_clusters(&clusters, &[], bands());
+    let decisions = match_meeting_clusters(&clusters, &model(), &[], bands());
     let seen: Vec<i64> = decisions.iter().map(|d| d.cluster.cluster_index).collect();
     assert_eq!(seen, (0..SPEAKERS as i64).collect::<Vec<_>>());
     for (d, c) in decisions.iter().zip(clusters.iter()) {

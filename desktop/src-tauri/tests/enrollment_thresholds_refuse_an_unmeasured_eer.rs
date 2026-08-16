@@ -327,6 +327,32 @@ fn the_scanner_catches_the_renamed_indirect_probe() {
         "the construction must be attributed to the function that did it: {sites:?}"
     );
 
+    // Net 4 — the SERDE door, which is the second probe and the one the
+    // compile-time seal did nothing about: no constructor is involved at all.
+    let data = bands::deserialization_sites(&code, "EnrollmentBands");
+    assert!(
+        data.iter().any(|s| s.contains("derives Deserialize")),
+        "the derive is the door: serde produces an EnrollmentBands with no constructor \
+         and no Inverted check — {data:?}"
+    );
+    assert!(
+        data.iter()
+            .any(|s| s.contains("from_str") && s.contains("shipped_bands_from_data")),
+        "the call must be caught inside the function that names the type, however the \
+         call is wrapped — {data:?}"
+    );
+    // …and none of the other four nets sees the serde probe, which is why it
+    // needed its own. (Net 3 is checked above at exactly 2: the `&str` payload
+    // is not an f32/f64 const.)
+    let serde_probe = "pub fn shipped_bands_from_data() -> Result<EnrollmentBands, \
+                       serde_json::Error> { serde_json::from_str(OPENWHISPR_BANDS) }";
+    assert!(
+        bands::call_arguments(serde_probe, "EnrollmentBands::new(").is_empty()
+            && bands::construction_sites(serde_probe, "EnrollmentBands").is_empty()
+            && !bands::is_tuned_band_line(serde_probe),
+        "if nets 1, 2 and 5 could see this on their own, net 4 would not be load-bearing"
+    );
+
     // …and the same scan over a file that only PASSES bands around is clean.
     let clean = "pub fn match_cluster(c: &Embedding, p: &[SpeakerProfile], bands: EnrollmentBands) \
                  -> MatchResult { if c.dim() == 0 { return MatchResult::New; } decide(bands) }";
@@ -334,6 +360,60 @@ fn the_scanner_catches_the_renamed_indirect_probe() {
         bands::scan_source("speaker_profiles.rs", clean, &[]).is_empty(),
         "a gate that flags a parameter is unsatisfiable rather than strict"
     );
+
+    // Nor does merely SERIALIZING a measured band trip the net: the whole point
+    // of the fix is that a band travels outward and never inward.
+    let outward = "#[derive(Debug, Clone, Copy, PartialEq, Serialize)] \
+                   #[serde(rename_all = \"camelCase\")] \
+                   pub struct EnrollmentBands { auto_confirm: CosineSimilarity, \
+                   new_voice_floor: CosineSimilarity }";
+    assert!(
+        bands::deserialization_sites(&bands::shipping_code(outward), "EnrollmentBands").is_empty(),
+        "Serialize alone is the shipped shape and must not be a hit"
+    );
+}
+
+/// Net 4's own unit tests: the two doors, and the two shapes that are not doors.
+#[test]
+fn the_data_net_sees_both_doors_and_neither_false_positive() {
+    // The derive door, with a `pub` and an intervening attribute — the exact
+    // shape that made a naive backwards walk report "no attributes at all".
+    let derived = bands::shipping_code(
+        "/// docs\n#[derive(Debug, Deserialize)]\n#[serde(rename_all = \"camelCase\")]\n\
+         pub struct EnrollmentBands { a: f32 }\n",
+    );
+    assert!(
+        !bands::deserialization_sites(&derived, "EnrollmentBands").is_empty(),
+        "the derive above a `pub struct`, past a `#[serde]` and a doc comment"
+    );
+
+    // The hand-written form of the same door.
+    let by_hand = bands::shipping_code(
+        "impl<'de> Deserialize<'de> for EnrollmentBands { fn deserialize<D>(d: D) -> \
+         Result<Self, D::Error> { todo!() } }",
+    );
+    assert!(
+        !bands::deserialization_sites(&by_hand, "EnrollmentBands").is_empty(),
+        "a hand-written impl is the same inward path as a derived one"
+    );
+
+    // NOT a door: a deserializer in a function that has nothing to do with a
+    // band. `extend_from_slice` alone appears dozens of times in `support.rs`,
+    // and a net that fired on the file rather than the function would flag
+    // every one of them.
+    let unrelated = bands::shipping_code(
+        "pub fn zip(out: &mut Vec<u8>, data: &[u8]) { out.extend_from_slice(data); } \
+         pub fn floor(f: ChipFloor) -> bool { f.min_turns > 0 }",
+    );
+    assert!(
+        bands::deserialization_sites(&unrelated, "ChipFloor").is_empty(),
+        "a gate that flagged `extend_from_slice` would be turned off within a week"
+    );
+
+    // NOT a door: the type's own `Serialize` half.
+    let outward =
+        bands::shipping_code("#[derive(Serialize)] pub struct ChipFloor { min_turns: usize }");
+    assert!(bands::deserialization_sites(&outward, "ChipFloor").is_empty());
 }
 
 /// The seal's scanner half: a test-only item is not shipping code, and nothing

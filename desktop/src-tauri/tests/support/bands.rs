@@ -34,10 +34,14 @@
 //! 3. **Any tuned float constant in the band module** ([`numeric_const_sites`]):
 //!    in `speaker_profiles.rs`, ANY non-endpoint decimal in an `f32`/`f64`
 //!    `const`/`static` is a hit regardless of its name.
-//! 4. **Deserialization** ([`DESERIALIZERS`]): `EnrollmentBands` derives
-//!    `Deserialize`, so data is the one remaining path a shipping band could
-//!    arrive by. Naming the type next to a deserializer in `src/` is a hit that
-//!    has to be argued for rather than a hole nobody wrote down.
+//! 4. **Deserialization** ([`deserialization_sites`]): data is the other way a
+//!    shipping band can arrive, and the way it actually did. A second probe
+//!    walked through the compile-time seal untouched, because serde's derive is
+//!    a public producer that needs no constructor — see [`PROBE_SOURCE`]'s
+//!    `shipped_bands_from_data`. This net therefore works over the FLATTENED
+//!    file rather than line by line (the line version only saw a hit when the
+//!    type name and the deserializer shared a source line) and covers both the
+//!    derive door and the call door.
 //!
 //! The name-based net is kept as a fifth, cheapest one — it catches the naive
 //! case with a good error message — but nothing rests on it any more.
@@ -633,16 +637,35 @@ pub const BAND_CONSTRUCTORS: [&str; 4] = [
     "TargetFar::new(",
 ];
 
-/// Ways a band could arrive as DATA rather than as a literal. `EnrollmentBands`
-/// derives `Deserialize` because the UI is handed one; that same derive is a
-/// path by which an unmeasured band could enter the app from a file.
+/// Ways a band could arrive as DATA rather than as a literal.
+///
+/// This net closed second, after the constructor seal, because sealing the
+/// constructor did nothing to it: serde's derive is a public producer that
+/// needs no constructor at all. With `#[derive(Deserialize)]` on
+/// `EnrollmentBands`, a shipping
+/// `serde_json::from_str::<EnrollmentBands>("{\"autoConfirm\":0.70,…}")`
+/// compiled clean, carried the vendor pair into the release binary, and skipped
+/// the `Inverted` check on the way. `EnrollmentBands` derives `Serialize` only
+/// now — a measured band travels outward, never inward — and this net is what
+/// keeps that true.
 pub const DESERIALIZERS: [&str; 4] = ["from_str", "from_slice", "from_value", "deserialize"];
+
+/// The derive door: the trait itself, wherever it is attached to a band type.
+///
+/// Separate from [`DESERIALIZERS`] because it is matched against a type's
+/// ATTRIBUTES and its `impl` headers rather than against a call.
+pub const DESERIALIZE_TRAIT: &str = "Deserialize";
 
 /// The modules whose float constants are all suspect by location.
 pub const BAND_MODULES: [&str; 1] = ["speaker_profiles.rs"];
 
-/// `(name, body_start, body_end)` for every `fn` with a body in `code`.
-pub fn fn_ranges(code: &str) -> Vec<(String, usize, usize)> {
+/// `(name, decl_start, body_start, body_end)` for every `fn` with a body.
+///
+/// `decl_start` is the `fn` keyword, so a caller can look at the SIGNATURE as
+/// well as the body. Net 4 needs that: a deserializer's target type is normally
+/// written in the return type (`-> Result<EnrollmentBands, …>`) and never at
+/// the call itself.
+fn fn_scan(code: &str) -> Vec<(String, usize, usize, usize)> {
     let m = code.as_bytes();
     let mut out = Vec::new();
     let mut from = 0usize;
@@ -670,11 +693,19 @@ pub fn fn_ranges(code: &str) -> Vec<(String, usize, usize)> {
             }
         }
         if let Some((start, end)) = body {
-            out.push((name, start, end));
+            out.push((name, at, start, end));
             from = start + 1;
         }
     }
     out
+}
+
+/// `(name, body_start, body_end)` for every `fn` with a body in `code`.
+pub fn fn_ranges(code: &str) -> Vec<(String, usize, usize)> {
+    fn_scan(code)
+        .into_iter()
+        .map(|(name, _, start, end)| (name, start, end))
+        .collect()
 }
 
 /// The innermost `fn` containing `index`, qualified with the impl type when it
@@ -850,18 +881,250 @@ pub fn numeric_const_sites(code: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Net 4: a band arriving as DATA
+// ---------------------------------------------------------------------------
+
+/// Does `code` name `ident` as a whole token at `at`?
+fn is_word_at(code: &str, at: usize, ident: &str) -> bool {
+    let b = code.as_bytes();
+    let before_ok = at == 0 || !is_ident_byte(b[at - 1]);
+    let after = at + ident.len();
+    let after_ok = after >= b.len() || !is_ident_byte(b[after]);
+    before_ok && after_ok
+}
+
+/// Every whole-token occurrence of `ident` in `code`.
+fn word_positions(code: &str, ident: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(ident) {
+        let at = from + rel;
+        from = at + ident.len();
+        if is_word_at(code, at, ident) {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// `at`, moved back past an optional `pub` / `pub(crate)` / `pub(in …)`.
+///
+/// Without this, the attribute walk below stops on the `b` of `pub` and reports
+/// that `pub struct EnrollmentBands` carries no attributes at all — which is
+/// every band type this net exists to look at.
+fn skip_visibility_backwards(code: &str, at: usize) -> usize {
+    let b = code.as_bytes();
+    let mut i = at;
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    // `pub(crate)` / `pub(in path)`: step over the restriction first.
+    if i > 0 && b[i - 1] == b')' {
+        let mut depth = 0i32;
+        let mut j = i - 1;
+        loop {
+            match b[j] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if j == 0 {
+                return at;
+            }
+            j -= 1;
+        }
+        if j >= 3 && &code[j - 3..j] == "pub" {
+            i = j - 3;
+        } else {
+            return at;
+        }
+    } else if i >= 3 && &code[i - 3..i] == "pub" && (i == 3 || !is_ident_byte(b[i - 4])) {
+        i -= 3;
+    } else {
+        return at;
+    }
+    i
+}
+
+/// The contiguous `#[…]` attribute block immediately above `at`, as one string.
+///
+/// Walked backwards, bracket-balanced, across the blanked doc comments that sit
+/// between the attributes and the item — which is why this reads the MASK
+/// rather than the raw source, and why the mask is length-preserving.
+fn attributes_above(code: &str, at: usize) -> String {
+    let b = code.as_bytes();
+    let mut i = skip_visibility_backwards(code, at);
+    let mut out = String::new();
+    loop {
+        while i > 0 && b[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 || b[i - 1] != b']' {
+            return out;
+        }
+        let mut depth = 0i32;
+        let mut j = i - 1;
+        loop {
+            match b[j] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if j == 0 {
+                return out;
+            }
+            j -= 1;
+        }
+        // `#[…]` and `#![…]`; anything else is not an attribute.
+        let hash = if j > 0 && b[j - 1] == b'!' && j > 1 && b[j - 2] == b'#' {
+            j - 2
+        } else if j > 0 && b[j - 1] == b'#' {
+            j - 1
+        } else {
+            return out;
+        };
+        out.push_str(&code[hash..i]);
+        out.push(' ');
+        i = hash;
+    }
+}
+
+/// Every way `ty` could arrive as DATA in `code`, which must be the FLATTENED
+/// shipping code (`shipping_code`), not a line.
+///
+/// The line-based version of this net saw a band-as-data only when the type
+/// name and the deserializer happened to share one source line. A review probe
+/// walked through it in the obvious way — `pub fn shipped_bands() ->
+/// Result<EnrollmentBands, serde_json::Error> { serde_json::from_str(BANDS) }`
+/// puts the type in the signature and the call in the body — so the net now
+/// works over the whole flattened file and looks at two doors:
+///
+/// 1. **The derive door**, which is the one that was actually open:
+///    `Deserialize` in the attribute block above `struct`/`enum <ty>`, or an
+///    `impl … Deserialize … for <ty>`. serde's derive is a public producer that
+///    needs no constructor, so sealing `from_measured_edges` did nothing to it.
+/// 2. **The call door**: a deserializer call inside any function that names
+///    `<ty>` in its signature or its body. Wrapping the call in a `Result`, a
+///    helper or three lines of formatting therefore changes nothing.
+///
+/// Scoping the call door to the enclosing function is deliberate rather than
+/// timid: "this file mentions a band somewhere and calls `from_str` somewhere"
+/// fires on files that have nothing to do with each other (`extend_from_slice`
+/// alone appears dozens of times in `support.rs`), and a gate that cries wolf
+/// gets an `#[allow]` written for it within a week.
+pub fn deserialization_sites(code: &str, ty: &str) -> Vec<String> {
+    let mut out = Vec::new();
+
+    // 4a — the derive door.
+    for keyword in ["struct ", "enum "] {
+        let needle = format!("{keyword}{ty}");
+        for at in word_positions(code, &needle) {
+            let attrs = attributes_above(code, at);
+            if attrs.contains(DESERIALIZE_TRAIT) {
+                out.push(format!(
+                    "`{ty}` derives {DESERIALIZE_TRAIT} — serde is a public producer that needs \
+                     no constructor, so a sealed constructor does not seal the type \
+                     [attributes: {}]",
+                    attrs.split_whitespace().collect::<Vec<_>>().join(" ")
+                ));
+            }
+        }
+    }
+
+    // 4a — and the hand-written form of the same door.
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find("impl") {
+        let at = from + rel;
+        from = at + 4;
+        if !is_word_at(code, at, "impl") {
+            continue;
+        }
+        let Some(open) = code[at..].find('{').map(|k| at + k) else {
+            break;
+        };
+        let header = &code[at..open];
+        if header.contains(DESERIALIZE_TRAIT) && header.contains(&format!("for {ty}")) {
+            out.push(format!(
+                "`impl {DESERIALIZE_TRAIT} for {ty}` — a hand-written deserializer is still an \
+                 inward path for a band nobody measured; it must route through the measured \
+                 producer and reject what the producer rejects"
+            ));
+        }
+    }
+
+    // 4b — the call door.
+    let fns = fn_scan(code);
+    for deserializer in DESERIALIZERS {
+        for at in word_positions(code, deserializer) {
+            let after = code[at + deserializer.len()..].trim_start();
+            if !(after.starts_with('(') || after.starts_with("::<") || after.starts_with('<')) {
+                continue;
+            }
+            let Some((name, decl, _, end)) = fns
+                .iter()
+                .filter(|(_, decl, _, end)| at > *decl && at < *end)
+                .max_by_key(|(_, decl, _, _)| *decl)
+            else {
+                continue;
+            };
+            if word_positions(&code[*decl..*end], ty).is_empty() {
+                continue;
+            }
+            out.push(format!(
+                "`{deserializer}` is called inside `{name}`, which names {ty}: a band arriving as \
+                 DATA is still a band nobody measured"
+            ));
+        }
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // The scan itself
 // ---------------------------------------------------------------------------
 
-/// The review probe that defeated the first version of this scanner, committed
-/// as a permanent mutation case.
+/// The two review probes that defeated this scanner, committed as permanent
+/// mutation cases.
 ///
-/// `the_scanner_catches_the_renamed_indirect_probe` runs every net over it and
-/// requires each one to fire independently, so no single net can rot and leave
-/// the others carrying a claim they were never checked for.
+/// `the_scanner_catches_the_renamed_indirect_probe` runs every net over this
+/// source and requires each one to fire independently, so no single net can rot
+/// and leave the others carrying a claim they were never checked for.
+///
+/// **Probe 1 — the literal door** (`shipped_bands`): rename the constants and
+/// put one function between the literals and the constructor. Both threshold
+/// gates stayed green while the crate carried the vendor pair.
+///
+/// **Probe 2 — the serde door** (`shipped_bands_from_data`): the same pair as
+/// a JSON string. This one needs no constructor at all, so sealing
+/// `from_measured_edges` did nothing to it — and it also walked past the
+/// `Inverted` check, producing the state the type claims is impossible. Note
+/// what each of the other nets sees here, which is nothing: the payload is a
+/// `&str` const (net 3 wants an `f32`/`f64`, and the mask blanks the literal
+/// anyway), there is no `BAND_NAMES` name and no `CosineSimilarity::new(`
+/// (net 5), no `BAND_CONSTRUCTORS` call (net 2), and `EnrollmentBands` is
+/// followed by a comma inside a `Result<…>` rather than by `{` or `::` (net 1).
 pub const PROBE_SOURCE: &str = r#"
 const OPENWHISPR_HI: f32 = 0.70;
 const OPENWHISPR_LO: f32 = 0.55;
+const OPENWHISPR_BANDS: &str = "{\"autoConfirm\":0.70,\"newVoiceFloor\":0.55}";
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentBands {
+    auto_confirm: CosineSimilarity,
+    new_voice_floor: CosineSimilarity,
+}
 
 pub fn shipped_bands() -> EnrollmentBands {
     EnrollmentBands::new(
@@ -869,6 +1132,10 @@ pub fn shipped_bands() -> EnrollmentBands {
         CosineSimilarity::new(OPENWHISPR_LO),
     )
     .expect("well ordered")
+}
+
+pub fn shipped_bands_from_data() -> Result<EnrollmentBands, serde_json::Error> {
+    serde_json::from_str(OPENWHISPR_BANDS)
 }
 "#;
 
@@ -931,17 +1198,11 @@ pub fn scan_source(file_name: &str, body: &str, extra_consts: &[(String, String)
         }
     }
 
-    // 4 — a band arriving as data.
-    for (n, line) in half.lines().enumerate() {
-        let line_code = callsite::code_only(line);
-        if BAND_TYPES.iter().any(|t| line_code.contains(t))
-            && DESERIALIZERS.iter().any(|d| line_code.contains(d))
-        {
-            hits.push(format!(
-                "{file_name}:{}: a band deserialized from data is still a band nobody measured — {}",
-                n + 1,
-                line.trim()
-            ));
+    // 4 — a band arriving as data, over the FLATTENED file: a derive, a
+    // hand-written impl, or a deserializer call however it is wrapped.
+    for ty in BAND_TYPES {
+        for site in deserialization_sites(&code, ty) {
+            hits.push(format!("{file_name}: {site}"));
         }
     }
 

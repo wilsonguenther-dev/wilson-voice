@@ -29,14 +29,29 @@
 //! `EnrollmentBands::from_measured_edges` is private to this module and
 //! [`EnrollmentBands::for_test`] exists only under `cfg(test)` or the
 //! `test-bands` feature (which the package's own dev-dependency turns on for
-//! `cargo test` and nothing turns on for `cargo build --release`). That probe
-//! now fails to COMPILE in a shipping build. `tests/support/bands.rs` then
-//! asserts the same property by TYPE rather than by name: it walks
-//! `src/**/*.rs` for every construction of an [`EnrollmentBands`] or a
-//! [`ChipFloor`] and requires each one to sit inside a measured producer, it
-//! resolves one level of `const` indirection before calling a constructor
-//! argument literal-free, and it flags **any** non-endpoint decimal in an
-//! `f32`/`f64` `const` in this file whatever it is called.
+//! `cargo test` and nothing turns on for `cargo build --release`). That
+//! LITERAL probe fails to COMPILE in a shipping build.
+//!
+//! **The second door was serde, and sealing the constructor did nothing to
+//! it.** A derived `Deserialize` is a public producer that needs no
+//! constructor: with it, a shipping
+//! `serde_json::from_str::<EnrollmentBands>("{\"autoConfirm\":0.70,\"newVoiceFloor\":0.55}")`
+//! compiled clean, put the exact vendor pair in the release binary, and skipped
+//! [`BandError::Inverted`] on the way — a second review probe, and the reason
+//! [`EnrollmentBands`] now derives `Serialize` only. The same derive on
+//! [`crate::diarize_metrics::CosineSimilarity`] was bypassing its clamp for the
+//! same reason; that one is hand-written now rather than dropped, because a
+//! score genuinely travels inward.
+//!
+//! `tests/support/bands.rs` then asserts the same properties by TYPE rather
+//! than by name: it walks `src/**/*.rs` for every construction of an
+//! [`EnrollmentBands`] or a [`ChipFloor`] and requires each one to sit inside a
+//! measured producer, it resolves one level of `const` indirection before
+//! calling a constructor argument literal-free, it flags **any** non-endpoint
+//! decimal in an `f32`/`f64` `const` in this file whatever it is called, and it
+//! flags a band arriving as DATA — a `Deserialize` derive or hand-written impl
+//! on a band type, or a deserializer call in any function that names one,
+//! however the call is wrapped.
 //!
 //! ## The rule that places the two edges, and why it is not the extrema
 //!
@@ -94,8 +109,11 @@
 //!
 //! * **Persistence.** The `speaker_profiles` table, its migration and the
 //!   centroid-update math are YV128's (PR #143, open at the time this landed).
-//!   The types here are the in-memory view a stored row deserializes into, and
-//!   nothing in this file touches SQL.
+//!   The types here are the in-memory view a stored row deserializes into —
+//!   including that row's `embedding_model` column, which [`SpeakerProfile`]
+//!   carries rather than drops, because a matcher that cannot say WHICH
+//!   embedder made a stored vector cannot say what a cosine against it means.
+//!   Nothing in this file touches SQL.
 //! * **Clustering.** Producing a [`ClusterSummary`] from audio is YV126's
 //!   `diarize::cluster_track` (PR #141, open). This file starts where that ends.
 //! * **Correction.** Reassign / merge / split, and the `locked` rule, are
@@ -168,18 +186,86 @@ impl Centroid {
     }
 }
 
+/// WHICH embedder produced a vector — the pinned sha256 of the model file, not
+/// its catalog id.
+///
+/// Cosine similarity between two embeddings is only a statement about voices
+/// when both came from the **same** model. Two different 192-dimensional
+/// embedders (CAM++ and any other wespeaker export) produce vectors of the same
+/// width in unrelated spaces, and comparing them yields a number — often a high
+/// one, ~1.0 for a voice the roster has never heard — with no meaning at all.
+/// Above the auto-confirm edge that number writes a name on a stranger with
+/// nobody in the loop, which is exactly the false-accept rate [`TargetFar`]
+/// exists to bound.
+///
+/// **The digest, not the id.** `catalog.json`'s `id` does not change when the
+/// bytes behind it are re-vendored (YV123 moved the weights to a Wilson-owned
+/// mirror without renaming anything), so an id comparison would call two
+/// different models the same model on precisely the occasion that matters. The
+/// pinned `sha256` — the value the downloader already verifies and the binary
+/// already carries as a trust anchor — changes exactly when the weights do.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EmbeddingModelId(String);
+
+impl EmbeddingModelId {
+    /// From a pinned digest string, as a stored profile row carries it.
+    pub fn new(digest: impl Into<String>) -> Self {
+        Self(digest.into())
+    }
+
+    /// The id of the embedding model a catalog entry names: the sha256 of the
+    /// FILE THE SIDECAR LOADS — the extracted file's digest when the entry is
+    /// an archive, the downloaded file's when it is a plain `.onnx`.
+    ///
+    /// `None` for a segmentation entry: segmentation produces no embeddings, so
+    /// asking it for an embedding-model id is a bug at the call site rather
+    /// than a value.
+    ///
+    /// This is the constructor a matching call site must use, applied to the
+    /// entry that was handed to `diarize::DiarizePool::load_models` — the model
+    /// identity has to come from the LOAD path, never from the profile being
+    /// compared against, or the check is circular and always passes.
+    pub fn of_loaded_embedder(model: &crate::models::DiarizeCatalogModel) -> Option<Self> {
+        if model.role != crate::models::DiarizeModelRole::Embedding {
+            return None;
+        }
+        Some(Self::new(match &model.archive {
+            Some(archive) => archive.extracted_sha256.clone(),
+            None => model.file.sha256.clone(),
+        }))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EmbeddingModelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One enrolled person.
 ///
 /// `is_me` is a flag on a PROFILE, never a track index — merged finding #4's
 /// correction, already spelled out in `meetings::speaker_label`'s doc comment.
 /// Wilson is matched by his voice like anybody else; the flag only says which
 /// enrolled row is his, so a surface can style it.
+///
+/// `embedding_model` is the [`EmbeddingModelId`] every centroid on this profile
+/// was produced by — YV128's `speaker_profiles.embedding_model` column, in the
+/// in-memory view. A profile carries one because a stored vector outlives the
+/// model that made it: re-vendored weights, a catalog swap, or a second 192-dim
+/// embedder all leave the row looking exactly as valid as it did yesterday.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerProfile {
     pub id: String,
     pub display_name: String,
     pub is_me: bool,
+    pub embedding_model: EmbeddingModelId,
     pub centroids: Vec<Centroid>,
 }
 
@@ -187,14 +273,30 @@ impl SpeakerProfile {
     /// The best score this profile can offer for `embedding`, across ALL of its
     /// centroids, and the `condition_key` of the one that won.
     ///
-    /// `None` for a profile with no centroids — an enrolled name with no voice
-    /// behind it yet, which must never be *suggested* for anything.
+    /// `None` when this profile cannot answer the question at all:
+    ///
+    /// * it has no centroids — an enrolled name with no voice behind it yet,
+    ///   which must never be *suggested* for anything; or
+    /// * `probe_model` is not the model its centroids came from. A score across
+    ///   two embedding spaces is not a weak score, it is not a score, and the
+    ///   only safe thing to do with it is not to have it. The cluster is then
+    ///   reported as [`MatchResult::New`] and a human is asked — a profile
+    ///   enrolled under different weights is unusable evidence, not a stranger.
     ///
     /// # Panics
-    /// If a centroid's dimension differs from `embedding`'s. Comparing a 192-dim
-    /// CAM++ vector against something else is a bug at the call site, and a low
-    /// score would hide it.
-    pub fn best_match(&self, embedding: &Embedding) -> Option<(CosineSimilarity, &str)> {
+    /// If a centroid's dimension differs from `embedding`'s. Comparing a CAM++
+    /// vector against something else is a bug at the call site, and a low score
+    /// would hide it. Note the model guard above fires FIRST, so the panic is
+    /// reserved for two vectors that claim the same model and disagree about
+    /// its width — a real corruption, not an ordinary model change.
+    pub fn best_match(
+        &self,
+        embedding: &Embedding,
+        probe_model: &EmbeddingModelId,
+    ) -> Option<(CosineSimilarity, &str)> {
+        if &self.embedding_model != probe_model {
+            return None;
+        }
         self.centroids
             .iter()
             .map(|c| {
@@ -220,7 +322,21 @@ impl SpeakerProfile {
 /// only path in the crate that yields one; [`EnrollmentBands::for_test`] exists
 /// only under `cfg(test)` or the `test-bands` feature. There is deliberately no
 /// `Default` and no `const` instance: see the module header.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// **And no `Deserialize`.** `Serialize` alone, on purpose: serde's derive is a
+/// second public producer that needs no constructor, so a sealed
+/// `from_measured_edges` plus a derived `Deserialize` still let a shipping
+/// `serde_json::from_str::<EnrollmentBands>(r#"{"autoConfirm":0.70,
+/// "newVoiceFloor":0.55}"#)` put the vendor pair into a release binary — and it
+/// bypassed [`BandError::Inverted`] too, producing the state this type claims
+/// is impossible. A measured band only ever needs to travel OUTWARD (to the
+/// UI, to a log, to `docs/`), which `Serialize` covers; nothing in this crate
+/// deserializes one, and the chip row's TypeScript carries its own type
+/// (`src/meetings/speakerChips.ts`). If an inward path is ever genuinely
+/// wanted, write it by hand so it routes through `from_measured_edges` and
+/// returns a serde error on `Inverted`, the way
+/// [`crate::diarize_metrics::CosineSimilarity`] now routes through its clamp.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollmentBands {
     auto_confirm: CosineSimilarity,
@@ -748,14 +864,27 @@ impl MatchResult {
 /// Ties break on the profile id, so the answer is stable across runs rather
 /// than dependent on roster order — a wobbling suggestion is worse than a wrong
 /// one, because the user cannot tell it is the same question.
+///
+/// **`probe_model` is which embedder produced `cluster_centroid`**, and it must
+/// come from the model the sidecar was told to load
+/// ([`EmbeddingModelId::of_loaded_embedder`] applied to the catalog entry
+/// `DiarizePool::load_models` was handed) — never from a profile, which would
+/// make the comparison circular. Profiles enrolled under any other embedder are
+/// skipped: a cosine between two embedding spaces is a meaningless number that
+/// runs ~1.0 as readily as ~0.0, and above the auto-confirm edge a meaningless
+/// number is a name written on a stranger with nobody in the loop.
 pub fn match_cluster(
     cluster_centroid: &Embedding,
+    probe_model: &EmbeddingModelId,
     profiles: &[SpeakerProfile],
     bands: EnrollmentBands,
 ) -> MatchResult {
     let best = profiles
         .iter()
-        .filter_map(|p| p.best_match(cluster_centroid).map(|(s, k)| (p, s, k)))
+        .filter_map(|p| {
+            p.best_match(cluster_centroid, probe_model)
+                .map(|(s, k)| (p, s, k))
+        })
         .max_by(|a, b| {
             a.1.get()
                 .total_cmp(&b.1.get())
@@ -809,13 +938,18 @@ pub struct ClusterDecision {
 }
 
 /// Match every cluster in a finished meeting — exactly once each.
+///
+/// `probe_model` is the embedder that produced THIS meeting's centroids; see
+/// [`match_cluster`] for why it comes from the load path and not from the
+/// roster.
 pub fn match_meeting_clusters(
     clusters: &[ClusterSummary],
+    probe_model: &EmbeddingModelId,
     profiles: &[SpeakerProfile],
     bands: EnrollmentBands,
 ) -> Vec<ClusterDecision> {
     match_meeting_clusters_with(clusters, |centroid| {
-        match_cluster(centroid, profiles, bands)
+        match_cluster(centroid, probe_model, profiles, bands)
     })
 }
 
@@ -1044,11 +1178,28 @@ mod tests {
             .expect("well-ordered test bands")
     }
 
+    /// The digest of the embedder these fixtures pretend to have been enrolled
+    /// under. A stand-in for `catalog.json`'s pinned sha256 — what matters to
+    /// these tests is only that two different models are two different strings.
+    fn campp() -> EmbeddingModelId {
+        EmbeddingModelId::new("sha256-campp")
+    }
+
     fn profile(id: &str, name: &str, vectors: &[(&str, [f32; 3])]) -> SpeakerProfile {
+        profile_from(id, name, campp(), vectors)
+    }
+
+    fn profile_from(
+        id: &str,
+        name: &str,
+        embedding_model: EmbeddingModelId,
+        vectors: &[(&str, [f32; 3])],
+    ) -> SpeakerProfile {
         SpeakerProfile {
             id: id.to_string(),
             display_name: name.to_string(),
             is_me: false,
+            embedding_model,
             centroids: vectors
                 .iter()
                 .map(|(k, v)| Centroid::new(*k, Embedding::new(v.to_vec())))
@@ -1077,7 +1228,7 @@ mod tests {
             &[("laptop", [1.0, 0.0, 0.0]), ("airpods", [0.0, 1.0, 0.0])],
         );
         let (score, key) = p
-            .best_match(&Embedding::new(vec![0.0, 1.0, 0.0]))
+            .best_match(&Embedding::new(vec![0.0, 1.0, 0.0]), &campp())
             .expect("a profile with centroids matches");
         assert!(score.get() > 0.99, "the airpods centroid is an exact match");
         assert_eq!(key, "airpods");
@@ -1089,11 +1240,13 @@ mod tests {
             id: "p1".into(),
             display_name: "Aidan".into(),
             is_me: false,
+            embedding_model: campp(),
             centroids: vec![],
         };
         assert_eq!(
             match_cluster(
                 &Embedding::new(vec![1.0, 0.0, 0.0]),
+                &campp(),
                 &[empty],
                 bands(0.8, 0.5)
             ),
@@ -1107,17 +1260,17 @@ mod tests {
         let b = bands(0.90, 0.50);
         // cos = 1.0
         assert!(matches!(
-            match_cluster(&Embedding::new(vec![1.0, 0.0, 0.0]), &roster, b),
+            match_cluster(&Embedding::new(vec![1.0, 0.0, 0.0]), &campp(), &roster, b),
             MatchResult::Known { .. }
         ));
         // cos = 1/sqrt(2) ≈ 0.707 — between the edges
         assert!(matches!(
-            match_cluster(&Embedding::new(vec![1.0, 1.0, 0.0]), &roster, b),
+            match_cluster(&Embedding::new(vec![1.0, 1.0, 0.0]), &campp(), &roster, b),
             MatchResult::Suggested { .. }
         ));
         // cos = 0.0 — orthogonal
         assert!(matches!(
-            match_cluster(&Embedding::new(vec![0.0, 1.0, 0.0]), &roster, b),
+            match_cluster(&Embedding::new(vec![0.0, 1.0, 0.0]), &campp(), &roster, b),
             MatchResult::New
         ));
     }
@@ -1127,10 +1280,96 @@ mod tests {
         let a = profile("aaa", "A", &[("laptop", [1.0, 0.0, 0.0])]);
         let z = profile("zzz", "Z", &[("laptop", [1.0, 0.0, 0.0])]);
         let target = Embedding::new(vec![1.0, 0.0, 0.0]);
-        let forward = match_cluster(&target, &[a.clone(), z.clone()], bands(0.9, 0.5));
-        let backward = match_cluster(&target, &[z, a], bands(0.9, 0.5));
+        let forward = match_cluster(&target, &campp(), &[a.clone(), z.clone()], bands(0.9, 0.5));
+        let backward = match_cluster(&target, &campp(), &[z, a], bands(0.9, 0.5));
         assert_eq!(forward, backward);
         assert_eq!(forward.profile_id(), Some("aaa"));
+    }
+
+    /// **A profile enrolled under a different embedder is not a candidate.**
+    ///
+    /// Two 192-dim embedders produce vectors in unrelated spaces, so the cosine
+    /// between them is a number rather than a similarity — and it is as happy
+    /// to come out at 1.0 for a voice nobody has heard as at 0.0. Without the
+    /// guard, this fixture (identical vectors, different model ids) scores 1.0
+    /// and returns `Known`: a name written on a stranger with nobody in the
+    /// loop, which is exactly the false accept `TargetFar` exists to bound.
+    #[test]
+    fn a_profile_from_another_embedder_is_skipped_rather_than_scored() {
+        let other = EmbeddingModelId::new("sha256-some-other-192-dim-model");
+        let roster = [profile_from(
+            "p1",
+            "Jeisil",
+            other.clone(),
+            &[("laptop", [1.0, 0.0, 0.0])],
+        )];
+        let identical = Embedding::new(vec![1.0, 0.0, 0.0]);
+
+        assert_eq!(
+            roster[0].best_match(&identical, &campp()),
+            None,
+            "a cosine across two embedding spaces is not a weak score, it is not a score"
+        );
+        assert_eq!(
+            match_cluster(&identical, &campp(), &roster, bands(0.9, 0.5)),
+            MatchResult::New,
+            "an unusable roster asks a human; it never auto-confirms on a meaningless 1.0"
+        );
+        // …and the SAME roster under its own model is the auto-confirm it would
+        // have been, so the guard is what changed the answer and not the fixture.
+        assert!(matches!(
+            match_cluster(&identical, &other, &roster, bands(0.9, 0.5)),
+            MatchResult::Known { .. }
+        ));
+    }
+
+    /// The guard fires before the dimension assert, so an ordinary model change
+    /// is a skip rather than a panic in the middle of a meeting.
+    #[test]
+    fn a_model_mismatch_is_checked_before_the_dimension_panic() {
+        let roster = [profile_from(
+            "p1",
+            "Jeisil",
+            EmbeddingModelId::new("sha256-256-dim-resnet34"),
+            &[("laptop", [1.0, 0.0, 0.0])],
+        )];
+        // 8 dims against 3: `cosine_similarity` would panic if it were reached.
+        let wider = Embedding::new(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            match_cluster(&wider, &campp(), &roster, bands(0.9, 0.5)),
+            MatchResult::New
+        );
+    }
+
+    /// The id is the pinned DIGEST of the file the sidecar loads, and only an
+    /// embedding entry has one.
+    #[test]
+    fn the_embedding_model_id_is_the_catalogs_pinned_digest() {
+        let embedding =
+            crate::models::diarize_model_for_role(crate::models::DiarizeModelRole::Embedding)
+                .expect("the catalog ships an embedding entry");
+        let id = EmbeddingModelId::of_loaded_embedder(embedding)
+            .expect("an embedding entry has an embedding-model id");
+        assert_eq!(
+            id.as_str(),
+            embedding.file.sha256,
+            "the plain .onnx entry's id is the digest of the bytes that were verified"
+        );
+        assert_ne!(
+            id.as_str(),
+            embedding.id,
+            "the catalog ID does not change when the bytes are re-vendored, which is \
+             precisely the case this guard exists for"
+        );
+
+        let segmentation =
+            crate::models::diarize_model_for_role(crate::models::DiarizeModelRole::Segmentation)
+                .expect("the catalog ships a segmentation entry");
+        assert_eq!(
+            EmbeddingModelId::of_loaded_embedder(segmentation),
+            None,
+            "segmentation produces no embeddings; asking it for an embedder id is a bug"
+        );
     }
 
     #[test]

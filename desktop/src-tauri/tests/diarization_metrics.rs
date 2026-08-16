@@ -248,6 +248,52 @@ fn cosine_distance_and_similarity_conversion_round_trips() {
     assert_eq!(CosineDistance::new(-9.0).get(), CosineDistance::MIN);
 }
 
+/// **The clamp is on the DATA path, not only on the constructor path.**
+///
+/// Both units used to carry `#[derive(Deserialize)]` with
+/// `#[serde(transparent)]`, which writes the wire `f32` straight into the field
+/// and never calls `new`. A review probe deserialized `9.0` and `-4.0` into a
+/// `CosineSimilarity` — both outside this unit's own `MIN`/`MAX`, both accepted
+/// silently. `Deserialize` is hand-written now and routes through the same
+/// constructor, so the two paths cannot disagree about what the type means.
+#[test]
+fn deserializing_a_cosine_unit_goes_through_its_clamp() {
+    // The exact probe values, which the derived impl let through unchanged.
+    let over: CosineSimilarity = serde_json::from_str("9.0").expect("finite input parses");
+    assert_eq!(
+        over.get(),
+        CosineSimilarity::MAX,
+        "a wire value above the unit's own maximum must be clamped exactly as a \
+         computed one is — a similarity of 9.0 is not a similarity"
+    );
+    let under: CosineSimilarity = serde_json::from_str("-4.0").expect("finite input parses");
+    assert_eq!(under.get(), CosineSimilarity::MIN);
+
+    let far: CosineDistance = serde_json::from_str("9.0").expect("finite input parses");
+    assert_eq!(far.get(), CosineDistance::MAX);
+    let negative: CosineDistance = serde_json::from_str("-9.0").expect("finite input parses");
+    assert_eq!(negative.get(), CosineDistance::MIN);
+
+    // In range, the wire value survives untouched — a clamp that moved ordinary
+    // scores would be a bug, not a guard.
+    let ordinary: CosineSimilarity = serde_json::from_str("0.4375").expect("in range");
+    assert_eq!(ordinary.get(), 0.4375);
+
+    // A NaN sorts as neither genuine nor impostor and would poison an EER
+    // sweep, so it is refused rather than clamped to an endpoint.
+    let nan = serde_json::from_str::<CosineSimilarity>("null");
+    assert!(nan.is_err(), "a null is not a number: {nan:?}");
+    let nan_f32: Result<CosineSimilarity, _> =
+        serde_json::from_value(serde_json::Value::String("NaN".into()));
+    assert!(nan_f32.is_err(), "a string is not a number: {nan_f32:?}");
+
+    // Round trip, which is the property every other caller depends on.
+    let round: CosineSimilarity =
+        serde_json::from_str(&serde_json::to_string(&CosineSimilarity::new(0.625)).unwrap())
+            .unwrap();
+    assert_eq!(round.get(), 0.625);
+}
+
 /// Merged finding #20, as a number rather than a warning.
 ///
 /// The plan's enrollment floor is a cosine SIMILARITY of 0.70. sherpa's

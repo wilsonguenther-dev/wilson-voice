@@ -43,8 +43,14 @@
 use wilson_voice_lib::diarize_metrics::CosineSimilarity;
 use wilson_voice_lib::speaker_profiles::{
     bands_from_distribution, labeled_pair_scores, match_cluster, Centroid, Embedding,
-    EnrollmentBands, MatchResult, SpeakerProfile, TargetFar, TuningError,
+    EmbeddingModelId, EnrollmentBands, MatchResult, SpeakerProfile, TargetFar, TuningError,
 };
+
+/// The embedder every fixture profile below was enrolled under, and the one the
+/// probe centroids come from. A stand-in for `catalog.json`'s pinned sha256.
+fn model() -> EmbeddingModelId {
+    EmbeddingModelId::new("sha256-fixture-embedder")
+}
 
 #[path = "support/bands.rs"]
 mod bands;
@@ -243,6 +249,7 @@ fn a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_insi
         id: "p1".into(),
         display_name: "Jeisil".into(),
         is_me: false,
+        embedding_model: model(),
         centroids: vec![Centroid::new(
             "laptop_mic_near",
             Embedding::new(vec![1.0, 0.0, 0.0]),
@@ -250,7 +257,12 @@ fn a_cleanly_separated_distribution_asks_about_the_gap_rather_than_guessing_insi
     }];
     // cos([1,1,0], [1,0,0]) = 0.7071 — inside the gap.
     assert!(matches!(
-        match_cluster(&Embedding::new(vec![1.0, 1.0, 0.0]), &roster, tuned.bands),
+        match_cluster(
+            &Embedding::new(vec![1.0, 1.0, 0.0]),
+            &model(),
+            &roster,
+            tuned.bands
+        ),
         MatchResult::Suggested { .. }
     ));
 }
@@ -504,19 +516,48 @@ fn the_full_tuning_loop_runs_from_labeled_utterances_to_a_matched_cluster() {
         id: "spk_0".into(),
         display_name: "Speaker 0".into(),
         is_me: false,
+        embedding_model: model(),
         centroids: vec![Centroid::new("laptop_mic_near", wobble(0, 1))],
     }];
     assert!(
         matches!(
-            match_cluster(&wobble(0, 2), &roster, tuned.bands),
+            match_cluster(&wobble(0, 2), &model(), &roster, tuned.bands),
             MatchResult::Known { .. }
         ),
         "a later take of an enrolled speaker must clear the measured auto-confirm edge"
     );
     assert_eq!(
-        match_cluster(&wobble(2, 1), &roster, tuned.bands),
+        match_cluster(&wobble(2, 1), &model(), &roster, tuned.bands),
         MatchResult::New,
         "a different speaker must fall under the measured floor"
+    );
+
+    // **And the same enrolled speaker, under a DIFFERENT embedder, is not a
+    // match at all.** This is the hazard the whole `TargetFar` derivation
+    // exists to bound, arriving by a route no threshold can see: the vectors
+    // are byte-identical here, so the score is 1.0 and the decision would be
+    // `Known` — a name written on a stranger with nobody in the loop — if the
+    // roster's `embedding_model` were not checked. Two 192-dim embedders
+    // (CAM++ and any other wespeaker export, or the same catalog id
+    // re-vendored to different weights) put vectors in unrelated spaces, and a
+    // cosine across two spaces is a number, not a similarity.
+    let other_embedder = [SpeakerProfile {
+        embedding_model: EmbeddingModelId::new("sha256-a-different-192-dim-model"),
+        ..roster[0].clone()
+    }];
+    assert!(
+        matches!(
+            match_cluster(&wobble(0, 1), &model(), &other_embedder, tuned.bands),
+            MatchResult::New
+        ),
+        "an identical vector from another embedding space must never auto-confirm"
+    );
+    assert!(
+        matches!(
+            match_cluster(&wobble(0, 1), &other_embedder[0].embedding_model, &other_embedder, tuned.bands),
+            MatchResult::Known { .. }
+        ),
+        "…and the same roster under its own model still matches, so it is the guard          that changed the answer and not the fixture"
     );
 }
 
