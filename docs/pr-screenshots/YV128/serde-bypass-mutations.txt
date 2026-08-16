@@ -1,0 +1,84 @@
+YV128 revise-first fix — non-vacuity evidence for
+`serde_deserialisation_cannot_bypass_the_normalising_constructor`
+
+The BLOCKING finding: `NormalizedEmbedding` derived `Serialize, Deserialize`
+with `#[serde(transparent)]`, which generates a SECOND constructor that skips
+`NormalizedEmbedding::new()` — no L2 normalisation, no finite check, no empty
+check, no zero-norm check. That falsifies the module header's "NormalizedEmbedding
+is the ONLY way to hand this module a vector, its constructor is the
+normalisation" and `Centroid::updated_with`'s "`sample` is already unit-length
+(it cannot be anything else)".
+
+Fix as shipped: derive dropped; `Serialize` hand-written as a plain forward (it
+cannot break an invariant the value already holds); `Deserialize` hand-written to
+deserialise into `Vec<f32>` and then route through `NormalizedEmbedding::new()`,
+turning a refused vector into `serde::de::Error::custom`. The seam YV129 needs to
+parse the sidecar's `{"embedding": [...]}` therefore exists AND validates, rather
+than being removed and re-added as a derive by the next person in a hurry.
+
+Each mutation below was applied to the fixed tree, the test run, then reverted.
+`grep -c MUTATION desktop/src-tauri/src/speaker_profiles.rs` = 0 on the pushed head.
+
+---------------------------------------------------------------------------
+MUTATION 1 — put the derive back exactly as it shipped in b8e441b
+---------------------------------------------------------------------------
+  -#[derive(Debug, Clone, PartialEq)]
+  +#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+  +#[serde(transparent)]
+   pub struct NormalizedEmbedding(Vec<f32>);
+  (and the two hand-written impls deleted)
+
+RESULT: RED — this is the reviewer's standalone repro, reproduced in-tree.
+
+  ---- serde_deserialisation_cannot_bypass_the_normalising_constructor stdout ----
+  panicked at src-tauri/tests/speaker_centroid_l2_normalize_before_and_after.rs:261:5:
+  serde must normalise like the constructor does; got norm 5 for [3.0, 4.0]
+
+  test result: FAILED. 4 passed; 1 failed
+
+---------------------------------------------------------------------------
+MUTATION 2 — keep the hand-written impl, but wrap instead of construct
+---------------------------------------------------------------------------
+  -        NormalizedEmbedding::new(&values).map_err(serde::de::Error::custom)
+  +        Ok(Self(values))
+
+RESULT: RED — same failure. The test asserts the CONSTRUCTOR ran, not merely that
+the impl is hand-written; a hand-written impl that skips `new` is caught too.
+
+  panicked at ...:261:5: serde must normalise like the constructor does; got norm 5 for [3.0, 4.0]
+  test result: FAILED. 4 passed; 1 failed
+
+---------------------------------------------------------------------------
+MUTATION 3 — normalise when possible, wave degenerate input through
+---------------------------------------------------------------------------
+  -        NormalizedEmbedding::new(&values).map_err(serde::de::Error::custom)
+  +        Ok(NormalizedEmbedding::new(&values).unwrap_or(Self(values)))
+
+RESULT: RED, at a DIFFERENT line — the refusal arm is independently non-vacuous,
+so the test is not carried entirely by the norm assertion.
+
+  panicked at src-tauri/tests/speaker_centroid_l2_normalize_before_and_after.rs:270:9:
+  serde accepted [], which NormalizedEmbedding::new refuses
+
+  test result: FAILED. 4 passed; 1 failed
+
+---------------------------------------------------------------------------
+GREEN, fixed tree, mutations reverted
+---------------------------------------------------------------------------
+  cargo test --features custom-protocol \
+    --test speaker_centroid_l2_normalize_before_and_after \
+    --test speaker_multi_centroid_best_match \
+    --test speaker_profile_blob_len_invariant \
+    --test speaker_profile_no_default_dim
+
+  speaker_centroid_l2_normalize_before_and_after ... 5 passed; 0 failed
+    (serde_deserialisation_cannot_bypass_the_normalising_constructor ... ok)
+  speaker_multi_centroid_best_match ............... 5 passed; 0 failed
+    (no_tuned_similarity_constant_ships_in_speaker_profiles ... ok — the threshold
+     tripwire is unaffected: this fix adds no constant, tuned or otherwise)
+  speaker_profile_blob_len_invariant .............. 4 passed; 0 failed
+  speaker_profile_no_default_dim .................. 5 passed; 0 failed
+
+EVAL DISCIPLINE: this fix tunes nothing and adds no numeric constant. The only
+numbers it introduces are test tolerances (1e-5/1e-6) and the arithmetic fixture
+[3.0, 4.0] -> [0.6, 0.8], whose norm is 5 by Pythagoras, not by measurement.

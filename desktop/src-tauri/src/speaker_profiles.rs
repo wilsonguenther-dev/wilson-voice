@@ -52,6 +52,18 @@
 //! [`CosineSimilarity`] newtypes: put the invariant where the compiler can hold
 //! it, not where a code review has to.
 //!
+//! **Including serde.** `#[derive(Deserialize)]` on a newtype is a SECOND
+//! constructor — it wraps whatever the wire sent and calls nothing — so a
+//! derived impl would quietly re-open every case [`NormalizedEmbedding::new`]
+//! refuses (`[3.0, 4.0]` arrives with norm 5, `[]` with dim 0, `[0.0, 0.0]`
+//! with norm 0) and falsify the paragraph above for any value that came in
+//! over JSON. The impl is therefore hand-written and routes through `new`,
+//! turning a refused vector into a serde error. `serde_deserialisation_cannot_
+//! bypass_the_normalising_constructor` (in
+//! `tests/speaker_centroid_l2_normalize_before_and_after.rs`) is what keeps it
+//! that way when YV129 wires the sidecar's `{"embedding": [...]}` response up
+//! to this type.
+//!
 //! [`CosineDistance`]: crate::diarize_metrics::CosineDistance
 //!
 //! ## What is deliberately NOT here
@@ -216,8 +228,12 @@ impl std::error::Error for EmbeddingError {}
 /// the average" stops being a question anyone can get wrong. Everything in this
 /// module takes and returns this type; raw `&[f32]` appears exactly at the two
 /// boundaries (the sidecar's response, the stored blob) and is converted there.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
+/// Serde is hand-written below, **not** derived: `#[derive(Deserialize)]` on a
+/// newtype generates a second constructor that skips [`Self::new`] entirely, so
+/// a derived `NormalizedEmbedding` could hold `[3.0, 4.0]` (norm 5), `[]`, or
+/// the zero vector — every input the constructor exists to refuse. See the
+/// [`Deserialize`] impl below.
+#[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedEmbedding(Vec<f32>);
 
 impl NormalizedEmbedding {
@@ -310,6 +326,38 @@ impl NormalizedEmbedding {
         // doing it anyway means the invariant holds for every value of this
         // type no matter where it came from.
         Self::new(&values)
+    }
+}
+
+/// Written as the bare JSON array of its components — the same shape a derived
+/// `#[serde(transparent)]` would produce. Serialising cannot break the
+/// invariant (the value already holds it), so this half is a plain forward.
+impl Serialize for NormalizedEmbedding {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+/// **Deserialisation routes through [`NormalizedEmbedding::new`], and that is
+/// the whole point of writing this by hand.**
+///
+/// A derived `Deserialize` is a second constructor. It would take the wire's
+/// `Vec<f32>` and wrap it — no L2 normalisation, no finite check, no empty
+/// check, no zero-norm check — which makes every claim in this module's header
+/// false for any value that arrived over serde rather than through `new`. The
+/// module says an un-normalised vector cannot enter an average and
+/// [`Centroid::updated_with`] leans on exactly that ("`sample` is already
+/// unit-length, it cannot be anything else"); a derived impl is precisely the
+/// thing that makes it something else.
+///
+/// So: deserialise into a raw `Vec<f32>`, then hand it to the one constructor.
+/// A vector the constructor refuses becomes a serde error — the ingestion
+/// boundary YV129 will parse the sidecar's `{"embedding": [...]}` at, refusing
+/// the same inputs `new` refuses, with the same names.
+impl<'de> Deserialize<'de> for NormalizedEmbedding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = Vec::<f32>::deserialize(deserializer)?;
+        NormalizedEmbedding::new(&values).map_err(serde::de::Error::custom)
     }
 }
 

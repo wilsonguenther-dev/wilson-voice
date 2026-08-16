@@ -238,3 +238,50 @@ fn a_second_condition_does_not_touch_the_first() {
     assert_eq!(laptop_after.sample_count, 6);
     assert!((bt.vector.l2_norm() - 1.0).abs() < 1e-5);
 }
+
+/// The discipline has to hold at the OTHER door too.
+///
+/// `NormalizedEmbedding::new` is only "the only constructor" for as long as
+/// nobody derives `Deserialize` on the type: a derived impl deserialises the
+/// wire's `Vec<f32>` and wraps it, calling nothing. That is a second
+/// constructor with none of the checks, and it is not hypothetical — the
+/// derive shipped in this file's first version, and `serde_json::from_str`
+/// produced a "normalised" embedding with an L2 norm of 5.
+///
+/// This asserts the three inputs the constructor refuses stay refused through
+/// serde, and that a vector it accepts arrives unit-length rather than as the
+/// raw numbers on the wire. It fails loudly the moment anyone swaps the
+/// hand-written impl back for a derive — which is exactly what YV129 might be
+/// tempted to do when it parses the sidecar's `{"embedding": [...]}`.
+#[test]
+fn serde_deserialisation_cannot_bypass_the_normalising_constructor() {
+    // The case that made the module's headline claim false: norm 5, not 1.
+    let parsed: NormalizedEmbedding =
+        serde_json::from_str("[3.0,4.0]").expect("a finite non-zero vector deserialises");
+    assert!(
+        (parsed.l2_norm() - 1.0).abs() < 1e-6,
+        "serde must normalise like the constructor does; got norm {} for [3.0, 4.0]",
+        parsed.l2_norm()
+    );
+    assert_eq!(parsed.as_slice(), &[0.6, 0.8]);
+
+    // Every input `new` refuses has to be refused here too, by name.
+    for wire in ["[]", "[0.0,0.0]", "[1.0,null]"] {
+        assert!(
+            serde_json::from_str::<NormalizedEmbedding>(wire).is_err(),
+            "serde accepted {wire}, which NormalizedEmbedding::new refuses"
+        );
+    }
+
+    // And a real embedding survives the round trip as a unit vector, so the
+    // hand-written pair is usable at the boundary YV129 needs, not just safe.
+    let raw = raw_sample(2);
+    let json = serde_json::to_string(&NormalizedEmbedding::new(&raw).unwrap()).unwrap();
+    let back: NormalizedEmbedding = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, NormalizedEmbedding::new(&raw).unwrap());
+    assert!((back.l2_norm() - 1.0).abs() < 1e-5);
+    assert!(
+        (l2_norm(&raw) - 1.0).abs() > 1.0,
+        "the fixture must be far from unit-length or this test proves nothing"
+    );
+}
