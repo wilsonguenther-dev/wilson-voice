@@ -259,9 +259,10 @@ fn speaker_label_decides_on_the_target_and_never_on_an_identity_flag() {
 ///
 /// What survives here is the part of the ladder this file can still see: the
 /// column exists, exactly once, and the ladder and `SCHEMA_VERSION` were edited
-/// together. The remaining honest gap — no cluster has yet come from AUDIO,
-/// because `yap-diarize` has no inference backend until YV122 — is instrumented
-/// in that same file, next to the evidence it qualifies.
+/// together. Clusters from real AUDIO are `meeting_eval::fixture_e_der_gate`'s
+/// subject and have been measured since YV122 (#137) put a backend in the
+/// sidecar; the gap that genuinely remains is that nothing in the APP calls the
+/// pass, which the changelog states in as many words.
 #[test]
 fn the_cluster_column_landed_and_the_ladder_agrees_with_the_schema_version() {
     let ladder = [

@@ -259,10 +259,12 @@ fn the_public_clustering_api_takes_a_typed_distance() {
 ///
 /// The clustering threshold is a PARAMETER of `cluster_track` precisely because
 /// the only honest source for a value is a measurement against fixture (e), and
-/// this tree has no inference backend to measure with yet. A `const
-/// DEFAULT_CLUSTERING_DISTANCE` would be sherpa's 0.5 (or OpenWhispr's 0.70/0.55
-/// read as the wrong unit) wearing a Rust type — the exact failure this
-/// backlog's eval-first sequencing exists to prevent.
+/// a measurement belongs in the harness that produced it —
+/// `meeting_eval::tune_clustering_threshold`, whose winner is recorded next to
+/// the gate it set. A `const DEFAULT_CLUSTERING_DISTANCE` here would be
+/// sherpa's 0.5 (or OpenWhispr's 0.70/0.55 read as the wrong unit) wearing a
+/// Rust type, indistinguishable in the source from a tuned one — the exact
+/// failure this backlog's eval-first sequencing exists to prevent.
 ///
 /// **Both units, not just the clustering one.** Binary mode
 /// (`TargetMode::EnrolledVsEveryoneElse`) decides each turn against an
