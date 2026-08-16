@@ -1,46 +1,79 @@
-YV124 — anti-alias EER validation arm: acceptance transcript
-host: macOS 26.5.2 / arm64; rustc 1.94.0
-corpus: ~/yap-eval-corpus/meetings (present); diarize models: not installed; yap-diarize: YV121 scaffold (no inference backend)
+YV124 — acceptance transcripts, FINISHER pass (rebased onto YV122 @ c3fd5d8)
+================================================================================
+macOS 26.5.2 / arm64. Eval corpus present at ~/yap-eval-corpus/meetings.
+Both catalog diarization models installed (sherpa-onnx-pyannote-segmentation-3-0
++ wespeaker_en_voxceleb_CAM++), so the EER half RUNS — it did not, and could
+not, on any machine before YV122 merged.
 
-$ cargo test --test meeting_eval anti_alias_eer_regression -- --nocapture
+`YAP_EER_UNMEASURED_OK` is UNSET for every run below (`env -u`). On this machine
+that is the strict setting: the arm may not skip, and it does not.
 
-running 1 test
-meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
-meeting_eval anti_alias_eer EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
-  the fold half of OS-8's arm is measured above; the EER half needs an embedder and this machine has none: no inference backend in yap-diarize (load_models answered 'no_backend')
-test meeting_eval_anti_alias_eer_regression ... ok
+--------------------------------------------------------------------------------
+1. cargo test --features custom-protocol --test meeting_eval anti_alias -- --nocapture
+--------------------------------------------------------------------------------
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.11s
-
-
-$ cargo test --test meeting_eval anti_alias_eer -- --nocapture   # all three arms of this item
-
-running 3 tests
+running 12 tests
+test meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself ... ok
 meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
-test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
+test meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches ... ok
+test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... ok
 test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
-meeting_eval anti_alias_eer in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
-meeting_eval anti_alias_eer EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
-  the fold half of OS-8's arm is measured above; the EER half needs an embedder and this machine has none: no inference backend in yap-diarize (load_models answered 'no_backend')
+test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
+test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... ok
+meeting_eval anti_alias_eer dprime_blindness margin 0.993759 → 0.002976 (334x) dprime 14.5170 → 11.7876 (1.23x) auc 1.0000 → 1.0000 eer 0.0000 → 0.0000 mean_impostor -0.0545 → 0.9968
+test meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts ... ok
+meeting_eval anti_alias_eer resolution genuine=18 impostor=48 frr_step=0.0556 far_step=0.0208 eer_step=0.0104 eer_clean=0.0000 eer_barely_worse=0.0000 margin_clean=0.993759 margin_barely_worse=0.976564 dprime_clean=14.5170 dprime_barely_worse=14.2246 auc_clean=1.0000 auc_barely_worse=1.0000
+test meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away ... ok
+test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... ok
+test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... ok
+meeting_eval anti_alias_eer backend_probe=model_load_failed — a real inference backend read two non-model files and rejected them, so the EER numbers in YV124's MEASURED block still have a backend behind them
+test meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend ... ok
+meeting_eval anti_alias_eer fixture=room-3-near-field rttm_turns=12 unoverlapped_spans=12 speakers=3 min_span_seconds=2.0 genuine_pairs=18 impostor_pairs=48 frr_step=0.0556 far_step=0.0208
+meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
+meeting_eval anti_alias_eer fixture=classroom-6-far-field rttm_turns=21 unoverlapped_spans=14 speakers=6 min_span_seconds=2.0 genuine_pairs=19 impostor_pairs=72 frr_step=0.0526 far_step=0.0139
+meeting_eval anti_alias_eer fixture=classroom-6-far-field in_band_fold_linear=0.040976 in_band_fold_antialiased=0.001406 removed_db=29.3
+  embedder ready: 512-dimensional embeddings
+meeting_eval anti_alias_eer embed_floor_seconds=2.0 half_length_clip=Refused("audio_too_short") — the floor refuses, so passing it below is a live assertion that the overlap trim did its job
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=control_shipped eer=0.2743 mean_genuine=0.673963 mean_impostor=0.506375 margin=0.167587 dprime=0.8836 auc=0.7361 threshold_at_eer=0.5677 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=control_linear eer=0.2743 mean_genuine=0.671920 mean_impostor=0.510220 margin=0.161700 dprime=0.8458 auc=0.7292 threshold_at_eer=0.5754 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=pre_fix eer=0.3924 mean_genuine=0.858646 mean_impostor=0.784492 margin=0.074154 dprime=0.8354 auc=0.7269 threshold_at_eer=0.8329 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field arm=shipped eer=0.2743 mean_genuine=0.611678 mean_impostor=0.446141 margin=0.165537 dprime=0.7346 auc=0.7060 threshold_at_eer=0.5008 genuine=18 impostor=48 eer_step=0.0104
+meeting_eval anti_alias_eer fixture=room-3-near-field distance_from_control eer_shipped=0.0000 eer_pre_fix=0.1181 margin_shipped=0.002051 margin_pre_fix=0.093434 control_spread_margin=0.005888
+  room-3-near-field control (no >8 kHz added, Butterworth): ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5677372), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6739627851380242, mean_impostor: 0.5063753112529715, margin: 0.16758747388505268, d_prime: 0.8836123518629897, auc: 0.7361111111111112, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field control (no >8 kHz added, linear):      ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5754039), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6719201174047258, mean_impostor: 0.5102201846117774, margin: 0.16169993279294836, d_prime: 0.8458189930933497, auc: 0.7291666666666666, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field pre-fix (linear decimation):            ArmScore { eer: EerReport { eer: 0.3923611111111111, threshold_at_eer: CosineSimilarity(0.8329115), far_at_eer: 0.3958333333333333, frr_at_eer: 0.3888888888888889, genuine: 18, impostor: 48 }, mean_genuine: 0.8586457404825423, mean_impostor: 0.7844919674098492, margin: 0.07415377307269311, d_prime: 0.8353682421283023, auc: 0.7268518518518519, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  room-3-near-field shipped (Butterworth):                  ArmScore { eer: EerReport { eer: 0.2743055555555556, threshold_at_eer: CosineSimilarity(0.5008047), far_at_eer: 0.2708333333333333, frr_at_eer: 0.2777777777777778, genuine: 18, impostor: 48 }, mean_genuine: 0.6116776474648051, mean_impostor: 0.4461407063839336, margin: 0.16553694108087152, d_prime: 0.7345899240238268, auc: 0.7060185185185185, frr_step: 0.05555555555555555, far_step: 0.020833333333333332 }
+  NOTE: no threshold_at_eer above is a shipped threshold, and the control's is not one either. YV129 tunes the enrollment bands, against post-fix embeddings only, and not on this corpus — see YV122's `diarize_embed_smoke`.
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=control_shipped eer=0.3176 mean_genuine=0.719072 mean_impostor=0.542839 margin=0.176233 dprime=1.0863 auc=0.7617 threshold_at_eer=0.5884 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=control_linear eer=0.3176 mean_genuine=0.716033 mean_impostor=0.535989 margin=0.180044 dprime=1.1127 auc=0.7697 threshold_at_eer=0.5751 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=pre_fix eer=0.0610 mean_genuine=0.847188 mean_impostor=0.549431 margin=0.297757 dprime=2.5773 auc=0.9635 threshold_at_eer=0.7349 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field arm=shipped eer=0.2635 mean_genuine=0.718794 mean_impostor=0.548766 margin=0.170028 dprime=1.1653 auc=0.7880 threshold_at_eer=0.6005 genuine=19 impostor=72 eer_step=0.0069
+meeting_eval anti_alias_eer fixture=classroom-6-far-field distance_from_control eer_shipped=0.0541 eer_pre_fix=0.2566 margin_shipped=0.006205 margin_pre_fix=0.121524 control_spread_margin=0.003811
+  classroom-6-far-field control (no >8 kHz added, Butterworth): ArmScore { eer: EerReport { eer: 0.31761695906432746, threshold_at_eer: CosineSimilarity(0.5883768), far_at_eer: 0.3194444444444444, frr_at_eer: 0.3157894736842105, genuine: 19, impostor: 72 }, mean_genuine: 0.719071974879817, mean_impostor: 0.5428393917779127, margin: 0.17623258310190426, d_prime: 1.0862861618096855, auc: 0.7616959064327485, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field control (no >8 kHz added, linear):      ArmScore { eer: EerReport { eer: 0.31761695906432746, threshold_at_eer: CosineSimilarity(0.5751256), far_at_eer: 0.3194444444444444, frr_at_eer: 0.3157894736842105, genuine: 19, impostor: 72 }, mean_genuine: 0.7160325254264631, mean_impostor: 0.5359888991547955, margin: 0.1800436262716676, d_prime: 1.112698180348898, auc: 0.7697368421052632, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field pre-fix (linear decimation):            ArmScore { eer: EerReport { eer: 0.06103801169590643, threshold_at_eer: CosineSimilarity(0.73488915), far_at_eer: 0.06944444444444445, frr_at_eer: 0.05263157894736842, genuine: 19, impostor: 72 }, mean_genuine: 0.8471881245311937, mean_impostor: 0.5494310789638095, margin: 0.29775704556738425, d_prime: 2.5773371485134815, auc: 0.9634502923976608, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  classroom-6-far-field shipped (Butterworth):                  ArmScore { eer: EerReport { eer: 0.2635233918128655, threshold_at_eer: CosineSimilarity(0.6005072), far_at_eer: 0.2638888888888889, frr_at_eer: 0.2631578947368421, genuine: 19, impostor: 72 }, mean_genuine: 0.7187936196201726, mean_impostor: 0.5487661014000574, margin: 0.1700275182201152, d_prime: 1.165328241146871, auc: 0.7880116959064327, frr_step: 0.05263157894736842, far_step: 0.013888888888888888 }
+  NOTE: no threshold_at_eer above is a shipped threshold, and the control's is not one either. YV129 tunes the enrollment bands, against post-fix embeddings only, and not on this corpus — see YV122's `diarize_embed_smoke`.
 test meeting_eval_anti_alias_eer_regression ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 2.13s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 9.88s
 
 
-── acceptance criterion 2: the EXISTING WER arm, unmodified ───────────────
-the backlog names it `anti_alias_wer_regression`; no test has that substring.
-$ cargo test --test meeting_eval anti_alias_wer_regression
+--------------------------------------------------------------------------------
+2. cargo test --features custom-protocol --test meeting_eval antialias -- --nocapture
+   (acceptance criterion 2 — the WER arm, evidenced against its real name; no
+   test carries the substring `anti_alias_wer_regression`, and the criterion as
+   written matches zero tests. The only change to this arm in the whole item is
+   the bare `20.0` in its fold assert becoming FOLD_REJECTION_DB — same value,
+   same behaviour, and the WER numbers below are unchanged.)
+--------------------------------------------------------------------------------
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/meeting_eval.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/debug/deps/meeting_eval-d4bb08ec0bd2add1)
 
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
-
-^ 0 tests run. A name filter that matches nothing exits 0, which is why the
-  evidence below uses the arm's REAL name instead.
-
-$ cargo test --test meeting_eval antialias_decimation -- --nocapture
-
-running 1 test
+running 2 tests
+test meeting_eval_antialias_both_fold_gates_spend_one_constant ... ok
 meeting_eval antialias in_band_fold_linear=0.094703 in_band_fold_antialiased=0.003846 removed_db=27.8
   [alias-linear] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
   [alias-filtered] using selected model handy-computer/parakeet-unified-en-0.6b-gguf
@@ -52,226 +85,5 @@ meeting_eval antialias broadband-noise wer_linear=0.0417 wer_antialiased=0.0417
 meeting_eval antialias clean wer_linear=0.0417 wer_antialiased=0.0417
 test meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.92s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 3.33s
 
-
-── the whole eval binary, 3× (flaky-prone) ───────────────────────────────
-run 1: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.33s
-run 2: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.29s
-run 3: test result: ok. 30 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 48.31s
-
-── the whole crate's tests, as CI runs them ──────────────────────────────
-$ cargo test --features custom-protocol   ×3
-run 1: ONE failure — two_track_journal_round_trip::a_journal_queue_drop_on_one_track_is_spliced_into_that_track
-       "12801 sample(s) were dropped but only 12800 were spliced" (an off-by-one in a
-       load-dependent drop counter). That test binary compiles none of this item's files
-       and this item changes nothing under src/ — see the diffstat. Re-run 5× in isolation:
-       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
-       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
-       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
-       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
-       test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
-run 2: ok (every binary green)
-run 3: ok (every binary green)
-       plus 3 earlier full runs without --features custom-protocol, all green.
-
-$ cargo fmt --all -- --check   # informational in CI; this item adds no new diff
-  7 hunks, all present on origin/main before this branch (96/810/1886/2082/2136/2212/2241,
-  shifted +6 by the import block this item adds). tests/support/diarize.rs is fmt-clean.
-$ cargo clippy --all-targets --features custom-protocol   # no warning points at this item's files
-$ npx tsc --noEmit -> 0
-
-
-===========================================================================
-REVIEW FIX PASS — 2026-08-15. Two BLOCKING findings on PR #139 @ 408476b.
-===========================================================================
-host: macOS 26.5.2 / arm64
-corpus: ~/yap-eval-corpus/meetings (present); diarize models: NOT installed;
-yap-diarize: YV121 scaffold (no inference backend — YV122/#137 still open)
-
-Finding 1: the skip was permanent and silent. Finding 2: the EER cannot
-resolve the effect the arm exists to detect.
-
-── fix 1: the skip EXPIRES. Undeclared machine ⇒ RED. ─────────────────────
-$ env -u YAP_EER_UNMEASURED_OK cargo test --features custom-protocol \
-      --test meeting_eval anti_alias_eer_regression -- --nocapture
-
-running 1 test
-meeting_eval anti_alias_eer fixture=room-3-near-field rttm_turns=12 unoverlapped_spans=12 speakers=3 min_span_seconds=2.0 genuine_pairs=18 impostor_pairs=48 frr_step=0.0556 far_step=0.0208
-meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
-meeting_eval anti_alias_eer fixture=classroom-6-far-field rttm_turns=21 unoverlapped_spans=14 speakers=6 min_span_seconds=2.0 genuine_pairs=19 impostor_pairs=72 frr_step=0.0526 far_step=0.0139
-meeting_eval anti_alias_eer fixture=classroom-6-far-field in_band_fold_linear=0.040976 in_band_fold_antialiased=0.001406 removed_db=29.3
-meeting_eval anti_alias_eer fixture=room-3-near-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
-meeting_eval anti_alias_eer fixture=classroom-6-far-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=29.3
-  the fold half of OS-8's arm is measured above; the EER half needs an embedder and this machine has none: no inference backend in yap-diarize (load_models answered 'no_backend')
-
-thread 'meeting_eval_anti_alias_eer_regression' panicked at src-tauri/tests/meeting_eval.rs:3824:5:
-the EER half of OS-8's arm did not run and this machine did not declare why.
-
-  reason from the shipped sidecar: no inference backend in yap-diarize (load_models answered 'no_backend')
-
-OS-8 requires the EER comparison BEFORE any enrollment threshold is tuned, so a silent skip here is the failure it was written to prevent. Do one of:
-
-  * install the two catalog diarization models and re-run — this is the path that closes the item;
-
-  * set YAP_EER_UNMEASURED_OK=1 for this run, which is a statement in the PR transcript that this machine has no embedder. `ci.yml` sets it, and the comment beside it names the condition for deleting it.
-
-test meeting_eval_anti_alias_eer_regression ... FAILED
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 4.19s
-
-^ THIS IS THE POINT. The version this PR first shipped printed the same
-  UNMEASURED lines and exited 0. This machine is exactly the machine the
-  finding described, and it is now red.
-
-── fix 1: the declaration, made on the record ─────────────────────────────
-$ YAP_EER_UNMEASURED_OK=1 cargo test --features custom-protocol \
-      --test meeting_eval anti_alias_eer -- --nocapture
-
-running 8 tests
-test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... ok
-test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... ok
-meeting_eval anti_alias_eer synthetic clean_eer=0.0000 common_mode_eer=0.4410 genuine=18 impostor=48
-test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... ok
-test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... ok
-meeting_eval anti_alias_eer resolution genuine=18 impostor=48 frr_step=0.0556 far_step=0.0208 eer_step=0.0104 eer_clean=0.0000 eer_barely_worse=0.0000 margin_clean=0.993759 margin_barely_worse=0.976564 dprime_clean=14.5170 dprime_barely_worse=14.2246 auc_clean=1.0000 auc_barely_worse=1.0000
-test meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away ... ok
-test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... ok
-test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... ok
-  [fixture + fold lines identical to the run above]
-  YAP_EER_UNMEASURED_OK=1 — this machine has declared, on the record, that it cannot measure an EER: no inference backend in yap-diarize (load_models answered 'no_backend')
-test meeting_eval_anti_alias_eer_regression ... ok
-
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 4.20s
-
-── fix 2: the resolution floor, measured, and the statistic that clears it ─
-The `resolution` line above is the finding's premise, reproduced:
-
-  genuine=18 impostor=48  ->  frr_step=0.0556  far_step=0.0208  eer_step=0.0104
-  eer_clean=0.0000  eer_barely_worse=0.0000     <- IDENTICAL. the EER is blind.
-  margin_clean=0.993759  margin_barely_worse=0.976564   <- the margin is not.
-  dprime_clean=14.5170   dprime_barely_worse=14.2246    <- nor is d'.
-
-`meeting_eval_anti_alias_eer_margin_resolves_what_the_eer_quantises_away`
-asserts every line of that: both EERs pinned at the floor, the two EERs
-EQUAL, and both continuous statistics strictly ordered. `arm_is_not_worse`
-is then gated on all three, and regressed on each in isolation (M6/M7).
-
-── fix 2: fixture (f) as a second SCORED fixture ──────────────────────────
-  classroom-6-far-field: rttm_turns=21 -> unoverlapped_spans=14, speakers=6
-                         genuine_pairs=19 impostor_pairs=72 (91 pairs total)
-  room-3-near-field:     rttm_turns=12 -> unoverlapped_spans=12, speakers=3
-                         genuine_pairs=18 impostor_pairs=48 (66 pairs total)
-  fold: 29.3 dB removed on (f), 28.3 dB on (e). Both gated at >=20 dB.
-
-CORRECTION TO THE FINDING, measured rather than argued: it stated "only 6 of
-21 turns overlap a neighbour" and that (f) "yields roughly 3x the pairs". Ten
-of the 21 turns touch a neighbour (turns 5,6,7,9,10,12,13,14,17,18 in start
-order), and 91 pairs against 66 is 1.38x, not 3x. The trim keeps all six
-identities because it trims to the longest single-speaker stretch rather than
-dropping whole turns — dropping whole turns would have lost spk_d entirely.
-The reason to score (f) is the far-field acoustics OS-8 names and the three
-extra identities, not the pair count.
-
-── local gate for the review-fix pass ─────────────────────────────────────
-$ npx tsc --noEmit                                          -> 0
-$ npm test                                    -> 10 files / 121 passed
-
-$ YAP_EER_UNMEASURED_OK=1 cargo test --features custom-protocol \
-      --test meeting_eval        x3   (x4 counting the fmt-fix re-run)
-run 1: test result: ok. 35 passed; 0 failed; 5 ignored; finished in 49.66s
-run 2: test result: ok. 35 passed; 0 failed; 5 ignored; finished in 50.18s
-run 3: test result: ok. 35 passed; 0 failed; 5 ignored; finished in 49.79s
-run 4: test result: ok. 35 passed; 0 failed; 5 ignored; finished in 49.65s
-  (30 before this pass; +5 = the five tests the two fixes add)
-
-$ YAP_EER_UNMEASURED_OK=1 cargo test --features custom-protocol
-  92 binaries, 1097 passed, 0 failed. No occurrence of FAILED anywhere in
-  the run. (1092 before this pass; +5, same five tests.) The
-  two_track_journal_round_trip flake this PR reported earlier did not
-  reproduce on this run.
-
-$ cargo fmt --all -- --check      # informational in CI
-  meeting_eval.rs: 7 hunks — lines 102, 816, 1892, 2088, 2142, 2218, 2247.
-  All seven are present with this branch's changes STASHED (measured, not
-  assumed: `git stash` -> 7 hunks -> `git stash pop`). Three hunks this pass
-  first introduced (4233, 4262, 4279) and one at 4353 were fixed rather than
-  declared. tests/support/diarize.rs: clean.
-
-$ cargo clippy --all-targets --features custom-protocol   # informational
-  70 warnings, unchanged from the count this branch already recorded.
-  The only meeting_eval.rs lines clippy names are 672, 2321 and 4701 — none
-  of them inside this pass's range (3401-4360).
-
-===========================================================================
-SECOND REVIEW PASS — where the expiry actually binds
-===========================================================================
-
-WHAT WAS WRONG. The previous revision claimed CI was held to the expiring
-skip via `YAP_EER_UNMEASURED_OK: "1"` in ci.yml. It was not: the arm opens on
-`corpus()`, CI has no corpus, and the arm returns before the fold assert,
-before `embedder()` and before the declaration is read. Measured on the parent
-commit, not argued:
-
-$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
-    cargo test --features custom-protocol --test meeting_eval anti_alias
-  test result: ok. 8 passed; 0 failed   <- green with NO declaration made
-
-WHAT BINDS NOW, and where:
-
-  1. corpus-equipped machine  -> the declaration, and it names its REASON
-     (`no_backend` / `models_missing`), so a stale export stops counting the
-     moment the reason changes. This is one machine today and the doc says so.
-  2. every machine, CI first  -> `..._unmeasured_expires_when_the_sidecar_gains_a_backend`
-     needs no corpus and no model: it asks the shipped `yap-diarize` whether
-     this build has an inference backend and requires the answer to still be
-     `no_backend`. Red from the day YV122 merges until the EER is measured.
-     No environment variable turns it off.
-  3. the workflow itself      -> `..._ci_does_not_declare_what_it_never_reaches`
-     keeps the inert variable from drifting back into ci.yml.
-
-── CI simulation: no corpus, no declaration, nothing set ──────────────────
-$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
-    cargo test --features custom-protocol --test meeting_eval anti_alias -- --nocapture
-meeting_eval anti_alias_eer UNRUN reason=no corpus at /nonexistent — fold, EER
-and the YAP_EER_UNMEASURED_OK gate all need it; the expiry that binds without a
-corpus is meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend
-meeting_eval anti_alias_eer backend_probe=no_backend — no build on this machine
-can produce a CAM++ embedding, so `EER: UNMEASURED` is still the honest state
-and this gate stays green
-test result: ok. 10 passed; 0 failed; 0 ignored; 32 filtered out
-  (8 before this pass; +2 = the two gates it adds. The UNRUN line is new: a run
-  that printed nothing about this arm read in a log exactly like a run that
-  passed it.)
-
-$ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
-    cargo test --features custom-protocol
-  92 binaries, 1099 passed, 0 failed, 18 ignored. No occurrence of FAILED.
-  (1097 before this pass; +2, the same two tests.) This is the exact
-  environment ci.yml now runs in — no env: block on the step at all.
-
-── corpus-equipped machine (macOS 26.5.2 / arm64, ~/yap-eval-corpus) ──────
-$ env -u YAP_EER_UNMEASURED_OK cargo test --features custom-protocol \
-    --test meeting_eval
-  test result: FAILED. 36 passed; 1 failed — the arm, refusing to skip:
-    "…this machine did not declare why … This machine has the corpus, which
-     makes it one of the few that can close the item."
-$ YAP_EER_UNMEASURED_OK=no_backend cargo test --features custom-protocol \
-    --test meeting_eval
-  test result: ok. 37 passed; 0 failed; 5 ignored; finished in 49.93s
-  (35 before this pass; +2.)
-$ YAP_EER_UNMEASURED_OK=no_backend cargo test --features custom-protocol
-  92 binaries, 1099 passed, 0 failed, 18 ignored. No occurrence of FAILED.
-
-── the sidecar + frontend halves of CI, unchanged by this pass ────────────
-$ cargo test -p yap-polish -p yap-diarize --release   -> 9 passed / 11 passed
-$ npm run build                                        -> built in 687ms
-$ npm test                                    -> 10 files / 121 passed
-
-── rustfmt / clippy (both informational in CI) ────────────────────────────
-$ cargo fmt --all -- --check
-  170 hunks with this pass applied; 170 with it STASHED (measured, not
-  assumed: `git stash` -> 170 -> `git stash pop` -> 170). This pass adds none.
-$ cargo clippy --all-targets --features custom-protocol
-  The only meeting_eval.rs line clippy names is 4921 (`manual_is_multiple_of`),
-  which is outside this pass's range and predates it. tests/support/diarize.rs:
-  no warning.

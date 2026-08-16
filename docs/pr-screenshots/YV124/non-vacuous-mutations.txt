@@ -1,202 +1,97 @@
-YV124 — non-vacuous mutations
-=============================
+YV124 — non-vacuity, FINISHER pass (rebased onto YV122 @ c3fd5d8)
+================================================================================
+Every mutation below was applied to a COMMITTED baseline, built, run, recorded,
+and reverted with `git checkout --` against that baseline. (A previous run in
+this loop lost uncommitted work to exactly that command; the rule since is
+commit first, mutate second.)
 
-Every assertion this item adds, deliberately broken one at a time, with the
-failure it produces. Run from `desktop/src-tauri`. The tree is restored after
-each run — this file is the record, not a committed mutation.
+M24 and M25 mutate the SIDECAR (`yap-diarize/src/main.rs`), which means a full
+`npm run sidecar` rebuild and re-stage per mutation — a sidecar mutation that is
+not re-staged tests the previous binary.
 
-REGENERATED for review fix #1 (the skip now expires) and review fix #2 (a
-statistic that does not saturate, and fixture (f) as a second scored fixture).
-M1–M4 are the original four, re-run at this sha so their line numbers and
-messages are this tree's; M5–M10 are the six the two fixes add.
+TWO MUTATIONS SURVIVED THE FIRST SWEEP AND ARE RECORDED AS DEFECTS, NOT DROPPED
+--------------------------------------------------------------------------------
+* The first cut of `meeting_eval_antialias_both_fold_gates_spend_one_constant`
+  counted its OWN filter line as a fold gate (three gates instead of two) — and
+  because the test's name says `antialias` while every filter used while writing
+  it said `anti_alias`, that broken version had never once executed. Fixed by
+  joining the needle at runtime so the line cannot match itself. M21 is the
+  re-run against the fixed test.
+* The first cut of the "d′ is deliberately ACCEPTED" assertion built a case in
+  which d′ did not regress against the pre-fix arm at all, so a re-added d′ gate
+  passed it. Fixed, with an `assert!` in front of it that the case really does
+  regress d′. M20 is the re-run.
 
-M5 is the one to read first: it is the ORIGINAL BUG, reproduced. Nothing is
-edited for it — the arm is simply run on a machine that has not declared it
-cannot measure an EER, which is what the first shipped version of this arm
-silently passed. It now fails, and names both ways out.
+A THIRD MUTATION IS RECORDED AS SURVIVING BY CONSTRUCTION
+--------------------------------------------------------------------------------
+* Widening the backend guard's match arm to accept ANY refusal tag leaves it
+  green, because on a correct build the answer already is `model_load_failed`.
+  That is a mutation of the TEST rather than of its subject — every test can be
+  weakened by editing it. The subject is the sidecar, and M24/M25 mutate that
+  instead. Both fire.
 
-Note on M1's -1.1 dB: with the shipped column swapped to the pre-fix
-decimator, its folded energy is still measured against the Butterworth clean
-control, so the ratio lands slightly below 0 dB rather than exactly at it. The
-point stands either way — 28.3 dB of separation becomes none.
-
-Note on M6/M7: the margin and d′ comparisons are each regressed IN ISOLATION
-(an `ArmScore` with only that one field made worse), so neither can be dropped
-from the gate and covered for by the other. Before that isolation existed, M6
-was caught by d′ — red, but for the neighbour's reason rather than its own.
-
-── M1 the shipped column is silently the pre-fix decimator
-$ cargo test --test meeting_eval anti_alias_eer_regression
-exit=101
-test meeting_eval_anti_alias_eer_regression ... FAILED
-meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.076254 removed_db=-1.1
-thread 'meeting_eval_anti_alias_eer_regression' (16423092) panicked at src-tauri/tests/meeting_eval.rs:3899:13:
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 2.02s
-
-── M2 every pair is labelled genuine
-$ cargo test --test meeting_eval anti_alias_eer_pairs_are_labeled_by_speaker
-exit=101
-test meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker ... FAILED
-thread 'meeting_eval_anti_alias_eer_pairs_are_labeled_by_speaker' (16423361) panicked at src-tauri/tests/meeting_eval.rs:4353:5:
-assertion `left == right` failed
-  left: 66
- right: 18
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-── M3 the common-mode corruption is not applied
-$ cargo test --test meeting_eval anti_alias_eer_arm_scores_the_degradation
-exit=101
-test meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts ... FAILED
-thread 'meeting_eval_anti_alias_eer_arm_scores_the_degradation_os8_predicts' (16423608) panicked at src-tauri/tests/meeting_eval.rs:4067:5:
-nine parts shared noise to one part person still separates at EER 0.0000, so the degradation is not a degradation
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-── M4 the fixture's speaker labels are flattened to one person
-$ cargo test --test meeting_eval anti_alias_eer_regression
-exit=101
-test meeting_eval_anti_alias_eer_regression ... FAILED
-thread 'meeting_eval_anti_alias_eer_regression' (16423840) panicked at src-tauri/tests/meeting_eval.rs:3873:13:
-room-3-near-field: an EER needs impostor pairs: 1 speaker(s), 12 utterance(s)
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.08s
-
-── M5 the declaration is not required — the ORIGINAL bug, restored
-$ env -u YAP_EER_UNMEASURED_OK cargo test --test meeting_eval anti_alias_eer_regression
-exit=101
-test meeting_eval_anti_alias_eer_regression ... FAILED
-meeting_eval anti_alias_eer fixture=room-3-near-field in_band_fold_linear=0.067392 in_band_fold_antialiased=0.002596 removed_db=28.3
-meeting_eval anti_alias_eer fixture=classroom-6-far-field in_band_fold_linear=0.040976 in_band_fold_antialiased=0.001406 removed_db=29.3
-meeting_eval anti_alias_eer fixture=room-3-near-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=28.3
-meeting_eval anti_alias_eer fixture=classroom-6-far-field EER=UNMEASURED reason=no inference backend in yap-diarize (load_models answered 'no_backend') fold_rejection_db=29.3
-thread 'meeting_eval_anti_alias_eer_regression' (16424068) panicked at src-tauri/tests/meeting_eval.rs:3824:5:
-the EER half of OS-8's arm did not run and this machine did not declare why.
-  reason from the shipped sidecar: no inference backend in yap-diarize (load_models answered 'no_backend')
-OS-8 requires the EER comparison BEFORE any enrollment threshold is tuned, so a silent skip here is the failure it was written to prevent. Do one of:
-  * install the two catalog diarization models and re-run — this is the path that closes the item;
-  * set YAP_EER_UNMEASURED_OK=1 for this run, which is a statement in the PR transcript that this machine has no embedder. `ci.yml` sets it, and the comment beside it names the condition for deleting it.
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 4.25s
-
-── M6 the margin comparison is dropped from the gate
-$ cargo test --test meeting_eval anti_alias_eer_the_gate_rejects
-exit=101
-test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... FAILED
-thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (16424331) panicked at src-tauri/tests/meeting_eval.rs:4246:10:
-the margin is in the report but not in the gate: ()
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-── M7 the d-prime comparison is dropped from the gate
-$ cargo test --test meeting_eval anti_alias_eer_the_gate_rejects
-exit=101
-test meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm ... FAILED
-thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (16424563) panicked at src-tauri/tests/meeting_eval.rs:4252:10:
-d′ is in the report but not in the gate: ()
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-── M8 the overlap trim returns each turn whole
-$ cargo test --test meeting_eval anti_alias_eer_overlapped_frames
-exit=101
-test meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label ... FAILED
-thread 'meeting_eval_anti_alias_eer_overlapped_frames_are_removed_by_label' (16424800) panicked at src-tauri/tests/meeting_eval.rs:4308:5:
-assertion `left == right` failed: the trim did not leave exactly the one-speaker stretches
-  left: ["spk_a 0.0..4.0", "spk_a 9.0..13.0", "spk_b 12.0..16.0", "spk_b 20.0..24.0", "spk_a 20.5..23.5"]
- right: ["spk_a 0.0..4.0", "spk_a 9.0..12.0", "spk_b 13.0..16.0", "spk_b 20.0..20.5"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-── M9 fixture (f) is dropped and only the near-field room is scored
-$ cargo test --test meeting_eval anti_alias_eer_scores_every_multi_speaker_fixture
-exit=101
-test meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture ... FAILED
-thread 'meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture' (16425036) panicked at src-tauri/tests/meeting_eval.rs:4194:5:
+--- M16 shipped column is silently the pre-fix decimator
+meeting_eval anti_alias_eer embed_floor_seconds=2.0 half_length_clip=Refused("audio_too_short") — the floor refuses, so passing it below is a live assertion that the overlap trim did its job
+thread 'meeting_eval_anti_alias_eer_regression' (22075098) panicked at src-tauri/tests/meeting_eval.rs:4256:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 7.05s
+--- M17 the control is the noisy shipped arm — no reference at all
+thread 'meeting_eval_anti_alias_eer_regression' (22075496) panicked at src-tauri/tests/meeting_eval.rs:4256:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 7.06s
+--- M18 the margin comparison is dropped from the gate
+thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22075806) panicked at src-tauri/tests/meeting_eval.rs:4720:10:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M19 the premise check (the two clean arms must agree) is dropped
+thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22076059) panicked at src-tauri/tests/meeting_eval.rs:4745:10:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M20 d′ is quietly re-added to the gate
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M21 the WER arm asserts a bare 20.0 again
+thread 'meeting_eval_antialias_both_fold_gates_spend_one_constant' (22076644) panicked at src-tauri/tests/meeting_eval.rs:4875:5:
+  left: 3
+ right: 2
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s
+--- M22 unoverlapped_spans masks on turn index, so a speaker interrupts himself
+thread 'meeting_eval_anti_alias_eer_a_speaker_does_not_contaminate_himself' (22076896) panicked at src-tauri/tests/meeting_eval.rs:5127:5:
+  left: ["spk_a 0.0..3.0", "spk_a 4.0..6.0"]
+ right: ["spk_a 0.0..4.0", "spk_a 3.0..6.0"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M23 the backend probe accepts any refusal — the guard stops guarding
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s
+--- M20 d′ is quietly re-added to the gate
+thread 'meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm' (22078700) panicked at src-tauri/tests/meeting_eval.rs:4771:5:
+assertion `left == right` failed: d′ is gating again. It is printed, not gated, and two measurements say why — read them before re-adding the arm.
+  left: Err("[dprime] regressed")
+ right: Ok(())
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M21 the WER arm asserts a bare 20.0 again
+thread 'meeting_eval_antialias_both_fold_gates_spend_one_constant' (22078947) panicked at src-tauri/tests/meeting_eval.rs:4902:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s
+--- M24 load_backend answers model_not_found for a file that exists (the probe stops probing)
+thread 'meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend' (22080097) panicked at src-tauri/tests/meeting_eval.rs:5027:74:
+the probe is broken, not the build: `yap-diarize` answered `model_not_found` for two files this test just wrote to "/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/tmp/yv94-yv124-backend-probe-47944-0". Nothing about the backend was tested. Fix the probe before reading anything into a green run here.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.55s
+--- M25 load_backend skips the sniff and reports a backend for two non-model files
+thread 'meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend' (22080323) panicked at src-tauri/tests/meeting_eval.rs:5027:74:
+the probe is broken, not the build: `yap-diarize` answered `model_not_found` for two files this test just wrote to "/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-yv124fin/desktop/target/tmp/yv94-yv124-backend-probe-47982-0". Nothing about the backend was tested. Fix the probe before reading anything into a green run here.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M25 the sidecar reports a DIFFERENT refusal tag (no_models) — a build that no longer proves it has a backend
+thread 'meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend' (22081799) panicked at src-tauri/tests/meeting_eval.rs:5032:44:
+`yap-diarize` answered `no_models` where a build with an inference backend answers `model_load_failed`. If the backend has been compiled out, YV124's MEASURED block is quoting numbers no machine can now reproduce — either put the backend back, or re-open `EER: UNMEASURED` in the backlog and say why.
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.52s
+--- M26 the blindness model adds jitter at full scale — i.e. models additive noise, not a fold
+thread 'meeting_eval_anti_alias_eer_dprime_is_blind_to_the_degradation_os8_predicts' (22083698) panicked at src-tauri/tests/meeting_eval.rs:4425:5:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+--- M27 the floor handed to embed() is Duration::ZERO — nothing is ever refused
+thread 'meeting_eval_anti_alias_eer_regression' (22083948) panicked at src-tauri/tests/meeting_eval.rs:4182:14:
+a clip half the length of the floor was embedded rather than refused, so the floor this arm passes below is inert and every vector under it is unmeasured: [13.349061, 10.587467, 6.9622, -26.945866, -2.931253, -17.36267, -22.088985, 4.6730695, -1.2098229, 7.614925, -7.351597, -6.243357, -9.59893, 6.775339, -12.742633, -5.733365, -3.9729729, 13.560073, -5.8410883, 7.5622306, -1.030941, 9.575091, 7.4929986, 10.167333, -1.9399819, 0.63299024, 9.169402, -13.097803, -10.202695, -3.1587183, -4.307419, -10.907776, 2.9926233, 2.743823, 3.2360926, 1.3139825, 0.7956825, -4.370429, 9.8268585, -2.1450353, 3.5876045, 2.4559848, -21.09224, -3.2645745, 1.1403596, 9.52272, -3.244419, 17.621164, -5.1574836, 2.4158444, 2.948417, -3.9078407, 11.5965805, -0.024594307, -1.0687437, 15.505129, -3.759128, -4.2497015, 7.0753813, -17.150976, 3.8354821, -15.269418, 1.9275415, -3.1222901, -4.9579463, 0.52240354, -4.299537, 6.6937056, 14.793504, -2.671059, -3.2781734, -9.109382, -9.623504, 8.046121, -8.035154, -17.5067, 9.573718, -16.365269, -3.7935877, 1.1084733, -1.2882415, 4.4092355, -3.5364914, 5.1501937, -12.9964285, -3.668846, 12.857324, -1.7769675, 0.63793594, -5.9154334, 5.2484517, 16.272963, -14.282416, -12.056382, -3.990772, -9.976808, 1.7460668, -2.1956635, -7.455223, 6.5547333, -0.9577405, 5.835424, 1.0505087, 14.216216, 16.161886, -7.199816, -9.378302, 14.863556, 4.789443, 9.5921135, -1.0048981, -0.08353418, 0.36587098, -0.68597525, 6.581578, -18.308151, 11.050477, -1.6268913, -1.6916695, -11.627218, -5.6444526, 4.7202973, 0.3342713, 13.39562, 8.172245, -0.46569586, 1.8244228, -6.1815596, -12.4565, 2.7961407, -0.044117384, 4.3398137, -2.8268971, 0.7010399, -8.478609, -3.2567432, -0.23826802, 5.162921, -7.5437593, 4.3750544, 4.004477, -3.5588498, -11.293202, 5.422246, -6.285617, 13.421286, -6.872053, -12.189456, -10.183089, -5.627307, 6.2547073, -6.288763, 11.93706, 4.6820273, -0.8719975, 0.106781244, 7.7307906, 1.8469884, 4.3301654, -11.999173, -5.2451515, -11.587479, 1.6304809, -1.7872385, -4.2237453, 5.4047966, 7.4096227, 1.449326, -0.7730148, -10.369349, 12.010804, -5.1341305, -2.013379, -2.8590946, -16.967575, -12.6816845, -10.739287, 6.894396, -16.158981, 15.202411, -10.14056, 17.171848, -9.578911, -4.5192695, 0.21261948, 4.036912, 5.866639, -5.443386, 3.860893, -11.188467, -4.4338055, 6.749076, -11.013706, -10.34459, -8.256731, -1.8276274, 11.176268, -5.874383, 9.906803, -17.10837, -8.899564, -9.433416, 8.510882, -0.5918487, 5.5901375, 14.354517, 13.390831, 0.3252771, -2.0750718, -11.761466, 6.2383976, 0.5209533, 11.839756, 0.08389723, -4.003403, 14.43776, 4.802693, 9.123038, -2.443742, 1.7216291, -15.895102, -2.2385724, -12.723088, -6.7294054, 13.468341, 6.760331, 2.6728916, 5.574053, -2.105482, -5.67318, 7.9167027, -17.534737, -4.2339525, -0.3088857, 1.1508012, 8.681115, -19.728527, 0.9149368, -13.940529, 0.97193307, -6.382961, 11.538206, 1.8456848, 7.222966, 8.522418, -2.8370354, 10.560069, -1.0476176, -19.328447, -5.108581, 2.8717778, -0.18517321, 7.226594, -8.604433, -15.280751, 4.2238865, 9.392761, 6.7658386, -10.727611, -5.24034, 16.793427, 17.750065, -4.4542613, -7.561128, -9.474885, -2.7412002, -3.0157292, 10.36125, -2.6727984, -2.905099, 13.80617, 0.743302, 0.8765956, -7.07734, -11.829885, -10.910874, 3.1311555, 5.1897063, -12.398371, -3.935112, 8.869624, -9.073543, -7.057322, 4.0707955, -7.0528383, 14.014936, -5.187043, 4.7562046, -15.813946, 13.111994, 0.9506815, -4.925872, -16.158628, -4.122925, -6.9799395, 13.721129, 3.7408774, 7.6012554, 19.253971, -6.8675737, -5.896687, -1.3997296, 10.6668415, -29.499376, 1.9925747, -11.861515, 4.7646346, -8.8667145, -9.878731, -4.248377, 2.038417, -14.446106, 8.808868, -0.12481046, -13.7910185, 0.41540685, -7.1696115, -14.874401, 6.3691134, 11.648378, 23.828955, 23.753922, 8.0821495, -3.3783655, -12.398927, 1.4590216, -4.3837624, 2.0809822, -5.485454, 7.0442796, -0.6063751, 15.889135, 11.302399, 8.141348, 3.8281908, 1.7134862, 22.994774, -18.378887, 4.679502, -7.279147, 4.05592, -0.7258594, 15.547314, -0.68129075, 10.102528, 2.4599397, 20.236961, 4.9412723, 8.92356, -5.6888227, 8.031484, -0.74263436, -3.079365, 1.1079829, -1.7404773, 1.438061, -9.287351, 9.700083, 10.567443, 10.9319725, 0.60669553, -22.451694, 0.20606327, 6.8046246, 9.533951, -3.236061, -9.192219, -12.225541, -3.6633244, 3.511029, -7.360156, 6.414964, -18.588717, -14.088926, -13.135438, -10.092248, 12.796609, -10.536768, 6.558486, -8.862302, -7.816615, -2.603747, -1.2603915, 1.0489389, -1.3959893, 0.63756573, -0.85117507, -3.4458194, -5.480525, 9.186256, 5.393796, -6.1577682, 0.80776507, 2.0550063, -6.060815, 2.9431362, 3.3786192, 6.1363688, 1.8419816, -10.9723425, 6.1612716, 12.461058, 3.4465458, 8.751553, 2.0054302, 6.983021, -9.616769, 2.299061, -1.1549882, -0.36578232, -4.6467896, -4.800833, 2.1002235, 7.2606716, -5.0503926, -5.9000015, -17.237724, -25.30172, -2.709667, -0.04801154, 5.400561, 10.587138, 7.3857827, -2.271111, -5.1394815, 11.287018, -1.869228, 0.08049035, 8.112822, -14.471902, 18.90386, -5.8934917, -2.7336607, 9.25797, -1.6516465, 2.0069852, -0.9757877, 16.286581, 5.409514, 4.1275077, 7.7359977, -5.77462, 7.9867744, 11.322671, 9.171189, 13.521868, -6.333014, 2.0530121, -2.3006163, -6.7691655, 3.5221016, -2.7334545, 24.343285, 4.6778474, -22.973043, -4.755312, -0.46963054, 10.044168, 9.872577, -1.3911208, -9.602728, 3.5303805, 2.9159966, 0.1396699, -4.624076, 17.393024, 8.360764, 2.2042456, 10.651481, 5.002433, 0.3009476, 12.285471, -11.520262, 2.1999967, -16.848473, -5.460779, -4.1437287, 8.17589, -10.840496, 5.2292805, -19.541992, 12.310566, -6.09017, 8.689455, -1.9648497, 3.7690985, 6.8172774, 2.6563063, 6.1553736, -4.5703697, 4.6210165, 5.17357, -2.1383793, 13.547348, 0.9982165, -17.094284, 5.3135233, 12.515312, -9.36839, 1.7917885, 14.23435, 2.96333, 25.637074, -5.0175047, -3.9611087, 12.103988, -0.7709689, 6.39699, 1.3418213, -3.2266726, 6.357025, -5.07465]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 4.60s
+--- M28 fixture (f) classroom-6-far-field is dropped from the scored set
+thread 'meeting_eval_anti_alias_eer_scores_every_multi_speaker_fixture' (22084254) panicked at src-tauri/tests/meeting_eval.rs:4661:5:
 assertion `left == right` failed: the arm scores ["room-3-near-field"] but the corpus can carry an EER on ["classroom-6-far-field", "room-3-near-field"]
-  left: ["room-3-near-field"]
- right: ["classroom-6-far-field", "room-3-near-field"]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
 
-── M10 any value of the variable counts as a declaration
-$ cargo test --test meeting_eval anti_alias_eer_unmeasured_needs_an_explicit_declaration
-exit=101
-test meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration ... FAILED
-thread 'meeting_eval_anti_alias_eer_unmeasured_needs_an_explicit_declaration' (16425268) panicked at src-tauri/tests/meeting_eval.rs:4269:9:
-Some("") must not count as a declaration that this machine cannot measure an EER
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
-
-===========================================================================
-SECOND REVIEW PASS — "the expiry binds nowhere automated"
-===========================================================================
-
-The finding: the `YAP_EER_UNMEASURED_OK: "1"` this branch added to ci.yml was
-INERT. `meeting_eval_anti_alias_eer_regression` opens on `corpus()`, CI has no
-corpus, and the arm returns before the declaration is ever read — so CI was
-green with no declaration, the ci.yml comment named the wrong precondition
-(models, not the corpus), and the expiry reached exactly one machine in the
-world. Reproduced verbatim on the parent commit 5e84fc5:
-
-  $ YAP_EVAL_CORPUS=/nonexistent env -u YAP_EER_UNMEASURED_OK \
-      cargo test --features custom-protocol --test meeting_eval anti_alias
-  test result: ok. 8 passed; 0 failed        <- green, no declaration made
-
-The fix moves the expiry to a gate that needs neither the corpus nor a model
-(`..._unmeasured_expires_when_the_sidecar_gains_a_backend`), deletes the dead
-variable from ci.yml, and makes the local declaration name its REASON so a
-stale `export` cannot outlive the state it described. M11-M15 break each of
-those, one at a time.
-
-── M11 the sidecar gains a backend (the expiry's actual trigger)
-   yap-diarize/src/main.rs: `load_backend` returns Ok(Backend{embedding_dim:192})
-$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
-      anti_alias_eer_unmeasured_expires
-exit=101
-test meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend ... FAILED
-the expiry has FIRED: `yap-diarize` LOADED a backend from two files that are
-not models and reported 192-dimensional embeddings. Whatever else that is, it
-is not `no_backend` — measure YV124's EER (see the sibling panic message)
-rather than leaving `EER: UNMEASURED` standing.
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
-  NOTE: no corpus and no catalog model on this run. That is the point — this
-  is the half of the expiry CI can hold, and it holds it in 0.15 s.
-
-── M12 the sidecar answers with a different refusal tag
-   yap-diarize/src/main.rs: `load_backend` returns Err(ERR_MODEL_NOT_FOUND)
-$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
-      anti_alias_eer_unmeasured_expires
-exit=101
-the expiry has FIRED: `yap-diarize` answered `model_not_found` rather than
-`no_backend`, which means this build has an inference backend and the probe
-files were merely rejected by it.
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
-
-── M13 the dead ci.yml variable comes back
-   .github/workflows/ci.yml: re-add `env: YAP_EER_UNMEASURED_OK: "1"`
-$ YAP_EVAL_CORPUS=/nonexistent cargo test --test meeting_eval \
-      anti_alias_eer_ci_does_not
-exit=101
-test meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches ... FAILED
-ci.yml sets YAP_EER_UNMEASURED_OK but never sets YAP_EVAL_CORPUS, so
-`meeting_eval_anti_alias_eer_regression` returns at its `corpus()` line and the
-declaration is never read. Dead configuration that reads like a gate is worse
-than no configuration: either give CI the corpus (and then this test steps
-aside), or leave the variable out and let
-`meeting_eval_anti_alias_eer_unmeasured_expires_when_the_sidecar_gains_a_backend`
-be CI's half of the expiry.
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
-
-── M14 the old bare-`1` escape hatch, on a corpus machine
-   Nothing edited. The value the previous revision accepted, offered again.
-$ YAP_EER_UNMEASURED_OK=1 cargo test --test meeting_eval anti_alias_eer_regression
-exit=101
-test meeting_eval_anti_alias_eer_regression ... FAILED
-the EER half of OS-8's arm did not run and this machine did not declare why.
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
-  This is the "one `export` away from permanent" half of the finding: a bare
-  `1` is no longer a declaration at all.
-
-── M15 a stale declaration for a reason that is no longer this machine's
-   Nothing edited. `models_missing` exported on a machine whose reason is
-   `no_backend` — the shape a shell-profile export takes once the world moves.
-$ YAP_EER_UNMEASURED_OK=models_missing cargo test --test meeting_eval \
-      anti_alias_eer_regression
-exit=101
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 41 filtered out
-  The same in reverse (`no_backend` exported when the reason has become
-  `models_missing`) is pinned as a pure table in
-  `..._unmeasured_needs_an_explicit_declaration`, which is what makes today's
-  declaration expire by itself the day YV122 lands.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 9.90s
+--- M27 the floor handed to embed() is Duration::ZERO — nothing is ever refused
+thread 'meeting_eval_anti_alias_eer_regression' (22086287) panicked at src-tauri/tests/meeting_eval.rs:4188:27:
+a clip half the length of the floor came back as a 512-float vector instead of a refusal, so the floor this arm passes below is inert and every embedding under it is a number nobody measured
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 4.68s
