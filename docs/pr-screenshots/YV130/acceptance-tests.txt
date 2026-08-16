@@ -1,12 +1,12 @@
 $ cargo test --test db_migration_idempotent
-     Running tests/db_migration_idempotent.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/db_migration_idempotent-4a68e18c2ee6087c)
+     Running tests/db_migration_idempotent.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/db_migration_idempotent-4a68e18c2ee6087c)
 
 running 11 tests
-test a_pre_ladder_database_upgrades_without_losing_rows ... ok
 test migration_five_creates_the_history_table_and_its_indexes ... ok
-test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
+test a_pre_ladder_database_upgrades_without_losing_rows ... ok
 test a_newer_database_is_left_alone ... ok
 test migration_one_creates_the_whole_meeting_schema ... ok
+test a_fresh_database_lands_on_the_current_version_with_every_column_present ... ok
 test opening_the_db_twice_is_a_no_op ... ok
 test a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments ... ok
 test migration_five_adds_the_correction_columns_without_touching_existing_rows ... ok
@@ -18,7 +18,7 @@ test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 
 $ cargo test --test reassign_and_merge_are_pure_db_ops
-     Running tests/reassign_and_merge_are_pure_db_ops.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/reassign_and_merge_are_pure_db_ops-a06513e462440d57)
+     Running tests/reassign_and_merge_are_pure_db_ops.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/reassign_and_merge_are_pure_db_ops-a06513e462440d57)
 
 running 4 tests
 test a_cluster_cannot_be_merged_into_itself ... ok
@@ -30,29 +30,33 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 $ cargo test --test split_cluster_uses_retained_embeddings
-     Running tests/split_cluster_uses_retained_embeddings.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/split_cluster_uses_retained_embeddings-215e0cdbe8eda144)
+     Running tests/split_cluster_uses_retained_embeddings.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/split_cluster_uses_retained_embeddings-215e0cdbe8eda144)
 
-running 8 tests
+running 12 tests
+test mixed_embedding_widths_are_refused ... ok
+test the_partition_refuses_a_single_zero_vector_among_real_ones ... ok
 test an_indistinguishable_cluster_is_refused_rather_than_halved ... ok
 test fewer_than_two_members_is_refused ... ok
-test mixed_embedding_widths_are_refused ... ok
+test an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved ... ok
 test the_partition_is_deterministic_and_both_parts_are_non_empty ... ok
 test a_second_split_takes_the_next_free_index ... ok
-test members_without_an_embedding_stay_put_and_are_reported ... ok
 test a_cluster_with_no_retained_embeddings_refuses_to_split ... ok
+test members_without_an_embedding_stay_put_and_are_reported ... ok
+test an_all_zero_cluster_refuses_through_the_database_path_too ... ok
+test one_degenerate_vector_does_not_hijack_the_seeding ... ok
 test a_merged_cluster_splits_back_into_its_two_original_clusters ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
 
 $ cargo test --test retroactive_relabel_apply_and_undo
-     Running tests/retroactive_relabel_apply_and_undo.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/retroactive_relabel_apply_and_undo-366891a680338944)
+     Running tests/retroactive_relabel_apply_and_undo.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/retroactive_relabel_apply_and_undo-366891a680338944)
 
 running 6 tests
 test an_offer_with_nothing_to_change_is_empty ... ok
 test undoing_twice_is_a_no_op ... ok
-test already_this_speaker_is_not_in_the_batch ... ok
 test undo_declines_to_clobber_a_later_hand_correction ... ok
+test already_this_speaker_is_not_in_the_batch ... ok
 test deleting_a_meeting_deletes_its_relabel_history ... ok
 test apply_writes_one_batch_and_one_undo_restores_every_prior_value ... ok
 
@@ -60,7 +64,7 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 $ cargo test --test retroactive_relabel_never_touches_locked
-     Running tests/retroactive_relabel_never_touches_locked.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/retroactive_relabel_never_touches_locked-ff7cde9556b03587)
+     Running tests/retroactive_relabel_never_touches_locked.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/retroactive_relabel_never_touches_locked-ff7cde9556b03587)
 
 running 3 tests
 test a_hand_correction_is_what_makes_a_segment_ineligible ... ok
@@ -71,7 +75,7 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 $ cargo test --test correction_ships_no_tuned_threshold
-     Running tests/correction_ships_no_tuned_threshold.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/correction_ships_no_tuned_threshold-c655d73817505691)
+     Running tests/correction_ships_no_tuned_threshold.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/correction_ships_no_tuned_threshold-c655d73817505691)
 
 running 3 tests
 test a_trailing_comment_does_not_hide_a_threshold ... ok
@@ -81,18 +85,24 @@ test the_correction_module_holds_no_float_literal ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-$ cargo test --test meeting_kind_branch
-     Running tests/meeting_kind_branch.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap-target/debug/deps/meeting_kind_branch-f68ae111b730b55a)
+$ cargo test --test diarization_metrics
+     Running tests/diarization_metrics.rs (/private/tmp/claude-501/-Users-wilsonguenther/8d185a15-12c3-4563-8911-350c4b2c4940/scratchpad/yap23-fix-yv130/desktop/target/debug/deps/diarization_metrics-1a80e1b4121c1a6c)
 
-running 7 tests
-test only_a_call_with_a_live_second_track_may_call_the_mic_me ... ok
-test the_branch_is_not_vacuous ... ok
-test the_diarization_target_follows_the_kind_and_the_second_track ... ok
-test the_system_track_is_never_this_user_under_either_branch ... ok
-test speaker_label_decides_on_the_target_and_never_on_an_identity_flag ... ok
-test the_label_follows_the_same_branch_the_target_does ... ok
-test the_two_cluster_half_of_the_manual_criterion_expires_when_yv126_lands ... ok
+running 13 tests
+test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
+test cosine_distance_and_similarity_conversion_round_trips ... ok
+test is_zero_norm_agrees_with_the_similarity_guard_it_defuses ... ok
+test eer_is_near_zero_for_well_separated_scores ... ok
+test eer_is_near_half_for_fully_overlapping_scores ... ok
+test der_counts_overlapped_reference_speech_once_per_speaker ... ok
+test der_matches_hand_worked_example ... ok
+test jer_matches_hand_worked_example ... ok
+test jer_exposes_a_speaker_der_hides ... ok
+test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
+test rttm_turns_round_trip_through_the_standard_line_format ... ok
+test no_threshold_shaped_declaration_takes_a_bare_float ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 

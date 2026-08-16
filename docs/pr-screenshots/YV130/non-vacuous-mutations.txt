@@ -168,3 +168,83 @@ A green line here would mean the test is decoration.
       thread 'a_locked_segment_is_excluded_even_when_its_embedding_matches_exactly' (19383591) panicked at src-tauri/tests/retroactive_relabel_never_touches_locked.rs:53:5:
       test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
       error: test failed, to rerun pass `--test retroactive_relabel_never_touches_locked`
+
+── the zero-norm fix (added after the panel's BLOCKING finding) ──────────────
+The finding was that `cosine_similarity` answers 0.0 for a zero-norm vector
+meaning "no information", and `CosineDistance::from_similarity(0.0)` is 1.0
+meaning "far" — so split read a degenerate embedding as the most distinctive
+voice in the cluster. Both halves of the fix are broken separately below,
+because they close different halves of the failure.
+
+=== M10 — both zero-norm guards removed (the state the panel probed)
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test split_cluster_uses_retained_embeddings
+    exit: 101
+      test an_indistinguishable_cluster_is_refused_rather_than_halved ... ok
+      test fewer_than_two_members_is_refused ... ok
+      test mixed_embedding_widths_are_refused ... ok
+      test the_partition_is_deterministic_and_both_parts_are_non_empty ... ok
+      test an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved ... FAILED
+      test the_partition_refuses_a_single_zero_vector_among_real_ones ... FAILED
+      test a_second_split_takes_the_next_free_index ... ok
+      test an_all_zero_cluster_refuses_through_the_database_path_too ... FAILED
+      test one_degenerate_vector_does_not_hijack_the_seeding ... FAILED
+      test a_cluster_with_no_retained_embeddings_refuses_to_split ... ok
+      test members_without_an_embedding_stay_put_and_are_reported ... ok
+      test a_merged_cluster_splits_back_into_its_two_original_clusters ... ok
+      ---- an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved stdout ----
+      thread 'an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved' (19463136) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:217:41:
+      ---- the_partition_refuses_a_single_zero_vector_among_real_ones stdout ----
+      thread 'the_partition_refuses_a_single_zero_vector_among_real_ones' (19463144) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:333:5:
+      ---- an_all_zero_cluster_refuses_through_the_database_path_too stdout ----
+      thread 'an_all_zero_cluster_refuses_through_the_database_path_too' (19463137) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:249:48:
+      ---- one_degenerate_vector_does_not_hijack_the_seeding stdout ----
+      thread 'one_degenerate_vector_does_not_hijack_the_seeding' (19463142) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:292:5:
+      test result: FAILED. 8 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+      error: test failed, to rerun pass `--test split_cluster_uses_retained_embeddings`
+
+=== M11 — split_cluster stops filtering degenerate members (pure guard kept)
+    file: desktop/src-tauri/src/speaker_corrections.rs
+    test: cargo test --test split_cluster_uses_retained_embeddings
+    exit: 101
+      test fewer_than_two_members_is_refused ... ok
+      test mixed_embedding_widths_are_refused ... ok
+      test an_indistinguishable_cluster_is_refused_rather_than_halved ... ok
+      test the_partition_refuses_a_single_zero_vector_among_real_ones ... ok
+      test the_partition_is_deterministic_and_both_parts_are_non_empty ... ok
+      test an_all_zero_cluster_is_refused_rather_than_arbitrarily_halved ... ok
+      test an_all_zero_cluster_refuses_through_the_database_path_too ... FAILED
+      test one_degenerate_vector_does_not_hijack_the_seeding ... FAILED
+      test a_second_split_takes_the_next_free_index ... ok
+      test a_merged_cluster_splits_back_into_its_two_original_clusters ... ok
+      test a_cluster_with_no_retained_embeddings_refuses_to_split ... ok
+      test members_without_an_embedding_stay_put_and_are_reported ... ok
+      ---- an_all_zero_cluster_refuses_through_the_database_path_too stdout ----
+      thread 'an_all_zero_cluster_refuses_through_the_database_path_too' (19463755) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:251:5:
+      ---- one_degenerate_vector_does_not_hijack_the_seeding stdout ----
+      thread 'one_degenerate_vector_does_not_hijack_the_seeding' (19463760) panicked at src-tauri/tests/split_cluster_uses_retained_embeddings.rs:291:52:
+      test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+      error: test failed, to rerun pass `--test split_cluster_uses_retained_embeddings`
+
+=== M12 — is_zero_norm stops agreeing with cosine_similarity's own guard
+    file: desktop/src-tauri/src/diarize_metrics.rs
+    test: cargo test --test diarization_metrics
+    exit: 101
+      test cosine_similarity_is_bounded_and_survives_a_zero_embedding ... ok
+      test cosine_distance_and_similarity_conversion_round_trips ... ok
+      test reading_a_similarity_as_a_distance_would_halve_the_strictness ... ok
+      test eer_is_near_half_for_fully_overlapping_scores ... ok
+      test eer_is_near_zero_for_well_separated_scores ... ok
+      test der_counts_overlapped_reference_speech_once_per_speaker ... ok
+      test jer_exposes_a_speaker_der_hides ... ok
+      test is_zero_norm_agrees_with_the_similarity_guard_it_defuses ... FAILED
+      test der_matches_hand_worked_example ... ok
+      test jer_matches_hand_worked_example ... ok
+      test rttm_turns_round_trip_through_the_standard_line_format ... ok
+      test der_is_zero_when_the_hypothesis_only_renamed_the_speakers ... ok
+      test no_threshold_shaped_declaration_takes_a_bare_float ... ok
+      ---- is_zero_norm_agrees_with_the_similarity_guard_it_defuses stdout ----
+      thread 'is_zero_norm_agrees_with_the_similarity_guard_it_defuses' (19464339) panicked at src-tauri/tests/diarization_metrics.rs:336:5:
+      test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      error: test failed, to rerun pass `--test diarization_metrics`
+
