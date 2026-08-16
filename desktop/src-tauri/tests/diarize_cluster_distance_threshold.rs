@@ -24,7 +24,9 @@ mod support;
 use std::path::Path;
 
 use support::diarize_stub::{angle_for_distance, ray, stub_returning, stub_with_body, StubTurn};
-use wilson_voice_lib::diarize::{cluster_by_distance_threshold, cluster_track, DiarizePool, MeetingTracks, TargetMode};
+use wilson_voice_lib::diarize::{
+    cluster_by_distance_threshold, cluster_track, DiarizePool, MeetingTracks, TargetMode,
+};
 use wilson_voice_lib::diarize_metrics::{cosine_similarity, CosineDistance, CosineSimilarity};
 use wilson_voice_lib::meetings::{MeetingKind, MIC_TRACK};
 
@@ -61,12 +63,18 @@ fn one_pair_groups_below_the_threshold_and_splits_above_it() {
 
     let points: Vec<&[f32]> = vec![&a, &b];
     assert_eq!(
-        distinct(&cluster_by_distance_threshold(&points, CosineDistance::new(0.35))),
+        distinct(&cluster_by_distance_threshold(
+            &points,
+            CosineDistance::new(0.35)
+        )),
         1,
         "0.30 apart, threshold 0.35: one speaker"
     );
     assert_eq!(
-        distinct(&cluster_by_distance_threshold(&points, CosineDistance::new(0.25))),
+        distinct(&cluster_by_distance_threshold(
+            &points,
+            CosineDistance::new(0.25)
+        )),
         2,
         "0.30 apart, threshold 0.25: two speakers"
     );
@@ -91,9 +99,21 @@ fn cluster_track_groups_and_splits_at_the_threshold_it_was_given() {
     ];
 
     for (threshold, expected, note) in [
-        (0.35f32, vec![0i64, 0, 1], "two voices: the near pair merges, the far turn does not"),
-        (0.05, vec![0, 1, 2], "a threshold under every gap: three singletons"),
-        (0.95, vec![0, 0, 0], "a threshold over every gap: one cluster, correctly"),
+        (
+            0.35f32,
+            vec![0i64, 0, 1],
+            "two voices: the near pair merges, the far turn does not",
+        ),
+        (
+            0.05,
+            vec![0, 1, 2],
+            "a threshold under every gap: three singletons",
+        ),
+        (
+            0.95,
+            vec![0, 0, 0],
+            "a threshold over every gap: one cluster, correctly",
+        ),
     ] {
         let pool = DiarizePool::new(stub_returning(turns.clone()), READY);
         let mic = Path::new("/tmp/does-not-need-to-exist.wav");
@@ -197,7 +217,9 @@ fn the_public_clustering_api_takes_a_typed_distance() {
         "pub fn cluster_by_distance_threshold(",
         "pub fn cluster_track(",
     ] {
-        let at = src.find(signature).unwrap_or_else(|| panic!("{signature} is gone"));
+        let at = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is gone"));
         let body = &src[at..at + 400];
         let head = body.split(") ->").next().unwrap_or_default();
         assert!(
@@ -244,6 +266,13 @@ fn the_public_clustering_api_takes_a_typed_distance() {
 /// this file is the same failure wearing a different newtype.
 #[test]
 fn no_tuned_clustering_constant_ships_in_the_crate() {
+    /// The ONE fractional constant this file is allowed to hold, and the
+    /// reason: it is a surfacing floor from the audit's own finding #25 — it
+    /// changes what a person is shown, never what is computed or stored — so
+    /// there is no measurement it could be an output of. Adding a name here is
+    /// the deliberate act this test exists to force.
+    const SURFACING_FLOORS: [&str; 1] = ["CHIP_FLOOR_SECONDS"];
+
     let src = include_str!("../src/diarize.rs");
     for line in src.lines() {
         let code = line.split("//").next().unwrap_or_default();
@@ -260,5 +289,31 @@ fn no_tuned_clustering_constant_ships_in_the_crate() {
                  {line}"
             );
         }
+        // …and the same number wearing a bare `f32` is the same failure. A
+        // `const DEFAULT_ENROLLMENT_BAND: f32 = 0.70;` types as a plain float
+        // and would sail past the unit check above, which is exactly how
+        // OpenWhispr's blog bands would arrive.
+        let Some((name, value)) = code.split_once('=') else {
+            continue;
+        };
+        let name = name
+            .rsplit_once(':')
+            .map(|(before, _)| before)
+            .unwrap_or(name);
+        let name = name.split_whitespace().next_back().unwrap_or_default();
+        let value = value.trim().trim_end_matches(';').trim();
+        let fractional = value.contains('.')
+            && value
+                .trim_end_matches("f32")
+                .trim_end_matches("f64")
+                .parse::<f64>()
+                .is_ok();
+        assert!(
+            !fractional || SURFACING_FLOORS.contains(&name),
+            "the fractional constant `{name} = {value}` has appeared in \
+             diarize.rs. If it is an accuracy threshold it may not ship — it is \
+             an OUTPUT of the eval harness. If it is a surfacing floor, name it \
+             in SURFACING_FLOORS and say why."
+        );
     }
 }
