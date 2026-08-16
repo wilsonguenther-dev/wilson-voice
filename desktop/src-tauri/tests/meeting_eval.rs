@@ -96,9 +96,9 @@ use wilson_voice_lib::diarize_metrics::{der, jer, RttmTurn};
 use wilson_voice_lib::meeting_asr::{
     merge_chunk_tokens, merge_chunk_tokens_reporting, merge_timed, merge_timed_reporting,
     plan_windows, plan_windows_fixed, timestamps_are_usable, BoundaryKind, ChunkConfig,
-    ChunkOutcome, ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, ResumePoint,
-    SampleWindows, SeamDecision, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP,
-    MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET, SEAM_TRUNCATION_SLACK,
+    ChunkOutcome, ChunkStatus, ChunkWindow, MemoryWindows, MergeReport, ResumePoint, SampleWindows,
+    SeamDecision, VoiceActivity, MAX_ANCHOR_TOKENS, MAX_HEAD_SKIP, MAX_TAIL_TRIM,
+    OVERLAP_TOKEN_BUDGET, SEAM_TRUNCATION_SLACK,
 };
 use wilson_voice_lib::vad::WarmVad;
 
@@ -812,10 +812,15 @@ struct Segment {
 /// boundaries, and never outside [25 s, 35 s], so nothing below depends on
 /// which arm ran.
 fn chunk_plan(total_seconds: f64) -> Vec<(f64, f64)> {
-    plan_windows_fixed(total_seconds, ResumePoint::start(), &ChunkConfig::default(), 0)
-        .iter()
-        .map(|w| (w.audio_start_seconds, w.audio_end_seconds))
-        .collect()
+    plan_windows_fixed(
+        total_seconds,
+        ResumePoint::start(),
+        &ChunkConfig::default(),
+        0,
+    )
+    .iter()
+    .map(|w| (w.audio_start_seconds, w.audio_end_seconds))
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1888,7 +1893,10 @@ fn meeting_eval_lecture_segment_timestamps_are_sorted() {
             "the model's own timestamps came out unsorted after the merge"
         );
         assert!(
-            decode.timed_spans.iter().all(|s| s.end_seconds >= s.start_seconds),
+            decode
+                .timed_spans
+                .iter()
+                .all(|s| s.end_seconds >= s.start_seconds),
             "a span ends before it starts"
         );
         // Every span belongs to the window that owns its midpoint, so the whole
@@ -2084,7 +2092,10 @@ fn meeting_eval_seam_dedupe_and_ordering_hold() {
             panic!("{SEAM_STRESS} (timed merge): {why}");
         }
         let timed_starts: Vec<f64> = decode.timed_spans.iter().map(|s| s.start_seconds).collect();
-        assert!(timed_starts.is_sorted(), "the timed merge came out unsorted");
+        assert!(
+            timed_starts.is_sorted(),
+            "the timed merge came out unsorted"
+        );
     }
 }
 
@@ -2138,10 +2149,20 @@ fn meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap() {
 
     let (rate, samples) = read_wav_i16(&root.join(LECTURE).join("audio.wav"));
     assert_eq!(rate, TARGET_RATE);
-    let floats: Vec<f32> = samples.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+    let floats: Vec<f32> = samples
+        .iter()
+        .map(|&s| s as f32 / i16::MAX as f32)
+        .collect();
     let audio = MemoryWindows::new(floats, TARGET_RATE);
     let cfg = ChunkConfig::default();
-    let plan = plan_windows(&audio, Some(&vad as &dyn VoiceActivity), ResumePoint::start(), &cfg, 0).expect("plan");
+    let plan = plan_windows(
+        &audio,
+        Some(&vad as &dyn VoiceActivity),
+        ResumePoint::start(),
+        &cfg,
+        0,
+    )
+    .expect("plan");
 
     // (1) Every interior boundary is a pause, inside the search window.
     let clock_cuts = plan
@@ -2214,7 +2235,11 @@ fn meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap() {
         }
         let margin = voiced
             .iter()
-            .map(|s| (cut - s.end_seconds).abs().min((s.start_seconds - cut).abs()))
+            .map(|s| {
+                (cut - s.end_seconds)
+                    .abs()
+                    .min((s.start_seconds - cut).abs())
+            })
             .fold(f64::INFINITY, f64::min);
         if margin.is_finite() {
             margins.push(margin);
@@ -2243,9 +2268,15 @@ fn meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap() {
     let decode = Decoder::new().decode_plan(&samples, "lecture-vad", &plan);
     let reference = normalize(&read_reference(&root, LECTURE));
     let fallback = wer(&reference, &decode.merged);
-    eprintln!("{LECTURE} (VAD-cut): text-anchor merge {fallback}; {:?}", decode.merge);
+    eprintln!(
+        "{LECTURE} (VAD-cut): text-anchor merge {fallback}; {:?}",
+        decode.merge
+    );
     assert_eq!(decode.merge.no_anchor_seams, 0);
-    assert!(fallback.wer() <= WER_GATE, "VAD-cut fallback merge: {fallback}");
+    assert!(
+        fallback.wer() <= WER_GATE,
+        "VAD-cut fallback merge: {fallback}"
+    );
 
     if decode.timestamps_are_real {
         let timed = wer(&reference, &decode.timed_tokens());
@@ -3487,9 +3518,16 @@ fn synthesize(text: &str, rate_hz: u32) -> Vec<i16> {
 ///
 /// The voice is a parameter and not a constant because the diarization fixtures
 /// are the only place in this corpus where WHO is speaking is the measured
-/// quantity. `say -v` fails loudly on a voice that is not installed, so a
-/// fixture roster naming a voice this machine does not have cannot be rendered
-/// as a silent fallback to the default voice.
+/// quantity.
+///
+/// **`say -v` does not fail on a voice this machine lacks** — it exits 0 and
+/// renders with a fallback (measured under YV122; two different nonsense voice
+/// names produce byte-identical audio). What protects THIS corpus is not the
+/// exit code but the committed hashes: a roster that collapsed would change the
+/// generated bytes, and `meeting_eval_corpus_matches_committed_sha256s` fails
+/// on the mismatch. A fixture generated fresh with no committed hash to check
+/// against has no such protection and must assert the roster itself — see
+/// `support/diarize_models.rs::assert_voices_are_distinct`.
 fn synthesize_with(text: &str, voice: &str, rate_hz: u32) -> Vec<i16> {
     let scratch = std::env::temp_dir().join("yap-meeting-eval-gen");
     fs::create_dir_all(&scratch).expect("scratch dir");

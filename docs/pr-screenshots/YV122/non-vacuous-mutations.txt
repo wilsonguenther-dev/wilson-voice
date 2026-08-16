@@ -1,0 +1,206 @@
+YV122 — non-vacuity record. 14 mutations, 14 caught, 0 survivors.
+
+Every mutation was applied to the COMMITTED baseline b8a6fb4 and reverted with
+`git checkout -- <file>` (YV121's harness learning: reverting a dirty tree
+leaves untracked mutations in place while destroying real edits).
+
+Where a mutation lives in `yap-diarize`, the sidecar was rebuilt AND re-staged
+into `src-tauri/binaries/` before the guarding test ran — `bundle.externalBin`
+means the app crate compiles against the staged binary, so a mutation that is
+only rebuilt is a mutation the integration tests never see.
+
+────────────────────────────────────────────────────────────────────────────
+M1  clustering_from returns `1.0 - clustering_distance_threshold`
+    — the inversion merged finding #20 is about, one character wide.
+    CAUGHT  yap-diarize the_clustering_distance_reaches_sherpa_unconverted
+            main.rs:609 "the similarity twin of 0 reached FastClusteringConfig"
+
+M2  load_backend reports `embedding_dim: 192` instead of `extractor.dim()`
+    — the plan's own number, hardcoded. This is the mutation the spec's
+      original acceptance criterion (`assert embedding_dim == 192`) would
+      have PASSED.
+    CAUGHT  sherpa_load_smoke sherpa_loads_both_models_...measured_embedding_width
+            sherpa_load_smoke.rs:126
+
+M3  the `looks_like_onnx` sniff is removed from load_backend
+    CAUGHT  yap-diarize bytes_that_are_not_an_onnx_model_never_reach_onnxruntime
+            not a failed assertion — `libc++abi: terminating due to uncaught
+            exception of type Ort::Exception`, signal 6 SIGABRT. Which is the
+            finding: onnxruntime's answer to bad bytes is not a return value.
+
+M4  diarize_wav drops the `wave.sample_rate() != model_rate` refusal
+    CAUGHT  diarize_embed_smoke a_two_voice_track_diarizes_...never_merges_more
+            diarize_embed_smoke.rs:305 (the 44.1 kHz arm)
+
+M5  `sherpa-onnx = "=1.13.4"` added to src-tauri/Cargo.toml
+    — the duplicate-onnxruntime link that forced this sidecar to exist.
+    CAUGHT  supply_chain diarize_sidecar_pins_sherpa_onnx_exactly:292
+
+M6  `sherpa-onnx-sys = { version = "1.13.4" }` — the caret range the wrapper
+    itself declares, i.e. the state of the world before this item pinned it.
+    CAUGHT  supply_chain diarize_sidecar_pins_sherpa_onnx_exactly:313
+            (`exact_pin` — "must be pinned with `=`")
+
+M7  a new `pub fn set_default_threshold(&self, threshold: f32)` on DiarizePool
+    CAUGHT  diarize_wire_unit_discipline
+            no_unsanctioned_bare_float_threshold_exists_on_the_diarization_surface:213
+            — and the message names the file, function and parameter, so the
+            failure says which boundary grew rather than that a count changed.
+
+M8  DiarizePool::diarize widens its parameter from CosineDistance to f32
+    CAUGHT  diarize_wire_unit_discipline does not COMPILE
+            error[E0308]: mismatched types (the fn-pointer const). A signature
+            regression is a build failure, not a test failure.
+
+M9  `eprintln!` → `println!` on the per-turn embedding diagnostic
+    CAUGHT  yap-diarize stdout_carries_the_protocol_and_nothing_else:521
+
+M10 embed_span returns Vec::new() for every turn
+    — the "an empty embedding is a legitimate answer" escape hatch, swallowing
+      everything.
+    CAUGHT  diarize_embed_smoke ...:277 "no turn produced an embedding"
+
+M11 the request's threshold is validated and then discarded for
+    `FastClusteringConfig::default()` (sherpa's 0.5)
+    — the resident-diarizer bug this item's per-request construction exists to
+      make impossible, reintroduced by hand.
+    CAUGHT  diarize_embed_smoke ...:286 (the monotonicity assertion: tight and
+            loose produce the same clustering)
+
+M12 `ERR_NO_BACKEND` reinstated beside ERR_MODEL_LOAD_FAILED
+    CAUGHT  diarize_protocol_tags_are_distinct_and_the_backendless_tag_is_gone
+            (fails in BOTH crates — the shared `#[path]` file compiled by each
+            end of the wire)
+
+M13 every turn is filed under `cluster: 0`, discarding `turn.speaker`
+    CAUGHT  diarize_embed_smoke ...:286 (tight no longer yields more clusters)
+
+M14 the census scanner's `names_a_unit` is short-circuited to `false`
+    — the test-of-the-test. A scanner that finds nothing must not pass.
+    CAUGHT  BOTH no_unsanctioned_bare_float_threshold_... AND
+            the_census_would_catch_a_new_bare_float_threshold, which is the
+            point of the second one existing.
+────────────────────────────────────────────────────────────────────────────
+
+Notes on coverage this record does NOT claim:
+
+* The population claims in `camplus_embeddings_track_the_speaker_across_utterances`
+  (genuine mean > impostor mean, per-voice) are not mutation-covered here —
+  their non-vacuity comes from the substrate itself: the same test measures an
+  EER of 0.272 and asserts the distributions overlap, so it is demonstrably
+  not asserting something trivially true.
+* Nothing here covers a TRUNCATED but validly-headed ONNX file. M3 is why:
+  that case aborts the process, and no assertion inside the process can
+  observe it. The three layers that do are YV123's sha256, the sniff, and the
+  process boundary itself.
+
+════════════════════════════════════════════════════════════════════════════
+REVISION (review fix, BLOCKING #2 of 2) — the roster guard
+════════════════════════════════════════════════════════════════════════════
+
+The substrate fact this rests on, measured on this machine BEFORE any code
+was written:
+
+    $ say -v Bogus  -o /tmp/b1.aiff "hello there" ; echo $?   → 0  (empty stderr, 34 KB)
+    $ say -v ZzzQqq -o /tmp/b2.aiff "hello there" ; echo $?   → 0  (empty stderr, 34 KB)
+    $ md5 -q /tmp/b1.aiff /tmp/b2.aiff
+    01bc7b9486b8dcaa66f203af103e3603
+    01bc7b9486b8dcaa66f203af103e3603
+
+Two unrelated nonsense names render BYTE-IDENTICALLY. `say` does not fail on
+an absent voice; it renders one fallback for all of them. `assert!(say.success())`
+was therefore never checking the voice.
+
+Three mutations, each run to completion:
+
+M15 roster names a voice this Mac does not have ("Ralph" → "Bogus")
+    CAUGHT  support/diarize_models.rs:314 — listing check, in 0.44 s, before
+            a model is loaded or an embedding computed.
+
+M16 listing check disabled; roster uses "Bogus1"/"Bogus2"
+    — isolates check (2). A listed-but-not-downloaded voice would reach here.
+    CAUGHT  support/diarize_models.rs:337
+            "Samantha and Bogus1 render the same probe line to byte-identical
+             audio" — note WHICH voice: the fallback is Samantha, already in
+            the roster, so an absent voice does not merely vanish, it doubles
+            an existing speaker.
+
+M17 BOTH preconditions disabled; roster uses "Bogus1"/"Bogus2"
+    — isolates the post-hoc degeneracy guard at the measurement layer.
+    Run with the two population asserts neutralised, so that the guard under
+    test is the only one left standing.
+    CAUGHT  diarize_embed_smoke.rs:239 at impostor max 1.0000.
+
+    The finding's central claim, reproduced rather than restated: in this same
+    run the overlap tripwire `impostor_max > genuine_min` PASSED (1.0000 >
+    0.5864) — it is satisfied MORE easily by the collapse it was the only
+    thing watching for. And the published number moved silently: EER 0.272 at
+    similarity 0.6422 became EER 0.291 at 0.8418. A collapsed roster does not
+    fail loudly; it publishes a different number.
+
+Honest note on M17 as first run: with the preconditions disabled but the
+population asserts left in place, the failure came from the PRE-EXISTING
+per-voice assert (Rishi's genuine mean 0.6950 fell under an impostor mean
+inflated to 0.7154 by three identical voices), NOT from the new guard. That
+is substrate luck — it depends on the fallback voice being in the roster and
+on Rishi being weak — and it is not evidence for the new assertion. Hence
+M17 above, which removes that luck and shows the new guard firing alone.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+REVIEW FIX #3 — the two blocking findings on head a2aedcd, plus the rebase
+M18-M25.  8 mutations, 8 caught, 0 survivors.
+
+Every sidecar mutation is rebuilt AND RE-STAGED into src-tauri/binaries before
+the test runs (bundle.externalBin means the app's integration tests execute the
+STAGED binary — a rebuild alone reads as a survivor; that is this item's own
+harness learning from round 1).
+
+M18 embed_turn ignores the mask:  `let exclusive = vec![span];`
+    — the defect finding 2 describes, restored exactly.
+    CAUGHT  diarize_embed_smoke.rs:554
+            "a floor above every turn's exclusive audio must leave no vector
+             at all, got [512, 512]" — with the mask off, both turns keep
+            their full 5.06 s / 5.87 s spans and clear a floor set above the
+            longest EXCLUSIVE span (2.75 s).
+
+M19 shared_regions counts depth >= 1 instead of >= 2
+    — "shared" becomes "covered at all", so every turn loses all of its audio.
+    CAUGHT  yap-diarize/src/main.rs:988
+            left [(480, 125440)] vs right [(31520, 81440)].
+
+M20 exclusive_of returns the whole span unconditionally
+    CAUGHT  yap-diarize/src/main.rs (same test), right [(480, 31520)].
+
+M21 min_embed_samples returns 0 (instead of usize::MAX) for a negative, NaN
+    or rate-less request — i.e. a bad floor silently means "no floor".
+    CAUGHT  tests::the_floor_rounds_toward_refusing, right 18446744073709551615.
+
+M22 diarize_wav defaults a missing floor: `.unwrap_or(0.0)`
+    — the compatibility hole: an older parent beside a newer staged sidecar
+    goes back to embedding every fragment, silently.
+    CAUGHT  diarize_embed_smoke.rs "a diarize request with no floor must be
+            refused, never defaulted" (left None, right Some("missing_field")).
+
+M23 embed_wav skips the floor entirely (the enrollment path)
+    CAUGHT  diarize_embed_smoke.rs "with a floor, the same clip is a refusal
+            that says why" (left None, right Some("audio_too_short")).
+
+M24 a default is written down anyway:
+    `const MIN_EMBED_DEFAULT: Duration = Duration::from_secs(2);` in diarize.rs
+    CAUGHT  diarize_wire_unit_discipline.rs::no_default_embedding_floor_is_
+            written_down_anywhere — names the file and the line it found.
+
+M25 the app manifest declares `sherpa-onnx = "=1.13.4"`
+    — the guard the rebase broke and this round rewrote. The old version was
+    `!CARGO_TOML.contains("sherpa-onnx")`, which went red on a YV123 COMMENT
+    naming sherpa-onnx-pyannote-segmentation-3-0.tar.bz2 and would have been
+    satisfied by commenting a real dependency out. The comment-stripped version
+    ignores the comment and still catches the dependency.
+    CAUGHT  supply_chain.rs:308, printing the offending line.
+
+NOT A MUTATION, but recorded because it is the same class: the compile-time
+guard `_CLUSTERING_API_TAKES_A_DISTANCE_AND_A_DURATION` in
+diarize_wire_unit_discipline.rs means "drop the floor parameter back to a
+default" is a COMPILE error in the test file, not a runtime finding. Same for
+`_ENROLLMENT_API_TAKES_A_DURATION` on the embed path.

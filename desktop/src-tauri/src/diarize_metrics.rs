@@ -139,8 +139,9 @@ impl CosineDistance {
 /// genuine nor impostor.
 ///
 /// # Panics
-/// If the two embeddings are of different length — comparing a 192-dim CAM++
-/// vector against anything else is a bug at the call site, not a low score.
+/// If the two embeddings are of different length — comparing a CAM++ vector
+/// (512-dim, measured) against a ResNet34 one (256-dim, measured) or against
+/// anything else is a bug at the call site, not a low score.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> CosineSimilarity {
     assert_eq!(
         a.len(),

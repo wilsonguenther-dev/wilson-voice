@@ -1,0 +1,69 @@
+YV122 — min_embed_seconds tuning sweep (the measurement behind the floor, and behind NOT setting one)
+
+machine : macOS (M-series), release yap-diarize, models ~/yap-diarize-models
+models  : sherpa-onnx-pyannote-segmentation-3-0/model.onnx + wespeaker_en_voxceleb_CAM++.onnx
+scored  : YV120's cosine_similarity, over the SAME 6-voice roster diarize_embed_smoke publishes
+question: at what span length does the extractor's answer stop being about the length
+          and start being about the speaker?
+
+--- method ---
+For each of 18 utterances (6 say voices x 3 texts): embed the FULL utterance, then embed a
+CENTRED window of T seconds of the same rendering and score the window against the full-length
+vector. Centred, not a prefix, so leading silence is not what is being measured. The bar is the
+SAME roster's global impostor mean (0.5789): below it, a window resembles its own full-length
+vector less than an average stranger does.
+
+--- output ---
+embedding_dim = 512
+min_embed_seconds = 0.0 on every request below: the sweep MEASURES the ungated behaviour that made the old empty-vector gate meaningless.
+  full Samantha-0: 5.18s dim=512
+  full Samantha-1: 5.41s dim=512
+  full Samantha-2: 5.17s dim=512
+  full Daniel-0: 5.27s dim=512
+  full Daniel-1: 5.84s dim=512
+  full Daniel-2: 5.33s dim=512
+  full Karen-0: 5.17s dim=512
+  full Karen-1: 5.55s dim=512
+  full Karen-2: 5.32s dim=512
+  full Rishi-0: 5.96s dim=512
+  full Rishi-1: 6.22s dim=512
+  full Rishi-2: 5.62s dim=512
+  full Fred-0: 6.76s dim=512
+  full Fred-1: 7.05s dim=512
+  full Fred-2: 6.05s dim=512
+  full Ralph-0: 6.76s dim=512
+  full Ralph-1: 7.05s dim=512
+  full Ralph-2: 6.05s dim=512
+
+full-utterance population: genuine n=18 mean 0.7837 min 0.5295 | impostor n=135 mean 0.5789 max 0.9362
+
+=== truncation-stability sweep: centered window of T seconds vs the SAME utterance's full-length vector ===
+  T(s)    n      min     mean      max    #below impostor mean
+  0.10   18   0.0411   0.2445   0.3797                      18  nonnumeric=0
+  0.20   18   0.0075   0.2615   0.4409                      18  nonnumeric=0
+  0.30   18   0.0288   0.2680   0.3999                      18  nonnumeric=0
+  0.40   18   0.0679   0.2793   0.4302                      18  nonnumeric=0
+  0.50   18   0.0362   0.2828   0.4383                      18  nonnumeric=0
+  0.75   18   0.0173   0.3147   0.4731                      18  nonnumeric=0
+  1.00   18   0.0185   0.3172   0.5485                      18  nonnumeric=0
+  1.25   18   0.0816   0.3473   0.5759                      18  nonnumeric=0
+  1.50   18   0.2077   0.5222   0.7558                      12  nonnumeric=0
+  1.75   18   0.3566   0.6619   0.8831                       5  nonnumeric=0
+  2.00   18   0.4166   0.6462   0.9724                       7  nonnumeric=0
+  2.50   18   0.1907   0.5671   0.7912                       7  nonnumeric=0
+  3.00   18   0.3109   0.6847   0.9441                       5  nonnumeric=0
+
+impostor mean (bar) = 0.5789
+  T=0.10  min_self=0.0411  clears=no
+  T=0.20  min_self=0.0075  clears=no
+  T=0.30  min_self=0.0288  clears=no
+  T=0.40  min_self=0.0679  clears=no
+  T=0.50  min_self=0.0362  clears=no
+  T=0.75  min_self=0.0173  clears=no
+  T=1.00  min_self=0.0185  clears=no
+  T=1.25  min_self=0.0816  clears=no
+  T=1.50  min_self=0.2077  clears=no
+  T=1.75  min_self=0.3566  clears=no
+  T=2.00  min_self=0.4166  clears=no
+  T=2.50  min_self=0.1907  clears=no
+  T=3.00  min_self=0.3109  clears=no

@@ -5,8 +5,10 @@
 //! tree rather than hypothetical. `vad-rs` runs Silero v4 through `ort`
 //! (onnxruntime) and links it **statically** into the app (see
 //! `src-tauri/Cargo.toml`'s own comment on that dependency, and `vad.rs`).
-//! `sherpa-onnx` — the crate YV122 adds to the sidecar — statically links its
-//! **own** vendored onnxruntime. Linking two independently-vendored copies of
+//! `sherpa-onnx` — in the sidecar since YV122 — statically links its **own**
+//! vendored onnxruntime (`sherpa-onnx-sys`'s build script emits
+//! `cargo:rustc-link-lib=static=onnxruntime` by name). Linking two
+//! independently-vendored copies of
 //! one C++ runtime into a single binary is the identical duplicate-symbol
 //! failure class that forced `yap-polish` out of process, documented verbatim
 //! at the head of `polish_protocol.rs` (llama.cpp #9267/#11303/#11491,
@@ -26,7 +28,7 @@
 //! // → stdin: load a vendored model pair (YV123 supplies the paths)
 //! {"id":1,"kind":"load_models","segmentation_path":"…","embedding_path":"…"}
 //! // ← stdout
-//! {"id":1,"ok":true,"embedding_dim":192}
+//! {"id":1,"ok":true,"embedding_dim":512}  // the width the child MEASURED
 //! // → stdin: diarize one track's audio (YV126 wires this to Track A/B)
 //! {"id":2,"kind":"diarize","wav_path":"…","clustering_distance_threshold":0.35}
 //! // ← stdout
@@ -54,12 +56,20 @@
 //!
 //! ## `embedding_dim` is reported, never assumed
 //!
-//! The plan's §5 schema assumed 512-dimension embeddings; the model yap23
-//! actually ships (`wespeaker_en_voxceleb_CAM++`) is **192** (audit finding
-//! #19). So the dimension is a value the CHILD reports at load time and the
-//! parent stores — there is no dimension constant on the Rust side of this
-//! wire, and `tests/diarize_sidecar_pool.rs` holds the parent to that by
-//! answering with a number no model has.
+//! The width is whatever the child measures off the model it has just opened.
+//! Measured on the shipped files: `wespeaker_en_voxceleb_CAM++` reports **512**
+//! (its own ONNX metadata carries `output_dim: 512`) and the
+//! `wespeaker_en_voxceleb_resnet34` control reports **256**. Audit finding #19
+//! predicted 192 for CAM++; that number is wrong, and the mechanism the same
+//! finding argued for — never write a width down — is exactly why it was
+//! catchable. `desktop/src-tauri/tests/sherpa_load_smoke.rs` asserts the
+//! measured 512 and asserts explicitly that it is not 192.
+//!
+//! So the dimension is a value the CHILD reports at load time and the parent
+//! stores — there is no dimension constant on the Rust side of this wire, and
+//! `tests/diarize_sidecar_pool.rs` holds the parent to that by answering with a
+//! number no model has. **YV128's `speaker_profiles` schema stores the reported
+//! value: no `DEFAULT 512`, and no 192 written down either.**
 //!
 //! ## `clustering_distance_threshold` is a DISTANCE
 //!
@@ -111,11 +121,33 @@ pub const ERR_MODEL_NOT_FOUND: &str = "model_not_found";
 pub const ERR_AUDIO_NOT_FOUND: &str = "audio_not_found";
 /// A `diarize`/`embed` arrived before any successful `load_models`.
 pub const ERR_NO_MODELS: &str = "no_models";
-/// This build has no inference backend compiled in (YV121's scaffold). YV122
-/// replaces the arm that returns it with the real `sherpa-onnx` load; until
-/// then the sidecar says so rather than answering with a plausible shape it
-/// did not compute.
-pub const ERR_NO_BACKEND: &str = "no_backend";
+/// The files are there and this build has a backend, but `sherpa-onnx` would
+/// not open one of them — a corrupt download, a truncated archive extraction,
+/// an `.onnx` that is not the model the catalog says it is.
+///
+/// YV121 answered with a "no-backend" tag here, because there was no inference
+/// crate in the sidecar at all. YV122 removed that tag along with the condition
+/// it named: a build that CAN load a model must never be able to say it cannot,
+/// or the one tag YV123's vendoring work reads to tell "bad bytes" from "no
+/// code" would mean both.
+pub const ERR_MODEL_LOAD_FAILED: &str = "model_load_failed";
+/// The audio file is there but is not a WAV this build can decode.
+pub const ERR_AUDIO_UNREADABLE: &str = "audio_unreadable";
+/// The WAV decoded, at a sample rate the loaded segmentation model does not
+/// run at.
+///
+/// This is a REFUSAL rather than a resample on purpose. `OfflineSpeakerDiarization::process`
+/// takes samples and no rate: hand it 44.1 kHz audio for a 16 kHz model and it
+/// returns segment boundaries in the wrong units — turns at plausible-looking
+/// times that are silently 2.76x off, which no assertion downstream of here
+/// would catch. Resampling belongs in the caller that owns the anti-alias
+/// filter (`resample.rs`, OS-8), not in a process that would have to guess.
+pub const ERR_SAMPLE_RATE: &str = "sample_rate";
+/// There was not enough audio for the embedding model to compute anything.
+pub const ERR_AUDIO_TOO_SHORT: &str = "audio_too_short";
+/// The models are loaded and the audio decoded, and the inference call itself
+/// returned nothing.
+pub const ERR_BACKEND_FAILED: &str = "backend_failed";
 
 /// The `type` value of the readiness line. The only message on this wire that
 /// is not keyed by a request id, which is how the two are told apart.
@@ -185,6 +217,46 @@ pub struct DiarizeRequest {
     /// here and nowhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clustering_distance_threshold: Option<f32>,
+    /// [`KIND_DIARIZE`] / [`KIND_EMBED`]: the shortest span of audio worth
+    /// embedding, in seconds. **Required on both kinds**, and there is no
+    /// default on either side of this wire.
+    ///
+    /// # Why this is a field and not a constant
+    ///
+    /// The embedding extractor has no minimum of its own worth the name.
+    /// Measured on the shipped CAM++ through this protocol: `audio_too_short`
+    /// fires only below **~10 samples (0.6 ms)**, and everything above that
+    /// returns a full-width, non-empty vector — a 0.2 s span embeds to a
+    /// perfectly ordinary-looking 512 floats. So "empty means unusable" was
+    /// never a gate, and a caller reading `into_embedding().is_some()` as
+    /// "this is a voiceprint" is reading noise as evidence.
+    ///
+    /// Measured on this repo's own substrate (6 macOS `say` voices × 3
+    /// utterances, centred windows, each window's vector scored against the
+    /// SAME utterance's full-length vector with YV120's `cosine_similarity`;
+    /// transcript in `docs/pr-screenshots/YV122/min-embed-sweep.txt`):
+    ///
+    /// ```text
+    ///   T       n   min self   mean self      the roster's own impostor mean is 0.5789
+    /// 0.20 s   18     0.0075      0.2615      every window below its own full-length vector
+    /// 0.50 s   18     0.0362      0.2828      by MORE than an average stranger is
+    /// 1.00 s   18     0.0185      0.3172      — i.e. the answer is about the length
+    /// 1.50 s   18     0.2077      0.5222      and not about the speaker
+    /// 1.75 s   18     0.3566      0.6619
+    /// 3.00 s   18     0.3109      0.6847
+    /// ```
+    ///
+    /// The sweep proves a floor is **necessary**. It does not establish where
+    /// it goes: `say` voices are the substrate this item already measured an
+    /// EER of 0.272 on and then forbade anyone from tuning against, and the
+    /// minimum column never clears the impostor mean at any length this
+    /// corpus can produce. So this item ships the parameter and **not one
+    /// number** — the same posture YV126 takes with the clustering distance,
+    /// and for the same reason. The item that can measure it on real speech
+    /// sets it; `diarize_wire_unit_discipline.rs` fails the build if a default
+    /// appears anywhere in the crate before then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_embed_seconds: Option<f32>,
 }
 
 impl DiarizeRequest {
@@ -192,7 +264,11 @@ impl DiarizeRequest {
     /// process cannot express as UTF-8 is a path the child could not open
     /// anyway, and a panic here would take the app's diarization down for a
     /// filename.
-    pub fn load_models(id: u64, segmentation: &std::path::Path, embedding: &std::path::Path) -> Self {
+    pub fn load_models(
+        id: u64,
+        segmentation: &std::path::Path,
+        embedding: &std::path::Path,
+    ) -> Self {
         Self {
             id,
             kind: KIND_LOAD_MODELS.to_string(),
@@ -200,12 +276,22 @@ impl DiarizeRequest {
             embedding_path: Some(embedding.to_string_lossy().into_owned()),
             wav_path: None,
             clustering_distance_threshold: None,
+            min_embed_seconds: None,
         }
     }
 
     /// Diarize one track. `clustering_distance_threshold` is a DISTANCE — the
     /// caller holds a `CosineDistance` and unwraps it here.
-    pub fn diarize(id: u64, wav: &std::path::Path, clustering_distance_threshold: f32) -> Self {
+    ///
+    /// `min_embed_seconds` is spent from a `std::time::Duration` for the same
+    /// reason: seconds-as-a-bare-float is how a millisecond figure ends up in
+    /// a field that means seconds.
+    pub fn diarize(
+        id: u64,
+        wav: &std::path::Path,
+        clustering_distance_threshold: f32,
+        min_embed_seconds: f32,
+    ) -> Self {
         Self {
             id,
             kind: KIND_DIARIZE.to_string(),
@@ -213,11 +299,17 @@ impl DiarizeRequest {
             embedding_path: None,
             wav_path: Some(wav.to_string_lossy().into_owned()),
             clustering_distance_threshold: Some(clustering_distance_threshold),
+            min_embed_seconds: Some(min_embed_seconds),
         }
     }
 
     /// Embed one enrollment utterance.
-    pub fn embed(id: u64, wav: &std::path::Path) -> Self {
+    ///
+    /// Carries the same floor as [`Self::diarize`], because the hole is the
+    /// same one: this path is where a 0.2 s clip was measured coming back as a
+    /// full-width vector, and enrollment is the consumer with the least
+    /// context to notice.
+    pub fn embed(id: u64, wav: &std::path::Path, min_embed_seconds: f32) -> Self {
         Self {
             id,
             kind: KIND_EMBED.to_string(),
@@ -225,6 +317,7 @@ impl DiarizeRequest {
             embedding_path: None,
             wav_path: Some(wav.to_string_lossy().into_owned()),
             clustering_distance_threshold: None,
+            min_embed_seconds: Some(min_embed_seconds),
         }
     }
 }
@@ -330,7 +423,8 @@ impl DiarizeResponse {
     /// The embedding dimension a successful [`KIND_LOAD_MODELS`] reports.
     /// `None` on any failure and on a success that omitted it — a load that
     /// cannot say how wide its vectors are has not told the parent what it
-    /// needs, and inventing 192 here is the exact bug finding #19 is about.
+    /// needs, and inventing a width here — 512, 192, any number — is the exact
+    /// bug finding #19 is about.
     pub fn into_embedding_dim(self) -> Option<u32> {
         self.ok.then_some(self.embedding_dim).flatten()
     }
@@ -388,8 +482,14 @@ mod tests {
         let response = serde_json::to_string(&DiarizeResponse::loaded(1, 192, 4)).expect("encode");
 
         assert!(parse_ready(&ready).is_some());
-        assert!(parse_ready(&response).is_none(), "a response is not a ready");
-        assert!(parse_response_for(&ready, 1).is_none(), "a ready is not a response");
+        assert!(
+            parse_ready(&response).is_none(),
+            "a response is not a ready"
+        );
+        assert!(
+            parse_response_for(&ready, 1).is_none(),
+            "a ready is not a response"
+        );
         assert!(parse_response_for(&response, 1).is_some());
         // …and a ready line carries no model claim at all: this sidecar's model
         // state is the answer to `load_models`, never the handshake.
@@ -423,29 +523,60 @@ mod tests {
             encoded,
             r#"{"id":1,"kind":"load_models","segmentation_path":"/seg.onnx","embedding_path":"/emb.onnx"}"#
         );
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), load);
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            load
+        );
 
-        let diarize = DiarizeRequest::diarize(2, Path::new("/a.wav"), 0.35);
+        let diarize = DiarizeRequest::diarize(2, Path::new("/a.wav"), 0.35, 2.0);
         let encoded = serde_json::to_string(&diarize).expect("encode");
         assert_eq!(
             encoded,
-            r#"{"id":2,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35}"#
+            r#"{"id":2,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35,"min_embed_seconds":2.0}"#
         );
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), diarize);
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            diarize
+        );
 
-        let embed = DiarizeRequest::embed(3, Path::new("/b.wav"));
+        let embed = DiarizeRequest::embed(3, Path::new("/b.wav"), 2.0);
         let encoded = serde_json::to_string(&embed).expect("encode");
-        assert_eq!(encoded, r#"{"id":3,"kind":"embed","wav_path":"/b.wav"}"#);
-        assert_eq!(serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"), embed);
+        assert_eq!(
+            encoded,
+            r#"{"id":3,"kind":"embed","wav_path":"/b.wav","min_embed_seconds":2.0}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<DiarizeRequest>(&encoded).expect("decode"),
+            embed
+        );
+
+        // A `diarize` line from a sidecar-era before this field existed decodes
+        // as `None` rather than as a zero — which is what makes "the floor is
+        // missing" answerable with `missing_field` instead of silently meaning
+        // "no floor at all". The compatibility direction that matters is the
+        // one where an OLD parent meets a NEW child: `bundle.externalBin`
+        // stages the sidecar beside the app, but an updater can leave them a
+        // version apart, and the honest answer there is a refusal.
+        let legacy: DiarizeRequest = serde_json::from_str(
+            r#"{"id":4,"kind":"diarize","wav_path":"/a.wav","clustering_distance_threshold":0.35}"#,
+        )
+        .expect("decode");
+        assert_eq!(legacy.min_embed_seconds, None);
     }
 
     /// Successes carry their kind's payload and nothing else; a refusal carries
     /// a tag and no payload at all.
     #[test]
     fn diarize_protocol_responses_carry_one_kind_of_payload() {
-        assert_eq!(DiarizeResponse::loaded(1, 192, 3).into_embedding_dim(), Some(192));
+        assert_eq!(
+            DiarizeResponse::loaded(1, 192, 3).into_embedding_dim(),
+            Some(192)
+        );
         assert_eq!(DiarizeResponse::loaded(1, 192, 3).into_segments(), None);
-        assert_eq!(DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).into_embedding_dim(), None);
+        assert_eq!(
+            DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).into_embedding_dim(),
+            None
+        );
         assert_eq!(
             DiarizeResponse::err(1, ERR_MODEL_NOT_FOUND).err_tag(),
             Some(ERR_MODEL_NOT_FOUND)
@@ -465,7 +596,9 @@ mod tests {
             r#"{"id":2,"ok":true,"segments":[{"start":0.0,"end":4.2,"cluster":0,"embedding":[0.1,0.2]}],"ms":7}"#
         );
         assert_eq!(
-            parse_response_for(&encoded, 2).expect("decode").into_segments(),
+            parse_response_for(&encoded, 2)
+                .expect("decode")
+                .into_segments(),
             Some(segments)
         );
         // Silence really did diarize into nothing — distinct from a failure.
@@ -474,10 +607,54 @@ mod tests {
             Some(Vec::new())
         );
         // An "embedding" of no numbers is not an embedding.
-        assert_eq!(DiarizeResponse::embedded(4, Vec::new(), 1).into_embedding(), None);
+        assert_eq!(
+            DiarizeResponse::embedded(4, Vec::new(), 1).into_embedding(),
+            None
+        );
         assert_eq!(
             DiarizeResponse::embedded(4, vec![1.0], 1).into_embedding(),
             Some(vec![1.0])
+        );
+    }
+
+    /// The tag vocabulary is closed, distinct, and — since YV122 — no longer
+    /// contains the retired "no-backend" tag.
+    ///
+    /// The absence is the assertion. That tag meant "this binary has no
+    /// inference crate compiled in", a condition that stopped existing the
+    /// moment `sherpa-onnx` entered `yap-diarize/Cargo.toml`. Leaving the
+    /// constant behind is how it would quietly get reused for "the model file
+    /// was bad" — and YV123's vendoring work reads exactly that distinction to
+    /// tell a broken download from a broken build.
+    #[test]
+    fn diarize_protocol_tags_are_distinct_and_the_backendless_tag_is_gone() {
+        let tags = [
+            ERR_BAD_REQUEST,
+            ERR_UNSUPPORTED_KIND,
+            ERR_MISSING_FIELD,
+            ERR_MODEL_NOT_FOUND,
+            ERR_AUDIO_NOT_FOUND,
+            ERR_NO_MODELS,
+            ERR_MODEL_LOAD_FAILED,
+            ERR_AUDIO_UNREADABLE,
+            ERR_SAMPLE_RATE,
+            ERR_AUDIO_TOO_SHORT,
+            ERR_BACKEND_FAILED,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for tag in tags {
+            assert!(seen.insert(tag), "duplicate error tag: {tag}");
+            assert!(
+                tag.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "an error tag is a snake_case token, never prose: {tag}"
+            );
+        }
+        // Assembled at runtime so this assertion cannot match its own source.
+        let retired = format!("no_{}", "backend");
+        assert!(
+            !include_str!("diarize_protocol.rs").contains(&retired),
+            "`{retired}` named a condition that ended when YV122 gave the \
+             sidecar a backend; it must not linger as a spare tag"
         );
     }
 
@@ -493,7 +670,10 @@ mod tests {
             embedding: vec![0.0; 192],
         })
         .expect("encode");
-        assert!(!encoded.contains("overlap"), "YV127: no overlap column in v1");
+        assert!(
+            !encoded.contains("overlap"),
+            "YV127: no overlap column in v1"
+        );
         // No CONSTANT in this file names an embedding width. `embedding_dim` is
         // a wire field the child fills in; the moment somebody writes
         // `const EMBEDDING_DIM: u32 = 192;` here, the parent has an opinion

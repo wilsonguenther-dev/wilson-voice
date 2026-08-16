@@ -54,6 +54,23 @@ jobs:
       # into src-tauri, the duplicate symbols fail here. It runs FIRST because
       # `bundle.externalBin` makes the staged binaries a precondition of every
       # `cargo build` of the app, not just `tauri build`.
+      #
+      # YV122 note — this step now FETCHES AT BUILD TIME. `sherpa-onnx-sys`'s
+      # build script downloads
+      # `sherpa-onnx-v1.13.4-osx-arm64-static-lib.tar.bz2` (19.5 MB) from
+      # GitHub Releases into `desktop/target/sherpa-onnx-prebuilt/` whenever
+      # `SHERPA_ONNX_LIB_DIR` is unset, and picks that URL from the SYS crate's
+      # own version — which is why both halves are pinned exactly (see
+      # `yap-diarize/Cargo.toml` and
+      # `supply_chain.rs::diarize_sidecar_pins_sherpa_onnx_exactly`).
+      #
+      # That fetch is the open supply-chain item, and it is YV123's, per closed
+      # decision O6. Two escape hatches exist and the cheaper one is not in the
+      # plan's write-up: `SHERPA_ONNX_ARCHIVE_DIR` points at a directory holding
+      # the vendored `.tar.bz2` and the build script extracts it itself, so a
+      # checked-in archive + one env var is enough — `SHERPA_ONNX_LIB_DIR`
+      # (which needs an already-extracted lib tree, produced and cached
+      # somewhere) is not required.
       - name: Build + stage the sidecars (yap-polish, yap-diarize)
         working-directory: desktop
         run: |

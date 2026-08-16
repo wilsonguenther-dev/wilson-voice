@@ -15,16 +15,41 @@ name = "yap-diarize"
 path = "src/main.rs"
 
 [dependencies]
-# YV121 ships this crate with NO inference dependency at all, deliberately.
-#
-# The whole point of this item is to prove the sidecar SHAPE — process
-# boundary, wire protocol, readiness handshake, restart budget, idle unload —
-# before `sherpa-onnx` (and the second statically-linked onnxruntime it brings)
-# enters the tree in YV122. A scaffold that already carried the risky crate
-# could not tell "the process model is wrong" from "the linker is unhappy".
-#
-# `tests/supply_chain.rs::diarize_sidecar_carries_no_inference_crate_yet` in
-# `wilson-voice` enforces this list, so YV122 adding `sherpa-onnx = "=1.13.4"`
-# is a deliberate, reviewable edit to BOTH files rather than a silent one here.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# YV122 — the inference backend. This is the crate YV121 deliberately kept out
+# of the tree until the process shape was proven, and it is the reason this
+# binary exists at all: `sherpa-onnx-sys`'s build script emits
+# `cargo:rustc-link-lib=static=onnxruntime`, and `wilson-voice` already links a
+# different, independently-vendored onnxruntime through `vad-rs`/`ort`. Two link
+# units keep those apart; one would be the duplicate-symbol failure that already
+# forced `yap-polish` out of process.
+#
+# Exact pin, no git source — `tests/supply_chain.rs::diarize_sidecar_pins_sherpa_onnx_exactly`
+# in `wilson-voice` is the standing check, mirroring the one on `llama-cpp-2`.
+sherpa-onnx = "=1.13.4"
+
+# The sys crate is pinned HERE, as a direct dependency, because pinning
+# `sherpa-onnx` alone does not pin it. `sherpa-onnx`'s own manifest asks for
+# `sherpa-onnx-sys = { version = "1.13.4" }` — a caret range — and two separate
+# things go wrong when it floats:
+#
+#   1. It does not build. `sherpa-onnx` 1.13.4's `offline_speech_denoiser.rs`
+#      initialises `OfflineSpeechDenoiserDpdfNetModelConfig` field-by-field, and
+#      `sherpa-onnx-sys` 1.13.5 added `attenuation_limit_db` to that struct:
+#      `error[E0063]: missing field `attenuation_limit_db``, on a plain
+#      `cargo build` of the pin the backlog specifies. Verified locally before
+#      this line was written; the transcript is in the PR.
+#   2. It silently changes WHICH NATIVE LIBRARY IS DOWNLOADED. The sys crate's
+#      `build.rs` builds its release URL from its OWN `CARGO_PKG_VERSION`
+#      (`.../releases/download/v{version}/sherpa-onnx-v{version}-osx-arm64-static-lib.tar.bz2`),
+#      so a floating sys version fetches a different prebuilt onnxruntime into a
+#      signed bundle with no reviewable diff — precisely the exposure the
+#      `=x.y.z` discipline exists for, one level below where anyone was looking.
+#
+# `default-features = false` so the link mode is decided in one place:
+# `sherpa-onnx`'s own `default = ["static"]`, which turns on
+# `sherpa-onnx-sys/static`. Naming the feature twice is how `static` and
+# `shared` end up both set, which the sys build script rejects outright.
+sherpa-onnx-sys = { version = "=1.13.4", default-features = false }

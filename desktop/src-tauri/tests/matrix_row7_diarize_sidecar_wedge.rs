@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wilson_voice_lib::diarize::{DiarizeError, DiarizeLauncher, DiarizePool, DiarizeState};
+use wilson_voice_lib::diarize_protocol::{ERR_MODEL_LOAD_FAILED, ERR_MODEL_NOT_FOUND};
 use wilson_voice_lib::meeting_matrix::{
     diarize_sidecar_degrade, DegradeReason, SpeakerLabels, DIARIZATION_FAILED,
 };
@@ -163,8 +164,15 @@ fn no_sidecar_failure_can_produce_a_failed_meeting() {
         DiarizeError::Unavailable,
         DiarizeError::Deadline,
         DiarizeError::Protocol,
-        DiarizeError::Refused("model_not_found".to_string()),
-        DiarizeError::Refused("no_backend".to_string()),
+        // The refusal tags are spent from the protocol's own constants rather
+        // than typed out. YV122 RETIRED `no_backend` — the condition it named
+        // (a sidecar with no inference crate compiled in) stopped existing when
+        // sherpa-onnx landed — and this table went on driving over it, which is
+        // a test asserting behaviour for an answer the child can no longer
+        // give. Naming the constants means the next retirement is a compile
+        // error here instead of a quietly decorative row.
+        DiarizeError::Refused(ERR_MODEL_NOT_FOUND.to_string()),
+        DiarizeError::Refused(ERR_MODEL_LOAD_FAILED.to_string()),
     ];
 
     for err in &errors {
@@ -201,8 +209,8 @@ fn no_sidecar_failure_can_produce_a_failed_meeting() {
     // Non-vacuous: the five errors do not all collapse to one indistinguishable
     // outcome. Two refusals with different tags stay different.
     assert_ne!(
-        diarize_sidecar_degrade(&DiarizeError::Refused("model_not_found".to_string())),
-        diarize_sidecar_degrade(&DiarizeError::Refused("no_backend".to_string()))
+        diarize_sidecar_degrade(&DiarizeError::Refused(ERR_MODEL_NOT_FOUND.to_string())),
+        diarize_sidecar_degrade(&DiarizeError::Refused(ERR_MODEL_LOAD_FAILED.to_string()))
     );
     assert_ne!(
         diarize_sidecar_degrade(&DiarizeError::Deadline),

@@ -162,21 +162,31 @@ fn polish_sidecar_pins_llama_cpp_exactly() {
     );
 }
 
-/// YV121: `yap-diarize` is bundled, and it carries **no inference crate yet**.
+/// YV122: `yap-diarize` is bundled, and both halves of `sherpa-onnx` are pinned
+/// exactly — including the `-sys` crate, which pinning `sherpa-onnx` does not
+/// pin.
 ///
-/// Both halves are the item. The bundling half is the same failure `yap-polish`
-/// would have had: an app that ships a diarization path it can never spawn.
+/// The bundling half is the same failure `yap-polish` would have had: an app
+/// that ships a diarization path it can never spawn.
 ///
-/// The dependency half is the point of landing this sidecar before YV122. The
-/// app already links onnxruntime statically through `vad-rs`/`ort`;
-/// `sherpa-onnx` statically links its own vendored copy, and its build script
-/// DOWNLOADS a prebuilt archive when `SHERPA_ONNX_LIB_DIR` is unset — a
-/// build-time fetch, which is a category this file did not previously cover
-/// (plan §2.4's own supply-chain note). So the scaffold ships with `serde` and
-/// `serde_json` and nothing else, and this test is what makes YV122 adding the
-/// crate a deliberate edit to two files rather than a silent one to a manifest.
+/// The pinning half replaces YV121's "carries no inference crate yet", which
+/// was the guard that made THIS commit a deliberate edit to two files rather
+/// than a silent one to a manifest. `sherpa-onnx` statically links its own
+/// vendored onnxruntime beside the one `vad-rs`/`ort` already links into the
+/// app, and — unlike every other dependency in this tree — its `-sys` crate
+/// DOWNLOADS a prebuilt native archive at build time when `SHERPA_ONNX_LIB_DIR`
+/// is unset (plan §2.4's supply-chain note; YV123 vendors it).
+///
+/// That download is why the second pin is load-bearing rather than tidy.
+/// `sherpa-onnx`'s own manifest asks for `sherpa-onnx-sys = { version =
+/// "1.13.4" }`, a CARET range, and the sys crate's `build.rs` builds its release
+/// URL out of its OWN `CARGO_PKG_VERSION`. So an unpinned sys crate silently
+/// changes which prebuilt onnxruntime is fetched into a signed bundle, one
+/// level below where the `=x.y.z` discipline was looking. (It also does not
+/// compile: sys 1.13.5 added a field to a struct `sherpa-onnx` 1.13.4
+/// initialises exhaustively.)
 #[test]
-fn diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet() {
+fn diarize_sidecar_pins_sherpa_onnx_exactly() {
     let config: serde_json::Value =
         serde_json::from_str(TAURI_CONF).expect("tauri.conf.json is valid JSON");
     let external: Vec<&str> = config["bundle"]["externalBin"]
@@ -193,7 +203,8 @@ fn diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet() {
     }
 
     // The dependency list, read as a list rather than searched for a name — a
-    // grep for "sherpa" would pass a manifest that grew `ort` instead.
+    // grep for "sherpa" would pass a manifest that ALSO grew `ort`, which is
+    // the one crate that must never be in this link unit twice.
     let deps: Vec<String> = DIARIZE_CARGO_TOML
         .lines()
         .map(str::trim)
@@ -206,17 +217,120 @@ fn diarize_sidecar_is_bundled_and_carries_no_inference_crate_yet() {
         .collect();
     assert_eq!(
         deps,
-        vec!["serde".to_string(), "serde_json".to_string()],
-        "YV121's sidecar is the SHAPE, proven with zero model bytes and zero \
-         onnxruntime. Adding an inference crate is YV122's job, and YV122 \
-         updates this assertion in the same commit."
+        vec![
+            "serde".to_string(),
+            "serde_json".to_string(),
+            "sherpa-onnx".to_string(),
+            "sherpa-onnx-sys".to_string(),
+        ],
+        "the diarization sidecar's whole dependency surface, and no second \
+         inference engine"
     );
 
-    // And no build-time fetch has crept in through a build script.
+    // Neither half may come from a git source or a local path — CI builds with
+    // a plain `cargo build`, so a moved branch head would enter a notarized
+    // bundle with no reviewable diff.
+    for line in DIARIZE_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("sherpa-onnx"))
+    {
+        assert!(
+            !line.contains("git = ") && !line.contains("path = "),
+            "sherpa-onnx must come from crates.io: {line}"
+        );
+    }
+
+    // Both exact, and both the SAME version — a matched pair is the only
+    // configuration the wrapper's exhaustive struct initialisers compile
+    // against, and the only one whose native archive URL is predictable.
+    let wrapper = exact_pin(DIARIZE_CARGO_TOML, "sherpa-onnx");
+    let sys = exact_pin(DIARIZE_CARGO_TOML, "sherpa-onnx-sys");
+    assert_eq!(
+        wrapper, sys,
+        "sherpa-onnx and sherpa-onnx-sys must be pinned to one version; \
+         the sys crate's build.rs downloads \
+         `sherpa-onnx-v{{sys_version}}-<target>-static-lib.tar.bz2`, so a skew \
+         here silently swaps the linked onnxruntime"
+    );
+
+    // The manifest states the range; the lockfile decides what links. Assert
+    // the resolved graph, or the pin above is a comment.
+    for crate_name in ["sherpa-onnx", "sherpa-onnx-sys"] {
+        assert_eq!(
+            locked_version(crate_name),
+            wrapper,
+            "Cargo.lock resolved {crate_name} away from the pin"
+        );
+    }
+
+    // The link mode is decided in exactly one place. Naming `static` (or
+    // `shared`) a second time here is how both end up set, which the sys build
+    // script rejects outright — and a silent flip to `shared` would put a
+    // `.dylib` beside a notarized binary that never bundles it.
+    let sys_line = DIARIZE_CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("sherpa-onnx-sys = "))
+        .expect("the sys pin is declared");
+    assert!(
+        sys_line.contains("default-features = false") && !sys_line.contains("features = ["),
+        "sherpa-onnx-sys' link mode comes from sherpa-onnx's own `default = \
+         [\"static\"]`, never from a second feature list: {sys_line}"
+    );
+
+    // The sidecar itself still has no build script of its own.
     assert!(
         !DIARIZE_CARGO_TOML.contains("[build-dependencies]"),
-        "the diarization sidecar has no build script, and therefore nothing that \
-         downloads at build time"
+        "the diarization sidecar has no build script of its own"
+    );
+
+    // And the app is still the OTHER link unit. `vad-rs`/`ort` already put one
+    // statically-linked onnxruntime in `wilson-voice`; sherpa-onnx brings a
+    // second. CI proves they never meet by building both, but a manifest line
+    // is where it would happen, so it is asserted here too.
+    //
+    // Asserted over the manifest with COMMENTS STRIPPED, and that is a
+    // correction rather than a refinement. The first version of this line was
+    // `!CARGO_TOML.contains("sherpa-onnx")`, and it went red on this branch for
+    // a reason that has nothing to do with linking: YV123 landed a comment in
+    // `src-tauri/Cargo.toml` explaining that the segmentation model ships as
+    // `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2`. A guard that a *comment*
+    // can trip is a guard somebody deletes the day it cries wolf — and the same
+    // substring check would have been satisfied by commenting a real dependency
+    // out and re-adding it under `[target.'cfg(...)'.dependencies]`. The
+    // property is about the resolved manifest, so the check is too.
+    let app_lines: Vec<&str> = CARGO_TOML
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.contains("sherpa"))
+        .collect();
+    assert!(
+        app_lines.is_empty(),
+        "sherpa-onnx belongs to the sidecar's link unit — moving it into \
+         src-tauri is the duplicate-symbol failure that forced yap-polish out \
+         of process: {app_lines:?}"
+    );
+    assert_eq!(
+        sherpa_onnx_pin_verdict(CARGO_TOML),
+        SherpaPin::Absent,
+        "the app declares no sherpa-onnx dependency"
+    );
+    // Non-vacuity, both ways: the check must see a real declaration, and must
+    // NOT see the comment that broke its first version.
+    assert!(
+        !"[dependencies]\nsherpa-onnx = \"=1.13.4\"\n"
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#') && l.contains("sherpa"))
+            .collect::<Vec<_>>()
+            .is_empty(),
+        "the scan must still catch a dependency that really is declared"
+    );
+    assert!(
+        CARGO_TOML.contains("sherpa-onnx-pyannote-segmentation-3-0"),
+        "the YV123 comment this check had to learn to ignore is still there — \
+         without it, the correction above is untested"
     );
 }
 

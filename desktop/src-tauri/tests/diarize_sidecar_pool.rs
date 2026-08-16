@@ -28,6 +28,15 @@ use wilson_voice_lib::diarize::{
 use wilson_voice_lib::diarize_metrics::CosineDistance;
 use wilson_voice_lib::diarize_protocol::{DiarizeRequest, ERR_MODEL_NOT_FOUND};
 
+/// The minimum-embeddable-audio floor these tests pass.
+///
+/// A FIXTURE, not a shipped value. `min_embed_seconds` has no default anywhere
+/// in either crate — the sweep that says a floor is necessary is in YV122's PR
+/// and the measurement that would say where it goes needs real speech — so
+/// every caller states one, and these tests state this one. Nothing is asserted
+/// about the number itself; the stubs never look at it.
+const TEST_FLOOR: Duration = Duration::from_secs(2);
+
 /// A stub sidecar: `/bin/sh` running `script`.
 fn stub(script: &'static str) -> DiarizeLauncher {
     Box::new(move || {
@@ -50,8 +59,9 @@ fn counted_stub(script: &'static str, launches: Arc<AtomicUsize>) -> DiarizeLaun
 /// Announce readiness, then answer every request with the id it carried.
 ///
 /// The reply is `embedding_dim: 7` on purpose: no real model is 7-dimensional,
-/// so a parent that hard-coded 192 (or 512, which is what the plan's schema
-/// assumed — finding #19) would fail the assertion that reads it back.
+/// so a parent that hard-coded 512 (what the shipped CAM++ actually measures)
+/// or 192 (what audit finding #19 predicted, wrongly) would fail the assertion
+/// that reads it back.
 const READY_STUB: &str = concat!(
     r#"printf '{"type":"ready","version":"stub"}\n'"#,
     "\n",
@@ -136,11 +146,11 @@ fn ready_pool(script: &'static str) -> DiarizePool {
 /// The dimension is the CHILD's to report — audit finding #19's fix, as a
 /// mechanism rather than as a comment.
 ///
-/// The plan's §5 schema assumed 512-dimension embeddings; the model yap23
-/// actually ships is 192. The way that class of error survives is a parent that
-/// "knows" the width. This stub reports **7**, and the pool reports 7 — so a
-/// constant anywhere on the Rust side of the wire fails here, whichever number
-/// somebody picked.
+/// The plan's §5 schema guessed a width, audit finding #19 "corrected" it to
+/// 192, and the model yap23 actually ships measures 512 (`sherpa_load_smoke`).
+/// The way that class of error survives is a parent that "knows" the width.
+/// This stub reports **7**, and the pool reports 7 — so a constant anywhere on
+/// the Rust side of the wire fails here, whichever number somebody picked.
 #[test]
 fn the_embedding_dimension_comes_from_the_child_never_from_the_parent() {
     let pool = ready_pool(READY_STUB);
@@ -156,7 +166,10 @@ fn the_embedding_dimension_comes_from_the_child_never_from_the_parent() {
     assert!(pool.is_warm());
     pool.shutdown();
     assert!(!pool.is_warm());
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::NotStarted, None));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::NotStarted, None)
+    );
 }
 
 /// A refusal is the protocol WORKING: the caller is told which "no" it got, the
@@ -190,7 +203,7 @@ fn a_refusal_is_not_a_death() {
     // Ten more refusals: still one process, still not failed.
     for _ in 0..10 {
         assert!(matches!(
-            pool.embed(Path::new("/a.wav")),
+            pool.embed(Path::new("/a.wav"), TEST_FLOOR),
             Err(DiarizeError::Refused(_))
         ));
     }
@@ -218,7 +231,10 @@ fn a_dead_child_respawns_once_then_stays_failed() {
         let _ = pool.load_models(&segmentation, &embedding);
         status = pool.status();
     }
-    assert_eq!(status, DiarizeStatus::new(DiarizeState::Failed, Some("died")));
+    assert_eq!(
+        status,
+        DiarizeStatus::new(DiarizeState::Failed, Some("died"))
+    );
     assert_eq!(
         launches.load(Ordering::Relaxed),
         2,
@@ -238,7 +254,10 @@ fn a_dead_child_respawns_once_then_stays_failed() {
     // And `shutdown` is a teardown, not a reset — a failed session that quietly
     // came back would spawn a dying child once per job forever.
     pool.shutdown();
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::Failed, Some("died")));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::Failed, Some("died"))
+    );
     assert_eq!(launches.load(Ordering::Relaxed), 2);
 }
 
@@ -266,7 +285,10 @@ fn a_silent_child_is_killed_at_the_readiness_budget() {
         pool.status(),
         DiarizeStatus::new(DiarizeState::Failed, Some("ready_timeout"))
     );
-    assert!(!pool.is_warm(), "the silent child was killed, not left running");
+    assert!(
+        !pool.is_warm(),
+        "the silent child was killed, not left running"
+    );
     // `ready_timeout` is a failure, not a death: it did not spend the restart
     // budget, and the stage stays failed rather than launching again.
     let _ = pool.load_models(&segmentation, &embedding);
@@ -279,7 +301,7 @@ fn a_silent_child_is_killed_at_the_readiness_budget() {
 #[test]
 fn a_response_for_another_id_is_never_returned_to_this_caller() {
     let pool = ready_pool(WRONG_ID_STUB);
-    let req = DiarizeRequest::embed(1, Path::new("/a.wav"));
+    let req = DiarizeRequest::embed(1, Path::new("/a.wav"), TEST_FLOOR.as_secs_f32());
     let started = Instant::now();
     let answer = pool.request_with_deadline(&req, Duration::from_millis(400));
     assert_eq!(answer, Err(DiarizeError::Deadline));
@@ -325,14 +347,21 @@ fn an_idle_child_is_torn_down_and_the_next_job_brings_it_back() {
     assert!(pool.sweep_idle(), "an idle sidecar is terminated");
     assert!(!pool.is_warm(), "no child is left resident");
     // NOT a failure: `NotStarted` is the state a fresh session begins in.
-    assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::NotStarted, None));
+    assert_eq!(
+        pool.status(),
+        DiarizeStatus::new(DiarizeState::NotStarted, None)
+    );
     // Sweeping again is a no-op — nothing to kill, nothing to log.
     assert!(!pool.sweep_idle());
 
     // The next job walks the ordinary path…
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
     assert_eq!(pool.status(), DiarizeStatus::new(DiarizeState::Ready, None));
-    assert_eq!(launches.load(Ordering::Relaxed), 2, "one spawn per job, no more");
+    assert_eq!(
+        launches.load(Ordering::Relaxed),
+        2,
+        "one spawn per job, no more"
+    );
 
     // …and the restart budget is untouched by the unload, so a child that dies
     // AFTER an idle sweep still gets its one restart. Proven by the state
@@ -361,7 +390,7 @@ fn the_clustering_threshold_crosses_the_wire_as_a_distance() {
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
 
     let segments = pool
-        .diarize(Path::new("/a.wav"), CosineDistance::new(0.35))
+        .diarize(Path::new("/a.wav"), CosineDistance::new(0.35), TEST_FLOOR)
         .expect("the echo stub answers every diarize");
     assert_eq!(segments.len(), 1, "one echoed turn");
     // The child was SENT 0.35. Both the `start` and the embedding element are
@@ -383,7 +412,7 @@ fn the_clustering_threshold_crosses_the_wire_as_a_distance() {
     // …and a second, different threshold, so a stub (or a parent) that answers
     // with a constant 0.35 cannot pass this test either.
     let segments = pool
-        .diarize(Path::new("/b.wav"), CosineDistance::new(0.20))
+        .diarize(Path::new("/b.wav"), CosineDistance::new(0.20), TEST_FLOOR)
         .expect("the echo stub answers every diarize");
     let sent = segments[0].start;
     assert!(
@@ -402,7 +431,7 @@ fn a_success_carrying_no_segments_is_a_protocol_failure_not_a_silent_meeting() {
     let (segmentation, embedding) = model_pair();
     assert_eq!(pool.load_models(&segmentation, &embedding), Ok(7));
     assert_eq!(
-        pool.diarize(Path::new("/a.wav"), CosineDistance::new(0.35)),
+        pool.diarize(Path::new("/a.wav"), CosineDistance::new(0.35), TEST_FLOOR),
         Err(DiarizeError::Protocol)
     );
     pool.shutdown();
