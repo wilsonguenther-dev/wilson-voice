@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use crate::diarize_metrics::{cosine_similarity, CosineDistance};
+use crate::diarize_metrics::{cosine_similarity, CosineDistance, CosineSimilarity};
 use crate::diarize_protocol::{
     parse_ready, parse_response_for, DiarizeRequest, DiarizeResponse, DiarizeSegment,
 };
@@ -652,6 +652,32 @@ impl Sidecar {
 //      achievable far-field and is what a student actually wants from a lecture
 //      recording: isolate the instructor.
 //
+//      **And it is a different computation, not a different label on the same
+//      one.** The first cut of this item ran the full N-way pass and then
+//      rewrote its cluster ids to "enrolled / not enrolled", which made binary
+//      mode strictly a POST-HOC RELABEL: its accuracy was capped by whether the
+//      same clustering the item says cannot do a six-person far-field room had
+//      nonetheless isolated the enrolled voice into exactly one cluster, and
+//      complete linkage (item 1 above, and the most split-prone linkage there
+//      is) makes that the less likely outcome. That is not a smaller question,
+//      it is the same question with fewer names printed. So binary mode does
+//      not cluster at all: [`label_against_enrolled`] compares EACH TURN's
+//      embedding against the enrolled centroid in cosine SIMILARITY and answers
+//      per turn. No agglomeration, no linkage, no distance threshold, and no
+//      dependency on the N-way pass's purity — which is precisely what makes
+//      the question smaller.
+
+// A note on what the fixture (f) ceiling numbers are and are not
+// (`meeting_eval::fixture_f_binary_fallback_der`, and the backlog's
+// measurement record): 0.2738 full N-way vs 0.1524 enrolled-vs-rest are
+// CEILINGS computed from ground truth — the DER floor imposed by the frames
+// sherpa deletes, for a hypothetical perfect implementation of each task. They
+// say the 2-class task is the one with more headroom on that fixture. They are
+// not a prediction of what this code scores, they are not evidence that this
+// code approaches them, and nothing here may be read as claiming a measured
+// far-field number: no build in this tree can turn audio into an embedding yet
+// (YV122), so what binary mode actually scores on fixture (f) is unmeasured.
+//
 //   3. **A cluster count is not a verdict** (merged finding #25). The original
 //      plan rejected a whole diarization pass when the cluster count exceeded
 //      `max(8, attendees × 2)`; a manually started meeting has no attendee
@@ -705,45 +731,78 @@ impl DiarizedSegment {
     }
 }
 
-/// The enrolled voice a binary-mode pass is looking for.
+/// The enrolled voice a binary-mode pass is looking for: whose it is, what it
+/// sounds like, and how close a turn has to be to count as it.
 ///
-/// `cluster` is which RAW cluster that profile matched — a decision made by
-/// comparing the profile's centroid against each cluster's, in cosine
-/// SIMILARITY, against a band tuned in YV129. YV126 does not make it and does
-/// not guess it: there is no enrollment threshold in this file, and inventing
-/// one to pick "probably the loudest cluster is the instructor" is exactly the
-/// vendor-number failure this backlog exists to avoid. The caller says which
-/// cluster; this file collapses everything else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The centroid is the load-bearing field. Without it the only thing binary
+/// mode could compare a turn against is a CLUSTER ID out of the N-way pass, and
+/// then "is this the enrolled voice" is answered by the same clustering the
+/// mechanism ceiling says cannot separate six far-field speakers — a relabel,
+/// not a smaller question. With it, each turn is decided on its own evidence.
+///
+/// `accept_at_or_above` is a cosine SIMILARITY (the enrollment side of merged
+/// finding #20's unit split — [`CosineDistance`] is the clustering side, and
+/// the two are different newtypes so they cannot be swapped by accident).
+/// There is deliberately NO default for it in this crate: the band is YV129's
+/// to tune against YV120's `enrollment_eer`, and inventing one here to make a
+/// far-field demo look decisive is exactly the vendor-number failure this
+/// backlog exists to prevent. The caller supplies it; this file applies it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnrolledSpeaker {
     /// The `speaker_profiles` row (YV128). Carried through so the caller that
     /// writes the attribution knows whose it is.
     pub profile_id: i64,
-    /// The raw `cluster_index` YV129's matcher identified as that profile.
-    pub cluster: i64,
+    /// The profile's voice centroid, in whatever dimension the loaded embedding
+    /// model reports. Nothing here assumes 192 or any other number; a turn
+    /// whose embedding is a different length than this is a mismatch the
+    /// comparison refuses rather than silently truncates.
+    pub centroid: Vec<f32>,
+    /// The minimum cosine similarity to `centroid` at which a turn is called
+    /// the enrolled voice.
+    pub accept_at_or_above: CosineSimilarity,
 }
 
 impl EnrolledSpeaker {
-    pub fn matched(profile_id: i64, cluster: i64) -> Self {
+    /// An enrolled profile with the centroid and acceptance band the caller
+    /// measured. There is no constructor that omits either: a binary-mode pass
+    /// with no centroid has nothing to compare against.
+    pub fn new(profile_id: i64, centroid: Vec<f32>, accept_at_or_above: CosineSimilarity) -> Self {
         Self {
             profile_id,
-            cluster,
+            centroid,
+            accept_at_or_above,
         }
     }
 }
 
 /// What task the clustering pass is being asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The two arms run DIFFERENT computations, which is the whole point of the
+/// second one existing — see this section's header.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TargetMode {
-    /// Every distinct voice gets its own cluster. Correct where the audio stays
-    /// inside pyannote-segmentation-3.0's ceiling — a near-field room of two or
-    /// three (fixture (e)) — and the default ask.
+    /// Every distinct voice gets its own cluster, by agglomerating turn
+    /// embeddings under a cosine-distance threshold. Correct where the audio
+    /// stays inside pyannote-segmentation-3.0's ceiling — a near-field room of
+    /// two or three (fixture (e)) — and the default ask.
     FullClustering,
-    /// Collapse to two classes: the enrolled voice, and everyone else.
+    /// Two classes: the enrolled voice, and everyone else.
     ///
-    /// Merged finding #5's reframe. This is not a degraded version of full
-    /// clustering, it is a DIFFERENT and smaller question, and it is the one a
-    /// six-person far-field classroom can actually answer.
+    /// Merged finding #5's reframe, and a genuinely different question rather
+    /// than full clustering with fewer labels printed. **No clustering runs in
+    /// this mode.** Each turn is scored against the enrolled centroid in cosine
+    /// similarity and answered on its own, so binary mode does not inherit the
+    /// N-way pass's speaker-splitting errors — it is not bounded by whether
+    /// that pass happened to isolate the enrolled voice into exactly one
+    /// cluster.
+    ///
+    /// What it IS bounded by is stated plainly so nobody has to infer it:
+    /// enrollment quality (how representative the centroid is), the acceptance
+    /// band the caller tuned, and the frames sherpa deleted before embedding —
+    /// the last of which is the fixture (f) ceiling of 0.1524 DER, a floor on
+    /// the error of a *perfect* 2-class implementation and not a score this
+    /// code has been shown to reach. Nothing in this tree has measured it: the
+    /// sidecar has no inference backend until YV122.
     EnrolledVsEveryoneElse(EnrolledSpeaker),
 }
 
@@ -792,7 +851,14 @@ pub struct MeetingTracks<'a> {
 ///
 /// `threshold` is a cosine **distance** and there is no default for it in this
 /// crate: see this section's header. `mode` picks the task
-/// ([`TargetMode`]).
+/// ([`TargetMode`]) — and the two tasks are two computations:
+///
+/// * [`TargetMode::FullClustering`] agglomerates the turn embeddings under
+///   `threshold` ([`cluster_by_distance_threshold`]).
+/// * [`TargetMode::EnrolledVsEveryoneElse`] does not cluster at all
+///   ([`label_against_enrolled`]). `threshold` is still sent to the child,
+///   because a backend that must cluster in order to segment needs it, but it
+///   decides nothing about the labels this mode returns.
 ///
 /// Errors are the sidecar's, unchanged and un-swallowed — in particular
 /// `Refused("no_backend")` on any build whose sidecar has no inference backend
@@ -819,19 +885,22 @@ pub fn cluster_track(
     };
 
     let raw = pool.diarize(wav, threshold)?;
-    let clustered = assign_clusters(&raw, threshold);
-    let segments: Vec<DiarizedSegment> = raw
-        .iter()
-        .zip(clustered)
-        .map(|(seg, cluster_index)| DiarizedSegment::new(track, seg.start, seg.end, cluster_index))
-        .collect();
 
-    Ok(match mode {
-        TargetMode::FullClustering => segments,
-        TargetMode::EnrolledVsEveryoneElse(enrolled) => {
-            collapse_to_enrolled_vs_everyone_else(&segments, enrolled.cluster)
+    match mode {
+        TargetMode::FullClustering => {
+            let clustered = assign_clusters(&raw, threshold);
+            Ok(raw
+                .iter()
+                .zip(clustered)
+                .map(|(seg, cluster_index)| {
+                    DiarizedSegment::new(track, seg.start, seg.end, cluster_index)
+                })
+                .collect())
         }
-    })
+        TargetMode::EnrolledVsEveryoneElse(enrolled) => {
+            label_against_enrolled(track, &raw, &enrolled)
+        }
+    }
 }
 
 /// Assign a cluster to each turn the sidecar returned.
@@ -1007,28 +1076,76 @@ fn complete_linkage_merges(distances: &mut [Vec<f64>]) -> Vec<(usize, usize, f64
     merges
 }
 
-/// Collapse a clustered track to the 2-class task: the enrolled voice, and
-/// everyone else.
+/// The refusal tag a binary-mode pass returns when the turns it was handed
+/// carry no embedding it can compare against the enrolled centroid.
 ///
-/// Merged finding #5. The output carries at most two distinct cluster indices —
-/// exactly two whenever the enrolled cluster actually occurs — and the turn
-/// boundaries are untouched: the mechanism can find WHERE the speaker changes
-/// far-field, it is telling six far-field voices apart that it cannot do.
-pub fn collapse_to_enrolled_vs_everyone_else(
-    segments: &[DiarizedSegment],
-    enrolled_cluster: i64,
-) -> Vec<DiarizedSegment> {
-    segments
+/// Tag-shaped (`[a-z0-9_]{1,32}`) like every other tag this parent will echo.
+pub const ERR_NO_EMBEDDINGS: &str = "no_embeddings";
+
+/// Answer the 2-class question one turn at a time: is THIS turn the enrolled
+/// voice, or is it not.
+///
+/// Merged finding #5's reframe, as a computation. Every turn is scored against
+/// [`EnrolledSpeaker::centroid`] with [`cosine_similarity`] and labelled
+/// [`ENROLLED_CLUSTER`] at or above [`EnrolledSpeaker::accept_at_or_above`],
+/// [`EVERYONE_ELSE_CLUSTER`] below it. Turn boundaries are untouched: the
+/// mechanism can find WHERE the speaker changes far-field, it is telling six
+/// far-field voices apart that it cannot do.
+///
+/// **What this deliberately does not do is look at the cluster ids.** Deciding
+/// the enrolled class by "which raw cluster did the profile match" would make
+/// this mode's accuracy a function of the N-way clustering's purity on the
+/// enrolled speaker — a speaker split across three clusters by complete linkage
+/// would lose two thirds of their speech no matter how good the enrollment was,
+/// and the mode would be a relabel of the pass it exists to replace. Per-turn
+/// scoring has no such dependency; it is why the question is smaller.
+///
+/// # Errors
+///
+/// [`DiarizeError::Refused`] carrying [`ERR_NO_EMBEDDINGS`] when any turn has
+/// an empty embedding or one whose length differs from the centroid's. There is
+/// no fallback for that case ON PURPOSE: without embeddings the only thing left
+/// to key on is a cluster id, which carries no identity, so a "fallback" here
+/// would be a guess wearing the enrolled speaker's name. A refusal lets the
+/// caller leave the transcript unattributed, which is the honest outcome.
+pub fn label_against_enrolled(
+    track: i64,
+    raw: &[DiarizeSegment],
+    enrolled: &EnrolledSpeaker,
+) -> Result<Vec<DiarizedSegment>, DiarizeError> {
+    if enrolled.centroid.is_empty() {
+        log::warn!(
+            "binary-mode diarization asked for profile {} with an empty centroid — refusing \
+             rather than labelling turns against nothing",
+            enrolled.profile_id
+        );
+        return Err(DiarizeError::Refused(ERR_NO_EMBEDDINGS.to_string()));
+    }
+    let mismatched = raw
         .iter()
-        .map(|s| DiarizedSegment {
-            cluster_index: if s.cluster_index == enrolled_cluster {
+        .any(|s| s.embedding.len() != enrolled.centroid.len());
+    if mismatched {
+        log::warn!(
+            "binary-mode diarization got {} turns whose embeddings do not match the enrolled \
+             centroid's {} dimensions — refusing, because a cluster id is not an identity",
+            raw.len(),
+            enrolled.centroid.len()
+        );
+        return Err(DiarizeError::Refused(ERR_NO_EMBEDDINGS.to_string()));
+    }
+
+    Ok(raw
+        .iter()
+        .map(|s| {
+            let similarity = cosine_similarity(&s.embedding, &enrolled.centroid);
+            let cluster_index = if similarity.get() >= enrolled.accept_at_or_above.get() {
                 ENROLLED_CLUSTER
             } else {
                 EVERYONE_ELSE_CLUSTER
-            },
-            ..s.clone()
+            };
+            DiarizedSegment::new(track, s.start, s.end, cluster_index)
         })
-        .collect()
+        .collect())
 }
 
 /// One cluster's weight in a meeting, and what it is called on screen.

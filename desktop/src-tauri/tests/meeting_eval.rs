@@ -6666,6 +6666,25 @@ const THRESHOLD_SWEEP: [f32; 19] = [
     0.85, 0.90, 0.95,
 ];
 
+/// The candidate acceptance bands a tuning run sweeps for the 2-class task, as
+/// cosine SIMILARITIES.
+///
+/// Binary mode is a different task with a different unit, so it gets a sweep of
+/// its own rather than borrowing the clustering distance. That is not a detail:
+/// a first cut of this item ran fixture (f)'s binary arm at a hard-coded `0.35`
+/// — a number that was neither tuned for the 2-class task nor even in the right
+/// unit for it — which is the vendor-blog threshold this backlog forbids,
+/// arrived at by inattention rather than by citation.
+///
+/// The grid spans the usable half of the similarity range. Below 0.0 a cosine
+/// band accepts turns pointing AWAY from the enrolled voice, which is not a
+/// decision anybody wants tuned; the top end goes to 0.95 so a winner cannot
+/// land on the edge without that being visible.
+const SIMILARITY_SWEEP: [f32; 19] = [
+    0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80,
+    0.85, 0.90, 0.95,
+];
+
 /// Every interval in which two or more speakers are talking at once.
 ///
 /// These are the frames sherpa's `ExcludeOverlap` deletes before embedding, and
@@ -6842,6 +6861,169 @@ fn measured_hypothesis(
     }
 }
 
+/// Enrol a fixture speaker the way a person would: from ONE span of their
+/// voice, not from the answer key.
+///
+/// Binary mode compares each turn against an enrolled centroid, so a measured
+/// run needs one, and where it comes from decides what the measurement means.
+/// This takes the speaker's FIRST ground-truth span, keeps the diarizer's turns
+/// that lie mostly inside it, and averages their embeddings (L2-normalised —
+/// the same shape YV128's `speaker_profiles` will store). Every later span is
+/// untouched and is what the DER is then scored over, so the enrollment sample
+/// and the test material are disjoint: a centroid built from all of a speaker's
+/// speech would be scoring the harness's knowledge of the answer, not the
+/// pipeline.
+///
+/// `None`, with the reason printed, on any machine that cannot embed — which is
+/// every machine until YV122.
+fn enrol_from_first_span(
+    root: &Path,
+    fixture: &str,
+    speaker: &str,
+    threshold: f32,
+) -> Option<(Vec<f32>, f64)> {
+    use wilson_voice_lib::diarize_metrics::CosineDistance;
+    use wilson_voice_lib::models::{diarize_model_for_role, diarize_model_path, DiarizeModelRole};
+
+    let reference = read_rttm(root, fixture);
+    let span = reference.iter().find(|t| t.speaker_id == speaker)?;
+    let (span_start, span_end) = (span.start_seconds, span.end_seconds);
+
+    let pool = diarize_pool()?;
+    let segmentation = diarize_model_for_role(DiarizeModelRole::Segmentation)?;
+    let embedding = diarize_model_for_role(DiarizeModelRole::Embedding)?;
+    let (segmentation, embedding) = (
+        diarize_model_path(segmentation),
+        diarize_model_path(embedding),
+    );
+    if let Err(e) = pool.load_models(&segmentation, &embedding) {
+        eprintln!("{DIARIZER_ABSENT} (load_models: {})", e.tag());
+        pool.shutdown();
+        return None;
+    }
+    let wav = root.join(fixture).join("audio.wav");
+    let raw = pool.diarize(&wav, CosineDistance::new(threshold));
+    pool.shutdown();
+    let raw = match raw {
+        Ok(raw) => raw,
+        Err(e) => {
+            eprintln!("{DIARIZER_ABSENT} (diarize: {})", e.tag());
+            return None;
+        }
+    };
+
+    let mine: Vec<&wilson_voice_lib::diarize_protocol::DiarizeSegment> = raw
+        .iter()
+        .filter(|s| {
+            let inside = s.end.min(span_end) - s.start.max(span_start);
+            inside > 0.0 && inside > (s.end - s.start) * 0.5
+        })
+        .filter(|s| !s.embedding.is_empty())
+        .collect();
+    if mine.is_empty() {
+        eprintln!(
+            "no diarized turn sits inside {speaker}'s first span ({span_start:.2}–{span_end:.2}s) \
+             — nothing to enrol from"
+        );
+        return None;
+    }
+    let dim = mine[0].embedding.len();
+    if mine.iter().any(|s| s.embedding.len() != dim) {
+        eprintln!("the sidecar returned mixed embedding dimensions — refusing to enrol");
+        return None;
+    }
+    let mut centroid = vec![0.0f32; dim];
+    for turn in &mine {
+        for (slot, value) in centroid.iter_mut().zip(&turn.embedding) {
+            *slot += value / mine.len() as f32;
+        }
+    }
+    let norm = centroid.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm <= f32::EPSILON {
+        eprintln!("the enrolled centroid is degenerate — refusing to enrol");
+        return None;
+    }
+    for slot in centroid.iter_mut() {
+        *slot /= norm;
+    }
+    eprintln!(
+        "enrolled {speaker} from {} turn(s) inside its first span \
+         ({span_start:.2}–{span_end:.2}s), {dim}-dim centroid",
+        mine.len()
+    );
+    Some((centroid, span_end))
+}
+
+/// Sweep [`SIMILARITY_SWEEP`] for the 2-class task on `fixture` and return the
+/// best `(band, DER, JER)`, printing the whole table.
+///
+/// The 2-class task gets its OWN tuned number, in its own unit, against its own
+/// fixture and its own collapsed reference. Reusing the clustering distance
+/// here would be tuning one task and gating another.
+///
+/// `scored_from` drops the enrollment span from the reference so the score is
+/// over material the centroid never saw.
+fn tune_enrollment_band(
+    root: &Path,
+    fixture: &str,
+    speaker: &str,
+    distance: f32,
+    centroid: &[f32],
+    scored_from: f64,
+) -> Option<(f32, f64, f64)> {
+    use wilson_voice_lib::diarize::{EnrolledSpeaker, TargetMode};
+    use wilson_voice_lib::diarize_metrics::CosineSimilarity;
+
+    let reference: Vec<RttmTurn> = collapse_rttm(&read_rttm(root, fixture), speaker)
+        .into_iter()
+        .filter(|t| t.start_seconds >= scored_from)
+        .collect();
+    assert!(
+        !reference.is_empty(),
+        "the enrollment span swallowed the whole fixture — nothing left to score"
+    );
+
+    let mut best: Option<(f32, f64, f64)> = None;
+    for band in SIMILARITY_SWEEP {
+        let hypothesis: Vec<RttmTurn> = measured_hypothesis(
+            root,
+            fixture,
+            distance,
+            TargetMode::EnrolledVsEveryoneElse(EnrolledSpeaker::new(
+                1,
+                centroid.to_vec(),
+                CosineSimilarity::new(band),
+            )),
+        )?
+        .into_iter()
+        .filter(|t| t.start_seconds >= scored_from)
+        // `measured_hypothesis` names its turns `cluster_<index>`; the collapsed
+        // reference names them `enrolled` / `everyone_else`. Same two classes,
+        // and the DER has to see the same two strings.
+        .map(|t| {
+            let id = if t.speaker_id
+                == format!("cluster_{}", wilson_voice_lib::diarize::ENROLLED_CLUSTER)
+            {
+                "enrolled"
+            } else {
+                "everyone_else"
+            };
+            RttmTurn::new(id, t.start_seconds, t.end_seconds)
+        })
+        .collect();
+        let report = der(&reference, &hypothesis);
+        let (rate, jaccard) = (report.rate(), jer(&reference, &hypothesis));
+        eprintln!(
+            "  band {band:.2}: DER {rate:.4} (miss {:.2}s, fa {:.2}s, conf {:.2}s), JER {jaccard:.4}",
+            report.miss, report.false_alarm, report.confusion
+        );
+        if best.is_none_or(|(_, best_der, _)| rate < best_der) {
+            best = Some((band, rate, jaccard));
+        }
+    }
+    best
+}
+
 /// Sweep [`THRESHOLD_SWEEP`] against fixture (e) and return the best
 /// `(threshold, DER, JER)`, printing the whole table.
 ///
@@ -6964,9 +7146,27 @@ fn fixture_e_der_gate() {
 ///
 /// If that ordering ever reversed, finding #5's reframe would be wrong and this
 /// test would say so instead of the backlog assuming it.
+///
+/// **Read arm 1's two numbers for exactly what they are.** 0.2738 and 0.1524
+/// are CEILINGS: the DER floor the deleted frames impose on a *perfect*
+/// implementation of each task. They establish that the 2-class task has more
+/// headroom on this fixture. They are not scores, no code in this tree has been
+/// shown to approach either, and quoting 0.1524 as what binary mode achieves
+/// would be a false capability claim. What binary mode actually achieves is arm
+/// 2, and arm 2 cannot run here: there is no inference backend until YV122.
+///
+/// **Arm 2 tunes each task for itself.** The clustering distance comes from
+/// fixture (e)'s sweep — (e) is the zero-ceiling fixture, so a distance tuned
+/// there is measuring similarity and nothing else. The 2-class acceptance band
+/// is a cosine SIMILARITY and gets its own sweep on THIS fixture, scored
+/// against the collapsed reference, over the material left after the enrollment
+/// span is removed. An earlier cut of this arm ran both at an inline `0.35`,
+/// which tuned the 2-class task for nothing;
+/// `every_diarization_measurement_takes_its_threshold_from_a_sweep` is what
+/// stops it coming back.
 #[test]
 fn fixture_f_binary_fallback_der() {
-    use wilson_voice_lib::diarize::{EnrolledSpeaker, TargetMode};
+    use wilson_voice_lib::diarize::TargetMode;
 
     let Some(root) = corpus() else { return };
     let reference = read_rttm(&root, CLASSROOM_6);
@@ -7018,14 +7218,14 @@ fn fixture_f_binary_fallback_der() {
     );
 
     // Arm 2 — the measured comparison, blocked on a backend.
-    let full = measured_hypothesis(&root, CLASSROOM_6, 0.35, TargetMode::FullClustering);
-    let binary = measured_hypothesis(
-        &root,
-        CLASSROOM_6,
-        0.35,
-        TargetMode::EnrolledVsEveryoneElse(EnrolledSpeaker::matched(1, 0)),
-    );
-    let (Some(full), Some(binary)) = (full, binary) else {
+    //
+    // Every number that enters this arm is tuned, and each task is tuned for
+    // ITSELF. The clustering distance comes from fixture (e)'s sweep, because
+    // (e) is the zero-ceiling fixture a distance can honestly be tuned on. The
+    // 2-class acceptance band comes from its own sweep, in its own unit, on
+    // THIS fixture — a hard-coded number in either place would be the
+    // vendor-blog threshold this backlog forbids.
+    let Some((distance, _, _)) = tune_clustering_threshold(&root) else {
         assert!(
             CLASSROOM_6_DER_GATE.is_none() && CLASSROOM_6_JER_GATE.is_none(),
             "the fixture (f) gates carry numbers but nothing here can produce a \
@@ -7033,24 +7233,141 @@ fn fixture_f_binary_fallback_der() {
         );
         return;
     };
-    let measured_full = der(&reference, &full).rate();
-    let measured_binary = der(&binary_reference, &binary).rate();
-    eprintln!(
-        "fixture (f) MEASURED: full N-way DER {measured_full:.4} (recorded, not gated) · \
-         enrolled/rest DER {measured_binary:.4}"
-    );
-    if let Some(gate) = CLASSROOM_6_DER_GATE {
+    let Some((centroid, enrolled_until)) =
+        enrol_from_first_span(&root, CLASSROOM_6, instructor, distance)
+    else {
         assert!(
-            measured_binary <= gate,
-            "fixture (f) binary-mode DER {measured_binary:.4} is worse than the \
-             recorded gate {gate:.4}"
+            CLASSROOM_6_DER_GATE.is_none() && CLASSROOM_6_JER_GATE.is_none(),
+            "the fixture (f) gates carry numbers but no enrolled centroid can be \
+             built on this machine to check them against"
         );
-    } else {
+        return;
+    };
+    eprintln!("fixture (f) 2-class acceptance-band sweep:");
+    let Some((band, measured_binary, measured_binary_jer)) = tune_enrollment_band(
+        &root,
+        CLASSROOM_6,
+        instructor,
+        distance,
+        &centroid,
+        enrolled_until,
+    ) else {
+        assert!(
+            CLASSROOM_6_DER_GATE.is_none() && CLASSROOM_6_JER_GATE.is_none(),
+            "the fixture (f) gates carry numbers but the 2-class sweep cannot run here"
+        );
+        return;
+    };
+    let Some(full) = measured_hypothesis(&root, CLASSROOM_6, distance, TargetMode::FullClustering)
+    else {
+        panic!("the sweeps ran but full clustering did not — that is not a state this can be in");
+    };
+    let measured_full = der(&reference, &full).rate();
+    eprintln!(
+        "fixture (f) MEASURED: full N-way DER {measured_full:.4} at clustering distance \
+         {distance:.2} (recorded, not gated) · enrolled/rest DER {measured_binary:.4}, \
+         JER {measured_binary_jer:.4} at acceptance band {band:.2}, scored from \
+         {enrolled_until:.2}s (the enrollment span is excluded)"
+    );
+    // The two are NOT directly comparable as scores — the full arm is scored
+    // against a 6-class reference over the whole fixture, the binary arm
+    // against a 2-class reference over the post-enrollment part — and neither
+    // is comparable to the ceilings in arm 1, which are a different quantity
+    // (a floor on a perfect implementation, not a measurement of this one).
+    // They are printed together because that is the table the backlog records,
+    // not because one minus the other means anything.
+    let (Some(der_gate), Some(jer_gate)) = (CLASSROOM_6_DER_GATE, CLASSROOM_6_JER_GATE) else {
         panic!(
             "a measurement is available (full {measured_full:.4}, binary \
-             {measured_binary:.4}) but CLASSROOM_6_DER_GATE is still `None`. \
-             Record both in the backlog and gate the BINARY one — full \
-             clustering here is documented as beyond the mechanism, not tuned."
+             {measured_binary:.4} DER / {measured_binary_jer:.4} JER at band \
+             {band:.2}) but CLASSROOM_6_DER_GATE / CLASSROOM_6_JER_GATE are still \
+             `None`. Record the sweep tables above in the backlog and gate the \
+             BINARY one — full clustering here is documented as beyond the \
+             mechanism, not tuned."
         );
+    };
+    assert!(
+        measured_binary <= der_gate,
+        "fixture (f) binary-mode DER {measured_binary:.4} is worse than the \
+         recorded gate {der_gate:.4}"
+    );
+    assert!(
+        measured_binary_jer <= jer_gate,
+        "fixture (f) binary-mode JER {measured_binary_jer:.4} is worse than the \
+         recorded gate {jer_gate:.4}"
+    );
+}
+
+/// No literal threshold reaches a diarization measurement.
+///
+/// The two sweeps above exist so that every number entering
+/// `fixture_e_der_gate` / `fixture_f_binary_fallback_der` is an OUTPUT of this
+/// harness. That discipline is a property of the source, not of a run — and on
+/// this tree no run can check it, because there is no backend. So it is checked
+/// the way `meeting_kind_branch.rs` checks its rules: against the file.
+///
+/// The specific regression: the fixture (f) binary arm previously called
+/// `measured_hypothesis(..., 0.35, ...)` with the literal written inline, for
+/// the 2-class task, in the wrong unit, tuned for nothing.
+#[test]
+fn every_diarization_measurement_takes_its_threshold_from_a_sweep() {
+    const CALL: &str = "measured_hypothesis(";
+    // Comments stripped first: prose that quotes the old `…, 0.35, …` call is
+    // the point of the comments, not a call site. Multi-line calls survive,
+    // because only each line's trailing comment is removed.
+    let src: String = include_str!("meeting_eval.rs")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let src = src.as_str();
+    let mut checked = 0usize;
+
+    for (at, _) in src.match_indices(CALL) {
+        let before = &src[..at];
+        // The definition, and this test's own mentions of the name in string
+        // literals, are not call sites.
+        if before.ends_with("fn ") || before.ends_with('"') {
+            continue;
+        }
+        // The arguments, at THIS call's paren depth: a nested
+        // `EnrolledSpeaker::new(1, …)` is not a threshold and is not checked.
+        let mut depth = 1usize;
+        let mut argument = String::new();
+        let mut arguments: Vec<String> = Vec::new();
+        for ch in src[at + CALL.len()..].chars() {
+            match ch {
+                '(' | '[' => depth += 1,
+                ')' | ']' if depth == 1 => break,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 1 => {
+                    arguments.push(std::mem::take(&mut argument));
+                    continue;
+                }
+                _ => {}
+            }
+            argument.push(ch);
+        }
+        arguments.push(argument);
+        checked += 1;
+
+        for argument in &arguments {
+            let argument = argument.trim();
+            let numeric = argument
+                .trim_start_matches('-')
+                .starts_with(|c: char| c.is_ascii_digit() || c == '.');
+            assert!(
+                !numeric,
+                "a diarization measurement is being taken at the literal `{argument}` \
+                 — every threshold in this epic is an output of a sweep, and the \
+                 specific regression this catches is the 2-class arm's inline 0.35"
+            );
+        }
     }
+
+    assert!(
+        checked >= 3,
+        "only {checked} `measured_hypothesis` call sites found — this guard has \
+         stopped guarding anything"
+    );
 }

@@ -235,18 +235,30 @@ fn the_public_clustering_api_takes_a_typed_distance() {
 /// DEFAULT_CLUSTERING_DISTANCE` would be sherpa's 0.5 (or OpenWhispr's 0.70/0.55
 /// read as the wrong unit) wearing a Rust type — the exact failure this
 /// backlog's eval-first sequencing exists to prevent.
+///
+/// **Both units, not just the clustering one.** Binary mode
+/// (`TargetMode::EnrolledVsEveryoneElse`) decides each turn against an
+/// acceptance band in cosine SIMILARITY, and that band is a field on
+/// `EnrolledSpeaker` supplied by the caller for exactly the same reason: YV129
+/// measures it against YV120's `enrollment_eer`. A `const` of either unit in
+/// this file is the same failure wearing a different newtype.
 #[test]
 fn no_tuned_clustering_constant_ships_in_the_crate() {
     let src = include_str!("../src/diarize.rs");
     for line in src.lines() {
         let code = line.split("//").next().unwrap_or_default();
-        if !code.contains("const") || !code.contains("CosineDistance") {
+        if !code.contains("const") {
             continue;
         }
-        panic!(
-            "a cosine-distance constant has appeared in diarize.rs — every \
-             threshold in this epic is an OUTPUT of the eval harness, never an \
-             input: {line}"
-        );
+        for unit in ["CosineDistance", "CosineSimilarity"] {
+            if !code.contains(unit) {
+                continue;
+            }
+            panic!(
+                "a {unit} constant has appeared in diarize.rs — every threshold \
+                 in this epic is an OUTPUT of the eval harness, never an input: \
+                 {line}"
+            );
+        }
     }
 }
