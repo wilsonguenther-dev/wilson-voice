@@ -4752,8 +4752,19 @@ fn meeting_eval_anti_alias_eer_the_gate_rejects_a_worse_shipped_arm() {
     // and the (e)/(f) split recorded on `shipped_arm_tracks_the_control`. If
     // somebody decides it belongs back, this line is where they have to say so
     // on purpose.
+    // Constructed so that a `shipped.d_prime < pre_fix.d_prime` comparison
+    // WOULD reject: the pre-fix arm here is the faithful one, whose d′ is far
+    // above the value planted below. Getting that backwards is how the first
+    // cut of this assertion let a re-added d′ gate survive a mutation.
     let mut worse_dprime = faithful.clone();
-    worse_dprime.d_prime = control.d_prime * 0.1;
+    worse_dprime.d_prime = degraded.d_prime * 0.1;
+    assert!(
+        worse_dprime.d_prime < degraded.d_prime,
+        "this case does not regress d′ against the pre-fix arm at all ({:.4} vs {:.4}), \
+         so accepting it proves nothing about whether d′ is gated",
+        worse_dprime.d_prime,
+        degraded.d_prime
+    );
     assert_eq!(
         shipped_arm_tracks_the_control(&control, &control_alt, &degraded, &worse_dprime),
         Ok(()),
@@ -4868,9 +4879,16 @@ fn meeting_eval_antialias_both_fold_gates_spend_one_constant() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect();
 
+    // The needle is JOINED at runtime so this line does not match itself. It
+    // did in the first cut, which counted three gates instead of two — and
+    // because the test's own name says `antialias` while every filter used
+    // while writing it said `anti_alias`, the broken version had never once
+    // executed. A source-reading test has to be told, explicitly, not to read
+    // itself.
+    let needle = format!("removed_db {}", ">=");
     let gates: Vec<&&str> = code
         .iter()
-        .filter(|line| line.contains("removed_db >="))
+        .filter(|line| line.contains(&needle))
         .collect();
     assert_eq!(
         gates.len(),
