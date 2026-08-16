@@ -1,0 +1,60 @@
+YV131 — acceptance transcript
+2026-08-16T11:19:09Z  aarch64-apple-darwin  rustc 1.94.0 (4a4ef493e 2026-03-02)
+
+### Backlog acceptance criterion 1
+$ cargo test --test as_norm_improves_cross_condition_matching
+test as_norm_is_not_a_cosine_similarity ... ok
+test as_norm_improves_cross_condition_matching ... ok
+test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+test the_whole_ranking_flips_not_just_the_pair ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+### Backlog acceptance criterion 2
+$ cargo test --test within_meeting_ranking_prefers_best_candidate
+test no_cohort_still_ranks_and_says_why ... ok
+test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
+test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
+test the_cohort_actually_has_spread_here ... ok
+test within_meeting_ranking_prefers_best_candidate ... ok
+test six_plausible_profiles_still_produce_one_suggestion ... ok
+test ranking_is_deterministic_and_stable_on_ties ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+### The measured arm (criterion 3, made runnable instead of manual)
+$ cargo test --test as_norm_cross_condition_measured -- --nocapture
+dev-clean|A clean (control)                  raw 3.75%  AS-norm 2.66%
+dev-clean|B1 headset->laptop, mild           raw 12.50%  AS-norm 10.27%
+dev-clean|B2 across-desk, moderate           raw 21.25%  AS-norm 19.95%
+dev-clean|B3 far-field room                  raw 30.99%  AS-norm 27.50%
+dev-clean|B4 telephone band                  raw 31.09%  AS-norm 28.89%
+dev-other|A clean (control)                  raw 6.01%  AS-norm 4.55%
+dev-other|B1 headset->laptop, mild           raw 15.15%  AS-norm 12.12%
+dev-other|B2 across-desk, moderate           raw 23.96%  AS-norm 22.73%
+dev-other|B3 far-field room                  raw 32.17%  AS-norm 31.96%
+dev-other|B4 telephone band                  raw 35.18%  AS-norm 35.09%
+test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+1801/2178 AS-norm scores (82.7%) lie outside the cosine range; min -18.980, max 6.461
+test the_tune_and_report_splits_are_different_corpora ... ok
+test the_measured_scores_do_not_fit_in_the_cosine_range ... ok
+test the_arm_is_large_enough_to_mean_something ... ok
+held-out dev-other / B1 headset->laptop, mild: raw EER 15.15% (66 genuine, 2112 impostor) -> AS-norm EER 12.12%
+test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+### The shipped cohort is what its manifest says
+$ cargo test --test as_norm_cohort_is_provenanced
+test the_voices_are_attributed_and_license_clear ... ok
+test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+test the_cohort_was_built_by_the_model_the_app_downloads ... ok
+test every_cohort_row_is_a_unit_vector ... ok
+test the_payload_hashes_to_what_the_manifest_claims ... ok
+test no_two_cohort_speakers_are_the_same_voice ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+### This item ships no tuned decision threshold
+$ cargo test --test as_norm_ships_no_tuned_threshold
+test normalized_scores_cannot_reach_a_cosine_band ... ok
+test the_tuned_hyperparameter_lives_in_the_manifest_not_the_code ... ok
+test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... ok
+test the_module_never_names_the_blog_bands ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,111 @@
+YV131 — non-vacuous mutation evidence
+Generated 2026-08-16T11:18:59Z, commit base 8086ed9
+
+Every acceptance test in this item was checked by breaking the thing it claims
+to protect and confirming it goes red. Seven mutations: six red, one DISCLOSED
+GREEN, described at the bottom rather than quietly dropped.
+
+=================================================================
+MUTATION: as_norm_score returns the raw score unchanged (AS-norm becomes a no-op)
+  fails:  cargo test --test as_norm_improves_cross_condition_matching
+test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+test as_norm_improves_cross_condition_matching ... FAILED
+test as_norm_is_not_a_cosine_similarity ... FAILED
+test the_whole_ranking_flips_not_just_the_pair ... FAILED
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `--test as_norm_improves_cross_condition_matching`
+
+=================================================================
+MUTATION: drop the ENROLLMENT side, keep only the test side (the half that cannot reorder)
+  fails:  cargo test --test as_norm_improves_cross_condition_matching
+test as_norm_is_not_a_cosine_similarity ... ok
+test a_hub_profile_loses_the_advantage_it_never_earned ... ok
+test as_norm_improves_cross_condition_matching ... FAILED
+test the_whole_ranking_flips_not_just_the_pair ... FAILED
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `--test as_norm_improves_cross_condition_matching`
+
+=================================================================
+MUTATION: rank_within_meeting sorts ascending (worst candidate first)
+  fails:  cargo test --test within_meeting_ranking_prefers_best_candidate
+test a_wrong_width_cohort_degrades_instead_of_scoring_nonsense ... ok
+test no_cohort_still_ranks_and_says_why ... ok
+test an_unnormalizable_candidate_never_outranks_a_measured_one ... ok
+test the_cohort_actually_has_spread_here ... ok
+test ranking_is_deterministic_and_stable_on_ties ... ok
+test within_meeting_ranking_prefers_best_candidate ... FAILED
+test six_plausible_profiles_still_produce_one_suggestion ... FAILED
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `--test within_meeting_ranking_prefers_best_candidate`
+
+=================================================================
+MUTATION: flip one byte in the committed cohort payload
+  fails:  cargo test --test as_norm_cohort_is_provenanced
+test the_voices_are_attributed_and_license_clear ... ok
+test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+test the_cohort_was_built_by_the_model_the_app_downloads ... ok
+test every_cohort_row_is_a_unit_vector ... ok
+test the_payload_hashes_to_what_the_manifest_claims ... FAILED
+test no_two_cohort_speakers_are_the_same_voice ... ok
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
+
+=================================================================
+MUTATION: point the manifest at a different embedder digest
+  fails:  cargo test --test as_norm_cohort_is_provenanced
+test the_voices_are_attributed_and_license_clear ... ok
+test the_cohort_was_built_by_the_model_the_app_downloads ... FAILED
+test the_cohort_is_the_size_and_shape_the_module_documents ... ok
+test every_cohort_row_is_a_unit_vector ... ok
+test the_payload_hashes_to_what_the_manifest_claims ... ok
+test no_two_cohort_speakers_are_the_same_voice ... ok
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+error: test failed, to rerun pass `--test as_norm_cohort_is_provenanced`
+
+=================================================================
+MUTATION: introduce a tuned decision threshold constant in the shipped module
+  fails:  cargo test --test as_norm_ships_no_tuned_threshold
+test normalized_scores_cannot_reach_a_cosine_band ... ok
+test the_tuned_hyperparameter_lives_in_the_manifest_not_the_code ... ok
+test no_float_literal_in_the_module_is_an_undocumented_decision_boundary ... FAILED
+test the_module_never_names_the_blog_bands ... ok
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: test failed, to rerun pass `--test as_norm_ships_no_tuned_threshold`
+
+=================================================================
+MUTATION: score AS-norm trials through the COSINE-clamping enrollment_eer
+  fails:  cargo test --test as_norm_cross_condition_measured
+test the_tune_and_report_splits_are_different_corpora ... ok
+test the_full_ladder_is_committed_not_only_the_flattering_rung ... ok
+test the_arm_is_large_enough_to_mean_something ... ok
+test as_norm_beats_raw_cosine_on_the_held_out_arm ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+=================================================================
+DISCLOSED GREEN — mutation 7, and what it actually tells us
+=================================================================
+Mutation: route the AS-norm trials through `enrollment_eer`, the COSINE-typed
+entry point, whose `CosineSimilarity::new` clamps every input to [-1, 1].
+
+Result: the suite stayed GREEN. The equal error rate is identical either way.
+
+Why, and why the guard still ships:
+  * Clamping is monotone non-decreasing, and on this arm the equal-error
+    crossing lands INSIDE [-1, 1], where the ordering of scores survives it.
+    The EER is a rank statistic, so it does not move.
+  * That is a property of this cohort, this channel and this corpus — not a
+    theorem. The crossing point is free to fall outside the surviving region
+    for the next one, and then the clamp silently reports a wrong number in
+    the one place this epic measures itself.
+  * The inputs are emphatically not in range: 82.7% of the 2,178 committed
+    scores lie outside [-1, 1], spanning -18.98 to +6.46. The clamp fuses
+    them into ties at the boundary and discards the distribution.
+
+So `the_measured_scores_do_not_fit_in_the_cosine_range` was added to assert the
+part that is not luck: that the scores overflow the cosine range, and that
+clamping visibly collapses the number of distinct values. That test IS red if
+the normalized scores ever become cosine-shaped, which is the real regression
+this guard is for.
+
+Reported here rather than counted as a win, because a mutation that did not
+fail is evidence about the test, and hiding it would make this file worthless.

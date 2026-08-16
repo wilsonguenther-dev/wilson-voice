@@ -42,6 +42,13 @@ pub mod diarize;
 // binaries from this one file so the two ends cannot drift — and its own unit
 // tests therefore run inside each of them.
 pub mod diarize_protocol;
+// YV131 — merged finding #21's other half: AS-norm against a compiled-in
+// impostor cohort, and within-meeting relative ranking instead of an absolute
+// per-utterance threshold. Public because five integration-test binaries score
+// the shipped functions directly, and because `NormalizedScore` has to be a
+// type on a `src/` signature to stop an AS-norm score ever being compared
+// against a cosine band — the same unit argument `diarize_metrics` makes.
+pub mod speaker_asnorm;
 // YV95: public because OS-12's energy rule is now a function with a test.
 // `hover_tick_ms` is the whole of fix (2) — a visible-but-untouched pill during
 // a three-hour meeting polls at 1 Hz, not 13 Hz — and

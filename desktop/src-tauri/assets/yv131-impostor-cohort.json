@@ -1,0 +1,351 @@
+{
+  "asset": "yv131-impostor-cohort.bin",
+  "sha256": "f67ac61c3bfe6c53d4e486cf849135a71968acfaee31284d438c42c5c5c0f345",
+  "bytes": 163840,
+  "count": 80,
+  "dim": 512,
+  "layout": "count * dim little-endian f32, row-major, each row L2-normalized",
+  "top_k": 20,
+  "embedder": {
+    "model_id": "wespeaker-en-voxceleb-campplus",
+    "model_sha256": "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef",
+    "extractor": "sherpa-onnx 1.13.4 SpeakerEmbeddingExtractor"
+  },
+  "source": {
+    "corpus": "LibriSpeech ASR corpus",
+    "subset": "test-clean",
+    "url": "https://www.openslr.org/12",
+    "license": "CC-BY-4.0",
+    "attribution": "LibriSpeech (c) 2014 Vassil Panayotov, CC-BY-4.0",
+    "note": "512-float embeddings only; no audio is redistributed and an embedding is not invertible to one.",
+    "segment_seconds": 30.0
+  },
+  "conditions": [
+    "clean",
+    "bandlimited"
+  ],
+  "entries": [
+    {
+      "speaker": 61,
+      "condition": "clean"
+    },
+    {
+      "speaker": 61,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 121,
+      "condition": "clean"
+    },
+    {
+      "speaker": 121,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 237,
+      "condition": "clean"
+    },
+    {
+      "speaker": 237,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 260,
+      "condition": "clean"
+    },
+    {
+      "speaker": 260,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 672,
+      "condition": "clean"
+    },
+    {
+      "speaker": 672,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 908,
+      "condition": "clean"
+    },
+    {
+      "speaker": 908,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1089,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1089,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1188,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1188,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1221,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1221,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1284,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1284,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1320,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1320,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1580,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1580,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 1995,
+      "condition": "clean"
+    },
+    {
+      "speaker": 1995,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2094,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2094,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2300,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2300,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2830,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2830,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 2961,
+      "condition": "clean"
+    },
+    {
+      "speaker": 2961,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3570,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3570,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3575,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3575,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 3729,
+      "condition": "clean"
+    },
+    {
+      "speaker": 3729,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4077,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4077,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4446,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4446,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4507,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4507,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4970,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4970,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 4992,
+      "condition": "clean"
+    },
+    {
+      "speaker": 4992,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5105,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5105,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5142,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5142,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5639,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5639,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 5683,
+      "condition": "clean"
+    },
+    {
+      "speaker": 5683,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 6829,
+      "condition": "clean"
+    },
+    {
+      "speaker": 6829,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 6930,
+      "condition": "clean"
+    },
+    {
+      "speaker": 6930,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7021,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7021,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7127,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7127,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7176,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7176,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 7729,
+      "condition": "clean"
+    },
+    {
+      "speaker": 7729,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8224,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8224,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8230,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8230,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8455,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8455,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8463,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8463,
+      "condition": "bandlimited"
+    },
+    {
+      "speaker": 8555,
+      "condition": "clean"
+    },
+    {
+      "speaker": 8555,
+      "condition": "bandlimited"
+    }
+  ],
+  "max_cross_speaker_similarity": 0.953581,
+  "generator": "scripts/yv131-build-impostor-cohort.py"
+}
