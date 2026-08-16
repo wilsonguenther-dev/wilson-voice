@@ -19,9 +19,11 @@ import {
   isTwoTrack,
   oneLine,
   orderedTranscript,
+  showsOverlapCaveat,
   speakerLabel,
   trackOf,
   MIC_TRACK,
+  OVERLAP_CAVEAT,
   SYSTEM_TRACK,
   UNCLUSTERED_SPEAKER_LABEL,
   type MeetingKind,
@@ -294,5 +296,85 @@ describe("isTwoTrack", () => {
     expect(
       isTwoTrack([...blankTap, seg("tap2", 2, SYSTEM_TRACK, "hello")]),
     ).toBe(true);
+  });
+});
+
+/**
+ * YV127 — the caveat's truth table.
+ *
+ * `overlap_column_absent_and_documented.rs` proves the column is absent and
+ * documented; these cases prove the absence is SAID, and said in the right
+ * places. Both halves matter: a caveat that never renders is a comment, and a
+ * caveat that renders everywhere is a disclaimer.
+ */
+describe("showsOverlapCaveat", () => {
+  const ROOM = [
+    seg("a", 0, MIC_TRACK, "let us start with the release checklist"),
+    seg("b", 4, MIC_TRACK, "friday works if the signing cert lands"),
+  ];
+
+  it("follows the diarization target, row for row", () => {
+    const rows: [string | null | undefined, TranscriptSegment[], boolean, string][] = [
+      ["in_person", ROOM, true, "the room is on the microphone and gets clustered"],
+      ["unknown", ROOM, true, "the picker was skipped — the clustering branch"],
+      [undefined, ROOM, true, "a row from before migration 4 is `unknown`"],
+      ["nonsense", ROOM, true, "an unreadable kind resolves to the clustering branch"],
+      [
+        "virtual",
+        ROOM,
+        true,
+        "a call whose tap never delivered is a microphone carrying the room",
+      ],
+      [
+        "virtual",
+        [...ROOM, seg("c", 6, SYSTEM_TRACK, "sounds right to me")],
+        false,
+        "THE exception: a call with a live second track never clusters Track A",
+      ],
+      [
+        "in_person",
+        [...ROOM, seg("c", 6, SYSTEM_TRACK, "sounds right to me")],
+        true,
+        "a hybrid room still clusters the microphone, so the caveat still applies",
+      ],
+    ];
+    for (const [kind, segments, expected, why] of rows) {
+      expect(showsOverlapCaveat(segments, kind), `${kind}: ${why}`).toBe(expected);
+      // The one rule this can never break: it agrees with the branch the
+      // speaker labels took, so the sentence and the labels describe the same
+      // mechanism.
+      expect(showsOverlapCaveat(segments, kind)).toBe(
+        diarizationTarget(kind, isTwoTrack(segments)) === "clusterTrackA",
+      );
+    }
+  });
+
+  it("needs a microphone line on the screen to qualify", () => {
+    expect(showsOverlapCaveat([], "in_person")).toBe(false);
+    // Rows exist, words do not: the same blank spans `orderedTranscript` drops.
+    expect(
+      showsOverlapCaveat([seg("mic", 0, MIC_TRACK, "  \n ")], "in_person"),
+    ).toBe(false);
+    // A tap-only transcript under a room kind: clustering is the branch, but
+    // there is not one microphone line for the sentence to qualify.
+    const tapOnly = [seg("t", 0, SYSTEM_TRACK, "somebody dialled in")];
+    expect(diarizationTarget("in_person", isTwoTrack(tapOnly))).toBe("clusterTrackA");
+    expect(showsOverlapCaveat(tapOnly, "in_person")).toBe(false);
+    // …and one real microphone word brings it back.
+    expect(
+      showsOverlapCaveat([...tapOnly, seg("m", 1, MIC_TRACK, "we did")], "in_person"),
+    ).toBe(true);
+  });
+
+  /**
+   * The sentence states a LIMIT and claims no ability, which is what makes it
+   * honest on a build where clustering has not shipped. Pinned as a string
+   * rather than left to review: `overlap_column_absent_and_documented.rs`
+   * compares this exact text against `meetings::OVERLAP_CAVEAT` in Rust.
+   */
+  it("says what it says", () => {
+    expect(OVERLAP_CAVEAT).toBe(
+      "Speech during overlapping talk is attributed to only one speaker.",
+    );
   });
 });

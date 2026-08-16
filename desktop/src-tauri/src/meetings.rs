@@ -17,8 +17,10 @@
 //!   * no `consent_ack` column — finding #13 closed O1 as "one TERMS line + one
 //!     one-time notice", so a single `settings_kv` key records it app-wide
 //!     (YV96). A per-row column with no reader is worse than nothing.
-//!   * no `speaker_id` / `speaker_label` / `cluster_index` / `overlapped` —
-//!     diarization is yap23. They arrive as migration 2, additive-only.
+//!   * no `speaker_id` / `speaker_label` / `cluster_index` — diarization is
+//!     yap23. They arrive as later, additive-only migrations. The fourth column
+//!     22-A cut alongside them is the one that is NEVER coming: see
+//!     [`OVERLAP_CAVEAT`] below, which is YV127's whole deliverable.
 //!   * no `track` column — 22-A captures one mic track. 22-B adds it (and
 //!     `sys_wav_path`) as its own migration step.
 //!   * retention is **time-based, 7 days** (finding #28), not
@@ -752,6 +754,73 @@ ALTER TABLE meeting_segments ADD COLUMN track INTEGER NOT NULL DEFAULT 0;
 pub const MIGRATION_4_MEETING_KIND: &str = r#"
 ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
 "#;
+
+/// YV127 — **the column that is not here, and the sentence that ships instead.**
+///
+/// The plan's §5 schema gave `meeting_segments` an overlap column (`INTEGER NOT
+/// NULL DEFAULT 0`, described as "pyannote overlap region → provisional"). The
+/// column's name is deliberately spelled out exactly once in this file, on the
+/// marker line below, so that a `grep` for it lands on the explanation and on
+/// nothing else — an absence is the one kind of design decision that leaves no
+/// code to read.
+///
+/// Merged finding #22 is that it cannot be populated. `OfflineSpeakerDiarization`
+/// — the sherpa entry point [`crate::diarize_protocol`] speaks to — answers with
+/// `{start, end, speaker, text}` per turn and nothing else:
+///
+/// > NO overlap flag — sherpa deletes overlapped frames before embedding
+///
+/// …and it deletes them upstream of the result type, so there is no moment in
+/// the pipeline at which the app could learn which stored segment sat under two
+/// voices. A column whose only possible values are `0` and a guess reads to
+/// every later query as a measurement, and this codebase has spent two backlogs
+/// refusing to ship those.
+///
+/// The finding offered a second option — drive the segmentation model directly
+/// for its raw powerset output instead of treating `OfflineSpeakerDiarization`
+/// as a black box, which really does mark overlap. That is a second integration
+/// surface against the same crate with its own output-format work, nothing in
+/// yap23's task list asks for it, and the finding's own wording ("make it an
+/// explicit decision, not an implied one") is a request to decide rather than an
+/// authorisation. **Decided: not in v1.** If a later item wants an overlap
+/// column, it starts by building that lower-level pass; adding the column first
+/// would be the guess this comment exists to prevent.
+///
+/// So there is no migration for this item. The deliverable is this comment —
+/// placed at the end of the ladder, where a reader looking for the column will
+/// be — and one sentence on screen, because "we dropped it silently" and "we
+/// dropped it and said so" are different products:
+///
+/// > Speech during overlapping talk is attributed to only one speaker.
+///
+/// That sentence is this constant, and
+/// `tests/overlap_column_absent_and_documented.rs` is what keeps this comment,
+/// the constant and the shipped UI from drifting apart.
+///
+/// ---
+///
+/// It is named here, beside [`MIC_SPEAKER_LABEL`] and [`UNCLUSTERED_SPEAKER_LABEL`],
+/// for the same reason those are: it is user-visible copy about attribution, and
+/// a second spelling of it somewhere else is how the app ends up saying two
+/// things. `src/meetings/transcript.ts` holds the mirror the UI actually renders
+/// (the transcript surface is React, exactly as the labels' mirror is), and the
+/// acceptance test asserts the two strings are byte-identical.
+///
+/// **Where it is shown is a decision, not a default.** It qualifies clustering,
+/// so it appears only where clustering is the mechanism — the
+/// [`DiarizationTarget::ClusterTrackA`] branch — and never on a `virtual`
+/// meeting whose live second track earns [`DiarizationTarget::MicIsMe`], where
+/// Track A was never clustered and the caveat would be describing work that did
+/// not happen.
+///
+/// **What it does NOT claim, on this base.** YV126 is what makes the microphone
+/// track separate into speakers; until it lands, a `ClusterTrackA` meeting
+/// renders every mic line as [`UNCLUSTERED_SPEAKER_LABEL`]. The sentence was
+/// chosen to be true in both worlds — it states a limit on attribution and
+/// claims no ability to tell voices apart — so it does not become true later, it
+/// simply becomes load-bearing later.
+pub const OVERLAP_CAVEAT: &str =
+    "Speech during overlapping talk is attributed to only one speaker.";
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.

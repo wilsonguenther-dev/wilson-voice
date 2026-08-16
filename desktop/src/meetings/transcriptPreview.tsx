@@ -15,6 +15,13 @@
  *     of YV108 found the opposite — labelled empty "Them" rows and a widened
  *     speaker gutter for a speaker the exported file did not contain.
  *
+ * YV127 — the same three scenes are also the two sides of the overlap caveat,
+ * which is why no fourth one was added for it: `mic-only` and `blank-tap` are
+ * both meetings whose microphone is the clustered track, so they carry the
+ * sentence, and `two-track` is the one configuration that never clusters Track
+ * A, so it must not. Screenshotting the trio therefore shows the caveat
+ * appearing AND being withheld, from the shipping component.
+ *
  * Same rules as `license/preview.tsx` and `meetings/preview.tsx`: a BUILD ENTRY
  * behind `YAP_DEV_TOOLING=1`, so no shipped build carries it.
  *

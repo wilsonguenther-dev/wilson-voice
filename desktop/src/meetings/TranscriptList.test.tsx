@@ -16,6 +16,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import TranscriptList from "./TranscriptList";
 import {
   MIC_TRACK,
+  OVERLAP_CAVEAT,
   SYSTEM_TRACK,
   UNCLUSTERED_SPEAKER_LABEL,
   type TranscriptSegment,
@@ -122,5 +123,60 @@ describe("TranscriptList", () => {
     );
     expect(html).toContain(">Me</span>");
     expect(html).toContain(">Them</span>");
+  });
+
+  /**
+   * YV127 — the overlap caveat, on the shipping component rather than only on
+   * the predicate behind it. `transcript.test.ts` owns the truth table; what is
+   * checked here is that the sentence reaches the markup at all, that it sits
+   * under the list it qualifies, and that the one meeting whose microphone is
+   * never clustered does not carry it.
+   *
+   * This is the automated half of the item's manual acceptance criterion
+   * ("renders for a full-clustering meeting, does not render for a virtual+tap
+   * meeting"); `docs/pr-screenshots/YV127/` is the other half, in pixels.
+   */
+  describe("the overlap caveat", () => {
+    const ROOM = [
+      seg("a", 0, MIC_TRACK, "let us start with the release checklist"),
+      seg("b", 4, MIC_TRACK, "friday works if the signing cert lands"),
+    ];
+
+    it("appears under a transcript whose microphone is the clustered track", () => {
+      for (const kind of ["in_person", "unknown", "virtual", undefined]) {
+        // `virtual` is in this list on purpose: with no live second track it is
+        // a microphone carrying the room, and it clusters like one.
+        const html = renderToStaticMarkup(
+          <TranscriptList kind={kind} segments={ROOM} />,
+        );
+        expect(html).toContain(OVERLAP_CAVEAT);
+        expect(html).toContain(`<p class="transcript-caveat">${OVERLAP_CAVEAT}</p>`);
+        // Under the lines, never above them: it qualifies what was just read.
+        expect(html.indexOf("</ol>")).toBeLessThan(html.indexOf("transcript-caveat"));
+      }
+    });
+
+    it("stays off a call whose second track really did record the others", () => {
+      const html = renderToStaticMarkup(
+        <TranscriptList
+          kind="virtual"
+          segments={[...ROOM, seg("c", 6, SYSTEM_TRACK, "sounds right to me")]}
+        />,
+      );
+      expect(html).toContain(">Me</span>");
+      expect(html).not.toContain(OVERLAP_CAVEAT);
+      expect(html).not.toContain("transcript-caveat");
+    });
+
+    it("does not caption a transcript that has no microphone lines", () => {
+      const html = renderToStaticMarkup(
+        <TranscriptList
+          kind="in_person"
+          segments={[seg("t", 0, SYSTEM_TRACK, "somebody dialled in")]}
+        />,
+      );
+      expect(html).toContain("somebody dialled in");
+      expect(html).not.toContain("transcript-caveat");
+    });
   });
 });
