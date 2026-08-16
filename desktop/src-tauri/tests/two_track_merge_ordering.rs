@@ -617,6 +617,7 @@ fn the_merge_labels_through_the_shipped_render_rule() {
             confidence: None,
             created_at: chrono::Utc::now(),
             track: s.track as i64,
+            cluster_index: None,
         })
         .collect();
     let rendered = render_transcript(&segments, CALL);

@@ -19,6 +19,11 @@
 //!     (YV96). A per-row column with no reader is worse than nothing.
 //!   * no `speaker_id` / `speaker_label` / `cluster_index` / `overlapped` —
 //!     diarization is yap23. They arrive as migration 2, additive-only.
+//!     (yap23 update: `cluster_index` arrived as **migration 5**, additive and
+//!     nullable, in YV126. `speaker_id`/`speaker_label` are still absent —
+//!     identity is an enrolled `speaker_profiles` match (YV128/YV129), not a
+//!     string on a transcript row — and `overlapped` is absent on purpose and
+//!     for good, per merged finding #22: see [`MIGRATION_5_CLUSTER_INDEX`].)
 //!   * no `track` column — 22-A captures one mic track. 22-B adds it (and
 //!     `sys_wav_path`) as its own migration step.
 //!   * retention is **time-based, 7 days** (finding #28), not
@@ -38,10 +43,13 @@ use serde::{Deserialize, Serialize};
 ///     `meeting_segments.track`).
 /// 4 = YV125's [`MeetingKind`] column (`meetings.kind`), which is what the
 ///     diarization branch reads.
+/// 5 = YV126's `meeting_segments.cluster_index` — which speaker cluster a
+///     transcript segment was attributed to, `NULL` for every row no clusterer
+///     has ever looked at.
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -94,6 +102,34 @@ pub const SYSTEM_SPEAKER_LABEL: &str = "Them";
 /// replaces it with the per-cluster `Speaker 1` / `Speaker 2` this is the zero
 /// element of, and YV129/YV130 replace those with enrolled names.
 pub const UNCLUSTERED_SPEAKER_LABEL: &str = "Speaker";
+
+/// YV126 — the bucket every cluster BELOW the surfacing floor is rolled into.
+///
+/// Merged finding #25's second half: the plan's sanity gate rejected a whole
+/// diarization pass when the cluster count exceeded `max(8, attendees × 2)`,
+/// which misfires precisely on this backlog's priority case — a manually
+/// started meeting has no attendee count, so the cap is 8, and a real six-person
+/// far-field room legitimately produces ten to fifteen raw clusters. The
+/// replacement is a RANKING with a floor
+/// ([`crate::diarize::rank_and_floor`]): the clusters that carry real speech
+/// get a chip each, everything else is named this, and nothing is ever
+/// discarded. A cluster in this bucket still has its `cluster_index` stored, so
+/// YV130's correction UX can promote it — "Other" is a surfacing decision, not
+/// a deletion.
+pub const OTHER_SPEAKER_LABEL: &str = "Other";
+
+/// The label for the `rank`-th surfaced cluster, 1-based:
+/// `Speaker 1`, `Speaker 2`, …
+///
+/// The rank is a position in [`crate::diarize::rank_and_floor`]'s speech-time
+/// ordering, **not** a `cluster_index`: cluster ids come out of the clusterer in
+/// whatever order the audio produced them, and showing a user "Speaker 7" in a
+/// three-person meeting would be leaking an internal counter as though it meant
+/// something. The stored `cluster_index` is what the DB keeps and what a
+/// correction updates; this is only what a person reads.
+pub fn cluster_speaker_label(rank: usize) -> String {
+    format!("{UNCLUSTERED_SPEAKER_LABEL} {rank}")
+}
 
 /// Lifecycle states a meeting row may hold. Kept as `&str` rather than a SQL
 /// CHECK so a future phase can add one without a migration, but validated on
@@ -342,6 +378,23 @@ pub struct MeetingSegment {
     /// without a backfill, because 22-A only ever recorded the mic.
     #[serde(default)]
     pub track: i64,
+    /// YV126 — which speaker cluster this segment was attributed to, within
+    /// THIS meeting.
+    ///
+    /// `None` is the honest majority state and always will be: every row
+    /// written before migration 5, every meeting whose clustering has not run
+    /// yet or failed, and every segment on a track that was never clustered (a
+    /// `virtual` meeting's mic track, which [`DiarizationTarget::MicIsMe`]
+    /// files as one person by mechanism, not by clustering). A `NULL` here
+    /// means "nobody has attributed this", never "speaker zero" — which is why
+    /// the column is nullable rather than `NOT NULL DEFAULT 0`.
+    ///
+    /// The number is local to one meeting and one clustering pass. Cluster 0 of
+    /// two meetings is two different people until an enrolled profile says
+    /// otherwise (YV128/YV129), and re-running clustering may renumber
+    /// everything.
+    #[serde(default)]
+    pub cluster_index: Option<i64>,
 }
 
 /// The mic track, as the DB spells it. Mirrors `meeting::MIC_TRACK`, which is
@@ -753,6 +806,45 @@ pub const MIGRATION_4_MEETING_KIND: &str = r#"
 ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';
 "#;
 
+/// The column migration 5 adds, named once so the SQL, the reader and the
+/// writer cannot be spelled differently in three places.
+pub const CLUSTER_INDEX_COLUMN: &str = "cluster_index";
+
+/// Migration 5 — YV126's `meeting_segments.cluster_index`.
+///
+/// One additive, **nullable** column. Nullable is the load-bearing choice, and
+/// it is the opposite of the choice migration 3 made for `track`: `track NOT
+/// NULL DEFAULT 0` was correct because 22-A only ever recorded the mic, so the
+/// default was a FACT about every existing row. Nothing equivalent is true
+/// here. No row in the wild has ever been through a clusterer, and there is no
+/// value that means "this segment is speaker 0" less than `0` does. `NULL`
+/// means "nobody has attributed this", and it stays `NULL` for:
+///
+///   * every segment written before this build,
+///   * every meeting whose clustering has not run, failed, or was never asked
+///     for,
+///   * the mic track of a `virtual` meeting, which [`diarization_target`] files
+///     as one speaker by mechanism rather than by clustering — writing `0`
+///     there would be re-deriving identity from a track index, which is the
+///     exact defect YV125 removed.
+///
+/// No `overlapped` column arrives with it, and that absence is deliberate
+/// rather than deferred: `sherpa-onnx`'s `OfflineSpeakerDiarizationSegment`
+/// carries `{start, end, speaker}` and no overlap flag, because overlapped
+/// frames are DELETED upstream before embedding rather than marked (merged
+/// finding #22). A column that could only ever be guessed at, read as measured,
+/// is worse than no column. YV127 is where that absence is documented next to
+/// the copy that has to admit it to a user.
+///
+/// `ALTER TABLE … ADD COLUMN` with no default is an O(1) header rewrite in
+/// SQLite — it does not touch existing rows. Not `IF NOT EXISTS` (there is no
+/// such clause): the ladder in `db::run_migrations` runs a step exactly once,
+/// inside its own transaction, with `user_version` written in the same
+/// transaction.
+pub const MIGRATION_5_CLUSTER_INDEX: &str = r#"
+ALTER TABLE meeting_segments ADD COLUMN cluster_index INTEGER;
+"#;
+
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.
 pub fn format_offset(seconds: f64) -> String {
@@ -1078,6 +1170,7 @@ mod tests {
             confidence: None,
             created_at: Utc.with_ymd_and_hms(2026, 8, 11, 16, 3, 0).unwrap(),
             track: MIC_TRACK,
+            cluster_index: None,
         }
     }
 

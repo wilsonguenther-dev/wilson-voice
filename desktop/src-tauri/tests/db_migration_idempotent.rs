@@ -19,8 +19,9 @@ use support::{open_db, temp_dir};
 /// second step is the first one that had to run against databases the first step
 /// already wrote. 3 = YV106's two-track columns (`sys_wav_path`,
 /// `tap_rebuilds`, `meeting_segments.track`). 4 = YV125's `meetings.kind`, the
-/// column the diarization branch reads.
-const EXPECTED_VERSION: i64 = 4;
+/// column the diarization branch reads. 5 = YV126's
+/// `meeting_segments.cluster_index`, which is where the branch's ANSWER lands.
+const EXPECTED_VERSION: i64 = 5;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -32,6 +33,9 @@ const EXPECTED_VERSION: i64 = 4;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
+    if version < 5 {
+        sql.push_str("ALTER TABLE meeting_segments DROP COLUMN cluster_index;\n");
+    }
     if version < 4 {
         sql.push_str("ALTER TABLE meetings DROP COLUMN kind;\n");
     }
@@ -202,8 +206,16 @@ fn migration_one_creates_the_whole_meeting_schema() {
     let cols = columns(&path, "meetings");
     assert!(!cols.contains(&"consent_ack".to_string()), "{cols:?}");
 
+    // `cluster_index` USED to be on this list too. It is migration 5's now
+    // (YV126) — asserted PRESENT in
+    // `migration_five_adds_cluster_index_without_touching_existing_rows` rather
+    // than asserted absent here. The other three names are still refused, and
+    // `overlapped` is refused permanently rather than pending: sherpa's result
+    // type carries no overlap flag because overlapped frames are deleted before
+    // embedding, so a column for it could only ever hold a guess (merged
+    // finding #22, documented at `MIGRATION_5_CLUSTER_INDEX`).
     let cols = columns(&path, "meeting_segments");
-    for banned in ["speaker_id", "speaker_label", "cluster_index", "overlapped"] {
+    for banned in ["speaker_id", "speaker_label", "overlapped"] {
         assert!(
             !cols.contains(&banned.to_string()),
             "{banned} is a later phase's column (yap23), not this one's: {cols:?}"
@@ -352,7 +364,10 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
     ] {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
-    assert!(columns(&path, "meeting_segments").contains(&"track".to_string()));
+    let segments = columns(&path, "meeting_segments");
+    for col in ["track", "cluster_index"] {
+        assert!(segments.contains(&col.to_string()), "{col}: {segments:?}");
+    }
 }
 
 // ── YV125 · migration 4 ──────────────────────────────────────────────────────
@@ -508,4 +523,128 @@ fn a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments() {
         db2
     };
     drop(db2);
+}
+
+// ── YV126 · migration 5 ──────────────────────────────────────────────────────
+
+/// The step this item owns, against a database that already has meetings in it.
+///
+/// `cluster_index` is **nullable with no default**, and that is the opposite of
+/// the choice migration 3 made for `track`. `track NOT NULL DEFAULT 0` was
+/// right because 22-A only ever recorded the mic, so the default was a fact
+/// about every existing row. Nothing equivalent is true here: no row in the wild
+/// has ever been through a clusterer, and `0` would not mean "unattributed", it
+/// would mean "speaker zero" — a claim about a person, invented for every
+/// transcript ever recorded. So old rows read back as `None`, and the write path
+/// is what fills them in.
+#[test]
+fn migration_five_adds_cluster_index_without_touching_existing_rows() {
+    let dir = temp_dir("cluster-index-column");
+    let path = dir.join("wilson_voice.db");
+
+    let id = {
+        let db = open_db(&dir);
+        let id = support::seed_meeting(
+            &db,
+            &dir,
+            "Recorded before YV126",
+            &["hello there", "and hello back", "third thing said"],
+        );
+        drop(db);
+        rewind_to(&path, 4);
+        id
+    };
+    assert!(
+        !columns(&path, "meeting_segments").contains(&"cluster_index".to_string()),
+        "the rewind must actually remove the column, or this proves nothing"
+    );
+
+    let db = wilson_voice_lib::db::Database::open(path.clone()).expect("upgrade");
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+
+    let m = db
+        .get_meeting(&id)
+        .unwrap()
+        .expect("the old meeting survived");
+    assert_eq!(m.title, "Recorded before YV126");
+    assert_eq!(m.segment_count, 3, "its segments are untouched");
+
+    let segments = db.list_meeting_segments(&id).unwrap();
+    assert!(
+        segments.iter().all(|s| s.cluster_index.is_none()),
+        "a segment no clusterer has ever looked at is unattributed, not speaker 0"
+    );
+
+    // The column is real and writable, in both directions: a re-run of
+    // clustering must be able to take an attribution back, not only add one.
+    let written = db
+        .set_segment_clusters(
+            &id,
+            &[
+                (segments[0].id.clone(), Some(0)),
+                (segments[1].id.clone(), Some(1)),
+                (segments[2].id.clone(), None),
+            ],
+        )
+        .unwrap();
+    assert_eq!(written, 3);
+    let after = db.list_meeting_segments(&id).unwrap();
+    assert_eq!(
+        after.iter().map(|s| s.cluster_index).collect::<Vec<_>>(),
+        vec![Some(0), Some(1), None]
+    );
+    // The text — and therefore the FTS index the update trigger rewrites — is
+    // untouched by an attribution.
+    assert_eq!(
+        db.list_meetings(10, Some("third".into())).unwrap().len(),
+        1,
+        "attributing a segment must not disturb the search index over its text"
+    );
+
+    // A segment id from ANOTHER meeting is not updatable through this meeting's
+    // id: the write path scopes every statement, so a bug that crossed meetings
+    // relabels nothing rather than relabelling a stranger's transcript.
+    let other = support::seed_meeting(&db, &dir, "Someone else's meeting", &["not yours"]);
+    let other_segment = db.list_meeting_segments(&other).unwrap()[0].id.clone();
+    assert_eq!(
+        db.set_segment_clusters(&id, &[(other_segment.clone(), Some(9))])
+            .unwrap(),
+        0,
+        "no row matched, and the caller is told so rather than assuming it landed"
+    );
+    assert!(db.list_meeting_segments(&other).unwrap()[0]
+        .cluster_index
+        .is_none());
+
+    // Re-opening does not re-run the step.
+    drop(db);
+    let db = wilson_voice_lib::db::Database::open(path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
+    assert_eq!(
+        db.list_meeting_segments(&id).unwrap()[1].cluster_index,
+        Some(1)
+    );
+}
+
+/// The whole ladder, walked from ZERO on a database that already had meetings
+/// at every rung — the upgrade a user who skipped four releases performs.
+#[test]
+fn a_database_from_every_rung_climbs_to_five() {
+    for from in 1..=5i64 {
+        let dir = temp_dir(&format!("ladder-from-{from}"));
+        let path = dir.join("wilson_voice.db");
+        let id = {
+            let db = open_db(&dir);
+            let id = support::seed_meeting(&db, &dir, "Long-lived meeting", &["hello there"]);
+            drop(db);
+            rewind_to(&path, from);
+            id
+        };
+        let db = wilson_voice_lib::db::Database::open(path).expect("upgrade");
+        assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION, "from {from}");
+        assert_eq!(db.get_meeting(&id).unwrap().unwrap().segment_count, 1);
+        assert!(db.list_meeting_segments(&id).unwrap()[0]
+            .cluster_index
+            .is_none());
+    }
 }

@@ -3205,8 +3205,13 @@ fn assert_rttm_fits_the_audio(root: &Path, id: &str, turns: &[RttmTurn]) {
 /// No number is gated until something has been measured.
 ///
 /// This test exists so that a placeholder cannot be quietly promoted to a gate:
-/// the moment YV126 sets one of these to `Some(x)`, this test is what has to be
+/// the moment one of these becomes `Some(x)`, this test is what has to be
 /// edited, and editing it means writing down where `x` came from.
+///
+/// YV126 wired the run that produces `x` — the threshold sweep in
+/// `fixture_e_der_gate`, against the shipped `cluster_track` — and left the
+/// constants alone, because the sweep cannot run without a backend to embed
+/// with. The tuning is one `cargo test` away on the first machine that has one.
 #[test]
 fn meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate() {
     for (name, gate) in [
@@ -3220,8 +3225,17 @@ fn meeting_eval_diarization_gates_are_unmeasured_until_there_is_output_to_gate()
             "{name} carries a number ({gate:?}) but nothing in this repo has \
              produced a diarization hypothesis yet — a gate set before the first \
              measurement is the vendor-blog threshold problem in a different \
-             file. YV126 sets these, against fixture (e), and records the \
-             tuning run."
+             file.\n\
+             \n\
+             YV126 was supposed to be the item that sets these. It shipped the \
+             clustering mechanism and the tuning run that would set them \
+             (`fixture_e_der_gate` -> `tune_clustering_threshold`), and could \
+             not set them: turning audio into an embedding needs an inference \
+             backend, and `yap-diarize`'s `load_backend` still answers \
+             `no_backend` on this base. YV122 is that item. Until it lands, \
+             `fixture_e_der_gate` prints {DIARIZER_ABSENT:?} and these stay \
+             `None` — which is the absence YV120 shipped on purpose, not a \
+             placeholder."
         );
     }
 }
@@ -6603,4 +6617,440 @@ fn meeting_eval_write_manifest() {
         panic!("{CORPUS_ABSENT}");
     };
     write_manifest_from(&root);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// YV126 — the clustering gates on fixtures (e) and (f)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Two different kinds of number live below, and conflating them would be the
+// whole failure this backlog's eval-first sequencing exists to prevent.
+//
+//   **A MEASUREMENT** is what the pipeline scored on real audio. It needs an
+//   embedding extractor, which needs a sidecar with an inference backend in it.
+//   `yap-diarize`'s `load_backend` still answers `no_backend` on this base —
+//   YV122 is the item that changes that — so no measurement exists yet, the
+//   gate constants stay `None`, and `measured_hypothesis` prints exactly why it
+//   could not produce one. `tune_clustering_threshold` is the tuning run that
+//   sets those constants the day a backend lands; it is wired to the real
+//   `cluster_track`, so the first machine with a backend runs it by running
+//   this test.
+//
+//   **A MECHANISM CEILING** is what the pipeline could score at BEST, computed
+//   from the fixture's own ground truth and the one thing the mechanism is
+//   documented to do: sherpa's pipeline deletes every overlapped frame before
+//   embedding (merged finding #5), so no clusterer — perfect or otherwise —
+//   can attribute speech in those frames. That is arithmetic over an RTTM with
+//   YV120's own `der`, it needs no model, and it is falsifiable today. It is
+//   NOT a measurement of this pipeline and is never reported as one.
+//
+// The ceiling is what makes finding #5's reframe checkable now: if the 2-class
+// task's ceiling on fixture (f) is materially better than full clustering's,
+// the reframe is right for a reason that has nothing to do with tuning. If it
+// were not, the reframe would be an opinion and this file would say so.
+
+/// Printed when the measured arm cannot run. Verbatim, so it is greppable in a
+/// CI log the way [`CORPUS_ABSENT`] is.
+const DIARIZER_ABSENT: &str =
+    "no diarization backend in this build (yap-diarize answers no_backend until YV122), \
+     skipping the measured arm";
+
+/// The candidate thresholds a tuning run sweeps, as cosine DISTANCES.
+///
+/// A grid, not a guess: the point of a sweep is that the winner is chosen by
+/// the harness rather than written down in advance. It spans the whole usable
+/// range — 0.05 (only near-identical turns merge) to 0.95 (almost everything
+/// does) — so a tuned value cannot land on an edge without that being visible.
+const THRESHOLD_SWEEP: [f32; 19] = [
+    0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80,
+    0.85, 0.90, 0.95,
+];
+
+/// Every interval in which two or more speakers are talking at once.
+///
+/// These are the frames sherpa's `ExcludeOverlap` deletes before embedding, and
+/// therefore the frames no clustering configuration can attribute.
+fn overlapped_regions(turns: &[RttmTurn]) -> Vec<(f64, f64)> {
+    let mut events: Vec<(f64, i32)> = Vec::with_capacity(turns.len() * 2);
+    for t in turns {
+        if t.duration() <= 0.0 {
+            continue;
+        }
+        events.push((t.start_seconds, 1));
+        events.push((t.end_seconds, -1));
+    }
+    events.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut here = 0i32;
+    let mut last = 0.0f64;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (at, delta) in events {
+        if here > 1 && at > last {
+            match out.last_mut() {
+                Some(previous) if (previous.1 - last).abs() < 1e-12 => previous.1 = at,
+                _ => out.push((last, at)),
+            }
+        }
+        here += delta;
+        last = at;
+    }
+    out
+}
+
+/// `spans` with every part of `cuts` removed.
+fn subtract(spans: &[(f64, f64)], cuts: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (start, end) in spans {
+        let mut pieces = vec![(*start, *end)];
+        for (cut_start, cut_end) in cuts {
+            let mut next = Vec::new();
+            for (a, b) in pieces {
+                if *cut_end <= a || *cut_start >= b {
+                    next.push((a, b));
+                    continue;
+                }
+                if a < *cut_start {
+                    next.push((a, *cut_start));
+                }
+                if *cut_end < b {
+                    next.push((*cut_end, b));
+                }
+            }
+            pieces = next;
+        }
+        out.extend(pieces);
+    }
+    out
+}
+
+/// The best hypothesis the MECHANISM can produce on this fixture: the ground
+/// truth with every overlapped frame deleted, exactly as sherpa's pipeline
+/// deletes them before embedding.
+///
+/// Speaker identity is perfect here, boundaries are perfect, clustering is
+/// perfect. Everything this scores as error is loss the mechanism inflicts
+/// before any threshold is chosen.
+fn mechanism_ceiling_hypothesis(turns: &[RttmTurn]) -> Vec<RttmTurn> {
+    let overlap = overlapped_regions(turns);
+    let mut out = Vec::new();
+    for turn in turns {
+        for (start, end) in subtract(&[(turn.start_seconds, turn.end_seconds)], &overlap) {
+            if end > start {
+                out.push(RttmTurn::new(turn.speaker_id.clone(), start, end));
+            }
+        }
+    }
+    out
+}
+
+/// An RTTM collapsed to the 2-class task: the enrolled voice, and everyone
+/// else.
+fn collapse_rttm(turns: &[RttmTurn], enrolled: &str) -> Vec<RttmTurn> {
+    turns
+        .iter()
+        .map(|t| {
+            let id = if t.speaker_id == enrolled {
+                "enrolled"
+            } else {
+                "everyone_else"
+            };
+            RttmTurn::new(id, t.start_seconds, t.end_seconds)
+        })
+        .collect()
+}
+
+/// The staged `yap-diarize` binary next to this test binary, if a workspace
+/// build put one there.
+fn diarize_pool() -> Option<wilson_voice_lib::diarize::DiarizePool> {
+    use wilson_voice_lib::diarize::DiarizePool;
+    let exe = std::env::current_exe().ok()?;
+    // …/target/<profile>/deps/<test-binary> → …/target/<profile>/yap-diarize
+    let binary = exe.parent()?.parent()?.join("yap-diarize");
+    if !binary.is_file() {
+        eprintln!(
+            "{DIARIZER_ABSENT} (no sidecar binary at {})",
+            binary.display()
+        );
+        return None;
+    }
+    Some(DiarizePool::new(
+        Box::new(move || Ok(Command::new(binary.clone()))),
+        std::time::Duration::from_secs(10),
+    ))
+}
+
+/// A REAL hypothesis for one fixture at one threshold, or `None` with the
+/// reason printed.
+///
+/// This is the shipped path end to end — the staged sidecar, the vendored model
+/// pair, `cluster_track` with the kind branch — so the day a backend exists,
+/// the numbers this file gates on come from the code that ships and not from a
+/// harness-local reimplementation of it.
+fn measured_hypothesis(
+    root: &Path,
+    fixture: &str,
+    threshold: f32,
+    mode: wilson_voice_lib::diarize::TargetMode,
+) -> Option<Vec<RttmTurn>> {
+    use wilson_voice_lib::diarize::{cluster_track, MeetingTracks};
+    use wilson_voice_lib::diarize_metrics::CosineDistance;
+    use wilson_voice_lib::models::{diarize_model_for_role, diarize_model_path, DiarizeModelRole};
+
+    let pool = diarize_pool()?;
+    let segmentation = diarize_model_for_role(DiarizeModelRole::Segmentation)?;
+    let embedding = diarize_model_for_role(DiarizeModelRole::Embedding)?;
+    let (segmentation, embedding) = (
+        diarize_model_path(segmentation),
+        diarize_model_path(embedding),
+    );
+    if let Err(e) = pool.load_models(&segmentation, &embedding) {
+        eprintln!("{DIARIZER_ABSENT} (load_models: {})", e.tag());
+        pool.shutdown();
+        return None;
+    }
+
+    let wav = root.join(fixture).join("audio.wav");
+    let result = cluster_track(
+        &pool,
+        MeetingTracks {
+            mic_wav: &wav,
+            system_wav: None,
+        },
+        // Both diarization fixtures are one microphone in a room, which is
+        // exactly what `in_person` means.
+        MeetingKind::InPerson,
+        CosineDistance::new(threshold),
+        mode,
+    );
+    pool.shutdown();
+    match result {
+        Ok(segments) => Some(
+            segments
+                .iter()
+                .map(|s| {
+                    RttmTurn::new(
+                        format!("cluster_{}", s.cluster_index),
+                        s.start_seconds,
+                        s.end_seconds,
+                    )
+                })
+                .collect(),
+        ),
+        Err(e) => {
+            eprintln!("{DIARIZER_ABSENT} (diarize: {})", e.tag());
+            None
+        }
+    }
+}
+
+/// Sweep [`THRESHOLD_SWEEP`] against fixture (e) and return the best
+/// `(threshold, DER, JER)`, printing the whole table.
+///
+/// This is the tuning run the backlog demands, and it is the ONLY sanctioned
+/// source for `ROOM_3_DER_GATE`/`ROOM_3_JER_GATE`. Fixture (e) is the fixture
+/// to tune on because it has zero overlap — its mechanism ceiling is 0.0 DER,
+/// asserted below — so every error it reports belongs to the clustering
+/// threshold rather than to frames the segmenter deleted.
+fn tune_clustering_threshold(root: &Path) -> Option<(f32, f64, f64)> {
+    use wilson_voice_lib::diarize::TargetMode;
+
+    let reference = read_rttm(root, ROOM_3);
+    let mut best: Option<(f32, f64, f64)> = None;
+    for threshold in THRESHOLD_SWEEP {
+        let hypothesis = measured_hypothesis(root, ROOM_3, threshold, TargetMode::FullClustering)?;
+        let report = der(&reference, &hypothesis);
+        let (rate, jaccard) = (report.rate(), jer(&reference, &hypothesis));
+        eprintln!(
+            "  distance {threshold:.2}: DER {rate:.4} (miss {:.2}s, fa {:.2}s, conf {:.2}s), JER {jaccard:.4}",
+            report.miss, report.false_alarm, report.confusion
+        );
+        if best.is_none_or(|(_, best_der, _)| rate < best_der) {
+            best = Some((threshold, rate, jaccard));
+        }
+    }
+    best
+}
+
+/// **Fixture (e) — the tuning fixture.** Three people, near-field, no overlap.
+///
+/// ```sh
+/// cargo test --test meeting_eval fixture_e_der_gate -- --nocapture
+/// ```
+///
+/// Two arms, and the difference between them is the difference between a
+/// measurement and arithmetic:
+///
+/// * The mechanism ceiling, computable today: fixture (e) has ZERO overlapped
+///   speech, so sherpa's frame deletion costs it nothing and a perfect
+///   clusterer would score 0.0 DER. That is what qualifies it as the fixture a
+///   threshold is tuned on — nothing else can be blamed for what the number
+///   turns out to be.
+/// * The tuned measurement, blocked: there is no inference backend in this
+///   build, so the sweep cannot run and the gate constants stay `None`. A
+///   number written here today would be sherpa's `0.5` default or OpenWhispr's
+///   blog bands in a Rust file, which is precisely the failure YV120 exists to
+///   make impossible.
+#[test]
+fn fixture_e_der_gate() {
+    let Some(root) = corpus() else { return };
+    let reference = read_rttm(&root, ROOM_3);
+
+    // Arm 1 — the mechanism ceiling. Real arithmetic, no model.
+    assert!(
+        overlapped_regions(&reference).is_empty(),
+        "fixture (e) is the NO-OVERLAP case; if it has drifted into overlap, a \
+         threshold tuned on it would be compensating for the mechanism ceiling \
+         instead of measuring similarity"
+    );
+    let ceiling = der(&reference, &mechanism_ceiling_hypothesis(&reference));
+    assert!(
+        ceiling.rate() < 1e-9,
+        "fixture (e)'s mechanism ceiling is not zero: {ceiling:?}"
+    );
+    eprintln!(
+        "fixture (e) mechanism ceiling: DER {:.4}, JER {:.4} — nothing the \
+         segmenter deletes costs anything here, so every point of error a \
+         measured run reports belongs to the clustering threshold",
+        ceiling.rate(),
+        jer(&reference, &mechanism_ceiling_hypothesis(&reference))
+    );
+
+    // Arm 2 — the tuned measurement.
+    eprintln!("fixture (e) threshold sweep:");
+    let Some((threshold, measured_der, measured_jer)) = tune_clustering_threshold(&root) else {
+        assert!(
+            ROOM_3_DER_GATE.is_none() && ROOM_3_JER_GATE.is_none(),
+            "the gates carry numbers but nothing on this machine can produce a \
+             hypothesis to check them against — a gate whose measurement cannot \
+             be reproduced is worse than no gate"
+        );
+        return;
+    };
+    eprintln!(
+        "fixture (e) TUNED: clustering distance {threshold:.2} → DER {measured_der:.4}, \
+         JER {measured_jer:.4}"
+    );
+    let (Some(der_gate), Some(jer_gate)) = (ROOM_3_DER_GATE, ROOM_3_JER_GATE) else {
+        panic!(
+            "a measurement is available ({measured_der:.4} DER at distance \
+             {threshold:.2}) but the gates are still `None`. Record the tuning \
+             table above in the backlog and set ROOM_3_DER_GATE / \
+             ROOM_3_JER_GATE from it."
+        );
+    };
+    assert!(
+        measured_der <= der_gate,
+        "fixture (e) DER {measured_der:.4} is worse than the recorded gate {der_gate:.4}"
+    );
+    assert!(
+        measured_jer <= jer_gate,
+        "fixture (e) JER {measured_jer:.4} is worse than the recorded gate {jer_gate:.4}"
+    );
+}
+
+/// **Fixture (f) — the fixture built to fail, and the reframe that answers it.**
+///
+/// ```sh
+/// cargo test --test meeting_eval fixture_f_binary_fallback_der -- --nocapture
+/// ```
+///
+/// Merged finding #5 says full N-way clustering cannot do a six-person
+/// far-field room, and that the fix is a smaller task rather than a better
+/// threshold. This is that claim as a number, and it does not need a model to
+/// check: sherpa deletes overlapped frames before embedding, so the BEST DER
+/// available to any full-clustering configuration on this fixture is the cost
+/// of those deleted frames — and the same deletion costs the 2-class task
+/// materially less, because the many-way crosstalk that dominates the loss is
+/// mostly not crosstalk at all once "everyone else" is one class.
+///
+/// If that ordering ever reversed, finding #5's reframe would be wrong and this
+/// test would say so instead of the backlog assuming it.
+#[test]
+fn fixture_f_binary_fallback_der() {
+    use wilson_voice_lib::diarize::{EnrolledSpeaker, TargetMode};
+
+    let Some(root) = corpus() else { return };
+    let reference = read_rttm(&root, CLASSROOM_6);
+    // The instructor: the nearest-mic voice, and the one a student would enrol.
+    let instructor = CLASSROOM_6_SPEAKERS[0].0;
+
+    // Arm 1 — the two mechanism ceilings, from ground truth alone.
+    let deleted: f64 = overlapped_regions(&reference)
+        .iter()
+        .map(|(s, e)| e - s)
+        .sum();
+    assert!(
+        deleted > 3.0,
+        "fixture (f) must carry real crosstalk or this comparison is vacuous: \
+         {deleted:.2}s"
+    );
+    let full_ceiling = der(&reference, &mechanism_ceiling_hypothesis(&reference));
+    let binary_reference = collapse_rttm(&reference, instructor);
+    let binary_ceiling = der(
+        &binary_reference,
+        &collapse_rttm(&mechanism_ceiling_hypothesis(&reference), instructor),
+    );
+    eprintln!(
+        "fixture (f) mechanism ceilings ({deleted:.2}s of overlapped speech deleted \
+         before embedding):\n  \
+         full N-way   : DER {:.4} (miss {:.2}s of {:.2}s reference speaker time)\n  \
+         enrolled/rest: DER {:.4} (miss {:.2}s of {:.2}s)",
+        full_ceiling.rate(),
+        full_ceiling.miss,
+        full_ceiling.total,
+        binary_ceiling.rate(),
+        binary_ceiling.miss,
+        binary_ceiling.total,
+    );
+    assert!(
+        full_ceiling.rate() > 0.15,
+        "full clustering's ceiling on fixture (f) is {:.4} — if the mechanism \
+         cost has become small, the fixture stopped exceeding the ceiling it \
+         was built to exceed",
+        full_ceiling.rate()
+    );
+    assert!(
+        binary_ceiling.rate() < full_ceiling.rate() * 0.75,
+        "the 2-class ceiling ({:.4}) is not materially better than the full \
+         one ({:.4}) — merged finding #5's reframe rests on it being so, and \
+         this is where that would stop being true",
+        binary_ceiling.rate(),
+        full_ceiling.rate()
+    );
+
+    // Arm 2 — the measured comparison, blocked on a backend.
+    let full = measured_hypothesis(&root, CLASSROOM_6, 0.35, TargetMode::FullClustering);
+    let binary = measured_hypothesis(
+        &root,
+        CLASSROOM_6,
+        0.35,
+        TargetMode::EnrolledVsEveryoneElse(EnrolledSpeaker::matched(1, 0)),
+    );
+    let (Some(full), Some(binary)) = (full, binary) else {
+        assert!(
+            CLASSROOM_6_DER_GATE.is_none() && CLASSROOM_6_JER_GATE.is_none(),
+            "the fixture (f) gates carry numbers but nothing here can produce a \
+             hypothesis to check them against"
+        );
+        return;
+    };
+    let measured_full = der(&reference, &full).rate();
+    let measured_binary = der(&binary_reference, &binary).rate();
+    eprintln!(
+        "fixture (f) MEASURED: full N-way DER {measured_full:.4} (recorded, not gated) · \
+         enrolled/rest DER {measured_binary:.4}"
+    );
+    if let Some(gate) = CLASSROOM_6_DER_GATE {
+        assert!(
+            measured_binary <= gate,
+            "fixture (f) binary-mode DER {measured_binary:.4} is worse than the \
+             recorded gate {gate:.4}"
+        );
+    } else {
+        panic!(
+            "a measurement is available (full {measured_full:.4}, binary \
+             {measured_binary:.4}) but CLASSROOM_6_DER_GATE is still `None`. \
+             Record both in the backlog and gate the BINARY one — full \
+             clustering here is documented as beyond the mechanism, not tuned."
+        );
+    }
 }
