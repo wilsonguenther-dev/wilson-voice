@@ -243,3 +243,44 @@ fn an_unnormalizable_candidate_never_outranks_a_measured_one() {
     assert_eq!(ranking.ordered[1].profile_id, "no-centroid");
     assert!(ranking.ordered[1].normalized.is_none());
 }
+
+#[test]
+fn an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one() {
+    // The winner is normalized; the runner-up is not. The gap between a
+    // z-score and nothing is not a number, and reporting `+inf` for it would
+    // tell a caller the suggestion is maximally safe precisely when the least
+    // is known about its competition.
+    let cluster = unit(&[(1, 1.0), (2, 0.55)]);
+    let good = unit(&[(1, 1.0), (2, 0.52)]);
+    let cands = vec![
+        Candidate {
+            profile_id: "measured".into(),
+            raw: cosine_similarity(&good, &cluster),
+            centroid: Some(good),
+        },
+        Candidate {
+            profile_id: "no-centroid".into(),
+            raw: CosineSimilarity::new(0.98),
+            centroid: None,
+        },
+    ];
+    let cohort = cohort();
+    let ranking = rank_within_meeting(&cluster, &cands, Some(&cohort));
+
+    assert_eq!(ranking.basis, RankingBasis::AsNorm);
+    assert_eq!(ranking.best().unwrap().profile_id, "measured");
+    assert_eq!(
+        ranking.margin(),
+        None,
+        "an unmeasurable runner-up leaves the margin unmeasurable, not infinite"
+    );
+
+    // And the ordinary case still reports a real, finite number.
+    let both = candidates(
+        &cluster,
+        &[("aidan", unit(&[(1, 1.0), (2, 0.30)])), ("jeisil", unit(&[(1, 1.0), (2, 0.52)]))],
+    );
+    let ok = rank_within_meeting(&cluster, &both, Some(&cohort));
+    let m = ok.margin().expect("two measured candidates have a margin");
+    assert!(m.is_finite() && m > 0.0, "margin {m}");
+}

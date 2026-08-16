@@ -109,3 +109,11 @@ this guard is for.
 
 Reported here rather than counted as a win, because a mutation that did not
 fail is evidence about the test, and hiding it would make this file worthless.
+
+=================================================================
+MUTATION 8 (added with the margin fix): restore the +inf margin
+  fails:  cargo test --test within_meeting_ranking_prefers_best_candidate
+Reverting `margin()` to subtract f32::NEG_INFINITY when the runner-up has no
+normalized score:
+test an_unmeasurable_runner_up_has_no_margin_rather_than_an_infinite_one ... FAILED
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
