@@ -3402,8 +3402,17 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
 // enrollment thresholds are tuned, or those thresholds permanently encode the
 // aliasing." YV92/YV93 shipped the WER half — it is
 // `meeting_eval_antialias_decimation_does_not_regress_wer_on_broadband_noise`,
-// forty lines above, and this item does not touch it. The EER half could not
-// ship then because there was no embedding extractor in the repo. This is it.
+// forty lines above, and this item changes exactly one line in it (a bare
+// `20.0` becoming the constant the two arms are documented as sharing). The EER
+// half could not ship then because there was no embedding extractor in the
+// repo. YV122 put one there, and this is the measurement it unblocked.
+//
+// **The headline is not the direction of a difference, it is that the
+// experiment needed a control before it could be read at all.** The two noisy
+// arms disagree between fixtures; the control arms are what make the
+// disagreement resolvable, and what turned "did the score get worse" into a
+// criterion an anti-alias filter can actually be held to. Read
+// [`shipped_arm_tracks_the_control`] before changing anything in this section.
 //
 // ## Which fixture, and why it is not fixture (c)
 //
@@ -3437,19 +3446,33 @@ fn meeting_eval_diarization_metrics_score_the_real_fixtures() {
 // The fold measurement below is real on any machine with the corpus and needs
 // no model: each arm's decimated output is compared against THAT SAME ARM's
 // decimation of the clean signal, so the number is the energy the noise put
-// into 0–8 kHz and the two arms' filter phase never enters it (the WER arm
-// measures the fold the same way, against the same 20 dB bar — one constant,
-// asserted in two places).
+// into 0–8 kHz and the two arms' filter phase never enters it. The WER arm
+// measures the fold the same way and against the same bar — and since a review
+// finding, against the same CONSTANT rather than against an equal literal; see
+// [`meeting_eval_antialias_both_fold_gates_spend_one_constant`].
 //
 // The EER itself needs embeddings, and embeddings need an inference backend in
-// `yap-diarize`. YV121 shipped that sidecar with zero model bytes on purpose
-// and YV122 — open, unmerged as this item lands — is what replaces its
-// `load_backend`. So on this base the arm measures the fold, then reports the
-// exact refusal tag it got back (`no_backend`) and stops. It does not
-// interpolate an EER, it does not quote one, and it does not skip silently:
-// `support::diarize::embedder()` panics on every failure that is NOT one of the
-// two honest "this machine has no embedder" states, so a broken sidecar can
-// never present here as a green arm.
+// `yap-diarize` AND the two catalog models on disk. YV122 shipped the backend,
+// so the remaining precondition is the model files — one state, not two, and
+// `support::diarize::embedder()` panics on every failure that is NOT that one
+// honest state, so a broken sidecar can never present here as a green arm. A
+// machine that has neither corpus nor models runs everything in this section
+// except the arm; a machine that has both runs the arm and must not skip.
+//
+// ## FOUR arms per fixture, because two could not answer the question
+//
+// The two noisy arms (pre-fix and shipped decimation of audio with the >8 kHz
+// comb added) are the experiment. The two CONTROL arms are the same utterances
+// decimated each way with nothing added, and they exist because the two noisy
+// arms gave opposite verdicts on the corpus's two multi-speaker fixtures — the
+// shipped decimator better on (e), the pre-fix one better on every statistic on
+// (f). With nothing above 8 kHz there is nothing to fold, so the two control
+// arms must agree; measured, they do to the digit. Against that reference (f)
+// resolves: the pre-fix arm moved away from the control in the FLATTERING
+// direction, inflating same-speaker similarity while leaving different-speaker
+// similarity where it was, because the folded comb is identical in every
+// utterance and two clips that both carry it look alike. The full argument, the
+// numbers and the criterion it forced are on [`shipped_arm_tracks_the_control`].
 //
 // ## The skip expired, and this is what the expiry produced
 //
