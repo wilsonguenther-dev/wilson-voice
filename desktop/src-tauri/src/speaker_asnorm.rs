@@ -6,11 +6,20 @@
 //! person, once on a laptop microphone and once on AirPods, will not reliably
 //! match against a fixed cosine-similarity threshold, because the absolute
 //! distribution of cosine scores moves with the recording condition. Multi-
-//! centroid profiles (YV128) are half the answer. This module is the other
-//! half, and it is the finding's own prescription, in its own words: "AS-norm
-//! against a small shipped impostor cohort to convert an absolute threshold
-//! into a relative one; within a meeting, rank candidates rather than threshold
+//! centroid profiles (YV128) are half the answer. This module answers the
+//! finding, whose prescription — in its own words — was: "AS-norm against a
+//! small shipped impostor cohort to convert an absolute threshold into a
+//! relative one; within a meeting, rank candidates rather than threshold
 //! absolutely."
+//!
+//! **It does not deliver that prescription as written, and the next section
+//! says exactly what it delivers instead.** The ranking half is here in full.
+//! The "convert an absolute threshold into a relative one" half is here only in
+//! the sense of *relative to the enrolled profile*, never *relative to the
+//! recording condition*: the term that would have done the latter was swept
+//! against the harness and lost, so it does not ship. Reading the quotation
+//! above as a description of the code is the mistake three earlier revisions of
+//! this file, its PR body and its changelog entry all made.
 //!
 //! # What the shipped form actually is — read this before the claims
 //!
