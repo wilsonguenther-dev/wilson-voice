@@ -3200,7 +3200,14 @@ fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, St
     let _ = state
         .db
         .set_meeting_state(&id, meetings::MeetingState::Summarizing, None);
-    let summary = summarize::summarize_segments(&segments, &client);
+    // YV133 — the summary is attributed with the SAME labelling the transcript
+    // is rendered with: `TrackSpeakers::for_meeting` makes the two calls
+    // `meetings::render_transcript` makes, off this meeting's stored `kind` and
+    // its own segments, so the speaker beside an action item and the speaker on
+    // the transcript row it cites cannot come apart. On the clustering branch
+    // this source declines and the summary is exactly what YV97 produced.
+    let speakers = summarize::TrackSpeakers::for_meeting(meeting.kind(), &segments);
+    let summary = summarize::summarize_segments_with(&segments, &client, &speakers);
     let _ = state.db.set_meeting_state(&id, previous, None);
 
     let summary = summary.map_err(|e| match e {

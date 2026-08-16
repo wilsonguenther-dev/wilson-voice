@@ -497,12 +497,38 @@ impl SummaryClient for StubModel {
 
 /// The `seg_NNNN` labels present in a rendered chunk — how a stub answers with
 /// ids that really are in the chunk it was handed.
+///
+/// YV133 — a rendered line may now be `seg_0001 (Them): …`, so the speaker tag
+/// is stripped back off here. That is what the model has to do too: the id is
+/// what the grammar enumerates and what the citation must echo, and a stub that
+/// answered `"seg_0001 (Them)"` would be dropped by the allowlist exactly as a
+/// real model's would be.
 pub fn labels_in(chunk_text: &str) -> Vec<String> {
     chunk_text
         .lines()
-        .filter_map(|l| {
-            l.split_once(": ")
-                .map(|(label, _)| label.trim().to_string())
+        .filter_map(|l| l.split_once(": ").map(|(label, _)| label))
+        .map(|label| {
+            label
+                .split_once(" (")
+                .map(|(id, _)| id)
+                .unwrap_or(label)
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The speaker tag on each rendered line, or `None` where the line carries
+/// none — what a MAP pass was actually SHOWN about who was speaking.
+pub fn speakers_in(chunk_text: &str) -> Vec<Option<String>> {
+    chunk_text
+        .lines()
+        .filter_map(|l| l.split_once(": ").map(|(prefix, _)| prefix))
+        .map(|prefix| {
+            prefix
+                .split_once(" (")
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .map(|s| s.to_string())
         })
         .collect()
 }
@@ -551,6 +577,71 @@ pub const SEGMENT_TEXTS: [&str; 3] = [
 /// [`SEGMENT_TEXTS`] as YV94 rows, four seconds apart.
 pub fn segments() -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
     segments_from(&SEGMENT_TEXTS)
+}
+
+// ── YV133 · the speaker source YV128–130 will build ──────────────────────────
+
+/// A [`SpeakerSource`] that answers with enrolled NAMES, keyed by segment id.
+///
+/// This stands in for the `speaker_profiles` lookup YV128 schemas and YV129
+/// matches against — the seam, filled by hand, because the table does not exist
+/// on `main` yet. That is the honest shape of it: `summarize.rs` takes any
+/// source, the app today wires the only one it can build
+/// (`summarize::TrackSpeakers`, which never returns a name), and this is what a
+/// named one looks like from the summarizer's side. Nothing in `summarize.rs`
+/// changes when the real one lands.
+pub struct EnrolledSpeakers {
+    by_segment_id: std::collections::HashMap<String, String>,
+}
+
+impl EnrolledSpeakers {
+    /// `(segment id, enrolled name)` pairs. Segments not listed are unenrolled
+    /// — the "new voice" case, which must come back as no attribution at all
+    /// rather than as a guess.
+    pub fn new(pairs: &[(&str, &str)]) -> Self {
+        Self {
+            by_segment_id: pairs
+                .iter()
+                .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+                .collect(),
+        }
+    }
+}
+
+impl wilson_voice_lib::summarize::SpeakerSource for EnrolledSpeakers {
+    fn speaker_for(
+        &self,
+        segment: &wilson_voice_lib::meetings::MeetingSegment,
+    ) -> Option<wilson_voice_lib::summarize::SegmentSpeaker> {
+        self.by_segment_id
+            .get(&segment.id)
+            .cloned()
+            .map(wilson_voice_lib::summarize::SegmentSpeaker::Named)
+    }
+}
+
+/// YV133 — arbitrary `(start_seconds, track, text)` turns as YV94 rows, in the
+/// order given, so a test can build a two-track meeting's transcript without a
+/// database.
+pub fn segments_on_tracks(
+    turns: &[(f64, i64, &str)],
+) -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
+    turns
+        .iter()
+        .enumerate()
+        .map(
+            |(i, (start, track, text))| wilson_voice_lib::meetings::MeetingSegment {
+                id: format!("segment-{i}"),
+                meeting_id: "meeting-under-test".to_string(),
+                start_seconds: *start,
+                end_seconds: *start + 3.5,
+                text: (*text).to_string(),
+                confidence: None,
+                created_at: chrono::Utc::now(),
+                track: *track,
+            },
+        )
+        .collect()
 }
 
 /// Arbitrary texts as YV94 rows.

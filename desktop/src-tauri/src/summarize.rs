@@ -32,9 +32,37 @@
 //! falls outside it anyway — belt and braces, because a grammar this build
 //! failed to apply must not silently become an unconstrained decode.
 //!
-//! Scoped to 22-A: segment ids are chronological transcript-segment labels
-//! ([`seg_label`]) over YV94's segments. Evidence against real speaker turns is
-//! a 23+ refinement that needs diarization.
+//! Segment ids are chronological transcript-segment labels ([`seg_label`]) over
+//! YV94's segments — that is 22-A's scope and YV133 does not change it.
+//!
+//! ## YV133 — speaker attribution rides the SAME rail, one step behind it
+//!
+//! An action item that says *"Jeisil will send the pricing doc"* is worth more
+//! than one that says *"send the pricing doc"*, and there are exactly two ways
+//! to get the name into it. One is to ask the model for it, which is finding
+//! #18's hazard wearing a different field name: a grammar could constrain the
+//! shape of a `speaker` field perfectly and the model would still be free to
+//! invent whose name goes in it. The other is to look it up, which is what this
+//! module does.
+//!
+//! So the mechanism is: the speaker a segment is ALREADY known to belong to is
+//! carried into the chunk text beside its id ([`TranscriptLine::render`]) so the
+//! model can read the conversation as a conversation, the grammar stays exactly
+//! as it was (still an enum over `seg_NNNN` and nothing else — see
+//! [`map_grammar`]), and [`SummaryItem::speaker`] is then filled in AFTER
+//! parsing by looking up the speaker of the evidence id the model was
+//! constrained to cite. The model is never asked who spoke and has nowhere to
+//! answer: [`ExtractedItem`] — the type the model's own output deserializes
+//! into — has no speaker field at all, so a `"speaker":"Priya"` key in a MAP
+//! answer lands nowhere.
+//!
+//! Where the speaker comes from is one trait ([`SpeakerSource`]). The only
+//! implementation this build can construct is [`TrackSpeakers`], which is
+//! YV108/YV125's track-derived "Me"/"Them" — real information on a two-track
+//! virtual call, and deliberately *nothing at all* where the mechanism does not
+//! back a name (see [`TrackSpeakers`]'s own note). Enrolled names arrive when
+//! YV128–130 build the profile table; nothing here needs to change when they
+//! do, which is the point of the seam.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -45,7 +73,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::meetings::{format_offset, MeetingSegment};
+use crate::meetings::{
+    diarization_target, format_offset, is_two_track, speaker_label, DiarizationTarget, MeetingKind,
+    MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
+};
 use crate::polish_protocol::{
     fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_MAP,
     SUMMARIZE_REDUCE, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
@@ -162,12 +193,128 @@ pub fn seg_label(index: usize) -> String {
     format!("seg_{:04}", index + 1)
 }
 
+// ── YV133 · where a speaker comes from, and where it may never come from ────
+
+/// The speaker a stored segment is ALREADY known to belong to.
+///
+/// Two variants, because there are two mechanically different things a speaker
+/// string can be, and collapsing them would let a placeholder be presented as
+/// an attribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SegmentSpeaker {
+    /// A PERSON: an enrolled `speaker_profiles` name (YV129) or a correction
+    /// the user made by hand (YV130). The only variant that can answer "who
+    /// said this" with a name a reader recognises.
+    Named(String),
+    /// A voice told apart from other voices without being identified —
+    /// YV108's `Me`/`Them`, YV126's `Speaker 2`. Real information (it separates
+    /// two people) but not an identity, and it must never be rendered as one.
+    Anonymous(String),
+}
+
+impl SegmentSpeaker {
+    /// The string as a reader sees it.
+    pub fn label(&self) -> &str {
+        match self {
+            SegmentSpeaker::Named(s) | SegmentSpeaker::Anonymous(s) => s,
+        }
+    }
+
+    /// Is this a person's name, as opposed to a voice number?
+    pub fn is_named(&self) -> bool {
+        matches!(self, SegmentSpeaker::Named(_))
+    }
+}
+
+/// Where a segment's speaker comes from. **Never the model** — that is the
+/// whole contract of this trait, and the reason it exists as a seam rather than
+/// as a field the parser could fill.
+///
+/// Implementations answer `None` for "I do not know who spoke", and are
+/// required to answer `None` rather than a placeholder: a source that returned
+/// `Anonymous("Speaker")` for every segment of a mic-only meeting would spend a
+/// tag on every transcript line to say nothing, and would put the bare word
+/// *Speaker* into the model's source text, where a summarizer can pick it up as
+/// if it were somebody's name. [`TrackSpeakers`] is the worked example.
+pub trait SpeakerSource {
+    fn speaker_for(&self, segment: &MeetingSegment) -> Option<SegmentSpeaker>;
+}
+
+/// No speaker information at all: every meeting summarized before YV133, and
+/// the behaviour [`summarize_segments`] keeps for callers that have none.
+pub struct NoSpeakers;
+
+impl SpeakerSource for NoSpeakers {
+    fn speaker_for(&self, _segment: &MeetingSegment) -> Option<SegmentSpeaker> {
+        None
+    }
+}
+
+/// The one speaker source this build can actually construct: YV108's track
+/// labels under YV125's diarization branch.
+///
+/// Built through [`TrackSpeakers::for_meeting`] so the target is computed from
+/// the meeting's `kind` and its segments by the SAME two calls
+/// `meetings::render_transcript` makes — the summary's attribution and the
+/// transcript's speaker column are then two readings of one decision rather
+/// than two decisions that can disagree.
+///
+/// **Why [`UNCLUSTERED_SPEAKER_LABEL`] becomes `None` here.** On the clustering
+/// branch — every in-person meeting, every unknown one, every virtual one whose
+/// tap never attached — `meetings::speaker_label` answers the honest `Speaker`,
+/// which means *somebody spoke and this build cannot say who*. That is the
+/// right word on a transcript row, where the reader can see the rows are
+/// interleaved. It is the wrong thing to hand a summarizer: it is identical on
+/// every line, so it separates nobody, it costs a tag per line out of a budget
+/// finding #35 exists to protect, and it writes the word "Speaker" into the
+/// source text that [`validate_item`]'s groundedness floor scores against. So
+/// the source declines. It starts answering the moment there is something to
+/// answer with — `Me`/`Them` on a live two-track call today, an enrolled name
+/// once YV128–130 land.
+pub struct TrackSpeakers {
+    target: DiarizationTarget,
+}
+
+impl TrackSpeakers {
+    /// The labelling this meeting's transcript is already rendered with.
+    pub fn for_meeting(kind: MeetingKind, segments: &[MeetingSegment]) -> Self {
+        Self {
+            target: diarization_target(kind, is_two_track(segments)),
+        }
+    }
+
+    /// The branch this source resolved to, for tests and diagnostics.
+    pub fn target(&self) -> DiarizationTarget {
+        self.target
+    }
+}
+
+impl SpeakerSource for TrackSpeakers {
+    fn speaker_for(&self, segment: &MeetingSegment) -> Option<SegmentSpeaker> {
+        let label = speaker_label(segment.track, self.target);
+        if label == UNCLUSTERED_SPEAKER_LABEL {
+            return None;
+        }
+        // Never `Named`: a track index is a channel, not a person. Whether a
+        // voice is Wilson's is a property of an enrolled profile matched by
+        // embedding (YV128), and nothing here may promote a channel number to
+        // an identity — the same rule `meetings::speaker_label`'s own header
+        // states about `is_me`.
+        Some(SegmentSpeaker::Anonymous(label.to_string()))
+    }
+}
+
 /// One transcript line on its way into a MAP pass.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptLine {
     pub label: String,
     pub start_seconds: f64,
     pub text: String,
+    /// YV133 — who this line belongs to, if anybody knows. Set from a
+    /// [`SpeakerSource`] before the line is ever rendered, and read back after
+    /// parsing to fill [`SummaryItem::speaker`]. `None` is the 22-A shape, and
+    /// renders byte-identically to what 22-A rendered.
+    pub speaker: Option<SegmentSpeaker>,
 }
 
 impl TranscriptLine {
@@ -176,24 +323,63 @@ impl TranscriptLine {
             label: seg_label(index),
             start_seconds,
             text: text.into(),
+            speaker: None,
+        }
+    }
+
+    /// The same line, attributed. `None` and a blank label both mean "unknown",
+    /// which is not the same thing as a speaker called `""`.
+    pub fn with_speaker(mut self, speaker: Option<SegmentSpeaker>) -> Self {
+        self.speaker = speaker.filter(|s| !s.label().trim().is_empty());
+        self
+    }
+
+    /// Everything before the line's own words: `seg_0007: `, or
+    /// `seg_0007 (Them): ` once a speaker is known.
+    ///
+    /// One function because two places need it to agree — [`Self::render`]
+    /// writes it and [`plan_chunks`] strips it back off a truncated render, and
+    /// a mismatch there doubles the label inside the model's prompt.
+    pub fn prefix(&self) -> String {
+        match &self.speaker {
+            Some(speaker) => format!("{} ({}): ", self.label, speaker.label()),
+            None => format!("{}: ", self.label),
         }
     }
 
     /// `seg_0007: we agreed to ship on friday` — one line, always, so the
     /// chunker can cut on line boundaries and the model can cite a whole line.
+    ///
+    /// With a speaker: `seg_0007 (Them): we agreed to ship on friday`. The id
+    /// stays first and stays bare, because it is the id the grammar enumerates
+    /// and the id the model must echo back.
     pub fn render(&self) -> String {
-        format!("{}: {}", self.label, one_line(&self.text))
+        format!("{}{}", self.prefix(), one_line(&self.text))
     }
 }
 
 /// YV94's stored segments, labelled in wall-clock order. Empty segments are
 /// dropped: a blank line costs tokens and cites nothing.
 pub fn transcript_lines(segments: &[MeetingSegment]) -> Vec<TranscriptLine> {
+    transcript_lines_with(segments, &NoSpeakers)
+}
+
+/// The same, attributed by `speakers`.
+///
+/// The speaker is looked up per SEGMENT, not per line index, so the lookup
+/// keeps working when empty segments drop out and the two numberings diverge.
+pub fn transcript_lines_with(
+    segments: &[MeetingSegment],
+    speakers: &dyn SpeakerSource,
+) -> Vec<TranscriptLine> {
     segments
         .iter()
         .filter(|s| !s.text.trim().is_empty())
         .enumerate()
-        .map(|(i, s)| TranscriptLine::new(i, s.start_seconds, s.text.trim()))
+        .map(|(i, s)| {
+            TranscriptLine::new(i, s.start_seconds, s.text.trim())
+                .with_speaker(speakers.speaker_for(s))
+        })
         .collect()
 }
 
@@ -277,12 +463,10 @@ pub fn plan_chunks(
             };
             let (kept, was_cut) =
                 fit_to_budget(&line.render(), budget.saturating_sub(marker), &mut count);
+            let prefix = line.prefix();
             line.text = format!(
                 "{} {TRUNCATION_MARKER}",
-                strip_label(
-                    kept.trim_end_matches(TRUNCATION_MARKER).trim_end(),
-                    &line.label
-                )
+                strip_prefix(kept.trim_end_matches(TRUNCATION_MARKER).trim_end(), &prefix)
             );
             cost = counter.count_tokens(&line.render())? + 1;
             cut = was_cut;
@@ -311,12 +495,17 @@ pub fn plan_chunks(
     Ok(chunks)
 }
 
-/// Drop the `seg_NNNN: ` prefix a rendered line carries, so a truncated render
-/// can go back into a [`TranscriptLine`] without doubling its label.
-fn strip_label(rendered: &str, label: &str) -> String {
+/// Drop the `seg_NNNN: ` / `seg_NNNN (Them): ` prefix a rendered line carries,
+/// so a truncated render can go back into a [`TranscriptLine`] without doubling
+/// its label — or its speaker.
+///
+/// `prefix` comes from [`TranscriptLine::prefix`], never rebuilt here: the cut
+/// may have landed anywhere, including inside the prefix itself, and a
+/// hand-rolled second opinion about what the prefix looks like is exactly how
+/// the two get out of step.
+fn strip_prefix(rendered: &str, prefix: &str) -> String {
     rendered
-        .strip_prefix(label)
-        .and_then(|rest| rest.strip_prefix(": "))
+        .strip_prefix(prefix)
         .unwrap_or(rendered)
         .to_string()
 }
@@ -341,6 +530,16 @@ fn strip_label(rendered: &str, label: &str) -> String {
 /// pass failed. Nothing in CI could catch it: building a grammar sampler needs a
 /// resident GGUF, so the only test that reaches this is the `#[ignore]`d
 /// `summarize_e2e_real_sidecar`, which is now part of the merge gate.
+///
+/// **YV133 — what did NOT change here.** The chunk text handed to a MAP pass
+/// now carries each line's speaker beside its id, and none of that reaches this
+/// function: `labels` is [`Chunk::labels`], which is still bare `seg_NNNN`, the
+/// `evid` rule is still an enum over exactly those, and there is still no
+/// speaker field in the schema for a model to fill. Speaker is looked up after
+/// the parse, from the id the model was constrained to cite — so this grammar's
+/// hallucination guard is exactly as strict as YV97 shipped it, and
+/// `tests/summarize_grammar_unchanged_shape.rs` fails the build if a speaker
+/// ever leaks into it.
 pub fn map_grammar(labels: &[String]) -> Option<String> {
     if labels.is_empty() {
         return None;
@@ -370,6 +569,19 @@ pub fn map_grammar(labels: &[String]) -> Option<String> {
 // ── defensive parsing of the MAP answer ─────────────────────────────────────
 
 /// One extracted item and the segment it came from.
+///
+/// **This is the model's own output type, and YV133 deliberately did not add a
+/// `speaker` field to it.** The backlog's file list names both this struct and
+/// [`SummaryItem`]; only the second one got the field, for two reasons that
+/// point the same way. Mechanically, the lookup cannot happen here —
+/// [`parse_map_output`] is handed a raw answer, a label allowlist and the chunk
+/// text, and has no access to any speaker, so a field here could only ever be
+/// `None` until [`summarize_segments_with`] filled it in later. And in
+/// principle, a `speaker` key on the type a model's JSON deserializes INTO is a
+/// slot a model can aim at: `serde` ignores unknown keys, so today a MAP answer
+/// carrying `"speaker":"Priya"` lands nowhere at all, which is a stronger
+/// guarantee than a field that is filled elsewhere and merely *ought* not be
+/// overwritten. `tests/summarize_grammar_unchanged_shape.rs` pins the absence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtractedItem {
     pub text: String,
@@ -808,12 +1020,28 @@ impl MeetingSummary {
     }
 }
 
-/// An item with its citation resolved back to a wall-clock offset.
+/// An item with its citation resolved back to a wall-clock offset — and, since
+/// YV133, to a speaker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryItem {
     pub text: String,
     pub segment: String,
     pub start_seconds: f64,
+    /// YV133 — **who spoke the segment this item cites**, looked up from the
+    /// evidence id after parsing. Never read from model output; see this
+    /// module's header and [`ExtractedItem`]'s.
+    ///
+    /// Said precisely, because the difference is load-bearing: this is who
+    /// *said* the line the item was extracted from, which is the strongest
+    /// attribution a mechanical lookup can make. It is not a claim about who
+    /// OWES an action — "could you send that over?" cites the person asking,
+    /// not the person doing — which is why [`render_summary`] renders it as an
+    /// attribution beside the timestamp rather than as an owner in front of the
+    /// text.
+    ///
+    /// `None` whenever the [`SpeakerSource`] declined, which today is every
+    /// meeting on the clustering branch.
+    pub speaker: Option<String>,
 }
 
 /// Summarize a meeting's segments end to end: chunk, MAP, merge, REDUCE, render.
@@ -841,7 +1069,23 @@ pub fn summarize_segments(
     segments: &[MeetingSegment],
     client: &dyn SummaryClient,
 ) -> Result<MeetingSummary, SummaryError> {
-    let lines = transcript_lines(segments);
+    summarize_segments_with(segments, client, &NoSpeakers)
+}
+
+/// The same, with speakers.
+///
+/// `speakers` decides two things and nothing else: what each transcript line
+/// says beside its id in the model's prompt, and what
+/// [`SummaryItem::speaker`] is filled with afterwards. It cannot influence
+/// which items survive, which ids are citable, or what any validator does —
+/// the speaker is read out of the same table the line was rendered from, keyed
+/// by the id the grammar already constrained the model to.
+pub fn summarize_segments_with(
+    segments: &[MeetingSegment],
+    client: &dyn SummaryClient,
+    speakers: &dyn SpeakerSource,
+) -> Result<MeetingSummary, SummaryError> {
+    let lines = transcript_lines_with(segments, speakers);
     if lines.is_empty() {
         return Err(SummaryError::NoSegments);
     }
@@ -907,21 +1151,34 @@ pub fn summarize_segments(
 
     let (narrative, reduce_truncated) = reduce_narrative(&merged.narratives, &full_text, client);
     truncated |= reduce_truncated;
-    let offsets: Vec<(String, f64)> = lines
+    // The evidence table: for every citable id, the two facts about it that are
+    // already known here — when it was said, and (YV133) who said it. Both are
+    // looked up by the SAME key, the id the grammar constrained the model to
+    // emit, which is what makes the speaker exactly as provenanced as the
+    // timestamp already was.
+    let evidence: Vec<(String, f64, Option<String>)> = lines
         .iter()
-        .map(|l| (l.label.clone(), l.start_seconds))
+        .map(|l| {
+            (
+                l.label.clone(),
+                l.start_seconds,
+                l.speaker.as_ref().map(|s| s.label().to_string()),
+            )
+        })
         .collect();
     let resolve = |items: &[ExtractedItem]| -> Vec<SummaryItem> {
         items
             .iter()
-            .map(|i| SummaryItem {
-                text: i.text.clone(),
-                segment: i.segment.clone(),
-                start_seconds: offsets
-                    .iter()
-                    .find(|(label, _)| label == &i.segment)
-                    .map(|(_, at)| *at)
-                    .unwrap_or(0.0),
+            .map(|i| {
+                let cited = evidence.iter().find(|(label, _, _)| label == &i.segment);
+                SummaryItem {
+                    text: i.text.clone(),
+                    segment: i.segment.clone(),
+                    start_seconds: cited.map(|(_, at, _)| *at).unwrap_or(0.0),
+                    // Never `i.<anything>`: the model's answer supplies the id
+                    // and nothing else about who spoke.
+                    speaker: cited.and_then(|(_, _, who)| who.clone()),
+                }
             })
             .collect()
     };
@@ -1151,11 +1408,16 @@ pub fn render_summary(
         out.push_str(heading);
         out.push_str("\n\n");
         for item in items {
-            out.push_str(&format!(
-                "- {} ({})\n",
-                item.text,
-                format_offset(item.start_seconds)
-            ));
+            let at = format_offset(item.start_seconds);
+            // YV133 — the speaker rides WITH the citation, not in front of the
+            // text. `- Jeisil: send the pricing doc` reads as an assignment,
+            // and the lookup does not support one: it knows who spoke the cited
+            // line, not who agreed to act on it. `(Jeisil, 00:04:12)` says
+            // exactly what is known — this came from Jeisil, here.
+            match &item.speaker {
+                Some(who) => out.push_str(&format!("- {} ({who}, {at})\n", item.text)),
+                None => out.push_str(&format!("- {} ({at})\n", item.text)),
+            }
         }
         out.push('\n');
     }
