@@ -1,0 +1,8 @@
+Yap CI/CD build loop — launch immediately. You are Fable: orchestrate only, Opus executes, max 3 concurrent agents (loop lanes count), never wait on a running task (dispatch, end the turn, react to the completion notification). agent()===null means a usage limit; the harness halts itself — do not relaunch until the limit resets.
+
+Already done, do not redo: the 87-item plan at ~/code/wilson-voice/docs/loop/PLAN.md was Senior-Panel audited 2026-09-12 (verdict revise-first → revisions applied and verified, telemetry logged). Harness contract: docs/loop/HARNESS.md. Memory: project_yap_loop_state_20260912. Panel-gate exemption when the hook fires: already-audited plan. Main is at __SHA__.
+
+Step 1, one line: cd ~/code/wilson-voice && git pull --ff-only origin main && cd desktop && npm run loop:validate
+Step 2: Workflow({scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop-all.mjs", args: {mode: "build"}}) — then END THE TURN.
+Step 3, on the completion notification: if halted on a usage limit, keep the runId and resume with Workflow({scriptPath, resumeFromRunId, args:{mode:"build"}}) in the same session once the limit resets, or relaunch cold in a new session (pre-flight skips finished items). When build mode completes: log to Obsidian (Claude-Sessions, Daily, the Yap project note), update memory project_yap_loop_state, then launch the review-and-fix pass with the same scriptPath and args {mode: "review"}.
+Gated, do not build: DB-A (usage metering), Y11-F (real-voice corpus). Owner decisions pending from the panel, ask Wilson only if an item blocks on them: LIC-A license-issuance policy, the support floor (arm64-only vs universal build), which pill style ships (ClassicPill vs YappyPill).

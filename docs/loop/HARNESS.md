@@ -77,31 +77,58 @@ landed is redone, and every item's pre-flight re-proves the rest from scratch.
 
 ## The gate
 
-Run from `<worktree>/desktop`, with that lane's `CARGO_TARGET_DIR` exported. All eight must exit 0,
-run separately, every exit code read bare (never through a pipe):
+Run from `<worktree>/desktop`, with that lane's `CARGO_TARGET_DIR` exported. **All twelve exit 0 —
+run separately, every exit code read bare, never through a pipe.**
 
-| command | on main, 2026-09-12 |
-| --- | --- |
-| `npx tsc --noEmit` | 0, ~1s |
-| `npm test` (vitest, 25 tests) | 0, ~1s |
-| `npm run build` (`tsc && vite build`) | 0, ~2s |
-| `cargo build -p yap-polish --release` | 0, ~37s warm |
-| stage `src-tauri/binaries/yap-polish-<triple>` | 0 |
-| `cargo test -p yap-polish --release` | 0, ~1s |
-| `cargo clippy --all-targets --features custom-protocol` (in `src-tauri`) | 0, ~4s warm |
-| `cargo test --features custom-protocol` (in `src-tauri`) | 0, ~41s warm |
+MEASURED, NOT ESTIMATED. Every number below is from one run in a throwaway worktree
+(`~/code/wilson-voice-loop/proof`, branch `loop/gate-proof`) at `9512ebe` with a **cold pinned
+`CARGO_TARGET_DIR`** and a real `npm ci` — fresh-clone semantics. The worktree and its target dir
+were deleted afterwards. The previous version of this table was never measured and two rows were
+false.
 
-Informational, **never** a gate: `cargo fmt --all -- --check` exits **1** on unmodified main (CI
-runs it with `|| true`). Never reformat the tree to silence it.
+| command | exit | wall (cold) |
+| --- | --- | --- |
+| `npm ci  (108 packages, fresh)` | **0** | 1s |
+| `npx tsc --noEmit` | **0** | 2s |
+| `npm test  (vitest, 25 tests)` | **0** | 1s |
+| `npm run build  (tsc && vite build)` | **0** | 2s |
+| `cargo build -p yap-polish --release` | **0** | 33s |
+| `cargo build -p yap-diarize --release` | **0** | 9s |
+| `stage BOTH binaries under their target triple` | **0** | 0s |
+| `cargo test -p yap-polish --release` | **0** | 1s |
+| `cargo test -p yap-diarize --release  (16 tests)` | **0** | 1s |
+| `cargo fmt --all -- --check` | **0** | 1s |
+| `cargo clippy --all-targets --features custom-protocol  (src-tauri)` | **0** | 38s |
+| `cargo test --features custom-protocol  (src-tauri, 546 lib + 45 suites)` | **0** | 480s |
 
-Not in the gate: `npm run desktop:build` (the DMG). Minutes long plus notarization — it belongs to
-a final smoke item, or to `mode: "review"` with `args: {dmg: true}`.
+Total ~9.5 minutes cold; the target dir it leaves behind measured **7.5G**. Warm, the same
+twelve run in well under a minute — which is why the target dirs are pinned outside the worktrees
+and Recon pays the cold cost once per lane. `~/.cargo` was already populated on this machine, so a
+truly cold machine also pays the crates.io downloads and the prebuilt onnxruntime tarball that
+`sherpa-onnx-sys` fetches for `yap-diarize`.
+
+**BOTH SIDECARS, AND STAGING COMES FIRST.** `bundle.externalBin` names `binaries/yap-polish` AND
+`binaries/yap-diarize`, and `tauri-build` checks every entry on EVERY `cargo build` of the app. With
+only `yap-polish` staged, commands 11 and 12 exit **101**:
+`resource path 'binaries/yap-diarize-aarch64-apple-darwin' doesn't exist`. Measured both ways — and
+those same two commands exit **0** on a WARM target dir, because the build script does not re-run.
+That false green (recorded as a pass earlier the same day) is why this table is taken cold.
+
+**clippy carries no `-- -D warnings`.** A mechanical `cargo clippy --fix` sweep landed (`0f413a7`);
+16 lints survive it that need real refactors (very-complex-type, too-many-arguments, clamp-like
+pattern, const assertions in tests). A loop item owns them. Do not add the flag, and do not silence
+a lint to make the gate green.
+
+**`cargo fmt --all -- --check` IS a conjunct now.** The tree was swept (`cargo fmt --all`, 152 hunks
+/ 21 files, `b4b8d06`, recorded in `.git-blame-ignore-revs`) and it exits 0 on main.
+
+Not in the gate: `npm run desktop:build` (the DMG) — minutes long plus notarization. It belongs to
+the final smoke item, or to `mode: "review"` with `args: {dmg: true}`.
 
 Two Yap-specific preconditions the harness spells out in every prompt:
 
-1. **Stage the sidecar first.** `bundle.externalBin` makes
-   `desktop/src-tauri/binaries/yap-polish-<triple>` a precondition of *every* `cargo build` of the
-   app, not just `tauri build`. A missing one is an environment failure, not a code defect.
+1. **Stage both sidecars first** (see above). A cargo failure naming a missing resource path is an
+   environment failure, not a code defect — and never a reason to edit `tauri.conf.json`.
 2. **Never touch the bundle identifier or the data directory.** Renaming the bundle id resets macOS
    TCC (the user loses Microphone / Accessibility / Input Monitoring); renaming the data dir orphans
    the SQLite history.
@@ -125,8 +152,8 @@ row and merge comment carries `ci=local`.
 | port | 5273 | 5274 | 5281 | 5282 |
 
 Worktrees, never clones — they share one object store. The cargo target dirs live **outside** the
-worktrees so the (minutes-long, vendored-ggml) cold build is paid once in Recon and survives every
-item, part and pass; each is ~1.4 GB.
+worktrees so the (~9.5-minute, vendored-ggml) cold build is paid once in Recon and survives every
+item, part and pass; a cold one measured **7.5 GB** (debug + release, three crates).
 
 **Teardown is part of the contract.** Every part but the last is stamped `KEEP_WORKTREE = true`; the
 last part's Drain removes both worktrees (`git worktree remove --force` + `git worktree prune`),

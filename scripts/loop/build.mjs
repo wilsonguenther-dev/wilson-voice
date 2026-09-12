@@ -153,6 +153,45 @@ const PART_LINE = /^const PART = '[^']*'/m
   }
   if (!template.includes('Local gate (CI unavailable)'))
     fail(`template must pin the PR-comment title "Local gate (CI unavailable)" — Reflect counts local-gate merges by that exact string`)
+  /**
+   * ACCEPTANCE AND PRE-FLIGHT MUST BE EXECUTED, NOT INTERPOLATED INTO A PROMPT AND FORGOTTEN.
+   *
+   * The first port of this harness put `item.acceptance` in the builder's prompt and nowhere else:
+   * no code path ran it, so "acceptance passed" was a sentence written by the agent whose work it
+   * judged. A Workflow script has no shell, so execution is a command-runner SEAT plus control flow
+   * in the script. These checks are structural on purpose — they fail the build the moment someone
+   * "simplifies" that seat away, which is exactly how the defect got in.
+   */
+  for (const needle of [
+    'async function runCommands(',            // the seat exists
+    'const RUN_SCHEMA =',                     // and returns a validated payload
+    'schema: RUN_SCHEMA',                     // and the seat is actually given that schema
+    'const runPassed =',                      // and the script, not the agent, decides pass/fail
+    'item.preflight,',                        // pre-flight is PASSED TO the seat
+    'const pre = await runCommands(',         // executed before any builder is dispatched
+    "    'preflight',",                         // ...as the pre-flight kind
+    "runCommands('acceptance',",              // executed after the builder returns
+    "runCommands('acceptance-rerun',",        // and re-executed after the one fix round
+    'item.acceptance, p)',                    // with the item's own commands, not a paraphrase
+    "status: 'failed-acceptance'",            // a twice-failed acceptance is a recorded outcome
+    'FAILURE RECORDER',                       // which is written onto the PR for a human
+  ]) {
+    if (!template.includes(needle))
+      fail(
+        `the acceptance-execution path is missing \`${needle}\`. item.preflight must be EXECUTED by a ` +
+          `command-runner seat on unmodified main before the builder is dispatched, and item.acceptance ` +
+          `EXECUTED on the item's branch after it returns, with ONE fix round and then status ` +
+          `'failed-acceptance'. Interpolating acceptance into a prompt is not running it.`
+      )
+  }
+  {
+    // The runner seat may not be handed the power to paper over its own result: it is the one seat
+    // that must never edit, commit, push or merge.
+    const at = template.indexOf('async function runCommands(')
+    const body = at < 0 ? '' : template.slice(at, at + 4000)
+    if (!/Do not edit, create, move or delete a file/.test(body) || !/Do not commit, rebase, push, merge, close or comment/.test(body))
+      fail(`the command-runner seat must be told, in its own prompt, that it may not edit, commit, push, merge or comment — a runner that can "fix" the failure it found is not a gate`)
+  }
   const helper = path.join(ROOT, 'scripts/loop/ci-mode.mjs')
   if (!fs.existsSync(helper))
     fail(`scripts/loop/ci-mode.mjs is missing — every agent calls it instead of re-deriving the CI mode by hand`)
