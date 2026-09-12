@@ -1,6 +1,6 @@
 Yap CI/CD build loop — launch immediately. You are Fable: orchestrate only, Opus executes, max 3 concurrent agents (loop lanes count), never wait on a running task (dispatch, end the turn, react to the completion notification). agent()===null means a usage limit; the harness halts itself — do not relaunch until the limit resets.
 
-Already done, do not redo: the 87-item plan at ~/code/wilson-voice/docs/loop/PLAN.md was Senior-Panel audited 2026-09-12 (verdict revise-first → revisions applied and verified, telemetry logged). Harness contract: docs/loop/HARNESS.md. Memory: project_yap_loop_state_20260912. Panel-gate exemption when the hook fires: already-audited plan. Main is at __SHA__.
+Already done, do not redo: the 87-item plan at ~/code/wilson-voice/docs/loop/PLAN.md was Senior-Panel audited 2026-09-12 (verdict revise-first → revisions applied and verified, telemetry logged). Harness contract: docs/loop/HARNESS.md. Memory: project_yap_loop_state_20260912. Panel-gate exemption when the hook fires: already-audited plan. Main is at 7b68fc4 (this prompt file is committed on top of it — step 1 pulls both).
 
 Step 1, one line: cd ~/code/wilson-voice && git pull --ff-only origin main && cd desktop && npm run loop:validate
 Step 2: Workflow({scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop-all.mjs", args: {mode: "build"}}) — then END THE TURN.
