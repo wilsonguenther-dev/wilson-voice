@@ -226,7 +226,9 @@ pub fn start(binding: PttBinding, command_binding: CommandBinding, callback: Cal
         // Non-fatal: without the fn PTT tap the app still runs via the tray
         // Start/Stop toggle and the secondary ⌘⇧V shortcut — don't take the
         // whole process down just because the OS refused this one thread.
-        log::error!("failed to spawn fn PTT thread: {e}; PTT hotkey disabled (tray / ⌘⇧V still work)");
+        log::error!(
+            "failed to spawn fn PTT thread: {e}; PTT hotkey disabled (tray / ⌘⇧V still work)"
+        );
         RUNNING.store(false, Ordering::SeqCst);
     }
 }
@@ -359,15 +361,16 @@ unsafe extern "C" fn tap_callback(
         handle_combo_edge(state, fn_down, control, command, option);
     } else if event_type == KCG_EVENT_KEY_DOWN
         && state.combo_down.load(Ordering::SeqCst)
-            && !state.hands_free.load(Ordering::SeqCst)
-            && !is_modifier_keycode(keycode)
-            && !state.interrupted.swap(true, Ordering::SeqCst) {
-                log::info!("PTT interrupted by keycode {keycode}");
-                // cancel hold arm
-                state.hold_armed.store(false, Ordering::SeqCst);
-                state.combo_down.store(false, Ordering::SeqCst);
-                (state.callback)(PttEvent::Interrupted);
-            }
+        && !state.hands_free.load(Ordering::SeqCst)
+        && !is_modifier_keycode(keycode)
+        && !state.interrupted.swap(true, Ordering::SeqCst)
+    {
+        log::info!("PTT interrupted by keycode {keycode}");
+        // cancel hold arm
+        state.hold_armed.store(false, Ordering::SeqCst);
+        state.combo_down.store(false, Ordering::SeqCst);
+        (state.callback)(PttEvent::Interrupted);
+    }
 
     event
 }

@@ -100,8 +100,8 @@ fn the_chunk_geometry_fits_inside_the_models_audio_ceiling() {
     if max_audio_ms == 0 {
         return; // no practical limit
     }
-    let widest_ms =
-        (wilson_voice_lib::meeting_asr::ChunkConfig::default().max_decode_seconds() * 1000.0) as i64;
+    let widest_ms = (wilson_voice_lib::meeting_asr::ChunkConfig::default().max_decode_seconds()
+        * 1000.0) as i64;
     assert!(
         widest_ms <= max_audio_ms,
         "the widest chunk ({widest_ms} ms) is longer than the model accepts ({max_audio_ms} ms)"

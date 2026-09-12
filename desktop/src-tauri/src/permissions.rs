@@ -189,12 +189,12 @@ pub fn open_privacy_pane(pane: &str) -> Result<(), String> {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
         ],
-        "Accessibility" => &[
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ],
-        "InputMonitoring" | "ListenEvent" => &[
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
-        ],
+        "Accessibility" => {
+            &["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]
+        }
+        "InputMonitoring" | "ListenEvent" => {
+            &["x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"]
+        }
         // YV102 — see SYSTEM_AUDIO_PANE. Verified anchor first, Privacy &
         // Security second; never a bare System Settings launch, which is the
         // dead end OS-10 warns about.

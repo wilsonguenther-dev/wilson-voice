@@ -104,7 +104,11 @@ fn corpus() -> Vec<Case> {
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
-    assert!(!files.is_empty(), "no *.jsonl fixtures in {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no *.jsonl fixtures in {}",
+        dir.display()
+    );
 
     let mut cases = Vec::new();
     for file in files {
@@ -202,22 +206,97 @@ const RETENTION_FLOOR: f64 = 0.80;
 /// full so its provenance is readable.
 const CONSUMABLE: &[&str] = &[
     // fillers / hedges (R "backtrack")
-    "um", "uh", "er", "erm", "hmm", "like", "you", "know", "sort", "kind", "guess", "basically",
-    "literally", "mean", "well",
+    "um",
+    "uh",
+    "er",
+    "erm",
+    "hmm",
+    "like",
+    "you",
+    "know",
+    "sort",
+    "kind",
+    "guess",
+    "basically",
+    "literally",
+    "mean",
+    "well",
     // self-correction markers
-    "scratch", "that", "wait", "meant", "sorry", "rephrase", "actually", "instead",
+    "scratch",
+    "that",
+    "wait",
+    "meant",
+    "sorry",
+    "rephrase",
+    "actually",
+    "instead",
     // enumeration cues (R7) — a spoken "one"/"first" becomes the "1." marker
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "first",
-    "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
-    "number", "next", "finally", "lastly",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "sixth",
+    "seventh",
+    "eighth",
+    "ninth",
+    "tenth",
+    "number",
+    "next",
+    "finally",
+    "lastly",
     // shape instruction (R10)
-    "bullet", "bullets", "point", "points",
+    "bullet",
+    "bullets",
+    "point",
+    "points",
     // spoken mark and line-command names (R1/R2)
-    "period", "comma", "question", "mark", "exclamation", "colon", "semicolon", "ellipsis",
-    "percent", "degree", "symbol", "sign", "quotation", "apostrophe", "dash", "asterisk",
-    "ampersand", "slash", "backslash", "underscore", "tilde", "plus", "minus", "equals",
-    "hashtag", "paren", "parenthesis", "angle", "bracket", "open", "close", "line", "paragraph",
-    "skip", "start", "new",
+    "period",
+    "comma",
+    "question",
+    "mark",
+    "exclamation",
+    "colon",
+    "semicolon",
+    "ellipsis",
+    "percent",
+    "degree",
+    "symbol",
+    "sign",
+    "quotation",
+    "apostrophe",
+    "dash",
+    "asterisk",
+    "ampersand",
+    "slash",
+    "backslash",
+    "underscore",
+    "tilde",
+    "plus",
+    "minus",
+    "equals",
+    "hashtag",
+    "paren",
+    "parenthesis",
+    "angle",
+    "bracket",
+    "open",
+    "close",
+    "line",
+    "paragraph",
+    "skip",
+    "start",
+    "new",
 ];
 
 /// Alphanumeric words of a string, lowercased. Splitting on everything else (not
@@ -300,8 +379,22 @@ const ALL_SHAPES: &[Shape] = &[
     Shape::NoInventedDigits,
 ];
 
-const GREETINGS: &[&str] = &["hi", "hey", "hello", "dear", "good morning", "good afternoon"];
-const SIGNOFFS: &[&str] = &["thanks", "thank you", "best", "cheers", "regards", "sincerely"];
+const GREETINGS: &[&str] = &[
+    "hi",
+    "hey",
+    "hello",
+    "dear",
+    "good morning",
+    "good afternoon",
+];
+const SIGNOFFS: &[&str] = &[
+    "thanks",
+    "thank you",
+    "best",
+    "cheers",
+    "regards",
+    "sincerely",
+];
 
 impl Shape {
     fn parse(name: &str) -> Option<Shape> {
@@ -369,7 +462,10 @@ fn shapes_of(case: &Case) -> Vec<Shape> {
         .iter()
         .map(|name| {
             Shape::parse(name).unwrap_or_else(|| {
-                panic!("{}: unknown shape predicate {name:?} ({})", case.id, case.source)
+                panic!(
+                    "{}: unknown shape predicate {name:?} ({})",
+                    case.id, case.source
+                )
             })
         })
         .collect()
@@ -389,10 +485,18 @@ fn fixtures_corpus_is_well_formed() {
     );
     let mut ids = BTreeSet::new();
     for case in &cases {
-        assert!(ids.insert(case.id.clone()), "duplicate case id {:?}", case.id);
+        assert!(
+            ids.insert(case.id.clone()),
+            "duplicate case id {:?}",
+            case.id
+        );
         assert!(!case.input.trim().is_empty(), "{}: empty input", case.id);
         assert!(!case.rules.is_empty(), "{}: covers no rule", case.id);
-        assert!(!case.note.trim().is_empty(), "{}: a case has to say why it exists", case.id);
+        assert!(
+            !case.note.trim().is_empty(),
+            "{}: a case has to say why it exists",
+            case.id
+        );
         assert!(
             STYLES.contains(&case.style.as_str()),
             "{}: unknown style {:?}",
@@ -401,7 +505,11 @@ fn fixtures_corpus_is_well_formed() {
         );
         // Parsing is the assertion for these three.
         let _ = (mode_of(case), level_of(case), style_of(case));
-        assert!(!shapes_of(case).is_empty(), "{}: declares no shape predicate", case.id);
+        assert!(
+            !shapes_of(case).is_empty(),
+            "{}: declares no shape predicate",
+            case.id
+        );
         // A case whose every word is consumable or declared-dropped would make
         // `fixtures_never_lose_text` vacuously true for it.
         assert!(
@@ -415,8 +523,10 @@ fn fixtures_corpus_is_well_formed() {
 #[test]
 fn fixtures_cover_every_rule_and_measured_failure() {
     let cases = corpus();
-    let covered: BTreeSet<&str> =
-        cases.iter().flat_map(|c| c.rules.iter().map(String::as_str)).collect();
+    let covered: BTreeSet<&str> = cases
+        .iter()
+        .flat_map(|c| c.rules.iter().map(String::as_str))
+        .collect();
     for id in REQUIRED_COVERAGE {
         assert!(
             covered.contains(id),
@@ -431,10 +541,16 @@ fn fixtures_cover_every_rule_and_measured_failure() {
     }
     // Every predicate has to be exercised by at least one case, or the evaluator
     // below is asserting something nothing uses.
-    let used: BTreeSet<&str> =
-        cases.iter().flat_map(|c| c.expect_llm_shape.iter().map(String::as_str)).collect();
+    let used: BTreeSet<&str> = cases
+        .iter()
+        .flat_map(|c| c.expect_llm_shape.iter().map(String::as_str))
+        .collect();
     for shape in ALL_SHAPES {
-        assert!(used.contains(shape.name()), "no fixture uses `{}`", shape.name());
+        assert!(
+            used.contains(shape.name()),
+            "no fixture uses `{}`",
+            shape.name()
+        );
     }
 }
 
@@ -526,7 +642,10 @@ fn fixtures_tone_pairs_differ_only_in_shape() {
             );
         }
     }
-    assert!(pairs >= 2, "the corpus needs tone pairs to make R14 falsifiable, found {pairs}");
+    assert!(
+        pairs >= 2,
+        "the corpus needs tone pairs to make R14 falsifiable, found {pairs}"
+    );
 }
 
 #[test]
@@ -563,7 +682,11 @@ fn fixtures_shape_predicates_discriminate() {
         (Shape::SignoffLine, "The build is green"),
         (Shape::NoInventedDigits, "The build is green, call me at 30"),
     ] {
-        assert!(!shape.holds(&case, bad), "`{}` accepted {bad:?}", shape.name());
+        assert!(
+            !shape.holds(&case, bad),
+            "`{}` accepted {bad:?}",
+            shape.name()
+        );
     }
     for shape in [
         Shape::ContentWordsPreserved,
@@ -575,11 +698,23 @@ fn fixtures_shape_predicates_discriminate() {
         Shape::SignoffLine,
         Shape::NoInventedDigits,
     ] {
-        assert!(shape.holds(&case, good), "`{}` rejected {good:?}", shape.name());
+        assert!(
+            shape.holds(&case, good),
+            "`{}` rejected {good:?}",
+            shape.name()
+        );
     }
-    for shape in [Shape::NoTrailingPeriod, Shape::NoBlankLine, Shape::SingleLine] {
+    for shape in [
+        Shape::NoTrailingPeriod,
+        Shape::NoBlankLine,
+        Shape::SingleLine,
+    ] {
         let clean = "sounds good to me";
-        assert!(shape.holds(&case, clean), "`{}` rejected {clean:?}", shape.name());
+        assert!(
+            shape.holds(&case, clean),
+            "`{}` rejected {clean:?}",
+            shape.name()
+        );
     }
 }
 
@@ -664,11 +799,19 @@ fn fixtures_latency_report_renders() {
         40,
         "the budget in §2.3 is for a 40-word dictation"
     );
-    let dir = latency_report_path().parent().expect("report has a parent dir").to_path_buf();
-    assert!(dir.is_dir(), "{} does not exist — the harness could not write", dir.display());
+    let dir = latency_report_path()
+        .parent()
+        .expect("report has a parent dir")
+        .to_path_buf();
+    assert!(
+        dir.is_dir(),
+        "{} does not exist — the harness could not write",
+        dir.display()
+    );
 
-    let samples: Vec<Duration> =
-        (1..=POLISH_SAMPLES).map(|n| Duration::from_millis(n as u64)).collect();
+    let samples: Vec<Duration> = (1..=POLISH_SAMPLES)
+        .map(|n| Duration::from_millis(n as u64))
+        .collect();
     assert_eq!(percentile(&samples, 0.50).as_millis(), 11);
     assert_eq!(percentile(&samples, 0.95).as_millis(), 19);
     let report = latency_report(&samples, POLISH_SAMPLES);
@@ -678,7 +821,10 @@ fn fixtures_latency_report_renders() {
         "| min / max | 1 ms / 20 ms |",
         "| input | 40 words, one polish pass per sample |",
     ] {
-        assert!(report.contains(fragment), "report is missing {fragment:?}:\n{report}");
+        assert!(
+            report.contains(fragment),
+            "report is missing {fragment:?}:\n{report}"
+        );
     }
 }
 
@@ -739,6 +885,12 @@ fn polish_latency_p50_under_budget() {
     fs::write(&path, &report).unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
     println!("{report}\nwrote {}", path.display());
 
-    assert!(p50 <= POLISH_P50_BUDGET_MS, "polish p50 {p50} ms > {POLISH_P50_BUDGET_MS} ms");
-    assert!(p95 <= POLISH_P95_BUDGET_MS, "polish p95 {p95} ms > {POLISH_P95_BUDGET_MS} ms");
+    assert!(
+        p50 <= POLISH_P50_BUDGET_MS,
+        "polish p50 {p50} ms > {POLISH_P50_BUDGET_MS} ms"
+    );
+    assert!(
+        p95 <= POLISH_P95_BUDGET_MS,
+        "polish p95 {p95} ms > {POLISH_P95_BUDGET_MS} ms"
+    );
 }

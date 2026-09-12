@@ -79,8 +79,14 @@ fn session(callbacks: u64, block: impl Fn(u64) -> Vec<f32>) -> TapDelivery {
 fn a_tap_that_never_delivered_anything_is_reported_as_looks_denied() {
     // Ten minutes of a perfectly-behaved IOProc handing over pure zeros.
     let delivery = session(60_000, |_| silence());
-    assert_eq!(delivery.callbacks, 60_000, "the IOProc fired the whole time");
-    assert!(delivery.frames > 0, "buffers arrived — they were just empty");
+    assert_eq!(
+        delivery.callbacks, 60_000,
+        "the IOProc fired the whole time"
+    );
+    assert!(
+        delivery.frames > 0,
+        "buffers arrived — they were just empty"
+    );
     assert!(!delivery.ever_delivered());
 
     let verdict = permission_verdict(&delivery, Duration::from_secs(600));

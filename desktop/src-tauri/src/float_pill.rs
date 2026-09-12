@@ -361,9 +361,7 @@ pub fn ensure_float(app: &AppHandle) -> Result<(), String> {
             builder = builder.transparent(true);
         }
 
-        builder
-            .build()
-            .map_err(|e| format!("float window: {e}"))?;
+        builder.build().map_err(|e| format!("float window: {e}"))?;
     }
 
     // Convert / re-apply NSPanel HUD flags

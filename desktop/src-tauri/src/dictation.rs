@@ -292,9 +292,7 @@ pub fn mode_hint_from_context(context: Option<&str>) -> Option<DictationMode> {
         }
         // A greeting only counts when it's punctuated like one ("Hi Sarah," /
         // "Hey!") so ordinary prose starting with "hi" can't trip it.
-        if EMAIL_GREETINGS.iter().any(|g| line.starts_with(g))
-            && line.ends_with([',', '!'])
-        {
+        if EMAIL_GREETINGS.iter().any(|g| line.starts_with(g)) && line.ends_with([',', '!']) {
             return Some(DictationMode::Email);
         }
     }
@@ -463,10 +461,7 @@ fn first_degenerate_token(tokens: &[(usize, &str)]) -> Option<usize> {
     }
     // Rule 3 — a single glued token that is a short unit repeated ≥4× on `-`/`_`.
     for (index, (_, tok)) in tokens.iter().enumerate() {
-        let parts: Vec<&str> = tok
-            .split(['-', '_'])
-            .filter(|p| !p.is_empty())
-            .collect();
+        let parts: Vec<&str> = tok.split(['-', '_']).filter(|p| !p.is_empty()).collect();
         if parts.len() >= 4 && has_short_repeated_unit(&parts) {
             return Some(index);
         }
@@ -633,7 +628,10 @@ impl CleanupLevel {
     }
     /// Backtrack (filler removal + spoken self-correction) runs from `Light` up.
     fn runs_backtrack(self) -> bool {
-        matches!(self, CleanupLevel::Light | CleanupLevel::Medium | CleanupLevel::High)
+        matches!(
+            self,
+            CleanupLevel::Light | CleanupLevel::Medium | CleanupLevel::High
+        )
     }
     /// Smart formatting (list detection) runs from `Medium` up.
     fn runs_format(self) -> bool {
@@ -925,8 +923,14 @@ fn remove_discourse_particles(text: &str) -> String {
 /// inside a quoted span, where the speaker is reporting words rather than hedging.
 fn is_discourse_particle(text: &str, start: usize, end: usize) -> bool {
     // Whole-word only: "like" but not "likely", "unlike".
-    if text[..start].chars().next_back().is_some_and(char::is_alphanumeric)
-        || text[end..].chars().next().is_some_and(char::is_alphanumeric)
+    if text[..start]
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric)
+        || text[end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
     {
         return false;
     }
@@ -1012,7 +1016,9 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
     let pos = find_marker(text, marker)?;
     let before = &text[..pos];
     let after = text[pos + marker.len()..]
-        .trim_start_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?') || c.is_whitespace())
+        .trim_start_matches(|c: char| {
+            matches!(c, ',' | '.' | ';' | ':' | '!' | '?') || c.is_whitespace()
+        })
         .trim();
     if after.is_empty() {
         // Nothing to correct with — leave the utterance untouched.
@@ -1024,8 +1030,8 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
         return None;
     }
     // Everything up to (and including) the boundary before the retracted clause.
-    let core_before =
-        before_trim.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | '\n') || c.is_whitespace());
+    let core_before = before_trim
+        .trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | '\n') || c.is_whitespace());
     // Same-category restatement first: the speaker replaced ONE word, not the
     // clause, so keep the clause and swap that word.
     if let Some(spliced) = splice_same_category(core_before, after) {
@@ -1054,8 +1060,14 @@ fn find_marker(text: &str, marker: &str) -> Option<usize> {
     loop {
         let pos = find_ci_ascii(text.as_bytes(), marker.as_bytes(), from)?;
         let end = pos + marker.len();
-        let bounded = !text[..pos].chars().next_back().is_some_and(char::is_alphanumeric)
-            && !text[end..].chars().next().is_some_and(char::is_alphanumeric);
+        let bounded = !text[..pos]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+            && !text[end..]
+                .chars()
+                .next()
+                .is_some_and(char::is_alphanumeric);
         if bounded {
             return Some(pos);
         }
@@ -1075,7 +1087,9 @@ fn splice_same_category(retracted: &str, correction: &str) -> Option<String> {
     }
     let category = token_category(word)?;
     let mut tokens: Vec<&str> = retracted.split_whitespace().collect();
-    let target = tokens.iter().rposition(|t| token_category(t) == Some(category))?;
+    let target = tokens
+        .iter()
+        .rposition(|t| token_category(t) == Some(category))?;
     tokens[target] = word;
     let out = tokens.join(" ");
     (!out.trim().is_empty()).then_some(out)
@@ -1271,7 +1285,13 @@ fn apply_marks_to_line(line: &str) -> String {
     let mut i = 0;
     while i < tokens.len() {
         if let Some((len, glyph, kind)) = match_spoken_mark(&tokens, i) {
-            if emit_mark(&mut out, glyph, kind, &mut quote_open, &mut space_before_next) {
+            if emit_mark(
+                &mut out,
+                glyph,
+                kind,
+                &mut quote_open,
+                &mut space_before_next,
+            ) {
                 i += len;
                 continue;
             }
@@ -1330,7 +1350,11 @@ fn emit_mark(
 ) -> bool {
     let kind = match kind {
         MarkKind::Quote => {
-            let resolved = if *quote_open { MarkKind::Leading } else { MarkKind::Trailing };
+            let resolved = if *quote_open {
+                MarkKind::Leading
+            } else {
+                MarkKind::Trailing
+            };
             *quote_open = !*quote_open;
             resolved
         }
@@ -1455,8 +1479,23 @@ const DANGLING_CONJUNCTIONS: &[&str] = &["and", "or"];
 /// GOALS are one … two …", "grocery LIST one … two …"). Positive evidence that the
 /// speaker set up a list, which is what separates listing from counting.
 const LIST_ANNOUNCING_NOUNS: &[&str] = &[
-    "list", "lists", "checklist", "things", "goals", "steps", "reasons", "items", "tasks",
-    "priorities", "options", "ideas", "plan", "plans", "agenda", "questions", "topics",
+    "list",
+    "lists",
+    "checklist",
+    "things",
+    "goals",
+    "steps",
+    "reasons",
+    "items",
+    "tasks",
+    "priorities",
+    "options",
+    "ideas",
+    "plan",
+    "plans",
+    "agenda",
+    "questions",
+    "topics",
 ];
 
 /// Present-tense listing verbs. Directly ahead of the first cue they are the spoken
@@ -1466,13 +1505,23 @@ const LIST_ANNOUNCING_VERBS: &[&str] = &["is", "are", "include", "includes"];
 
 /// Words that turn a bullet noun into a shape instruction: "write it IN bullets",
 /// "USE bullet points". Without one, a bare "bullets" is a thing being talked about.
-const BULLET_INSTRUCTION_MARKERS: &[&str] =
-    &["in", "as", "use", "using", "with", "into", "make", "format", "formatted"];
+const BULLET_INSTRUCTION_MARKERS: &[&str] = &[
+    "in",
+    "as",
+    "use",
+    "using",
+    "with",
+    "into",
+    "make",
+    "format",
+    "formatted",
+];
 
 /// Determiners that make "bullet points" a referring noun phrase — something the
 /// speaker is talking ABOUT ("THE bullet points are one … two …"), never shape.
-const BULLET_DETERMINERS: &[&str] =
-    &["the", "these", "those", "my", "your", "our", "their", "his", "her", "its"];
+const BULLET_DETERMINERS: &[&str] = &[
+    "the", "these", "those", "my", "your", "our", "their", "his", "her", "its",
+];
 
 /// One enumeration cue found in the token stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1507,17 +1556,18 @@ fn detect_and_format_list(text: &str) -> Option<String> {
         }
         // A cue that opens no item is a quantity, not an enumerator ("one OF the
         // things …"), so the whole chain is a misread.
-        if items
-            .iter()
-            .any(|it| it.first().is_some_and(|t| NON_ITEM_OPENERS.contains(&token_core(t).as_str())))
-        {
+        if items.iter().any(|it| {
+            it.first()
+                .is_some_and(|t| NON_ITEM_OPENERS.contains(&token_core(t).as_str()))
+        }) {
             return None;
         }
         // An item that trails off in a conjunction is a clause still running, not an
         // item that ended — quantity prose ("I have one dog two cats AND three
         // birds") rather than an enumeration.
         if items.iter().any(|it| {
-            it.last().is_some_and(|t| DANGLING_CONJUNCTIONS.contains(&token_core(t).as_str()))
+            it.last()
+                .is_some_and(|t| DANGLING_CONJUNCTIONS.contains(&token_core(t).as_str()))
         }) {
             return None;
         }
@@ -1565,15 +1615,27 @@ fn scan_cues(tokens: &[&str]) -> Vec<Cue> {
         // can't also register as a cue of its own.
         if core == "number" {
             if let Some(value) = tokens.get(i + 1).and_then(|t| cue_value(&token_core(t))) {
-                cues.push(Cue { start: i, len: 2, value: Some(value) });
+                cues.push(Cue {
+                    start: i,
+                    len: 2,
+                    value: Some(value),
+                });
                 i += 2;
                 continue;
             }
         }
         if let Some(value) = digit_cue_value(tokens[i]).or_else(|| cue_value(&core)) {
-            cues.push(Cue { start: i, len: 1, value: Some(value) });
+            cues.push(Cue {
+                start: i,
+                len: 1,
+                value: Some(value),
+            });
         } else if CONTINUATION_CUES.contains(&core.as_str()) {
-            cues.push(Cue { start: i, len: 1, value: None });
+            cues.push(Cue {
+                start: i,
+                len: 1,
+                value: None,
+            });
         }
         i += 1;
     }
@@ -1589,7 +1651,11 @@ fn scan_enum_cues(tokens: &[&str]) -> Vec<Cue> {
     while i < tokens.len() {
         if at_clause_boundary(tokens, i) {
             if let Some(len) = enum_cue_len(&tokens[i..]) {
-                cues.push(Cue { start: i, len, value: None });
+                cues.push(Cue {
+                    start: i,
+                    len,
+                    value: None,
+                });
                 i += len;
                 continue;
             }
@@ -1693,17 +1759,27 @@ fn has_enumeration_evidence(
     bulleted: bool,
 ) -> bool {
     bulleted
-        || chain.first().is_some_and(|cue| is_enumerative_form(tokens[cue.start]))
-        || chain.iter().all(|cue| at_clause_boundary(tokens, cue.start))
-        || lead_in.iter().any(|t| LIST_ANNOUNCING_NOUNS.contains(&token_core(t).as_str()))
-        || lead_in.last().is_some_and(|t| LIST_ANNOUNCING_VERBS.contains(&token_core(t).as_str()))
+        || chain
+            .first()
+            .is_some_and(|cue| is_enumerative_form(tokens[cue.start]))
+        || chain
+            .iter()
+            .all(|cue| at_clause_boundary(tokens, cue.start))
+        || lead_in
+            .iter()
+            .any(|t| LIST_ANNOUNCING_NOUNS.contains(&token_core(t).as_str()))
+        || lead_in
+            .last()
+            .is_some_and(|t| LIST_ANNOUNCING_VERBS.contains(&token_core(t).as_str()))
 }
 
 /// True when the cue token marks an enumeration by its own form — an ordinal word
 /// ("first") or a dictated digit marker ("1.") — rather than a bare cardinal.
 fn is_enumerative_form(token: &str) -> bool {
     digit_cue_value(token).is_some()
-        || ORDINAL_CUES.iter().any(|(cue, _)| *cue == token_core(token))
+        || ORDINAL_CUES
+            .iter()
+            .any(|(cue, _)| *cue == token_core(token))
 }
 
 /// Strip an explicit "bullet point(s)" / "bullets" instruction from a LEAD-IN,
@@ -1754,7 +1830,9 @@ fn cue_value(word: &str) -> Option<usize> {
 /// Enumeration position of a dictated digit marker — `1.` … `10.` (or `1)`). The
 /// trailing mark is required: a bare "2" is a quantity far more often than a cue.
 fn digit_cue_value(token: &str) -> Option<usize> {
-    let digits = token.strip_suffix('.').or_else(|| token.strip_suffix(')'))?;
+    let digits = token
+        .strip_suffix('.')
+        .or_else(|| token.strip_suffix(')'))?;
     let value: usize = digits.parse().ok()?;
     (1..=10).contains(&value).then_some(value)
 }
@@ -1764,7 +1842,10 @@ fn enum_cue_len(rest: &[&str]) -> Option<usize> {
     ENUM_CUES.iter().find_map(|phrase| {
         let words: Vec<&str> = phrase.split(' ').collect();
         (rest.len() >= words.len()
-            && words.iter().enumerate().all(|(i, w)| token_core(rest[i]) == *w))
+            && words
+                .iter()
+                .enumerate()
+                .all(|(i, w)| token_core(rest[i]) == *w))
         .then_some(words.len())
     })
 }
@@ -2462,7 +2543,11 @@ mod tests {
             "I gave one dollar to my brother two days later he gave it back",
             "on the one hand it rained on the other hand two people still showed up",
         ] {
-            assert_eq!(format_dictation(prose), prose, "{prose:?} was mangled into a list");
+            assert_eq!(
+                format_dictation(prose),
+                prose,
+                "{prose:?} was mangled into a list"
+            );
         }
     }
 
@@ -2477,7 +2562,11 @@ mod tests {
             "one hundred and two people came to the show and three hundred left",
             "he was number one in the league and number two in scoring",
         ] {
-            assert_eq!(format_dictation(prose), prose, "{prose:?} was mangled into a list");
+            assert_eq!(
+                format_dictation(prose),
+                prose,
+                "{prose:?} was mangled into a list"
+            );
         }
     }
 
@@ -2511,7 +2600,11 @@ mod tests {
             "chapter one was slow chapter two was better",
         ];
         let generated = generated_list_utterances();
-        for input in FIXED.iter().map(|s| (*s).to_string()).chain(generated.iter().cloned()) {
+        for input in FIXED
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(generated.iter().cloned())
+        {
             let out = format_dictation(&input);
             for (word, spoken) in content_token_counts(&input) {
                 let kept = count_tokens(&out, &word);
@@ -2523,7 +2616,10 @@ mod tests {
         }
         // …and the generated corpus has to actually reach the list path, or the
         // property above would be satisfied by never formatting anything at all.
-        let listed = generated.iter().filter(|i| format_dictation(i).contains('\n')).count();
+        let listed = generated
+            .iter()
+            .filter(|i| format_dictation(i).contains('\n'))
+            .count();
         assert!(
             listed * 2 > generated.len(),
             "only {listed}/{} generated utterances formatted as lists",
@@ -2571,7 +2667,9 @@ mod tests {
 
     /// How many whitespace tokens of `text` have `word` as their core.
     fn count_tokens(text: &str, word: &str) -> usize {
-        text.split_whitespace().filter(|t| token_core(t) == word).count()
+        text.split_whitespace()
+            .filter(|t| token_core(t) == word)
+            .count()
     }
 
     fn is_cue_word(word: &str) -> bool {
@@ -2592,9 +2690,9 @@ mod tests {
         // from this same vocabulary as item bodies — including the bullet words, so
         // the generator can build the very lead-ins that used to lose them.
         const CONTENT: &[&str] = &[
-            "a", "at", "id", "go", "my", "the", "buy", "milk", "eggs", "report", "client",
-            "docs", "gun", "bullet", "bullets", "point", "points", "ship", "email", "call",
-            "mom", "list", "goals", "things", "plan", "steps",
+            "a", "at", "id", "go", "my", "the", "buy", "milk", "eggs", "report", "client", "docs",
+            "gun", "bullet", "bullets", "point", "points", "ship", "email", "call", "mom", "list",
+            "goals", "things", "plan", "steps",
         ];
         const CUE_FORMS: [[&str; 4]; 3] = [
             ["one", "two", "three", "four"],
@@ -2679,7 +2777,10 @@ mod tests {
             "so I think we should go home"
         );
         assert_eq!(clean_backtrack("Er, hello there"), "hello there");
-        assert_eq!(clean_backtrack("that is hmm interesting"), "that is interesting");
+        assert_eq!(
+            clean_backtrack("that is hmm interesting"),
+            "that is interesting"
+        );
     }
 
     #[test]
@@ -2735,7 +2836,10 @@ mod tests {
         // An all-filler utterance can never be emptied — original is preserved.
         assert_eq!(clean_backtrack("um uh er"), "um uh er");
         // A dangling marker with no correction is left untouched.
-        assert_eq!(clean_backtrack("meet at noon scratch that"), "meet at noon scratch that");
+        assert_eq!(
+            clean_backtrack("meet at noon scratch that"),
+            "meet at noon scratch that"
+        );
     }
 
     #[test]
@@ -2825,7 +2929,11 @@ mod tests {
                 !cleaned.trim().is_empty(),
                 "clean_backtrack emptied {input:?}"
             );
-            for mode in [DictationMode::Notes, DictationMode::Plain, DictationMode::Code] {
+            for mode in [
+                DictationMode::Notes,
+                DictationMode::Plain,
+                DictationMode::Code,
+            ] {
                 let marked = apply_spoken_marks(&cleaned, mode);
                 assert!(
                     !marked.trim().is_empty(),
@@ -2840,9 +2948,23 @@ mod tests {
     fn generated_backtrack_utterances() -> Vec<String> {
         const CONTENT: &[&str] = &["ship", "the", "report", "Friday", "at", "7", "to", "Jeisil"];
         const TRIGGERS: &[&str] = &[
-            "um", "uh", "like,", ",", "you know,", "scratch that,", "wait no,", "no wait,",
-            "i mean,", "basically,", "period", "comma", "new line", "new paragraph",
-            "exclamation point", "quotation mark", "at symbol",
+            "um",
+            "uh",
+            "like,",
+            ",",
+            "you know,",
+            "scratch that,",
+            "wait no,",
+            "no wait,",
+            "i mean,",
+            "basically,",
+            "period",
+            "comma",
+            "new line",
+            "new paragraph",
+            "exclamation point",
+            "quotation mark",
+            "at symbol",
         ];
         let mut state = 0x5eed_1958_u64;
         let mut out = Vec::with_capacity(240);
@@ -2884,7 +3006,10 @@ mod tests {
         );
         // Tight and paired glyphs attach the way they are typed.
         assert_eq!(
-            apply_spoken_marks("email wilson at symbol drivia dot dev", DictationMode::Notes),
+            apply_spoken_marks(
+                "email wilson at symbol drivia dot dev",
+                DictationMode::Notes
+            ),
             "email wilson@drivia dot dev"
         );
         assert_eq!(
@@ -3053,7 +3178,10 @@ mod tests {
         // Dictionary ran before the LLM stage (stages 1 → 4 ordering).
         assert_eq!(*order.borrow(), vec!["dictionary", "llm"]);
         // Stage 1 (dictionary) applied: "Drivea" → "Drivia".
-        assert!(out.contains("Drivia"), "dictionary stage output missing: {out}");
+        assert!(
+            out.contains("Drivia"),
+            "dictionary stage output missing: {out}"
+        );
         // Stage 2 (backtrack) applied: the "um" filler is gone.
         assert!(!out.contains("um "), "backtrack stage did not run: {out}");
         // Stage 3 (format) applied: enumerated list intent became a numbered list.
@@ -3163,15 +3291,28 @@ mod tests {
     fn continuing_a_sentence_lowercases_the_lead_word() {
         // The model always capitalises the first word of a take; mid-sentence
         // that is wrong, and the context before the caret is what proves it.
-        assert_eq!(lead_case_for_context(Some("we should ")), LeadCase::Lowercase);
-        assert_eq!(join_with_context("Ship it on Friday", Some("we should ")), "ship it on Friday");
+        assert_eq!(
+            lead_case_for_context(Some("we should ")),
+            LeadCase::Lowercase
+        );
+        assert_eq!(
+            join_with_context("Ship it on Friday", Some("we should ")),
+            "ship it on Friday"
+        );
         assert_eq!(join_with_context("Ship it", Some("we should")), " ship it");
 
         // A fresh sentence after . ? ! keeps (and forces) the capital.
         for ender in ["That works.", "Does it?", "Ship it!"] {
-            assert_eq!(lead_case_for_context(Some(ender)), LeadCase::Capitalize, "{ender}");
+            assert_eq!(
+                lead_case_for_context(Some(ender)),
+                LeadCase::Capitalize,
+                "{ender}"
+            );
         }
-        assert_eq!(join_with_context("ship it", Some("That works. ")), "Ship it");
+        assert_eq!(
+            join_with_context("ship it", Some("That works. ")),
+            "Ship it"
+        );
         // An empty field is the start of a sentence too.
         assert_eq!(join_with_context("ship it", Some("")), "Ship it");
         // …and so is a new line.
@@ -3185,11 +3326,23 @@ mod tests {
     #[test]
     fn lowercasing_never_damages_i_acronyms_or_names() {
         // Capitalised for a reason: the pronoun, acronyms, CamelCase names.
-        for text in ["I think so", "I'll ship it", "API keys rotate", "GitHub is down"] {
-            assert_eq!(join_with_context(text, Some("she said ")), text.to_string(), "{text}");
+        for text in [
+            "I think so",
+            "I'll ship it",
+            "API keys rotate",
+            "GitHub is down",
+        ] {
+            assert_eq!(
+                join_with_context(text, Some("she said ")),
+                text.to_string(),
+                "{text}"
+            );
         }
         // …but an ordinary word does fold down.
-        assert_eq!(join_with_context("They shipped", Some("she said ")), "they shipped");
+        assert_eq!(
+            join_with_context("They shipped", Some("she said ")),
+            "they shipped"
+        );
     }
 
     #[test]
@@ -3208,13 +3361,19 @@ mod tests {
             assert!(!needs_leading_space(Some(ctx), "ship it"), "{ctx}");
         }
         // Punctuation on the dictated side hugs the previous word.
-        assert_eq!(join_with_context(", and then some", Some("done")), ", and then some");
+        assert_eq!(
+            join_with_context(", and then some", Some("done")),
+            ", and then some"
+        );
     }
 
     #[test]
     fn email_context_hints_the_mode_without_overriding_app_or_setting() {
         let greeting = "Hi Sarah,\n\nthanks for sending the deck over. We are";
-        assert_eq!(mode_hint_from_context(Some(greeting)), Some(DictationMode::Email));
+        assert_eq!(
+            mode_hint_from_context(Some(greeting)),
+            Some(DictationMode::Email)
+        );
         assert_eq!(
             mode_hint_from_context(Some("Subject: Q3 pricing\n\n")),
             Some(DictationMode::Email)
@@ -3224,7 +3383,10 @@ mod tests {
             Some(DictationMode::Email)
         );
         // Ordinary prose (and no context at all) hints nothing.
-        assert_eq!(mode_hint_from_context(Some("hi there is a bug in the parser")), None);
+        assert_eq!(
+            mode_hint_from_context(Some("hi there is a bug in the parser")),
+            None
+        );
         assert_eq!(mode_hint_from_context(None), None);
 
         // The hint only fills the gap an unrecognised app leaves.

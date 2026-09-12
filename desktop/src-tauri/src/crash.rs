@@ -549,7 +549,6 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-
     #[test]
     fn ips_header_parse_on_fixture() {
         let header = parse_ips_header(FIXTURE).expect("fixture header parses");

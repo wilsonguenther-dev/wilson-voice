@@ -116,7 +116,11 @@ impl RollingFile {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("yap.log");
         let written = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let handle = OpenOptions::new().create(true).append(true).open(&path).ok();
+        let handle = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
         Self {
             dir,
             path,

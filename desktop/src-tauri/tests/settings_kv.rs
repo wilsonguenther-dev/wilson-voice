@@ -177,7 +177,7 @@ fn an_unparseable_row_never_becomes_a_denial() {
         "",
         "   ",
         "some_verdict_from_the_future 2026-08-14T00:00:00Z",
-        "granted",       // no timestamp
+        "granted",              // no timestamp
         "2026-08-14T00:00:00Z", // an older encoding: bare timestamp, no verdict
     ] {
         let state = SystemAudioSetup::from_row(Some(row.to_string()));

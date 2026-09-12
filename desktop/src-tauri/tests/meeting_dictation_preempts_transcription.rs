@@ -95,7 +95,10 @@ impl Transcriber for StubEngine {
     }
 }
 
-fn manager(chunks: Arc<AtomicUsize>, dictations: Arc<AtomicUsize>) -> (TranscriptionManager, PathBuf) {
+fn manager(
+    chunks: Arc<AtomicUsize>,
+    dictations: Arc<AtomicUsize>,
+) -> (TranscriptionManager, PathBuf) {
     // `load` insists the model file exists; any file will do, since the loader
     // below never opens it.
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

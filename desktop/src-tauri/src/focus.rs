@@ -17,9 +17,9 @@ pub const CONTEXT_CHAR_LIMIT: usize = 500;
 
 #[cfg(target_os = "macos")]
 mod ax {
-    use std::ffi::c_void;
     use core_foundation::base::{CFGetTypeID, CFRange, CFRelease, CFTypeRef, TCFType};
     use core_foundation::string::{CFString, CFStringRef};
+    use std::ffi::c_void;
 
     pub type AXUIElementRef = *mut c_void;
 
@@ -61,7 +61,8 @@ mod ax {
             }
             let key = CFString::new("AXFocusedUIElement");
             let mut focused: CFTypeRef = std::ptr::null_mut();
-            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
             CFRelease(system as CFTypeRef);
             if err != AX_OK || focused.is_null() {
                 return false;
@@ -106,7 +107,8 @@ mod ax {
             }
             let key = CFString::new("AXFocusedUIElement");
             let mut focused: CFTypeRef = std::ptr::null_mut();
-            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
             CFRelease(system as CFTypeRef);
             if err != AX_OK || focused.is_null() {
                 return None;
@@ -176,7 +178,8 @@ mod ax {
             }
             let key = CFString::new("AXFocusedUIElement");
             let mut focused: CFTypeRef = std::ptr::null_mut();
-            let err = AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
             CFRelease(system as CFTypeRef);
             if err != AX_OK || focused.is_null() {
                 return None;
@@ -191,7 +194,9 @@ mod ax {
                 None
             } else {
                 match (attr_cfstring(el, "AXValue"), caret_offset(el)) {
-                    (Some(value), Some(caret)) => Some(super::prefix_before_caret(&value, caret, limit)),
+                    (Some(value), Some(caret)) => {
+                        Some(super::prefix_before_caret(&value, caret, limit))
+                    }
                     _ => None,
                 }
             };

@@ -99,7 +99,8 @@ fn the_ack_is_one_settings_kv_row_and_no_meeting_column() {
     let has_column: bool = conn
         .prepare("SELECT * FROM meetings")
         .expect("prepare")
-        .column_names().contains(&"consent_ack");
+        .column_names()
+        .contains(&"consent_ack");
     assert!(
         !has_column,
         "finding #13: the per-meeting consent_ack column must not come back"

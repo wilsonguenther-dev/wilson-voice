@@ -424,7 +424,9 @@ pub fn plan_windows(
                 // and the seam falls back to text anchoring, exactly as it does
                 // for a region with no pause in it.
                 Err(e) => {
-                    log::warn!("meeting chunker: VAD failed near {prev:.1}s ({e}) — clock boundary");
+                    log::warn!(
+                        "meeting chunker: VAD failed near {prev:.1}s ({e}) — clock boundary"
+                    );
                     (target, BoundaryKind::FixedClock)
                 }
             },
@@ -438,7 +440,12 @@ pub fn plan_windows(
         boundaries.push(boundary);
         kinds.push(kind);
     }
-    Ok(windows_from_boundaries(&boundaries, &kinds, cfg, first_index))
+    Ok(windows_from_boundaries(
+        &boundaries,
+        &kinds,
+        cfg,
+        first_index,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -499,8 +506,8 @@ pub struct WavWindows {
 impl WavWindows {
     pub fn open(path: impl AsRef<Path>) -> Result<WavWindows, String> {
         let path = path.as_ref().to_path_buf();
-        let reader = hound::WavReader::open(&path)
-            .map_err(|e| format!("open {}: {e}", path.display()))?;
+        let reader =
+            hound::WavReader::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
         let spec = reader.spec();
         if spec.channels != 1 {
             return Err(format!(
@@ -1628,8 +1635,7 @@ impl ProgressStore for JsonProgressStore {
             .iter()
             .map(|c| c.content_end_seconds)
             .fold(0.0f64, f64::max);
-        fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
+        fs::create_dir_all(&self.dir).map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let path = self.path_for(meeting_id);
         let tmp = path.with_extension("json.tmp");
         let body = serde_json::to_string(&progress).map_err(|e| format!("encode progress: {e}"))?;
@@ -1884,9 +1890,7 @@ impl MeetingAsr<'_> {
                     // yield and the take. That is contention, not a decode
                     // failure: wait it out and decode this chunk properly rather
                     // than writing a hole into the transcript.
-                    Err(ref e)
-                        if e == NO_ENGINE_LOADED && attempt < CONTENDED_CHUNK_RETRIES =>
-                    {
+                    Err(ref e) if e == NO_ENGINE_LOADED && attempt < CONTENDED_CHUNK_RETRIES => {
                         attempt += 1;
                         if self.yield_to_interactive() {
                             yields += 1;
@@ -2424,7 +2428,12 @@ mod tests {
     #[test]
     fn a_resumed_plan_starts_at_the_resume_point() {
         let cfg = ChunkConfig::default();
-        let plan = plan_windows_fixed(200.0, ResumePoint::at(61.0, BoundaryKind::FixedClock), &cfg, 2);
+        let plan = plan_windows_fixed(
+            200.0,
+            ResumePoint::at(61.0, BoundaryKind::FixedClock),
+            &cfg,
+            2,
+        );
         assert_eq!(plan[0].content_start_seconds, 61.0);
         assert_eq!(plan[0].index, 2);
         assert_eq!(
@@ -2544,7 +2553,10 @@ mod tests {
         let cfg = ChunkConfig::default();
         let audio = MemoryWindows::at_meeting_rate(vec![0.0; MEETING_RATE as usize * 100]);
         let with_none = plan_windows(&audio, None, ResumePoint::start(), &cfg, 0).expect("plan");
-        assert_eq!(with_none, plan_windows_fixed(100.0, ResumePoint::start(), &cfg, 0));
+        assert_eq!(
+            with_none,
+            plan_windows_fixed(100.0, ResumePoint::start(), &cfg, 0)
+        );
     }
 
     fn outcome(index: usize, start: f64, end: f64, spans: &[(f64, f64, &str)]) -> ChunkOutcome {
@@ -2600,7 +2612,9 @@ mod tests {
         let merged = merge_timed(&[a, b]);
         let words: Vec<&str> = merged.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(words, vec!["pineapple", "trombone", "lantern"]);
-        assert!(merged.windows(2).all(|p| p[0].start_seconds <= p[1].start_seconds));
+        assert!(merged
+            .windows(2)
+            .all(|p| p[0].start_seconds <= p[1].start_seconds));
     }
 
     /// The tie-break that saves a half-cut word must not eat a word the speaker
@@ -2971,7 +2985,10 @@ mod tests {
     /// The English-only gate (finding #38), against the REAL bundled catalog.
     #[test]
     fn the_english_gate_names_what_is_wrong() {
-        assert!(meeting_availability(Some("handy-computer/parakeet-unified-en-0.6b-gguf"), None).is_ok());
+        assert!(
+            meeting_availability(Some("handy-computer/parakeet-unified-en-0.6b-gguf"), None)
+                .is_ok()
+        );
         assert!(meeting_availability(
             Some("handy-computer/parakeet-unified-en-0.6b-gguf"),
             Some("en-US")
@@ -2982,8 +2999,15 @@ mod tests {
             Some("es"),
         )
         .expect_err("a Spanish setting is refused");
-        assert!(blocked.message().contains("English-only"), "{}", blocked.message());
-        assert_eq!(meeting_availability(None, None), Err(MeetingUnavailable::NoModel));
+        assert!(
+            blocked.message().contains("English-only"),
+            "{}",
+            blocked.message()
+        );
+        assert_eq!(
+            meeting_availability(None, None),
+            Err(MeetingUnavailable::NoModel)
+        );
         assert!(matches!(
             meeting_availability(Some("some/local-model"), None),
             Err(MeetingUnavailable::UnknownModel { .. })

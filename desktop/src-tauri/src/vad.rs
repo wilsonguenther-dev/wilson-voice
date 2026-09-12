@@ -418,7 +418,9 @@ impl WarmVad {
             engine.reset();
             for (f, slot) in mask.iter_mut().enumerate() {
                 let base = f * FRAME_SAMPLES;
-                *slot = engine.inner.is_voice(&samples[base..base + FRAME_SAMPLES])?;
+                *slot = engine
+                    .inner
+                    .is_voice(&samples[base..base + FRAME_SAMPLES])?;
             }
         }
         let mask = pad_voiced_runs(&drop_blips(&mask, ONSET_FRAMES), SPAN_PAD_FRAMES);

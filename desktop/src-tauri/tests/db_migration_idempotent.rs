@@ -641,7 +641,11 @@ fn a_database_from_every_rung_climbs_to_five() {
             id
         };
         let db = wilson_voice_lib::db::Database::open(path).expect("upgrade");
-        assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION, "from {from}");
+        assert_eq!(
+            db.schema_version().unwrap(),
+            EXPECTED_VERSION,
+            "from {from}"
+        );
         assert_eq!(db.get_meeting(&id).unwrap().unwrap().segment_count, 1);
         assert!(db.list_meeting_segments(&id).unwrap()[0]
             .cluster_index

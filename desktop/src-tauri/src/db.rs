@@ -782,9 +782,9 @@ impl Database {
                 "SELECT id, term FROM dictionary
                  WHERE source = 'harvest' AND preferred IS NULL AND starred = 0",
             ) {
-                if let Ok(rows) = stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                }) {
+                if let Ok(rows) =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                {
                     for (id, term) in rows.flatten() {
                         if !seeds.contains(&term.to_lowercase()) && !is_jargon_token(&term) {
                             junk.push(id);
@@ -918,7 +918,14 @@ impl Database {
                    asr_ms = excluded.asr_ms,
                    speech_ms = excluded.speech_ms,
                    pipeline_ms = excluded.pipeline_ms",
-                params![day, a.words, a.sessions, a.asr_ms, a.speech_ms, a.pipeline_ms],
+                params![
+                    day,
+                    a.words,
+                    a.sessions,
+                    a.asr_ms,
+                    a.speech_ms,
+                    a.pipeline_ms
+                ],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -1092,7 +1099,11 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
-    pub fn list_transcripts(&self, limit: i64, query: Option<String>) -> Result<Vec<TranscriptEntry>, String> {
+    pub fn list_transcripts(
+        &self,
+        limit: i64,
+        query: Option<String>,
+    ) -> Result<Vec<TranscriptEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let q = query.unwrap_or_default().trim().to_string();
 
@@ -1329,9 +1340,7 @@ impl Database {
     /// exactly where it was — the two facts are independent and the storage has
     /// to keep them that way.
     pub fn system_audio_setup(&self) -> meetings::SystemAudioSetup {
-        meetings::SystemAudioSetup::from_row(
-            self.setting_get(meetings::SYSTEM_AUDIO_SETUP_ACK_KEY),
-        )
+        meetings::SystemAudioSetup::from_row(self.setting_get(meetings::SYSTEM_AUDIO_SETUP_ACK_KEY))
     }
 
     /// Record what the setup step (or a later meeting's discriminator) found.
@@ -2705,12 +2714,7 @@ impl Database {
                title = excluded.title,
                body = excluded.body,
                updated_at = excluded.updated_at",
-            params![
-                note.id,
-                note.title,
-                note.body,
-                note.updated_at.to_rfc3339()
-            ],
+            params![note.id, note.title, note.body, note.updated_at.to_rfc3339()],
         )
         .map_err(|e| e.to_string())?;
         Ok(note)
@@ -2727,9 +2731,11 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         let total_words: i64 = conn
-            .query_row("SELECT COALESCE(SUM(word_count),0) FROM transcripts", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(word_count),0) FROM transcripts",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
         let total_sessions: i64 = conn
             .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
@@ -2925,7 +2931,11 @@ impl Database {
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![start], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?;
             for row in rows {
@@ -2938,7 +2948,11 @@ impl Database {
         for i in (0..days).rev() {
             let d = (Local::now().date_naive() - Duration::days(i)).to_string();
             let (w, s) = map.get(&d).copied().unwrap_or((0, 0));
-            out.push(DayCount { date: d, words: w, sessions: s });
+            out.push(DayCount {
+                date: d,
+                words: w,
+                sessions: s,
+            });
         }
         Ok(out)
     }
@@ -2964,7 +2978,11 @@ impl Database {
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?;
             for row in rows {
@@ -2990,7 +3008,11 @@ impl Database {
             .into_iter()
             .map(|ym| {
                 let (w, s) = map.get(&ym).copied().unwrap_or((0, 0));
-                DayCount { date: ym, words: w, sessions: s }
+                DayCount {
+                    date: ym,
+                    words: w,
+                    sessions: s,
+                }
             })
             .collect();
         Ok(out)
@@ -3018,7 +3040,9 @@ impl Database {
                  FROM transcripts ORDER BY created_at ASC",
             )
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], map_transcript).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], map_transcript)
+            .map_err(|e| e.to_string())?;
         let mut n = 0usize;
         for r in rows {
             f(r.map_err(|e| e.to_string())?)?;
@@ -3277,7 +3301,11 @@ mod tests {
         db.checkpoint();
         let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
         if wal.exists() {
-            assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0, "WAL not truncated");
+            assert_eq!(
+                std::fs::metadata(&wal).unwrap().len(),
+                0,
+                "WAL not truncated"
+            );
         }
 
         drop(db);
@@ -3312,7 +3340,10 @@ mod tests {
         let listed = db.list_transcripts(10, None).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].text, "the report is done");
-        assert_eq!(listed[0].raw_text.as_deref(), Some("um the report is uh done"));
+        assert_eq!(
+            listed[0].raw_text.as_deref(),
+            Some("um the report is uh done")
+        );
 
         // Default: with no raw supplied, raw_text mirrors the final text.
         let plain = db
@@ -3339,7 +3370,11 @@ mod tests {
         }
         // Reopening a VALID db must not quarantine it, and data must survive.
         let db2 = Database::open(path.clone()).unwrap();
-        assert_eq!(db2.list_transcripts(10, None).unwrap().len(), 1, "data lost on reopen");
+        assert_eq!(
+            db2.list_transcripts(10, None).unwrap().len(),
+            1,
+            "data lost on reopen"
+        );
         let quarantined = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -3359,8 +3394,10 @@ mod tests {
 
         // "The"/"and" are stopwords (dropped); Drivia/RunPod/JAX are jargon (kept).
         // RunPod appears twice → higher hits.
-        db.learn_from_transcript("The Drivia RunPod deploy and JAX").unwrap();
-        db.learn_from_transcript("RunPod scaled and Supabase synced").unwrap();
+        db.learn_from_transcript("The Drivia RunPod deploy and JAX")
+            .unwrap();
+        db.learn_from_transcript("RunPod scaled and Supabase synced")
+            .unwrap();
 
         let dict = db.list_dictionary().unwrap();
         let get = |t: &str| dict.iter().find(|d| d.term.eq_ignore_ascii_case(t));
@@ -3379,7 +3416,11 @@ mod tests {
         }
         // Most-frequent term is LAST (Whisper weights later prompt tokens more).
         let top = db.bias_terms(50).unwrap();
-        assert_eq!(top.last().map(String::as_str), Some("RunPod"), "not most-frequent-last: {top:?}");
+        assert_eq!(
+            top.last().map(String::as_str),
+            Some("RunPod"),
+            "not most-frequent-last: {top:?}"
+        );
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3662,15 +3703,21 @@ mod tests {
     }
 
     fn words(n: usize) -> String {
-        (0..n).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ")
+        (0..n)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
     fn total_words_and_sessions_are_exact() {
         let (db, dir) = fresh_db("total");
-        db.insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(2), "native".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(1), "native".into(), 0.5, 1.0, 0, None).unwrap();
+        db.insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None)
+            .unwrap();
+        db.insert_transcript(words(2), "native".into(), 0.5, 1.0, 0, None)
+            .unwrap();
+        db.insert_transcript(words(1), "native".into(), 0.5, 1.0, 0, None)
+            .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.total_words, 6, "total words must sum every session");
         assert_eq!(ins.total_sessions, 3);
@@ -3682,11 +3729,14 @@ mod tests {
     fn wpm_is_speech_weighted_and_excludes_legacy_zero_rows() {
         let (db, dir) = fresh_db("wpm");
         // 30 words / 30s + 30 words / 30s = 60 words / 60s = exactly 60 WPM.
-        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None).unwrap();
-        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None).unwrap();
+        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None)
+            .unwrap();
+        db.insert_transcript(words(30), "native".into(), 5.0, 30.0, 0, None)
+            .unwrap();
         // A legacy row with NO measured speech (speech_seconds = 0). It contributes
         // 100 words to total, but MUST NOT enter the WPM math (no speaking time).
-        db.insert_transcript(words(100), "native".into(), 9.0, 0.0, 0, None).unwrap();
+        db.insert_transcript(words(100), "native".into(), 9.0, 0.0, 0, None)
+            .unwrap();
 
         let ins = db.insights().unwrap();
         assert_eq!(ins.total_words, 160, "all words count toward the total");
@@ -3695,7 +3745,10 @@ mod tests {
             "WPM must be 60 (speech-weighted), got {}",
             ins.avg_wpm
         );
-        assert_eq!(ins.wpm_sample_sessions, 2, "only speech rows are WPM samples");
+        assert_eq!(
+            ins.wpm_sample_sessions, 2,
+            "only speech rows are WPM samples"
+        );
         assert!(
             (ins.speech_seconds_total - 60.0).abs() < 1e-6,
             "speech total must exclude the zero-speech row"
@@ -3708,15 +3761,21 @@ mod tests {
     fn wpm_is_clamped_against_transient_fooled_short_speech() {
         let (db, dir) = fresh_db("wpmclamp");
         // Normal session: 60 words / 60s = 60 WPM.
-        db.insert_transcript(words(60), "native".into(), 5.0, 60.0, 0, None).unwrap();
+        db.insert_transcript(words(60), "native".into(), 5.0, 60.0, 0, None)
+            .unwrap();
         // Pathological: 200 words but only 0.3s "voiced" (a loud transient fooled
         // the VAD). Un-clamped this single session is 40,000 WPM and would drag the
         // pooled average to ~259. The word-count floor caps its speaking time at
         // 200/400*60 = 30s → pooled = 260 words / ((60+30)/60) min = 173.3 WPM.
-        db.insert_transcript(words(200), "native".into(), 3.0, 0.3, 0, None).unwrap();
+        db.insert_transcript(words(200), "native".into(), 3.0, 0.3, 0, None)
+            .unwrap();
 
         let ins = db.insights().unwrap();
-        assert!(ins.avg_wpm <= 400.0 + 1e-6, "WPM must be capped, got {}", ins.avg_wpm);
+        assert!(
+            ins.avg_wpm <= 400.0 + 1e-6,
+            "WPM must be capped, got {}",
+            ins.avg_wpm
+        );
         assert!(
             (ins.avg_wpm - 173.33).abs() < 0.5,
             "expected ~173.3 pooled WPM after the plausibility floor, got {}",
@@ -3737,10 +3796,28 @@ mod tests {
         let (db, dir) = fresh_db("today");
         // Anchor the "today" row at local noon too, so an insert landing a
         // microsecond before local midnight can't race the day boundary.
-        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None)
-            .unwrap();
-        db.insert_transcript_at(words(100), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None)
-            .unwrap();
+        db.insert_transcript_at(
+            words(10),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(0),
+            None,
+        )
+        .unwrap();
+        db.insert_transcript_at(
+            words(100),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(3),
+            None,
+        )
+        .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.words_today, 10, "words_today must exclude prior days");
         assert_eq!(ins.sessions_today, 1);
@@ -3753,12 +3830,30 @@ mod tests {
     fn streak_counts_consecutive_days_including_today() {
         let (db, dir) = fresh_db("streak");
         for n in [0, 1, 2] {
-            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
-                .unwrap();
+            db.insert_transcript_at(
+                words(5),
+                "native".into(),
+                0.5,
+                2.0,
+                0,
+                None,
+                days_ago_noon(n),
+                None,
+            )
+            .unwrap();
         }
         // A gap, then an old day — must not extend the current streak.
-        db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None)
-            .unwrap();
+        db.insert_transcript_at(
+            words(5),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(5),
+            None,
+        )
+        .unwrap();
         let ins = db.insights().unwrap();
         assert_eq!(ins.streak_days, 3, "today + 2 prior consecutive days");
         assert_eq!(ins.longest_streak, 3);
@@ -3771,11 +3866,23 @@ mod tests {
         let (db, dir) = fresh_db("grace");
         // Active yesterday/-2/-3 but NOT today → streak still counts (day not over).
         for n in [1, 2, 3] {
-            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
-                .unwrap();
+            db.insert_transcript_at(
+                words(5),
+                "native".into(),
+                0.5,
+                2.0,
+                0,
+                None,
+                days_ago_noon(n),
+                None,
+            )
+            .unwrap();
         }
         let ins = db.insights().unwrap();
-        assert_eq!(ins.streak_days, 3, "missing-today grace: yesterday anchors the streak");
+        assert_eq!(
+            ins.streak_days, 3,
+            "missing-today grace: yesterday anchors the streak"
+        );
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3785,8 +3892,17 @@ mod tests {
         let (db, dir) = fresh_db("longest");
         // Current run of 2 (yesterday, -2), older run of 4 (-5..-8).
         for n in [1, 2, 5, 6, 7, 8] {
-            db.insert_transcript_at(words(5), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(n), None)
-                .unwrap();
+            db.insert_transcript_at(
+                words(5),
+                "native".into(),
+                0.5,
+                2.0,
+                0,
+                None,
+                days_ago_noon(n),
+                None,
+            )
+            .unwrap();
         }
         let ins = db.insights().unwrap();
         assert_eq!(ins.streak_days, 2, "current streak is the recent 2-day run");
@@ -3798,26 +3914,67 @@ mod tests {
     #[test]
     fn daily_series_is_contiguous_and_zero_filled() {
         let (db, dir) = fresh_db("series");
-        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(0), None).unwrap();
-        db.insert_transcript_at(words(20), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(3), None).unwrap();
-        db.insert_transcript_at(words(30), "native".into(), 0.5, 2.0, 0, None, days_ago_noon(5), None).unwrap();
+        db.insert_transcript_at(
+            words(10),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(0),
+            None,
+        )
+        .unwrap();
+        db.insert_transcript_at(
+            words(20),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(3),
+            None,
+        )
+        .unwrap();
+        db.insert_transcript_at(
+            words(30),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            days_ago_noon(5),
+            None,
+        )
+        .unwrap();
 
         let s = db.daily_series(7).unwrap();
-        assert_eq!(s.len(), 7, "series must have exactly one entry per requested day");
+        assert_eq!(
+            s.len(),
+            7,
+            "series must have exactly one entry per requested day"
+        );
         // oldest first, strictly consecutive calendar days
         for w in s.windows(2) {
             let a = NaiveDate::parse_from_str(&w[0].date, "%Y-%m-%d").unwrap();
             let b = NaiveDate::parse_from_str(&w[1].date, "%Y-%m-%d").unwrap();
-            assert_eq!(b, a + Duration::days(1), "days must be contiguous & ascending");
+            assert_eq!(
+                b,
+                a + Duration::days(1),
+                "days must be contiguous & ascending"
+            );
         }
         // last entry is today with 10 words; days 3 and 5 back carry their counts
         assert_eq!(s[6].words, 10, "today");
         assert_eq!(s[3].words, 20, "3 days ago"); // index 6-3
         assert_eq!(s[1].words, 30, "5 days ago"); // index 6-5
-        // untouched days are zero-filled, not missing
+                                                  // untouched days are zero-filled, not missing
         assert_eq!(s[5].words, 0, "yesterday had no activity → 0, not absent");
         let total: i64 = s.iter().map(|d| d.words).sum();
-        assert_eq!(total, 60, "series words sum to the inserted total in-window");
+        assert_eq!(
+            total, 60,
+            "series words sum to the inserted total in-window"
+        );
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3847,19 +4004,56 @@ mod tests {
     fn monthly_series_rolls_up_and_zero_fills() {
         let (db, dir) = fresh_db("monthly");
         // this month, and 2 months back — 1 month back is intentionally left empty.
-        db.insert_transcript_at(words(10), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
-        db.insert_transcript_at(words(7), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(0), None).unwrap();
-        db.insert_transcript_at(words(40), "native".into(), 0.5, 2.0, 0, None, months_ago_15th(2), None).unwrap();
+        db.insert_transcript_at(
+            words(10),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            months_ago_15th(0),
+            None,
+        )
+        .unwrap();
+        db.insert_transcript_at(
+            words(7),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            months_ago_15th(0),
+            None,
+        )
+        .unwrap();
+        db.insert_transcript_at(
+            words(40),
+            "native".into(),
+            0.5,
+            2.0,
+            0,
+            None,
+            months_ago_15th(2),
+            None,
+        )
+        .unwrap();
 
         let s = db.monthly_series(3).unwrap();
         assert_eq!(s.len(), 3, "one entry per requested month");
         // keys look like YYYY-MM and are contiguous ascending
         for e in &s {
-            assert!(e.date.len() == 7 && e.date.as_bytes()[4] == b'-', "month key YYYY-MM: {}", e.date);
+            assert!(
+                e.date.len() == 7 && e.date.as_bytes()[4] == b'-',
+                "month key YYYY-MM: {}",
+                e.date
+            );
         }
         assert_eq!(s[2].words, 17, "this month sums both sessions (10+7)");
         assert_eq!(s[2].sessions, 2);
-        assert_eq!(s[1].words, 0, "the empty middle month is zero-filled, not absent");
+        assert_eq!(
+            s[1].words, 0,
+            "the empty middle month is zero-filled, not absent"
+        );
         assert_eq!(s[0].words, 40, "two months ago");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3873,27 +4067,46 @@ mod tests {
         let (db, dir) = fresh_db("delete");
 
         // History: delete one, then clear all.
-        let a = db.insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None).unwrap();
-        db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None).unwrap();
+        let a = db
+            .insert_transcript(words(3), "native".into(), 0.5, 1.0, 0, None)
+            .unwrap();
+        db.insert_transcript(words(4), "native".into(), 0.5, 1.0, 0, None)
+            .unwrap();
         assert_eq!(db.list_transcripts(50, None).unwrap().len(), 2);
         db.delete_transcript(&a.id).unwrap();
         let after = db.list_transcripts(50, None).unwrap();
         assert_eq!(after.len(), 1, "delete_transcript did not remove the row");
-        assert!(!after.iter().any(|e| e.id == a.id), "deleted id still present");
+        assert!(
+            !after.iter().any(|e| e.id == a.id),
+            "deleted id still present"
+        );
         db.clear_transcripts().unwrap();
-        assert_eq!(db.list_transcripts(50, None).unwrap().len(), 0, "clear_transcripts failed");
+        assert_eq!(
+            db.list_transcripts(50, None).unwrap().len(),
+            0,
+            "clear_transcripts failed"
+        );
 
         // Dictionary: add then delete by id.
         let term = db.add_dictionary_term("Anthropic".into(), None).unwrap();
-        assert!(db.list_dictionary().unwrap().iter().any(|d| d.id == term.id));
+        assert!(db
+            .list_dictionary()
+            .unwrap()
+            .iter()
+            .any(|d| d.id == term.id));
         db.delete_dictionary_term(&term.id).unwrap();
         assert!(
-            !db.list_dictionary().unwrap().iter().any(|d| d.id == term.id),
+            !db.list_dictionary()
+                .unwrap()
+                .iter()
+                .any(|d| d.id == term.id),
             "delete_dictionary_term did not remove the term"
         );
 
         // Scratchpad: save then delete by id.
-        let note = db.save_scratch(None, "Title".into(), "body".into()).unwrap();
+        let note = db
+            .save_scratch(None, "Title".into(), "body".into())
+            .unwrap();
         assert!(db.list_scratch().unwrap().iter().any(|n| n.id == note.id));
         db.delete_scratch(&note.id).unwrap();
         assert!(
@@ -3957,7 +4170,11 @@ mod tests {
 
         // (a) every row reached the file — not 10,000 of them.
         assert_eq!(count, N, "writer reported the wrong row count");
-        assert_eq!(lines.len(), N, "export dropped rows (the old cap was 10,000)");
+        assert_eq!(
+            lines.len(),
+            N,
+            "export dropped rows (the old cap was 10,000)"
+        );
 
         // (b) oldest first — line 1 is exactly the row the DESC+LIMIT cap discarded.
         let first: TranscriptEntry = serde_json::from_str(lines[0]).unwrap();
@@ -4251,8 +4468,11 @@ mod tests {
         // transcripts INSERT, via a unique index the second row must violate.
         {
             let conn = db.conn.lock().unwrap();
-            conn.execute("CREATE UNIQUE INDEX yv68_one_row ON transcripts(backend)", [])
-                .unwrap();
+            conn.execute(
+                "CREATE UNIQUE INDEX yv68_one_row ON transcripts(backend)",
+                [],
+            )
+            .unwrap();
         }
         db.insert_transcript_at(
             "first take".into(),
@@ -4276,7 +4496,10 @@ mod tests {
             Utc::now(),
             None,
         );
-        assert!(doomed.is_err(), "the duplicate key should have failed the INSERT");
+        assert!(
+            doomed.is_err(),
+            "the duplicate key should have failed the INSERT"
+        );
         assert_eq!(
             db.list_transcripts(10, None).unwrap().len(),
             1,
@@ -4405,7 +4628,10 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(history.iter().filter(|e| e.text == "the live take").count(), 1);
+        assert_eq!(
+            history.iter().filter(|e| e.text == "the live take").count(),
+            1
+        );
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);

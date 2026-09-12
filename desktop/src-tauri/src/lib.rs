@@ -663,7 +663,10 @@ fn toggle_meeting(
         notify(
             app,
             "Recording this meeting",
-            format!("Stop with {} or the menu bar.", shortcuts::MEETING_TOGGLE.label),
+            format!(
+                "Stop with {} or the menu bar.",
+                shortcuts::MEETING_TOGGLE.label
+            ),
         );
     } else if !status.recording && was_recording {
         // Never yank the pill out from under a dictation that is still running.
@@ -2925,7 +2928,10 @@ async fn send_support_bundle(
     let path = support::desktop_dir(&home_dir()).join(&prepared.file_name);
     support::write_zip(&path, &prepared.entries, prepared.generated_at)
         .map_err(|e| format!("Could not write the diagnostics file: {e}"))?;
-    log::info!("support bundle written ({} entries)", prepared.entries.len());
+    log::info!(
+        "support bundle written ({} entries)",
+        prepared.entries.len()
+    );
 
     let version = env!("CARGO_PKG_VERSION");
     let headline = state
@@ -2950,18 +2956,17 @@ async fn send_support_bundle(
     }
     let path_for_fallback = path.clone();
     Ok(
-        on_main_thread(&app, move || {
-            support::fallback_outcome(&path_for_fallback)
-        })
-        .unwrap_or_else(|| support::SendOutcome {
-            method: "reveal".into(),
-            path: path.to_string_lossy().into_owned(),
-            recipient: support::SUPPORT_EMAIL.into(),
-            message: format!(
-                "The file is on your Desktop. Attach it to an email to {}.",
-                support::SUPPORT_EMAIL
-            ),
-        }),
+        on_main_thread(&app, move || support::fallback_outcome(&path_for_fallback)).unwrap_or_else(
+            || support::SendOutcome {
+                method: "reveal".into(),
+                path: path.to_string_lossy().into_owned(),
+                recipient: support::SUPPORT_EMAIL.into(),
+                message: format!(
+                    "The file is on your Desktop. Attach it to an email to {}.",
+                    support::SUPPORT_EMAIL
+                ),
+            },
+        ),
     )
 }
 
@@ -3436,7 +3441,10 @@ fn export_history(state: State<'_, Arc<AppState>>) -> Result<ExportResult, Strin
     };
     drop(w);
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    Ok(ExportResult { path: path.display().to_string(), count })
+    Ok(ExportResult {
+        path: path.display().to_string(),
+        count,
+    })
 }
 
 #[tauri::command]
@@ -5007,7 +5015,10 @@ mod tests {
             }
             from = start + 5;
         }
-        assert!(blocks.len() > 10, "log scan found nothing — audit is broken");
+        assert!(
+            blocks.len() > 10,
+            "log scan found nothing — audit is broken"
+        );
         blocks
     }
 

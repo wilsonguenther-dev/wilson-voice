@@ -483,10 +483,7 @@ mod tests {
     fn auto_timestamps_are_not_mistaken_for_real_ones() {
         assert_eq!(TimedKind::from_native(TimestampKind::Auto), TimedKind::None);
         assert_eq!(TimedKind::from_native(TimestampKind::None), TimedKind::None);
-        assert_eq!(
-            TimedKind::from_native(TimestampKind::Word),
-            TimedKind::Word
-        );
+        assert_eq!(TimedKind::from_native(TimestampKind::Word), TimedKind::Word);
         assert!(!TimedKind::None.has_times());
         assert!(TimedKind::Segment.has_times());
     }
@@ -534,7 +531,6 @@ mod tests {
         assert_eq!(moved.end_seconds, 30.25);
         assert_eq!(moved.text, "walnut");
     }
-
 
     /// YV47 — the prompt is capped to what transcribe-cpp will actually keep.
     /// Overflow drops the LEAST-important terms (the head), never the starred

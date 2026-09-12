@@ -73,11 +73,7 @@ fn scripted() -> StubModel {
         if req.mode == "reduce" {
             // REDUCE sees the chunk narratives and nothing else; stitch them
             // into one paragraph, which is the merge a model would be asked for.
-            let head: Vec<&str> = req
-                .text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .collect();
+            let head: Vec<&str> = req.text.lines().filter(|l| !l.trim().is_empty()).collect();
             return Ok(head.join(" "));
         }
         let clause = |i: usize| -> String {
