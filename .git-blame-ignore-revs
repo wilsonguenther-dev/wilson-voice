@@ -1,0 +1,5 @@
+# Mechanical, whole-tree reformat commits. Ignored by `git blame`.
+# Enable locally with:  git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style(yap): cargo fmt --all sweep — 152 hunks / 21 files (2026-09-12)
+b4b8d066e96233a403f26fa10c26d0e6207852c3
