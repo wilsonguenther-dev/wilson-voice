@@ -445,10 +445,9 @@ where
             expected.display()
         ));
     }
-    verify_sha256(&expected, &archive.extracted_sha256).map_err(|e| {
+    verify_sha256(&expected, &archive.extracted_sha256).inspect_err(|_e| {
         // Wrong bytes out of a right archive: leave nothing half-installed.
         let _ = std::fs::remove_file(&expected);
-        e
     })?;
     // The archive is a second copy of bytes we now hold extracted; it is 7 MB
     // of nothing. `is_diarize_downloaded` deliberately looks at the extracted

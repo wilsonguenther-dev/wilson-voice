@@ -401,10 +401,8 @@ fn a_journal_abandoned_by_the_shipped_22a_build_still_recovers() {
     // Two records saying half a second of audio never reached the disk.
     std::fs::write(
         &index,
-        format!(
-            "{{\"host_ns\":1000000000,\"captured_samples\":8000,\"spilled_samples\":8000}}\n\
-             {{\"host_ns\":2000000000,\"captured_samples\":24000,\"spilled_samples\":16000}}\n"
-        ),
+        "{\"host_ns\":1000000000,\"captured_samples\":8000,\"spilled_samples\":8000}\n\
+             {\"host_ns\":2000000000,\"captured_samples\":24000,\"spilled_samples\":16000}\n".to_string(),
     )
     .unwrap();
     std::fs::write(

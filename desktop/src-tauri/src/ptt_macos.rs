@@ -357,26 +357,23 @@ unsafe extern "C" fn tap_callback(
         // Any flags-changed event may be an fn or Control edge — re-evaluate the
         // combo unconditionally; handle_combo_edge no-ops when nothing changed.
         handle_combo_edge(state, fn_down, control, command, option);
-    } else if event_type == KCG_EVENT_KEY_DOWN {
-        if state.combo_down.load(Ordering::SeqCst)
+    } else if event_type == KCG_EVENT_KEY_DOWN
+        && state.combo_down.load(Ordering::SeqCst)
             && !state.hands_free.load(Ordering::SeqCst)
             && !is_modifier_keycode(keycode)
-        {
-            if !state.interrupted.swap(true, Ordering::SeqCst) {
+            && !state.interrupted.swap(true, Ordering::SeqCst) {
                 log::info!("PTT interrupted by keycode {keycode}");
                 // cancel hold arm
                 state.hold_armed.store(false, Ordering::SeqCst);
                 state.combo_down.store(false, Ordering::SeqCst);
                 (state.callback)(PttEvent::Interrupted);
             }
-        }
-    }
 
     event
 }
 
 fn is_modifier_keycode(code: i64) -> bool {
-    matches!(code, 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63)
+    matches!(code, 54..=63)
 }
 
 fn combo_wanted(binding: PttBinding, fn_down: bool, control: bool) -> bool {

@@ -40,7 +40,7 @@ pub fn request_microphone_access() -> bool {
         log::warn!("mic request: default_input_config failed (denied or busy)");
         return false;
     };
-    let conf: cpal::StreamConfig = supported.clone().into();
+    let conf: cpal::StreamConfig = supported.into();
     let got = Arc::new(Mutex::new(false));
     let got2 = got.clone();
 

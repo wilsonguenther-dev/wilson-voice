@@ -4396,7 +4396,7 @@ pub fn run() {
             // which works regardless of activation policy — not from being .accessory.
             // LSUIElement is false in Info.plist to match.
             #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             // YV42: re-assert launch-at-login from the persisted setting, so the
             // toggle stays authoritative even if the .app moved (which strands

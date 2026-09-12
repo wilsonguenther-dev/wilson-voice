@@ -3013,8 +3013,7 @@ pub mod imp {
         // bridged with CFString.
         let raw: *mut NSString = unsafe { get_property(object, selector)? };
         let owned = NonNull::new(raw)
-            .map(|p| unsafe { Retained::from_raw(p.as_ptr()) })
-            .flatten()
+            .and_then(|p| unsafe { Retained::from_raw(p.as_ptr()) })
             .ok_or(-1i32)?;
         Ok(owned.to_string())
     }

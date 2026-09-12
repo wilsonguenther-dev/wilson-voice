@@ -460,7 +460,7 @@ mod tests {
             .find(|l| l.starts_with("max_timestamp_kind: "))
             .expect("max_timestamp_kind line");
         assert!(
-            kind.trim_start_matches("max_timestamp_kind: ").len() > 0,
+            !kind.trim_start_matches("max_timestamp_kind: ").is_empty(),
             "empty timestamp kind: {kind}"
         );
         let audio = report

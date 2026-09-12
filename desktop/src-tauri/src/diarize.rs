@@ -1747,8 +1747,8 @@ mod tests {
         // Three points in a line, each hop 0.25 apart in cosine distance but
         // the ends 0.5 apart — single linkage would call this one cluster.
         let a = [1.0f32, 0.0, 0.0];
-        let b = [0.75f32, 0.66143783, 0.0];
-        let c = [0.5f32 * 0.75, 0.66143783 * 0.75 + 0.25, 0.0];
+        let b = [0.75f32, 0.661_437_8, 0.0];
+        let c = [0.5f32 * 0.75, 0.661_437_8 * 0.75 + 0.25, 0.0];
         let points: Vec<&[f32]> = vec![&a, &b, &c];
         let threshold = CosineDistance::new(0.3);
         let labels = cluster_by_distance_threshold(&points, threshold);

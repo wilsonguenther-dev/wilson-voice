@@ -57,7 +57,7 @@ fn ustar_entry(name: &str, type_flag: u8, payload: &[u8], mode: u32) -> Vec<u8> 
     let mut out = header.to_vec();
     out.extend_from_slice(payload);
     let padding = (512 - payload.len() % 512) % 512;
-    out.extend(std::iter::repeat(0u8).take(padding));
+    out.extend(std::iter::repeat_n(0u8, padding));
     out
 }
 
@@ -126,7 +126,7 @@ fn pax_size_header(for_name: &str, size: u64) -> Vec<u8> {
 
 fn tar_bytes(entries: &[Vec<u8>]) -> Vec<u8> {
     let mut out: Vec<u8> = entries.concat();
-    out.extend(std::iter::repeat(0u8).take(1024)); // two zero blocks = EOF
+    out.extend(std::iter::repeat_n(0u8, 1024)); // two zero blocks = EOF
     out
 }
 

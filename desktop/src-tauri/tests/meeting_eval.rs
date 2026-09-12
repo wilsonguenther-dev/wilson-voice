@@ -5676,7 +5676,7 @@ fn generate_lecture(root: &Path) {
         });
         audio.extend_from_slice(&gap);
         i += 1;
-        if i % 20 == 0 {
+        if i.is_multiple_of(20) {
             eprintln!("  {LECTURE}: {:.0}s rendered", seconds(audio.len()));
         }
     }

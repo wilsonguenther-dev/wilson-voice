@@ -370,7 +370,7 @@ pub fn marker_sequence(lines: &[TranscriptLine], markers: &[String]) -> Vec<Stri
             let word = word
                 .trim_matches(|c: char| !c.is_ascii_alphanumeric())
                 .to_ascii_lowercase();
-            if markers.iter().any(|m| *m == word) {
+            if markers.contains(&word) {
                 out.push(format!("{}:{}", line.speaker, word));
             }
         }

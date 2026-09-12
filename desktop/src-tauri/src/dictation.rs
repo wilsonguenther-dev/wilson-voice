@@ -293,7 +293,7 @@ pub fn mode_hint_from_context(context: Option<&str>) -> Option<DictationMode> {
         // A greeting only counts when it's punctuated like one ("Hi Sarah," /
         // "Hey!") so ordinary prose starting with "hi" can't trip it.
         if EMAIL_GREETINGS.iter().any(|g| line.starts_with(g))
-            && line.ends_with(|c: char| c == ',' || c == '!')
+            && line.ends_with([',', '!'])
         {
             return Some(DictationMode::Email);
         }
@@ -464,7 +464,7 @@ fn first_degenerate_token(tokens: &[(usize, &str)]) -> Option<usize> {
     // Rule 3 — a single glued token that is a short unit repeated ≥4× on `-`/`_`.
     for (index, (_, tok)) in tokens.iter().enumerate() {
         let parts: Vec<&str> = tok
-            .split(|c| c == '-' || c == '_')
+            .split(['-', '_'])
             .filter(|p| !p.is_empty())
             .collect();
         if parts.len() >= 4 && has_short_repeated_unit(&parts) {
@@ -1019,7 +1019,7 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
         return None;
     }
     let before_trim = before.trim_end();
-    if !before_trim.ends_with(|c: char| matches!(c, ',' | '.' | ';' | '\n')) {
+    if !before_trim.ends_with([',', '.', ';', '\n']) {
         // Marker isn't clause-delimited → too ambiguous to fire safely.
         return None;
     }
@@ -1031,7 +1031,7 @@ fn apply_clause_correction(text: &str, marker: &str) -> Option<String> {
     if let Some(spliced) = splice_same_category(core_before, after) {
         return Some(spliced);
     }
-    let head = match core_before.rfind(|c: char| matches!(c, ',' | '.' | ';' | '\n')) {
+    let head = match core_before.rfind([',', '.', ';', '\n']) {
         Some(i) => core_before[..=i].trim().to_string(),
         None => String::new(),
     };
@@ -1658,7 +1658,7 @@ fn clean_lead_in(text: &str) -> String {
         return String::new();
     }
     let mut lead = capitalize(trimmed);
-    if !lead.ends_with(|c: char| matches!(c, '.' | '!' | '?')) {
+    if !lead.ends_with(['.', '!', '?']) {
         lead.push(':');
     }
     lead
@@ -1673,7 +1673,7 @@ fn clean_item(text: &str) -> String {
         .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':') || c.is_whitespace())
         .to_string();
     if let Some(head) = item.strip_suffix('.') {
-        if !head.contains(|c: char| matches!(c, '.' | '!' | '?')) {
+        if !head.contains(['.', '!', '?']) {
             item = head.trim_end().to_string();
         }
     }
@@ -1772,7 +1772,7 @@ fn enum_cue_len(rest: &[&str]) -> Option<usize> {
 /// True when the token at `i` opens a clause: the utterance start, or right after
 /// a token that ended one.
 fn at_clause_boundary(tokens: &[&str], i: usize) -> bool {
-    i == 0 || tokens[i - 1].ends_with(|c: char| matches!(c, ',' | '.' | ';' | ':'))
+    i == 0 || tokens[i - 1].ends_with([',', '.', ';', ':'])
 }
 
 // ---------------------------------------------------------------------------
