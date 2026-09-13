@@ -1,11 +1,11 @@
 # Deferred — real, later, with a destination
 
 Created by the Senior Panel, 2026-09-12, alongside `docs/loop/PLAN.md` §Panel revisions. Nothing here
-is rejected; each entry is work the panel judged real and deliberately out of the 87-item loop.
+is rejected; each entry is work the panel judged real and deliberately out of the loop (87 items at the panel; 88 after the owner decisions of 2026-09-13).
 A design note is kept for everything that was killed, so a later loop starts from the thinking
 rather than from scratch.
 
-## 1. `Y5-H` — Home is a living habitat (KILLED from the loop, design kept)
+## 1. `Y5-H` — Home is a living habitat (**REINSTATED 2026-09-13 as `Y5-K`**)
 
 **Why it left.** Two seats independently named it as the one item to cut. It closes none of
 Wilson's six observations, it is a rewrite of a 919-line working canvas scene
@@ -21,8 +21,22 @@ download); dithered depth and parallax for the pod interior; pixel art, never sm
 origami (decision ledger #4). The cute companion still ships in this loop through `Y5-C`, `Y5-D`
 and `Y5-I` — the pill is what a working user actually looks at.
 
-**Destination.** The first loop after the review pass lands, with Wilson watching the iteration
-live rather than reading a PR — which is how he asked for it.
+**REINSTATED — OWNER DECISION 2026-09-13.** Wilson overruled the kill on product-identity grounds:
+the pill is a **character system**, not a choice between two styles, and the habitat is that
+system's habitat layer. *"There's a classic pill and there's a yappy pill and there's gonna be
+different pills with the different creatures that are coming."* The work now lives in **`Y5-K` —
+"pill character system + habitat layer"**, last in `scripts/loop/items/25-y5-ui-ux-polish.mjs` by
+dependency (shell → characters → habitat), inside this loop. The design note above is its spec
+input and survives intact, including the aesthetic lock.
+
+The seats' cost objection was **not** overruled — it was answered structurally: the shell owns
+docks, geometry and the phase machine; a character is a data module behind one interface; tests run
+a fixture matrix over registered characters. See `docs/loop/PLAN.md` § "Owner decisions applied
+(2026-09-13)" #1.
+
+**What is still deferred from this entry.** Nothing — the item is in the loop. Wilson still judges
+the ART on the PR's screenshots and recording; `Y5-K`'s acceptance deliberately gates the
+STRUCTURE, because taste is not automatable in a build-first pass.
 
 ## 2. `Y10-C` — stacked messages / press-enter (KILLED from the loop, design kept)
 

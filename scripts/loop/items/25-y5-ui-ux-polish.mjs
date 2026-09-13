@@ -47,6 +47,29 @@
 //   feedback_ui_quality: truly native feel, no webview tells.
 //   feedback_think_ux_first: controls first, prose last.
 //
+// ── OWNER DECISION 2026-09-13 (Wilson) — THE PILL IS A CHARACTER SYSTEM ──
+//   Verbatim: "I thought we were gonna develop it and then make more characters
+//   and make it more flexible ... there's a classic pill and there's a yappy
+//   pill and there's gonna be different pills with the different creatures that
+//   are coming."
+//   So "which pill ships in v1" was the WRONG QUESTION and is closed: BOTH ship,
+//   as the first two CHARACTERS of a pluggable system, and more creatures come
+//   later. The panel's cost objection was real and is answered STRUCTURALLY,
+//   not by picking one:
+//     * THE SHELL owns everything that is not the creature — the window, the
+//       dock, the geometry table, hover/hit-testing, motion, the phase state
+//       machine, a11y names. Dock positions are handled ONCE, in the shell.
+//     * A CHARACTER is a DATA-DRIVEN MODULE behind one interface: given a phase
+//       and a tone it returns a sprite/animation and copy. It knows nothing
+//       about docks, windows or license logic.
+//     * TESTS RUN A FIXTURE MATRIX OVER THE REGISTERED CHARACTERS instead of
+//       duplicating a code path per pill. Y5-C's "13 phases x 2 styles x 3 docks"
+//       becomes 13 phases x 3 docks in the shell, plus one data completeness
+//       sweep per registered character.
+//     * A NEW CREATURE IS A NEW MODULE + A FIXTURE ROW. No shell change.
+//   Y5-K builds that system and reinstates the living habitat (the killed Y5-H)
+//   as its habitat layer. The aesthetic lock below is unchanged and binding.
+//
 // SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
 // EVERY item here owes the two-size screenshots (980x700 and 720x520) plus the
 // pill at three dock positions for each state it touches.
@@ -312,8 +335,17 @@ ITEMS.push({
         take's \`last_error\` (lib.rs:1147 sets it) — never a code.
 
     Every phase needs: a duration policy (how long it holds), a next phase, and
-    a rendering in BOTH pills at ALL THREE dock positions. Put the policy in the
-    pure state machine (live.ts) and only the rendering in the components — the
+    a rendering that the SHELL places at ALL THREE dock positions — once, not
+    once per pill (OWNER DECISION 2026-09-13, top of this file). Both
+    ClassicPill and YappyPill ship; they are the first two characters, so what
+    each owes this item is PHASE COVERAGE AS DATA (a sprite/animation and copy
+    for every phase in every tone), never a second copy of the phase logic or of
+    the dock placement. Until Y5-K lands the registry, keep the per-character
+    data in the component that already holds it and DO NOT add a third branch
+    on \`pill_style\` anywhere outside those two components — Y5-K's first act
+    is to lift exactly that data out.
+    Put the policy in the pure state machine (live.ts) and only the rendering in
+    the components — the
     file is already 310 lines of pure logic with 271 lines of tests precisely so
     this is possible, and ci.yml calls out that vitest is a gate because a
     regression here shipped once.
@@ -332,6 +364,10 @@ ITEMS.push({
         rude|friendly|rose (live.ts:29) and \`companion_tone: "friendly"\` is the
         default (lib.rs:412). A phase with no copy in one tone is a blank pill.
       * \`every_phase_renders_within_the_side_dock_strip\`
+      * \`every_shipped_character_has_copy_and_art_for_every_phase\` — a table
+        test driven off the list of characters that ship (classic, yappy), so
+        adding a creature adds a row and not a test file. This is the fixture
+        matrix the character system formalises in Y5-K.
       * precedence: blocked > gated > error > cancelled > the happy path.
 
     Depends on PERM-C, Y2-C, Y3-C.
@@ -361,6 +397,7 @@ ITEMS.push({
     grep -q 'no_path_from_listening_to_done_without_an_intermediate_phase' desktop/src/pill/live.test.ts
     grep -q 'every_phase_has_copy_in_every_tone' desktop/src/pill/live.test.ts
     grep -q 'every_phase_renders_within_the_side_dock_strip' desktop/src/pill/live.test.ts
+    grep -q 'every_shipped_character_has_copy_and_art_for_every_phase' desktop/src/pill/live.test.ts
     cd ${APP} && npm ci
     npm test -- pill ; test $? -eq 0
     npx tsc --noEmit ; test $? -eq 0
@@ -695,16 +732,26 @@ ITEMS.push({
       - Do NOT force the banner states into the column. They crush; the research
         says so explicitly and the golden table encodes it.
       - Do NOT keep the old positioning code alongside the new base.
-    PANEL 2026-09-12 — SCOPE THE GEOMETRY TABLE TO ClassicPill. The measured
-    Wispr per-state capsule geometry (8x40 resting, 30x50 ready, 30x73,
-    30x102.5, 136x30 polishing...) is meaningful for a capsule and UNDEFINED
-    for a pixel character on an LCD pod, and the first draft pointed one
-    dock-geometry.json at both styles. ClassicPill is the shipped default
-    (lib.rs:407 \`pill_style: "classic"\`), so: the committed golden table is
-    ClassicPill's, and YappyPill gets its own dock spec or is restricted to
-    surfaces where dock geometry does not apply. Which style ships in v1 is
-    Wilson's call (docs/loop/PLAN.md §4); until he answers, do not let a builder
-    settle it per item, and do not delete either renderer.
+    PANEL 2026-09-12, SUPERSEDED BY THE OWNER DECISION 2026-09-13 — THE
+    GEOMETRY TABLE BELONGS TO THE SHELL AND IS CHARACTER-INDEPENDENT. The panel
+    said "scope it to ClassicPill" because it read the two pills as two products
+    and expected one to be cut. Both ship (top of this file), so scoping the
+    table to one of them would have left the other with no dock contract at all.
+    The correct target is the PILL SHELL: the measured Wispr per-state box
+    (8x40 resting, 30x50 ready, 30x73, 30x102.5, 136x30 polishing ...) is the
+    size and orientation of the WINDOW CONTENT BOX for a phase, and every
+    character renders INSIDE that box. So:
+      * \`dock-geometry.json\` is the shell's table, keyed by phase x dock, with
+        NO style dimension in it. One table, forever, for every creature.
+      * A character declares only how it fills the box it is given — a pixel
+        character on an LCD pod scales or crops to the box, and a capsule paints
+        it. If a character cannot render a phase inside the box the table gives
+        it, that is a CHARACTER defect and the character's fallback covers it;
+        it is never a reason to fork the table.
+      * The golden test asserts the SHELL's boxes. The per-character sweep is
+        Y5-C's completeness table and Y5-K's registry contract test, not this one.
+      * Do not delete either renderer, and do not add a style dimension to the
+        fixture.
 
   `,
   acceptance: `
@@ -712,6 +759,7 @@ ITEMS.push({
     grep -q -- '--flow-bar-length' desktop/src/tokens.css
     grep -q -- '--flow-bar-thickness' desktop/src/tokens.css
     test -f desktop/src/pill/dock-geometry.json
+    test 0 -eq "$(grep -c 'pill_style\\|pillStyle\\|classic\\|yappy' desktop/src/pill/dock-geometry.json)"
     test -f desktop/src/pill/dock.test.ts
     grep -q 'no_state_exceeds_the_thirty_pixel_strip_on_a_side_dock' desktop/src/pill/dock.test.ts
     grep -q 'banner_states_stay_horizontal_in_every_dock' desktop/src/pill/dock.test.ts
@@ -722,5 +770,142 @@ ITEMS.push({
     npm test         ; test $? -eq 0
     npx tsc --noEmit ; test $? -eq 0
     npm run build    ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-K', prompt: 'Y5', branch: 'loop/y5-k-pill-character-system-and-habitat-layer', gated: null,
+  title: 'The pill becomes a pluggable character system, and the habitat comes back as its habitat layer',
+  preflight: `
+    test -f desktop/src/pill/characters/registry.ts
+    test -f desktop/src/pill/characters/characters.test.ts
+    test -d desktop/src/home/habitat
+    cd ${APP} && npm ci && npm test -- characters
+  `,
+  spec: `
+    OWNER DECISION 2026-09-13 (Wilson), and it REINSTATES \`Y5-H\`, which the
+    panel killed on a two-seat convergence. Wilson, verbatim: "I thought we were
+    gonna develop it and then make more characters and make it more flexible ...
+    there's a classic pill and there's a yappy pill and there's gonna be
+    different pills with the different creatures that are coming."
+
+    The panel's cost objection was CORRECT and is not waved away: a second pill
+    style doubles the render and test surface of every pill item, and Y5-C alone
+    was 13 phases x 2 styles x 3 docks. The remedy is structural. The shell
+    stops knowing about creatures and the creatures stop knowing about the
+    shell, so the matrix stops multiplying.
+
+    THIS ITEM RUNS LAST IN THIS FILE ON PURPOSE: shell first (Y5-A tokens, Y5-C
+    phases, Y5-D motion, Y5-E hit-testing, Y5-I dock geometry), then the
+    characters, then the habitat. Do not start it before Y5-I has landed — the
+    shell's box contract is the thing the character interface is defined
+    against.
+
+    (1) THE SHELL / CHARACTER SEAM.
+      * \`desktop/src/pill/characters/types.ts\` — ONE interface. A character is
+        \`{ id, label, render(frame) }\` where \`frame\` is what the shell already
+        computed: \`{ phase, tone, level, box: {w,h}, dock, reducedMotion }\`.
+        A character receives a BOX and paints inside it. It never reads
+        \`pill_style\`, never reads settings, never reads license state, never
+        positions a window, never knows a dock exists beyond the axis hint in
+        \`frame\`.
+      * \`registry.ts\` — \`registerCharacter()\` + \`characters()\`. The shell
+        resolves \`settings.pill_style\` to a registered id ONCE, at the mount
+        point, and falls back to \`classic\` for an unknown id rather than
+        rendering nothing. \`pill_style\` stays a free string in
+        \`AppSettings\` (lib.rs:234-235, default "classic", lib.rs:366/411) —
+        do NOT turn it into a Rust enum: a new creature must be shippable
+        without touching Rust.
+      * PORT, do not rewrite: \`ClassicPill.tsx\` and \`YappyPill.tsx\` become
+        \`characters/classic/\` and \`characters/yappy/\` with their phase art and
+        copy as DATA, and everything that is not the creature — the capsule
+        chrome, the waveform placement, dock geometry, hover hysteresis, the
+        license chip placement, aria names — moves UP into the shell. The two
+        characters must end up with NO duplicated shell logic between them; that
+        deduplication is the whole point and it is measurable (see acceptance).
+      * A NEW CREATURE IS A NEW MODULE PLUS A FIXTURE ROW, WITH NO SHELL CHANGE.
+        Prove it: the item ships a third, deliberately minimal character
+        (\`characters/example/\`) whose only purpose is to be the proof that the
+        seam holds, and the contract test registers it with zero shell edits.
+
+    (2) THE TEST MATRIX STOPS DUPLICATING.
+      * The shell owns phase x dock. That suite runs ONCE, character-agnostic,
+        against \`dock-geometry.json\` (Y5-I).
+      * Each registered character is swept by ONE data-completeness contract
+        test over the registry: every phase in the \`LivePhase\` union, in every
+        tone (rude|friendly|rose, live.ts:29), has art and copy; nothing exceeds
+        the box it was handed; \`imageSmoothingEnabled\` is false wherever a
+        character paints to a canvas.
+      * Registering an INCOMPLETE character must turn that contract test RED.
+        That is the test's reason to exist and it is the item's mutation proof.
+
+    (3) THE HABITAT LAYER — the reinstated \`Y5-H\`, with its design note
+        preserved in docs/loop/DEFERRED.md §1. \`desktop/src/home/YappyHouse.tsx\`
+        is 919 lines of working real-clock canvas scene with an ambient
+        director; this is a REFACTOR PLUS A LAYER, not a rewrite.
+      * \`desktop/src/home/habitat/\` — the habitat is the CHARACTER'S WORLD, and
+        it is selected by the same registered character id, so a new creature
+        brings its own pod. Split what exists into: the director (clock,
+        routines, intent pathing), the scene (pod interior, dithered depth,
+        parallax), and the character's own idle/reaction sprites, which come
+        from the SAME character module the pill uses — one creature, two
+        surfaces, one source of art.
+      * EVENT-DRIVEN REACTIONS, from the design note: a take starting, a paste
+        landing, a model finishing its download. The habitat subscribes to the
+        same events the pill does; it never polls.
+      * Routines on a real clock and intent pathing rather than a random walk.
+      * AESTHETIC LOCK, unchanged and binding (top of this file): pixel art,
+        chunky pixels, \`imageSmoothingEnabled = false\`, limited retro palette,
+        Tamagotchi / Bitzee. Hand-coded. NOT smooth vector. No angled "angry"
+        eyebrows. Paper/origami is REJECTED.
+      * Wilson's taste is the real gate on the ART and cannot be automated in a
+        build-first pass — which is why this item's acceptance gates the
+        STRUCTURE (the seam, the completeness sweep, the deduplication, the
+        no-shell-change proof) and the PR body carries the screenshots and a
+        recording of the habitat for him to judge. Say that in the PR body.
+
+    Depends on Y5-A, Y5-C, Y5-D, Y5-E, Y5-I. Consumes PERM-C's complete
+    \`LivePhase\` union.
+
+    What NOT to do:
+      - Do NOT delete either shipped character. Both ship.
+      - Do NOT let a character read settings, license state or dock position
+        directly. Everything it needs arrives in \`frame\`.
+      - Do NOT add a style dimension to \`dock-geometry.json\`.
+      - Do NOT turn \`pill_style\` into a Rust enum or a TypeScript union of two
+        literals — the whole point is that the next creature is additive.
+      - Do NOT rewrite YappyHouse from scratch, and do not lose its ambient
+        director.
+      - Do NOT smooth the pixels.
+  `,
+  acceptance: `
+    test -f desktop/src/pill/characters/types.ts
+    test -f desktop/src/pill/characters/registry.ts
+    test -d desktop/src/pill/characters/classic
+    test -d desktop/src/pill/characters/yappy
+    test -d desktop/src/pill/characters/example
+    test -f desktop/src/pill/characters/characters.test.ts
+    test -d desktop/src/home/habitat
+    test -f desktop/src/home/habitat/habitat.test.ts
+    grep -q 'registerCharacter' desktop/src/pill/characters/registry.ts
+    grep -q 'every_registered_character_covers_every_phase_in_every_tone' desktop/src/pill/characters/characters.test.ts
+    grep -q 'a_character_never_exceeds_the_box_the_shell_hands_it' desktop/src/pill/characters/characters.test.ts
+    grep -q 'a_new_creature_needs_no_shell_change' desktop/src/pill/characters/characters.test.ts
+    grep -q 'imageSmoothingEnabled' desktop/src/pill/characters/characters.test.ts
+    grep -q 'the_director_runs_on_the_real_clock_not_a_random_walk' desktop/src/home/habitat/habitat.test.ts
+    grep -q 'the_habitat_reacts_to_take_paste_and_model_events' desktop/src/home/habitat/habitat.test.ts
+    test 0 -eq "$(grep -rc 'pill_style\\|pillStyle' desktop/src/pill/characters | grep -v ':0$' | wc -l | tr -d ' ')"
+    test 0 -eq "$(grep -rl 'data-bar-position' desktop/src/pill/characters | wc -l | tr -d ' ')"
+    test 0 -eq "$(grep -c 'classic\\|yappy' desktop/src/pill/dock-geometry.json)"
+    cd ${APP} && npm ci
+    npm test -- characters ; test $? -eq 0
+    npm test -- habitat    ; test $? -eq 0
+    npm test               ; test $? -eq 0
+    npx tsc --noEmit       ; test $? -eq 0
+    npm run build          ; test $? -eq 0
+    printf '\\nregisterCharacter({ id: "mutant", label: "mutant", render: () => null });\\n' >> src/pill/characters/registry.ts
+    npm test -- characters ; test $? -ne 0
+    cd .. && git checkout -- desktop/src/pill/characters/registry.ts
+    git diff --exit-code -- desktop/src/pill/characters/registry.ts
   `,
 })

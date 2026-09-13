@@ -42,60 +42,146 @@
 // SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
 
 ITEMS.push({
-  id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-purchase-to-working-dictation-proven-end-to-end', gated: null,
-  title: 'Payment to working dictation, proven once end to end — the leg no item owned',
+  id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
+  title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
-    grep -q 'retrieve_license\\|retrieveLicense' desktop/src-tauri/src/license.rs
+    test -f supabase/functions/yap-license/index.ts
+    test -f docs/YAP-LICENSING.md
     grep -q 'ISSUANCE' docs/RELEASE.md
+    test 0 -eq "$(grep -c 'sslip.io' desktop/src-tauri/src/license.rs)"
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test activation_e2e
   `,
   spec: `
-    PANEL 2026-09-12, two seats independently, and it runs FIRST in this file
-    because everything else here pushes a user toward paying. MEASURED at
-    4e8c9adf: four new pressure surfaces are planned (Y2-B's numeral, Y2-C's
-    gated state, Y2-D's upgrade sheet, Y2-E's tray line) and NOTHING in the
-    plan owns the segment between the card being charged and a key existing.
-      desktop/src/license/PurchasePrompt.tsx:15,72 — the sheet offers exactly
-        two things: buy, or paste a key you already have.
-      desktop/src-tauri/src/license.rs:37-41 — the signing key "lives
-        root-owned, mode 0400, on the Forge box"; nothing in this repo mints.
-      no Stripe webhook, issuer or fulfilment code anywhere in the tree.
-      license.rs:117 REVOCATION_URL is an IP-bearing sslip.io hostname, so any
-        box move breaks revocation silently.
-    The worst outcome in the whole product is a $29 customer with a dead app,
-    and it is currently untested.
+    OWNER DECISION 2026-09-13 (Wilson). The panel gated this on "automated or
+    manual?". The answer is neither of the panel's two options as written:
+    issuance is ALREADY automated, and it lives somewhere this repo does not
+    own. Wilson's call is to MOVE IT TO SUPABASE — "connect this to Supabase".
+    So this item is a MIGRATION with a proof, not a greenfield build.
 
-    Do, and keep it small:
-      * Prove the path ONCE with a staging key: issue from the Forge signer,
-        activate it in a clean YAP_DATA_DIR (Y0-D), assert the entitlement flips
-        and a dictation completes. That walk is the item's evidence.
-      * Add "I already paid — retrieve my license" to the purchase sheet: it
-        asks the issuer for a key by checkout email and activates on success.
-        If issuance is MANUAL (Wilson's call, see docs/loop/PLAN.md §4), the
-        button instead states the turnaround honestly and dictation keeps
-        working under a short, signed grace claim rather than going dead.
-      * Define what a FAILED activation says. Today that path has no copy and
-        no surface. One sentence, one action, no raw Rust string.
-      * Give REVOCATION_URL a real hostname so the box can move, and check
-        issuer-host liveness in the release checklist, not at runtime.
-      * Write the issuance runbook into docs/RELEASE.md under a heading
-        containing ISSUANCE.
+    HOW LICENSING WORKS TODAY — measured, not assumed:
+      * Checkout is a Stripe PAYMENT LINK, one compile-time constant:
+        license.rs:137 PAYMENT_LINK_URL, opened by \`open_purchase_page\`
+        (lib.rs:3557-3570) with no argument, so the webview never supplies a URL.
+        The link is \`active: false\` on Stripe (license.rs:131-136) — purchasing
+        is OFF until the delivery path is proven, which is this item.
+      * Fulfilment is a Fastify service on the FORGE BOX, outside this repo:
+        drivia-forge \`server/src/routes/yap.ts\` registers
+        POST /v1/yap/stripe-webhook (:93), GET /v1/yap/license (:402),
+        GET /v1/yap/revoked.json (:479), POST /v1/yap/resend (:493), wired in
+        \`server/src/index.ts:406\`. The signer is \`server/src/yap-license.ts\`
+        (\`signClaims\`), Ed25519, key at
+        /etc/forge/yap/license-signing-ed25519.pem root:root 0400
+        (yap-license.ts:43, :179). Delivery is Resend (yap-license.ts:623-690),
+        and a mail failure deliberately never turns into a non-2xx for Stripe
+        (:659-662). Issuance is idempotent on session id AND event id (:580-583).
+      * The app verifies OFFLINE against the pinned public key
+        (license.rs ISSUER_PUBLIC_KEY_SPKI_B64 / ISSUER_SKID) and only ever
+        contacts one host, for the public revocation list: license.rs:117-119,
+        \`https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json\` — a URL with
+        the box's IP ADDRESS in its hostname.
+      * So the real defects are: the fulfilment path is invisible to this repo
+        and untestable in this gate; revocation is pinned to a box IP; and
+        nothing here has ever been walked end to end.
+
+    WHAT TO BUILD — Stripe Checkout -> Supabase Edge Function issuer:
+      1. \`supabase/functions/yap-license/index.ts\` — one Deno Edge Function
+         with the four routes the Forge service has: stripe-webhook (verify the
+         Stripe signature with the webhook secret, idempotent on
+         \`event.id\` AND \`checkout.session.id\`), license (retrieve by purchase
+         email), revoked.json (the public list, cache-control max-age 300), and
+         resend. PORT the Forge logic; do not reinvent the wire format.
+      2. The WIRE FORMAT IS FROZEN:
+         \`base64url(claimsJson) "." base64url(ed25519 sig)\`, the signature over
+         the ASCII BYTES of the first segment, claims
+         \`{ v, plan, seats, email_hash, issued_at, kid, skid }\`. Every shipped
+         copy of Yap pins the public key. KEEP THE SAME SIGNING KEY: re-keying
+         invalidates nothing yet (no customer exists) but changing the FORMAT
+         silently forks the verifier. Put the claims/signature logic in
+         \`supabase/functions/_shared/claims.ts\` using Web Crypto so it runs
+         unchanged under Deno and under vitest.
+      3. THE SIGNING KEY MOVES INTO SUPABASE SECRETS
+         (\`supabase secrets set YAP_SIGNING_KEY_PEM=...\`), never into this repo,
+         never into an .env that is read by anything else. The PUBLIC half stays
+         compiled into the app exactly as it is today. Nothing changes on the
+         verification side.
+      4. \`REVOCATION_URL\` and \`ISSUER_HOST\` in license.rs repoint at the
+         Supabase function URL — a stable hostname, no IP. \`sslip.io\` must not
+         appear in license.rs afterwards. Keep the "one host, one call, no
+         telemetry" property: it is a shipped claim (PRIVACY.md, PRIV-A).
+      5. Delivery stays RESEND (the Forge implementation is correct and its
+         failure semantics are right), called from the Edge Function with
+         \`RESEND_API_KEY\` in Supabase secrets. AND the key is retrievable
+         in-app: add "I already paid — retrieve my license" to
+         \`PurchasePrompt.tsx\`, which posts the checkout email to the license
+         route and activates on success.
+      6. Define what a FAILED activation and a FAILED retrieval say. Today
+         neither path has copy. One sentence, one action, never a raw Rust
+         string, and a retrieval failure must NEVER block offline verification.
+
+    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS.
+      * A DEDICATED YAP PROJECT. Explicitly NOT the Drivia project
+        (\`vlfrzdbqwsnrosmcygca\`), which is over its free-tier limits; a
+        licensing outage caused by an unrelated product's usage is the worst
+        possible coupling. The project ref, its function URL, the Stripe webhook
+        signing secret, \`RESEND_API_KEY\` and \`YAP_SIGNING_KEY_PEM\` are
+        OWNER-PROVISIONED VALUES. None of them may be committed.
+      * THE GATE STAYS OFFLINE. Build and test against \`supabase start\` (the
+        local stack) or against stubs: the webhook handler takes its Stripe
+        client and its mailer as injected dependencies so the tests drive it
+        with a fixture event and a fixture key pair and never open a socket. If
+        \`supabase\` is not installed, the vitest suite must still pass — the
+        local-stack walk is a DOCUMENTED MANUAL STEP, not a gate conjunct.
+      * Write \`docs/YAP-LICENSING.md\`: what the flow is, and a
+        RUNTIME DEPENDENCIES table (same convention Y6-E puts in
+        ARCHITECTURE.md) with one row per provisioned value — what it is, who
+        provisions it, where it lives, and what breaks if it is missing.
+        Nothing may be listed as "assumed present on the machine".
+      * \`docs/RELEASE.md\` gains an ISSUANCE heading: deploy the function,
+        set the secrets, register the Stripe webhook endpoint, re-activate the
+        payment link, and the one-command liveness check for the issuer host
+        that belongs in the RELEASE CHECKLIST and never at runtime.
+
+    THE PROOF, which is the item's real evidence: issue a staging key from the
+    local stack, activate it in a clean \`YAP_DATA_DIR\` (Y0-D), assert the
+    entitlement flips and a dictation completes.
 
     What NOT to do:
-      - Do NOT put the signing key, or any path to it, in this repo.
+      - Do NOT put the signing key, or any path to a live one, in this repo.
       - Do NOT make dictation depend on reaching the issuer. Offline verify
-        stays the mechanism; retrieval is a convenience.
+        stays the mechanism; retrieval and revocation are conveniences.
+      - Do NOT point anything at the Drivia Supabase project.
+      - Do NOT change the claims wire format or the pinned public key.
+      - Do NOT delete the Forge implementation from drivia-forge as part of this
+        item. Two live issuers signing with one key is fine; one dead customer
+        path is not. Decommission is a release step, after the proof.
   `,
   acceptance: `
+    test -f supabase/functions/yap-license/index.ts
+    test -f supabase/functions/_shared/claims.ts
+    test -f docs/YAP-LICENSING.md
+    grep -q 'Runtime Dependencies' docs/YAP-LICENSING.md
     grep -q 'ISSUANCE' docs/RELEASE.md
     grep -rq 'retrieve' desktop/src/license
     test 0 -eq "$(grep -c 'sslip.io' desktop/src-tauri/src/license.rs)"
+    test 0 -eq "$(grep -rl 'vlfrzdbqwsnrosmcygca' supabase desktop | wc -l | tr -d ' ')"
+    test 0 -eq "$(grep -rl 'BEGIN PRIVATE KEY' supabase desktop | wc -l | tr -d ' ')"
     test -f desktop/src-tauri/tests/activation_e2e.rs
     grep -q 'a_signed_key_flips_the_entitlement_and_dictation_resumes' desktop/src-tauri/tests/activation_e2e.rs
     grep -q 'a_failed_activation_has_copy_and_an_action' desktop/src-tauri/tests/activation_e2e.rs
     grep -q 'retrieval_failure_never_blocks_offline_verification' desktop/src-tauri/tests/activation_e2e.rs
-    cd ${APP} && npm ci && cd src-tauri
+    grep -rq 'the_webhook_is_idempotent_on_event_id_and_session_id' supabase desktop/src
+    grep -rq 'the_signature_covers_the_ascii_bytes_of_the_claims_segment' supabase desktop/src
+    cd ${APP} && npm ci
+    npm test         ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+    cd src-tauri
     cargo test --features custom-protocol --test activation_e2e ; test $? -eq 0
+    cd ../..
+    sed -i '' 's/pub const SOLD_PLAN: &str = "lifetime";/pub const SOLD_PLAN: \\&str = "lifetime_MUTANT";/' desktop/src-tauri/src/license.rs
+    ( cd ${APP}/src-tauri && cargo test --features custom-protocol --test activation_e2e ) ; test $? -ne 0
+    git checkout -- desktop/src-tauri/src/license.rs
+    git diff --exit-code -- desktop/src-tauri/src/license.rs
   `,
 })
 

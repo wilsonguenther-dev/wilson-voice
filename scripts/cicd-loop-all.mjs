@@ -1,10 +1,10 @@
 export const meta = {
   name: "yap-overhaul-all",
   description:
-    "Every item of the Yap (wilson-voice) overhaul, run as 2 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 87 items in all, 2 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
+    "Every item of the Yap (wilson-voice) overhaul, run as 2 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 88 items in all, 2 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
   phases: [
-    { title: "part-01", detail: "Y0-A..Y8-D" },
-    { title: "part-02", detail: "Y9-A..Y11-F" },
+    { title: "part-01", detail: "Y0-A..Y7-E" },
+    { title: "part-02", detail: "Y8-A..Y11-F" },
   ],
 }
 /**
@@ -46,14 +46,14 @@ let halted = null
 
 if (halted) {
   log("part-01 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-01", status: 'skipped: run halted', items: 67 })
+  results.push({ part: "part-01", status: 'skipped: run halted', items: 63 })
 } else {
   phase("part-01")
-  log("START part-01 — 67 item(s), Y0-A..Y8-D — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (449867 bytes)")
+  log("START part-01 — 63 item(s), Y0-A..Y7-E — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (446022 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
-    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (67 item(s))")
-    results.push({ part: "part-01", status: 'ok', items: 67, result })
+    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (63 item(s))")
+    results.push({ part: "part-01", status: 'ok', items: 63, result })
     if (result && result.halted) {
       halted = { part: "part-01", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-01 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -62,28 +62,28 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-01", at: null, reason: message }
-      results.push({ part: "part-01", status: 'halted', items: 67, error: message })
+      results.push({ part: "part-01", status: 'halted', items: 63, error: message })
       log("HALT: part-01 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-01 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-01", status: 'errored', items: 67, error: message })
+      results.push({ part: "part-01", status: 'errored', items: 63, error: message })
     }
   }
 }
 
 if (halted) {
   log("part-02 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-02", status: 'skipped: run halted', items: 20 })
+  results.push({ part: "part-02", status: 'skipped: run halted', items: 25 })
 } else if (REVIEW_MODE) {
   log("part-02 — SKIPPED: mode=review runs part-01 ONLY. The review pass is PR-DRIVEN — one triage agent enumerates every open loop-build PR on the repo and two chains consume that queue — so every further part would re-triage the same PRs and dispatch duplicate reviewers at them.")
-  results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 20 })
+  results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 25 })
 } else {
   phase("part-02")
-  log("START part-02 — 20 item(s), Y9-A..Y11-F — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (206523 bytes)")
+  log("START part-02 — 25 item(s), Y8-A..Y11-F — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (228199 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
-    log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (20 item(s))")
-    results.push({ part: "part-02", status: 'ok', items: 20, result })
+    log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (25 item(s))")
+    results.push({ part: "part-02", status: 'ok', items: 25, result })
     if (result && result.halted) {
       halted = { part: "part-02", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-02 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -92,11 +92,11 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-02", at: null, reason: message }
-      results.push({ part: "part-02", status: 'halted', items: 20, error: message })
+      results.push({ part: "part-02", status: 'halted', items: 25, error: message })
       log("HALT: part-02 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-02 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-02", status: 'errored', items: 20, error: message })
+      results.push({ part: "part-02", status: 'errored', items: 25, error: message })
     }
   }
 }

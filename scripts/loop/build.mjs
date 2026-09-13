@@ -614,7 +614,12 @@ function validateScript(label, generated, items) {
     [/drivia-hustle|drivia\.consulting|wilsonguenther-dev\/drivia\b|drivia-fixtures/i, 'a path, repo or fixture from the sibling project — this loop runs against wilsonguenther-dev/wilson-voice'],
     [/WILSON_QA_ACK/, "the sibling project's pre-commit ack — this repo has no hooks path set, so plain `git commit` is correct"],
     [/npm run (lint|typecheck|dead-code|start|check:route-conflicts)\b/, 'an npm script desktop/package.json does not define — the gate is: npx tsc --noEmit, npm test, npm run build, the two cargo test suites and cargo clippy'],
-    [/supabase|next\.config|app\/dashboard/i, "a web-stack surface Yap does not have"],
+    // OWNER DECISION 2026-09-13 (Wilson): Supabase is no longer drift here. LIC-A moves the license
+    // ISSUER off the Forge box onto a Supabase Edge Function in a DEDICATED Yap project, so
+    // `supabase/functions/**` is a real surface of this repo. Next.js and a dashboard route still
+    // are not. LIC-A names the Drivia project ref in prose precisely to forbid pointing at it, so
+    // that ref is not banned from the prompts; LIC-A's own acceptance keeps it out of the tree.
+    [/next\.config|app\/dashboard/i, "a web-stack surface Yap does not have"],
   ]
   for (const [re, why] of DRIFT) {
     const m = generated.match(re)

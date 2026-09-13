@@ -463,3 +463,115 @@ declares the floor machine · `Y7-C` collects executed mutations, one row per ne
 3. **Which pill style ships in v1** — `ClassicPill` (today's default, `lib.rs:407`) or `YappyPill`.
    Keeping both doubles the render and test surface of every pill item and leaves `Y5-I`'s geometry
    table pointed at an unstated target.
+
+---
+
+## Owner decisions applied (2026-09-13)
+
+Wilson answered the panel's three owner questions. Two are closed, one stays open and
+non-blocking. Items **87 → 88**. Validator after these changes:
+`✓ loop:validate — 2 part(s) + 1 parent would be written, 88 item(s), every check passed.`
+
+### 1. The pill is a CHARACTER SYSTEM, not a choice — `Y5-H` reinstated
+
+Wilson, verbatim: *"I thought we were gonna develop it and then make more characters and make it
+more flexible ... there's a classic pill and there's a yappy pill and there's gonna be different
+pills with the different creatures that are coming."*
+
+"Which style ships in v1" (panel, For Wilson #3) was the wrong question and is closed: **both ship**,
+as the first two characters of a pluggable system, and more creatures follow. The living habitat
+(`Y5-H`), killed by the panel on a cto + ux-designer convergence, is **REINSTATED** as the habitat
+layer of that system.
+
+The panel's cost objection was right and is answered **structurally**, not by picking one. The
+doubled surface it measured (*"Y5-C alone is 13 phases × 2 styles × 3 dock positions"*) collapses
+because the multiplication is removed, not because a factor is deleted:
+
+- **The shell** owns everything that is not the creature — window, dock, geometry table,
+  hover/hit-testing, motion, the phase state machine, a11y names. **Dock positions are handled once,
+  in the shell**, never per character.
+- **A character is a data-driven module** behind one interface: `(phase, tone, level, box, dock,
+  reducedMotion) → sprite/animation + copy`. It knows nothing about docks, windows, settings or
+  license state.
+- **Tests run a fixture matrix over the registered characters** instead of duplicated code paths:
+  13 phases × 3 docks once in the shell, plus one data-completeness sweep per registered character.
+- **A new creature is a new module plus a fixture row, with no shell change** — and that is proven,
+  not asserted: `Y5-K` ships a deliberately minimal third character whose only job is to be that
+  proof.
+
+The cute/Tamagotchi rule is unchanged and binding: pixel art, chunky pixels,
+`imageSmoothingEnabled = false`, limited retro palette, hand-coded. Origami stays rejected.
+
+**Items changed / added**
+
+| Item | Change |
+| --- | --- |
+| `25-y5` file header | New OWNER DECISION block stating the shell/character seam and the matrix rule; binding on every item in the file. |
+| `Y5-C` | "a rendering in BOTH pills at ALL THREE dock positions" → the **shell** places the phase at all three docks once; each character owes **phase coverage as data**. New table test `every_shipped_character_has_copy_and_art_for_every_phase`, added to acceptance. No third branch on `pill_style` outside the two components until `Y5-K` lifts the data out. |
+| `Y5-I` | The panel's "scope the geometry table to ClassicPill" is **superseded**. The Wispr geometry table is the **pill SHELL's**, character-independent: `dock-geometry.json` is keyed phase × dock with **no style dimension**, and a character renders inside the box it is handed. New acceptance line asserts the fixture carries no style key. |
+| **`Y5-K` (new)** | *Pill character system + habitat layer.* Last in `25-y5` by dependency: shell (`Y5-A`, `Y5-C`, `Y5-D`, `Y5-E`, `Y5-I`) → characters → habitat. Ships `characters/{types,registry}.ts`, ports `ClassicPill`/`YappyPill` into `characters/classic|yappy` as data, adds `characters/example` as the no-shell-change proof, and rebuilds `home/YappyHouse.tsx` (919 lines, kept — refactor plus a layer, never a rewrite) into `home/habitat/` with its director, scene and event-driven reactions. |
+
+`Y5-K`'s pre-flight fails on main today (`desktop/src/pill/characters/` and `desktop/src/home/habitat/`
+do not exist), and its acceptance carries the binding-rule (a) mutation: registering an incomplete
+character must turn the contract test red, then `git checkout` + `git diff --exit-code`.
+
+### 2. `LIC-A` — issuance moves to Supabase (ungated, decision made)
+
+Wilson: *"they buy it from Stripe — where do they get it?"*, and his lean, *"connect this to
+Supabase"*. The panel's two options (automated vs manual) were both wrong about the starting state.
+
+**How licensing works today.** Checkout is a Stripe **Payment Link**, a single compile-time constant
+(`desktop/src-tauri/src/license.rs:137`) opened by `open_purchase_page` with no argument
+(`desktop/src-tauri/src/lib.rs:3557-3570`); the link is deliberately `active: false` on Stripe until
+delivery is proven (`license.rs:131-136`). Fulfilment is already **automated, but outside this
+repo**: a Fastify service on the Forge box registers `POST /v1/yap/stripe-webhook`,
+`GET /v1/yap/license`, `GET /v1/yap/revoked.json` and `POST /v1/yap/resend`
+(`drivia-forge server/src/routes/yap.ts:93,402,479,493`, wired at `server/src/index.ts:406`), signs
+Ed25519 claims in `server/src/yap-license.ts` (`signClaims`) with a key at
+`/etc/forge/yap/license-signing-ed25519.pem` root:root 0400 (`yap-license.ts:43,179`), mails the key
+through Resend (`yap-license.ts:623-690`, where a mail failure deliberately never becomes a non-2xx
+for Stripe), and is idempotent on both Stripe `event.id` and the checkout session id
+(`yap-license.ts:580-583`). The app verifies **offline** against the pinned public key
+(`license.rs ISSUER_PUBLIC_KEY_SPKI_B64`, `ISSUER_SKID`) and makes exactly one network call, for the
+public revocation list at `license.rs:117-119` — a URL carrying the Forge box's **IP address** in its
+hostname. So the real defects are not "is it automated": the fulfilment path is invisible to this
+repo and untestable in this gate, revocation is pinned to a box IP, and nobody has ever walked the
+purchase end to end.
+
+`LIC-A` is therefore a **migration with a proof**: Stripe Checkout → a Stripe webhook handled by a
+**Supabase Edge Function** on a **dedicated Yap Supabase project** (explicitly *not* the Drivia
+project `vlfrzdbqwsnrosmcygca`, which is over its free-tier limits — a licensing outage caused by an
+unrelated product's usage is the worst possible coupling) → the key signed **server-side** with the
+signing key moved into Supabase secrets, the public half still compiled into the app for offline
+validation → delivered by **Resend** *and* retrievable in-app by purchase email → the **revocation
+list served from Supabase**, so `sslip.io` disappears from `license.rs` and the box can move. The
+claims wire format is **frozen** (`base64url(claims).base64url(sig)`, signature over the ASCII bytes
+of the first segment) because every shipped copy of Yap pins the verifier.
+
+The Supabase project ref and function URL, the Stripe webhook signing secret, `RESEND_API_KEY` and
+`YAP_SIGNING_KEY_PEM` are **runtime dependencies Wilson provisions** — none may be committed. The
+item builds and tests against `supabase start` or injected stubs so **the gate stays offline**: the
+local-stack walk is a documented manual step, never a gate conjunct. Provisioning is documented in a
+new `docs/YAP-LICENSING.md` with a **Runtime Dependencies** table (the convention `Y6-E` puts in
+`ARCHITECTURE.md`) plus an `ISSUANCE` section in `docs/RELEASE.md`.
+
+`LIC-A` stays **ungated** — it already was (`gated: null`), and nothing in the code makes that
+unsafe: the signing key never enters the repo, the verifier is unchanged, and the Forge issuer is
+explicitly **not** decommissioned by this item (two issuers sharing one key is fine; one dead
+customer path is not).
+
+One harness consequence: `scripts/loop/build.mjs`'s wrong-stack drift rule banned the string
+`supabase` as "a web-stack surface Yap does not have". That is no longer true — `supabase/functions/**`
+is now a real surface of this repo — so the rule was narrowed to `next.config|app/dashboard`, with
+the reason written at the rule.
+
+### 3. The support floor — STILL OPEN, non-blocking
+
+arm64-only vs a universal build is **not answered**. `Y6-E` is unchanged and still declares the floor
+machine in `ARCHITECTURE.md`; the universal-build question stays in `docs/loop/DEFERRED.md` §7 as a
+release-engineering decision. Nothing in the loop blocks on it.
+
+### 4. Gated, unchanged
+
+`DB-A` (usage metering) and `Y11-F` (real-voice eval corpus) stay `gated: 'panel'`. Wilson confirmed.
+They cost nothing and are skipped unless launched with `args: {panelApproved: [...]}`.
