@@ -262,10 +262,25 @@ fn the_sentence_reaches_the_settings_step_on_every_pre_14_4_mac() {
     );
     // The invoke and the render have to be reachable from the app's own tree,
     // not only from the dev preview page (which fakes its inputs by design).
+    //
+    // Y5-G split App.tsx into `views/` and lifted the shell's state machine
+    // into `appShell.ts`, so the invoke now lives there rather than in App.tsx
+    // itself. The point of this assertion is NOT the filename — it is that the
+    // caller is reachable from the shipping window rather than only from the
+    // dev preview page, which fakes its inputs by design. So accept either
+    // file, and then prove `appShell.ts` really is in App.tsx's tree by
+    // requiring App.tsx to mount it. An orphaned appShell.ts that nothing
+    // renders would fail the second assertion, which makes this pair strictly
+    // stronger than the filename match it replaces.
+    let shell_is_mounted = frontend_files_containing("useAppShell")
+        .iter()
+        .any(|f| f.ends_with("App.tsx"));
     assert!(
-        callers.iter().any(|f| f.ends_with("App.tsx")),
+        callers
+            .iter()
+            .any(|f| f.ends_with("App.tsx") || (f.ends_with("appShell.ts") && shell_is_mounted)),
         "only {callers:?} asks for the gate — the shipping window does not, so a real macOS 13 \
-         Mac still sees nothing"
+         Mac still sees nothing (App.tsx mounts the shell: {shell_is_mounted})"
     );
 
     // …and the step that carries it is DISABLED rather than merely present. The
