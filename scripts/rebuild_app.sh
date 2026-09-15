@@ -7,24 +7,14 @@ DESKTOP="$ROOT/desktop"
 SRC="$DESKTOP/src-tauri"
 APP_SRC="$SRC/target/release/bundle/macos/Wilson Voice.app"
 APP_DST="/Applications/Wilson Voice.app"
-ENT="$SRC/Entitlements.plist"
-IDENTITY="${WILSON_VOICE_SIGN_IDENTITY:-Apple Development: Wilson Guenther (U8BP8Z86T2)}"
-if ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "Wilson Guenther"; then
-  # Ad-hoc signing has no stable designated requirement, so the cdhash changes
-  # every build and macOS DROPS Mic/Accessibility/Input-Monitoring grants each
-  # rebuild — the exact "permissions don't stick / paste keeps failing" trap.
-  # Fail hard unless explicitly overridden, instead of silently shipping it.
-  if [[ "${WILSON_VOICE_ALLOW_ADHOC:-0}" == "1" ]]; then
-    echo "WARN: no 'Wilson Guenther' codesign identity — ad-hoc signing (TCC grants will NOT persist across rebuilds)."
-    IDENTITY="-"
-  else
-    echo "FATAL: no 'Wilson Guenther' codesign identity found." >&2
-    echo "       Ad-hoc signing resets TCC (mic/accessibility) every rebuild." >&2
-    echo "       Install the Apple Development cert, or set WILSON_VOICE_ALLOW_ADHOC=1 to force it." >&2
-    exit 1
-  fi
-fi
-echo "codesign identity: $IDENTITY"
+# SEC-A: signing lives in ONE place now — scripts/sign-local.sh. It resolves a
+# real identity (Developer ID, then Apple Development), never falls back to
+# ad-hoc, and fails with the `security find-identity` hint when none is present.
+# Ad-hoc has no stable designated requirement, so every rebuild used to drop the
+# Microphone / Accessibility / Input-Monitoring grants. Run the resolve FIRST so
+# a missing certificate fails in a second instead of after a full release build.
+SIGN="$ROOT/scripts/sign-local.sh"
+"$SIGN" --identity
 
 killall wilson-voice 2>/dev/null || true
 sleep 1
@@ -98,15 +88,10 @@ cp -f "$SRC/icons/icon.icns" "$APP_SRC/Contents/Resources/icon.icns" 2>/dev/null
 cp -R "$APP_SRC" "$APP_DST"
 xattr -cr "$APP_DST" 2>/dev/null || true
 
-if [[ "$IDENTITY" == "-" ]]; then
-  echo "WARN: ad-hoc sign — Mic TCC may re-prompt after rebuilds"
-  codesign --force --deep -s - "$APP_DST" || true
-else
-  # No --options runtime: Apple Development + WebView is more reliable locally
-  codesign --force --deep --entitlements "$ENT" -s "$IDENTITY" "$APP_DST"
-fi
+# xattr -cr, codesign with the resolved identity + Entitlements.plist, then
+# verify (Authority chain present, NOT adhoc, app-sandbox false). Fails loudly.
+"$SIGN" "$APP_DST"
 
-codesign -dv "$APP_DST" 2>&1 | head -14
 open -a "Wilson Voice"
 echo "DONE → $APP_DST"
 echo "If UI is blank, this script failed the custom-protocol check — do not ship."
