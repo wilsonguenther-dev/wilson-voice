@@ -4972,14 +4972,46 @@ fn update_is_skipped(version: &str, skipped: Option<&str>) -> bool {
 
 /// Ask the release endpoint whether a newer Yap exists — and ONLY ask (YV44).
 /// Nothing downloads, nothing installs, nothing relaunches here; the answer is
+/// Every updater endpoint this build will try, in the order the plugin tries
+/// them, read straight out of the compiled `tauri.conf.json` so it can never
+/// drift from what the plugin actually contacts (UPD-A).
+fn updater_endpoints(app: &AppHandle) -> Vec<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("endpoints"))
+        .and_then(|e| e.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// UPD-A: when the check fails on EVERY endpoint, the manual "Check for
+/// updates" button has to say *which* host it could not reach. The endpoints
+/// have moved twice already (GitHub release assets died when the repo went
+/// private; the DMG then moved to the site host), and a bare "couldn't check
+/// for updates" over a dead URL is indistinguishable from being offline — that
+/// ambiguity is the whole reason this item exists. No key material is ever in
+/// an endpoint URL, so this is safe to surface and to log.
+fn describe_update_failure(err: &str, endpoints: &[String]) -> String {
+    if endpoints.is_empty() {
+        return format!("{err} (no update endpoint is configured in this build)");
+    }
+    format!("{err} — tried {}", endpoints.join(", "))
+}
+
 /// handed to the UI, which prompts. Returns `None` when updates are turned off,
 /// when there is nothing newer, when the user skipped this exact version, or
-/// when no manifest is published yet (GitHub answers 404 for
-/// `releases/latest/download/latest.json` until the first release exists —
-/// that is the NORMAL state, so it is DEBUG, not the launch-time ERROR the
-/// plugin logs on its own). A genuine failure (offline, malformed manifest) is
-/// returned as an error so the manual "Check for updates" button can say so;
-/// the launch-time check ignores it.
+/// when no manifest is published yet (every endpoint answers 404 for
+/// `latest.json` until the first release is staged — that is the NORMAL state,
+/// so it is DEBUG, not the launch-time ERROR the plugin logs on its own). A
+/// genuine failure (offline, malformed manifest) is returned as an error —
+/// naming the endpoints it tried, see `describe_update_failure` — so the manual
+/// "Check for updates" button can say so; the launch-time check ignores it.
 #[tauri::command]
 async fn check_for_update(
     app: AppHandle,
@@ -5029,8 +5061,9 @@ async fn check_for_update(
             Ok(None)
         }
         Err(e) => {
-            log::warn!("update check failed: {e}");
-            Err(e.to_string())
+            let detail = describe_update_failure(&e.to_string(), &updater_endpoints(&app));
+            log::warn!("update check failed: {detail}");
+            Err(detail)
         }
     }
 }
@@ -6162,6 +6195,36 @@ mod tests {
         status_message, update_is_skipped, write_settings_file, AppSettings,
         CURRENT_SETTINGS_SCHEMA_VERSION, ENGINE_PREPARING_MESSAGE,
     };
+
+    /// UPD-A — a failed check names the endpoints it tried. Without this the
+    /// toast reads "Couldn't check for updates: error sending request", which
+    /// looks identical whether the user is offline or the manifest URL is dead.
+    #[test]
+    fn update_failure_names_the_endpoints_it_tried() {
+        let endpoints = vec![
+            "https://yap-lemon.vercel.app/updates/latest.json".to_string(),
+            "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
+                .to_string(),
+        ];
+        let msg = super::describe_update_failure("error sending request", &endpoints);
+        assert!(msg.contains("error sending request"), "{msg}");
+        assert!(
+            msg.contains("yap-lemon.vercel.app/updates/latest.json"),
+            "{msg}"
+        );
+        assert!(msg.contains("github.com"), "{msg}");
+        // Order is the order the plugin tries them in.
+        assert!(
+            msg.find("yap-lemon").unwrap() < msg.find("github.com").unwrap(),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn update_failure_with_no_endpoints_says_so() {
+        let msg = super::describe_update_failure("boom", &[]);
+        assert!(msg.contains("no update endpoint is configured"), "{msg}");
+    }
 
     /// A fresh per-test directory (tests run in parallel — never share one).
     fn temp_dir(tag: &str) -> std::path::PathBuf {
