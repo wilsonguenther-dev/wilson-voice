@@ -20,6 +20,12 @@ export interface UpdateInfo {
  * every launch). A genuine failure — offline, malformed manifest — rejects, so
  * the manual "Check for updates" button can say so; the launch-time check
  * ignores it rather than nagging.
+ *
+ * UPD-A: that rejection now carries the endpoints the backend actually tried,
+ * in order, so the Advanced toast distinguishes "you are offline" from "the
+ * manifest URL is dead" — the failure mode that shipped twice when the DMG
+ * changed hosts and the manifest URL did not. Nothing else about this contract
+ * changed: still check-only, still USER-TRIGGERED for the install.
  */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   return (await invoke<UpdateInfo | null>("check_for_update")) ?? null;
