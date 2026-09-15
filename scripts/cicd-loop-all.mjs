@@ -49,7 +49,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: run halted', items: 63 })
 } else {
   phase("part-01")
-  log("START part-01 — 63 item(s), Y0-A..Y7-E — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (446022 bytes)")
+  log("START part-01 — 63 item(s), Y0-A..Y7-E — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (446353 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (63 item(s))")
@@ -79,7 +79,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 25 })
 } else {
   phase("part-02")
-  log("START part-02 — 25 item(s), Y8-A..Y11-F — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (228199 bytes)")
+  log("START part-02 — 25 item(s), Y8-A..Y11-F — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (228530 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (25 item(s))")

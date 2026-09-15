@@ -798,6 +798,147 @@ for (const p of parts) {
   if (keepers !== parts.length - 1) fail(`${parts.length - keepers} part(s) would remove the shared worktree — exactly one (the last) may`)
   if (parts.length > 1 && parts[parts.length - 1].keepWorktree) fail('the last part must not keep the worktree')
 }
+// ── 5q. THE DRY RUN — EXECUTE EVERY EMITTED SCRIPT WITH STUBBED GLOBALS ──────
+/**
+ * WHY THIS EXISTS (2026-09-14). Every check above is STRUCTURAL: a grep, a parse, a byte count.
+ * All of them passed on a build whose two parts each threw `ReferenceError: dir is not defined`
+ * the instant the Workflow tool loaded them — zero agents ran. The cause was a top-level const
+ * template literal that interpolated a variable which only exists inside a prompt builder. A
+ * parse cannot see that; only EVALUATION can.
+ *
+ * So: run each part and the parent to completion, in-process, with every runtime global stubbed.
+ * Nothing here touches git, the network or the filesystem — the generated scripts do their work
+ * exclusively through agent() PROMPTS (strings), so stubbing agent() is enough; `fetch` and
+ * `process` are shadowed anyway so a stray call is a loud failure rather than a real side effect.
+ * `Date` and `Math` are shadowed with frozen values so a dry run is deterministic.
+ *
+ * Both arg shapes are exercised: {} (build mode) and {mode:'review'} (the review pass), because
+ * three of the five call sites of the prompt that carried this bug are reachable only in review.
+ */
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+/** A value that answers any property with another one of itself, and is callable and iterable. */
+const benign = () =>
+  new Proxy(function () {}, {
+    get(_t, p) {
+      if (p === 'then') return undefined // so `await benign()` resolves to itself
+      if (p === Symbol.iterator) return function* () {}
+      if (p === Symbol.toPrimitive) return () => ''
+      if (p === Symbol.toStringTag) return 'DryRunStub'
+      if (p === 'toJSON') return () => null
+      if (typeof p === 'symbol') return undefined
+      if (p === 'length') return 0
+      return benign()
+    },
+    apply: () => benign(),
+  })
+/**
+ * What agent() resolves to. The real thing is a subagent's structured return; the script reads it
+ * with asText(), destructures a handful of fields and JSON.stringifies it into later prompts, so
+ * the stub is a real object with the shapes the harness names, behind a Proxy that answers every
+ * OTHER property with a benign value rather than `undefined`.
+ */
+const AGENT_STUB = new Proxy(
+  {
+    status: 'ok',
+    ok: true,
+    halted: false,
+    exits: [0],
+    allZero: true,
+    verdict: 'PASS',
+    blocking: [],
+    advisory: [],
+    prs: [],
+    items: [],
+    text: '{"status":"merged","verdict":"PASS","blocking":[],"advisory":[],"exits":[0],"allZero":true}',
+    output: '{"status":"merged","verdict":"PASS","blocking":[],"advisory":[]}',
+    result: {},
+  },
+  {
+    get(t, p) {
+      if (p in t) return t[p]
+      // `then` MUST be undefined: a callable `then` makes this object a thenable, and `await`
+      // would hang forever on a stub that never resolves.
+      // `toJSON` must be undefined too, or JSON.stringify() of this stub serialises a function
+      // (undefined) instead of the object the harness interpolates into its prompts.
+      if (p === 'then' || p === 'toJSON' || typeof p === 'symbol') return undefined
+      return benign()
+    },
+  }
+)
+let DRY_RUN_REPORT = ''
+function dryRun(label, src, argsIn) {
+  let calls = 0
+  const CAP = 20000
+  const tick = () => {
+    if (++calls > CAP) throw new Error(`the dry run made more than ${CAP} stubbed calls — the script does not terminate`)
+  }
+  const agent = async () => (tick(), AGENT_STUB)
+  const parallel = async (fns) => (tick(), Promise.all((fns || []).map((f) => (typeof f === 'function' ? f() : f))))
+  const pipeline = async (fns) => {
+    tick()
+    const out = []
+    for (const f of fns || []) out.push(typeof f === 'function' ? await f() : f)
+    return out
+  }
+  const phase = () => tick()
+  const log = () => tick()
+  const workflow = async () => (tick(), { halted: false, parts: [], items: [] })
+  const budget = new Proxy({ remaining: 1e9, used: 0, limit: 1e9 }, { get: (t, p) => (p in t ? t[p] : benign()) })
+  const FIXED = 1757808000000
+  class FrozenDate extends Date {
+    constructor(...a) {
+      super(...(a.length ? a : [FIXED]))
+    }
+    static now() {
+      return FIXED
+    }
+  }
+  const FrozenMath = Object.create(Math, { random: { value: () => 0.42 } })
+  const boom = (what) => () => {
+    throw new Error(`the dry run refuses to ${what}: a generated loop script must reach the outside world only through agent() prompts`)
+  }
+  const body = src.replace(/^export const meta/m, 'const meta')
+  const names = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'workflow', 'args', 'budget', 'Date', 'Math', 'fetch', 'process', 'require']
+  const values = [agent, parallel, pipeline, phase, log, workflow, argsIn, budget, FrozenDate, FrozenMath, boom('fetch'), new Proxy({}, { get: boom('touch process') }), boom('require')]
+  let fn
+  try {
+    fn = new AsyncFunction(...names, body)
+  } catch (err) {
+    fail(`${label}: the dry run could not compile the script: ${err && err.message ? err.message : err}`)
+    return Promise.resolve()
+  }
+  return fn(...values).then(
+    () => {},
+    (err) => {
+      const stack = err && err.stack ? String(err.stack) : String(err)
+      const m = stack.match(/<anonymous>:(\d+):(\d+)/)
+      // The wrapper is `async function anonymous(<names>\n) {\n<body>`, so body line 1 is
+      // wrapped line 3 — a measured offset of 2, not a guess.
+      const lines = body.split('\n')
+      const at = m ? Number(m[1]) - 2 : 0
+      const from = m ? Math.max(1, at - 2) : 0
+      const where = m ? `→ ${label} line ${at}, column ${m[2]}` : ''
+      const around = m
+        ? '\n' + lines.slice(from - 1, at).map((l, i) => `      ${from + i}| ${l.slice(0, 160)}`).join('\n')
+        : ''
+      fail(
+        `${label}: THE DRY RUN THREW with args ${JSON.stringify(argsIn)} — this script would die at load/run time before a single agent was dispatched.\n` +
+          `    ${err && err.name ? err.name : 'Error'}: ${err && err.message ? err.message : err}\n` +
+          (where ? `  ${where}\n` : '') +
+          (around ? `  ${around}\n` : '') +
+          `    stack:\n${stack.split('\n').slice(0, 6).map((l) => `      ${l.trim()}`).join('\n')}`
+      )
+    }
+  )
+}
+{
+  const targets = [...parts.map((p) => [path.relative(ROOT, p.file), p.src]), [path.relative(ROOT, PARENT_OUT), parent.src]]
+  for (const [label, src] of targets) {
+    for (const argsIn of [{}, { mode: 'review' }]) await dryRun(label, src, argsIn)
+  }
+  if (!problems.length) DRY_RUN_REPORT = `${targets.length} script(s) × 2 arg shapes ({} and {mode:'review'}) executed end-to-end with stubbed agent/parallel/pipeline/phase/log/workflow`
+}
+
 if (problems.length) die()
 
 // ── 6. WRITE ────────────────────────────────────────────────────────────────
@@ -806,6 +947,7 @@ if (VALIDATE_ONLY) {
   console.log(`  items      ${path.relative(ROOT, ITEMS_DIR)} — ${itemFiles.length} file(s): ${itemFiles.join(', ')}`)
   for (const p of parts) console.log(`  ${p.name}  ${p.size} bytes  ${p.items.length} item(s)  ${span(p.items)}  keeps worktree: ${p.keepWorktree}`)
   console.log(`  parent     ${parent.size} bytes (meta.name ${LOOP_NAME})`)
+  console.log(`  dry run    ${DRY_RUN_REPORT}`)
   console.log('  NOTHING WAS WRITTEN (--validate-only).')
   process.exit(0)
 }
@@ -836,12 +978,13 @@ console.log('')
 for (const p of parts) console.log(`  ${p.name}  ${rel(p.file)}  ←  ${p.files.join(', ')}`)
 console.log(`  parent runs each part from the pinned checkout: ${RUN_ROOT}/scripts/loop/generated/`)
 console.log(`  parent    ${rel(PARENT_OUT)}  (meta.name ${LOOP_NAME})`)
+console.log(`  dry run    ${DRY_RUN_REPORT}`)
 console.log(`  gated      ${ITEMS.filter((i) => i.gated === 'panel').map((i) => i.id).join(', ') || 'none'}`)
 console.log(
   `  lanes      A: ${ITEMS.filter((i) => laneById.get(i.id) === 0).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 0).length} file(s)` +
     `  ·  B: ${ITEMS.filter((i) => laneById.get(i.id) === 1).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 1).length} file(s)`
 )
 console.log(
-  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats, phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate`
+  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats, phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (both arg shapes) against stubbed globals`
 )
 console.log(`  NOTE       ${rel(PARENT_OUT)} and ${rel(GEN_DIR)}/ are generated — do not hand-edit them; re-run \`npm run loop:build\`.`)

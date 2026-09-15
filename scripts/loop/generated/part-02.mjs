@@ -347,8 +347,11 @@ against the CURRENT HEAD of main before you rely on it.
  * The Drivia harness proved gating with authenticated fetches. Yap has no server and no accounts,
  * so the equivalent proof is that the behaviour is real ON THE MACHINE: a test that exercises the
  * code path, and for anything a human sees, the running app.
+ * It is a FUNCTION of the lane worktree, not a top-level template: it interpolates ${dir}, which
+ * only exists inside a prompt builder. As a top-level const it evaluated at module load and threw
+ * ReferenceError: dir is not defined before a single agent was dispatched (2026-09-14).
  */
-const RUNTIME_PROOF = `
+const RUNTIME_PROOF = (dir) => `
 PROVING BEHAVIOUR ON A DESKTOP APP — "it compiles" is not evidence and neither is a unit test of a
 function nothing calls.
 For every behavioural claim, give ONE of these, and say which:
@@ -861,7 +864,7 @@ ${item.notes}
 # ACCEPTANCE (these exact checks must pass; put their REAL output in the PR body)
 ${item.acceptance}
 
-${RUNTIME_PROOF}
+${RUNTIME_PROOF(dir)}
 ${REACHABILITY}
 ${VERIFY_NOTHING}
 ${COMMIT_CONTRACT}
@@ -1161,7 +1164,7 @@ A PR merges with ZERO blocking findings no matter how many advisory ones.
 5. HAS MAIN MOVED UNDER IT? Check whether the PR is now redundant, contradicted by, or duplicated
    on origin/main. Say so explicitly — that is a real outcome.
 ${REACHABILITY}
-${RUNTIME_PROOF}
+${RUNTIME_PROOF(dir)}
 ${VERIFY_NOTHING}
 
 If you return BLOCK you MUST return a non-empty blocking[] array. A BLOCK with an empty blocking[]
@@ -1206,7 +1209,7 @@ TRIAGE ALREADY ESTABLISHED: ${facts}
     "tested" or a pasted number MUST map to raw output pasted in the PR. A claim with no raw output
     behind it is a FALSE CAPABILITY CLAIM and is BLOCKING. An exit code read through a pipe is the
     exit code of the LAST command in the pipe, so evidence piped into tail/grep proves nothing.
-${RUNTIME_PROOF}
+${RUNTIME_PROOF(dir)}
 ${VERIFY_NOTHING}
 
 If you cannot read the PR at all (gh fails, the PR is missing), return status "unavailable" with
@@ -1326,7 +1329,7 @@ ${LOGLINE(`${itemId} fix+land PR#${pr}`, itemId, 'review:fixed', `${pr}`)}
 Then write the board ONE more time with the OUTCOME — stage review:merged, review:ci-pending,
 review:needs-human or review:closed-superseded — and the PR number as the 4th argument.
 ${WORKTREE_CONTRACT(dir, port, target, other)}
-${RUNTIME_PROOF}
+${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
   const land = await withAgents(1, () => agentR(landPrompt, { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
@@ -3541,7 +3544,7 @@ SECURITY PRs FROM THIS PASS: ${JSON.stringify(securityMerged.map((r) => ({ pr: r
 For each MERGED one, re-run its own acceptance probe against main's head and paste the raw output:
 the capability entry, the generate_handler! grep, the migration applied to a COPY of a history file,
 the sidecar handshake, the updater signature check — whichever that item's acceptance named.
-${RUNTIME_PROOF}
+${RUNTIME_PROOF(REVIEW_DIRS[0])}
 
 # 4 — THE APP ACTUALLY RUNS
 A green workspace build is not a running app. Launch it from main's head and say what you saw:

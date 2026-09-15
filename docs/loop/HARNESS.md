@@ -38,7 +38,22 @@ Nothing is written unless **every** check passes. What it checks, beyond the sib
   script `desktop/package.json` does not define (`npm run lint`, `npm run typecheck`,
   `npm run dead-code`, `npm run start`), or a web-stack surface Yap does not have;
 - `let CI_MODE = 'local'` (the default here is local, not github) with both gate branches present,
-  and `GATE_CMDS` as the single source of the gate commands.
+  and `GATE_CMDS` as the single source of the gate commands;
+- **the DRY RUN (added 2026-09-14).** Every check above is structural — a grep, a parse, a byte
+  count — and all of them passed on a build whose two parts each threw
+  `ReferenceError: dir is not defined` the instant the Workflow tool loaded them: zero agents ran.
+  The cause was a top-level `const` template literal interpolating `${dir}`, a variable that only
+  exists inside a prompt builder. A parse cannot see that; only evaluation can. So the validator
+  now EXECUTES each part and the parent in-process, wrapped exactly the way the Workflow runtime
+  wraps them, with `agent`, `parallel`, `pipeline`, `phase`, `log`, `workflow`, `args` and `budget`
+  stubbed (`agent()` resolves to a canned `{status, verdict, blocking:[], exits:[0], text, ...}`
+  behind a Proxy that answers any other property with a benign value), and `Date`/`Math` frozen so
+  the run is deterministic. `fetch`, `process` and `require` are shadowed with throwing stubs, so
+  the dry run touches no git, no network and no filesystem — the generated scripts reach the
+  outside world only through `agent()` prompts, which are strings. Both arg shapes are exercised,
+  `{}` and `{mode:'review'}`, because most of the review pass is unreachable otherwise, and a
+  20,000-call cap turns a non-terminating script into a named failure. A throw is reported with the
+  mapped `part-NN.mjs` line and column, three lines of source around it, and the stack.
 
 ### The item contract
 
