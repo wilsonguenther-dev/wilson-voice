@@ -2731,7 +2731,14 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
     // after a downgrade. An unknown id can never be downloaded or loaded, so the
     // app would sit at "Model needed" forever with no way back; point it at the
     // catalog's recommendation once.
-    if models::catalog_model(&settings.native_model).is_none() {
+    //
+    // GUARDED on `stored_version < 1` (Y4-A). Until this item there was only one
+    // schema version, so "not current" and "v0" were the same thing and the arm
+    // needed no guard. Raising CURRENT to 2 separates them: without this guard a
+    // v1 store re-enters a v0 → v1 arm, and a user who deliberately selected a
+    // model a later catalog stopped listing would have it silently reset to the
+    // recommendation on the next launch.
+    if stored_version < 1 && models::catalog_model(&settings.native_model).is_none() {
         log::warn!(
             "settings migration v{stored_version}→v{CURRENT_SETTINGS_SCHEMA_VERSION}: \
              model '{}' is not in the bundled catalog; selecting the recommended model",

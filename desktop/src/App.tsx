@@ -3898,7 +3898,7 @@ export default function App() {
                       untouched — only the label a person reads changed. */}
                   <div className="panel">
                     <h3>How much should Yap clean up?</h3>
-{/* Y4-A — ONE quiet line, and only for a user whose stored
+                    {/* Y4-A — ONE quiet line, and only for a user whose stored
                         level was migrated. `formattingNoticePending` is set by
                         the v1 → v2 settings migration and by nothing else, so a
                         fresh install never sees this: there is no change to
@@ -3908,7 +3908,7 @@ export default function App() {
                     {settings.formattingNoticePending && (
                       <p className="notice" role="status">
                         Formatting is on now — spoken punctuation, lists and
-                        email shape. Pick Light below to go back.{" "}
+                        email shape. Change it in the picker below.{" "}
                         <button
                           type="button"
                           className="linklike"

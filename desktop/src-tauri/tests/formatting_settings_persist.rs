@@ -51,7 +51,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-const APP_SETTINGS_FIELD_COUNT: usize = 29;
+const APP_SETTINGS_FIELD_COUNT: usize = 31;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -63,7 +63,11 @@ fn fully_populated() -> AppSettings {
     polish_styles.insert("notes".to_string(), "casual".to_string());
 
     AppSettings {
-        schema_version: 1,
+        // Y4-A — the CURRENT schema version. This fixture stands for "a store
+        // the running app wrote", so it must not be a stale one: a store
+        // pinned below CURRENT is by definition migrated on load, and this
+        // test asserts a byte-for-byte round trip, not a migration.
+        schema_version: 2,
         language: "fr".into(),
         auto_paste: false,
         hotkey_label: "fn".into(),
@@ -76,6 +80,12 @@ fn fully_populated() -> AppSettings {
         companion_tone: "rude".into(),
         dictation_mode: "email".into(),
         cleanup_level: "high".into(),
+        // Y4-A — both non-default (the shipped values are `false`), so the
+        // round-trip proves the store actually carries them. These two are
+        // the provenance bit the v1 -> v2 migration writes and the one-shot
+        // flag that shows the "formatting is on now" line exactly once.
+        cleanup_level_set_by_user: true,
+        formatting_notice_pending: true,
         snippet_scope: "utterance".into(),
         polish_model: "qwen2.5-1.5b-instruct".into(),
         polish_deadline_ms: 2500,
