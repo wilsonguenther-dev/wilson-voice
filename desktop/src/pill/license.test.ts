@@ -7,7 +7,14 @@
  */
 import { describe, expect, it } from "vitest";
 import { type LicenseStatus } from "../license/status";
-import { PILL_TRIAL_DAYS, pillLicense, type PillLicense } from "./license";
+import {
+  PILL_TRIAL_DAYS,
+  PILL_VALUE_MAX_CHARS,
+  pillLicense,
+  splitValue,
+  valueFitsSideDock,
+  type PillLicense,
+} from "./license";
 
 const EXPIRES = 1_800_000_000_000;
 
@@ -165,5 +172,68 @@ describe("pillLicense — the pill never quotes a price", () => {
     for (const s of strings) {
       expect(s).not.toMatch(/\$\d/);
     }
+  });
+});
+
+/**
+ * Y2-B — the geometry policy. The side dock is a ~30px strip
+ * (reference_wispr_parity_research §4.2: Wispr's fixed-width label exists
+ * because a sentence cannot "crush in a 30px column"), so what goes ON the
+ * capsule is the VALUE and the sentence goes in the tooltip. This is the check
+ * that the value can never grow into something that does not fit — a chip that
+ * silently overflows on one dock out of three is invisible to a type check, a
+ * green build and every other test in this file.
+ */
+describe("pillLicense — value_is_never_wider_than_the_side_dock", () => {
+  it("value_is_never_wider_than_the_side_dock, for every day 0..14", () => {
+    for (let days = 0; days <= 14; days++) {
+      const { value } = pillLicense(trial(days));
+      expect(valueFitsSideDock(value)).toBe(true);
+      expect(value === null || value.length <= PILL_VALUE_MAX_CHARS).toBe(true);
+    }
+  });
+
+  it("holds past the ends of the fortnight too — a clock rollback is not an excuse", () => {
+    for (const days of [-30, -3, -1, 15, 60, 3650]) {
+      expect(valueFitsSideDock(pillLicense(trial(days)).value)).toBe(true);
+    }
+  });
+
+  it("the two states that carry no numeral fit trivially", () => {
+    expect(valueFitsSideDock(pillLicense(required()).value)).toBe(true);
+    expect(valueFitsSideDock(pillLicense(licensed()).value)).toBe(true);
+  });
+
+  it("rejects anything that would not fit, so the check is not vacuous", () => {
+    // If `valueFitsSideDock` said yes to everything, the assertions above would
+    // pass on a pill that overflows. It does not.
+    expect(valueFitsSideDock("14 days")).toBe(false);
+    expect(valueFitsSideDock("10d left")).toBe(false);
+    expect(valueFitsSideDock("10d")).toBe(true); // exactly the budget
+    expect(valueFitsSideDock("100d")).toBe(false);
+    expect(PILL_VALUE_MAX_CHARS).toBe(3);
+  });
+});
+
+describe("splitValue — the numeral and its unit are set in different faces", () => {
+  it("splits every value this policy can produce", () => {
+    for (let days = 0; days <= PILL_TRIAL_DAYS; days++) {
+      const { value } = pillLicense(trial(days));
+      const split = splitValue(value);
+      expect(split).not.toBe(null);
+      expect(split!.numeral).toMatch(/^\d+$/);
+      expect(split!.unit).toBe("d");
+      expect(split!.numeral + split!.unit).toBe(value);
+    }
+  });
+
+  it("is null when there is no numeral, which is the cue to draw the glyph", () => {
+    expect(splitValue(pillLicense(required()).value)).toBe(null);
+    expect(splitValue(null)).toBe(null);
+    expect(splitValue("")).toBe(null);
+  });
+
+  it("does not lose a value it cannot parse", () => {
+    expect(splitValue("soon")).toEqual({ numeral: "soon", unit: "" });
   });
 });

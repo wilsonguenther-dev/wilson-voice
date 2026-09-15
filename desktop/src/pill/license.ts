@@ -135,3 +135,46 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
     title: statusCopy(status).headline,
   };
 }
+
+/* ───────────────────────── Y2-B — the geometry policy ─────────────────────────
+ *
+ * THE SIDE DOCK IS THE CONSTRAINT, AND IT IS THE NARROW ONE. `pill_position` is
+ * `bottom | left | right` (lib.rs:408, default "bottom"), and on a side dock the
+ * capsule is parked flush against the screen edge in a ~30px-wide strip —
+ * reference_wispr_parity_research §4.2 measured Wispr's side-docked bar at 30px
+ * and found their fixed-width label is why only the primary listening states
+ * rotate: a sentence cannot "crush in a 30px column".
+ *
+ * So the pill shows the VALUE and nothing else — "5d" fits a 30px column, "5
+ * days left" does not — and the whole sentence lives in `title`, which
+ * `pillLicense` already returns and which a tooltip can be as wide as it likes.
+ *
+ * Three characters is the budget: the widest value this policy can EVER produce
+ * is "7d" (`PILL_TRIAL_DAYS` is 7 and day 0 renders "1d"), so three leaves one
+ * character of headroom for a future unit without re-opening the geometry. It
+ * is asserted over the whole fortnight in `license.test.ts` rather than left as
+ * a comment, because the failure mode is a chip that silently overflows the
+ * strip on one dock out of three.
+ */
+export const PILL_VALUE_MAX_CHARS = 3;
+
+/** Does this value fit the 30px side dock? `null` (no numeral) trivially does. */
+export function valueFitsSideDock(value: string | null): boolean {
+  return value === null || value.length <= PILL_VALUE_MAX_CHARS;
+}
+
+/**
+ * Split "5d" into the numeral the eye lands on and its unit, so the pills can
+ * set them in two different faces: the numeral in Departure Mono (the pixel
+ * voice every other count in Yap already wears — `chipFor` in status.ts:118
+ * says as much, and the component is what actually sets it), the unit in the
+ * body face so it reads as a word and not as another digit.
+ *
+ * Returns `null` when there is no numeral at all (`license_required`), which is
+ * the caller's cue to draw the glyph instead.
+ */
+export function splitValue(value: string | null): { numeral: string; unit: string } | null {
+  if (!value) return null;
+  const m = /^(\d+)(.*)$/.exec(value);
+  return m ? { numeral: m[1], unit: m[2] } : { numeral: value, unit: "" };
+}

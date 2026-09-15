@@ -11,7 +11,7 @@ import {
   phaseVisual, progressFraction, progressLabel, progressNumeral,
   type LivePhase, type TranscribeProgress,
 } from "./live";
-import { type PillLicense } from "./license";
+import { splitValue, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
@@ -30,14 +30,13 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null }: {
+  { gate = "idle", progress = null, license = null }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
     /**
-     * Y2-A — the license as the pill is allowed to say it, already decided by
-     * `pillLicense` in float-main. Accepted here so the wiring is complete and
-     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
-     * this component deliberately does not read it yet.
+     * Y2-A decided it, Y2-B draws it. The policy (does the pill mention the
+     * trial at all, and with which tone) is `pillLicense` in float-main; this
+     * component only renders the answer and never reaches for `days_left`.
      */
     license?: PillLicense | null;
   },
@@ -179,6 +178,37 @@ export default function ClassicPill(
     invoke("manual_toggle").catch(() => {});
   }, [blocked, busy, transcribing, drag]);
 
+  // Y2-B — the trial numeral, as a small trailing chip on the capsule.
+  //
+  // IT IS IN THE JSX, NOT IN THE rAF EFFECT, AND THAT IS THE WHOLE POINT. The
+  // reduced-motion branch above (the `matchMedia("(prefers-reduced-motion:
+  // reduce)")` early return) paints ONE calm static frame and never schedules
+  // another; anything a person still needs to be able to read has to survive
+  // that. The countdown is information, not decoration, so it is rendered here,
+  // where no animation path can take it away. There is no pulse, no bounce and
+  // no flash on it in any state: `urgent` shifts hue and nothing else, because a
+  // countdown that moves is a countdown that nags.
+  //
+  // `blocked` still outranks it, for the same reason it outranks every take
+  // state: a capsule that cannot hear you has exactly one thing to say.
+  //
+  // Only the VALUE is on the capsule — never the sentence. The side dock is a
+  // ~30px strip (see the geometry note in license.ts) so the sentence lives in
+  // `title`, which is a tooltip and can be as wide as it likes.
+  const split = splitValue(license?.value ?? null);
+  const chip = license?.show && !blocked ? (
+    <span className={`lic lic-${license.tone}`} title={license.title} aria-label={license.title} role="note">
+      {split ? (
+        <>
+          <i className="lic-num">{split.numeral}</i>
+          {split.unit ? <i className="lic-unit">{split.unit}</i> : null}
+        </>
+      ) : (
+        <i className="lic-glyph" aria-hidden>{license.glyph}</i>
+      )}
+    </span>
+  ) : null;
+
   return (
     <div className="stage">
       <div
@@ -229,6 +259,7 @@ export default function ClassicPill(
             </div>
           </>
         )}
+        {chip}
       </div>
     </div>
   );
