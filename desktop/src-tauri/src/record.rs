@@ -33,6 +33,174 @@ pub const TARGET_RATE: u32 = 16_000;
 /// same threshold, measured on the in-memory buffer now).
 const MIN_CLIP_SAMPLES: usize = TARGET_RATE as usize * 30 / 1000;
 
+// ── Y3-F: the declared maximum session length ───────────────────────────────
+//
+// Before this item there was no maximum take length anywhere in the code:
+// `git grep "MAX_TAKE\|max_take\|MAX_RECORD\|session_len" desktop` returned
+// nothing functional. That is not generosity. It means the failure mode at some
+// unknown length is a timeout or an OOM — a cliff the user discovers by falling
+// off it — instead of a number we chose, said out loud, and tested.
+
+/// The longest ONE dictation take may run, in seconds. **Thirty minutes.**
+///
+/// ### Why thirty, and not Wispr's twenty
+///
+/// Wispr declares 20 minutes (raised from 5). Twenty is not copied here,
+/// because the point of a ceiling is that it is *measured*, and our own
+/// measurement supports more than twenty:
+///
+/// * **Capture is flat in the length of the take.** Y3-A (merged, `2ef8f0c`)
+///   moved the take's audio to a disk spill, and
+///   `tests/dictation_capture_memory.rs` measures a synthetic **twenty-minute**
+///   take holding under [`MAX_RESIDENT_CAPTURE_BYTES`] (4 MiB) resident — down
+///   from ~153 MB across two unbounded `Vec`s on the pre-Y3 shape. Nothing in
+///   that path grows with duration, so twenty minutes was a fixture length, not
+///   a limit.
+/// * **The binding cost is the ONE read-back at the end.** `finalize_take`
+///   reads the spill back as 16 kHz mono `f32`, which is exactly
+///   `TARGET_RATE * 4` = **64 KB per second of take**, deterministic and
+///   resident once. At this ceiling that is `1800 * 64 KB` ≈ **115 MB**, held
+///   for the length of one finalize.
+/// * `tests/max_session.rs::the_ceiling_is_a_measurement_not_a_guess` re-runs
+///   Y3-A's probe at **this** number rather than at twenty minutes, so the
+///   declared ceiling and the measured ceiling can never drift apart: raising
+///   `MAX_SESSION_SECONDS` re-measures capture at the new length or fails.
+///
+/// Thirty is therefore the larger number our own evidence supports, declared
+/// because it is declared and tested — not because it beats a competitor. It is
+/// deliberately NOT five: Wilson dictates long, and a low ceiling is the same
+/// complaint in a new costume.
+pub const MAX_SESSION_SECONDS: u64 = 30 * 60;
+
+/// [`MAX_SESSION_SECONDS`] as a `Duration` — the form the watchdog compares.
+pub const MAX_SESSION: Duration = Duration::from_secs(MAX_SESSION_SECONDS);
+
+/// How far into the ceiling the one calm warning fires, in percent.
+///
+/// A percentage rather than a second count, so the warning cannot drift away
+/// from the ceiling when the ceiling moves. At 80% of thirty minutes the user
+/// gets six minutes of notice.
+pub const SESSION_WARN_PERCENT: u64 = 80;
+
+/// When the warning fires — **derived** from [`MAX_SESSION_SECONDS`] and
+/// [`SESSION_WARN_PERCENT`], never hand-written.
+pub const SESSION_WARN_AT: Duration =
+    Duration::from_secs(MAX_SESSION_SECONDS * SESSION_WARN_PERCENT / 100);
+
+/// How far back from the ceiling the cut may look for a silence to land on.
+///
+/// "A couple of seconds": long enough to contain a whole word plus the gap
+/// after it at any speaking rate, short enough that what a capped take loses is
+/// a trailing fragment rather than a sentence.
+pub const CUT_GRACE: Duration = Duration::from_secs(2);
+
+/// What the ceiling watchdog decides on one tick.
+///
+/// Same shape as `meeting::watchdog_tick`'s [`crate::meeting::WatchdogAction`]
+/// on purpose — a pure function of elapsed time and a latch, so the rule is
+/// testable without a microphone, an `AppState` or a running app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCapAction {
+    /// Nothing to do; keep recording.
+    Continue,
+    /// Cross [`SESSION_WARN_AT`] for the first time — say so, once.
+    Warn,
+    /// At or past [`MAX_SESSION`] — stop cleanly and transcribe what we have.
+    Stop,
+}
+
+/// The ceiling rule. `warned` is the caller's latch: the watchdog ticks many
+/// times a second, and a rule without the latch would repeat the warning for
+/// the whole last fifth of the take.
+///
+/// `Stop` outranks `Warn`: a take that somehow reached the ceiling without ever
+/// being warned still stops rather than spending a tick on the notice.
+pub fn session_cap_tick(elapsed: Duration, warned: bool) -> SessionCapAction {
+    if elapsed >= MAX_SESSION {
+        SessionCapAction::Stop
+    } else if elapsed >= SESSION_WARN_AT && !warned {
+        SessionCapAction::Warn
+    } else {
+        SessionCapAction::Continue
+    }
+}
+
+/// The one calm line the pill shows when the warning fires.
+///
+/// Deliberately a plain status string on the SAME `status` event the pill
+/// already renders (`lib::status_message` → `emit_status`) — no toast system,
+/// no second channel, no new window. It states the ceiling and what happens at
+/// it, because a warning that does not say what is coming is just an alarm.
+pub fn session_cap_warning() -> String {
+    format!(
+        "{} minutes in — Yap stops and transcribes at {}.",
+        SESSION_WARN_AT.as_secs() / 60,
+        human_minutes(MAX_SESSION)
+    )
+}
+
+/// `30:00`-style minutes:seconds, for the warning copy.
+fn human_minutes(d: Duration) -> String {
+    format!("{}:{:02}", d.as_secs() / 60, d.as_secs() % 60)
+}
+
+/// The ceiling in samples at [`TARGET_RATE`].
+pub fn max_session_samples() -> usize {
+    MAX_SESSION_SECONDS as usize * TARGET_RATE as usize
+}
+
+/// Where to cut a take that reached the ceiling.
+///
+/// Returns an index into `samples`. The contract, in order:
+///
+/// 1. A take at or under `ceiling` is never cut — the returned index is
+///    `samples.len()`. Nothing is discarded for being long enough to fit.
+/// 2. Otherwise the cut lands at or before `ceiling`, and PREFERS the start of
+///    the last silence beginning inside `[ceiling - grace, ceiling]`, so the
+///    take ends between words rather than through one. `vad::`-grade frame
+///    energy is what decides "silence": this reuses the same bridged 20 ms
+///    voiced mask [`pause_spans`] and `voiced_seconds` already compute on every
+///    take ([`voiced_frames`]), rather than adding a second opinion about what
+///    speech is.
+/// 3. With no silence in the grace window — the user was mid-sentence at the
+///    ceiling, which is the whole reason the grace window is small — the cut is
+///    `ceiling` exactly. Truncating a trailing fragment is the honest outcome;
+///    discarding the take is not, and never happens.
+pub fn cap_cut_index(samples: &[f32], sample_rate: u32, ceiling: usize, grace: Duration) -> usize {
+    if samples.len() <= ceiling {
+        return samples.len();
+    }
+    let grace_samples = (grace.as_secs_f64() * sample_rate as f64) as usize;
+    let window_start = ceiling.saturating_sub(grace_samples);
+    let Some((mask, frame_secs)) = voiced_frames(&samples[..ceiling], sample_rate) else {
+        return ceiling;
+    };
+    let frame = (frame_secs * sample_rate as f64).round() as usize;
+    if frame == 0 {
+        return ceiling;
+    }
+    // Walk back from the ceiling for the START of the last silent run — the
+    // moment the speaker stopped — and cut there.
+    let mut best: Option<usize> = None;
+    let mut run_start: Option<usize> = None;
+    for (i, &voiced) in mask.iter().enumerate() {
+        if voiced {
+            run_start = None;
+        } else {
+            let at = i * frame;
+            if run_start.is_none() {
+                run_start = Some(at);
+            }
+            if let Some(start) = run_start {
+                if start >= window_start && start <= ceiling {
+                    best = Some(start);
+                }
+            }
+        }
+    }
+    best.unwrap_or(ceiling).min(ceiling)
+}
+
 /// The take's stop signal (YV38) — what the HUD level thread parks on instead of
 /// re-reading a flag every 50 ms. `stop_recording` (and the cancel path through
 /// it) flips it once and wakes every waiter, so a waiter learns the hold ended
@@ -89,6 +257,13 @@ impl ActiveRecording {
     /// Shared stop signal — waiters park on it and are woken when the take ends.
     pub fn stop_signal(&self) -> Arc<StopSignal> {
         self.stop.clone()
+    }
+
+    /// When this take started capturing — the clock the Y3-F ceiling watchdog
+    /// measures against. An `Instant`, not a wall-clock time, so a system clock
+    /// change mid-take can never move the ceiling.
+    pub fn started_at(&self) -> Instant {
+        self.started
     }
 }
 
@@ -298,6 +473,23 @@ pub fn stop_recording(
     // only finishes the take — apply the accumulated AGC gain, de-click the
     // edges, optionally denoise — and yields the 16 kHz mono buffer ASR reads.
     let mut samples = finalize_take(captured, active.denoise)?;
+
+    // Y3-F — the declared ceiling is enforced on the AUDIO, not only on the
+    // watchdog that normally trips first. The watchdog stops the take within one
+    // HUD frame of `MAX_SESSION`, so the overshoot here is milliseconds on the
+    // normal path; this is what makes the ceiling true for every path, including
+    // a take stopped by something that never consulted the clock.
+    let ceiling = max_session_samples();
+    if samples.len() > ceiling {
+        let cut = cap_cut_index(&samples, TARGET_RATE, ceiling, CUT_GRACE);
+        log::info!(
+            "session ceiling: take ran to {:.1}s, cut at {:.1}s (ceiling {}s)",
+            samples.len() as f64 / TARGET_RATE as f64,
+            cut as f64 / TARGET_RATE as f64,
+            MAX_SESSION_SECONDS
+        );
+        samples.truncate(cut);
+    }
 
     if samples.len() < MIN_CLIP_SAMPLES {
         // Sub-second tap: no wav was ever written for it (the recovery write is

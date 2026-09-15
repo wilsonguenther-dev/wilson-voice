@@ -124,6 +124,14 @@ pub mod polish_protocol;
 #[cfg(target_os = "macos")]
 pub mod ptt_macos;
 mod record;
+/// Y3-F — the declared maximum session length, its 80% warning, and the rule +
+/// cut that enforce them. Re-exported for the same reason as the two above:
+/// `record` stays crate-private and `tests/max_session.rs` drives exactly these.
+pub use record::{
+    cap_cut_index, max_session_samples, session_cap_tick, session_cap_warning, SessionCapAction,
+    CUT_GRACE, MAX_SESSION, MAX_SESSION_SECONDS, SESSION_WARN_AT, SESSION_WARN_PERCENT,
+    TARGET_RATE,
+};
 /// Y3 — the dictation capture consumer's test seam and its memory ceiling.
 /// `record` itself stays crate-private; these two are what
 /// `tests/dictation_capture_memory.rs` drives.
@@ -497,6 +505,10 @@ struct AppState {
     busy: PLMutex<bool>,
     /// Hands-free latch (double-tap fn⌃); release keys but keep recording.
     hands_free: PLMutex<bool>,
+    /// Y3-F — the in-flight take has already crossed [`record::SESSION_WARN_AT`]
+    /// and the one calm ceiling notice has been said. Latched so the watchdog,
+    /// which ticks at HUD cadence, says it ONCE; cleared when a take starts.
+    session_cap_warned: PLMutex<bool>,
     /// YV49 command mode: the selection captured when THIS take began, read via
     /// AX at key-down. `Some` marks the in-flight take as a command (edit the
     /// selection) rather than dictation (type the transcript). Consumed by
@@ -783,8 +795,16 @@ fn status_message(
     accessibility: bool,
     secure_input_blocked: bool,
     ptt: &str,
+    session_cap_warned: bool,
 ) -> String {
-    if recording && hands_free {
+    if recording && session_cap_warned {
+        // Y3-F: past 80% of `record::MAX_SESSION` the live take's own line SAYS
+        // what is coming, on the status event the pill already renders. It
+        // outranks the ordinary recording copy because it is the same fact plus
+        // the part the user does not know; it is set once by the latch, so this
+        // is a state the line holds, never a notice that repeats.
+        record::session_cap_warning()
+    } else if recording && hands_free {
         format!("Hands-free… tap {ptt} to stop")
     } else if recording {
         format!("Recording… release {ptt} or click Stop")
@@ -836,6 +856,7 @@ fn build_status(state: &AppState) -> AppStatus {
         accessibility,
         secure.blocked,
         &ptt,
+        *state.session_cap_warned.lock(),
     );
     AppStatus {
         recording,
@@ -1312,7 +1333,12 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
         Ok(active) => {
             let level = active.level.clone();
             let stop = active.stop_signal();
+            // Y3-F — the clock the ceiling watchdog measures against.
+            let started = active.started_at();
             *state.recorder.lock() = Some(active);
+            // Y3-F: a fresh take starts un-warned, so the ceiling notice belongs
+            // to THIS take and never leaks in from the last one.
+            *state.session_cap_warned.lock() = false;
             *state.recording.lock() = true;
             // YV95 — the pill's hover watch must keep its fast cadence for a
             // take even when a meeting is recording underneath it.
@@ -1335,11 +1361,42 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // immediately (it used to keep drawing for up to one frame after the
             // hold, and the zeroing frame landed that late too).
             let app_lv = app.clone();
+            // Y3-F: the ceiling watchdog rides this thread rather than getting one
+            // of its own. It already ticks at HUD cadence, it already holds the
+            // take's stop signal, and it already dies with the take — so the
+            // ceiling costs no thread, and a stop lands within one HUD frame of
+            // `record::MAX_SESSION` instead of within a 60 s watchdog interval.
+            let state_lv = state.clone();
             std::thread::spawn(move || {
                 use std::sync::atomic::Ordering;
                 loop {
                     let v = level.load(Ordering::Relaxed) as f64 / 1000.0;
                     let _ = app_lv.emit("audio_level", v);
+                    let warned = *state_lv.session_cap_warned.lock();
+                    match record::session_cap_tick(started.elapsed(), warned) {
+                        record::SessionCapAction::Continue => {}
+                        record::SessionCapAction::Warn => {
+                            *state_lv.session_cap_warned.lock() = true;
+                            log::info!(
+                                "session ceiling: {}s in, warning once ({}s ceiling)",
+                                record::SESSION_WARN_AT.as_secs(),
+                                record::MAX_SESSION_SECONDS
+                            );
+                            emit_status(&app_lv, &state_lv);
+                        }
+                        record::SessionCapAction::Stop => {
+                            log::info!(
+                                "session ceiling: {}s reached — stopping cleanly and transcribing",
+                                record::MAX_SESSION_SECONDS
+                            );
+                            // The SAME path the hotkey release takes: the take is
+                            // finalized, cut at a VAD boundary if one is inside the
+                            // grace window, and transcribed. It is never discarded
+                            // and never surfaced as an error.
+                            stop_and_transcribe(app_lv.clone(), state_lv.clone());
+                            break;
+                        }
+                    }
                     if stop.wait_stopped(HUD_FRAME) {
                         break;
                     }
@@ -4583,6 +4640,7 @@ pub fn run() {
         recording: PLMutex::new(false),
         busy: PLMutex::new(false),
         hands_free: PLMutex::new(false),
+        session_cap_warned: PLMutex::new(false),
         command_selection: PLMutex::new(None),
         recorder: PLMutex::new(None),
         saved_audio: PLMutex::new(None),
@@ -5637,31 +5695,37 @@ mod tests {
     // Mac, where that path was the non-functional Command Line Tools shim.
     #[test]
     fn status_says_model_needed_until_a_model_is_ready() {
-        let no_model = status_message(false, false, false, false, None, false, true, false, "fn⌃");
+        let no_model = status_message(
+            false, false, false, false, None, false, true, false, "fn⌃", false,
+        );
         assert!(no_model.contains("Model needed"), "{no_model}");
         assert!(!no_model.contains("Ready"), "{no_model}");
 
-        let ready = status_message(false, false, false, false, None, true, true, false, "fn⌃");
+        let ready = status_message(
+            false, false, false, false, None, true, true, false, "fn⌃", false,
+        );
         assert!(ready.starts_with("Ready — hold fn⌃"), "{ready}");
 
         // Accessibility is a paste-only concern: still Ready, with a nudge.
-        let no_ax = status_message(false, false, false, false, None, true, false, false, "fn⌃");
+        let no_ax = status_message(
+            false, false, false, false, None, true, false, false, "fn⌃", false,
+        );
         assert!(no_ax.starts_with("Ready —"), "{no_ax}");
         assert!(no_ax.contains("Accessibility"), "{no_ax}");
 
         // Live states and hard errors still outrank the model gate.
+        assert!(status_message(
+            true, false, false, false, None, false, true, false, "fn⌃", false
+        )
+        .contains("Recording"));
         assert!(
-            status_message(true, false, false, false, None, false, true, false, "fn⌃")
-                .contains("Recording")
-        );
-        assert!(
-            status_message(true, true, false, false, None, false, true, false, "fn⌃")
+            status_message(true, true, false, false, None, false, true, false, "fn⌃", false)
                 .contains("Hands-free")
         );
-        assert!(
-            status_message(false, false, true, false, None, false, true, false, "fn⌃")
-                .contains("Transcribing")
-        );
+        assert!(status_message(
+            false, false, true, false, None, false, true, false, "fn⌃", false
+        )
+        .contains("Transcribing"));
         let err = status_message(
             false,
             false,
@@ -5672,6 +5736,7 @@ mod tests {
             true,
             false,
             "fn⌃",
+            false,
         );
         assert_eq!(err, "Error: boom");
     }
@@ -5680,20 +5745,23 @@ mod tests {
     // idle line must never keep advertising the key — it must name the cause.
     #[test]
     fn status_reports_secure_input_instead_of_advertising_the_dead_hotkey() {
-        let blocked = status_message(false, false, false, false, None, true, true, true, "fn⌃");
+        let blocked = status_message(
+            false, false, false, false, None, true, true, true, "fn⌃", false,
+        );
         assert_eq!(blocked, crate::secure_input::BLOCKED_MESSAGE);
         assert!(!blocked.contains("Ready"), "{blocked}");
 
         // It also outranks the model gate — pointing a user at a download does
         // not fix a keyboard they cannot reach the app with.
-        let blocked_no_model =
-            status_message(false, false, false, false, None, false, true, true, "fn⌃");
+        let blocked_no_model = status_message(
+            false, false, false, false, None, false, true, true, "fn⌃", false,
+        );
         assert_eq!(blocked_no_model, crate::secure_input::BLOCKED_MESSAGE);
 
         // But a live take and a real error still win: those describe what just
         // happened, not an instruction the user cannot follow.
         assert!(
-            status_message(true, false, false, false, None, true, true, true, "fn⌃")
+            status_message(true, false, false, false, None, true, true, true, "fn⌃", false)
                 .contains("Recording")
         );
         assert_eq!(
@@ -5706,16 +5774,17 @@ mod tests {
                 true,
                 true,
                 true,
-                "fn⌃"
+                "fn⌃",
+                false
             ),
             "Error: boom"
         );
 
         // Cleared → straight back to the normal Ready line.
-        assert!(
-            status_message(false, false, false, false, None, true, true, false, "fn⌃")
-                .starts_with("Ready — hold fn⌃")
-        );
+        assert!(status_message(
+            false, false, false, false, None, true, true, false, "fn⌃", false
+        )
+        .starts_with("Ready — hold fn⌃"));
     }
 
     // --- YV80 lazy ASR load ------------------------------------------------
@@ -5821,16 +5890,22 @@ mod tests {
     /// been decoded yet is the dead air this replaces.
     #[test]
     fn busy_says_preparing_while_the_engine_is_still_loading() {
-        let loading = status_message(false, false, true, true, None, true, true, false, "fn⌃");
+        let loading = status_message(
+            false, false, true, true, None, true, true, false, "fn⌃", false,
+        );
         assert_eq!(loading, ENGINE_PREPARING_MESSAGE);
 
         // Once it is resident the same busy take reads as a decode again.
-        let decoding = status_message(false, false, true, false, None, true, true, false, "fn⌃");
+        let decoding = status_message(
+            false, false, true, false, None, true, true, false, "fn⌃", false,
+        );
         assert!(decoding.contains("Transcribing"), "{decoding}");
 
         // A load that overlaps the hold is invisible: the user is talking, and
         // the recording line is still the true one.
-        let recording = status_message(true, false, false, true, None, true, true, false, "fn⌃");
+        let recording = status_message(
+            true, false, false, true, None, true, true, false, "fn⌃", false,
+        );
         assert!(recording.contains("Recording"), "{recording}");
     }
 
@@ -6510,6 +6585,7 @@ mod tests {
             recording: super::PLMutex::new(false),
             busy: super::PLMutex::new(false),
             hands_free: super::PLMutex::new(false),
+            session_cap_warned: super::PLMutex::new(false),
             command_selection: super::PLMutex::new(None),
             recorder: super::PLMutex::new(None),
             saved_audio: super::PLMutex::new(None),
