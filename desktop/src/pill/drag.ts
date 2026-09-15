@@ -17,6 +17,7 @@
  * survives a restart and the picker follows.
  */
 import { useMemo, useRef } from "react";
+import { EXPANDED_CLASSES, HOVER_ATTR, publishedHitbox, type HoverPhase } from "./hitbox";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -98,24 +99,54 @@ export function reportPillHitbox(x: number, y: number, w: number, h: number): vo
 }
 
 /**
+ * Is the capsule at full size right now? Y5-E: derived from the SAME class list
+ * and attribute float.css keys its expanded geometry off, so the rect handed to
+ * the NSPanel and the box CSS paints can never disagree about which state the
+ * pill is in.
+ */
+export function pillHoverPhase(el: HTMLElement): HoverPhase {
+  if (el.getAttribute(HOVER_ATTR) === "expanded") return "expanded";
+  return EXPANDED_CLASSES.some((c) => el.classList.contains(c)) ? "expanded" : "collapsed";
+}
+
+/**
  * Track a DOM-laid-out capsule's rect and keep the backend current. Resizes come
  * from the capsule's own expand/collapse transition; the `data-dock` attribute
  * moves it sideways without resizing it, so watch that too. Returns a teardown.
+ *
+ * Y5-E — what gets published is `publishedHitbox()`, not the bare rect: while
+ * the capsule is expanded float.css paints an invisible `inset: -12px` alpha
+ * margin around it (`.pill::before`), and the panel's mouse region has to be
+ * that same box. If it were not, the cursor drifting off the capsule into its
+ * own margin would leave the OS-level hot region, the webview would stop
+ * receiving pointermove, and the hover machine would never see the samples that
+ * are supposed to keep it expanded — the margin would be worse than none.
+ * Collapsed, no `::before` exists and none is published, so an idle 16px seed
+ * has no 12px dead zone around it. The element's own `class` and
+ * `data-hover` are watched because a phase flip changes the published rect
+ * even when the element has not finished resizing.
  */
 export function watchPillHitbox(el: HTMLElement): () => void {
   const push = () => {
     const r = el.getBoundingClientRect();
-    reportPillHitbox(r.left, r.top, r.width, r.height);
+    const box = publishedHitbox(
+      { x: r.left, y: r.top, w: r.width, h: r.height },
+      pillHoverPhase(el),
+    );
+    reportPillHitbox(box.x, box.y, box.w, box.h);
   };
   push();
   const ro = new ResizeObserver(push);
   ro.observe(el);
   const mo = new MutationObserver(push);
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-dock"] });
+  const phaseMo = new MutationObserver(push);
+  phaseMo.observe(el, { attributes: true, attributeFilter: ["class", HOVER_ATTR] });
   window.addEventListener("resize", push);
   return () => {
     ro.disconnect();
     mo.disconnect();
+    phaseMo.disconnect();
     window.removeEventListener("resize", push);
   };
 }

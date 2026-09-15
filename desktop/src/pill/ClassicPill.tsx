@@ -13,6 +13,7 @@ import {
 } from "./live";
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
+import { createHoverMachine, HOVER_ATTR, type HoverPhase, type Rect } from "./hitbox";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
 /**
@@ -77,6 +78,9 @@ export default function ClassicPill(
 ) {
   const [status, setStatus] = useState<AppStatus>({ recording: false, busy: false, message: "Ready" });
   const [done, setDone] = useState(false);
+  // Y5-E — the hover machine's phase, stamped onto the capsule as data-hover so
+  // float.css owns the geometry and the alpha margin off one attribute.
+  const [hover, setHover] = useState<HoverPhase>("collapsed");
   const levelRef = useRef(0);
   const smoothRef = useRef(0);
   const pillRef = useRef<HTMLDivElement | null>(null);
@@ -92,9 +96,49 @@ export default function ClassicPill(
 
   // YV65 — publish the capsule's rect so the panel only takes the cursor over
   // the pill itself; the transparent shadow margin stays click-through.
+  // Y5-E — and drive hover expand/collapse through the hysteresis machine, so a
+  // pill docked flush against a screen edge cannot oscillate. Expand fires on
+  // the first sample inside the capsule (no lag); collapse only once the cursor
+  // has been outside the EXPANDED box — capsule plus its invisible 12px alpha
+  // margin — for `collapseDebounceMs`. The rect fed in is the LIVE rect, which
+  // is the collapsed capsule while collapsed and the grown one while expanded,
+  // so the hot region is always exactly what float.css is painting.
   useEffect(() => {
     const el = pillRef.current;
-    return el ? watchPillHitbox(el) : undefined;
+    if (!el) return;
+    const stopHitbox = watchPillHitbox(el);
+    const machine = createHoverMachine();
+    let timer: number | null = null;
+    const rectOf = (): Rect => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left, y: r.top, w: r.width, h: r.height };
+    };
+    const clear = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+    };
+    const feed = (x: number, y: number) => {
+      const now = performance.now();
+      if (machine.push(rectOf(), { x, y, t: now })) setHover(machine.phase);
+      clear();
+      const due = machine.collapseAt;
+      // The cursor can simply STOP outside the box, and a pointer that stopped
+      // sends no more events — so one timer re-feeds the last position when the
+      // pending collapse is due. Exactly one timer is ever armed.
+      if (due !== null) timer = window.setTimeout(() => { timer = null; feed(x, y); }, Math.max(0, due - now));
+    };
+    const onMove = (e: PointerEvent) => feed(e.clientX, e.clientY);
+    const onOut = () => { clear(); if (machine.reset()) setHover(machine.phase); };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerleave", onOut);
+    window.addEventListener("blur", onOut);
+    return () => {
+      clear();
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerleave", onOut);
+      window.removeEventListener("blur", onOut);
+      stopHitbox();
+    };
   }, []);
 
   useEffect(() => {
@@ -238,6 +282,7 @@ export default function ClassicPill(
         ref={pillRef}
         className={cls}
         data-phase={PHASE_ID[gate]}
+        {...{ [HOVER_ATTR]: hover }}
         data-sprite={art.sprite}
         data-motion={art.motion}
         role="button"

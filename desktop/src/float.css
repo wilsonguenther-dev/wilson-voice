@@ -80,18 +80,42 @@ body,
     gap 0.3s ease,
     padding 0.3s ease;
 }
-/* Expand to the full "radio pill" on activity (listening / transcribing / done). */
+/* Expand to the full "radio pill" on activity (listening / transcribing / done),
+   and on hover — Y5-E, where the hover is gated by the hysteresis machine in
+   pill/hitbox.ts rather than by :hover, so the pill cannot oscillate. */
 .pill.live,
 .pill.busy,
-.pill.done {
+.pill.done,
+.pill[data-hover="expanded"] {
   height: 44px;
   min-width: 200px;
   gap: 10px;
   padding: 0 14px 0 8px;
 }
+/* Y5-E — THE ALPHA HIT MARGIN. An invisible 12px ring around the capsule,
+ * painted ONLY while the capsule is expanded. The conditionality IS the fix:
+ * painted always it is a 12px dead zone swallowing clicks around an idle 16px
+ * seed; painted never, the cursor that just triggered an expand falls outside
+ * the grown capsule and the pill flickers expand/collapse forever against a
+ * screen edge. rgba(0,0,0,0.004) is non-zero so the box is a real hit target and
+ * low enough to be invisible over any wallpaper. pill/hitbox.ts publishes this
+ * exact rect to the NSPanel (publishedHitbox), so the OS mouse region and this
+ * box are the same box. Deliberately NOT pointer-events: none — unlike ::after,
+ * being clickable is the entire point. */
+.pill.live::before,
+.pill.busy::before,
+.pill.done::before,
+.pill[data-hover="expanded"]::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  border-radius: 34px; /* 22px capsule radius + the 12px margin */
+  background: rgba(0, 0, 0, 0.004);
+  z-index: -1;
+}
 /* control button is fully OUT of layout at rest (not width:0 — that left a sliver
    + negative margin that shoved the seed off-center). It reappears when expanded. */
-.pill:not(.live):not(.busy):not(.done) .ctrl {
+.pill:not(.live):not(.busy):not(.done):not([data-hover="expanded"]) .ctrl {
   display: none;
 }
 .pill::after {
