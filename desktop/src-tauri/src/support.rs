@@ -760,9 +760,33 @@ pub fn os_version() -> String {
 /// free text about a device name.
 pub fn permissions_block(report: &crate::permissions::PermissionReport) -> String {
     format!(
-        "accessibility: {}\nmicrophone: {}\nasr_model_ready: {}\nasr_detail: {}\nall_critical_ok: {}\n",
-        report.accessibility, report.microphone, report.asr_ok, report.asr_detail, report.all_critical_ok
+        "accessibility: {}\nmicrophone: {}\nasr_model_ready: {}\nasr_detail: {}\nall_critical_ok: {}\n{}",
+        report.accessibility,
+        report.microphone,
+        report.asr_ok,
+        report.asr_detail,
+        report.all_critical_ok,
+        tap_health_lines()
     )
+}
+
+/// Y1-A — how often macOS switched the push-to-talk tap off and we switched it
+/// back on. It belongs in the permissions block because a dead tap and a revoked
+/// Accessibility grant look IDENTICAL from the user's chair, and this is the one
+/// line that tells the two apart in a support bundle.
+fn tap_health_lines() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let h = crate::ptt_macos::tap_health();
+        format!(
+            "tap_re_arms: {}\ntap_re_arms_by_timeout: {}\ntap_re_arms_by_user_input: {}\n",
+            h.re_arms, h.by_timeout, h.by_user_input
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        String::new()
+    }
 }
 
 /// Which models are on disk. "Yap cannot transcribe" is a catalog question

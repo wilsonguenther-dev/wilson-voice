@@ -117,8 +117,12 @@ pub mod power;
 // truncate-and-warn budget fitting all live here, and
 // `tests/summarize_grammar_chain.rs` holds them to their contract.
 pub mod polish_protocol;
+// Public since Y1-A: the tap-disable classifier and the session's tap-health
+// counters are asserted by `tests/tap_health.rs`, which cannot reach a private
+// module — and a claim about a hotkey that silently stops listening is exactly
+// the kind that must be testable without a window server.
 #[cfg(target_os = "macos")]
-mod ptt_macos;
+pub mod ptt_macos;
 mod record;
 // YV92 — rate conversion and the anti-alias filter that now sits in front of
 // it. Public for the same reason `input_format` is: the ≥20 dB-at-10 kHz claim
@@ -472,6 +476,12 @@ pub struct AppStatus {
     /// state for a model that is still coming off disk.
     #[serde(default)]
     pub engine_loading: bool,
+    /// Y1-A — macOS switched the CGEvent tap off (slow callback, sleep/wake, or
+    /// a user-input flood) and we switched it back on. `None` for a healthy
+    /// session AND for the first re-arm, which is silent by design; `Some` from
+    /// the second one, when a tap that keeps dying is a fault worth surfacing.
+    #[serde(default)]
+    pub tap_health_message: Option<String>,
 }
 
 struct AppState {
@@ -802,6 +812,13 @@ fn build_status(state: &AppState) -> AppStatus {
     let ready = model_ready(state);
     let secure = state.secure_input.lock().clone();
     let engine_loading = state.transcription.is_loading();
+    // Y1-A: the tap-health line rides on the same `status` event the pill
+    // already listens to, so PERM-C's denied-state surface renders it without a
+    // second channel.
+    #[cfg(target_os = "macos")]
+    let tap_health_message = ptt_macos::tap_health_message(ptt_macos::tap_health());
+    #[cfg(not(target_os = "macos"))]
+    let tap_health_message: Option<String> = None;
     let message = status_message(
         recording,
         hands_free,
@@ -825,6 +842,7 @@ fn build_status(state: &AppState) -> AppStatus {
         secure_input_blocked: secure.blocked,
         secure_input_detail: secure.blocked.then(|| secure.detail()),
         engine_loading,
+        tap_health_message,
     }
 }
 
