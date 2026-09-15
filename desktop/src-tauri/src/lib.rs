@@ -1551,17 +1551,33 @@ fn transcribe_native(
         .filter(|l| !l.is_empty())
         .map(str::to_string);
     let decode_started = std::time::Instant::now();
-    let text = manager.transcribe(samples, language, bias_prompt)?;
+    // Y3-B: the whole take, windowed when it is long enough to be near the
+    // per-call wall. A short take is the exact same single `transcribe` call
+    // this line used to be; a long one decodes in windows under a PER-CHUNK
+    // budget and comes back partial rather than empty if a window dies.
+    let take = manager.transcribe_take(samples, language, bias_prompt)?;
     let decode_ms = decode_started.elapsed().as_millis() as i64;
-    if text.trim().is_empty() {
+    if take.windowed {
+        log::info!(
+            "dictation decoded in {} window(s), {} failed, degraded={}",
+            take.chunks_total,
+            take.chunks_failed,
+            take.degraded
+        );
+    }
+    if take.text.trim().is_empty() {
         return Err("Empty transcript".into());
     }
     Ok(transcription::AsrOutput {
-        text,
+        text: take.text,
         backend: "native".into(),
         seconds: started.elapsed().as_secs_f64(),
         load_ms,
         decode_ms,
+        degraded: take.degraded,
+        chunks: take.chunks_total,
+        chunks_failed: take.chunks_failed,
+        degraded_reason: take.degraded_reason,
     })
 }
 
@@ -1787,6 +1803,39 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &settings.language,
                 bias_prompt,
             )?;
+            // Y3-B — a DEGRADED take is text the user keeps AND audio we refuse
+            // to throw away: some window of it never decoded, so the recovery
+            // row (YV52/YV66's Recover path) is what lets them retry the same
+            // audio instead of re-speaking eleven minutes of it.
+            if asr.degraded {
+                let reason = asr
+                    .degraded_reason
+                    .clone()
+                    .unwrap_or_else(|| "some of this take did not decode".to_string());
+                match pending.take() {
+                    Some((clip, speech_seconds, src)) => {
+                        let kept = keep_failed_take(
+                            &db,
+                            &recovery_dir(),
+                            clip,
+                            speech_seconds,
+                            src,
+                            &reason,
+                        );
+                        log::warn!(
+                            "degraded take ({}/{} windows failed) — clip preserved for retry: {}",
+                            asr.chunks_failed,
+                            asr.chunks,
+                            kept.is_some()
+                        );
+                    }
+                    None => log::warn!(
+                        "degraded take ({}/{} windows failed) — no clip to preserve",
+                        asr.chunks_failed,
+                        asr.chunks
+                    ),
+                }
+            }
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
             let mut raw_text = asr.text;

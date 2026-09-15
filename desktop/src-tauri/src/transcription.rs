@@ -39,6 +39,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::asr_engine;
+use crate::meeting_asr;
 
 /// Unload a warm engine after this long without a transcription (Handy's
 /// default model-unload timeout).
@@ -127,6 +128,129 @@ pub const ENGINE_HANDBACK_WAIT: Duration =
     Duration::from_secs(MAX_SANCTIONED_CHUNK_DECODE_SECONDS as u64);
 /// How often that wait re-checks the slot.
 const ENGINE_HANDBACK_POLL: Duration = Duration::from_millis(5);
+
+// ---------------------------------------------------------------------------
+// Y3-B — DICTATION CHUNKING: the 120 s wall becomes a PER-CHUNK budget
+// ---------------------------------------------------------------------------
+//
+// Before this, a take was ONE `transcribe` call under [`TRANSCRIBE_TIMEOUT`].
+// The timeout is per *call*, so a take long enough to trip it lost EVERYTHING —
+// there was no partial result to keep, and the wall did not move when the take
+// got longer.
+//
+// MEASURED (2026-09-12, see `docs/BUDGETS.md`): a 601 s 16 kHz mono WAV through
+// the shipped headless path returned in 30.5 s INCLUDING model load — a
+// real-time factor of ~19.7x. So the 120 s wall sits around 45 minutes of
+// audio, not four; the cliff is real but far out. That is why the threshold
+// below is DERIVED from that measurement rather than set to the chunk width:
+// ordinary dictation must keep taking the byte-identical single-call path, and
+// only a take that is genuinely in the neighbourhood of the wall gets windowed.
+//
+// Nothing here re-implements chunking. The geometry
+// ([`meeting_asr::plan_windows_fixed`]), the window shape
+// ([`meeting_asr::ChunkWindow`]), the per-chunk record
+// ([`meeting_asr::ChunkOutcome`]) and the seam dedupe + merge
+// ([`meeting_asr::assemble`]) are the meeting path's, called — not copied.
+
+/// The real-time factor a decode is assumed to achieve, measured rather than
+/// guessed: 601 s of audio decoded in 30.5 s of wall clock including the model
+/// load. Used ONLY to place [`DICTATION_CHUNK_THRESHOLD_SECONDS`].
+pub const DICTATION_MEASURED_RTF: f64 = 19.7;
+
+/// How much of the measured headroom we refuse to spend. A thermally throttled
+/// laptop, a cold Metal warm-up and a busy machine are all slower than the
+/// bench that produced [`DICTATION_MEASURED_RTF`], so the threshold sits at a
+/// quarter of where the wall actually is.
+pub const DICTATION_CHUNK_SAFETY_FACTOR: f64 = 4.0;
+
+/// A take longer than this decodes in WINDOWS; anything shorter takes the
+/// single-call path that shipped before Y3-B, byte for byte.
+///
+/// Derived, not chosen: `120 s * 19.7 / 4` ≈ 591 s ≈ 9.8 minutes. The ten-minute
+/// take is exactly the case the audit measured, and it is the first one that
+/// wants a partial result more than it wants one atomic decode.
+pub const DICTATION_CHUNK_THRESHOLD_SECONDS: f64 =
+    TRANSCRIBE_TIMEOUT.as_secs() as f64 * DICTATION_MEASURED_RTF / DICTATION_CHUNK_SAFETY_FACTOR;
+
+/// Dictation is 16 kHz mono f32 everywhere above the capture layer.
+pub const DICTATION_CHUNK_SAMPLE_RATE: u32 = 16_000;
+
+/// How the dictation path chunks a long take. A struct rather than four loose
+/// constants so a test can shrink the threshold and the windows without
+/// touching the shipped numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DictationChunking {
+    /// Takes at or below this decode in ONE call (the pre-Y3-B path).
+    pub threshold_seconds: f64,
+    /// The window geometry — the meeting path's, deliberately.
+    pub config: meeting_asr::ChunkConfig,
+    pub sample_rate: u32,
+}
+
+impl Default for DictationChunking {
+    fn default() -> Self {
+        DictationChunking {
+            threshold_seconds: DICTATION_CHUNK_THRESHOLD_SECONDS,
+            // The SAME geometry meetings use, so `ChunkConfig::validate` — and
+            // therefore `MAX_SANCTIONED_CHUNK_DECODE_SECONDS` — governs both
+            // callers. One chunker means one set of numbers to be wrong.
+            config: meeting_asr::ChunkConfig::default(),
+            sample_rate: DICTATION_CHUNK_SAMPLE_RATE,
+        }
+    }
+}
+
+/// The planner signature both callers resolve to. Exposed so
+/// `chunker_has_exactly_one_implementation` can compare addresses rather than
+/// trust a comment.
+pub type WindowPlanner = fn(
+    f64,
+    meeting_asr::ResumePoint,
+    &meeting_asr::ChunkConfig,
+    usize,
+) -> Vec<meeting_asr::ChunkWindow>;
+
+/// The one window planner the dictation path uses. It IS
+/// [`meeting_asr::plan_windows_fixed`] — the same function the meeting path
+/// falls back to when no VAD is available, not a copy of it.
+pub fn dictation_window_planner() -> WindowPlanner {
+    meeting_asr::plan_windows_fixed
+}
+
+/// What a finished take produced, once a take can be PARTLY successful.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictationTake {
+    pub text: String,
+    /// True when at least one window failed, the whole-take deadline tripped,
+    /// or the merge could not anchor a seam. The take is still returned — the
+    /// caller keeps the clip so the user can retry the audio.
+    pub degraded: bool,
+    /// False on the single-call path, true when the take was windowed.
+    pub windowed: bool,
+    pub chunks_total: usize,
+    pub chunks_failed: usize,
+    /// The first thing that went wrong, for the log and the recovery row. Never
+    /// carries transcript text.
+    pub degraded_reason: Option<String>,
+}
+
+impl DictationTake {
+    /// The shape of a take that decoded in one call, as it always has.
+    fn whole(text: String) -> DictationTake {
+        DictationTake {
+            text,
+            degraded: false,
+            windowed: false,
+            chunks_total: 1,
+            chunks_failed: 0,
+            degraded_reason: None,
+        }
+    }
+}
+
+/// What a window records when the WHOLE-TAKE deadline stopped the run before it
+/// was ever handed to the engine.
+pub const TAKE_DEADLINE_EXCEEDED: &str = "whole-take deadline exceeded before this window decoded";
 
 /// How often [`TranscriptionManager::drain_and_unload`] re-checks the lease.
 const DRAIN_POLL: Duration = Duration::from_millis(10);
@@ -225,6 +349,15 @@ pub struct AsrOutput {
     pub load_ms: i64,
     /// YV40 latency span: the decode itself, in ms (excludes the load above).
     pub decode_ms: i64,
+    /// Y3-B — some window of this take did not decode. The text is real and is
+    /// pasted; the clip is kept so the user can retry the audio.
+    pub degraded: bool,
+    /// Windows this take decoded in. `1` on the single-call path.
+    pub chunks: usize,
+
+    pub chunks_failed: usize,
+    /// Never carries transcript text.
+    pub degraded_reason: Option<String>,
 }
 
 /// The warm engine plus the catalog id it was loaded from.
@@ -1033,6 +1166,188 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 // ---------------------------------------------------------------------------
 // Tests (stub engine — no model file download, no network)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Y3-B — the windowed take
+// ---------------------------------------------------------------------------
+
+impl TranscriptionManager {
+    /// Transcribe a whole take, windowing it when it is long enough to be near
+    /// the per-call wall (Y3-B).
+    ///
+    /// Short takes are UNCHANGED: the same [`transcribe`](Self::transcribe)
+    /// call, the same interactive claim, the same non-preemptible lease, the
+    /// same bytes out. Only a take past
+    /// [`DICTATION_CHUNK_THRESHOLD_SECONDS`] takes the new path.
+    pub fn transcribe_take(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<DictationTake, String> {
+        self.transcribe_take_with(
+            samples_16k_mono,
+            language,
+            bias_prompt,
+            &DictationChunking::default(),
+        )
+    }
+
+    /// [`transcribe_take`](Self::transcribe_take) with the chunking injected —
+    /// the seam the Y3-B tests drive.
+    pub fn transcribe_take_with(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+        plan: &DictationChunking,
+    ) -> Result<DictationTake, String> {
+        let rate = plan.sample_rate.max(1) as f64;
+        let total_seconds = samples_16k_mono.len() as f64 / rate;
+        if total_seconds <= plan.threshold_seconds {
+            // THE UNCHANGED PATH. Not "equivalent to" the old call — it is the
+            // old call, so a single-window take cannot drift from the fixtures.
+            return self
+                .transcribe(samples_16k_mono, language, bias_prompt)
+                .map(DictationTake::whole);
+        }
+        plan.config.validate()?;
+        let windows = dictation_window_planner()(
+            total_seconds,
+            meeting_asr::ResumePoint::start(),
+            &plan.config,
+            0,
+        );
+        if windows.len() <= 1 {
+            // The geometry did not actually split it; take the old path rather
+            // than run a one-window "merge" that can only differ.
+            return self
+                .transcribe(samples_16k_mono, language, bias_prompt)
+                .map(DictationTake::whole);
+        }
+
+        // THE DEADLINES. `transcribe_timeout` is now spent PER WINDOW, so a
+        // longer take simply gets more budget instead of hitting a fixed wall.
+        // The whole-take deadline is the separate, generous backstop the item
+        // asks for: it is derived from the chunk count (so it scales with the
+        // take and is never a fixed number), and it exists to surface time
+        // burned OUTSIDE the decodes — handback waits, engine reloads, a
+        // pathological load loop — which the per-window bound cannot see.
+        let per_chunk = self.inner.transcribe_timeout;
+        let take_deadline = per_chunk
+            .checked_mul(windows.len() as u32)
+            .and_then(|d| d.checked_add(per_chunk))
+            .unwrap_or(Duration::MAX);
+        let started = Instant::now();
+
+        let mut outcomes: Vec<meeting_asr::ChunkOutcome> = Vec::with_capacity(windows.len());
+        let mut decoded = 0usize;
+        let mut first_error: Option<String> = None;
+        let mut deadline_tripped = false;
+        for window in &windows {
+            if deadline_tripped || started.elapsed() >= take_deadline {
+                // PARTIAL RESULT, not a lost take: every window already decoded
+                // stays in `outcomes` and is merged below.
+                deadline_tripped = true;
+                first_error.get_or_insert_with(|| TAKE_DEADLINE_EXCEEDED.to_string());
+                outcomes.push(meeting_asr::ChunkOutcome::failed(
+                    window,
+                    TAKE_DEADLINE_EXCEEDED.to_string(),
+                ));
+                continue;
+            }
+            let slice = window_samples(&samples_16k_mono, window, rate);
+            match self.transcribe_timed_interactive(slice, language.clone(), bias_prompt.clone()) {
+                Ok(transcript) => {
+                    decoded += 1;
+                    outcomes.push(meeting_asr::ChunkOutcome::from_transcript(
+                        window, transcript,
+                    ));
+                }
+                Err(e) => {
+                    // Chunk 9 of 12 failing costs chunk 9, not the take.
+                    log::warn!("dictation chunk {} failed: {e}", window.index);
+                    first_error.get_or_insert_with(|| e.clone());
+                    outcomes.push(meeting_asr::ChunkOutcome::failed(window, e));
+                }
+            }
+        }
+
+        if decoded == 0 {
+            // Nothing survived — this is an ordinary failed take, and the
+            // caller's existing error path (which keeps the clip) is right.
+            return Err(first_error.unwrap_or_else(|| "transcription failed".to_string()));
+        }
+
+        let total = outcomes.len();
+        let transcript = meeting_asr::assemble(outcomes, 0, decoded, 0, deadline_tripped);
+        let mut degraded_reason = first_error;
+        // FAIL LOUDLY when neither seam rule could settle a boundary. The timed
+        // merge is exact; the text-anchor fallback reports every seam it could
+        // not anchor, and an unanchored seam means the incoming chunk was
+        // appended WHOLE — i.e. its overlap is still in the text. Silently
+        // doubling a phrase at every seam is the behaviour being deleted, so
+        // this marks the take degraded rather than pretending it is clean.
+        if !transcript.timestamps_are_real && transcript.merge.no_anchor_seams > 0 {
+            let seams = transcript.merge.no_anchor_seams;
+            log::error!(
+                "dictation seam dedupe had no evidence at {seams} seam(s): no timestamps and no text anchor"
+            );
+            degraded_reason.get_or_insert_with(|| {
+                format!("seam dedupe had no timestamps and no text anchor at {seams} seam(s)")
+            });
+        }
+        let failed = transcript.chunks_failed;
+        Ok(DictationTake {
+            text: transcript.text,
+            degraded: failed > 0 || deadline_tripped || degraded_reason.is_some(),
+            windowed: true,
+            chunks_total: total,
+            chunks_failed: failed,
+            degraded_reason,
+        })
+    }
+
+    /// A TIMED decode with dictation's priority (Y3-B).
+    ///
+    /// Deliberately NOT [`transcribe_timed`](Self::transcribe_timed), which is
+    /// the meeting's decode: that one raises no interactive claim and IS
+    /// preemptible. A dictation window must keep the priority
+    /// [`transcribe`](Self::transcribe) has — claim raised before the engine is
+    /// taken (so an in-flight meeting chunk is cancelled) and a NON-preemptible
+    /// lease (this audio exists nowhere a meeting could re-read it) — while
+    /// still returning the alignment the seam merge needs.
+    fn transcribe_timed_interactive(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+    ) -> Result<asr_engine::TimedTranscript, String> {
+        if samples_16k_mono.is_empty() {
+            self.touch();
+            return Ok(asr_engine::TimedTranscript::text_only(String::new()));
+        }
+        let _claim = self.claim_interactive();
+        self.leased(false, move |engine| {
+            engine.transcribe_timed(
+                &samples_16k_mono,
+                language.as_deref(),
+                bias_prompt.as_deref(),
+            )
+        })
+    }
+}
+
+/// The samples one window decodes: `[audio_start, audio_end)` clamped to the
+/// buffer. The window already carries the overlap, so this is a plain slice —
+/// the overlap is removed by the MERGE, on time, exactly as it is for a meeting.
+fn window_samples(samples: &[f32], window: &meeting_asr::ChunkWindow, rate: f64) -> Vec<f32> {
+    let start = (window.audio_start_seconds.max(0.0) * rate).round() as usize;
+    let end = (window.audio_end_seconds.max(0.0) * rate).round() as usize;
+    let start = start.min(samples.len());
+    let end = end.clamp(start, samples.len());
+    samples[start..end].to_vec()
+}
 
 #[cfg(test)]
 mod tests {

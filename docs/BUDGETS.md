@@ -120,3 +120,39 @@ the parent, so neither model is counted as lazily-mapped-and-untouched pages.
 
 This is also why the polish model is not resident at launch: 1.28 GiB for a stage nobody has
 invoked yet.
+
+---
+
+## asr_decode_real_time_factor
+
+**Measured on:** the same M4 Pro, 2026-09-12, by the PANEL pass that scoped `Y3-B`.
+
+A 601-second WAV (241x the `quick-brown-fox-16k.wav` fixture, 16 kHz mono) was pushed through the
+shipped headless path — `./target/debug/wilson-voice --transcribe-file <601s.wav>` — and returned
+exit 0.
+
+| quantity | value |
+|---|---|
+| audio decoded | 601.0 s |
+| wall clock, **including** model load | 30.5 s |
+| words returned | ~1 900 |
+| **real-time factor** | **~19.7x** (audio seconds per wall second) |
+
+This is the number `TRANSCRIBE_TIMEOUT` has to be read against, and reading it changes the shape of
+the problem. At 19.7x a 120 s per-call ceiling is roughly **forty-five minutes** of audio, not four
+— consistent with `transcription.rs`'s own note that "a 60 s take is ~1 s on Metal". So the wall is
+real but far out, and the thing that actually broke at ten minutes was not the timeout.
+
+Two consumers of this row:
+
+* **`Y3-B` (shipped).** `DICTATION_CHUNK_THRESHOLD_SECONDS` is *derived* from it —
+  `TRANSCRIBE_TIMEOUT * 19.7 / 4` ≈ **591 s** (~9.8 min). The divisor is headroom we refuse to
+  spend: a thermally throttled laptop, a cold Metal warm-up and a busy machine are all slower than
+  this bench. Under the threshold a take decodes in one call exactly as it always did; over it, the
+  take decodes in windows and the 120 s budget is spent **per window**, so a longer take gets more
+  budget instead of meeting a fixed wall.
+* **`Y3-F`.** The declared maximum session length must be derived from this row rather than
+  asserted, so that the number in the product copy is one somebody took.
+
+Caveat, stated rather than buried: this is a single measurement on one machine, on a debug build,
+with the model load folded in. It bounds the order of magnitude — it is not a distribution.
