@@ -117,6 +117,15 @@ pub struct FailedDictation {
     pub source_app: Option<String>,
     /// When the take was SPOKEN — a retry keeps this, not the retry instant.
     pub created_at: DateTime<Utc>,
+    /// DB-B — the id the take's audio carries on disk, when this row came from
+    /// a take that was recovered rather than one that failed in a live
+    /// session. It is the join key into `take_chunks`.
+    pub take_id: Option<String>,
+    /// DB-B — the words this take had ALREADY produced before it died, joined
+    /// in chunk order. `None` for a take that never got far enough to decode a
+    /// chunk. Read-only: the UI shows it so "Finish transcribing" is an offer
+    /// with visible substance, and the retry path resumes from it.
+    pub partial_text: Option<String>,
 }
 
 /// YV52 — how long a failed take's audio is kept before it is purged, matching
@@ -655,6 +664,35 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_failed_dictations_created
               ON failed_dictations(created_at DESC);
+
+            -- DB-B long-take recovery: the text of each chunk of a long
+            -- dictation, written as that chunk finishes decoding rather than
+            -- at the end of the take. A take that dies half-decoded therefore
+            -- leaves its already-decoded words HERE, in the WAL-backed store,
+            -- instead of only in the process that died.
+            --
+            -- `take_id` is the `<id>` in `<id>.in_progress.json` /
+            -- `<id>.capture.wav` — the same id the audio on disk carries, which
+            -- is what lets the launch sweep pair words with sound.
+            --
+            -- `end_sample` is where this chunk ENDED in the take's 16 kHz
+            -- audio. It is what makes Finish transcribing a resume rather
+            -- than a replay: the retry decodes from the last persisted
+            -- `end_sample` onward and keeps the words that already exist.
+            --
+            -- THIS TABLE HOLDS TRANSCRIPT TEXT. It is listed in
+            -- `clear_transcripts` for exactly that reason, and it never reaches
+            -- a log line or a support bundle.
+            CREATE TABLE IF NOT EXISTS take_chunks (
+              take_id TEXT NOT NULL,
+              chunk_index INTEGER NOT NULL,
+              text TEXT NOT NULL,
+              end_sample INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (take_id, chunk_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_take_chunks_created
+              ON take_chunks(created_at);
             -- YV48 snippets: trigger phrase → expansion text. `trigger` is a
             -- SQL keyword, hence the column name; the struct field is `trigger`.
             CREATE TABLE IF NOT EXISTS snippets (
@@ -757,6 +795,12 @@ impl Database {
             [],
         );
         let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN feedback INTEGER", []);
+        // DB-B: a failed/recovered take remembers the id its audio carries on
+        // disk, so the launch sweep can pair it with the chunk text that take
+        // had already produced. Nullable — rows written before this existed
+        // (and every take that failed live, where the audio was never orphaned)
+        // simply have no partial text to find.
+        let _ = conn.execute("ALTER TABLE failed_dictations ADD COLUMN take_id TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1276,9 +1320,15 @@ impl Database {
     ///     terms are the user's own vocabulary and survive.
     ///   * `daily_stats` — counts only, but it IS the history rollup, so it
     ///     goes with the rows it was computed from.
+    ///   * `take_chunks` (DB-B) — the per-chunk text of a long take that never
+    ///     finished. These ARE dictated words, sitting in a table the user
+    ///     never sees as "history", which is exactly why they have to go: an
+    ///     "erase everything" that leaves a half-transcribed take behind has
+    ///     not erased everything.
     ///
-    /// Deliberately NOT touched: `failed_dictations` (YV52) stores a WAV path
-    /// and the engine's error string, never transcript text, and its clips are
+    /// Deliberately NOT touched: `failed_dictations` (YV52) stores a WAV path,
+    /// a take id and the engine's error string, never transcript text (its
+    /// words live in `take_chunks`, which IS cleared above), and its clips are
     /// the user's only copy of a take that was never transcribed;
     /// `dict_candidates`, `snippets` and `scratchpad` are text the user typed,
     /// with their own delete paths; `crash_events` is built from an allowlist
@@ -1307,6 +1357,9 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
             tx.execute("DELETE FROM daily_stats", [])
+                .map_err(|e| e.to_string())?;
+            // DB-B — see the doc comment: this table holds transcript text.
+            tx.execute("DELETE FROM take_chunks", [])
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
 
@@ -2069,19 +2122,39 @@ impl Database {
         error: &str,
         source_app: Option<String>,
     ) -> Result<FailedDictation, String> {
-        let row = FailedDictation {
+        self.record_failed_dictation_for_take(wav_path, speech_seconds, error, source_app, None)
+    }
+
+    /// DB-B — the same write, for a take RECOVERED off disk rather than one
+    /// that failed in a live session: it carries the id its audio is named
+    /// with, which is the join key into `take_chunks`.
+    ///
+    /// This is the real function and the four-argument form above delegates to
+    /// it — a live failure is simply the case where there is no take id,
+    /// because nothing was ever orphaned to pair words with.
+    pub fn record_failed_dictation_for_take(
+        &self,
+        wav_path: &Path,
+        speech_seconds: f64,
+        error: &str,
+        source_app: Option<String>,
+        take_id: Option<String>,
+    ) -> Result<FailedDictation, String> {
+        let mut row = FailedDictation {
             id: Uuid::new_v4().to_string(),
             wav_path: wav_path.to_string_lossy().to_string(),
             speech_seconds: speech_seconds.max(0.0),
             error: error.to_string(),
             source_app,
             created_at: Utc::now(),
+            take_id,
+            partial_text: None,
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO failed_dictations
-             (id, wav_path, speech_seconds, error, source_app, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (id, wav_path, speech_seconds, error, source_app, created_at, take_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 row.id,
                 row.wav_path,
@@ -2089,51 +2162,205 @@ impl Database {
                 row.error,
                 row.source_app,
                 row.created_at.to_rfc3339(),
+                row.take_id,
             ],
         )
         .map_err(|e| e.to_string())?;
+        fill_partial_text(&conn, std::slice::from_mut(&mut row))?;
         Ok(row)
+    }
+
+    // --- DB-B: per-chunk text for a long take ------------------------------
+    //
+    // The contract in one place, because three call sites depend on it:
+    //
+    //   * A chunk is written the MOMENT it decodes, not at the end of the take.
+    //     That is the entire point — the WAL is what survives a kill -9, and a
+    //     Vec<String> in the decoder is what does not.
+    //   * `end_sample` is the take-relative sample offset the chunk ENDS at, so
+    //     a resume decodes the remainder instead of replaying the whole clip.
+    //   * A take that COMPLETES clears its chunks (`clear_take_chunks`). A
+    //     completed take must leave nothing recoverable behind, or the next
+    //     launch offers the user a take they already have in History.
+
+    /// Persist one finished chunk of a take's text. Idempotent on
+    /// `(take_id, chunk_index)`: a re-decode of the same chunk replaces it
+    /// rather than doubling the words.
+    ///
+    /// **Its producer is Y3-B's chunked dictation decode**, which is not on
+    /// `main` yet — the dictation path still decodes a take in one shot, so
+    /// there is nothing here to call this once per chunk. It is written now,
+    /// with the read half (`take_partial_text`, `take_resume_sample`,
+    /// `crate::recover_dictation`) live and wired into startup, because the
+    /// recovery contract is the thing that has to exist BEFORE the producer
+    /// does: a chunk loop that has nowhere durable to put its output is a chunk
+    /// loop that loses the take all over again. `tests/long_take_recovery.rs`
+    /// drives exactly the call shape that loop will use.
+    pub fn record_take_chunk(
+        &self,
+        take_id: &str,
+        chunk_index: i64,
+        text: &str,
+        end_sample: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO take_chunks (take_id, chunk_index, text, end_sample, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(take_id, chunk_index) DO UPDATE SET
+               text = excluded.text,
+               end_sample = excluded.end_sample",
+            params![
+                take_id,
+                chunk_index,
+                text,
+                end_sample.max(0),
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The take's already-decoded words, joined in chunk order, or `None` when
+    /// it never produced a chunk.
+    pub fn take_partial_text(&self, take_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut rows = vec![FailedDictation {
+            id: String::new(),
+            wav_path: String::new(),
+            speech_seconds: 0.0,
+            error: String::new(),
+            source_app: None,
+            created_at: Utc::now(),
+            take_id: Some(take_id.to_string()),
+            partial_text: None,
+        }];
+        fill_partial_text(&conn, &mut rows)?;
+        Ok(rows.remove(0).partial_text)
+    }
+
+    /// Where a resume should start decoding: the highest `end_sample` the take
+    /// has persisted, or 0 when it has none.
+    pub fn take_resume_sample(&self, take_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT COALESCE(MAX(end_sample), 0) FROM take_chunks WHERE take_id = ?1",
+            params![take_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Drop a take's chunk text. Called when the take COMPLETES (so it leaves
+    /// nothing recoverable) and when its recovery row is retried or discarded.
+    pub fn clear_take_chunks(&self, take_id: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM take_chunks WHERE take_id = ?1",
+            params![take_id],
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Retention — drop chunk text older than `cutoff`, on the SAME 7-day
+    /// window the audio lives on. Without this the words would outlive the
+    /// sound they came from, which is both a privacy leak and unbounded growth
+    /// in a table nothing else ever deletes from.
+    pub fn purge_take_chunks(&self, cutoff: DateTime<Utc>) -> Result<usize, String> {
+        let stale: Vec<String> = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT take_id, created_at FROM take_chunks")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            // Instants, not strings — same reason as `purge_failed_dictations`.
+            rows.flatten()
+                .filter(|(_, created)| parse_dt(created.clone()) < cutoff)
+                .map(|(take_id, _)| take_id)
+                .collect()
+        };
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut purged = 0usize;
+        for take_id in &stale {
+            purged += tx
+                .execute(
+                    "DELETE FROM take_chunks WHERE take_id = ?1",
+                    params![take_id],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(purged)
     }
 
     /// YV52 — recoverable takes, newest first.
     pub fn list_failed_dictations(&self) -> Result<Vec<FailedDictation>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at
-                 FROM failed_dictations ORDER BY created_at DESC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], map_failed_dictation)
-            .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r.map_err(|e| e.to_string())?);
+        {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {FAILED_DICTATION_COLUMNS}
+                     FROM failed_dictations ORDER BY created_at DESC"
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], map_failed_dictation)
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                out.push(r.map_err(|e| e.to_string())?);
+            }
         }
+        // DB-B — the offer the UI renders has to carry the words the take
+        // already produced, or "Finish transcribing" is a button with nothing
+        // behind it.
+        fill_partial_text(&conn, &mut out)?;
         Ok(out)
     }
 
     /// YV52 — one recoverable take, or `None` once it has been retried/discarded.
     pub fn get_failed_dictation(&self, id: &str) -> Result<Option<FailedDictation>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at
-             FROM failed_dictations WHERE id = ?1",
-            params![id],
-            map_failed_dictation,
-        )
-        .optional()
-        .map_err(|e| e.to_string())
+        let row = conn
+            .query_row(
+                &format!("SELECT {FAILED_DICTATION_COLUMNS} FROM failed_dictations WHERE id = ?1"),
+                params![id],
+                map_failed_dictation,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut rows = [row];
+        fill_partial_text(&conn, &mut rows)?;
+        let [row] = rows;
+        Ok(Some(row))
     }
 
     /// YV52 — drop a recoverable take. Returns the WAV path that is now orphaned
     /// so the caller can unlink the audio (the row is the only reference to it).
     pub fn delete_failed_dictation(&self, id: &str) -> Result<Option<String>, String> {
-        let path = self.get_failed_dictation(id)?.map(|r| r.wav_path);
+        let row = self.get_failed_dictation(id)?;
+        let path = row.as_ref().map(|r| r.wav_path.clone());
+        let take_id = row.and_then(|r| r.take_id);
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
+        // DB-B — discarding a take discards its words too. Chunk text outliving
+        // the row that pointed at it is transcript text nothing can reach and
+        // nothing will ever delete.
+        if let Some(take_id) = take_id {
+            conn.execute(
+                "DELETE FROM take_chunks WHERE take_id = ?1",
+                params![take_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Ok(path)
     }
 
@@ -2142,10 +2369,10 @@ impl Database {
     /// pass `Utc::now() - Duration::days(FAILED_TAKE_RETENTION_DAYS)`; the seam
     /// exists so the cutoff itself is testable without waiting a week.
     pub fn purge_failed_dictations(&self, cutoff: DateTime<Utc>) -> Result<Vec<String>, String> {
-        let stale: Vec<(String, String)> = {
+        let stale: Vec<(String, String, Option<String>)> = {
             let conn = self.conn.lock().map_err(|e| e.to_string())?;
             let mut stmt = conn
-                .prepare("SELECT id, wav_path, created_at FROM failed_dictations")
+                .prepare("SELECT id, wav_path, created_at, take_id FROM failed_dictations")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([], |r| {
@@ -2153,14 +2380,15 @@ impl Database {
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?;
             // Compare as instants, not as strings: created_at is RFC3339 but the
             // offset is not guaranteed to be the same on every row.
             rows.flatten()
-                .filter(|(_, _, created)| parse_dt(created.clone()) < cutoff)
-                .map(|(id, wav, _)| (id, wav))
+                .filter(|(_, _, created, _)| parse_dt(created.clone()) < cutoff)
+                .map(|(id, wav, _, take_id)| (id, wav, take_id))
                 .collect()
         };
         let mut purged = Vec::with_capacity(stale.len());
@@ -2171,9 +2399,19 @@ impl Database {
             // row survived.
             let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
-            for (id, wav) in stale {
+            for (id, wav, take_id) in stale {
                 tx.execute("DELETE FROM failed_dictations WHERE id = ?1", params![id])
                     .map_err(|e| e.to_string())?;
+                // DB-B — the words go with the sound, in the SAME transaction.
+                // A purged clip whose partial text survived would leave History
+                // offering a take whose audio is gone.
+                if let Some(take_id) = take_id {
+                    tx.execute(
+                        "DELETE FROM take_chunks WHERE take_id = ?1",
+                        params![take_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
                 purged.push(wav);
             }
             tx.commit().map_err(|e| e.to_string())?;
@@ -3269,7 +3507,11 @@ fn map_crash_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CrashEvent> {
 }
 
 fn map_failed_dictation(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailedDictation> {
-    // id, wav_path, speech_seconds, error, source_app, created_at
+    // id, wav_path, speech_seconds, error, source_app, created_at, take_id
+    //
+    // `partial_text` is NOT a column: it is joined in afterwards by
+    // `fill_partial_text`, under the same lock, so the chunk order it is built
+    // from is `ORDER BY chunk_index` and not whatever a group_concat felt like.
     Ok(FailedDictation {
         id: row.get(0)?,
         wav_path: row.get(1)?,
@@ -3277,7 +3519,43 @@ fn map_failed_dictation(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailedDicta
         error: row.get(3)?,
         source_app: row.get(4)?,
         created_at: parse_dt(row.get::<_, String>(5)?),
+        take_id: row.get(6)?,
+        partial_text: None,
     })
+}
+
+/// The columns `map_failed_dictation` reads, in its order. Spelled once so a
+/// new column cannot be added to one query and forgotten in the other.
+const FAILED_DICTATION_COLUMNS: &str =
+    "id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at, take_id";
+
+/// DB-B — join each row's persisted chunk text onto it, in chunk order.
+///
+/// Separate from the row query on purpose: a `group_concat` in SQLite has no
+/// guaranteed order, and "the user's words, in an order SQLite did not promise"
+/// is a worse outcome than no offer at all.
+fn fill_partial_text(conn: &Connection, rows: &mut [FailedDictation]) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT text FROM take_chunks WHERE take_id = ?1 ORDER BY chunk_index")
+        .map_err(|e| e.to_string())?;
+    for row in rows.iter_mut() {
+        let Some(take_id) = row.take_id.clone() else {
+            continue;
+        };
+        let parts = stmt
+            .query_map(params![take_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| e.to_string())?;
+        let joined = parts
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        row.partial_text = (!joined.is_empty()).then_some(joined);
+    }
+    Ok(())
 }
 
 fn percentile_ms(sorted: &[i64], p: f64) -> i64 {
