@@ -769,22 +769,22 @@ impl CleanupLevel {
     }
 
     /// Vocabulary/dictionary replacement runs at every level except `None`.
-    fn runs_dictionary(self) -> bool {
+    pub fn runs_dictionary(self) -> bool {
         self != CleanupLevel::None
     }
     /// Backtrack (filler removal + spoken self-correction) runs from `Light` up.
-    fn runs_backtrack(self) -> bool {
+    pub fn runs_backtrack(self) -> bool {
         matches!(
             self,
             CleanupLevel::Light | CleanupLevel::Medium | CleanupLevel::High
         )
     }
     /// Smart formatting (list detection) runs from `Medium` up.
-    fn runs_format(self) -> bool {
+    pub fn runs_format(self) -> bool {
         matches!(self, CleanupLevel::Medium | CleanupLevel::High)
     }
     /// The local-LLM polish stage runs only at `High`.
-    fn runs_llm(self) -> bool {
+    pub fn runs_llm(self) -> bool {
         self == CleanupLevel::High
     }
 }

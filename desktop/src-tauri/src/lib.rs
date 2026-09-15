@@ -49,6 +49,9 @@ pub mod diarize_protocol;
 // trying to infer a sleep duration from the outside.
 pub mod float_pill;
 mod focus;
+/// Y4-H — the formatting screen's copy, derived from the pipeline's own
+/// `runs_*` predicates so it cannot drift from what the pipeline does.
+pub mod formatting_options;
 // YV73: the disk sweep + the memory telemetry line. Pure selection rules, so
 // "what may I delete" is testable without a filesystem — see the module docs.
 mod hygiene;
@@ -2449,7 +2452,7 @@ fn persist_settings(settings: &AppSettings) -> Result<(), String> {
 ///    then renamed over the target, so a crash or power loss mid-write leaves
 ///    either the old file or the new one — never the truncated file that the
 ///    loader would have to quarantine.
-fn write_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String> {
+pub fn write_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String> {
     let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
     if let (Some(next), Some(prev)) = (
         value.as_object_mut(),
@@ -2493,7 +2496,7 @@ fn write_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String
 /// * one bad field → `salvage_settings` keeps every other stored field;
 /// * an older schema → `apply_settings_migrations` upgrades it and rewrites the
 ///   file once, atomically.
-fn load_settings(path: &Path) -> AppSettings {
+pub fn load_settings(path: &Path) -> AppSettings {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return AppSettings::default();
     };
@@ -2617,6 +2620,15 @@ fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json::Va
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
+}
+
+/// Y4-H — the formatting screen asks the backend what the levels MEAN instead
+/// of carrying its own copy of the answer. Every string here is built from
+/// `dictation::CleanupLevel`'s `runs_*` predicates and `polish::POLISH_SPEEDS`,
+/// so a pipeline change updates the screen on the same commit.
+#[tauri::command]
+fn formatting_options() -> formatting_options::FormattingOptions {
+    formatting_options::formatting_options()
 }
 
 #[tauri::command]
@@ -4777,6 +4789,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             user_display_name,
             get_settings,
+            formatting_options,
             save_settings,
             pill_set_hitbox,
             pill_drag_start,

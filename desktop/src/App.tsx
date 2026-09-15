@@ -15,6 +15,14 @@ import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
 import { PermissionHealthRow } from "./PermissionHealthRow";
 import DiffView from "./DiffView";
+// Y4-H — the formatting screen's copy is derived from the pipeline's own
+// `runs_*` predicates in the backend, so it cannot drift from what the pipeline
+// actually does. Nothing here retypes a level's behaviour.
+import {
+  levelNeedsPolishModel,
+  selectedSpeed,
+  useFormattingOptions,
+} from "./formatting";
 import type { GrantStatus, PermissionGrantRow } from "./permission";
 // YV95 — the meeting status shape and its label rules are shared with the pill
 // (src/pill/meeting.ts) so the two surfaces cannot render the same second
@@ -192,6 +200,13 @@ interface AppSettings {
    * reaches the RULES (the trailing-period rule R3), not just the local model.
    */
   polishStyles?: Record<string, string>;
+  /**
+   * Y4-H — the local model's hard deadline for one take (backend
+   * `polish_deadline_ms`, bounded 100..5000). Never shown as a millisecond
+   * field: the screen writes one of `polish::POLISH_SPEEDS`' three named values
+   * (Fast / Balanced / Careful) and reads the nearest one back.
+   */
+  polishDeadlineMs?: number;
   /**
    * The sign-off block appended to a take (backend `signature`, YV62 / R13),
    * e.g. "Wilson — drivia.consulting". Empty by default. Pasted byte for byte
@@ -851,6 +866,10 @@ export default function App() {
   // SEC-C — the OPTIONAL polish model. No `autoDownload` twin: nothing here
   // fetches 1.1 GB unless the user presses the button in Settings → Advanced.
   const polishSetup = usePolishModel();
+
+  // Y4-H — the level labels, their one-line descriptions, and the three named
+  // polish speeds, all built backend-side from `CleanupLevel::runs_*`.
+  const formatting = useFormattingOptions();
 
   // Read the live query without making `refreshAll` depend on it — otherwise the
   // mount effect that registers event listeners re-runs on every keystroke,
@@ -3842,65 +3861,105 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                  {/* Y4-H — controls first, prose last. The question is "how
+                      much should Yap clean up?", not "what is cleanup_level?",
+                      and every description below is built backend-side from the
+                      SAME `CleanupLevel::runs_*` predicates `run_cleanup`
+                      branches on. That is why the stale "the AI polish pass
+                      isn't wired up yet" line is gone and cannot come back: no
+                      string here describes a stage, so none can go out of date.
+                      The stored KEY (`cleanupLevel`: none|light|medium|high) is
+                      untouched — only the label a person reads changed. */}
                   <div className="panel">
-                    <h3>Auto-cleanup</h3>
-                    <p>
-                      How much Yap tidies each transcript. None pastes your exact
-                      words; higher levels drop “um”s, fix things you re-said,
-                      and format the result. Your words are never dropped — Yap
-                      keeps the raw take too, so you can undo the edit with
-                      ⌃⌘Z, the menu-bar “Undo AI Edit” item, or “Paste raw” in
-                      History.
-                    </p>
+                    <h3>How much should Yap clean up?</h3>
                     <div className="profile-row">
-                      {/* YV51 — blurbs describe what each level ACTUALLY runs
-                          today. The local-LLM polish stage is still a no-op
-                          stub (dictation::polish_llm), so High currently
-                          behaves exactly like Medium and must say so rather
-                          than advertise an "AI polish" that never runs. */}
-                      {(
-                        [
-                          ["none", "None", "Exactly as spoken, word for word"],
-                          [
-                            "light",
-                            "Light",
-                            "Your dictionary words, minus “um”s and things you re-said",
-                          ],
-                          [
-                            "medium",
-                            "Medium",
-                            "Light, plus spoken lists become real lists",
-                          ],
-                          [
-                            "high",
-                            "High",
-                            "Same as Medium for now — the AI polish pass isn’t wired up yet",
-                          ],
-                        ] as const
-                      ).map(([id, label, blurb]) => (
+                      {formatting.cleanupLevels.map((level) => (
                         <button
-                          key={id}
+                          key={level.id}
                           type="button"
                           className={
-                            (settings.cleanupLevel ?? "light") === id
+                            (settings.cleanupLevel ?? "light") === level.id
                               ? "profile active"
                               : "profile"
                           }
                           onClick={() =>
-                            saveSettings({ ...settings, cleanupLevel: id })
+                            saveSettings({
+                              ...settings,
+                              cleanupLevel: level.id,
+                            })
                           }
                         >
-                          <strong>{label}</strong>
-                          <span>{blurb}</span>
+                          <strong>{level.label}</strong>
+                          <span>{level.description}</span>
+                          {level.needsPolishModel && (
+                            <span className="muted tiny">
+                              {polishSetup.active
+                                ? "Uses the local model you installed"
+                                : "Needs the local model — install it below"}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
+                    {levelNeedsPolishModel(
+                      settings.cleanupLevel ?? "light",
+                      formatting.cleanupLevels,
+                    ) &&
+                      !polishSetup.active && (
+                        <p className="muted">
+                          No local model is installed, so this setting behaves
+                          like the one before it until you install one under “AI
+                          polish model” below.
+                        </p>
+                      )}
+                    {/* Y4-H — `polish_deadline_ms` was invisible: a bounded
+                        number (100..5000) no screen showed. It is a named
+                        choice now, and only where it can change anything. */}
+                    {levelNeedsPolishModel(
+                      settings.cleanupLevel ?? "light",
+                      formatting.cleanupLevels,
+                    ) &&
+                      polishSetup.active && (
+                        <>
+                          <h4>How long may the model think?</h4>
+                          <div className="profile-row">
+                            {formatting.polishSpeeds.map((speed) => (
+                              <button
+                                key={speed.id}
+                                type="button"
+                                className={
+                                  selectedSpeed(
+                                    settings.polishDeadlineMs,
+                                    formatting.polishSpeeds,
+                                  ) === speed.id
+                                    ? "profile active"
+                                    : "profile"
+                                }
+                                onClick={() =>
+                                  saveSettings({
+                                    ...settings,
+                                    polishDeadlineMs: speed.deadlineMs,
+                                  })
+                                }
+                              >
+                                <strong>{speed.label}</strong>
+                                <span>{speed.description}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    <p className="muted">
+                      Your words are never lost — Yap keeps the raw take too, so
+                      you can undo the edit with ⌃⌘Z, the menu-bar “Undo AI
+                      Edit” item, or “Paste raw” in History.
+                    </p>
                   </div>
                   {/* YV62 (R14) — the tone dial, per surface. It reaches the
                       rules, not just the local model: Formal keeps the full
                       stop, Very Casual drops it everywhere. */}
                   <div className="panel">
-                    <h3>Tone</h3>
+                    <h3>How should Yap sound in each app?</h3>
                     <p>
                       How formal each surface sounds. The dial only changes
                       capitalisation and punctuation — never your words. Formal
@@ -3944,7 +4003,7 @@ export default function App() {
                   {/* YV62 (R13) — the sign-off block. Opt-in, and pasted byte
                       for byte after every other stage so nothing rewrites it. */}
                   <div className="panel">
-                    <h3>Signature</h3>
+                    <h3>Should Yap sign off for you?</h3>
                     <p>
                       Your sign-off block, pasted exactly as you type it here.
                       It is added last, after everything else, so nothing
