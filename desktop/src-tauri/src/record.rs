@@ -1004,6 +1004,12 @@ pub struct RecoveredTake {
     pub wav_path: PathBuf,
     /// Length of the recovered audio, for the failed-dictation row.
     pub seconds: f64,
+    /// DB-B — the take's own id, i.e. the `<id>` in `<id>.in_progress.json` /
+    /// `<id>.capture.wav`. It is the ONLY thing that ties audio recovered off
+    /// disk to the chunk text `take_chunks` persisted while the take was still
+    /// being decoded; without it a recovered wav and its partial words are two
+    /// unrelated artefacts in the same directory.
+    pub take_id: String,
 }
 
 /// Pure predicate (mirrors `is_stale_wav`): does this dir entry name an
@@ -1092,6 +1098,86 @@ fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, Str
     Ok(Some(RecoveredTake {
         wav_path,
         seconds: samples.len() as f64 / sample_rate as f64,
+        take_id: id.to_string(),
+    }))
+}
+
+/// DB-B — the OTHER half of what a dead long take leaves behind.
+///
+/// Y3-A spills a take's frames to `<recordings>/<id>.capture.wav` as they
+/// arrive and, when the take dies mid-flight, [`SpillWriter::drop`] finalizes
+/// the header and moves that file into the recovery dir. Its name is
+/// deliberately not a journal marker, so [`recover_orphaned_journals`] walks
+/// straight past it — which until now meant NOTHING read it back. The audio sat
+/// in the recovery dir until the 7-day sweep deleted it, and the user's words
+/// with it.
+///
+/// This turns each orphaned spill into `<id>.wav`, exactly the shape a recovered
+/// journal produces, so it joins the ONE recovery lifecycle that already exists
+/// (a `failed_dictations` row, the retry path's gates, the 7-day purge) instead
+/// of growing a second one beside it.
+///
+/// Best-effort, like every other recovery step here: a spill that cannot be
+/// finalized is LEFT ON DISK for the next launch rather than deleted.
+pub fn recover_orphaned_spills(dir: &Path) -> Vec<RecoveredTake> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut recovered = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(id) = spill_take_id(&name) else {
+            continue;
+        };
+        let spill = entry.path();
+        match finalize_orphaned_spill(&spill, id) {
+            Ok(Some(take)) => recovered.push(take),
+            Ok(None) => {}
+            Err(e) => log::warn!(
+                "DB-B orphaned spill {} not recovered ({e}) — left for the next launch",
+                spill.display()
+            ),
+        }
+    }
+    recovered
+}
+
+/// Pure predicate (mirrors [`is_journal_marker`]): the take id inside
+/// `<id>.capture.wav`, or `None` for anything else in the directory.
+fn spill_take_id(name: &str) -> Option<&str> {
+    let suffix = const_spill_suffix();
+    let id = name.strip_suffix(suffix)?;
+    (!id.is_empty()).then_some(id)
+}
+
+/// `".capture.wav"` — the dot belongs to the separator, not to the extension
+/// constant, which is why this is spelled once here rather than at each use.
+fn const_spill_suffix() -> &'static str {
+    ".capture.wav"
+}
+
+/// Turn ONE orphaned spill into `<id>.wav`. `Ok(None)` means there was nothing
+/// worth recovering (a stray tap under the same floor the journal path uses, or
+/// a take the journal path already rebuilt); `Err` leaves the spill in place.
+fn finalize_orphaned_spill(spill: &Path, id: &str) -> Result<Option<RecoveredTake>, String> {
+    let wav_path = spill.with_file_name(format!("{id}.wav"));
+    if wav_path.exists() {
+        // The journal path already rebuilt this take. One take, one row — drop
+        // the duplicate audio rather than offering the same words twice.
+        let _ = std::fs::remove_file(spill);
+        return Ok(None);
+    }
+    let samples = read_wav_16k_mono(spill)?;
+    if samples.len() < MIN_CLIP_SAMPLES {
+        let _ = std::fs::remove_file(spill);
+        return Ok(None);
+    }
+    write_wav_i16(&wav_path, TARGET_RATE, &samples)?;
+    let _ = std::fs::remove_file(spill);
+    Ok(Some(RecoveredTake {
+        wav_path,
+        seconds: samples.len() as f64 / TARGET_RATE as f64,
+        take_id: id.to_string(),
     }))
 }
 

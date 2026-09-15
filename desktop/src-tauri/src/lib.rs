@@ -2472,24 +2472,139 @@ const CRASH_RECOVERY_ERROR: &str = "recovered after crash";
 /// be turned into a row has its wav removed rather than left as audio nothing
 /// can reach. Returns how many takes were recovered.
 fn recover_crashed_takes(db: &Database, dir: &Path) -> usize {
+    adopt_recovered_takes(
+        db,
+        record::recover_orphaned_journals(dir),
+        CRASH_RECOVERY_ERROR,
+        "YV63 crash recovery",
+    )
+}
+
+/// The error a take recovered from its Y3-A spill carries in History. Distinct
+/// from [`CRASH_RECOVERY_ERROR`] because it is a distinct story: the take was
+/// being DECODED when the app went away, so some of its words already exist.
+const UNFINISHED_TAKE_ERROR: &str = "recovered mid-transcription — not finished";
+
+/// Turn recovered audio into the failed-dictation rows History offers, carrying
+/// each take's id so its persisted chunk text comes back with it.
+///
+/// Shared by both recovery routes on purpose: a journal orphan and a spill
+/// orphan are the same thing to everything downstream (one row, one Retry, one
+/// 7-day window), and the moment they are adopted by two different pieces of
+/// code is the moment they start drifting apart.
+fn adopt_recovered_takes(
+    db: &Database,
+    takes: Vec<record::RecoveredTake>,
+    error: &str,
+    tag: &str,
+) -> usize {
     let mut recovered = 0;
-    for take in record::recover_orphaned_journals(dir) {
-        match db.record_failed_dictation(&take.wav_path, take.seconds, CRASH_RECOVERY_ERROR, None) {
+    for take in takes {
+        match db.record_failed_dictation_for_take(
+            &take.wav_path,
+            take.seconds,
+            error,
+            None,
+            Some(take.take_id.clone()),
+        ) {
             Ok(row) => {
                 recovered += 1;
+                // YV20/M2: the take's WORDS never reach a log line — only how
+                // many characters of them survived.
                 log::info!(
-                    "YV63 crash recovery: take {} ({:.2}s) rebuilt from its capture journal",
+                    "{tag}: take {} ({:.2}s) rebuilt from disk, partial text {} chars",
                     row.id,
-                    take.seconds
+                    take.seconds,
+                    row.partial_text.as_ref().map_or(0, |t| t.chars().count())
                 );
             }
             Err(e) => {
-                log::warn!("YV63 crash recovery: row not written ({e}) — removing rebuilt clip");
+                log::warn!("{tag}: row not written ({e}) — removing rebuilt clip");
                 let _ = std::fs::remove_file(&take.wav_path);
+                // The words are unreachable now that nothing points at them.
+                let _ = db.clear_take_chunks(&take.take_id);
             }
         }
     }
     recovered
+}
+
+/// DB-B — the launch sweep for a LONG take the app died in the middle of.
+///
+/// The pieces all existed and none of them were connected. A long dictation
+/// spills its audio to `recovery/<id>.capture.wav` as it is captured (Y3-A) and
+/// persists each chunk's text to `take_chunks` as it decodes (the DB side of
+/// Y3-B). If the app is killed between those two and the transcript insert,
+/// BOTH artefacts sat on disk and nothing ever read them back: the audio waited
+/// for the 7-day sweep to delete it, and the words waited with it.
+///
+/// This is what reads them back. In order, and the order matters:
+///
+///   1. **Purge first.** Expired takes and their chunk text go before anything
+///      is offered, so the 7-day window bounds this directory whether or not
+///      the user ever opens History, and a take recovered today always gets a
+///      full window rather than inheriting a nearly-expired one.
+///   2. **Journal orphans**, exactly as YV63 already did them.
+///   3. **Spill orphans** — the takes that were being decoded. A take the
+///      journal path already rebuilt is skipped inside
+///      `record::recover_orphaned_spills`, so one take can never become two
+///      rows.
+///
+/// What it deliberately does NOT do:
+///
+///   * **It never decodes.** A cold launch that pins the GPU for four minutes
+///     because the user quit mid-take yesterday is its own bug. The take is
+///     OFFERED; the user presses "Finish transcribing" when they want it.
+///   * **It never pastes.** It takes no `AppHandle`, so it structurally cannot:
+///     pasting recovered words into whatever app happens to be focused minutes
+///     or days later is the wrong behaviour, and it would drive straight
+///     through YV21's paste-target guard.
+///
+/// Returns how many takes are now on offer.
+pub fn recover_dictation(db: &Database, dir: &Path) -> usize {
+    // (1) Retention first — see the doc comment.
+    purge_expired_failed_takes(db);
+    purge_expired_take_chunks(db);
+    // (2) The YV63 route: a take that died while CAPTURING.
+    let from_journals = recover_crashed_takes(db, dir);
+    // (3) The DB-B route: a take that died while DECODING, whose spill the
+    //     journal scan walks straight past.
+    let from_spills = adopt_recovered_takes(
+        db,
+        record::recover_orphaned_spills(dir),
+        UNFINISHED_TAKE_ERROR,
+        "DB-B long-take recovery",
+    );
+    let offered = from_journals + from_spills;
+    if offered > 0 {
+        log::info!(
+            "startup: {offered} dictation(s) offered for recovery ({from_journals} from a capture journal, {from_spills} unfinished mid-transcription) — none decoded, none pasted"
+        );
+    }
+    offered
+}
+
+/// DB-B retention — chunk text lives on the SAME 7-day window as the audio it
+/// came from. This sweeps rows whose take row is already gone (a take adopted
+/// and then discarded, a row that failed to write); the rows that still have an
+/// owner go in `purge_failed_dictations`' own transaction, with their WAV.
+fn purge_expired_take_chunks(db: &Database) -> usize {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(db::FAILED_TAKE_RETENTION_DAYS);
+    match db.purge_take_chunks(cutoff) {
+        Ok(0) => 0,
+        Ok(n) => {
+            log::info!(
+                "DB-B retention: purged partial text for {} take(s) older than {} days",
+                n,
+                db::FAILED_TAKE_RETENTION_DAYS
+            );
+            n
+        }
+        Err(e) => {
+            log::warn!("take-chunk purge skipped: {e}");
+            0
+        }
+    }
 }
 
 /// YV52 — expired recoverable takes are dropped with their audio. Called at
@@ -3081,6 +3196,24 @@ fn retry_failed_dictation(
         return Err("The audio for this take is no longer on disk".into());
     }
     let samples = record::read_wav_16k_mono(&wav)?;
+    // DB-B — "Finish transcribing" is a RESUME, not a replay. A take recovered
+    // mid-decode already has words in `take_chunks` and an `end_sample` saying
+    // how far into its audio they go, so decode the REMAINDER and keep what
+    // exists. Re-decoding from zero would burn the whole clip's GPU time to
+    // reproduce text that is already on disk — and would throw away the
+    // recovered words if this second decode happened to come out worse.
+    let (partial_text, resume_at) = match row.take_id.as_deref() {
+        Some(take_id) => (
+            row.partial_text.clone(),
+            state.db.take_resume_sample(take_id).unwrap_or(0).max(0) as usize,
+        ),
+        None => (None, 0),
+    };
+    let remaining: Vec<f32> = if resume_at < samples.len() {
+        samples[resume_at..].to_vec()
+    } else {
+        Vec::new()
+    };
     let settings = state.settings.lock().clone();
     let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
         return Err("No speech model installed — open Settings → Models and download one.".into());
@@ -3092,18 +3225,52 @@ fn retry_failed_dictation(
             None
         }
     };
-    let asr = transcribe_native(
-        &state.transcription,
-        &model_id,
-        &model_path,
-        samples,
-        &settings.language,
-        bias_prompt,
-        // A retry from History has no live pill to fill: the user is looking at
-        // the history row, not at a recording indicator.
-        &mut transcribe_progress::NoObserver,
-    )?;
-    let mut raw_text = asr.text;
+    // A take whose chunks covered the whole clip has nothing left to decode —
+    // the persisted words ARE the take. Skip the engine rather than handing it
+    // an empty buffer, but still run everything below, because the gate and the
+    // cleanup are what make this text the same kind of text a live take
+    // produces.
+    let asr = if remaining.is_empty() {
+        transcription::AsrOutput {
+            text: String::new(),
+            // The words came off disk, not off the engine — say so rather than
+            // attributing them to a decode that did not happen.
+            backend: "recovered".to_string(),
+            seconds: 0.0,
+            load_ms: 0,
+            decode_ms: 0,
+        }
+    } else {
+        transcribe_native(
+            &state.transcription,
+            &model_id,
+            &model_path,
+            remaining,
+            &settings.language,
+            bias_prompt,
+            // A retry or recovery from History has no live pill to fill: the
+            // user is looking at the history row, not at a recording indicator.
+            &mut transcribe_progress::NoObserver,
+        )?
+    };
+    // The recovered words and the freshly decoded remainder are ONE transcript
+    // from here down. Everything after this line — the hallucination gate, the
+    // dictionary, the cleanup pipeline, the polish pass — sees exactly what it
+    // would have seen had the take never been interrupted.
+    let mut raw_text = match partial_text.as_deref().map(str::trim) {
+        Some(prefix) if !prefix.is_empty() => {
+            let tail = asr.text.trim();
+            if tail.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{prefix} {tail}")
+            }
+        }
+        _ => asr.text,
+    };
+    if raw_text.trim().is_empty() {
+        return Err("There is nothing left to transcribe in this take".into());
+    }
     // The same non-destructive gate as the live path (YV66). It matters MORE
     // here: a successful retry unlinks the recovery wav, so a degenerate tail
     // that slips through is unrecoverable — there is no audio left to try
@@ -3163,7 +3330,13 @@ fn retry_failed_dictation(
         asr.seconds,
         Some(raw_text),
     )?;
-    // The take's audio now follows the normal lifecycle: it is gone.
+    // The take's audio now follows the normal lifecycle: it is gone. Its
+    // partial text goes with it — the words live in `transcripts` now, and a
+    // `take_chunks` row nothing points at is transcript text that would sit in
+    // the DB until the retention sweep found it.
+    if let Some(take_id) = row.take_id.as_deref() {
+        let _ = state.db.clear_take_chunks(take_id);
+    }
     let _ = std::fs::remove_file(&wav);
     let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
     log::info!(
@@ -4740,15 +4913,13 @@ pub fn run() {
             log::warn!("could not record the legacy-migration flag ({e})");
         }
     }
-    // YV52 retention: recoverable takes (and their audio) live 7 days, then go —
-    // same "audio never lingers" rule as the sweep above, just with the window a
-    // retry needs. Runs after the DB is open and before anything can list them.
-    purge_expired_failed_takes(&db);
-    // YV63: anything the previous run was still capturing when it died is on
-    // disk as a spill + an in-progress marker. Rebuild those takes into rows the
-    // user can retry — after the purge, so a freshly recovered take always gets
-    // its own full retention window.
-    let rebuilt = recover_crashed_takes(&db, &recovery_dir());
+    // DB-B: one sweep for everything the previous run left on disk. It purges
+    // on the 7-day window FIRST, then rebuilds both kinds of orphan — a take
+    // that died while capturing (YV63's marker + spill) and a long take that
+    // died while DECODING (Y3-A's spill, plus whatever chunk text it had already
+    // persisted) — into rows the user can finish. It decodes nothing and pastes
+    // nothing; see its doc comment for why both of those are deliberate.
+    let rebuilt = recover_dictation(&db, &recovery_dir());
     if rebuilt > 0 {
         log::info!("startup: recovered {rebuilt} dictation(s) the app died in the middle of");
     }
