@@ -20,7 +20,7 @@ import {
   progressNumeral, resetLive, toChatTone, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
 } from "./live";
-import { type PillLicense } from "./license";
+import { splitValue, type PillLicense } from "./license";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -78,14 +78,15 @@ const DOCK_PAD = 10;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null }: {
+  { gate = "idle", progress = null, license = null }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
     /**
-     * Y2-A — the license as the pill is allowed to say it, already decided by
-     * `pillLicense` in float-main. Accepted here so the wiring is complete and
-     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
-     * this component deliberately does not read it yet.
+     * The answer `pillLicense` already gave, decided once in float-main (Y2-A)
+     * and only RENDERED here (Y2-B) — as a numeral Yappy HOLDS and, at
+     * `urgent`, as a change in how he is standing. Never as a badge: this
+     * pill's whole job is that state reads as character. This component never
+     * reaches for `days_left` and never re-decides whether to speak.
      */
     license?: PillLicense | null;
   },
@@ -98,6 +99,22 @@ export default function YappyPill(
   const drag = usePillDrag();
   // YV95 — a meeting's recording state rides above the canvas as DOM.
   const meeting = useMeetingStatus();
+  // Y2-B — the draw loop is mounted ONCE (deps `[]`), so a prop that has to
+  // reach it rides a ref, exactly like `meetingRef` above. What the canvas takes
+  // from the license is a POSTURE and nothing else: at `urgent` (and once the
+  // trial has actually ended) Yappy's head tufts fold down and his blinks come
+  // further apart. No badge, no pulse, no angry eyebrows — he is a chick who has
+  // noticed the time, which is the loudest this surface is allowed to be
+  // (feedback_companion_must_be_cute).
+  const droopRef = useRef(false);
+  const droop = license?.show === true && license.tone !== "trial";
+  useEffect(() => {
+    droopRef.current = droop;
+    // A settled scene has PARKED its rAF (YV81). Without this wake the new pose
+    // would not be painted until something else happened to wake him, which on
+    // an idle desktop can be minutes.
+    wakeRef.current();
+  }, [droop]);
   // PERM-C — set by the draw effect; called when the gate prop changes.
   const applyGateRef = useRef<(g: LivePhase) => void>(() => {});
   // Y3-C — decode progress reaches the mount-once scene the same way the gate
@@ -147,7 +164,7 @@ export default function YappyPill(
     const ell = (cx: number, cy: number, rx: number, ry: number, col: string) => { octx.fillStyle = col; for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) { const t = (y + .5 - cy) / ry; if (Math.abs(t) > 1) continue; const hw = rx * Math.sqrt(1 - t * t); octx.fillRect(Math.round(cx - hw), y, Math.max(1, Math.round(2 * hw)), 1); } };
     const rct = (x: number, y: number, w: number, h: number, col: string) => { octx.fillStyle = col; octx.fillRect(Math.round(x), Math.round(y), w, h); };
 
-    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean }
+    interface SP { hop: number; sx: number; sy: number; blink: number; mood: number; beakF: number; sway: number; flap: number; world: number; prop: Prop; propIn: number; look: "down" | "fwd"; glasses: boolean; pencil: boolean; droop: boolean }
 
     // the chick — front wing holds a pencil when noting / at the desk
     function drawChick(cx: number, feetY: number, A: SP) {
@@ -155,7 +172,13 @@ export default function YappyPill(
       ell(cx + rx - 1, cy + 2, 4, 3, C.outline); ell(cx + rx - 1, cy + 2, 3, 2, C.dark);              // tail
       ell(cx + rx - 2, cy + 1 - A.flap, 3, 4, C.outline); ell(cx + rx - 2, cy + 1 - A.flap, 2, 3, C.dark); // back wing
       ell(cx, cy, rx + 1, ry + 1, C.outline); ell(cx, cy, rx, ry, C.body); ell(cx - 3, cy - 4, rx - 4, ry - 5, C.light); ell(cx, cy + 5, rx - 5, ry - 5, C.belly);
-      const sw = Math.round(A.sway); rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout);
+      const sw = Math.round(A.sway);
+      // Y2-B — the head tufts are Yappy's ears. Upright at rest; folded flat
+      // against his head once the trial is nearly (or actually) out. This is a
+      // POSE, not an animation: it is a different set of pixels in the same
+      // frame, so it costs the loop nothing and it never moves on its own.
+      if (A.droop) { rct(cx - 3 + sw, cy - ry, 2, 1, C.sprout); rct(cx + 1 + sw, cy - ry - 1, 2, 1, C.sprout); }
+      else { rct(cx - 1 + sw, cy - ry - 2, 1, 3, C.sprout); rct(cx + 1 + sw, cy - ry - 3, 1, 3, C.sprout); }
       const wy = cy + 1 - A.flap;
       ell(cx - rx + 2, wy, 3, 4, C.outline); ell(cx - rx + 2, wy, 2, 3, C.body);
       if (A.pencil) { const px = cx - rx - 1, py = cy + 3; rct(px - 3, py - 3, 1, 1, C.pencilT); rct(px - 2, py - 2, 1, 1, C.pencil); rct(px - 1, py - 1, 1, 1, C.pencil); rct(px, py, 1, 1, C.pencil); rct(px + 1, py + 1, 1, 1, C.dark); }
@@ -348,7 +371,7 @@ export default function YappyPill(
       const dt = Math.min(mode === "ambient" ? .12 : .05, wallDt); tPrev = ts; elapsed += dt; idleFor += dt;
       if (phase === "idle" && idleFor > 12) setPhase("sleepy");
       if (blinkT < 0) { nextBlink -= dt; if (nextBlink <= 0) blinkT = 0; }
-      let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = 2 + Math.random() * 4; } }
+      let blink = 0; if (blinkT >= 0) { blinkT += dt; const d = .13; blink = blinkT < d / 2 ? blinkT / (d / 2) : blinkT < d ? 1 - (blinkT - d / 2) / (d / 2) : 0; if (blinkT > d) { blinkT = -1; nextBlink = (2 + Math.random() * 4) * (droopRef.current ? 1.6 : 1); } }
       const active = phase === "listening" || phase === "thinking" || phase === "done";
       openV = R.open.update(dt, active ? 1 : 0); openV = Math.max(0, Math.min(1, openV));
       // live escalation WHILE talking — the pure machine decides the tier, the
@@ -386,7 +409,7 @@ export default function YappyPill(
       // glasses ride the desk prop (desk/essay tiers), pencil rides the notepad (notes tier) — for both live + transcript tiers
       const glasses = wantProp === "desk" && propV > .5 && phase !== "idle";
       const pencil = wantProp === "pad" && propV > .4 && phase !== "idle";
-      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil });
+      drawScene({ hop: hopPx, sx, sy, blink, mood, beakF: beakFrame, sway, flap, world: openV, prop: wantProp, propIn: propV, look: lookMode, glasses, pencil, droop: droopRef.current });
 
       // ── the capsule + pull-back camera (world fills the whole pill) ──
       ctx.clearRect(0, 0, W, H);
@@ -495,6 +518,30 @@ export default function YappyPill(
         >
           <span className="kami-progress-track" aria-hidden><i /></span>
           <span className="kami-progress-count" aria-hidden>{progressNumeral(progress)}</span>
+        </div>
+      ) : null}
+      {/* Y2-B — the trial numeral, held in Yappy's wing. DOM and not canvas for
+          the same reason the progress count above is: it is text in Departure
+          Mono, so it costs the draw loop nothing, it is selectable by a screen
+          reader, and it survives every frame policy in live.ts — including the
+          reduced-motion one, which stops the loop entirely. A countdown that
+          disappears when the animation does is a countdown nobody can rely on.
+          No motion on it, ever: `urgent` shifts hue, and the POSE above is what
+          actually carries the urgency. Only the value is here — the sentence is
+          the tooltip, because a side dock is a ~30px strip. */}
+      {license?.show ? (
+        <div className={`kami-license kami-license-${license.tone}`} title={license.title} role="note" aria-label={license.title}>
+          {(() => {
+            const sp = splitValue(license.value);
+            return sp ? (
+              <>
+                <span className="kami-license-num">{sp.numeral}</span>
+                {sp.unit ? <span className="kami-license-unit">{sp.unit}</span> : null}
+              </>
+            ) : (
+              <span className="kami-license-glyph" aria-hidden>{license.glyph}</span>
+            );
+          })()}
         </div>
       ) : null}
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
