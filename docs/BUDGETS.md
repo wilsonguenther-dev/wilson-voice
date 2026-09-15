@@ -156,3 +156,94 @@ Two consumers of this row:
 
 Caveat, stated rather than buried: this is a single measurement on one machine, on a debug build,
 with the model load folded in. It bounds the order of magnitude — it is not a distribution.
+
+---
+
+## long_take_budget (Y3-G)
+
+**Measured on:** Apple M4 Pro, 24 GB unified memory, macOS 26.6.2, `aarch64-apple-darwin`,
+`cargo test --features custom-protocol` (dev profile for the app crate, release for the sidecars),
+on AC power, no other load. **Measured at:** 2026-09-15.
+**Falsifier:** `desktop/src-tauri/tests/long_take_budget.rs`. Every number below is a named
+constant in that file; the two that need model weights SKIP with a line that names the missing
+path rather than passing quietly.
+
+```
+cd desktop/src-tauri
+cargo test --features custom-protocol --test long_take_budget -- --nocapture
+```
+
+| budget | measured | ceiling | shape |
+|---|---|---|---|
+| `press_to_capture_start`, spill-writer overhead | **0 ms** (arm p50 44 µs with spill, 0 µs without, n=21) | 25 ms | absolute |
+| `chunk_decode_wall_per_audio_second` | **9.8 ms/s chunked vs 11.8 ms/s single-window — ratio 0.83** (0.68 on an earlier run of the same command; the arms move together) | 1.60× | ratio, same fixture, same run |
+| `progress_events_per_minute_of_audio` | **0/min** — no take-path progress emitter exists on this base | 60/min | ceiling |
+| `resident_bytes_after_a_long_take_return_to_baseline` | **0 bytes** growth after a 20-minute take (peak 76 800 000 B live during it) | 1 MiB | exact, thread-local meter |
+| `peak_resident_bytes_with_asr_and_polish_loaded` | **2 021 864 992 B (1 928.2 MiB)** — ASR delta 904 544 256 B + polish weights floor 1 117 320 736 B | 2 621 440 000 B (2.44 GiB) | ceiling, floor machine |
+| `no_new_polling_timer_was_introduced` | census below, exact match required | allowlist | census |
+
+### The floor machine is named, because a budget without one is a wish
+
+`Y6-E` is the release-engineering item that ratifies it; until it lands, `FLOOR_MACHINE_BYTES` in
+the test is the single place the number is written down: a **fanless 8 GB M1 Air**, which is
+already what `transcription.rs:582`, `tests/meeting_capture_memory.rs` and
+`tests/meeting_no_model_resident.rs` name as the target machine. The footprint ceiling is set at
+2.44 GiB — under a third of that machine's RAM, and ~30% headroom over the 1 928.2 MiB measured
+here. `docs/BUDGETS.md`'s `memory_ceiling` section records the *live-child* composition
+(2 241 462 272 B) measured by `polish_envelope.rs`; Y3-G's test uses the polish weights **file
+size** as the child's floor so it does not have to spawn a sidecar, which is why its number is
+lower. Both are under the ceiling.
+
+### Why the decode budget is a ratio and not a millisecond
+
+A wall-clock decode budget measures the runner's GPU, so it would be a different number on every
+machine and a red gate on the slowest one. The test decodes the committed
+`tests/fixtures/quick-brown-fox-16k.wav`, tiled to 60 s, twice in the same run on the same engine:
+once as one window, once as four 15 s windows. Only the ratio is asserted. The first decode after
+a load is thrown away, because charging the graph build to whichever arm ran first would make the
+ratio an artefact of test ordering.
+
+Chunking measured **faster** than single-window here (0.83), which is not a paradox: the engine's
+cost is superlinear in window length on this model, so four short decodes beat one long one. The
+ceiling is still 1.60 — it exists to catch a chunker that halves throughput, not to reward this
+particular curve.
+
+### Process RSS cannot be asserted inside a shared test binary
+
+The memory test was first written against process RSS and it **failed red on the first run**,
+reporting a 1 824 374 784 B "leak" across one twenty-minute take. There was no leak:
+`cargo test` runs a binary's tests concurrently in one process, and
+`chunk_decode_wall_per_audio_second` had a ~900 MB ASR engine resident at the same moment. That is
+the same defect `tests/meeting_capture_rt_safety.rs` hit with a process-global allocation counter,
+and it has the same fix — the meter is now a **thread-local metering `GlobalAlloc`**, armed for
+exactly the take. It reports 0 bytes of growth against a 76 800 000 B peak during the take, and it
+proves it saw the take before it reports a verdict. RSS is still printed, labelled
+INFORMATIONAL, and asserted on nothing. The two engine-loading tests additionally serialize on one
+mutex, because two engines resident at once is a state no user's machine is ever in.
+
+### The YV81 polling-timer census
+
+`no_new_polling_timer_was_introduced` counts every sub-1000 ms `Duration` **literal** in the three
+modules Y3 touches and compares the counts, exactly, against an allowlist. A second is the line
+because YV81's finding was sub-second wakeups; a 5 s or 60 s deadline is supervision, a 5 ms one in
+a loop is a busy-wait wearing a `Duration`'s clothes. As measured on
+`344a335`:
+
+```
+src/record.rs        {1:1, 2:1, 5:3, 10:3, 60:2, 300:1, 500:4}
+src/transcription.rs {2:2, 5:2, 10:2, 20:2, 50:3, 80:1, 120:1, 150:1, 200:1, 300:1, 400:3}
+src/lib.rs           {5:2, 10:1, 50:1, 100:1, 150:2, 400:1, 500:1}
+```
+
+**Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
+variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
+census against an allowlist and not a proof of absence — it makes the cheap regression (a
+`from_millis(16)` dropped into a decode loop) impossible to land silently, and adding a row is a
+deliberate act that has to be written down here.
+
+### Every scanner in this file falsifies itself first
+
+The emitter scan, the throttle scan and the timer census each run over a synthetic source that
+contains the shape they are meant to catch, and assert they catch it, before they run over the
+real tree. A grep proving absence with the wrong pattern is a green test that guards nothing;
+these three prove the pattern can match the shape feared, not just the shape remembered.
