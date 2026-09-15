@@ -40,6 +40,7 @@ import {
   chipFor,
   daysLeft,
   statusCopy,
+  storedKeyProblem,
   trialCountdown,
   type LicenseStatus,
 } from "../license/status";
@@ -51,10 +52,25 @@ import {
 export const PILL_TRIAL_DAYS = 7;
 
 /**
- * The pill has three voices and no fourth. `licensed` is absent on purpose:
+ * The pill has four voices and no fifth. `licensed` is absent on purpose:
  * a licensed app says NOTHING, so it never needs a tone.
+ *
+ * Y2-F added `problem`, and it is not a shade of `ended` — it is its opposite.
+ * `ended` is addressed to someone who has not paid; `problem` is addressed to
+ * someone who HAS, whose key stopped granting anything (revoked, refunded,
+ * seat-capped, signed for another plan, or unreadable on this Mac). Collapsing
+ * the two is the single most expensive sentence this app can say: it asks a
+ * paying customer to buy the thing they already bought.
  */
-export type PillLicenseTone = "trial" | "urgent" | "ended";
+export type PillLicenseTone = "trial" | "urgent" | "ended" | "problem";
+
+/**
+ * Where a press on the pill's license mark goes. This is the machine-checkable
+ * half of Y2-D's rule "never show a price to a stored-key holder": the policy,
+ * not the component, decides whether a purchase surface is reachable at all,
+ * so the rule can be asserted in a unit test instead of eyeballed in a render.
+ */
+export type PillLicenseAction = "none" | "license" | "purchase";
 
 export interface PillLicense {
   /** Draw anything at all? When false, every other field is meaningless. */
@@ -66,6 +82,16 @@ export interface PillLicense {
   value: string | null;
   /** Hover / accessible description. Never contains a price. */
   title: string;
+  /**
+   * What a press opens. `problem` is ALWAYS `"license"` — a person whose key
+   * is stored gets the re-activate box, never the checkout.
+   */
+  action: PillLicenseAction;
+}
+
+/** Is a purchase surface reachable from this result? The Y2-D rule, as a test. */
+export function offersPurchase(pill: PillLicense): boolean {
+  return pill.show && pill.action === "purchase";
 }
 
 /** The silent answer, shared so "show nothing" is one object and one shape. */
@@ -75,15 +101,32 @@ export const PILL_LICENSE_SILENT: PillLicense = {
   glyph: "",
   value: null,
   title: "",
+  action: "none",
 };
 
 const GLYPH_TRIAL = "⧗"; // ⧗ hourglass — a trial that is running out
 const GLYPH_ENDED = "⊘"; // ⊘ — new dictation is stopped
+const GLYPH_PROBLEM = "⚿"; // ⚿ squared key — the KEY is the thing that is wrong
+
+/**
+ * What the pill says when a stored key granted nothing and the backend did not
+ * say why (an unreadable or corrupt store: `has_stored_license` is true,
+ * `license_problem_message` is null).
+ *
+ * This string is why the branch below keys on `has_stored_license` and NOT on
+ * `storedKeyProblem(status) !== null`. `storedKeyProblem` returns null in
+ * exactly this case, so branching on it would drop an unreadable store back
+ * into `license_required` — the precise bug Y2-F exists to remove, reintroduced
+ * by the function that looks like it prevents it. It carries no figure.
+ */
+const PROBLEM_FALLBACK =
+  "Your license is stored on this Mac but is not being accepted right now. Open License settings to re-enter your key.";
 
 /**
  * The whole display policy for the pill, given the backend's license payload.
  *
  *   licensed                  → nothing, ever, whatever the trial fields say
+ *   stored key, not licensed  → tone `problem` — Y2-F, see below
  *   trial, more than 7 days   → nothing (ambient silence)
  *   trial, 7…1 days           → "7d"…"1d", tone `trial`
  *   trial, last day (0)       → "1d", tone `urgent` — there is still today,
@@ -92,11 +135,34 @@ const GLYPH_ENDED = "⊘"; // ⊘ — new dictation is stopped
  *
  * `null` (nothing has arrived from the backend yet) is silence, not an
  * assumption: the pill must not flash a countdown during boot.
+ *
+ * ORDER IS THE DESIGN. The `problem` test sits directly under `licensed` and
+ * ABOVE the trial arithmetic, so it wins over every other non-licensed row. A
+ * broken stored key during a still-running trial is still a broken key: the
+ * person paid, and telling them "5 days left" would hide the one fact they can
+ * act on. `licensed` stays first because a working key outranks everything —
+ * `has_stored_license` is true for every licensed install too, and testing it
+ * first would silence the entire app.
  */
 export function pillLicense(status: LicenseStatus | null | undefined): PillLicense {
   if (!status) return PILL_LICENSE_SILENT;
 
   if (status.state === "licensed") return PILL_LICENSE_SILENT;
+
+  // Y2-F — a key IS stored and it granted nothing. This is a paying customer
+  // with a broken key, not a visitor whose trial lapsed, and the two must not
+  // look alike. Copy comes from the backend's own diagnosis; the purchase
+  // sentence is never reachable from here.
+  if (status.has_stored_license) {
+    return {
+      show: true,
+      tone: "problem",
+      glyph: GLYPH_PROBLEM,
+      value: null,
+      title: storedKeyProblem(status) ?? PROBLEM_FALLBACK,
+      action: "license",
+    };
+  }
 
   if (status.state === "trial") {
     // Borrowed, not recomputed: the backend's day count, floored at zero.
@@ -109,6 +175,7 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
         glyph: GLYPH_TRIAL,
         value: "1d",
         title: `${trialCountdown(0)} of your Yap trial.`,
+        action: "purchase",
       };
     }
     // `chipFor` already renders the numeral and the sentence for a running
@@ -122,6 +189,7 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
       glyph: GLYPH_TRIAL,
       value: chip.value,
       title: chip.title,
+      action: "purchase",
     };
   }
 
@@ -133,6 +201,7 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
     glyph: GLYPH_ENDED,
     value: null,
     title: statusCopy(status).headline,
+    action: "purchase",
   };
 }
 

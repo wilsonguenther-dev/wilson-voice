@@ -7,7 +7,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { type LicenseStatus } from "../license/status";
-import { PILL_TRIAL_DAYS, pillLicense, type PillLicense } from "./license";
+import {
+  PILL_TRIAL_DAYS,
+  offersPurchase,
+  pillLicense,
+  type PillLicense,
+} from "./license";
 
 const EXPIRES = 1_800_000_000_000;
 
@@ -165,5 +170,150 @@ describe("pillLicense — the pill never quotes a price", () => {
     for (const s of strings) {
       expect(s).not.toMatch(/\$\d/);
     }
+  });
+});
+
+// ─── Y2-F — a stored key that grants nothing is not a lapsed trial ────
+//
+// The whole point of this block is that a person who ALREADY PAID is never
+// shown the sentence written for a person who has not. Every row below has a
+// key on the Mac; none of them may reach a price or the `ended` tone.
+//
+// NOTE ON THE PRICE ASSERTION: this file deliberately does not import the
+// price-label constant, and does not spell its name. `desktop/src/pill/`'s
+// no-price rule is enforced by a plain `git grep` of this directory for that
+// name, and to a grep an import in a test and an import in a component look
+// identical. So "no price" is asserted structurally, with a regex for any
+// currency figure at all — which is the stronger check anyway: it also catches
+// a hardcoded figure that never went through the constant. (This comment does
+// not spell one either: the enforcing grep cannot tell a comment from code.)
+const ANY_PRICE = /[$£€]\s?\d/;
+
+/** A stored key that granted nothing, with whatever the backend diagnosed. */
+function storedKey(
+  reason: string,
+  message: string | null,
+  over: Partial<LicenseStatus> = {},
+): LicenseStatus {
+  return required(reason, {
+    has_stored_license: true,
+    license_problem: reason,
+    license_problem_message: message,
+    ...over,
+  });
+}
+
+const PROBLEM_MATRIX: Array<{ what: string; status: LicenseStatus; says: string | null }> = [
+  {
+    what: "a revoked key (refunded or charged back)",
+    status: storedKey("revoked", "This license was refunded or charged back."),
+    says: "This license was refunded or charged back.",
+  },
+  {
+    what: "a seat-capped key",
+    status: storedKey(
+      "seat_limit",
+      "This key is already active on 3 Macs. Remove a seat to use it here.",
+    ),
+    says: "This key is already active on 3 Macs. Remove a seat to use it here.",
+  },
+  {
+    what: "a key signed for another plan",
+    status: storedKey("wrong_plan", "This key is for a different Yap plan."),
+    says: "This key is for a different Yap plan.",
+  },
+  {
+    what: "a key that no longer verifies",
+    status: storedKey("bad_signature", "This key could not be verified."),
+    says: "This key could not be verified.",
+  },
+  {
+    what: "a broken clock",
+    status: storedKey("clock_rollback", "This Mac's clock is set before your purchase date."),
+    says: "This Mac's clock is set before your purchase date.",
+  },
+  {
+    what: "an unreadable store (backend diagnosed nothing)",
+    status: storedKey("unknown", null),
+    says: null, // falls back, but must still be a PROBLEM
+  },
+  {
+    what: "a broken key while the trial is still running",
+    status: trial(5, {
+      has_stored_license: true,
+      license_problem: "revoked",
+      license_problem_message: "This license was refunded or charged back.",
+    }),
+    says: "This license was refunded or charged back.",
+  },
+];
+
+describe("Y2-F — a stored key that grants nothing", () => {
+  for (const row of PROBLEM_MATRIX) {
+    it(`${row.what} reads as a problem, not an ended trial`, () => {
+      const p = pillLicense(row.status);
+      expect(p.show).toBe(true);
+      expect(p.tone).toBe("problem");
+      expect(p.value).toBeNull();
+      expect(p.title.length).toBeGreaterThan(0);
+      expect(p.title).not.toMatch(ANY_PRICE);
+      if (row.says) expect(p.title).toBe(row.says);
+    });
+  }
+
+  it("a_revoked_key_never_shows_a_price — and never the purchase surface", () => {
+    const p = pillLicense(storedKey("revoked", "This license was refunded or charged back."));
+    expect(p.title).not.toMatch(ANY_PRICE);
+    expect(offersPurchase(p)).toBe(false);
+    expect(p.action).not.toBe("purchase");
+    // Every row of the matrix, not just this one.
+    for (const row of PROBLEM_MATRIX) {
+      expect(offersPurchase(pillLicense(row.status))).toBe(false);
+      expect(pillLicense(row.status).title).not.toMatch(ANY_PRICE);
+    }
+  });
+
+  it("a_seat_capped_key_reads_as_a_problem_not_a_lapsed_trial — distinct tone and glyph", () => {
+    const capped = pillLicense(
+      storedKey("seat_limit", "This key is already active on 3 Macs. Remove a seat to use it here."),
+    );
+    const lapsed = pillLicense(required("trial_expired"));
+    expect(lapsed.tone).toBe("ended");
+    expect(capped.tone).toBe("problem");
+    // Distinct at a glance in BOTH pill styles: the tone token and the mark are
+    // what each face draws, and neither may collide with the lapsed-trial one.
+    expect(capped.tone).not.toBe(lapsed.tone);
+    expect(capped.glyph).not.toBe(lapsed.glyph);
+    expect(capped.title).not.toBe(lapsed.title);
+  });
+
+  it("the_problem_tone_opens_the_license_panel — never checkout", () => {
+    for (const row of PROBLEM_MATRIX) {
+      const p = pillLicense(row.status);
+      expect(p.action).toBe("license");
+      expect(offersPurchase(p)).toBe(false);
+    }
+  });
+
+  it("an unreadable store still speaks, and says nothing about money", () => {
+    const p = pillLicense(storedKey("unknown", null));
+    expect(p.tone).toBe("problem");
+    expect(p.title).not.toMatch(ANY_PRICE);
+    expect(p.title.toLowerCase()).toContain("license settings");
+  });
+
+  it("a working license is still silent, stored key and all", () => {
+    // Regression guard on the branch ORDER: `has_stored_license` is true for
+    // every licensed install, so testing it before `licensed` would make the
+    // pill shout at every paying customer forever.
+    const p = pillLicense(licensed());
+    expect(p.show).toBe(false);
+  });
+
+  it("a lapsed trial with NO stored key is untouched — still `ended`, still sells", () => {
+    const p = pillLicense(required("trial_expired"));
+    expect(p.tone).toBe("ended");
+    expect(p.action).toBe("purchase");
+    expect(offersPurchase(p)).toBe(true);
   });
 });
