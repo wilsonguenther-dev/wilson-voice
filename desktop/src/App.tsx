@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Onboarding from "./Onboarding";
+import { awaitMicDecision } from "./micStatus";
 import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
@@ -273,6 +274,9 @@ interface AppStatus {
 interface PermissionReport {
   accessibility: boolean;
   microphone: boolean;
+  /** PERM-A — the AVFoundation status the UI branches on. A bool cannot tell
+   *  "never asked" (show the prompt button) from "denied" (show Settings). */
+  microphoneStatus: string;
   ffmpegOk: boolean;
   asrOk: boolean;
   asrDetail: string;
@@ -2298,12 +2302,29 @@ export default function App() {
                   </button>
                   <button
                     onClick={async () => {
+                      // PERM-A: the command returns immediately; macOS answers
+                      // the dialog on its own schedule. Read the authoritative
+                      // status back instead of guessing with a fixed timeout.
                       try {
-                        await invoke("request_microphone");
+                        const status = await awaitMicDecision({
+                          request: () => invoke("request_microphone"),
+                          read: () => invoke("microphone_status"),
+                          sleep: (ms) =>
+                            new Promise((r) => setTimeout(r, ms)),
+                        });
+                        if (status === "denied") {
+                          toast(
+                            "Microphone denied — macOS will not ask again. Turn Yap on in System Settings → Privacy & Security → Microphone.",
+                          );
+                        } else if (status === "restricted") {
+                          toast(
+                            "Microphone is restricted by a device policy — an administrator has to allow it.",
+                          );
+                        }
                       } catch (e) {
                         toast(String(e));
                       }
-                      setTimeout(refreshPerms, 1000);
+                      refreshPerms();
                     }}
                   >
                     Request Microphone
