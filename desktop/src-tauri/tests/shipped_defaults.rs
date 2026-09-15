@@ -166,6 +166,7 @@ fn defaults_reach_every_cleanup_stage() {
         level,
         mode,
         Style::Default,
+        &[],
         |t| {
             dictionary_called.set(true);
             t.to_string()

@@ -1076,6 +1076,7 @@ mod polish_fallback_tests {
             CleanupLevel::High,
             mode,
             Style::Default,
+            &[],
             no_dict,
             |_| None,
         )
@@ -1088,9 +1089,15 @@ mod polish_fallback_tests {
         cfg: &PolishConfig,
         client: &dyn PolishClient,
     ) -> String {
-        run_cleanup(raw, CleanupLevel::High, mode, cfg.style, no_dict, |t| {
-            polish_stage(t, mode, cfg, client)
-        })
+        run_cleanup(
+            raw,
+            CleanupLevel::High,
+            mode,
+            cfg.style,
+            &[],
+            no_dict,
+            |t| polish_stage(t, mode, cfg, client),
+        )
     }
 
     /// Sleeps past any deadline worth having, then answers perfectly — the

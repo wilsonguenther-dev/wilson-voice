@@ -711,6 +711,8 @@ impl CleanupLevel {
 ///   3. rules formatting — `format_dictation` (list detection), respecting `mode`,
 ///      then [`apply_spoken_marks`] (punctuation-by-name + line/paragraph commands),
 ///      then the YV62 shape rules: [`format_email_shape`] in `Email` (R13) and
+///      then [`insert_paragraphs`] (R12 — paragraph breaks at the speaker's own
+///      pauses, which is why `pauses` is a parameter), then
 ///      the tone-dialled trailing-period rule (R3/R14), which is why `style` is a
 ///      parameter — the dial reaches the RULES, not only the model's prompt.
 ///   4. LLM polish — `polish` (YV61: production passes the validated stage,
@@ -725,6 +727,7 @@ pub fn run_cleanup<D, P>(
     level: CleanupLevel,
     mode: DictationMode,
     style: Style,
+    pauses: &[PauseSpan],
     apply_dictionary: D,
     polish: P,
 ) -> String
@@ -779,6 +782,15 @@ where
             if !out.trim().is_empty() {
                 text = out;
             }
+        }
+        // R12 (Y4-C) — paragraphing, from the pauses the speaker actually left.
+        // AFTER the email shape on purpose: `format_email_shape` is inert on a
+        // text that already carries line breaks, so cutting paragraphs first
+        // would silently disable the greeting/sign-off rule. Inert in `Chat`
+        // (a newline sends the message), `Code`, `Plain` and `List`.
+        let out = insert_paragraphs(&text, pauses, mode, style);
+        if !out.trim().is_empty() {
+            text = out;
         }
         // R3/R14 (YV62) — the tone-dialled trailing period, last of the rules:
         // it decides about the FINAL character, so everything that can add one
@@ -2181,6 +2193,325 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Paragraphing (Y4-C / R12) — long speech becomes paragraphs BY RULE.
+//
+// The rules stage used to have no paragraph rule at all: the only thing that
+// could produce a blank line was the spoken COMMAND ("new paragraph", R2). A
+// five-minute dictation therefore arrived as one unbroken block, which is the
+// single most visible way formatting "does not work".
+//
+// The signal this rule runs on is SILENCE, because that is the signal the
+// speaker actually produced. Capture already measures it — `record::pause_spans`
+// reads the same bridged energy-VAD mask that feeds `voiced_seconds`, which
+// until now computed the mask and threw it away — and hands it down the take as
+// `RecordingResult::pause_spans`. A long pause AT A SENTENCE BOUNDARY is a
+// paragraph break; the same pause mid-clause is a speaker thinking, and is not.
+//
+// Deliberately NOT here:
+//   * no fixed word count ("every 60 words" is the arbitrary behaviour users
+//     notice and hate),
+//   * no model — this runs with no polish model installed, which is the default,
+//   * no break inside a detected list.
+// ---------------------------------------------------------------------------
+
+/// One silence between two voiced runs of a take, as measured at capture.
+///
+/// Position is carried as a FRACTION OF VOICED TIME rather than as a wall-clock
+/// offset, and that is the whole trick that lets a pure string rule use it: the
+/// text is the speech, so the share of the speaking that had happened when the
+/// speaker stopped is directly comparable to a share of the characters. A
+/// wall-clock offset is not — it includes the pauses themselves, and a take that
+/// opens with four seconds of throat-clearing would push every later break.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PauseSpan {
+    /// How long the speaker was silent.
+    pub seconds: f64,
+    /// Share of the take's total VOICED time already spoken when the pause began,
+    /// in `0.0..=1.0`.
+    pub at_voiced_fraction: f64,
+}
+
+/// A silence at or over this is a candidate paragraph break.
+///
+/// Sentence-internal and between-sentence pauses in connected speech sit around
+/// 0.2–0.5 s; the gap a speaker leaves when they finish a thought and start a
+/// new one is markedly longer. 0.9 s sits above the sentence gap with room to
+/// spare, which is the right way to be wrong here: a missed break leaves text
+/// that reads exactly as it does today, an invented one breaks a sentence in
+/// half in front of the user.
+pub const PARAGRAPH_PAUSE_SECONDS: f64 = 0.9;
+
+/// Below this many (whitespace-collapsed) characters a take is one paragraph, in
+/// every mode. Roughly three or four spoken sentences — short takes are the
+/// common case and paragraphing one is never an improvement.
+const MIN_PARAGRAPHING_CHARS: usize = 220;
+
+/// A break is never cut this close to either end: a one-clause orphan paragraph
+/// at the top or bottom of a take looks like a bug, not like formatting.
+const EDGE_GUARD_CHARS: usize = 60;
+
+/// How far from the pause's projected position a sentence boundary may sit and
+/// still be considered the boundary that pause belongs to.
+///
+/// The projection assumes a roughly constant speaking rate across one take,
+/// which is true enough over a paragraph and not true to the character. The
+/// window absorbs that error; a pause with NO sentence boundary inside its
+/// window is a mid-clause pause and produces nothing. Proportional, because the
+/// projection's error grows with the length of the take.
+fn snap_window(flat_len: usize) -> usize {
+    (flat_len / 8).clamp(24, 160)
+}
+
+/// Sentences needed before the marker fallback may fire at all.
+const MIN_SENTENCES_FOR_MARKER: usize = 4;
+
+/// Discourse markers that open a new thought when they open a new SENTENCE.
+///
+/// Secondary by design, with a hard condition attached (see
+/// [`insert_paragraphs`]): a marker-only rule breaks paragraphs on speech habits
+/// — plenty of people open every second sentence with "so" — and that is why so
+/// many dictation apps feel arbitrary. It exists for the take that has no timing
+/// at all: a recovered spill, an imported clip, a History retry.
+const PARAGRAPH_MARKERS: &[&str] = &[
+    "okay so",
+    "ok so",
+    "alright so",
+    "all right so",
+    "moving on",
+    "next up",
+    "also separately",
+    "separately",
+    "anyway",
+    "anyhow",
+    "one more thing",
+    "another thing",
+    "on another note",
+    "switching gears",
+    "so",
+];
+
+/// The separator this mode puts between paragraphs, or `None` when the mode is
+/// never paragraphed.
+///
+/// `Chat` is a CORRECTNESS case, not a taste call: a newline in Slack, Discord,
+/// Messages or Telegram SENDS the message, so a paragraph break there truncates
+/// what the user said and fires it off mid-thought. `Code` and `Plain` are the
+/// verbatim modes and `List` is already a rendered shape.
+fn paragraph_separator(mode: DictationMode) -> Option<&'static str> {
+    match mode {
+        DictationMode::Email | DictationMode::Document | DictationMode::Notes => Some("\n\n"),
+        DictationMode::Chat | DictationMode::Code | DictationMode::Plain | DictationMode::List => {
+            None
+        }
+    }
+}
+
+/// The text with every whitespace RUN collapsed to a single space, alongside the
+/// byte range in the original that each collapsed space came from.
+///
+/// This is the coordinate system the rule measures in, and measuring in it is
+/// what makes the rule idempotent: inserting `"\n\n"` where a space was changes
+/// the byte length of the text but not one flat position, so a second
+/// application projects every pause onto exactly the same boundary, finds the
+/// break already there, and does nothing.
+struct Flat {
+    chars: Vec<char>,
+    /// For each flat index, the `[start, end)` byte range it occupies in the
+    /// original text (a run of whitespace, or one character).
+    spans: Vec<(usize, usize)>,
+}
+
+fn flatten(text: &str) -> Flat {
+    let mut chars = Vec::new();
+    let mut spans = Vec::new();
+    let mut it = text.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        if c.is_whitespace() {
+            let mut end = i + c.len_utf8();
+            while let Some(&(j, n)) = it.peek() {
+                if n.is_whitespace() {
+                    end = j + n.len_utf8();
+                    it.next();
+                } else {
+                    break;
+                }
+            }
+            chars.push(' ');
+            spans.push((i, end));
+        } else {
+            chars.push(c);
+            spans.push((i, i + c.len_utf8()));
+        }
+    }
+    Flat { chars, spans }
+}
+
+/// A place a paragraph break could legally go: the whitespace run that follows a
+/// sentence-terminating mark.
+struct Boundary {
+    /// Index into [`Flat::chars`] of the collapsed space.
+    flat_idx: usize,
+    /// Byte range of the whitespace run in the original text.
+    byte_range: (usize, usize),
+    /// The run already contains a blank line — an explicit spoken "new
+    /// paragraph" (R2), or this rule's own earlier output.
+    already_break: bool,
+}
+
+/// Sentence boundaries of a flattened text: a collapsed space whose preceding
+/// non-closing character terminates a sentence and whose following character
+/// opens a word.
+fn sentence_boundaries(text: &str, flat: &Flat) -> Vec<Boundary> {
+    let mut out = Vec::new();
+    for (idx, &c) in flat.chars.iter().enumerate() {
+        if c != ' ' || idx == 0 || idx + 1 >= flat.chars.len() {
+            continue;
+        }
+        // Walk back over closing quotes/brackets: `he said "stop." Then ...`.
+        let mut back = idx;
+        while back > 0 {
+            back -= 1;
+            let p = flat.chars[back];
+            if matches!(p, '"' | '\'' | ')' | ']' | '”' | '’') {
+                continue;
+            }
+            if matches!(p, '.' | '?' | '!') {
+                let next = flat.chars[idx + 1];
+                if next.is_alphanumeric() {
+                    let (s, e) = flat.spans[idx];
+                    out.push(Boundary {
+                        flat_idx: idx,
+                        byte_range: (s, e),
+                        already_break: text[s..e].matches('\n').count() >= 2,
+                    });
+                }
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// Does this text already have a rendered list shape? A numbered or bulleted
+/// line means the list rule owns this text's line breaks and paragraphing must
+/// keep its hands off it.
+fn looks_like_list(text: &str) -> bool {
+    text.lines().any(|line| {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix(['-', '*', '•']) {
+            return rest.starts_with(' ');
+        }
+        let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+        !digits.is_empty()
+            && t[digits.len()..].starts_with('.')
+            && t[digits.len() + 1..].starts_with(' ')
+    })
+}
+
+/// Does the sentence starting just after `boundary` open with a discourse marker?
+fn opens_with_marker(flat: &Flat, boundary: &Boundary) -> bool {
+    let tail: String = flat.chars[boundary.flat_idx + 1..]
+        .iter()
+        .collect::<String>()
+        .to_lowercase();
+    PARAGRAPH_MARKERS.iter().any(|m| {
+        tail.strip_prefix(m)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(' ') || rest.starts_with(','))
+    })
+}
+
+/// Break a long dictation into paragraphs at the places the SPEAKER paused.
+///
+/// * `pauses` — the take's silences, from `record::pause_spans`. EMPTY means the
+///   take has no timing (a recovered spill, an imported clip, a History retry),
+///   and only then does the discourse-marker fallback run. A take that HAS
+///   timing and no long pause is a take the speaker did not break: measured
+///   silence outranks a guess about their vocabulary, always.
+/// * `mode` — [`paragraph_separator`] decides whether this surface is paragraphed
+///   at all. Chat never is.
+/// * `style` — the tone dial is taken so every rule in this stage has the same
+///   shape and a later tone-dependent paragraph rule needs no signature change.
+///   Paragraphing does not vary by tone today, and the parameter is unused.
+///
+/// Pure, additive (it only ever replaces a run of whitespace with a blank line)
+/// and idempotent: a second application returns the same string byte for byte.
+pub fn insert_paragraphs(
+    text: &str,
+    pauses: &[PauseSpan],
+    mode: DictationMode,
+    _style: Style,
+) -> String {
+    let Some(separator) = paragraph_separator(mode) else {
+        return text.to_string();
+    };
+    if looks_like_list(text) {
+        return text.to_string();
+    }
+    let flat = flatten(text);
+    let flat_len = flat.chars.len();
+    if flat_len < MIN_PARAGRAPHING_CHARS {
+        return text.to_string();
+    }
+    let boundaries = sentence_boundaries(text, &flat);
+    let usable: Vec<&Boundary> = boundaries
+        .iter()
+        .filter(|b| {
+            !b.already_break
+                && b.flat_idx >= EDGE_GUARD_CHARS
+                && b.flat_idx + EDGE_GUARD_CHARS < flat_len
+        })
+        .collect();
+    if usable.is_empty() {
+        return text.to_string();
+    }
+
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    if pauses.is_empty() {
+        // Fallback: no timing at all. Needs a genuinely multi-sentence take
+        // before a speech habit is allowed to mean anything.
+        if boundaries.len() + 1 < MIN_SENTENCES_FOR_MARKER {
+            return text.to_string();
+        }
+        for b in &usable {
+            if opens_with_marker(&flat, b) {
+                cuts.push(b.byte_range);
+            }
+        }
+    } else {
+        let window = snap_window(flat_len);
+        for pause in pauses {
+            if pause.seconds < PARAGRAPH_PAUSE_SECONDS {
+                continue;
+            }
+            let projected = (pause.at_voiced_fraction.clamp(0.0, 1.0) * flat_len as f64) as usize;
+            let best = usable
+                .iter()
+                .map(|b| (b.flat_idx.abs_diff(projected), *b))
+                .filter(|(d, _)| *d <= window)
+                .min_by_key(|(d, _)| *d);
+            if let Some((_, b)) = best {
+                cuts.push(b.byte_range);
+            }
+        }
+    }
+    if cuts.is_empty() {
+        return text.to_string();
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut out = String::with_capacity(text.len() + cuts.len() * separator.len());
+    let mut at = 0usize;
+    for (s, e) in cuts {
+        out.push_str(&text[at..s]);
+        out.push_str(separator);
+        at = e;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3132,6 +3463,7 @@ mod tests {
                 CleanupLevel::High,
                 DictationMode::Code,
                 Style::Default,
+                &[],
                 no_dict,
                 no_polish
             ),
@@ -3143,6 +3475,7 @@ mod tests {
                 CleanupLevel::High,
                 DictationMode::Notes,
                 Style::Default,
+                &[],
                 no_dict,
                 no_polish
             ),
@@ -3200,6 +3533,7 @@ mod tests {
             CleanupLevel::None,
             DictationMode::Notes,
             Style::Default,
+            &[],
             |_t| "REWRITTEN".to_string(),
             |_t| Some("POLISHED".to_string()),
         );
@@ -3229,6 +3563,7 @@ mod tests {
             CleanupLevel::High,
             DictationMode::Notes,
             Style::Default,
+            &[],
             dict,
             llm,
         );
@@ -3255,6 +3590,7 @@ mod tests {
             CleanupLevel::Light,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3265,6 +3601,7 @@ mod tests {
             CleanupLevel::Medium,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3283,6 +3620,7 @@ mod tests {
             CleanupLevel::Light,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3300,6 +3638,7 @@ mod tests {
             CleanupLevel::None,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3311,6 +3650,7 @@ mod tests {
             CleanupLevel::Light,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3500,6 +3840,7 @@ mod tests {
             CleanupLevel::High,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             no_polish,
         );
@@ -3510,6 +3851,7 @@ mod tests {
             CleanupLevel::High,
             DictationMode::Notes,
             Style::Default,
+            &[],
             no_dict,
             |_t| Some("   ".to_string()),
         );
@@ -3521,7 +3863,15 @@ mod tests {
     /// The rules stage at Medium — the LLM is off, which is the default, and R13
     /// and R14 have to hold anyway.
     fn rules(raw: &str, mode: DictationMode, style: Style) -> String {
-        run_cleanup(raw, CleanupLevel::Medium, mode, style, no_dict, no_polish)
+        run_cleanup(
+            raw,
+            CleanupLevel::Medium,
+            mode,
+            style,
+            &[],
+            no_dict,
+            no_polish,
+        )
     }
 
     /// Content words only: what R14 is forbidden to change.
