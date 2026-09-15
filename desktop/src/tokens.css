@@ -1,0 +1,305 @@
+/*
+ * tokens.css — the one visual system.
+ *
+ * Y5-A. Before this file, App.css (2,917 lines) and float.css (728) each carried
+ * their own literal colours, radii and spacings, which is the mechanical reason
+ * unrelated screens read as different apps. Everything a surface is allowed to
+ * look like is declared HERE, once, and nowhere else.
+ *
+ * TWO RULES FOR ADDING A TOKEN
+ *   1. Name it by ROLE, never by value. --surface-raised survives a palette
+ *      change; --gray-3 guarantees the next inconsistency, because the day the
+ *      palette moves, the name becomes a lie and the next author invents a
+ *      literal rather than trust it.
+ *   2. Pure custom properties only. This file must never declare document-level
+ *      font, colour or background: float.html imports it too, and a `background`
+ *      on :root here would paint the transparent pill window cream. The window
+ *      chrome lives in App.css; the pill's own shell lives in float.css.
+ *
+ * PALETTE PROVENANCE — this is not an invented palette. The retro/LCD values are
+ * read off docs/prototypes/yappy-house.html and src/home/YappyHouse.tsx so the
+ * chrome and the character share one world instead of two. Each such token names
+ * its source below.
+ *
+ * Y5-A IS A REFACTOR WITH NO INTENTIONAL VISUAL CHANGE. Every value here is the
+ * value that already shipped. Y5-B..I do the visual work on top of this layer.
+ */
+
+:root {
+  /* ══════════════════════════════════════════════════════════════════
+     COMPANION PALETTE — retro/LCD, shared with Yappy's world
+     Source: docs/prototypes/yappy-house.html + src/home/YappyHouse.tsx.
+     The house chrome in App.css was already drawn from these exact values;
+     naming them is the whole change.
+     ══════════════════════════════════════════════════════════════════ */
+  --retro-wood: #a5673f; /* YappyHouse floor — the house frame */
+  --retro-wood-shadow: #8a5333; /* prototype floorSh (YappyHouse.tsx carries
+                                   #8a5334; the one-digit drift is the
+                                   renderer's, and the chrome shipped this
+                                   value — pinned as shipped, not reconciled,
+                                   so this refactor stays pixel-identical) */
+  --retro-wood-deep: #6f3f27; /* YappyHouse floorDk — frame inset + tag */
+  --retro-wood-darkest: #4d2c1a; /* prototype's dark-mode frame inset */
+  --retro-paper: #ffe9c6; /* warm paper, the tag's lettering */
+  --retro-lcd-backdrop: #20233f; /* prototype line 111 — the night-blue behind
+                                    the pixel stage, a Tamagotchi LCD ground */
+
+  /* ══════════════════════════════════════════════════════════════════
+     SURFACES — light. Dark overrides live in the one @media block below.
+     ══════════════════════════════════════════════════════════════════ */
+  --surface: #f8f0e0; /* the page itself */
+  --surface-sidebar: rgba(255, 251, 244, 0.5);
+  --surface-card: rgba(255, 252, 246, 0.66);
+  --surface-raised: rgba(255, 253, 248, 0.75);
+  --surface-glass: rgba(255, 252, 246, 0.55);
+  --surface-glass-border: rgba(255, 255, 255, 0.55);
+  --border-subtle: rgba(74, 48, 20, 0.12);
+
+  /* A surface that stays dark in BOTH themes — the toast. It is a momentary
+     object laid over the page, so it does not follow the page's theme; that is
+     why these are declared once and never overridden below. */
+  --surface-inverse: #2c2216;
+  --text-on-inverse: #f8f0e0;
+  --accent-on-inverse: #ffb98a;
+
+  /* ══════════════════════════════════════════════════════════════════
+     TEXT
+     ══════════════════════════════════════════════════════════════════ */
+  --text-primary: #2c2216;
+  /* YV56 — #8a7658 measured 3.85:1 on the cream, and it carries the ledes,
+     stat labels and every card-meta line at 0.66-0.9rem. One shade deeper in
+     the same warm brown puts the smallest type in the app over 4.5:1. */
+  --text-muted: #7a6547;
+
+  /* Text drawn ON a saturated fill. Two tokens, because they answer two
+     different questions:
+       --text-on-fill    never changes (white on the accent/danger fills that
+                         are themselves saturated in both themes: the count
+                         badge, the onboarding record button, the pill's own
+                         buttons in the always-dark float world).
+       --text-on-accent  DOES flip, because the dark palette lifts --accent to a
+                         pale ember that white text cannot sit on; dark uses a
+                         deep teal ink instead. */
+  --text-on-fill: #fff;
+  --text-on-accent: #fff;
+
+  /* ══════════════════════════════════════════════════════════════════
+     ACCENTS — orange is action, sky is information.
+     ══════════════════════════════════════════════════════════════════ */
+  --accent-action: #ef7d3c;
+  --accent-action-soft: rgba(239, 125, 60, 0.14);
+  --accent-data: #4ba3d8;
+  --accent-data-soft: rgba(75, 163, 216, 0.16);
+
+  /* YV56 - ink pair for every semantic colour. The vivid tokens above are FILL
+     colours - they sit under white/ink text on buttons, bars and the heat ramp,
+     and they have to stay the brand hue. As TEXT on the cream they were washed
+     (accent 2.42:1, accent-data 2.46:1, and worse inside their own soft chips),
+     which is exactly what small mono chips are made of. So text takes the -ink
+     token and fills keep the hue: same colour, one weight deeper. Dark mode
+     maps the ink back to the vivid token, which already reads 8-11:1 there. */
+  --accent-action-ink: #9c4a15;
+  --accent-data-ink: #17638d;
+  --accent-urgent-ink: #be123c;
+  --accent-caution-ink: #9a4708;
+
+  --accent-urgent: #be123c;
+  --accent-caution: #b45309;
+  /* The permissions-health banner tints its ground with this amber at 12%. */
+  --accent-caution-tint: #f0b429;
+
+  /* ══════════════════════════════════════════════════════════════════
+     STATUS SIGNALS — the dots, pulses and badges that report live state.
+     ══════════════════════════════════════════════════════════════════ */
+  --status-ready: #2dd4bf; /* idle/connected teal dot */
+  --status-ready-halo: rgba(45, 212, 191, 0.2);
+  --status-live: #fb7185; /* the pulsing rose of an open mic */
+  --status-live-fill: #e11d48; /* the same signal as a filled badge */
+  --status-blocked: #f87171; /* a refusal, struck through */
+
+  /* Pill-world state hues, as HSL triplets so float.css can vary the alpha.
+     Moved here from float.css's own :root — a colour role belongs in one file
+     even when only one document consumes it. */
+  --accent-live: 351 95% 71%; /* rose  — listening    */
+  --accent-busy: 38 92% 55%; /* amber — transcribing  */
+  --accent-done: 152 69% 52%; /* green — done         */
+  --accent-meeting: 0 84% 62%; /* red — recording, the one universal signal */
+
+  /* ══════════════════════════════════════════════════════════════════
+     ACTIVITY HEATMAP (YV55) — a warm amber climb out of the soil, so an
+     empty day is the page itself and a loud day is the accent ember.
+     ══════════════════════════════════════════════════════════════════ */
+  --heat-0: rgba(74, 48, 20, 0.07);
+  --heat-1: #f6dcb4;
+  --heat-2: #f2b878;
+  --heat-3: #ef7d3c;
+  --heat-4: #c4551c;
+
+  /* ══════════════════════════════════════════════════════════════════
+     THE PILL — float.html's own world. Always dark, never themed: it floats
+     over the user's screen, not over our page, so it does not follow the
+     app's light/dark at all. That is why none of these are overridden below.
+     ══════════════════════════════════════════════════════════════════ */
+  --pill-shell-top: #17181c;
+  --pill-shell-bottom: #0c0c0f;
+  --pill-shell-highlight: #3a3b40; /* the lit edge of a round pill button */
+  --pill-text: #f5f5f7;
+  --pill-bubble-surface: #20222e;
+  --pill-bubble-text: #f7f1e6;
+
+  /* ══════════════════════════════════════════════════════════════════
+     ELEVATION
+     ══════════════════════════════════════════════════════════════════ */
+  --elevation-raised: 0 12px 40px rgba(74, 48, 20, 0.1);
+  --elevation-house: 0 18px 40px -12px rgba(78, 52, 24, 0.28);
+  --elevation-tag: 0 3px 8px -2px rgba(78, 52, 24, 0.4);
+  --blur-glass: 28px;
+
+  /* ══════════════════════════════════════════════════════════════════
+     RADIUS
+     ══════════════════════════════════════════════════════════════════ */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* ══════════════════════════════════════════════════════════════════
+     SPACING — a 4px scale. Every gap, pad and inset should land on one of
+     these; the step number IS the multiple of 4, so --space-3 is 12px and
+     nobody has to memorise a table.
+     ══════════════════════════════════════════════════════════════════ */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ══════════════════════════════════════════════════════════════════
+     TYPE — body is native SF; the pixel voice is reserved for data
+     (numerals, eyebrows, metadata), never for prose.
+     ══════════════════════════════════════════════════════════════════ */
+  --font-body:
+    "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-2xs: 0.66rem;
+  --text-xs: 0.72rem;
+  --text-sm: 0.78rem;
+  --text-md: 0.82rem;
+  --text-base: 0.9rem;
+  --text-lg: 1rem;
+  --text-xl: 1.1rem;
+  --text-2xl: 1.35rem;
+  --text-3xl: 1.6rem;
+
+  --leading-tight: 1.2;
+  --leading-body: 1.45;
+
+  /* ══════════════════════════════════════════════════════════════════
+     MOTION
+     ══════════════════════════════════════════════════════════════════ */
+  --duration-instant: 0.085s;
+  --duration-fast: 0.16s;
+  --duration-quick: 0.2s;
+  --duration-base: 0.25s;
+  --duration-slow: 0.3s;
+  --duration-slower: 0.34s;
+
+  /* The two springs. --spring-pill is the pill's grow/settle curve and
+     --spring-pop is its overshoot; both are declared here so the chrome can
+     borrow the companion's physics instead of each screen inventing an easing.
+     --spring-pop is live today (float.css's kami bubble); --spring-pill is
+     declared for Y5-B..I, which restyle the pill states on top of this layer. */
+  --spring-pill: cubic-bezier(0.05, 0.6, 0.4, 0.95);
+  --spring-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ══════════════════════════════════════════════════════════════════
+     LEGACY ALIASES — the short names 2,900 lines of App.css already call.
+     They now RESOLVE to the role tokens above rather than carrying values of
+     their own, which is what makes this a no-op refactor: one definition per
+     colour, zero rule-level churn. Y5-B..I migrate call sites onto the role
+     names and delete aliases as they empty out. Do not add new ones.
+     ══════════════════════════════════════════════════════════════════ */
+  --bg: var(--surface);
+  --bg-side: var(--surface-sidebar);
+  --bg-card: var(--surface-card);
+  --bg-elev: var(--surface-raised);
+  --glass: var(--surface-glass);
+  --glass-border: var(--surface-glass-border);
+  --border: var(--border-subtle);
+  --text: var(--text-primary);
+  --muted: var(--text-muted);
+  --accent: var(--accent-action);
+  --accent-soft: var(--accent-action-soft);
+  --accent-ink: var(--accent-action-ink);
+  --danger-ink: var(--accent-urgent-ink);
+  --warn-ink: var(--accent-caution-ink);
+  --danger: var(--accent-urgent);
+  --warn: var(--accent-caution);
+  --mono: var(--font-mono);
+  --radius: var(--radius-lg);
+  --shadow: var(--elevation-raised);
+  --blur: var(--blur-glass);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #201811;
+    --surface-sidebar: rgba(40, 32, 26, 0.55);
+    --surface-card: rgba(48, 40, 32, 0.55);
+    --surface-raised: rgba(58, 48, 38, 0.65);
+    --surface-glass: rgba(44, 36, 28, 0.5);
+    --surface-glass-border: rgba(255, 238, 214, 0.12);
+    --border-subtle: rgba(255, 238, 214, 0.12);
+
+    --text-primary: #f4e9d6;
+    --text-muted: #b6a184;
+    /* The dark palette lifts --accent-action to a pale ember; white text cannot
+       sit on it, so the ink on an accent fill goes deep teal here. */
+    --text-on-accent: #042f2e;
+
+    --accent-action: #ff9a5c;
+    --accent-action-soft: rgba(255, 154, 92, 0.16);
+    --accent-data: #8fd6ff;
+    --accent-data-soft: rgba(143, 214, 255, 0.14);
+
+    /* YV56 - dark never overrode danger/warn, so the light crimson and amber
+       were being drawn on the dark ground at 2.78:1 and 3.48:1: the Permissions
+       count badge, the error/busy states of the ready-pill and the warning
+       banners were all barely legible after dark. The accents already read
+       here, so the ink tokens are just the vivid values; danger/warn get a
+       lifted pair. */
+    --accent-action-ink: var(--accent-action);
+    --accent-data-ink: var(--accent-data);
+    --accent-urgent-ink: #ff8098;
+    --accent-caution-ink: #f5b45c;
+
+    --heat-0: rgba(255, 238, 214, 0.07);
+    --heat-1: #5c3a1d;
+    --heat-2: #9a5c26;
+    --heat-3: #d97f38;
+    --heat-4: #ff9a5c;
+
+    /* NOTE: the retro house tokens are deliberately NOT remapped here. The dark
+       block in App.css overrides .yh-frame and .yh-frame::after only — .yh-tag
+       is not overridden — so remapping --retro-wood-deep after dark would
+       silently recolour the tag, which is exactly the kind of invisible visual
+       change this item promises not to make. Dark names the deeper tokens at
+       the call site instead. */
+
+    --elevation-raised: 0 16px 48px rgba(0, 0, 0, 0.5);
+    --elevation-house: 0 18px 40px -12px rgba(0, 0, 0, 0.45);
+  }
+}
