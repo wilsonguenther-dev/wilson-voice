@@ -2,7 +2,7 @@ Yap CI/CD build loop — launch immediately. You are Fable: orchestrate only, Op
 
 Already done, do not redo: the 88-item plan at ~/code/wilson-voice/docs/loop/PLAN.md was Senior-Panel audited 2026-09-12 (verdict revise-first → revisions applied and verified, telemetry logged). Harness contract: docs/loop/HARNESS.md. Memory: project_yap_loop_state_20260912. Panel-gate exemption when the hook fires: already-audited plan. Main is at 1f0cf10 (this prompt file is committed on top of it — step 1 pulls both).
 
-Status: PAUSED until Wilson provisions/pays Supabase (earliest ~2026-09-27). Forge box is being decommissioned — LIC-A's Supabase issuer decision stands.
+Status: build loop 42/88 processed (31 merged, 11 open PRs) as of main c79acd6; stopped by Wilson 2026-09-15. Relaunch cold in build mode (pre-flight skips merged items and re-evaluates open PRs), then run mode review. Before launch: `tmutil thinlocalsnapshots / 80000000000 4` and confirm >=40 GB free.
 
 Step 1, one line: cd ~/code/wilson-voice && git pull --ff-only origin main && cd desktop && npm run loop:validate
 Step 2: Workflow({scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop-all.mjs", args: {mode: "build"}}) — then END THE TURN.
