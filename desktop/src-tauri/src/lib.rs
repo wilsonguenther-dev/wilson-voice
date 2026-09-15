@@ -279,12 +279,31 @@ pub struct AppSettings {
     /// "auto" infers the mode from the frontmost app; any other value forces it.
     #[serde(default = "default_dictation_mode")]
     pub dictation_mode: String,
-    /// Auto-Cleanup level (YV10): none | light | medium | high (default "light").
-    /// Gates the cleanup pipeline — "none" is a raw passthrough; higher levels
-    /// enable dictionary → backtrack → formatting → local-LLM polish (see
-    /// `dictation::CleanupLevel` / `run_cleanup`).
+    /// Auto-Cleanup level (YV10): none | light | medium | high (default
+    /// "medium" since Y4-A). Gates the cleanup pipeline — "none" is a raw
+    /// passthrough; higher levels enable dictionary → backtrack → formatting →
+    /// local-LLM polish (see `dictation::CleanupLevel` / `run_cleanup`).
+    ///
+    /// Y4-A raised the shipped value from "light" to "medium": "light" stops
+    /// one stage short of `runs_format()`, so a fresh install did no spoken
+    /// punctuation, no lists, no email shape — "formatting does not work
+    /// whatsoever".
     #[serde(default = "default_cleanup_level")]
     pub cleanup_level: String,
+    /// Y4-A provenance: true once the user has actually MOVED the Auto-Cleanup
+    /// picker. Nothing else writes it. A default nobody chose may be migrated
+    /// out from under the user (that is what v1 → v2 does to "light"); a value
+    /// the user picked may not, and without this bit the two are
+    /// indistinguishable on disk — `save_settings` persists the whole struct,
+    /// so every store has a `cleanupLevel` key from the first save onward.
+    #[serde(default)]
+    pub cleanup_level_set_by_user: bool,
+    /// Y4-A: set by the v1 → v2 migration so the app can say ONE quiet line
+    /// about formatting now being on, and where to turn it off. Cleared by the
+    /// UI when the line is dismissed. False on a fresh install — a first run
+    /// has no behaviour change to explain.
+    #[serde(default)]
+    pub formatting_notice_pending: bool,
     /// Where snippet triggers may fire (YV48): `inline` (anywhere in the
     /// transcript, the default) or `utterance` (only when the trigger is the
     /// WHOLE utterance). See `snippets::SnippetScope`.
@@ -382,7 +401,7 @@ pub struct AppSettings {
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
 /// arm in `apply_settings_migrations` that upgrades stores written at the
 /// previous version.
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 fn default_schema_version() -> u32 {
     CURRENT_SETTINGS_SCHEMA_VERSION
@@ -406,7 +425,7 @@ fn default_dictation_mode() -> String {
     "auto".into()
 }
 fn default_cleanup_level() -> String {
-    "light".into()
+    "medium".into()
 }
 fn default_snippet_scope() -> String {
     "inline".into()
@@ -442,7 +461,9 @@ impl Default for AppSettings {
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
             dictation_mode: "auto".into(),
-            cleanup_level: "light".into(),
+            cleanup_level: "medium".into(),
+            cleanup_level_set_by_user: false,
+            formatting_notice_pending: false,
             snippet_scope: "inline".into(),
             polish_model: String::new(),
             polish_deadline_ms: polish::DEFAULT_POLISH_DEADLINE_MS,
@@ -2696,7 +2717,7 @@ fn salvage_settings(stored: &serde_json::Value) -> AppSettings {
 /// defaulted the struct field to the current version.
 ///
 /// Must stay idempotent — it runs on every launch until the rewrite lands.
-fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json::Value) -> bool {
+pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json::Value) -> bool {
     let stored_version = stored
         .get("schemaVersion")
         .and_then(|v| v.as_u64())
@@ -2717,6 +2738,26 @@ fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json::Va
             settings.native_model
         );
         settings.native_model = default_native_model();
+    }
+
+    // v1 → v2 (Y4-A): "light" never reaches `runs_format()`, so every store
+    // carrying it dictates with no spoken punctuation, no lists and no email
+    // shape. It is rewritten to "medium" UNCONDITIONALLY, because a v1 store
+    // cannot tell a chosen "light" from the shipped one: `save_settings`
+    // persists the whole `AppSettings` struct, so `cleanupLevel` is present in
+    // every store the moment onboarding saves, and v1 records no provenance
+    // anywhere. From v2 on, `cleanup_level_set_by_user` records it, and a v2
+    // store never re-enters this function at all (the early return above).
+    //
+    // Only "light" moves. "none" is verbatim mode — a real user need — and
+    // "high" is already past the gate.
+    if stored_version < 2 && settings.cleanup_level.trim().eq_ignore_ascii_case("light") {
+        log::info!(
+            "settings migration v{stored_version}→v{CURRENT_SETTINGS_SCHEMA_VERSION}: \
+             Auto-Cleanup \"light\" never reached the formatting stage; raising it to \"medium\""
+        );
+        settings.cleanup_level = "medium".into();
+        settings.formatting_notice_pending = true;
     }
 
     settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
@@ -2747,7 +2788,16 @@ fn save_settings(
     // YV46: the legacy-migration flag is backend bookkeeping the UI never
     // carries — take it from the live settings so a save can't re-arm the
     // one-shot migration on the next launch.
-    next.legacy_json_migrated = state.settings.lock().legacy_json_migrated;
+    {
+        let live = state.settings.lock();
+        next.legacy_json_migrated = live.legacy_json_migrated;
+        // Y4-A provenance: this is the command the Auto-Cleanup picker calls,
+        // and a save that MOVES the level is the only evidence that a human
+        // chose it. Once true it stays true — a later save of some unrelated
+        // toggle must not un-choose it.
+        next.cleanup_level_set_by_user =
+            live.cleanup_level_set_by_user || next.cleanup_level != live.cleanup_level;
+    }
     // Keep label in sync with binding
     next.hotkey_label = match next.ptt_binding.as_str() {
         "fn" => "fn".into(),
@@ -5994,9 +6044,15 @@ mod tests {
         let parsed: AppSettings = serde_json::from_str(legacy).expect("legacy parse");
         assert!(!parsed.onboarded);
         assert!(parsed.calibration_sample.is_none());
-        // YV10: cleanup_level defaults to "light" for fresh installs and legacy JSON.
-        assert_eq!(AppSettings::default().cleanup_level, "light");
-        assert_eq!(parsed.cleanup_level, "light");
+        // YV10 / Y4-A: cleanup_level defaults to "medium" for fresh installs and
+        // for legacy JSON written before the field existed. It was "light" until
+        // Y4-A, which stopped one stage short of `CleanupLevel::runs_format()` —
+        // so a legacy store with no `cleanupLevel` key deserialised into a
+        // configuration that never formatted anything. The serde default is the
+        // only thing standing behind that store, which is why it is asserted on
+        // both sides here.
+        assert_eq!(AppSettings::default().cleanup_level, "medium");
+        assert_eq!(parsed.cleanup_level, "medium");
         // YV12: denoise defaults ON for fresh installs and legacy JSON (serde default).
         assert!(AppSettings::default().denoise);
         assert!(parsed.denoise);
@@ -6181,7 +6237,10 @@ mod tests {
 
         let salvaged = salvage_settings(&stored);
         assert_eq!(salvaged.language, "fr");
-        assert_eq!(salvaged.cleanup_level, "light");
+        // Y4-A: a field of the wrong type falls back to the SHIPPED default,
+        // which is now "medium". Salvage runs on the struct, below the
+        // migration, so this is the serde default and nothing else.
+        assert_eq!(salvaged.cleanup_level, "medium");
     }
 
     // End-to-end through the file: one bad field, everything else survives, and
@@ -6210,7 +6269,15 @@ mod tests {
         assert!(loaded.onboarded);
         assert_eq!(loaded.ptt_binding, "fn");
         assert_eq!(loaded.native_model, "handy-computer/whisper-tiny-gguf");
-        assert_eq!(loaded.cleanup_level, "light", "only the bad field defaults");
+        // Y4-A: the bad field falls back to the shipped default, now "medium".
+        // The v1 → v2 migration also runs on this file (it is stored at v1), and
+        // it deliberately does NOT fire here: its arm rewrites the literal
+        // "light", and salvage already produced "medium". Two mechanisms, one
+        // value, no double-handling.
+        assert_eq!(
+            loaded.cleanup_level, "medium",
+            "only the bad field defaults"
+        );
         assert!(path.exists(), "a salvageable file is not quarantined");
         assert!(!dir.join("settings.json.bak").exists());
 

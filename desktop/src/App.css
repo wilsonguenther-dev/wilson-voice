@@ -2882,3 +2882,36 @@ button.primary.big {
 .diff-view .diff-feedback button.on {
   background: rgba(127, 127, 127, 0.22);
 }
+/* Y4-A — the one quiet line a migrated install sees once: Auto-Cleanup was
+   raised from Light to Medium, so formatting now runs. Deliberately NOT a
+   `.banner`: banners sit at the top of the window and interrupt, and this is a
+   footnote inside the panel that owns the setting it is talking about. Low
+   contrast, no icon, one dismiss. */
+.notice {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+/* A button that reads as a link — used inside a sentence, where a real button
+   chrome would shout louder than the sentence does. It keeps button semantics
+   (focusable, Enter/Space, announced as a button) on purpose. */
+.linklike {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  opacity: 0.75;
+}

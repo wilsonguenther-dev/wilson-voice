@@ -6,12 +6,13 @@
 //! The audit's worst finding was not a broken function. Every function worked.
 //! The defect was that the whole formatting corpus
 //! (`tests/fixtures/formatting/*.jsonl`) pins its own `level` on every row —
-//! 36 rows at `"medium"`, 10 at `"high"` — while `AppSettings::default()` ships
+//! 36 rows at `"medium"`, 10 at `"high"` — while `AppSettings::default()` shipped
 //! `cleanup_level: "light"` and `CleanupLevel::runs_format()` is true only from
-//! `Medium` up. So the corpus is green and, on a fresh install, the formatting
-//! stage never runs at all. That is the mechanism behind "formatting does not
+//! `Medium` up. So the corpus was green and, on a fresh install, the formatting
+//! stage never ran at all. That was the mechanism behind "formatting does not
 //! work whatsoever": a test suite exercising a configuration the product never
-//! ships.
+//! shipped. Y4-A closed it by raising the shipped default to `"medium"`; these
+//! tests are what keep it closed.
 //!
 //! Two kinds of assertion live here, and they are deliberately different:
 //!
@@ -21,12 +22,13 @@
 //!   default is allowed; changing one silently is not.
 //! * [`defaults_reach_every_cleanup_stage`] and
 //!   [`every_rule_has_a_fixture_row_at_the_shipped_level`] — the two tripwires.
-//!   Both are RED on today's main, both are `#[ignore]`d, and both name the
-//!   item that is allowed to remove the ignore.
+//!   Both were RED when this file landed and both were ignore-attributed. Y4-A did
+//!   the work they named — raised the shipped level and covered it in the
+//!   corpus — and removed both ignores, so they run on every `cargo test` now.
 //!
 //! ## What this file deliberately does NOT do
 //!
-//! It does not change a single default. Y4-A owns that change. It does not
+//! It does not change a single default — Y4-A did that, in `lib.rs`. It does not
 //! read a literal back out of `lib.rs` with a grep either — every assertion
 //! constructs `AppSettings::default()`, so a changed default breaks the test
 //! rather than the test tracking the change.
@@ -55,12 +57,31 @@ fn shipped_defaults_table() {
     let d = AppSettings::default();
 
     // --- Text output ------------------------------------------------------
-    // "light" means `CleanupLevel::runs_format()` is FALSE on a fresh install:
-    // no list detection, no spoken punctuation ("period" stays the word
-    // "period"), no email shape, no tone-dialled trailing period. This is the
-    // single value behind "formatting does not work whatsoever". Y4-A owns
-    // raising it; this row exists so the change can never be silent.
-    assert_eq!(d.cleanup_level, "light", "cleanup_level default");
+    // Y4-A raised this from "light" to "medium". "light" stopped one stage
+    // short of `CleanupLevel::runs_format()`, so a fresh install did no list
+    // detection, no spoken punctuation ("period" stayed the word "period"), no
+    // email shape and no tone-dialled trailing period — the single value behind
+    // "formatting does not work whatsoever". "medium" reaches the rules
+    // formatting stage and stops there; stage 4 stays off because no polish
+    // model ships (see `polish_model` below). Lowering it again silently is
+    // what this row exists to prevent.
+    assert_eq!(d.cleanup_level, "medium", "cleanup_level default");
+    // Y4-A provenance. False on a fresh install: the user has not touched the
+    // Auto-Cleanup picker, so a FUTURE default change is allowed to move their
+    // level out from under them the way v1 → v2 moved "light". True would mean
+    // a fresh install claims a choice nobody made and never gets the next
+    // migration.
+    assert!(
+        !d.cleanup_level_set_by_user,
+        "cleanup_level_set_by_user default (a fresh install chose nothing)"
+    );
+    // False on a fresh install: the one-line "formatting is on now" notice
+    // explains a CHANGE, and a first run has no change to explain. True here
+    // would show every new user a notice about a level they never had.
+    assert!(
+        !d.formatting_notice_pending,
+        "formatting_notice_pending default (nothing to explain on a first run)"
+    );
     // Empty = no local polish model installed, so the LLM polish stage is a
     // no-op even at `High`. The user gets rules output only.
     assert_eq!(d.polish_model, "", "polish_model default (empty = OFF)");
@@ -137,12 +158,11 @@ const NO_DOWNLOAD_STAGES: &[&str] = &[
 ///   * stage 3 — `apply_spoken_marks` turns the spoken word "period" into "."
 ///     and it runs ONLY inside `runs_format()`, which is the gate at issue.
 ///
-/// RED ON MAIN, ON PURPOSE: `cleanup_level: "light"` fails stage 3.
-/// UNBLOCKED BY Y4-A — Y4-A raises the shipped default and removes the
-/// `#[ignore]` in the same diff. Do not remove the ignore without that change;
-/// do not change the default here.
+/// WAS RED ON MAIN: `cleanup_level: "light"` failed stage 3. Y4-A raised the
+/// shipped default to "medium" and dropped the ignore attribute in the same diff, so
+/// this now runs on every `cargo test`. It goes red again the moment a default
+/// stops reaching the pipeline — which is the whole point of it.
 #[test]
-#[ignore = "RED on main by design — UNBLOCKED BY Y4-A (raises the shipped cleanup_level)"]
 fn defaults_reach_every_cleanup_stage() {
     use std::cell::Cell;
 
@@ -217,11 +237,11 @@ fn defaults_reach_every_cleanup_stage() {
 /// The rule id set comes from `support/formatting_rules.rs`, the same table
 /// `formatting_fixtures.rs` reads — never from a literal in this file.
 ///
-/// RED ON MAIN, ON PURPOSE.
-/// UNBLOCKED BY Y4-A — remove this `#[ignore]` in the diff that makes the corpus
-/// cover the shipped level.
+/// WAS RED ON MAIN. Y4-A added `group-d-shipped-level.jsonl`, whose rows all sit
+/// at the shipped level and cover the rules the formatting stage owns (list
+/// detection, spoken marks, the line/paragraph commands, email shape and the
+/// tone-dialled trailing period), and dropped the ignore attribute in the same diff.
 #[test]
-#[ignore = "RED on main by design — UNBLOCKED BY Y4-A (corpus must cover the shipped level)"]
 fn every_rule_has_a_fixture_row_at_the_shipped_level() {
     let shipped = AppSettings::default().cleanup_level;
     let rows = fixture_rows();
