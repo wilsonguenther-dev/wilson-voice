@@ -112,9 +112,37 @@ pub fn polish_speed_for(ms: u64) -> &'static str {
 /// Nothing to fix below this — a 3-word utterance costs a model round trip and
 /// gains nothing (§2.3).
 const MIN_POLISH_WORDS: usize = 4;
-/// Long-form is rules-only: chunking is a later item, and a single pass over
-/// 400+ words cannot hold the deadline (§2.3).
-const MAX_POLISH_WORDS: usize = 400;
+/// Words per polish chunk — Y4-E, and MEASURED rather than chosen.
+///
+/// `docs/BUDGETS.md` §`per_chunk_word_budget` derives **160** from the swept
+/// latency curve on the shipped 1.5B: 200 words is the longest input that was
+/// both error-free (9/9) and inside [`DEFAULT_POLISH_DEADLINE_MS`] (p95 980 ms),
+/// and `BUDGET_HEADROOM = 0.8` is applied on top for a colder page cache and a
+/// busier machine. 160 also sits below 300 — the shortest length at which a
+/// `max_out` overrun has ever been observed — which matters because an overrun
+/// costs the whole chunk, not a degraded one.
+///
+/// This REPLACES the 400-word cliff, under which the longest and most valuable
+/// dictations got the least formatting. 400 was never a latency bound: the
+/// curve puts it at twice the deadline's real reach.
+pub const POLISH_CHUNK_WORDS: usize = 160;
+
+/// Words of the preceding chunk handed to the next one as context, on the
+/// request's `topic` field.
+///
+/// It is document text the user just dictated, not the AX cursor context — the
+/// rule that context never leaves the process is about the CARET's surroundings
+/// (another app's window), and this is the take itself. It exists so a chunk
+/// boundary does not read as a topic change to a model that can only see one
+/// chunk at a time; it is never validated INTO the output, because
+/// [`validate_polish`] compares the answer against this chunk's input only.
+const POLISH_CHUNK_CONTEXT_WORDS: usize = 24;
+
+/// Chunks one take may spend on the model. At [`POLISH_CHUNK_WORDS`] this is
+/// roughly 6 400 words — far past any dictation — and it exists so a pathological
+/// input cannot turn into an unbounded run of round trips. Chunks past the
+/// ceiling keep their rules text, so nothing is lost, only unpolished.
+pub const MAX_POLISH_CHUNKS: usize = 40;
 
 /// Content-word retention floor (§2.5 V3).
 const RETENTION_FLOOR: f64 = 0.80;
@@ -199,6 +227,39 @@ pub enum PolishError {
     Unavailable,
     /// The child answered something that is not a usable response line.
     Protocol,
+    /// The child hit its `max_out` token cap mid-rewrite and answered
+    /// `{"ok":false,"err":"max_out"}` (`yap-polish/src/main.rs`, `KIND_POLISH`).
+    ///
+    /// Distinguished from [`PolishError::Protocol`] since Y4-E because it is the
+    /// one failure the measured curve says is CONTENT-dependent rather than
+    /// length-monotonic (`docs/BUDGETS.md`: 300 words overran 9/9 while 400
+    /// words passed 9/9), so it is the reason a chunk most often keeps its rules
+    /// text and the reason worth reporting by name.
+    Overrun,
+}
+
+impl PolishError {
+    /// Map the sidecar's `err` string onto a variant. Anything unrecognised is
+    /// [`PolishError::Protocol`]: an answer we cannot read is not an answer.
+    pub fn from_wire_err(err: &str) -> Self {
+        match err {
+            "max_out" => PolishError::Overrun,
+            "deadline" => PolishError::Deadline,
+            _ => PolishError::Protocol,
+        }
+    }
+
+    /// The reason tag this failure is recorded under, per chunk.
+    pub fn reason(self) -> &'static str {
+        match self {
+            PolishError::Deadline => "client_deadline",
+            // Y4-G's tag, unchanged: `no_sidecar` is what db.rs:48, lib.rs:1529
+            // and dictation.rs:813 already document and what the take records.
+            PolishError::Unavailable => "no_sidecar",
+            PolishError::Protocol => "protocol",
+            PolishError::Overrun => "max_out",
+        }
+    }
 }
 
 /// The seam between the pipeline and the model. Implemented in production by
@@ -280,6 +341,21 @@ pub fn style_for_mode(settings: &crate::AppSettings, mode: DictationMode) -> Sty
 /// the mode is `Code` (§2.5 V8: code never reaches a model at all), or the
 /// utterance is outside the length band the latency budget is written for.
 pub fn build_request(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Option<PolishRequest> {
+    build_chunk_request(text, mode, cfg, None)
+}
+
+/// [`build_request`] for ONE chunk of a long take, with the tail of the previous
+/// chunk as context.
+///
+/// The upper bound is [`POLISH_CHUNK_WORDS`], not the whole take: the chunker
+/// guarantees no chunk is longer, and this is the second lock on it, so a
+/// hand-built oversized request still never reaches the model.
+pub fn build_chunk_request(
+    text: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+    context: Option<&str>,
+) -> Option<PolishRequest> {
     if cfg.model.trim().is_empty() {
         return None;
     }
@@ -288,20 +364,25 @@ pub fn build_request(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Opt
         return None;
     }
     let words = text.split_whitespace().count();
-    if !(MIN_POLISH_WORDS..=MAX_POLISH_WORDS).contains(&words) {
+    if !(MIN_POLISH_WORDS..=POLISH_CHUNK_WORDS).contains(&words) {
         return None;
     }
-    // The pushed session topic, once there is one, would go on the request's
-    // `topic`. NEVER the AX cursor context — that steers decisions in-process
-    // and is not sent anywhere.
-    Some(PolishRequest::polish(
+    // The pushed session topic, and since Y4-E the previous chunk's tail, go on
+    // the request's `topic`. NEVER the AX cursor context — that steers decisions
+    // in-process and is not sent anywhere.
+    let mut req = PolishRequest::polish(
         NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         mode_tag(mode),
         cfg.style.tag(),
         max_out_for(text),
         cfg.deadline_ms,
         text.to_string(),
-    ))
+    );
+    req.topic = context
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string);
+    Some(req)
 }
 
 /// The whole stage for one take against a given client: request shaping, then
@@ -312,8 +393,8 @@ pub fn polish_stage(
     cfg: &PolishConfig,
     client: &dyn PolishClient,
 ) -> Option<String> {
-    let req = build_request(text, mode, cfg)?;
-    polish_with(text, req, client)
+    let outcome = polish_stage_chunked(text, mode, cfg, client);
+    (outcome.accepted_chunks() > 0).then_some(outcome.text)
 }
 
 /// Call `client` under a hard deadline and a panic guard, then put its answer
@@ -323,10 +404,22 @@ pub fn polish_stage(
 /// an answer that arrived too late, or one that fails the gate. The caller's
 /// text is untouched in all of them.
 pub fn polish_with(text: &str, req: PolishRequest, client: &dyn PolishClient) -> Option<String> {
+    polish_attempt(text, req, client).ok()
+}
+
+/// [`polish_with`], but it hands back the reason tag instead of throwing it
+/// away — which is what lets a chunked take record WHICH chunk kept its rules
+/// text and why (Y4-E). Identical behaviour otherwise: same counter, same log
+/// line, same collapse of every failure to "the caller keeps its text".
+fn polish_attempt(
+    text: &str,
+    req: PolishRequest,
+    client: &dyn PolishClient,
+) -> Result<String, &'static str> {
     // V8, defence in depth: a caller that hand-builds a code request still gets
     // no model call. `build_request` already refuses; this is the second lock.
     if req.mode == mode_tag(DictationMode::Code) {
-        return reject("v8_code_mode");
+        return Err(reject_reason("v8_code_mode"));
     }
     let started = Instant::now();
     let deadline = Duration::from_millis(req.deadline_ms.max(1));
@@ -335,17 +428,507 @@ pub fn polish_with(text: &str, req: PolishRequest, client: &dyn PolishClient) ->
     let answered = std::panic::catch_unwind(AssertUnwindSafe(|| client.rewrite(&req)));
     let rewritten = match answered {
         Ok(Ok(text)) => text,
-        Ok(Err(PolishError::Unavailable)) => return reject("no_sidecar"),
-        Ok(Err(PolishError::Deadline)) => return reject("deadline"),
-        Ok(Err(_)) => return reject("client_error"),
-        Err(_) => return reject("client_panic"),
+        // Y4-G named the closed set; Y4-E only makes it FINER, because a chunk
+        // has to say which failure it survived. `PolishError::reason` keeps
+        // Y4-G's `no_sidecar` verbatim (db.rs, lib.rs and dictation.rs all
+        // document that tag) and splits what Y4-G folded into `client_error`
+        // into `max_out` and `protocol` — an overrun is the one failure a
+        // per-chunk fallback exists for, so it cannot stay anonymous.
+        Ok(Err(err)) => return Err(reject_reason(err.reason())),
+        Err(_) => return Err(reject_reason("client_panic")),
     };
     // The parent's own clock is the authority: a client that answers late (or
     // one that cannot be interrupted) still loses its answer here.
     if started.elapsed() > deadline {
-        return reject("deadline");
+        return Err(reject_reason("deadline"));
     }
-    validate_polish(text, &rewritten)
+    // `validate_polish` already counted and logged its own V-tag on the way out.
+    validate_polish(text, &rewritten).ok_or("validator")
+}
+
+// ── Long-form: one take, many chunks (Y4-E) ─────────────────────────────────
+
+/// One piece of a take: the exact whitespace that separates it from the piece
+/// before it, and its body.
+///
+/// The INVARIANT is byte-level and is the whole seam story:
+/// `chunks.map(|c| c.sep + c.body).concat() == text`. Reassembly therefore
+/// cannot drop the join whitespace, cannot duplicate a sentence and cannot
+/// invent a capital at a boundary — the separators are carried, never
+/// regenerated. `plan_polish_chunks_is_byte_exact` asserts it over every
+/// fixture in the long-form suite.
+///
+/// A trailing run of whitespace at the very end of a take becomes a chunk with
+/// an EMPTY body: it is passed through untouched and never sent to a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolishChunk {
+    /// Whitespace preceding this chunk, verbatim (empty for the first chunk
+    /// unless the take itself starts with whitespace).
+    pub sep: String,
+    /// The text handed to the model — never longer than [`POLISH_CHUNK_WORDS`]
+    /// words.
+    pub body: String,
+}
+
+impl PolishChunk {
+    /// Words in the body, by the same `split_whitespace` count the gates use.
+    pub fn words(&self) -> usize {
+        self.body.split_whitespace().count()
+    }
+}
+
+/// What happened to one polishable chunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkOutcome {
+    /// 0-based index among the POLISHABLE chunks (whitespace-only pieces carry
+    /// no outcome — nothing was decided about them).
+    pub index: usize,
+    /// Words in the chunk as it went in.
+    pub words: usize,
+    /// The model's rewrite was accepted for this chunk.
+    pub accepted: bool,
+    /// Why this chunk kept its RULES text: `"max_out"`, `"deadline"`,
+    /// `"client_deadline"`, `"client_panic"`, `"no_sidecar"`, `"protocol"`,
+    /// `"validator"`, `"not_eligible"` (off / too short / `Code`), or
+    /// `"chunk_ceiling"`. `None` when accepted.
+    pub reason: Option<&'static str>,
+}
+
+/// The result of polishing one whole take.
+///
+/// `text` is ALWAYS a complete document: accepted chunks rewritten, every other
+/// chunk carrying the rules text it arrived with. That is the never-lose-text
+/// property made per chunk instead of per take — before Y4-E a single rejection
+/// discarded the entire rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolishOutcome {
+    /// The assembled document.
+    pub text: String,
+    /// One row per polishable chunk, in order.
+    pub chunks: Vec<ChunkOutcome>,
+    /// Set when the ASSEMBLED document failed [`validate_aggregate`] and the
+    /// rules text was kept whole. `None` in the normal case.
+    pub aggregate_reason: Option<&'static str>,
+}
+
+impl PolishOutcome {
+    /// How many chunks the model actually rewrote.
+    pub fn accepted_chunks(&self) -> usize {
+        self.chunks.iter().filter(|c| c.accepted).count()
+    }
+
+    /// The reason recorded for one polishable chunk, if it kept its rules text.
+    pub fn reason_for(&self, index: usize) -> Option<&'static str> {
+        self.chunks
+            .iter()
+            .find(|c| c.index == index)
+            .and_then(|c| c.reason)
+    }
+}
+
+/// Split a take into chunks at PARAGRAPH boundaries first, then sentence
+/// boundaries, then — only if one sentence is itself over budget — at word
+/// boundaries.
+///
+/// See [`PolishChunk`] for the byte-exactness invariant this upholds.
+pub fn plan_polish_chunks(text: &str) -> Vec<PolishChunk> {
+    plan_polish_chunks_with(text, POLISH_CHUNK_WORDS)
+}
+
+/// [`plan_polish_chunks`] against an explicit budget, so a test can drive a
+/// 12-chunk take without writing two thousand words of fixture.
+pub fn plan_polish_chunks_with(text: &str, budget: usize) -> Vec<PolishChunk> {
+    let budget = budget.max(1);
+    let mut chunks: Vec<PolishChunk> = Vec::new();
+    // The chunk being filled: whole paragraphs are packed into it until the
+    // next one will not fit, so a take of many short paragraphs costs one round
+    // trip per BUDGET, not one per paragraph.
+    let mut open: Option<PolishChunk> = None;
+    let mut open_words = 0usize;
+    for (sep, block) in split_paragraphs(text) {
+        if block.is_empty() {
+            // The take's trailing whitespace: carried, never sent anywhere.
+            if let Some(chunk) = open.take() {
+                chunks.push(chunk);
+                open_words = 0;
+            }
+            chunks.push(PolishChunk { sep, body: block });
+            continue;
+        }
+        let words = block.split_whitespace().count();
+        if words <= budget {
+            match open.as_mut() {
+                Some(chunk) if open_words + words <= budget => {
+                    chunk.body.push_str(&sep);
+                    chunk.body.push_str(&block);
+                    open_words += words;
+                }
+                _ => {
+                    if let Some(chunk) = open.take() {
+                        chunks.push(chunk);
+                    }
+                    open = Some(PolishChunk { sep, body: block });
+                    open_words = words;
+                }
+            }
+            continue;
+        }
+        // A paragraph over budget on its own: close what is open, then cut this
+        // one at sentence ends (and only then at words).
+        if let Some(chunk) = open.take() {
+            chunks.push(chunk);
+            open_words = 0;
+        }
+        let mut lead = sep;
+        let pieces = pack_block(&block, budget);
+        let last = pieces.len().saturating_sub(1);
+        for (i, (inner, piece)) in pieces.into_iter().enumerate() {
+            let mut pre = std::mem::take(&mut lead);
+            pre.push_str(&inner);
+            let words = piece.split_whitespace().count();
+            let chunk = PolishChunk {
+                sep: pre,
+                body: piece,
+            };
+            if i == last {
+                // The paragraph's LAST piece stays open so the next paragraph
+                // can join it if there is room.
+                open = Some(chunk);
+                open_words = words;
+            } else {
+                chunks.push(chunk);
+            }
+        }
+    }
+    if let Some(chunk) = open.take() {
+        chunks.push(chunk);
+    }
+    fold_short_tail(&mut chunks, budget);
+    chunks
+}
+
+/// Paragraph split: a whitespace run containing two or more newlines opens a
+/// new block, and every byte of the original is carried in either a `sep` or a
+/// body.
+fn split_paragraphs(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut sep = String::new();
+    let mut body = String::new();
+    let mut gap = String::new();
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            gap.push(ch);
+            continue;
+        }
+        if body.is_empty() {
+            sep.push_str(&gap);
+            gap.clear();
+        } else if gap.chars().filter(|c| *c == '\n').count() >= 2 {
+            out.push((std::mem::take(&mut sep), std::mem::take(&mut body)));
+            sep = std::mem::take(&mut gap);
+        } else {
+            body.push_str(&gap);
+            gap.clear();
+        }
+        body.push(ch);
+    }
+    if !body.is_empty() {
+        out.push((sep, body));
+        sep = String::new();
+    }
+    if !gap.is_empty() {
+        // Trailing whitespace, or a take that is nothing but whitespace.
+        out.push((sep + &gap, String::new()));
+    }
+    out
+}
+
+/// Pack one paragraph into pieces of at most `budget` words, splitting at
+/// sentence ends and only then at words. Each piece carries the whitespace that
+/// preceded it INSIDE the paragraph.
+fn pack_block(block: &str, budget: usize) -> Vec<(String, String)> {
+    if block.split_whitespace().count() <= budget {
+        return vec![(String::new(), block.to_string())];
+    }
+    let mut pieces: Vec<(String, String)> = Vec::new();
+    let mut cur_sep = String::new();
+    let mut cur = String::new();
+    let mut cur_words = 0usize;
+    for (sep, sentence) in split_sentences(block) {
+        for (wsep, unit) in split_oversized(&sep, &sentence, budget) {
+            let words = unit.split_whitespace().count();
+            if cur_words > 0 && cur_words + words > budget {
+                pieces.push((std::mem::take(&mut cur_sep), std::mem::take(&mut cur)));
+                cur_sep = wsep;
+                cur = unit;
+                cur_words = words;
+            } else {
+                if cur.is_empty() {
+                    cur_sep = wsep;
+                } else {
+                    cur.push_str(&wsep);
+                }
+                cur.push_str(&unit);
+                cur_words += words;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        pieces.push((cur_sep, cur));
+    }
+    pieces
+}
+
+/// Sentence split inside a paragraph: a `.`, `!` or `?` (with any closing
+/// quotes or brackets that follow it) ends a sentence when whitespace comes
+/// next. Separators are carried verbatim.
+fn split_sentences(block: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut sep = String::new();
+    let mut cur = String::new();
+    let mut gap = String::new();
+    let mut ended = false;
+    for ch in block.chars() {
+        if ch.is_whitespace() {
+            gap.push(ch);
+            continue;
+        }
+        if !gap.is_empty() {
+            if ended && !cur.is_empty() {
+                out.push((std::mem::take(&mut sep), std::mem::take(&mut cur)));
+                sep = std::mem::take(&mut gap);
+            } else {
+                cur.push_str(&gap);
+                gap.clear();
+            }
+            ended = false;
+        }
+        cur.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            ended = true;
+        } else if !matches!(ch, '"' | '\'' | ')' | ']' | '}' | '»' | '”' | '’') {
+            ended = false;
+        }
+    }
+    if !cur.is_empty() {
+        cur.push_str(&gap);
+        out.push((sep, cur));
+    }
+    out
+}
+
+/// A single sentence longer than the budget is cut at word boundaries — the
+/// last resort, and the only cut that can land mid-sentence.
+fn split_oversized(sep: &str, sentence: &str, budget: usize) -> Vec<(String, String)> {
+    if sentence.split_whitespace().count() <= budget {
+        return vec![(sep.to_string(), sentence.to_string())];
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur_sep = sep.to_string();
+    let mut cur = String::new();
+    let mut words = 0usize;
+    let mut gap = String::new();
+    for ch in sentence.chars() {
+        if ch.is_whitespace() {
+            gap.push(ch);
+            continue;
+        }
+        if !gap.is_empty() {
+            if words >= budget {
+                out.push((std::mem::take(&mut cur_sep), std::mem::take(&mut cur)));
+                cur_sep = std::mem::take(&mut gap);
+                words = 0;
+            } else {
+                cur.push_str(&gap);
+                gap.clear();
+            }
+        }
+        if cur.is_empty() || cur.ends_with(char::is_whitespace) {
+            words += 1;
+        } else if words == 0 {
+            words = 1;
+        }
+        cur.push(ch);
+    }
+    cur.push_str(&gap);
+    if !cur.is_empty() {
+        out.push((cur_sep, cur));
+    }
+    out
+}
+
+/// A final chunk under [`MIN_POLISH_WORDS`] would be refused by the gate and
+/// left raw for no reason, so fold it back into its predecessor when the two
+/// still fit the budget. Concatenation only — the invariant is untouched.
+fn fold_short_tail(chunks: &mut Vec<PolishChunk>, budget: usize) {
+    while chunks.len() >= 2 {
+        let last = chunks.len() - 1;
+        let tail_words = chunks[last].words();
+        if tail_words == 0 || tail_words >= MIN_POLISH_WORDS {
+            break;
+        }
+        let prev_words = chunks[last - 1].words();
+        if prev_words == 0 || prev_words + tail_words > budget {
+            break;
+        }
+        let tail = chunks.remove(last);
+        let prev = &mut chunks[last - 1];
+        prev.body.push_str(&tail.sep);
+        prev.body.push_str(&tail.body);
+    }
+}
+
+/// The last `words` words of a chunk, handed to the next chunk as context.
+fn tail_words(text: &str, words: usize) -> String {
+    let all: Vec<&str> = text.split_whitespace().collect();
+    let start = all.len().saturating_sub(words);
+    all[start..].join(" ")
+}
+
+/// The whole-take deadline: one chunk's deadline PER CHUNK.
+///
+/// A long take is many sequential round trips, so giving it the same 1 200 ms a
+/// single paragraph gets would guarantee it misses — `DEFAULT_POLISH_DEADLINE_MS`
+/// is a per-request number and always was. `MAX_POLISH_DEADLINE_MS` (5 000) is
+/// the ceiling on THAT per-request number, and `docs/BUDGETS.md` measures the
+/// worst swept per-request cost on the shipped model at p95 1 960 ms (400 words)
+/// and ~980 ms at the 200-word band the chunk budget is derived from — so the
+/// ceiling already sits above the floor and is not raised here.
+pub fn take_deadline_ms(text: &str, cfg: &PolishConfig) -> u64 {
+    let chunks = plan_polish_chunks(text)
+        .iter()
+        .filter(|c| !c.body.is_empty())
+        .count()
+        .max(1) as u64;
+    chunks.saturating_mul(cfg.deadline_ms)
+}
+
+/// Polish one take, chunk by chunk, and say what happened to each chunk.
+///
+/// Per-chunk validation is the point: [`validate_polish`] runs on every chunk
+/// against THAT chunk's input, so a rejected chunk costs exactly that chunk's
+/// rewrite and every other chunk still benefits. The assembled document then
+/// goes through [`validate_aggregate`], because a pass that stays inside the
+/// band chunk by chunk can still be an ASSEMBLY that lost or duplicated one.
+///
+/// The sidecar's restart budget (YV75, `MAX_SIDECAR_RESTARTS`) stays PER
+/// SESSION and is deliberately NOT reset per chunk — an unbounded respawn is
+/// exactly what that budget exists to prevent. Chunking cannot multiply the
+/// spend because the first [`PolishError::Unavailable`] STOPS the loop: a
+/// 12-chunk take against a dead sidecar costs ONE round trip, not twelve, and
+/// the remaining chunks are recorded `"no_sidecar"` without being asked.
+pub fn polish_stage_chunked(
+    text: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+    client: &dyn PolishClient,
+) -> PolishOutcome {
+    let chunks = plan_polish_chunks(text);
+    let mut assembled = String::with_capacity(text.len());
+    let mut outcomes: Vec<ChunkOutcome> = Vec::new();
+    let mut context: Option<String> = None;
+    let mut stopped: Option<&'static str> = None;
+    for chunk in &chunks {
+        assembled.push_str(&chunk.sep);
+        if chunk.body.is_empty() {
+            continue;
+        }
+        let index = outcomes.len();
+        let words = chunk.words();
+        let mut reason: Option<&'static str> = None;
+        let mut rewritten: Option<String> = None;
+        if let Some(why) = stopped {
+            reason = Some(why);
+        } else if index >= MAX_POLISH_CHUNKS {
+            reason = Some("chunk_ceiling");
+        } else {
+            match build_chunk_request(&chunk.body, mode, cfg, context.as_deref()) {
+                None => reason = Some("not_eligible"),
+                Some(req) => match polish_attempt(&chunk.body, req, client) {
+                    Ok(out) => rewritten = Some(out),
+                    Err(why) => {
+                        reason = Some(why);
+                        // The sidecar is gone for this session; asking again
+                        // once per chunk would spend the restart budget on a
+                        // process that is not coming back.
+                        if why == "no_sidecar" {
+                            stopped = Some("no_sidecar");
+                        }
+                    }
+                },
+            }
+        }
+        let body = rewritten.unwrap_or_else(|| chunk.body.clone());
+        context = Some(tail_words(&body, POLISH_CHUNK_CONTEXT_WORDS));
+        assembled.push_str(&body);
+        outcomes.push(ChunkOutcome {
+            index,
+            words,
+            accepted: reason.is_none(),
+            reason,
+        });
+    }
+    let accepted = outcomes.iter().filter(|c| c.accepted).count();
+    if accepted == 0 {
+        return PolishOutcome {
+            text: text.to_string(),
+            chunks: outcomes,
+            aggregate_reason: None,
+        };
+    }
+    match validate_aggregate(text, &assembled) {
+        Some(whole) => PolishOutcome {
+            text: whole,
+            chunks: outcomes,
+            aggregate_reason: None,
+        },
+        None => {
+            // The document drifted even though its pieces did not. Keep the
+            // rules text whole, and say the rewrite was not taken.
+            for row in &mut outcomes {
+                row.accepted = false;
+                row.reason = Some("aggregate");
+            }
+            PolishOutcome {
+                text: text.to_string(),
+                chunks: outcomes,
+                aggregate_reason: Some("aggregate"),
+            }
+        }
+    }
+}
+
+/// V2 (length band) and V3 (content-word retention floor) over the WHOLE take.
+///
+/// V4–V7 are not repeated here: they are set-membership checks against the
+/// input, and the union of per-chunk passes cannot fail a union check. V2 and V3
+/// are repeated because they are RATIOS over a document, and the thing they
+/// catch at this level is not a bad model — a convex combination of in-band
+/// chunks is always in band — it is a bad ASSEMBLY: a chunk dropped, a chunk
+/// emitted twice, a seam that swallowed a sentence. That is the failure class
+/// Y3-B's ASR seams have, and the reason this gate is not decorative.
+///
+/// Unlike [`validate_polish`] the output is NOT trimmed: the assembled document
+/// already carries the take's own leading and trailing whitespace verbatim, and
+/// trimming it here would edit the seam this function exists to protect.
+pub fn validate_aggregate(input: &str, output: &str) -> Option<String> {
+    if output.trim().is_empty() {
+        return reject("aggregate_empty");
+    }
+    let (before, after) = (compare_len(input), compare_len(output));
+    if before > 0 {
+        let ratio = after as f64 / before as f64;
+        if ratio > MAX_LENGTH_RATIO {
+            return reject("aggregate_runaway");
+        }
+        if ratio < MIN_LENGTH_RATIO {
+            return reject("aggregate_truncated");
+        }
+    }
+    if retention(input, output) < RETENTION_FLOOR {
+        return reject("aggregate_retention");
+    }
+    Some(output.to_string())
 }
 
 /// Accept the model's rewrite, or reject it (→ caller keeps the rules output).
@@ -413,10 +996,18 @@ pub fn rejected_total() -> u64 {
 /// Count the rejection, log the TAG, and hand the caller its `None`. The
 /// rejected text and the input are never logged — YV20/M2 hygiene.
 fn reject(reason: &'static str) -> Option<String> {
+    reject_reason(reason);
+    None
+}
+
+/// Count the rejection and log the TAG, handing the tag back so a per-chunk
+/// caller can record WHICH chunk kept its rules text and why (Y4-E). Same
+/// counter, same log line, same hygiene — only the return value is new.
+fn reject_reason(reason: &'static str) -> &'static str {
     POLISH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
     note_polish_skip(reason);
     log::info!("polish rejected: {reason}");
-    None
+    reason
 }
 
 // ---------------------------------------------------------------------------
@@ -615,9 +1206,16 @@ pub fn polish_llm(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Option
 /// The same stage, but saying WHY when it produces nothing (Y4-G).
 ///
 /// `Err` carries a closed-set tag — `no_model`, `no_sidecar`, `deadline`,
-/// `client_error`, `client_panic`, `v1_empty` … `v7_script_drift`, `unknown` —
-/// which the take records and the "see what changed" panel attributes to the
-/// polish stage. It is NEVER text: nothing dictated escapes through it.
+/// `client_deadline`, `max_out`, `protocol`, `client_panic`, `v1_empty` …
+/// `v7_script_drift`, `unknown` — which the take records and the "see what
+/// changed" panel attributes to the polish stage. It is NEVER text: nothing
+/// dictated escapes through it.
+///
+/// Y4-E: this is the LIVE call site (`lib.rs`), so it runs the CHUNKED pass.
+/// Routing it through [`polish_stage`] instead would leave the whole item dead
+/// in the app — a long take would still be refused for being long, which is the
+/// defect this item exists to remove. `Err` here now means "not one chunk was
+/// taken", not "the take was too long to try".
 pub fn polish_llm_result(
     text: &str,
     mode: DictationMode,
@@ -625,20 +1223,48 @@ pub fn polish_llm_result(
 ) -> Result<String, &'static str> {
     // Drop any reason latched by an earlier take before this one can read it.
     let _ = take_polish_skip_reason();
-    let Some(model) = models::polish_model(cfg.model.trim())
-        .filter(|m| models::is_polish_downloaded(m))
-        .map(models::polish_model_path)
-    else {
+    let Some(outcome) = polish_llm_outcome(text, mode, cfg) else {
         note_polish_skip("no_model");
         return Err("no_model");
     };
-    match polish_stage(text, mode, cfg, &SidecarClient::new(model)) {
-        Some(out) => Ok(out),
-        // `polish_stage` funnels every refusal through `reject`, which latches
-        // the tag. `build_request` returning `None` is the one path that does
-        // not, and it can only happen in `Code` mode, where the stage is off.
-        None => Err(take_polish_skip_reason().unwrap_or("unknown")),
+    if outcome.accepted_chunks() > 0 {
+        return Ok(outcome.text);
     }
+    // Nothing was taken. Report the FIRST chunk's reason rather than the latch:
+    // with many chunks the latch holds only the last one, and the first is the
+    // one that describes why the take failed. `polish_stage_chunked` funnels
+    // every refusal through `reject_reason`, which latches — the fallbacks
+    // below cover the one path that does not (`build_chunk_request` returning
+    // `None`, i.e. the stage is off or the take is under MIN_POLISH_WORDS).
+    Err(outcome
+        .chunks
+        .first()
+        .and_then(|c| c.reason)
+        .or_else(take_polish_skip_reason)
+        .unwrap_or("unknown"))
+}
+
+/// [`polish_llm`], reporting the per-chunk outcome rather than collapsing it.
+///
+/// `None` ONLY when there is no installed polish model — i.e. the stage does
+/// not exist on this machine. Every other case returns a complete document plus
+/// the reason each unpolished chunk kept its rules text, which is what lets a
+/// long-form test against the REAL sidecar assert something specific instead of
+/// "it returned None".
+pub fn polish_llm_outcome(
+    text: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+) -> Option<PolishOutcome> {
+    let model = models::polish_model(cfg.model.trim())
+        .filter(|m| models::is_polish_downloaded(m))
+        .map(models::polish_model_path)?;
+    Some(polish_stage_chunked(
+        text,
+        mode,
+        cfg,
+        &SidecarClient::new(model),
+    ))
 }
 
 /// The polish model this machine could actually run right now: the catalog's
@@ -1154,6 +1780,13 @@ impl Sidecar {
                 // into another's target.
                 Ok(line) => {
                     if let Some(response) = parse_response_for(&line, req.id) {
+                        // A named refusal keeps its name: `max_out` in
+                        // particular is the overrun the measured curve says is
+                        // content-dependent, and per chunk it costs one chunk,
+                        // not the take (Y4-E).
+                        if let Some(err) = response.err.as_deref() {
+                            return Err(PolishError::from_wire_err(err));
+                        }
                         return response.into_text().ok_or(PolishError::Protocol);
                     }
                 }
@@ -1525,7 +2158,7 @@ mod polish_fallback_tests {
         assert_eq!(client.calls(), 0);
         // Same for utterances outside the band the latency budget covers.
         assert!(build_request("ship it", DictationMode::Notes, &on()).is_none());
-        let long = "word ".repeat(MAX_POLISH_WORDS + 1);
+        let long = "word ".repeat(POLISH_CHUNK_WORDS + 1);
         assert!(build_request(&long, DictationMode::Notes, &on()).is_none());
     }
 
