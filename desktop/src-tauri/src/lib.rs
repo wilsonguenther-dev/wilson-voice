@@ -4138,6 +4138,93 @@ fn activate_license(
     }
 }
 
+/// LIC-A — "I already paid, get my key". The other half of the purchase leg.
+///
+/// The person types the address they paid with; this asks the issuer for the
+/// key that was signed for that address and activates it in place, so a lost
+/// receipt is one sentence of typing instead of a support thread.
+///
+/// Three properties this must keep, because they are the reason it is safe to
+/// have a network call in a licensing module at all:
+///   * it is only ever reached by SOMEBODY PRESSING A BUTTON. Nothing calls it
+///     on a timer, at launch, or on the dictation path;
+///   * a failure is a typed `{code, message}` with a sentence and a next step,
+///     never a raw transport error, and never a dead end — the copy says the
+///     emailed key still works with no internet at all;
+///   * it cannot make offline verification worse. The retrieved key goes
+///     through exactly the same `activate` as a pasted one, signature first,
+///     and a failed retrieval writes nothing.
+#[tauri::command]
+async fn retrieve_license(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    email: String,
+) -> Result<license::LicenseStatus, CommandError> {
+    let manager = state.license.clone();
+    let email = email.trim().to_string();
+    if !email.contains('@') {
+        return Err(CommandError {
+            code: "malformed_email".to_string(),
+            message: "That does not look like an email address. Use the one you paid with."
+                .to_string(),
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|_| CommandError {
+            code: license::RETRIEVAL_FAILED_CODE.to_string(),
+            message: license::RETRIEVAL_FAILED_MESSAGE.to_string(),
+        })?;
+    let response = client
+        .post(license::license_retrieval_url())
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+        .map_err(|e| {
+            log::info!("license: retrieval could not reach the issuer ({e})");
+            CommandError {
+                code: license::RETRIEVAL_FAILED_CODE.to_string(),
+                message: license::RETRIEVAL_FAILED_MESSAGE.to_string(),
+            }
+        })?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(CommandError {
+            code: license::RETRIEVAL_NOT_FOUND_CODE.to_string(),
+            message: license::RETRIEVAL_NOT_FOUND_MESSAGE.to_string(),
+        });
+    }
+    let failed = || CommandError {
+        code: license::RETRIEVAL_FAILED_CODE.to_string(),
+        message: license::RETRIEVAL_FAILED_MESSAGE.to_string(),
+    };
+    if !response.status().is_success() {
+        log::info!("license: retrieval answered {}", response.status());
+        return Err(failed());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RetrievedKey {
+        key: String,
+    }
+    let retrieved: RetrievedKey = response.json().await.map_err(|_| failed())?;
+
+    // Same door as a pasted key: verified before it is written.
+    match manager.activate(&retrieved.key) {
+        Ok(status) => {
+            spawn_revocation_refresh(&app, manager.clone());
+            let _ = app.emit("license", &status);
+            Ok(status)
+        }
+        Err(e) => Err(CommandError {
+            code: e.code().to_string(),
+            message: e.message().to_string(),
+        }),
+    }
+}
+
 /// YP3 — open Stripe's hosted checkout in the user's browser.
 ///
 /// Takes **no argument on purpose**. The destination is
@@ -4186,7 +4273,7 @@ fn deactivate_license(app: AppHandle, state: State<'_, Arc<AppState>>) -> licens
 fn spawn_revocation_refresh(app: &AppHandle, mgr: Arc<license::LicenseManager>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = license::fetch_revocations(license::REVOCATION_URL).await;
+        let result = license::fetch_revocations(&license::revocation_url()).await;
         if mgr.apply_fetch_result(result) {
             let _ = app.emit("license", &mgr.status());
         }
@@ -5064,6 +5151,7 @@ pub fn run() {
             install_update,
             license_status,
             activate_license,
+            retrieve_license,
             deactivate_license,
             open_purchase_page
         ])

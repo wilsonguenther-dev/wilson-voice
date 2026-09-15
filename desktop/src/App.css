@@ -2322,6 +2322,41 @@ button.star.on {
   padding: 0.6rem 1.1rem;
 }
 
+/* LIC-A — "I already paid". Quiet until it is asked for: a third full-width
+   button beside Buy would compete with the thing that pays for Yap, and a
+   permanently-open email field on a purchase sheet reads like a signup form. */
+.buy-retrieve-open {
+  margin-top: 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+.buy-retrieve {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  text-align: left;
+}
+.buy-retrieve label {
+  font-size: 12px;
+  opacity: 0.8;
+  line-height: 1.45;
+}
+.buy-retrieve-row {
+  display: flex;
+  gap: 8px;
+}
+.buy-retrieve-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.buy-retrieve-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger, #d2544a);
+}
+
 .buy-fine {
   margin: 0;
   color: var(--muted);

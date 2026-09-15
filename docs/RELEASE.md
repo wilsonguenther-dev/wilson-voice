@@ -232,6 +232,48 @@ jq -n --arg v "0.7.1" --arg sig "$(cat src-tauri/target/release/bundle/macos/Yap
   > latest.json
 ```
 
+## ISSUANCE — the licensing path (LIC-A)
+
+A release that ships a Buy button and a dead issuer is worse than one with no
+Buy button. Do this **before** tagging, and re-run the liveness check after the
+build that carries a new `YAP_ISSUER_BASE_URL`. Full detail, including the
+Runtime Dependencies table, is in `docs/YAP-LICENSING.md`.
+
+```bash
+# 1. Deploy the issuer (dedicated Yap project — NOT the Drivia project).
+supabase functions deploy yap-license --no-verify-jwt --project-ref "$YAP_SUPABASE_PROJECT_REF"
+
+# 2. Set the secrets. They live here and nowhere else — never in the repo.
+supabase secrets set --project-ref "$YAP_SUPABASE_PROJECT_REF" \
+  YAP_SIGNING_KEY_PEM="$(cat /path/to/license-signing-ed25519.pem)" \
+  YAP_PUBLIC_KEY_SPKI_B64=... \
+  STRIPE_WEBHOOK_SECRET=whsec_... \
+  RESEND_API_KEY=re_...
+
+# 3. Register the Stripe webhook endpoint (checkout.session.completed only) at
+#    https://<ref>.functions.supabase.co/yap-license/stripe-webhook
+#    and copy its signing secret into step 2.
+
+# 4. Build the app against that issuer. The URL is compile-time; a build made
+#    without it points at an unresolvable .invalid host by design.
+export YAP_ISSUER_BASE_URL="https://$YAP_SUPABASE_PROJECT_REF.functions.supabase.co/yap-license"
+npm --prefix desktop run desktop:build
+
+# 5. LIVENESS — one command, and it belongs HERE, in the checklist, never at
+#    runtime. A 200 with a kids[] array is the only acceptable answer.
+curl -fsS "$YAP_ISSUER_BASE_URL/revoked.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("kids:", len(d["kids"]))'
+
+# 6. Re-activate the Stripe Payment Link (it ships `active: false` until the
+#    delivery path has been walked). Then walk it once, for real:
+#    buy → the email arrives → paste the key into a clean YAP_DATA_DIR →
+#    the entitlement flips → a dictation completes.
+YAP_DATA_DIR="$(mktemp -d)" npm --prefix desktop run desktop:dev
+```
+
+Only after that walk is the Forge issuer (`drivia-forge`, `server/src/routes/yap.ts`)
+a candidate for decommissioning. Two live issuers signing with one key is fine.
+One dead customer path is not.
+
 ## Verify before publishing
 
 ```bash
