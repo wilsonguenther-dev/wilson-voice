@@ -650,6 +650,129 @@ impl LicenseStatus {
 pub const LICENSE_REQUIRED_MESSAGE: &str =
     "Your 14-day Yap trial has ended. Your history, exports and settings all still work — a $29 one-time license turns dictation back on.";
 
+// ─── Y2-E — one trial sentence, three surfaces ───────────────────────
+//
+// The floating pill (`desktop/src/pill/license.ts`, `pillLicense`), the
+// Settings → License card and the menu-bar dropdown all answer the same two
+// questions: *is the trial worth mentioning at all*, and *is it urgent yet*.
+// Three surfaces answering that independently is three chances to disagree, and
+// a menu bar reading "Licensed" while the pill counts down is the shape of bug
+// a person reports as "your app is lying to me".
+//
+// So the THRESHOLDS are written down once, here, and the TypeScript side holds
+// its own copies under the SAME names. `tests/tray_license.rs` parses both
+// files and fails if either the numbers or the comparison OPERATORS drift
+// apart. A parse, deliberately, and not a generated constants module: a
+// generated module needs a build step, a build step can be skipped or stale,
+// and a skipped build step fails silently. A parse needs nothing and fails
+// loudly.
+//
+// WHY THE TRAY IS NOT SIMPLY THE PILL AGAIN. The pill is ambient — it sits over
+// every window all day, so above `PILL_SHOW_DAYS` it says NOTHING. The tray
+// header is inside a menu the user chose to open, so it always carries the
+// state; what the thresholds govern there is the *upgrade item* and the *icon*,
+// not whether the state is legible. That difference is the design, and it is
+// why `tray_line` returns a line for every state while
+// `tray_offers_purchase` does not.
+
+/// How many whole days may remain before the trial is mentioned ambiently.
+/// Mirrored in TS as `PILL_SHOW_DAYS`. The rule is `days_left <= PILL_SHOW_DAYS`.
+pub const PILL_SHOW_DAYS: i64 = 7;
+
+/// How few whole days must remain before the mention turns URGENT. Mirrored in
+/// TS as `PILL_URGENT_DAYS`. The rule is `days_left < PILL_URGENT_DAYS` — the
+/// last day, when a whole day no longer remains. Strictly-less is what makes
+/// `1` the honest number to write down: on the day the counter reads "1d" there
+/// is still a day in it, so that day is not yet urgent.
+pub const PILL_URGENT_DAYS: i64 = 1;
+
+/// The Rust twin of TS `trialCountdown` — the same three phrases, so the tray
+/// header and the Settings chip read alike.
+fn trial_countdown(days: i64) -> String {
+    if days <= 0 {
+        "Last day".to_string()
+    } else if days == 1 {
+        "1 day left".to_string()
+    } else {
+        format!("{days} days left")
+    }
+}
+
+/// The menu-bar header's sentence, and whether the tray ICON should wear the
+/// urgent treatment.
+///
+/// The header is DISABLED in the menu — it is a label, not an action — and it is
+/// present in every state, because a menu the user opened on purpose should say
+/// where they stand.
+///
+/// `urgent` is true on the last day of the trial and past the trial, AND ONLY
+/// THEN. A permanently decorated menu-bar icon is noise, and a stored key that
+/// stopped granting is a different problem from a clock running out: it gets its
+/// own sentence (below) but not the icon, because nothing about it is
+/// time-critical while the trial is still running.
+pub fn tray_line(status: &LicenseStatus) -> (String, bool) {
+    match &status.entitlement {
+        // A working key outranks every other row, exactly as in `pillLicense`:
+        // `has_stored_license` is true for every licensed install too, so
+        // testing it first would mis-diagnose every paying customer.
+        Entitlement::Licensed { .. } => ("Licensed".to_string(), false),
+        Entitlement::Trial { days_left, .. } => {
+            let days = (*days_left).max(0);
+            let urgent = days < PILL_URGENT_DAYS;
+            // Y2-F's rule, carried into the menu bar: a key IS stored and it
+            // granted nothing. That is a person who PAID, and telling them
+            // "5 days left" hides the one fact they can act on.
+            let line = if status.has_stored_license {
+                format!("License needs attention — {}", trial_countdown(days))
+            } else {
+                format!("Trial — {}", trial_countdown(days))
+            };
+            (line, urgent)
+        }
+        Entitlement::LicenseRequired { .. } => {
+            let line = if status.has_stored_license {
+                "License needs attention — dictation paused"
+            } else {
+                "Trial ended — dictation paused"
+            };
+            (line.to_string(), true)
+        }
+    }
+}
+
+/// Is the "Upgrade Yap" item allowed in the menu at all?
+///
+/// This is the Rust twin of TS `offersPurchase(pillLicense(status))` — NOT of
+/// `pillLicense(status).show`. The two differ in exactly one row and it is the
+/// expensive one: a stored key that granted nothing makes the pill SHOW (tone
+/// `problem`) while its action is `license`, never `purchase`. Mirroring `show`
+/// would put a price in front of a customer who already paid, which
+/// `pill/license.ts` calls "the single most expensive sentence this app can
+/// say". So the menu bar mirrors the purchase DECISION, not the visibility bit.
+pub fn tray_offers_purchase(status: &LicenseStatus) -> bool {
+    if matches!(status.entitlement, Entitlement::Licensed { .. }) {
+        return false;
+    }
+    if status.has_stored_license {
+        return false;
+    }
+    match &status.entitlement {
+        Entitlement::Trial { days_left, .. } => (*days_left).max(0) <= PILL_SHOW_DAYS,
+        Entitlement::LicenseRequired { .. } => true,
+        Entitlement::Licensed { .. } => false,
+    }
+}
+
+/// The menu-bar upgrade line. The price lives HERE, next to the payment link it
+/// sends people to, and not in the tray-building code: the one-time $29 and the
+/// URL that charges it are one fact, and splitting them is how a label ends up
+/// quoting a price the link no longer takes.
+///
+/// No file under `desktop/src/pill/` may carry a figure (see that directory's
+/// own rule); the menu bar is not the pill, it is a menu the user opened, and a
+/// money item with no number in it is a worse menu item.
+pub const UPGRADE_TRAY_LABEL: &str = "Upgrade Yap — $29 once";
+
 // ─── Manager ─────────────────────────────────────────────────────────
 
 type NowFn = Box<dyn Fn() -> i64 + Send + Sync>;

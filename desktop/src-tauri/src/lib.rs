@@ -573,6 +573,26 @@ struct AppState {
     /// sure). Disabled while a meeting is recording, for the same reason the
     /// item above becomes "Stop meeting": there is nothing to pick a kind FOR.
     tray_meeting_kind: PLMutex<Option<Submenu<Wry>>>,
+    /// Y2-E — the DISABLED header carrying the license state ("Trial — 5 days
+    /// left" / "Licensed" / "Trial ended — dictation paused"). Its text comes
+    /// from [`license::tray_line`], the same decision the pill renders, so the
+    /// menu bar and the pill cannot disagree about the trial.
+    tray_license: PLMutex<Option<MenuItem<Wry>>>,
+    /// Y2-E — "Upgrade Yap — $29 once". Held so `sync_tray` can INSERT it into
+    /// and REMOVE it from the menu rather than grey it out: muda has no hidden
+    /// item, and a disabled upgrade line is still the wrong sentence sitting in
+    /// front of someone who already paid.
+    tray_upgrade: PLMutex<Option<MenuItem<Wry>>>,
+    /// Y2-E — the tray's own `Menu`, kept because `TrayIcon` does not hand it
+    /// back and the upgrade item above has to be inserted into something.
+    tray_menu: PLMutex<Option<Menu<Wry>>>,
+    /// Y2-E — is the upgrade item currently IN the menu? Edge-triggered so
+    /// `sync_tray` mutates the menu only when the answer changes.
+    tray_upgrade_shown: PLMutex<bool>,
+    /// Y2-E — does the tray icon currently wear the urgent treatment? Also
+    /// edge-triggered: re-setting an NSStatusItem's image on every status emit
+    /// is work nobody asked for, and this runs on the dictation hot path.
+    tray_urgent: PLMutex<bool>,
     /// YV95 — the one owner of "a meeting is recording". Built in `setup` (it
     /// needs an `AppHandle` for its status sink), so this is a `OnceLock` rather
     /// than a field: every entry point reads it through [`AppState::meeting`]
@@ -940,6 +960,28 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
     let raw_item = state.tray_paste_raw.lock().clone();
     let undo_available = *state.undo_available.lock();
     let tray = state.tray.lock().clone();
+    // Y2-E — the license state, from the SAME two functions the pill's
+    // `pillLicense` mirrors. `LicenseManager::status()` re-derives entitlement
+    // from the already-in-memory signed blob: no disk read, no network, no
+    // cached "licensed" boolean to go stale. That is what makes it safe to ask
+    // on the path `emit_status` already runs on every state transition.
+    let license = state.license.status();
+    let (license_line, urgent) = license::tray_line(&license);
+    let offers_purchase = license::tray_offers_purchase(&license);
+    let license_item = state.tray_license.lock().clone();
+    let upgrade_item = state.tray_upgrade.lock().clone();
+    let tray_menu = state.tray_menu.lock().clone();
+    // Read the two edge flags, then commit the new values here rather than in
+    // the closure below: the closure has to be 'static, so it cannot hold
+    // `&AppState`. Committing early means a `run_on_main_thread` that never
+    // runs leaves the flags describing the menu we asked for rather than the
+    // one we have — a one-emit skew that the next transition corrects, which is
+    // the cheaper of the two failure modes (the other is a permanent redundant
+    // insert attempt on every emit).
+    let upgrade_shown = *state.tray_upgrade_shown.lock();
+    let was_urgent = *state.tray_urgent.lock();
+    *state.tray_upgrade_shown.lock() = offers_purchase;
+    *state.tray_urgent.lock() = urgent;
     if dictation.is_none() && hf_item.is_none() && tray.is_none() {
         return; // tray not built yet (early startup emit)
     }
@@ -960,6 +1002,22 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
         if let Some(item) = hf_item {
             let _ = item.set_checked(hands_free);
         }
+        // Y2-E — the header sentence. One `set_text`, every state, no branch
+        // here: the branching happened in `license::tray_line`.
+        if let Some(item) = license_item {
+            let _ = item.set_text(&license_line);
+        }
+        // Y2-E — the upgrade line appears and disappears rather than greying
+        // out. Position 1 is directly under the header and ABOVE the header's
+        // separator, so the money line reads as part of the license block and
+        // not as the first of the dictation controls.
+        if let (Some(menu), Some(item)) = (tray_menu.as_ref(), upgrade_item.as_ref()) {
+            if offers_purchase && !upgrade_shown {
+                let _ = menu.insert(item, 1);
+            } else if !offers_purchase && upgrade_shown {
+                let _ = menu.remove(item);
+            }
+        }
         if let Some(tray) = tray {
             // YV43: the idle tooltip must not keep saying "hold fn" while
             // Secure Input has the tap blind — that is the exact instruction
@@ -977,8 +1035,55 @@ fn sync_tray(app: &AppHandle, state: &AppState) {
                 "Yap — hold fn to dictate"
             };
             let _ = tray.set_tooltip(Some(tip));
+            // Y2-E — the icon wears the urgent treatment on the last day and
+            // past the trial, AND ONLY THEN (`license::tray_line`'s second
+            // return value). A permanently decorated menu-bar icon is noise, so
+            // this is an edge, not a state: nothing is re-set while the answer
+            // has not changed.
+            //
+            // The urgent art is COLOURED, so macOS must not tint it — hence
+            // `set_icon_as_template(false)` for it and `true` for the idle
+            // silhouette. Same artwork, same 44x44 alpha mask, one recolour.
+            if urgent != was_urgent {
+                let bytes: &[u8] = if urgent {
+                    include_bytes!("../icons/tray-urgent.png")
+                } else {
+                    include_bytes!("../icons/tray-template.png")
+                };
+                match tauri::image::Image::from_bytes(bytes) {
+                    Ok(img) => {
+                        let _ = tray.set_icon(Some(img));
+                        let _ = tray.set_icon_as_template(!urgent);
+                    }
+                    Err(e) => log::warn!(
+                        "tray icon ({}): {e}",
+                        if urgent { "urgent" } else { "idle" }
+                    ),
+                }
+            }
         }
     });
+}
+
+/// Y2-E — the ONE place the menu bar opens the upgrade path.
+///
+/// It deliberately does NOT launch the browser. `open_purchase_page` hands
+/// `license::PAYMENT_LINK_URL` straight to `open(1)`, and a menu item that
+/// silently throws up a Stripe tab is a worse surprise than one that shows you
+/// the page carrying the price and the Buy button first. So this lands on
+/// Settings -> License, which is exactly where the pill's own purchase action
+/// lands (`ClassicPill.tsx` / `YappyPill.tsx` emit the same `settings-tab`).
+///
+/// Both events already have listeners in `desktop/src/appShell.ts` (`navigate`
+/// and `settings-tab`) — this adds no new frontend surface, and when Y2-D's
+/// dedicated purchase sheet lands there is a single function body to repoint.
+fn reveal_purchase_prompt(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit("navigate", "settings");
+    let _ = app.emit("settings-tab", "license");
 }
 
 fn notify(app: &AppHandle, title: &str, body: impl Into<String>) {
@@ -5130,6 +5235,11 @@ pub fn run() {
         tray_paste_raw: PLMutex::new(None),
         tray_meeting: PLMutex::new(None),
         tray_meeting_kind: PLMutex::new(None),
+        tray_license: PLMutex::new(None),
+        tray_upgrade: PLMutex::new(None),
+        tray_menu: PLMutex::new(None),
+        tray_upgrade_shown: PLMutex::new(false),
+        tray_urgent: PLMutex::new(false),
         meeting: std::sync::OnceLock::new(),
         undo_available: PLMutex::new(false),
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
@@ -5634,6 +5744,24 @@ pub fn run() {
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep_meeting = PredefinedMenuItem::separator(app)?;
+            // Y2-E — the license header, seeded from the same decision
+            // `sync_tray` refreshes it with, so the menu bar is already correct
+            // the first time it is opened rather than after the first state
+            // transition. DISABLED because it is a label, not an action.
+            let (license_line_now, _) = license::tray_line(&state.license.status());
+            let license_i =
+                MenuItem::with_id(app, "license_header", license_line_now, false, None::<&str>)?;
+            let sep_license = PredefinedMenuItem::separator(app)?;
+            // Y2-E — the upgrade line. Built unconditionally so `sync_tray`
+            // owns a handle to it, but NOT placed in the menu below: it is
+            // inserted only while `license::tray_offers_purchase` is true.
+            let upgrade_i = MenuItem::with_id(
+                app,
+                "upgrade",
+                license::UPGRADE_TRAY_LABEL,
+                true,
+                None::<&str>,
+            )?;
             let show_i = MenuItem::with_id(app, "show", "Open Yap", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let shortcuts_i =
@@ -5648,6 +5776,8 @@ pub fn run() {
             let menu = Menu::with_items(
                 app,
                 &[
+                    &license_i,
+                    &sep_license,
                     &dictation_i,
                     &paste_last_i,
                     &paste_raw_i,
@@ -5672,6 +5802,9 @@ pub fn run() {
             *state.tray_paste_raw.lock() = Some(paste_raw_i);
             *state.tray_meeting.lock() = Some(meeting_i);
             *state.tray_meeting_kind.lock() = Some(meeting_kind_i);
+            *state.tray_license.lock() = Some(license_i);
+            *state.tray_upgrade.lock() = Some(upgrade_i);
+            *state.tray_menu.lock() = Some(menu.clone());
             // Menu-bar TEMPLATE icon: a monochrome Yappy silhouette. `icon_as_template`
             // lets macOS tint it for the light/dark menu bar — a full-color app icon
             // crammed into the status bar looks wrong (that was the "terrible toolbar").
@@ -5719,6 +5852,13 @@ pub fn run() {
                         }
                         "paste_last" => {
                             paste_last_transcript(app, &state);
+                        }
+                        // Y2-E — the upgrade path, from the menu bar. The item
+                        // is only ever IN the menu when
+                        // `license::tray_offers_purchase` said so, so this arm
+                        // cannot fire for a licensed Mac or a stored-key holder.
+                        "upgrade" => {
+                            reveal_purchase_prompt(app);
                         }
                         // YV95 — start/stop a meeting from the menu bar. The
                         // picker is skipped on this path: `unknown`.
@@ -7119,6 +7259,11 @@ mod tests {
             tray_paste_raw: super::PLMutex::new(None),
             tray_meeting: super::PLMutex::new(None),
             tray_meeting_kind: super::PLMutex::new(None),
+            tray_license: super::PLMutex::new(None),
+            tray_upgrade: super::PLMutex::new(None),
+            tray_menu: super::PLMutex::new(None),
+            tray_upgrade_shown: super::PLMutex::new(false),
+            tray_urgent: super::PLMutex::new(false),
             meeting: std::sync::OnceLock::new(),
             undo_available: super::PLMutex::new(false),
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
