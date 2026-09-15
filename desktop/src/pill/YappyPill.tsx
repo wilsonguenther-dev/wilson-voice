@@ -20,6 +20,7 @@ import {
   progressNumeral, resetLive, toChatTone, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
 } from "./live";
+import { type PillLicense } from "./license";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -77,7 +78,17 @@ const DOCK_PAD = 10;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null }: { gate?: LivePhase; progress?: TranscribeProgress | null },
+  { gate = "idle", progress = null }: {
+    gate?: LivePhase;
+    progress?: TranscribeProgress | null;
+    /**
+     * Y2-A — the license as the pill is allowed to say it, already decided by
+     * `pillLicense` in float-main. Accepted here so the wiring is complete and
+     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
+     * this component deliberately does not read it yet.
+     */
+    license?: PillLicense | null;
+  },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);

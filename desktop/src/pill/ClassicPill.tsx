@@ -11,6 +11,7 @@ import {
   phaseVisual, progressFraction, progressLabel, progressNumeral,
   type LivePhase, type TranscribeProgress,
 } from "./live";
+import { type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
@@ -29,7 +30,17 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * refused press must not look like a normal recording.
  */
 export default function ClassicPill(
-  { gate = "idle", progress = null }: { gate?: LivePhase; progress?: TranscribeProgress | null },
+  { gate = "idle", progress = null }: {
+    gate?: LivePhase;
+    progress?: TranscribeProgress | null;
+    /**
+     * Y2-A — the license as the pill is allowed to say it, already decided by
+     * `pillLicense` in float-main. Accepted here so the wiring is complete and
+     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
+     * this component deliberately does not read it yet.
+     */
+    license?: PillLicense | null;
+  },
 ) {
   const [status, setStatus] = useState<AppStatus>({ recording: false, busy: false, message: "Ready" });
   const [done, setDone] = useState(false);
