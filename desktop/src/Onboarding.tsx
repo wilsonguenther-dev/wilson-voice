@@ -313,6 +313,29 @@ export default function Onboarding({
   const modelReady = modelSetup.ready;
   /** Calibration can only run once an engine exists — until then it waits. */
   const engineWaiting = !modelReady && !recording;
+  /**
+   * PERM-D — calibration RECORDS A REAL TAKE, so it cannot start before the
+   * microphone grant is real. `micStatus !== "authorized"` is the only reading
+   * that means "macOS will hand us audio": `not_determined` is a dialog nobody
+   * has answered, `denied` and `restricted` are refusals, and a stream opened
+   * on any of them delivers digital silence. The take that follows can only be
+   * silent, the app's own no-speech gate then correctly refuses to paste it,
+   * and the user's first experience of Yap is a recording that does nothing and
+   * says nothing about permissions.
+   *
+   * It wears the SAME waiting-ribbon pattern the step already uses for a
+   * downloading model (YV54): the button waits, wearing its reason, instead of
+   * starting a take that could only fail. A recording in progress is never
+   * interrupted by this — stopping it is how the take ends.
+   */
+  const micWaiting = micStatus !== "authorized" && !recording;
+  /** The one line the record button wears while it waits, reason named. */
+  const calibrationBlockedReason =
+    micStatus === "denied"
+      ? "Microphone blocked — grant it above to calibrate"
+      : micStatus === "restricted"
+        ? "Microphone restricted by this Mac's policy"
+        : "Grant the microphone above to calibrate";
 
   return (
     <div className="onboard-overlay" role="dialog" aria-modal="true">
@@ -442,18 +465,31 @@ export default function Onboarding({
             <button
               className={recording ? "onboard-record live" : "onboard-record"}
               onClick={toggleCalibration}
-              disabled={busy || engineWaiting}
+              disabled={busy || micWaiting || engineWaiting}
             >
               {recording
                 ? "■ Stop & save"
                 : busy
                   ? "Transcribing…"
-                  : engineWaiting
-                    ? (modelSetup.ribbon ?? "Preparing your speech engine…")
-                    : sample
-                      ? "● Record again"
-                      : "● Start recording"}
+                  : micWaiting
+                    ? calibrationBlockedReason
+                    : engineWaiting
+                      ? (modelSetup.ribbon ?? "Preparing your speech engine…")
+                      : sample
+                        ? "● Record again"
+                        : "● Start recording"}
             </button>
+            {/* PERM-D — the button alone is a dead control with a label; the
+                way BACK to the grant is the thing the user needs. Same step,
+                one click, no hunting. */}
+            {micWaiting && (
+              <p className="muted tiny">
+                Calibration records a real take, so it needs the microphone.{" "}
+                <button className="ghost" onClick={() => setStep("permissions")}>
+                  Back to permissions
+                </button>
+              </p>
+            )}
             {sample && (
               <div className="onboard-sample">
                 <span className="muted tiny">Heard:</span>

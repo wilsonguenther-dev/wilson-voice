@@ -1172,6 +1172,33 @@ export default function App() {
         setTimeout(() => setRetryId((id) => (id === row.id ? null : id)), 4000);
       },
     ).then((u) => (dead ? u() : unsubs.push(u)));
+    // PERM-D — a take that captured DIGITAL SILENCE. This is NOT a transcription
+    // failure (nothing was ever transcribed) and NOT the no-speech toast (the
+    // user did nothing wrong), so it gets its own channel and its own action:
+    // the permission screen when macOS is the reason, and the input-device
+    // sentence when the grant is fine and the device is the suspect.
+    listen<{
+      code: string;
+      status: string;
+      needsPermission: boolean;
+      message: string;
+      failed?: FailedDictation | null;
+    }>("take_failed", (e) => {
+      const p = e.payload;
+      if (!p || p.code !== "silent_capture") return;
+      setFlash(p.message || "That take recorded silence.");
+      setTimeout(() => setFlash(null), 5000);
+      // The grant is the reason — a toast that vanishes is the wrong surface.
+      // Show the screen that can actually fix it.
+      if (p.needsPermission) {
+        setNav("permissions");
+        refreshAll();
+      }
+      // The clip was preserved (YV52 lifecycle), so History offers it back.
+      const row = p.failed;
+      if (!row) return;
+      setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
     listen<string>("navigate", (e) => {
       const dest = e.payload as Nav;
