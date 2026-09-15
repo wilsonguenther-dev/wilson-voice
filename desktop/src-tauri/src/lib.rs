@@ -127,6 +127,12 @@ pub mod polish_protocol;
 #[cfg(target_os = "macos")]
 pub mod ptt_macos;
 mod record;
+/// Y3-D — the clip guard, re-exported so `tests/cancel_long_take.rs` can drive
+/// the REAL keep-the-audio path (`keep_cancelled_take` takes a `&mut ClipWav`)
+/// instead of a parallel reimplementation of it that would stop describing the
+/// code the moment the two drifted. One type, not the whole `record` module:
+/// capture internals stay private.
+pub use record::ClipWav;
 /// Y3-F — the declared maximum session length, its 80% warning, and the rule +
 /// cut that enforce them. Re-exported for the same reason as the two above:
 /// `record` stays crate-private and `tests/max_session.rs` drives exactly these.
@@ -135,12 +141,6 @@ pub use record::{
     CUT_GRACE, MAX_SESSION, MAX_SESSION_SECONDS, SESSION_WARN_AT, SESSION_WARN_PERCENT,
     TARGET_RATE,
 };
-/// Y3-D — the clip guard, re-exported so `tests/cancel_long_take.rs` can drive
-/// the REAL keep-the-audio path (`keep_cancelled_take` takes a `&mut ClipWav`)
-/// instead of a parallel reimplementation of it that would stop describing the
-/// code the moment the two drifted. One type, not the whole `record` module:
-/// capture internals stay private.
-pub use record::ClipWav;
 /// Y3 — the dictation capture consumer's test seam and its memory ceiling.
 /// `record` itself stays crate-private; these two are what
 /// `tests/dictation_capture_memory.rs` drives.
@@ -1364,6 +1364,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     // than in the worker: the worker starts after the hold ends, and a cancel
     // fired in the gap between press and release must still be honoured.
     state.take_cancelled.store(false, Ordering::SeqCst);
+    // ...and so does the manager-side latch that Y3-B's chunk loop reads, so
+    // the two are armed together and never drift apart.
+    state.transcription.begin_user_take();
     register_cancel_shortcut(app);
     let denoise = state.settings.lock().denoise;
     // YV35: anchor the press→capture_start span on the physical key-down when

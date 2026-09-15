@@ -29,10 +29,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use wilson_voice_lib::db::Database;
+use wilson_voice_lib::meeting_asr::ChunkConfig;
 use wilson_voice_lib::shortcuts::{self, Scope};
 use wilson_voice_lib::transcription::{
-    CancelHandle, Transcriber, TranscriptionManager, ABANDONED_FOR_EXIT, CANCELLED_BY_USER,
-    PREEMPTED_FOR_DICTATION,
+    CancelHandle, DictationChunking, Transcriber, TranscriptionManager, ABANDONED_FOR_EXIT,
+    CANCELLED_BY_USER, DICTATION_CHUNK_SAMPLE_RATE, PREEMPTED_FOR_DICTATION,
 };
 use wilson_voice_lib::ClipWav;
 use wilson_voice_lib::{keep_cancelled_take, CANCELLED_TAKE_REASON};
@@ -339,4 +340,140 @@ fn escape_is_not_a_global_shortcut_while_idle() {
     }
     // The table is still collision-free with the new chord in it.
     assert_eq!(shortcuts::first_collision(), None);
+}
+
+/// How many windows the plan below splits a 60 s take into.
+const PLANNED_WINDOWS: usize = 12;
+
+/// A stub that counts WINDOWS, not inner boundaries, and has no cancel hook at
+/// all.
+///
+/// The missing hook is the point. `Transcriber::cancel_handle` returning `None`
+/// is the honest shape of a native decode that cannot be interrupted: the only
+/// place such a take can be stopped is BETWEEN windows. If the loop's boundary
+/// check is the thing doing the work, this engine proves it; if the test leaned
+/// on a cancel hook it would be re-proving the engine path that
+/// `cancel_mid_decode_stops_at_the_next_chunk_boundary` already covers.
+struct WindowCountingEngine {
+    windows_decoded: Arc<AtomicUsize>,
+}
+
+impl Transcriber for WindowCountingEngine {
+    fn transcribe(
+        &mut self,
+        _samples: &[f32],
+        _language: Option<&str>,
+        _bias: Option<&str>,
+    ) -> Result<String, String> {
+        std::thread::sleep(Duration::from_millis(30));
+        let n = self.windows_decoded.fetch_add(1, Ordering::SeqCst);
+        Ok(format!("window {n}"))
+    }
+}
+
+/// Twelve five-second windows — the same geometry the Y3-B tests use, small
+/// enough that this is milliseconds rather than minutes.
+fn twelve_window_plan() -> DictationChunking {
+    DictationChunking {
+        threshold_seconds: 10.0,
+        config: ChunkConfig {
+            target_seconds: 5.0,
+            min_seconds: 4.0,
+            max_seconds: 6.0,
+            overlap_seconds: 1.0,
+            min_silence_seconds: 0.2,
+        },
+        sample_rate: DICTATION_CHUNK_SAMPLE_RATE,
+    }
+}
+
+/// THE REGRESSION THIS EXISTS FOR. A cancel must stop Y3-B's REAL windowed
+/// dictation loop, not just the single decode inside one window.
+///
+/// `InFlight::discard` is consumed per decode — `*slot = None` on the way out —
+/// so without the sticky latch a cancel can only ever spend itself on ONE
+/// window. The loop catches that window's `Err`, logs "dictation chunk N
+/// failed", and decodes every remaining window anyway: the user cancels at
+/// minute four of fifteen and the engine keeps going to minute fifteen, which
+/// is precisely the bug this item was opened for, merely moved one layer down.
+#[test]
+fn cancel_stops_the_real_windowed_loop_not_just_one_window() {
+    let windows_decoded = Arc::new(AtomicUsize::new(0));
+    let m = Arc::new({
+        let windows_decoded = windows_decoded.clone();
+        TranscriptionManager::with_loader(
+            Arc::new(move |_p: &Path| {
+                Ok(Box::new(WindowCountingEngine {
+                    windows_decoded: windows_decoded.clone(),
+                }) as Box<dyn Transcriber>)
+            }),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            Duration::from_secs(30),
+        )
+    });
+    let model_dir = std::env::temp_dir().join(format!("y3d-win-{}", std::process::id()));
+    std::fs::create_dir_all(&model_dir).unwrap();
+    let model_path = model_dir.join("stub.bin");
+    std::fs::write(&model_path, b"stub").unwrap();
+    m.load("stub", &model_path).expect("stub loads");
+    m.begin_user_take();
+
+    // 60 s at 16 kHz -> twelve windows under the plan above.
+    let samples = vec![0.1f32; DICTATION_CHUNK_SAMPLE_RATE as usize * 60];
+    let decoder = {
+        let m = m.clone();
+        std::thread::spawn(move || {
+            m.transcribe_take_with(samples, None, None, &twelve_window_plan())
+        })
+    };
+
+    // Let a couple of windows go by, so this is a cancel MID-take.
+    std::thread::sleep(Duration::from_millis(90));
+    m.cancel_in_flight_for_user();
+    // The latch is raised whether or not there was a hook to fire — this engine
+    // has none, and the boundary check is the only thing that can stop it.
+    assert!(
+        m.user_cancel_requested(),
+        "the cancel did not raise the latch the chunk boundary reads"
+    );
+
+    let out = decoder.join().unwrap();
+    assert_eq!(
+        out.as_ref()
+            .map(|t| t.text.as_str())
+            .map_err(|e| e.as_str()),
+        Err(CANCELLED_BY_USER),
+        "a cancelled windowed take must report its own reason — and must NOT come \
+         back as an Ok(degraded) take carrying the text the user just rejected"
+    );
+    let decoded = windows_decoded.load(Ordering::SeqCst);
+    assert!(
+        decoded < PLANNED_WINDOWS,
+        "the windowed loop ran to completion anyway: {decoded}/{PLANNED_WINDOWS} windows decoded"
+    );
+
+    // The latch is per-take, not per-process: the NEXT take still works. A
+    // sticky flag nobody clears is a cancel button that disables dictation.
+    m.begin_user_take();
+    assert!(
+        !m.user_cancel_requested(),
+        "arming a new take did not clear the previous take's latch"
+    );
+    windows_decoded.store(0, Ordering::SeqCst);
+    let again = m.transcribe_take_with(
+        vec![0.1f32; DICTATION_CHUNK_SAMPLE_RATE as usize * 60],
+        None,
+        None,
+        &twelve_window_plan(),
+    );
+    assert!(
+        again.is_ok(),
+        "the take after a cancelled one failed: {again:?} — the latch was never cleared"
+    );
+    assert_eq!(
+        windows_decoded.load(Ordering::SeqCst),
+        PLANNED_WINDOWS,
+        "the take after a cancelled one was truncated by the previous take's latch"
+    );
 }

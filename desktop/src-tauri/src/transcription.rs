@@ -503,6 +503,16 @@ struct Inner {
     /// dictation coming without the engine mutex having any fairness at all.
     /// Raised BEFORE the engine is taken, dropped only once it is back.
     interactive_waiting: AtomicU64,
+    /// Y3-D — the STICKY user-cancel latch for the take that is decoding now.
+    ///
+    /// `InFlight::discard` is consumed per decode (`*slot = None`), so it can
+    /// only ever stop ONE chunk. Y3-B's windowed dictation decode runs a dozen
+    /// of them in a row: without a latch that outlives a single chunk, a cancel
+    /// lands on chunk 4, chunk 4 reports `CANCELLED_BY_USER`, the loop logs it
+    /// as an ordinary chunk failure and decodes chunks 5 through 12 anyway —
+    /// i.e. the fifteen-minute decode the user cancelled still runs to the end.
+    /// This flag is what the loop reads at every chunk boundary.
+    user_cancelled: AtomicBool,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
     idle_check_interval: Duration,
@@ -566,6 +576,7 @@ impl TranscriptionManager {
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 interactive_waiting: AtomicU64::new(0),
+                user_cancelled: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
                 idle_check_interval,
@@ -929,6 +940,12 @@ impl TranscriptionManager {
     /// would discard a decode that runs to completion anyway, and the take's
     /// own cooperative checkpoints still refuse to paste the result.
     pub fn cancel_in_flight_for_user(&self) -> bool {
+        // Raise the STICKY latch FIRST and unconditionally — before the hook is
+        // even looked for. It is deliberately not tied to there being an
+        // in-flight decode: a cancel that arrives in the gap between two chunks
+        // of a windowed take finds `in_flight` empty, and if that were the end
+        // of it the next chunk would start regardless.
+        self.inner.user_cancelled.store(true, Ordering::SeqCst);
         let cancel = {
             let mut slot = self.inner.in_flight.lock();
             match slot.as_mut() {
@@ -1139,6 +1156,21 @@ impl TranscriptionManager {
             None => {}
         }
         result
+    }
+
+    /// Y3-D — arm a new take: drop any cancel latch left by the previous one.
+    ///
+    /// Called where `AppState::take_cancelled` is cleared, so the manager-side
+    /// latch and the worker-side flag are armed and disarmed together and a
+    /// cancelled take can never poison the one after it.
+    pub fn begin_user_take(&self) {
+        self.inner.user_cancelled.store(false, Ordering::SeqCst);
+    }
+
+    /// Y3-D — has the user cancelled the take currently decoding? This is the
+    /// chunk-boundary checkpoint of Y3-B's windowed loop.
+    pub fn user_cancel_requested(&self) -> bool {
+        self.inner.user_cancelled.load(Ordering::SeqCst)
     }
 
     /// Take the engine out of the slot, waiting out another caller who has it.
@@ -1362,6 +1394,20 @@ impl TranscriptionManager {
         let mut first_error: Option<String> = None;
         let mut deadline_tripped = false;
         for window in &windows {
+            // Y3-D — THE CHUNK BOUNDARY. Checked before every window, including
+            // the first, so a cancel that lands while chunk 4 decodes stops the
+            // take at the top of chunk 5 instead of riding out chunks 5..12.
+            // This returns `Err` rather than assembling what decoded so far:
+            // partial text from a take the user rejected is not a partial
+            // result, it is text they asked not to have.
+            if self.user_cancel_requested() {
+                log::info!(
+                    "dictation decode cancelled by the user at chunk {} of {}",
+                    window.index,
+                    windows.len()
+                );
+                return Err(CANCELLED_BY_USER.into());
+            }
             if deadline_tripped || started.elapsed() >= take_deadline {
                 // PARTIAL RESULT, not a lost take: every window already decoded
                 // stays in `outcomes` and is merged below.
