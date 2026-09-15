@@ -4,6 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { ModelRibbon, useModelSetup } from "./ModelSetup";
 import { errorText } from "./errors";
 import { awaitMicDecision } from "./micStatus";
+import {
+  deriveMicStatus,
+  micIsUsable,
+  permissionAction,
+  permissionCopy,
+  type MicPermissionStatus,
+} from "./permission";
 
 // YV9 — first-run onboarding. Rendered as a full-screen overlay over the main
 // app while AppSettings.onboarded is false. Self-contained: it invokes the
@@ -23,7 +30,11 @@ type Step = "welcome" | "permissions" | "calibration" | "done";
 interface PermissionReport {
   accessibility: boolean;
   microphone: boolean;
-  /** PERM-A — see App.tsx. */
+  /**
+   * PERM-A — the real `AVCaptureDevice.authorizationStatus`, see App.tsx.
+   * PERM-B renders it: `deriveMicStatus` prefers this field and only falls back
+   * to the boolean when it is absent.
+   */
   microphoneStatus: string;
   ffmpegOk: boolean;
   asrOk: boolean;
@@ -78,6 +89,13 @@ export default function Onboarding({
 }) {
   const [step, setStep] = useState<Step>("welcome");
   const [perms, setPerms] = useState<PermissionReport | null>(null);
+  /**
+   * PERM-B — whether Yap has invoked `request_microphone` in this session. It
+   * is the ONLY thing that separates "has not been asked" from "said no" while
+   * the backend still answers with a boolean, and getting it wrong shows a
+   * first-run user the denial screen for a question nobody put to them.
+   */
+  const [micAsked, setMicAsked] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sample, setSample] = useState<string | null>(null);
@@ -116,11 +134,20 @@ export default function Onboarding({
       refreshPerms();               // whatever changed while we were away
       start();
     };
+    // PERM-B — returning from System Settings is an EVENT, not a tick. The 2s
+    // poll above still runs (it catches a toggle flipped while both windows are
+    // visible side by side), but the common path is: press "Open System
+    // Settings", flip the toggle, click back onto Yap. Re-reading on focus
+    // makes that click the moment the row updates, instead of up to 2s later —
+    // which is exactly the interval in which a user concludes it did not work.
+    const onFocus = () => { refreshPerms(); };
     onVisibility();
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
     return () => {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
     };
   }, [step, refreshPerms]);
 
@@ -200,25 +227,45 @@ export default function Onboarding({
     // PERM-A: non-blocking request + authoritative read-back. A denial comes
     // back instantly with no dialog, so waiting a fixed 900 ms was both wrong
     // and slow; a first-run grant can take a human several seconds.
+    //
+    // PERM-B records the ask BEFORE the await as a FALLBACK only: it is what
+    // separates "never asked" from "said no" on any build where
+    // `microphoneStatus` is missing. When PERM-A's field is present it wins.
+    setMicAsked(true);
     try {
       const status = await awaitMicDecision({
         request: () => invoke("request_microphone"),
         read: () => invoke("microphone_status"),
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       });
-      if (status === "denied") {
-        setNote(
-          "Microphone denied — macOS will not ask again. Turn Yap on in System Settings → Privacy & Security → Microphone.",
-        );
-      } else if (status === "restricted") {
-        setNote(
-          "Microphone is restricted by a device policy — an administrator has to allow it.",
-        );
-      }
+      // PERM-B: `status` is not toasted here any more. The microphone row
+      // below now OWNS the denied and restricted cases — full copy plus the
+      // one action that can actually help (System Settings for denied, nothing
+      // at all for restricted) — and a toast repeating it in different words
+      // is the same news twice. Clear any stale note instead.
+      if (status === "denied" || status === "restricted") setNote(null);
     } catch (e) {
       setNote(String(e));
     }
     refreshPerms();
+  }
+
+  /**
+   * PERM-B — the deep link lives in Rust (`permissions.rs::open_privacy_pane`),
+   * verified against a real OS build. The frontend passes a PANE NAME and never
+   * a URL, the same way `App.tsx` already does.
+   */
+  async function openMicSettings(pane: "Microphone") {
+    try {
+      await invoke("open_privacy_settings", { pane });
+    } catch (e) {
+      setNote(errorText(e));
+    }
+  }
+
+  /** Honest exit from a mic Yap cannot use: skip calibration, which needs one. */
+  function continueWithoutDictation() {
+    setStep("done");
   }
 
   async function requestAccessibility() {
@@ -254,7 +301,14 @@ export default function Onboarding({
     if (i > 0) setStep(STEP_ORDER[i - 1]);
   }
 
-  const micOk = !!perms?.microphone;
+  const micStatus: MicPermissionStatus = deriveMicStatus({
+    microphoneStatus: perms?.microphoneStatus,
+    microphone: !!perms?.microphone,
+    asked: micAsked,
+  });
+  const micOk = micIsUsable(micStatus);
+  const micCopy = permissionCopy(micStatus);
+  const micAction = permissionAction(micStatus);
   const axOk = !!perms?.accessibility;
   const modelReady = modelSetup.ready;
   /** Calibration can only run once an engine exists — until then it waits. */
@@ -310,14 +364,28 @@ export default function Onboarding({
               updates live as you enable each one.
             </p>
             <ul className="onboard-perms">
-              <li className={micOk ? "ok" : "bad"}>
+              {/* PERM-B — four statuses, four screens. The button is whatever
+                  `permissionAction` says it is, including nothing at all: an
+                  authorized row is settled, and a restricted row gets NO
+                  System Settings button because that toggle is greyed out by
+                  an MDM profile and sending the user there is an errand that
+                  cannot succeed. */}
+              <li className={micOk ? "ok" : "bad"} data-mic-status={micStatus}>
                 <StatusDot ok={micOk} />
                 <div>
-                  <strong>Microphone</strong>
-                  <p>Needed to hear you. Click Allow when macOS prompts.</p>
-                  <button onClick={requestMic}>
-                    {micOk ? "Granted ✓" : "Request Microphone"}
-                  </button>
+                  <strong>{micCopy.title}</strong>
+                  <p>{micCopy.body}</p>
+                  {micAction.kind === "request" && (
+                    <button onClick={requestMic}>{micAction.label}</button>
+                  )}
+                  {micAction.kind === "settings" && (
+                    <button
+                      className="primary"
+                      onClick={() => openMicSettings(micAction.pane)}
+                    >
+                      {micAction.label}
+                    </button>
+                  )}
                 </div>
               </li>
               <li className={axOk ? "ok" : "bad"}>
@@ -336,9 +404,21 @@ export default function Onboarding({
               <button className="ghost" onClick={goBack}>
                 Back
               </button>
-              <button className="primary" onClick={goNext}>
-                {micOk && axOk ? "Continue" : "Continue anyway"}
-              </button>
+              {/* PERM-B — the old escape hatch walked a user past a
+                  microphone they do not have into an app whose only feature
+                  cannot run, and the bug report that follows says dictation is
+                  broken.
+                  Without a usable mic the honest move is to name what is being
+                  given up and skip calibration, which cannot succeed either. */}
+              {micOk ? (
+                <button className="primary" onClick={goNext}>
+                  Continue
+                </button>
+              ) : (
+                <button className="ghost" onClick={continueWithoutDictation}>
+                  Continue without dictation
+                </button>
+              )}
             </div>
           </div>
         )}
