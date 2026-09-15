@@ -3239,6 +3239,12 @@ fn retry_failed_dictation(
             seconds: 0.0,
             load_ms: 0,
             decode_ms: 0,
+            // Nothing was handed to the engine, so nothing degraded and no
+            // window ran: this take's windows all completed BEFORE the crash.
+            degraded: false,
+            chunks: 0,
+            chunks_failed: 0,
+            degraded_reason: None,
         }
     } else {
         transcribe_native(
