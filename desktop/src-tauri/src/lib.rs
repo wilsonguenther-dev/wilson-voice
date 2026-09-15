@@ -3440,7 +3440,15 @@ fn prewarm_system_audio() -> meetings::SetupVerdict {
             }
             meetings::SetupVerdict::Failed
         }
-        (true, syscapture::SystemAudioPermission::Granted) => meetings::SetupVerdict::Granted,
+        (true, syscapture::SystemAudioPermission::Granted) => {
+            // PERM-E: the ONLY legitimate input to the system-audio grant is an
+            // observation from a tap that already ran. This is that call site.
+            permissions::note_audio_capture_observation(
+                permissions::AudioCaptureObservation::Delivered,
+            );
+            permissions::poke(permissions::WatchReason::Refusal);
+            meetings::SetupVerdict::Granted
+        }
         // Opened, nothing audible in 200 ms. The alert has been shown; the
         // answer is genuinely not knowable yet, and saying so is the item.
         (true, _) => meetings::SetupVerdict::Ran,
@@ -4741,12 +4749,48 @@ pub fn run() {
                 let _ = win.show();
                 let _ = win.set_focus();
                 let w = win.clone();
-                win.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
+                win.on_window_event(move |e| match e {
+                    WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let _ = w.hide();
                     }
+                    // PERM-E: coming back to the window is the moment a grant
+                    // flipped in System Settings becomes worth re-reading. The
+                    // watcher is parked until this fires, so it costs one read,
+                    // not a timer.
+                    WindowEvent::Focused(true) => {
+                        permissions::poke(permissions::WatchReason::Focus);
+                    }
+                    _ => {}
                 });
+            }
+
+            // PERM-E — the ONE permission watcher. It re-reads all four grants
+            // on launch, on window focus, on wake (Y1-B's publisher calls
+            // `permissions::poke(WatchReason::Wake)`; no second sleep/wake
+            // observer is registered here) and on every hotkey/paste refusal,
+            // and emits `permission_changed` only when something actually
+            // changed. While nothing is denied it parks on a condvar with no
+            // timer at all.
+            {
+                let read_state = state.clone();
+                let emit_app = app.handle().clone();
+                permissions::start_watch(
+                    move || {
+                        let native = read_state.settings.lock().native_model.clone();
+                        permissions::GrantSnapshot::from_report(&permissions::report(
+                            false,
+                            native_model_ready(&native).is_some(),
+                        ))
+                    },
+                    move |snapshot| {
+                        if let Err(e) =
+                            emit_app.emit(permissions::PERMISSION_CHANGED_EVENT, snapshot)
+                        {
+                            log::warn!("permission_changed emit: {e}");
+                        }
+                    },
+                );
             }
 
             // Menu-bar dropdown (Wispr parity): a full control surface so Yap is
@@ -5037,6 +5081,9 @@ pub fn run() {
                 log::info!(
                     "Accessibility not trusted — fn⌃ needs it. Enable Wilson Voice in Privacy → Accessibility"
                 );
+                // PERM-E: a hotkey that cannot arm IS a refusal. Tell the
+                // watcher so the health row is right before the user tries.
+                permissions::poke(permissions::WatchReason::Refusal);
             }
 
             // Primary: fn⌃ hybrid (hold PTT / double-tap hands-free)

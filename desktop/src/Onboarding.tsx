@@ -10,6 +10,7 @@ import {
   permissionAction,
   permissionCopy,
   type MicPermissionStatus,
+  type PermissionGrantRow,
 } from "./permission";
 
 // YV9 — first-run onboarding. Rendered as a full-screen overlay over the main
@@ -36,7 +37,10 @@ interface PermissionReport {
    * to the boolean when it is absent.
    */
   microphoneStatus: string;
-  ffmpegOk: boolean;
+  /** PERM-E — the four grants, tri-state. PANEL (4): these ARE this step's
+   *  checklist rows, built once in `permissions.rs`, so the onboarding list and
+   *  the main window's health row can never disagree. */
+  grants: PermissionGrantRow[];
   asrOk: boolean;
   asrDetail: string;
   summary: string;

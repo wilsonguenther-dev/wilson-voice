@@ -2787,3 +2787,41 @@ button.primary.big {
   max-height: 260px;
   overflow: auto;
 }
+
+/* PERM-E — the permission health row. One line, one button, and NOTHING at all
+   while the four grants are fine (the component returns null, so these rules
+   never match on a healthy install). Deliberately not a card: a dashboard for
+   permissions is a permanent nag wearing a feature's clothes. */
+.perm-health {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 0 0 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: color-mix(in srgb, #f0b429 12%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.perm-health-line {
+  flex: 1;
+  min-width: 0;
+}
+
+.perm-health-action {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.perm-health-action:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}

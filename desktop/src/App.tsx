@@ -7,6 +7,8 @@ import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
+import { PermissionHealthRow } from "./PermissionHealthRow";
+import type { GrantStatus, PermissionGrantRow } from "./permission";
 // YV95 — the meeting status shape and its label rules are shared with the pill
 // (src/pill/meeting.ts) so the two surfaces cannot render the same second
 // differently, and so those rules are unit-tested once instead of twice.
@@ -277,7 +279,12 @@ interface PermissionReport {
   /** PERM-A — the AVFoundation status the UI branches on. A bool cannot tell
    *  "never asked" (show the prompt button) from "denied" (show Settings). */
   microphoneStatus: string;
-  ffmpegOk: boolean;
+  /** PERM-E — `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`, tri-state. */
+  inputMonitoring: GrantStatus;
+  /** PERM-E — unknown by construction; there is no API that reads it. */
+  audioCapture: GrantStatus;
+  /** PERM-E — THE four rows. Everything permission-shaped renders from this. */
+  grants: PermissionGrantRow[];
   asrOk: boolean;
   asrDetail: string;
   summary: string;
@@ -1118,6 +1125,11 @@ export default function App() {
     listen<AppStatus>("status", (e) => setStatus(e.payload)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
+    // PERM-E — the watcher emits this ONLY on a transition, so this re-read
+    // happens when a grant actually changed and never on a timer.
+    listen("permission_changed", () => {
+      void refreshPerms();
+    }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<boolean>("recording", (e) =>
       setStatus((s) => ({
         ...s,
@@ -2254,6 +2266,11 @@ export default function App() {
             running, so this is the same slim ribbon onboarding shows, and it
             retires itself the moment the engine is ready. */}
         <ModelRibbon setup={modelSetup} />
+
+        {/* PERM-E — the single permission surface. Renders NOTHING while all
+            four grants are fine, which is why it sits unconditionally here
+            rather than behind a nav check: it is its own visibility rule. */}
+        <PermissionHealthRow grants={perms?.grants} />
 
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
