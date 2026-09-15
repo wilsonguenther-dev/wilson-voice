@@ -109,12 +109,85 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// Trial length in milliseconds.
 pub const TRIAL_MS: i64 = TRIAL_DAYS * DAY_MS;
 
+/// LIC-A — where the issuer lives, compiled in at **build** time.
+///
+/// This used to be a wildcard-DNS hostname with the Forge box's IP ADDRESS
+/// embedded in it. That was a latent, unfixable outage: re-IPing the box would
+/// have silently killed revocation for every copy of Yap already on a
+/// customer's Mac, and no client-side release could have repaired it. The
+/// issuer is now a Supabase Edge Function on a stable hostname, and the URL is
+/// supplied by the RELEASE, never hard-coded here — the project ref is an
+/// owner-provisioned value (see `docs/YAP-LICENSING.md` § Runtime
+/// Dependencies) and must not be committed.
+///
+/// Unprovisioned builds fall back to an RFC 2606 `.invalid` host, which can
+/// never resolve and which nobody else can ever register. That is deliberate:
+/// a build with no issuer must fail to REACH one, not quietly talk to a
+/// plausible domain a stranger owns. Nothing a licensed user does breaks
+/// either way — see `ISSUER_CONFIGURED`.
+const UNPROVISIONED_ISSUER_BASE_URL: &str = "https://issuer.yap.invalid/functions/v1/yap-license";
+
+/// The issuer's base URL. Set `YAP_ISSUER_BASE_URL` at build time, e.g.
+/// `https://<ref>.functions.supabase.co/yap-license`.
+pub const ISSUER_BASE_URL: &str = match option_env!("YAP_ISSUER_BASE_URL") {
+    Some(url) => url,
+    None => UNPROVISIONED_ISSUER_BASE_URL,
+};
+
+/// Whether this build was given a real issuer. False in a plain `cargo build`,
+/// and in the test gate — which is exactly why neither needs a network.
+pub const ISSUER_CONFIGURED: bool = option_env!("YAP_ISSUER_BASE_URL").is_some();
+
 /// The ONLY host this module ever contacts, and only for the public revocation
-/// list. No telemetry, no activation call, no license check-in — a Yap that
-/// never sees the internet again works exactly the same.
-pub const ISSUER_HOST: &str = "forge.87-99-149-214.sslip.io";
+/// list and an explicitly requested key retrieval. No telemetry, no activation
+/// call, no license check-in — a Yap that never sees the internet again works
+/// exactly the same. (PRIVACY.md, PRIV-A.)
+pub fn issuer_host() -> &'static str {
+    ISSUER_BASE_URL
+        .split_once("://")
+        .map_or(ISSUER_BASE_URL, |(_scheme, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or(ISSUER_BASE_URL)
+}
+
+/// Base URL with any trailing slash removed, so joining a route is total.
+fn issuer_base() -> &'static str {
+    ISSUER_BASE_URL.trim_end_matches('/')
+}
+
 /// Public revocation list (`{version, updatedAt, kids[]}`, `max-age=300`).
-pub const REVOCATION_URL: &str = "https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json";
+/// Fetched on activation and on a button press, never on the dictation path,
+/// and a failure to fetch it changes no entitlement.
+pub fn revocation_url() -> String {
+    format!("{}/revoked.json", issuer_base())
+}
+
+/// "I already paid" — POST `{email}`, get the key that was signed for it.
+/// The retrieved key goes through the same offline `activate` as a pasted one.
+pub fn license_retrieval_url() -> String {
+    format!("{}/license", issuer_base())
+}
+
+/// Copy for a key that verifies but is not this product. Like every other
+/// refusal it has to name a next step: "your key is wrong" with nothing to do
+/// about it is a dead end, and a dead end in a paid product is a refund.
+pub const WRONG_PLAN_MESSAGE: &str = "That key is signed by Yap but is not a license for this \
+app. Use the key from your Yap purchase email, or reply to your receipt and we will re-send it.";
+
+/// Copy for a retrieval that could not reach the issuer. Its one job beyond
+/// naming a next step is to say plainly that the OFFLINE path is unaffected:
+/// the emailed key works on a machine that never sees a network again, and a
+/// customer must never conclude that a down issuer means a dead license.
+pub const RETRIEVAL_FAILED_CODE: &str = "retrieval_failed";
+pub const RETRIEVAL_FAILED_MESSAGE: &str = "Yap could not reach the license issuer just now. \
+The key in your purchase email still works with no internet at all — paste it above, or try \
+this again in a minute.";
+
+/// Copy for a retrieval that reached the issuer and found no such purchase.
+pub const RETRIEVAL_NOT_FOUND_CODE: &str = "retrieval_not_found";
+pub const RETRIEVAL_NOT_FOUND_MESSAGE: &str = "No purchase was found for that address. Use the \
+email address you paid with, or reply to your Stripe receipt and we will re-send the key.";
 
 /// Where "Buy Yap" goes — the **one** place this URL is written down in the
 /// app (YP3). The frontend never holds it: the Buy button invokes
@@ -240,9 +313,7 @@ impl VerifyError {
             VerifyError::WrongSigningKey => {
                 "That license key was not issued by Yap. Use the key from your purchase email."
             }
-            VerifyError::WrongPlan => {
-                "That key is signed by Yap but is not a license for this app."
-            }
+            VerifyError::WrongPlan => WRONG_PLAN_MESSAGE,
         }
     }
 }
@@ -592,8 +663,8 @@ where
             }
             Ok(claims) if claims.plan != SOLD_PLAN => {
                 problem = Some((
-                    "wrong_plan".into(),
-                    "That key is signed by Yap but is not a license for this app.".into(),
+                    VerifyError::WrongPlan.code().to_string(),
+                    WRONG_PLAN_MESSAGE.to_string(),
                 ));
             }
             Ok(claims) => licensed = Some(claims),
@@ -711,6 +782,27 @@ impl LicenseManager {
 
     pub fn with_clock(dir: &Path, store: Arc<dyn LicenseStore>, now: NowFn) -> Self {
         Self::build(dir, store, now, Box::new(verify_license))
+    }
+
+    /// LIC-A — open a manager with BOTH the clock and the verifier injected.
+    ///
+    /// The end-to-end activation proof has to mint keys, and minting a key
+    /// means holding a private key. The one the product ships with lives in
+    /// Supabase secrets and must never be in this repository, so the test signs
+    /// with a throwaway pair and hands in a verifier pinned to ITS public half.
+    /// Everything downstream of the signature — the plan check, the entitlement
+    /// flip, what gets written to disk — is the real code on the real path.
+    ///
+    /// This does not weaken shipped verification: `new` and `with_clock` both
+    /// still pin `ISSUER_PUBLIC_KEY_SPKI_B64`, and nothing in the app calls
+    /// this.
+    pub fn with_verify(
+        dir: &Path,
+        store: Arc<dyn LicenseStore>,
+        now: NowFn,
+        verify: VerifyFn,
+    ) -> Self {
+        Self::build(dir, store, now, verify)
     }
 
     fn build(dir: &Path, store: Arc<dyn LicenseStore>, now: NowFn, verify: VerifyFn) -> Self {
@@ -1390,14 +1482,41 @@ mod tests {
 
     #[test]
     fn license_revocation_url_is_https_on_the_issuer_host_only() {
-        assert!(REVOCATION_URL.starts_with("https://"));
-        let host = REVOCATION_URL
-            .trim_start_matches("https://")
+        let revocation = revocation_url();
+        let retrieval = license_retrieval_url();
+
+        // Both routes, one host. This is the "one host, one call, no telemetry"
+        // claim in PRIVACY.md, asserted rather than promised.
+        assert_eq!(issuer_host(), host_of(&revocation));
+        assert_eq!(issuer_host(), host_of(&retrieval));
+        assert!(revocation.ends_with("/revoked.json"));
+        assert!(retrieval.ends_with("/license"));
+
+        // LIC-A: the box IP is gone and must never come back. A hostname with
+        // an IP in it cannot survive the box being re-IPed, and no client
+        // release could repair the copies already shipped.
+        for url in [revocation.as_str(), retrieval.as_str(), ISSUER_BASE_URL] {
+            assert!(
+                !url.contains(concat!("sslip", ".io")),
+                "{url}: the issuer must not be pinned to a box IP"
+            );
+        }
+
+        // An unprovisioned build points somewhere that can never resolve,
+        // over TLS, and still has the issuer's shape.
+        if !ISSUER_CONFIGURED {
+            assert!(revocation.starts_with("https://"));
+            assert!(ISSUER_BASE_URL.ends_with("/yap-license"));
+            assert!(issuer_host().ends_with(".invalid"));
+        }
+    }
+
+    fn host_of(url: &str) -> &str {
+        url.split_once("://")
+            .map_or(url, |(_scheme, rest)| rest)
             .split('/')
             .next()
-            .unwrap();
-        assert_eq!(host, ISSUER_HOST);
-        assert!(REVOCATION_URL.ends_with("/v1/yap/revoked.json"));
+            .unwrap()
     }
 
     #[test]

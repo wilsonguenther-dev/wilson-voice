@@ -265,7 +265,10 @@ fn the_issuer_sources_hold_no_private_key_material() {
                 // The Drivia project. Yap's issuer is a DEDICATED project on
                 // purpose: a licensing outage caused by an unrelated product's
                 // free-tier usage is the worst possible coupling.
-                "vlfrzdbqwsnrosmcygca",
+                // Split so that grepping this repository for the ref finds
+                // ZERO files: the guard must not be the one hit that makes a
+                // "is the Drivia ref anywhere in the tree?" search look dirty.
+                concat!("vlfrzdbq", "wsnrosmcygca"),
             ] {
                 assert!(
                     !source.contains(marker),
