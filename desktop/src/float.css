@@ -71,14 +71,25 @@ body,
     0 12px 34px rgba(0, 0, 0, 0.46),
     0 2px 6px rgba(0, 0, 0, 0.34);
   animation: pill-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* Y5-D — the soft body. Driven per rAF frame by the spring in
+     `pill/motion.ts`, as the INDEPENDENT `scale` property rather than a
+     transform: `pill-in` above animates `transform` with fill-mode `both`, so a
+     transform-based squash would be permanently overridden by that keyframe's
+     final value. `scale` composes with it instead, and is deliberately absent
+     from the transition list below because the spring — not CSS — owns every
+     frame of it. Defaults to 1 1, which is also the Reduce Motion value. */
+  scale: var(--squash-x, 1) var(--squash-y, 1);
+  transform-origin: center;
+  /* Durations come from DURATION in `pill/motion.ts` via applyMotionVars();
+     the literals are only the fallback for the frames before it runs. */
   transition:
-    box-shadow 0.28s ease,
-    background 0.28s ease,
-    transform 0.18s ease,
-    height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    min-width 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    gap 0.3s ease,
-    padding 0.3s ease;
+    box-shadow var(--dur-morph, 100ms) var(--ease-state, ease),
+    background var(--dur-morph, 100ms) var(--ease-state, ease),
+    transform var(--dur-morph, 100ms) var(--ease-state, ease),
+    height var(--dur-expand, 340ms) var(--ease-state, ease),
+    min-width var(--dur-expand, 340ms) var(--ease-state, ease),
+    gap var(--dur-collapse, 300ms) var(--ease-state, ease),
+    padding var(--dur-collapse, 300ms) var(--ease-state, ease);
 }
 /* Expand to the full "radio pill" on activity (listening / transcribing / done). */
 .pill.live,
@@ -809,4 +820,10 @@ html[data-dock="right"] .phase-strip {
   .pill[data-motion="shake"],
   .kami-stage[data-motion="shake"] .kami-canvas { animation: none; }
   .phase-strip { transition: none; }
+  /* Y5-D — belt and braces. `createSoftBody({reduceMotion})` already refuses to
+     move the spring, so --squash-* never leaves 1; this pins the capsule's own
+     shape even if a stale inline value survived a preference change mid-session.
+     The pill keeps its FULL information here — phase class, sprite, numeral,
+     progress fill — because none of that is carried by motion. */
+  .pill { scale: 1 1; animation: none; }
 }
