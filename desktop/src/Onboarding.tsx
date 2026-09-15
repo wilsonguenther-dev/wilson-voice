@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ModelRibbon, useModelSetup } from "./ModelSetup";
+import {
+  ModelRibbon,
+  PolishModelPicker,
+  useModelSetup,
+  usePolishModel,
+} from "./ModelSetup";
+import { describePolishOffer } from "./polishOffer";
 import { errorText } from "./errors";
 import { awaitMicDecision } from "./micStatus";
 import {
@@ -25,6 +31,14 @@ import {
 // the user grants permissions and calibrates. The only trace of it is the slim
 // ribbon in the card footer. The picker moved to Settings → Advanced for the
 // power users who do want to choose.
+//
+// SEC-C — the polish (LLM formatting) model got a real install path, but
+// nothing in first run mentioned it, so a new user finished onboarding without
+// ever learning the stage exists. The last step now says so — ONCE, at the end,
+// after the speech model is settled, behind a button nobody presses for them.
+// `describePolishOffer` owns that decision and is tested on its own; the
+// `PolishOffer` component below mounts only on the "done" step, so the catalog
+// read it performs never touches the welcome/permissions path at all.
 
 type Step = "welcome" | "permissions" | "calibration" | "done";
 
@@ -80,6 +94,32 @@ const PERMISSION_POLL_MS = 2000;
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={ok ? "dot-ok" : "dot-bad"} aria-hidden />;
+}
+
+/**
+ * SEC-C — the optional formatting model, offered at the end of first run.
+ *
+ * Mounted ONLY from the "done" step. `usePolishModel` has no `autoDownload`
+ * analogue by construction (see ModelSetup.tsx), so mounting this reads the
+ * catalog and nothing else: not one byte of the 1.1 GB GGUF moves until the
+ * user presses the button inside `PolishModelPicker`.
+ */
+function PolishOffer({ speechModelReady }: { speechModelReady: boolean }) {
+  const polish = usePolishModel();
+  const offer = describePolishOffer({
+    speechModelReady,
+    catalogSize: polish.models.length,
+    polishActive: polish.active,
+    polishDownloading: polish.downloading,
+  });
+  if (offer.kind === "hidden") return null;
+  return (
+    <div className="onboard-polish">
+      <h2>{offer.title}</h2>
+      <p className="muted">{offer.body}</p>
+      {offer.showPicker && <PolishModelPicker polish={polish} />}
+    </div>
+  );
 }
 
 export default function Onboarding({
@@ -548,6 +588,7 @@ export default function Onboarding({
                 <StatusDot ok={!!sample} /> Voice sample
               </li>
             </ul>
+            <PolishOffer speechModelReady={modelReady} />
             <div className="onboard-actions">
               <button className="ghost" onClick={goBack}>
                 Back

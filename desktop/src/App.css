@@ -1891,6 +1891,27 @@ button.star.on {
   gap: 8px;
 }
 
+/* SEC-C — the optional formatting model, offered on the last onboarding step.
+   Set apart from the recap above by a rule rather than a card, because it is an
+   aside and must not read as another thing the user has to finish. */
+.onboard-polish {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+.onboard-polish h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.onboard-polish p {
+  margin: 0;
+}
+.onboard-polish .onboard-models {
+  margin-top: 12px;
+}
+
 /* ── YappyHouse — the living-habitat companion on the Home screen (YV18) ──
    A chunky wooden "dollhouse" window into Yappy's cottage room, ported from
    docs/prototypes/yappy-house.html. The bezel + stat strip mirror the SSOT. */
