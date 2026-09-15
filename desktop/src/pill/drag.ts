@@ -39,8 +39,25 @@ export interface PillDrag {
   dragged: () => boolean;
 }
 
-export function usePillDrag(): PillDrag {
+/**
+ * Y5-D — the soft body listens to this gesture. The drag owns the only truthful
+ * account of what the pointer did (press, plain release, release-after-a-drag =
+ * a DOCK), so the physics is driven from here rather than from a second set of
+ * pointer handlers that would have to re-derive the slop.
+ *
+ * Held in a ref and read at call time: the callbacks close over React state in
+ * the caller, and the handlers below are memoised for the life of the mount.
+ */
+export interface PillGestureFeedback {
+  press?(): void;
+  release?(): void;
+  dock?(): void;
+}
+
+export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
   const st = useRef({ down: false, moved: false, x: 0, y: 0 });
+  const fb = useRef(feedback);
+  fb.current = feedback;
   return useMemo<PillDrag>(() => {
     const end = (e: ReactPointerEvent<HTMLElement>) => {
       const s = st.current;
@@ -52,6 +69,10 @@ export function usePillDrag(): PillDrag {
         /* capture was already lost (window teardown) — the drag still ends */
       }
       invoke("pill_drag_end", { x: e.screenX, y: e.screenY, snap: s.moved }).catch(() => {});
+      // A drag that moved ends by SNAPPING into a dock, so it lands; a press
+      // that never moved is a plain click, so it just rebounds.
+      if (s.moved) fb.current.dock?.();
+      else fb.current.release?.();
     };
     return {
       handlers: {
@@ -65,6 +86,7 @@ export function usePillDrag(): PillDrag {
           } catch {
             /* non-fatal: the drag just ends if the pointer leaves the capsule */
           }
+          fb.current.press?.();
           invoke("pill_drag_start").catch(() => {});
         },
         onPointerMove: (e) => {
