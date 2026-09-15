@@ -11,7 +11,7 @@
 #![cfg(target_os = "macos")]
 
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -187,6 +187,7 @@ mod ffi {
         pub fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         pub fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
         pub fn CFRunLoopRun();
+        pub fn CFRetain(cf: *const c_void) -> *const c_void;
         pub static kCFRunLoopCommonModes: CFStringRef;
     }
 
@@ -324,6 +325,10 @@ fn run_tap(state: Arc<TapState>) {
             let _ = Arc::from_raw(user_info as *const TapState);
             return;
         }
+        // Y1-A: retain and publish the port BEFORE enabling, so a disable
+        // notification that arrives immediately still finds something to re-arm.
+        ffi::CFRetain(tap as *const std::ffi::c_void);
+        TAP_PORT.store(tap, Ordering::SeqCst);
         ffi::CGEventTapEnable(tap, true);
         let source = ffi::CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0);
         if source.is_null() {
@@ -345,6 +350,23 @@ unsafe extern "C" fn tap_callback(
     event: ffi::CGEventRef,
     user_info: *mut std::ffi::c_void,
 ) -> ffi::CGEventRef {
+    // Y1-A FIRST, above the null guards: macOS delivers the two disable
+    // pseudo-types regardless of our event mask, and the `event` it passes with
+    // them is not one of ours — a null-event early return would drop exactly the
+    // notification we must act on.
+    if let Some(kind) = classify_tap_disable(event_type) {
+        let health = note_tap_disabled(kind);
+        let re_armed = should_re_arm(kind) && re_arm_tap();
+        log::warn!(
+            "FN PTT: tap disabled by {} ({}) — re-arm #{} {}",
+            kind.name(),
+            kind.reason(),
+            health.re_arms,
+            if re_armed { "issued" } else { "FAILED" }
+        );
+        return event;
+    }
+
     if user_info.is_null() || event.is_null() {
         return event;
     }
@@ -540,6 +562,156 @@ fn on_combo_up(state: &TapState) {
     }
 
     log::debug!("PTT medium release ignored ({duration:?})");
+}
+
+// ── Y1-A: a tap macOS switched OFF is re-armed, not mourned ──────────────────
+//
+// macOS kills an event tap whose callback is slow, and it tells the callback by
+// invoking it with a *pseudo event type* — `kCGEventTapDisabledByTimeout`
+// (0xFFFFFFFE) or `kCGEventTapDisabledByUserInput` (0xFFFFFFFF). Those two are
+// delivered REGARDLESS of the event mask this tap asked for, and once either
+// arrives the tap stays dead until `CGEventTapEnable` is called again. Before
+// this section existed the tree called `CGEventTapEnable` exactly once, at
+// startup, so a single slow callback, one long decode or one sleep/wake cycle
+// left the push-to-talk hotkey silently dead for the rest of the process — a
+// failure indistinguishable, from the user's chair, from a revoked
+// Accessibility grant.
+
+/// The tap timed out: our callback took longer than the window server's budget.
+const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
+/// A user-input flood took the tap out. NOT normal, and still needs re-arming.
+const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
+
+/// Which of the two ways macOS switched the tap off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapDisable {
+    /// `kCGEventTapDisabledByTimeout` — our callback was too slow.
+    Timeout,
+    /// `kCGEventTapDisabledByUserInput` — a user-input flood.
+    UserInput,
+}
+
+impl TapDisable {
+    /// The Apple constant name, for the log line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Timeout => "kCGEventTapDisabledByTimeout",
+            Self::UserInput => "kCGEventTapDisabledByUserInput",
+        }
+    }
+
+    /// One clause of cause, for the support bundle.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Timeout => "the tap callback exceeded the window server timeout",
+            Self::UserInput => "a user-input flood took the tap out",
+        }
+    }
+}
+
+/// PURE classification of the pseudo event type macOS hands the callback.
+///
+/// Pure on purpose: it is the whole decision the callback makes, and this way
+/// it is unit-testable with no window server, no tap and no permission grant
+/// (`tests/tap_health.rs`). `None` means "an ordinary event, keep handling it".
+pub fn classify_tap_disable(event_type: u32) -> Option<TapDisable> {
+    match event_type {
+        KCG_EVENT_TAP_DISABLED_BY_TIMEOUT => Some(TapDisable::Timeout),
+        KCG_EVENT_TAP_DISABLED_BY_USER_INPUT => Some(TapDisable::UserInput),
+        _ => None,
+    }
+}
+
+/// How often this process has had to switch its own tap back on, split by cause.
+///
+/// Counted, not merely logged: "the hotkey died once an hour" and "the hotkey
+/// died once since launch" are different bugs and a log line the user never
+/// reads cannot tell them apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct TapHealth {
+    /// Total re-arm attempts this session.
+    pub re_arms: u32,
+    pub by_timeout: u32,
+    pub by_user_input: u32,
+}
+
+impl TapHealth {
+    /// PURE counter step — the global below is just one instance of this.
+    pub fn record(&mut self, kind: TapDisable) {
+        self.re_arms = self.re_arms.saturating_add(1);
+        match kind {
+            TapDisable::Timeout => self.by_timeout = self.by_timeout.saturating_add(1),
+            TapDisable::UserInput => self.by_user_input = self.by_user_input.saturating_add(1),
+        }
+    }
+}
+
+static TAP_HEALTH: Mutex<TapHealth> = Mutex::new(TapHealth {
+    re_arms: 0,
+    by_timeout: 0,
+    by_user_input: 0,
+});
+
+/// The live CFMachPort for the tap, so the callback can re-enable the SAME tap
+/// instead of respawning the thread. Retained at creation (`CFRetain`) because
+/// the callback reads it from an arbitrary later moment.
+static TAP_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Snapshot of the session's tap health. Cheap; safe from any thread.
+pub fn tap_health() -> TapHealth {
+    *TAP_HEALTH.lock()
+}
+
+/// Count one disable + re-arm and hand back the new snapshot.
+pub fn note_tap_disabled(kind: TapDisable) -> TapHealth {
+    let mut g = TAP_HEALTH.lock();
+    g.record(kind);
+    *g
+}
+
+/// What the pill (PERM-C's surface) and the support bundle (PERM-E's report)
+/// should SAY about tap health — `None` when there is nothing to say.
+///
+/// Silent the first time: one re-arm is macOS being macOS, we fixed it in
+/// microseconds and the user saw nothing. Visible from the second one in a
+/// session, because a tap that keeps dying is a real, reportable fault.
+pub fn tap_health_message(health: TapHealth) -> Option<String> {
+    if health.re_arms < 2 {
+        return None;
+    }
+    Some(format!(
+        "the hotkey stopped listening — re-armed ({}× this session)",
+        health.re_arms
+    ))
+}
+
+/// Is this disable type one we re-arm? BOTH of them are.
+///
+/// Spelled out as a function, and read by the callback, so "ByUserInput is not
+/// normal — it means a user-input flood took the tap out, and it still needs
+/// re-arming" is a rule with a test on it rather than a comment someone can
+/// quietly regress.
+pub fn should_re_arm(kind: TapDisable) -> bool {
+    match kind {
+        TapDisable::Timeout => true,
+        TapDisable::UserInput => true,
+    }
+}
+
+/// Switch the existing tap back on. NOT a respawn: same CFMachPort, same run
+/// loop source, same thread.
+///
+/// Returns whether the `CGEventTapEnable` call was actually issued — false only
+/// when no tap port has been published yet (no tap installed, e.g. in a test
+/// binary or a `--smoke` launch), which is reported, never silently swallowed.
+pub fn re_arm_tap() -> bool {
+    let tap = TAP_PORT.load(Ordering::SeqCst);
+    if tap.is_null() {
+        log::error!("FN PTT: tap disabled before the port was recorded — cannot re-arm");
+        return false;
+    }
+    unsafe { ffi::CGEventTapEnable(tap, true) };
+    true
 }
 
 #[cfg(test)]
