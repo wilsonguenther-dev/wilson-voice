@@ -15,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
-import { reduceGatePhase, type LivePhase } from "./pill/live";
+import { acceptProgress, reduceGatePhase, type LivePhase, type TranscribeProgress } from "./pill/live";
 import "./float.css";
 
 interface Settings { pillStyle?: string; pillPosition?: string }
@@ -26,6 +26,13 @@ interface Settings { pillStyle?: string; pillPosition?: string }
  * "waiting" and "blocked" on the pill.
  */
 interface MicGateNotice { status?: string; prompting?: boolean }
+
+/**
+ * Y3-C — the backend's per-chunk decode progress. Emitted ONCE per COMPLETED
+ * chunk and never for a single-window take, so the mere arrival of one of these
+ * is what puts the pill into the `transcribing` phase.
+ */
+interface ProgressNotice { chunk?: number; of?: number; words_so_far?: number }
 
 const DOCKS = ["bottom", "left", "right"];
 const dockOf = (s?: Settings) => {
@@ -39,6 +46,30 @@ function Float() {
   // is a property of the app and not of whichever capsule happens to be drawn.
   // Both pills receive it; neither invents it.
   const [gate, setGate] = useState<LivePhase>("idle");
+  // Y3-C — decode progress lives HERE for the same reason `gate` does: it is a
+  // property of the take, not of whichever capsule happens to be drawn. Both
+  // pills receive it; neither invents it, and neither interpolates it.
+  const [progress, setProgress] = useState<TranscribeProgress | null>(null);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const push = (u: () => void) => (dead ? u() : unsubs.push(u));
+    listen<ProgressNotice>("transcribe_progress", (e) =>
+      setProgress((p) =>
+        acceptProgress(p, {
+          chunk: Number(e.payload?.chunk),
+          of: Number(e.payload?.of),
+          wordsSoFar: Number(e.payload?.words_so_far),
+        }),
+      ),
+    ).then(push);
+    // A NEW take wipes the last take's progress, and a finished transcript ends
+    // the phase. Without both, a stale "9/12" outlives the decode that made it.
+    listen<boolean>("recording", (e) => { if (e.payload) setProgress(null); }).then(push);
+    listen<unknown>("transcript", () => setProgress(null)).then(push);
+    listen<unknown>("transcript_error", () => setProgress(null)).then(push);
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
   useEffect(() => {
     let dead = false;
     const unsubs: Array<() => void> = [];
@@ -81,7 +112,9 @@ function Float() {
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
-  return style === "yappy" ? <YappyPill gate={gate} /> : <ClassicPill gate={gate} />;
+  return style === "yappy"
+    ? <YappyPill gate={gate} progress={progress} />
+    : <ClassicPill gate={gate} progress={progress} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

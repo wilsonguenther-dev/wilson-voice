@@ -184,6 +184,8 @@ pub mod syscapture;
 // one warm engine back from meeting ASR at the next chunk boundary) is proved
 // against the REAL manager in `tests/meeting_dictation_preempts_transcription.rs`
 // and `tests/matrix_new_asr_chunk_timeout.rs` (error-matrix row `3b`).
+/// Y3-C — the only thing allowed to state progress through a running decode.
+pub mod transcribe_progress;
 pub mod transcription;
 // YV93 — public for `WarmVad::speech_spans`, the silence map the chunker cuts
 // its boundaries on.
@@ -1593,6 +1595,9 @@ fn transcribe_native(
     samples: Vec<f32>,
     language: &str,
     bias_prompt: Option<String>,
+    // Y3-C — who hears about each completed decode window. The dictation path
+    // passes the pill's reporter; every headless caller passes `NoObserver`.
+    observer: &mut dyn transcribe_progress::TakeObserver,
 ) -> Result<transcription::AsrOutput, String> {
     let started = std::time::Instant::now();
     manager.load(model_id, model_path)?;
@@ -1615,7 +1620,7 @@ fn transcribe_native(
     // per-call wall. A short take is the exact same single `transcribe` call
     // this line used to be; a long one decodes in windows under a PER-CHUNK
     // budget and comes back partial rather than empty if a window dies.
-    let take = manager.transcribe_take(samples, language, bias_prompt)?;
+    let take = manager.transcribe_take_observed(samples, language, bias_prompt, observer)?;
     let decode_ms = decode_started.elapsed().as_millis() as i64;
     if take.windowed {
         log::info!(
@@ -1855,6 +1860,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // into the engine. This is the paragraphing signal: measured at
             // capture, thrown away until now.
             let take_pauses = rec.pause_spans.clone();
+            // Y3-C — the pill's only honest source of mid-decode progress.
+            //
+            // The observer is handed to the decode and driven from INSIDE
+            // Y3-B's window loop: `planned` fires once, with the number of
+            // windows the planner actually produced, and `chunk_done` fires
+            // once per window that really finished, carrying that window's real
+            // text. A take the planner did not split never calls `planned` at
+            // all, so nothing is emitted and the pill stays on its
+            // undifferentiated busy state — correct, because a single window
+            // has no progress to report and a 1/1 flicker is worse than
+            // silence. There is no timer here and nothing is interpolated
+            // between completions.
+            let sink = transcribe_progress::AppProgress(app2.clone());
+            let mut progress = transcribe_progress::TakeProgress::new(&sink);
             let asr = transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -1862,6 +1881,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 rec.samples,
                 &settings.language,
                 bias_prompt,
+                &mut progress,
             )?;
             // Y3-B — a DEGRADED take is text the user keeps AND audio we refuse
             // to throw away: some window of it never decoded, so the recovery
@@ -1896,6 +1916,9 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     ),
                 }
             }
+            // The take is over: nothing may repaint the pill behind the
+            // transcript that is about to land on it.
+            progress.finish();
             // Raw ASR output — preserved verbatim so both raw and polished text are
             // stored on the transcript (Wispr Flow "Undo AI edit" / raw↔polished).
             let mut raw_text = asr.text;
@@ -3019,6 +3042,9 @@ fn retry_failed_dictation(
         samples,
         &settings.language,
         bias_prompt,
+        // A retry from History has no live pill to fill: the user is looking at
+        // the history row, not at a recording indicator.
+        &mut transcribe_progress::NoObserver,
     )?;
     let mut raw_text = asr.text;
     // The same non-destructive gate as the live path (YV66). It matters MORE

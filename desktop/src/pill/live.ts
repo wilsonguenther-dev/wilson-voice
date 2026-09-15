@@ -41,6 +41,17 @@ export const LIVE_PROP: Record<LiveTier, LiveProp> = {
 
 /** Rough speaking rate → estimate words from seconds of ACTUAL voiced speech. */
 export const WORDS_PER_SEC = 2.5;
+/**
+ * An ESTIMATE, and only ever an estimate — seconds of voiced audio multiplied by
+ * an average speaking rate. On a ten-minute take its error is enormous.
+ *
+ * Y3-C: this is legal for the LISTENING phase ONLY, where nothing better exists
+ * — no text has been decoded yet, so a guess is the only thing there is, and
+ * "listening" states are playful rather than numeric. The TRANSCRIBING phase
+ * MUST NOT use it: by then real chunks have returned real text with a real word
+ * count (`TranscribeProgress.wordsSoFar`), and a numeric state that is wrong is
+ * the dishonesty this item removes. See `transcribeTierForWords`.
+ */
 export const wordsFromVoiced = (voicedSec: number): number => voicedSec * WORDS_PER_SEC;
 /** Live tier keyed off ESTIMATED words — ~3s / 10s / 24s / 100s of speech. */
 export const liveTierForWords = (estWords: number): LiveTier =>
@@ -225,6 +236,110 @@ export function advanceLive(
   return { tier, prop: LIVE_PROP[tier], estWords, speaking, say };
 }
 
+// ── Y3-C: real progress through a chunked decode ───────────────────────────
+//
+// Before this, the only mid-take number the pill had was `wordsFromVoiced` — an
+// estimate off a stopwatch — and after the hold ended it had nothing at all:
+// `busy` is a boolean, so a 15-minute take decoding across 12 chunks showed the
+// same undifferentiated state for minutes.
+//
+// The backend now emits `transcribe_progress` once per COMPLETED chunk, with
+// the chunk index, the total and the REAL cumulative word count of the text
+// decoded so far. No timer, no interpolation, no smoothing: every value the
+// pill draws was measured, and the only moments it moves are the moments a
+// chunk actually finished.
+
+/** The `transcribe_progress` payload — one per COMPLETED chunk, never a guess. */
+export interface TranscribeProgress {
+  /** 1-based index of the chunk that just completed. */
+  chunk: number;
+  /** Total chunks this take was split into. Never reported below 2. */
+  of: number;
+  /** REAL words in the text decoded so far. Cumulative and monotonic. */
+  wordsSoFar: number;
+}
+
+/** Progress reported for a take that was never chunked is not progress. */
+export const MIN_REPORTABLE_CHUNKS = 2;
+
+/**
+ * Fold one `transcribe_progress` event into the phase's state.
+ *
+ * Everything this rejects is a lie the pill would otherwise have drawn:
+ *  - `of < 2` — a single-window take. There is nothing to report; a 1/1 flicker
+ *    is worse than silence, so the phase is never entered at all.
+ *  - `chunk > of` or `chunk < 1` — a fill past 100%, or before the start.
+ *  - a chunk index that did not ADVANCE — progress bars do not go backwards,
+ *    and a duplicate event must not re-animate one.
+ *  - a word count that went DOWN — words already decoded cannot un-decode.
+ *
+ * Returns the state to draw: the accepted event, or `prev` untouched. Never
+ * interpolates between events — a smooth bar that is lying is the defect being
+ * removed, so the fill moves in exactly the steps the decoder actually took.
+ */
+export function acceptProgress(
+  prev: TranscribeProgress | null,
+  next: TranscribeProgress,
+): TranscribeProgress | null {
+  const { chunk, of, wordsSoFar } = next;
+  if (!Number.isFinite(chunk) || !Number.isFinite(of) || !Number.isFinite(wordsSoFar)) return prev;
+  if (of < MIN_REPORTABLE_CHUNKS) return prev;
+  if (chunk < 1 || chunk > of) return prev;
+  if (wordsSoFar < 0) return prev;
+  if (prev) {
+    if (of !== prev.of) return prev; // a different take's geometry — ignore it
+    if (chunk <= prev.chunk) return prev;
+    if (wordsSoFar < prev.wordsSoFar) return prev;
+  }
+  return { chunk, of, wordsSoFar };
+}
+
+/** Is the pill in the transcribing phase right now? Only real progress opens it. */
+export const isTranscribing = (p: TranscribeProgress | null): p is TranscribeProgress => p !== null;
+
+/**
+ * The determinate fill, 0..1 — `chunk / of` and nothing else. Deliberately NOT
+ * eased, interpolated or time-blended: each step is one chunk that finished.
+ */
+export const progressFraction = (p: TranscribeProgress): number =>
+  Math.max(0, Math.min(1, p.chunk / p.of));
+
+/** The numeral both pills draw (Departure Mono), e.g. "3/12". */
+export const progressNumeral = (p: TranscribeProgress): string => `${p.chunk}/${p.of}`;
+
+/** The capsule's accessible name while transcribing — states progress, not words. */
+export const progressLabel = (p: TranscribeProgress): string =>
+  `Transcribing — chunk ${p.chunk} of ${p.of}`;
+
+/**
+ * The live tier during TRANSCRIBING, keyed off REAL decoded words.
+ *
+ * Same rungs as `liveTierForWords`, deliberately: the ladder is the character,
+ * what changes is that the number feeding it was measured instead of guessed.
+ */
+export const transcribeTierForWords = (realWords: number): LiveTier =>
+  liveTierForWords(realWords);
+
+/** Tone-aware commentary while the decode runs, escalating on REAL words. */
+const WORK_LINE: Record<LiveTier, Record<ChatTone, string>> = {
+  quick: { rude: "typing it…", friendly: "typing it up!", rose: "writing it down 🌹" },
+  notes: { rude: "still typing…", friendly: "got a page of this!", rose: "every word, love 🌹" },
+  desk: { rude: "this is a lot…", friendly: "big one — nearly there!", rose: "so much to keep 🌹" },
+  essay: { rude: "an ESSAY to type…", friendly: "wow, what an essay!", rose: "your whole story 🌹" },
+  saga: { rude: "a SAGA to type…", friendly: "a whole saga — hang on!", rose: "i'd type all day 🌹" },
+};
+
+/**
+ * What Yappy says while the decode runs.
+ *
+ * The escalation is driven by `p.wordsSoFar` — real text from real chunks —
+ * NOT by `wordsFromVoiced`. That is the whole point of the phase: a persona
+ * promised off a stopwatch is unearned, and on a long take the stopwatch is
+ * wrong by a wide margin.
+ */
+export const transcribeLine = (tone: ChatTone, p: TranscribeProgress): string =>
+  WORK_LINE[transcribeTierForWords(p.wordsSoFar)][tone];
+
 // ── frame policy ───────────────────────────────────────────────────────────
 // The always-on pill throttles its redraw while nothing is happening, but it
 // must NEVER park while a take is live — the mouth follows the mic and the
@@ -278,7 +393,13 @@ export type LivePhase =
   // ── placeholders: declared here, rendered by the item that owns them ─────
   /** Trial over / no license — a refused take that is NOT a permission fault. */
   | "gated" // OWNED BY Y2-C
-  /** Audio captured, ASR running. */
+  /**
+   * Audio captured, ASR running over a take that was split into MORE THAN ONE
+   * chunk — so the pill can state real, measured progress (Y3-C). Distinct from
+   * `thinking`, which is the polish/LLM gap AFTER a transcript exists. A take
+   * decoded in a single window never enters this phase: there is no progress to
+   * report and a flicker of 1/1 is worse than silence.
+   */
   | "transcribing" // OWNED BY Y3-C
   /** Transcript in hand, the polish sidecar is rewriting it. */
   | "polishing" // OWNED BY Y5-C
@@ -340,7 +461,7 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
     case "gated":
       return { tone: "warn", label: "Dictation locked", needsPermission: false, placeholder: true };
     case "transcribing":
-      return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: true };
+      return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: false };
     case "polishing":
       return { tone: "busy", label: "Polishing", needsPermission: false, placeholder: true };
     case "pasting":
@@ -452,7 +573,11 @@ export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
   // refusals — a muted capsule and a struck-through glyph, both CSS — so they
   // must repaint once and then let the loop settle, never hold a 60Hz rAF for
   // as long as a grant stays revoked.
-  const active = phase === "listening" || phase === "thinking" || phase === "done";
+  // Y3-C — `transcribing` joins the active set. It is the phase that fills the
+  // dead time after talking stops, and a determinate fill that does not repaint
+  // is the undifferentiated busy state this item removes.
+  const active = phase === "listening" || phase === "thinking" || phase === "done"
+    || phase === "transcribing";
   if (active || f.busyVisuals || f.level >= 0.02) {
     return { mode: "raf", intervalMs: f.reduceMotion ? REDUCED_FRAME_MS : 0 };
   }

@@ -613,3 +613,86 @@ body,
   stroke-linejoin: round;
 }
 .kami-blocked .slash { stroke: #f87171; }
+
+/* ── Y3-C — real progress through a chunked decode ────────────────────────
+ *
+ * Both pill styles state the SAME thing: a determinate fill at `--progress`
+ * (chunk / of) and the numeral in Departure Mono, the pixel voice every other
+ * count in Yap already wears. The fill has NO transition on purpose — it is a
+ * step function of chunks that actually completed, and easing it between events
+ * would reintroduce the smooth-but-lying bar this item exists to delete.
+ */
+@font-face {
+  font-family: "Departure Mono";
+  src: url("./assets/fonts/DepartureMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+.pill.transcribing .xscribe-track {
+  position: relative;
+  display: block;
+  width: 78px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+.pill.transcribing .xscribe-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: 2px;
+  background: hsl(38 92% 55%);
+  transform-origin: left center;
+  /* Stepwise by design — see the note above. */
+  transform: scaleX(var(--progress, 0));
+}
+.pill.transcribing .xscribe-count {
+  font-family: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.kami-progress {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 3;
+}
+.kami-progress-track {
+  position: relative;
+  display: block;
+  width: 62px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+.kami-progress-track > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: 2px;
+  background: hsl(38 92% 55%);
+  transform-origin: left center;
+  transform: scaleX(var(--progress, 0));
+}
+.kami-progress-count {
+  font-family: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: hsl(38 92% 62%);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* The dock edge decides where the fill can sit without leaving the window. */
+html[data-dock="left"] .kami-progress,
+html[data-dock="right"] .kami-progress { bottom: 4px; }

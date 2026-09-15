@@ -1193,14 +1193,61 @@ impl TranscriptionManager {
         )
     }
 
+    /// [`transcribe_take`](Self::transcribe_take) with Y3-C's progress observer
+    /// attached — the dictation path, and the only caller that has a pill in
+    /// front of it. The observer is driven from inside the window loop, so what
+    /// it reports is completed decodes and nothing else.
+    pub fn transcribe_take_observed(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+        observer: &mut dyn crate::transcribe_progress::TakeObserver,
+    ) -> Result<DictationTake, String> {
+        self.transcribe_take_with_observed(
+            samples_16k_mono,
+            language,
+            bias_prompt,
+            &DictationChunking::default(),
+            observer,
+        )
+    }
+
     /// [`transcribe_take`](Self::transcribe_take) with the chunking injected —
     /// the seam the Y3-B tests drive.
+    ///
+    /// Y3-C disposition: this and [`transcribe_take`](Self::transcribe_take)
+    /// have no production callers any more — dictation goes through
+    /// [`transcribe_take_observed`](Self::transcribe_take_observed). They are
+    /// kept deliberately as the observer-free entry points, because Y3-B's
+    /// chunking suite is the contract for the UNSPLIT path and threading a
+    /// `NoObserver` it does not care about through every one of its cases would
+    /// obscure what those tests actually assert.
     pub fn transcribe_take_with(
         &self,
         samples_16k_mono: Vec<f32>,
         language: Option<String>,
         bias_prompt: Option<String>,
         plan: &DictationChunking,
+    ) -> Result<DictationTake, String> {
+        self.transcribe_take_with_observed(
+            samples_16k_mono,
+            language,
+            bias_prompt,
+            plan,
+            &mut crate::transcribe_progress::NoObserver,
+        )
+    }
+
+    /// [`transcribe_take_with`](Self::transcribe_take_with) with Y3-C's
+    /// observer. This is the real body; every other entry point delegates here.
+    pub fn transcribe_take_with_observed(
+        &self,
+        samples_16k_mono: Vec<f32>,
+        language: Option<String>,
+        bias_prompt: Option<String>,
+        plan: &DictationChunking,
+        observer: &mut dyn crate::transcribe_progress::TakeObserver,
     ) -> Result<DictationTake, String> {
         let rate = plan.sample_rate.max(1) as f64;
         let total_seconds = samples_16k_mono.len() as f64 / rate;
@@ -1225,6 +1272,12 @@ impl TranscriptionManager {
                 .transcribe(samples_16k_mono, language, bias_prompt)
                 .map(DictationTake::whole);
         }
+
+        // Y3-C — the ONLY place a progress total is allowed to come from: the
+        // windows the planner actually produced, after both single-window early
+        // returns above have declined to reach this line. Nothing downstream
+        // may derive a total from the take's duration.
+        observer.planned(windows.len());
 
         // THE DEADLINES. `transcribe_timeout` is now spent PER WINDOW, so a
         // longer take simply gets more budget instead of hitting a fixed wall.
@@ -1260,6 +1313,10 @@ impl TranscriptionManager {
             match self.transcribe_timed_interactive(slice, language.clone(), bias_prompt.clone()) {
                 Ok(transcript) => {
                     decoded += 1;
+                    // Y3-C — reported here, mid-loop, from the window's REAL
+                    // text. A failed window deliberately reports nothing: the
+                    // bar must not advance for audio that did not decode.
+                    observer.chunk_done(&transcript.text);
                     outcomes.push(meeting_asr::ChunkOutcome::from_transcript(
                         window, transcript,
                     ));
