@@ -17,17 +17,26 @@ import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
 import {
   acceptProgress,
+  errorSentence,
+  phaseCopy,
+  phaseVisual,
   reduceGatePhase,
+  reduceTakePhase,
+  toChatTone,
+  winningPhase,
   CANCELLED_SETTLE_MS,
   GATED_SETTLE_MS,
+  PHASE_HOLD_MS,
+  PHASE_ID,
   type LivePhase,
+  type TakeStatus,
   type TranscribeProgress,
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
 import { type LicenseStatus } from "./license/status";
 import "./float.css";
 
-interface Settings { pillStyle?: string; pillPosition?: string }
+interface Settings { pillStyle?: string; pillPosition?: string; companionTone?: string }
 
 /**
  * PERM-C — the backend's refusal payload. `prompting` is true only while the
@@ -42,6 +51,21 @@ interface MicGateNotice { status?: string; prompting?: boolean }
  * is what puts the pill into the `transcribing` phase.
  */
 interface ProgressNotice { chunk?: number; of?: number; words_so_far?: number }
+
+/**
+ * Y5-C — the slice of `build_status` (lib.rs:873) the phase reducer reads. Every
+ * field already exists on the event the pill has always listened to; the phase
+ * is DERIVED from them, never announced by a new one.
+ */
+interface BackendStatus {
+  recording?: boolean;
+  busy?: boolean;
+  engine_loading?: boolean;
+  last_error?: string | null;
+}
+
+/** The `transcript` event, for its word count only (lib.rs:2509). */
+interface TranscriptNotice { wordCount?: number; word_count?: number }
 
 const DOCKS = ["bottom", "left", "right"];
 const dockOf = (s?: Settings) => {
@@ -59,6 +83,15 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(null);
+  // Y5-C — the TAKE's phase, beside `gate` and for the same reason: which stage
+  // of the pipeline is running is a property of the take, not of whichever
+  // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
+  // combined ONCE, below, with `winningPhase`.
+  const [take, setTake] = useState<LivePhase>("idle");
+  // The sentence `error` shows. Straight off the backend's own `last_error`
+  // (lib.rs:1460 / 2497) — never a code, and never invented here.
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [tone, setTone] = useState<string>("friendly");
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -159,6 +192,50 @@ function Float() {
     }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
+  // Y5-C — the take's phase, folded out of events the backend ALREADY emits.
+  // No new Rust and no new channel: `status` carries `recording`, `busy`,
+  // `engine_loading` and `last_error` (build_status, lib.rs:873), `transcript`
+  // fires only for a take that produced text (lib.rs:2509), and its ABSENCE is
+  // what makes YV16's no-speech exit visible as `empty`.
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const push = (u: () => void) => (dead ? u() : unsubs.push(u));
+    const onStatus = (st?: BackendStatus) => {
+      if (!st) return;
+      setLastError(st.last_error ?? null);
+      const status: TakeStatus = {
+        recording: !!st.recording,
+        busy: !!st.busy,
+        engineLoading: !!st.engine_loading,
+        lastError: st.last_error ?? null,
+      };
+      setTake((prev) => reduceTakePhase(prev, { type: "status", status }));
+    };
+    invoke<BackendStatus>("get_status").then(onStatus).catch(() => {});
+    listen<BackendStatus>("status", (e) => onStatus(e.payload)).then(push);
+    listen<TranscriptNotice>("transcript", (e) =>
+      setTake((prev) => reduceTakePhase(prev, {
+        type: "transcript",
+        words: e.payload?.wordCount ?? e.payload?.word_count ?? 1,
+      }))).then(push);
+    listen<unknown>("transcribe_progress", () =>
+      setTake((prev) => reduceTakePhase(prev, { type: "progress" }))).then(push);
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
+  // Y5-C — the DURATION POLICY, armed here because a pure module owns no
+  // timers. Every phase but the five that legitimately wait on the user or the
+  // OS has a deadline (`PHASE_HOLD_MS`), and the reducer refuses a stale timer
+  // that fires after the phase has already moved on.
+  useEffect(() => {
+    const hold = PHASE_HOLD_MS[take];
+    if (hold === null) return;
+    const t = window.setTimeout(
+      () => setTake((prev) => reduceTakePhase(prev, { type: "hold_elapsed", phase: take })),
+      hold,
+    );
+    return () => clearTimeout(t);
+  }, [take]);
   useEffect(() => {
     // A synchronous cleanup can run before the listen() promise resolves
     // (StrictMode double-mount). A `dead` flag unsubscribes a listener that
@@ -170,6 +247,9 @@ function Float() {
     const apply = (s?: Settings) => {
       setStyle(s?.pillStyle || "classic");
       document.documentElement.dataset.dock = dockOf(s);
+      // Y5-C — the tone decides WHICH line every phase says, so the shell has
+      // to know it: the phase strip is drawn once, above both capsules.
+      setTone(s?.companionTone || "friendly");
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -190,9 +270,47 @@ function Float() {
     document.documentElement.dataset.license = lic.show ? lic.tone : "";
     document.documentElement.dataset.licenseAction = lic.show ? lic.action : "";
   }, [lic.show, lic.tone, lic.action]);
-  return style === "yappy"
-    ? <YappyPill gate={gate} progress={progress} license={lic} />
-    : <ClassicPill gate={gate} progress={progress} license={lic} />;
+  // Y5-C — ONE phase, decided once. `gate` (permission/license) outranks the
+  // take, exactly as PHASE_PRECEDENCE says and exactly as `start_recording`
+  // does in the backend: the pill is never allowed to disagree about the reason
+  // a press did nothing.
+  const phase = winningPhase(gate, take);
+  const chatTone = toChatTone(tone);
+  useEffect(() => {
+    // The phase rides on <html> beside the dock and the license, for the same
+    // reason: it drives CSS and must not remount the capsule. It is also the
+    // only handle a screenshot or a browser test has on "which state is this".
+    document.documentElement.dataset.phase = PHASE_ID[phase];
+    document.documentElement.dataset.tone = chatTone;
+  }, [phase, chatTone]);
+  const pill = style === "yappy"
+    ? <YappyPill gate={phase} progress={progress} license={lic} />
+    : <ClassicPill gate={phase} progress={progress} license={lic} />;
+  // Y5-C — the phase line is placed ONCE, by the SHELL, at all three docks
+  // (OWNER DECISION 2026-09-13). It is character-agnostic TEXT; what is
+  // per-character is the ART, and that stays inside each capsule. Placed by
+  // `.phase-strip` in float.css off `<html data-dock>`, so "bottom, left,
+  // right" is three CSS rules and not three components — and not two copies.
+  //
+  // `error` is the one phase whose line is not a preset: it says WHAT went
+  // wrong, in one line, off the take's own `last_error`.
+  const line = (phase === "error" ? errorSentence(lastError) : null)
+    ?? phaseCopy(phase, chatTone);
+  return (
+    <>
+      {pill}
+      <div
+        className="phase-strip"
+        data-phase={PHASE_ID[phase]}
+        data-tone={chatTone}
+        role="status"
+        aria-live="polite"
+        aria-label={phaseVisual(phase).label}
+      >
+        {line}
+      </div>
+    </>
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

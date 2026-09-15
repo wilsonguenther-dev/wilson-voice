@@ -12,10 +12,19 @@ import {
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
   speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
   phaseRank, winningPhase,
-  AMBIENT_FRAME_MS, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS, IDLE_FRAME_MS, LIVE_TIERS,
-  MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_PRECEDENCE,
-  type ChatTone, type LiveFrame, type LivePhase, type TranscribeProgress,
+  errorSentence, fitsSideDockStrip, isLegalTransition, phaseCopy, phaseHoldMs, reduceTakePhase,
+  AMBIENT_FRAME_MS, ALL_LIVE_PHASES, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS,
+  IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_COPY, PHASE_HOLD_MS,
+  PHASE_ID, PHASE_NEXT, PHASE_PRECEDENCE, SHIPPED_CHARACTERS, SIDE_DOCK_TEXT_PX,
+  UNBOUNDED_PHASES,
+  type ChatTone, type LiveFrame, type LivePhase, type TakeStatus, type TranscribeProgress,
 } from "./live";
+// Y5-C — the per-character art tables live in the components that draw them
+// (Y5-K lifts them into a registry). Importing them here is what makes
+// "adding a creature adds a ROW" true: a new face with a missing phase fails
+// this file, not a hand-written test per character.
+import { CLASSIC_PHASE_ART } from "./ClassicPill";
+import { YAPPY_PHASE_ART } from "./YappyPill";
 
 /** The pill redraws on rAF; `audio_level` lands at HUD_FPS underneath it. */
 const FRAME = 1 / 60;
@@ -309,11 +318,12 @@ describe("frame policy — parking (YV81)", () => {
 });
 
 /** Every variant of the union PERM-C owns — kept literal so a new one is a type error here too. */
-const ALL_PHASES: LivePhase[] = [
-  "idle", "listening", "thinking", "done", "sleepy",
-  "blocked", "waiting", "gated", "transcribing", "polishing",
-  "pasting", "error", "model-loading", "empty",
-];
+// Y5-C — was a SECOND, hand-typed copy of the union, and it had already
+// drifted: Y3-D added `cancelled` to `LivePhase` and not to this list, so that
+// phase was silently exempt from "every declared phase has a treatment". The
+// canonical list is exported from live.ts now; this alias keeps the existing
+// assertions reading the way they did.
+const ALL_PHASES: readonly LivePhase[] = ALL_LIVE_PHASES;
 
 // ── PERM-C — the microphone refusal, as a state machine ─────────────────────
 // The defect: a denied grant still opened the capture stream (a denied stream
@@ -372,9 +382,15 @@ describe("PERM-C — the permission phase", () => {
     // count is two lower than PERM-C landed it at. Each later item that renders
     // its variant drops this by one more; the point of the assertion is that the
     // union is not GROWING.
-    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(5);
+    // Y5-C renders the LAST five placeholders, so the count is now zero and
+    // stays zero: the union is complete and nothing may be declared without a
+    // treatment again.
+    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder)).toEqual([]);
     expect(phaseVisual("transcribing").placeholder, "Y3-C renders it").toBe(false);
     expect(phaseVisual("gated").placeholder, "Y2-C renders it").toBe(false);
+    for (const p of ["polishing", "pasting", "error", "model-loading", "empty"] as LivePhase[]) {
+      expect(phaseVisual(p).placeholder, `Y5-C renders ${p}`).toBe(false);
+    }
   });
 
   it("a blocked pill never holds a 60Hz rAF open", () => {
@@ -606,5 +622,241 @@ describe("Y2-C — the license gate on the pill", () => {
     // not an error tone, and history/search/export/settings keep working past
     // the trial (KEEP_FOREVER_LINE). The pill must not imply otherwise.
     expect(phaseVisual("gated").needsPermission).toBe(false);
+  });
+});
+
+
+/**
+ * Y5-C — THE COMPLETE PHASE VOCABULARY.
+ *
+ * The union has been complete since PERM-C; what was missing is everything
+ * that makes a variant a STATE: a duration, a successor, copy in every tone,
+ * art in every character, and a place to be drawn on all three docks. Every
+ * one of those is a table here, because the failure mode is not a crash — it
+ * is a pill that is blank, or frozen, or lying, on someone's screen.
+ *
+ * The defect in Wilson's words: "fill the dead time after talking stops and
+ * before text appears."
+ */
+describe("Y5-C — the phase vocabulary", () => {
+  const TONES: ChatTone[] = ["rude", "friendly", "rose"];
+  const st = (o: Partial<TakeStatus>): TakeStatus =>
+    ({ recording: false, busy: false, ...o });
+
+  it("the_transition_table_is_total_and_has_no_unreachable_phase", () => {
+    // (a) every phase has a successor set, and every successor is a real phase.
+    for (const p of ALL_LIVE_PHASES) {
+      const next = PHASE_NEXT[p];
+      expect(Array.isArray(next), `${p} has no successor set`).toBe(true);
+      expect(next.length, `${p} is a dead end`).toBeGreaterThan(0);
+      for (const n of next) expect(ALL_LIVE_PHASES, `${p} -> ${n}`).toContain(n);
+      expect(new Set(next).size, `${p} lists a successor twice`).toBe(next.length);
+      expect(next, `${p} lists itself`).not.toContain(p);
+    }
+    // (b) no phase is unreachable: walk the graph from `idle` and reach all.
+    const seen = new Set<LivePhase>(["idle"]);
+    const queue: LivePhase[] = ["idle"];
+    while (queue.length) {
+      for (const n of PHASE_NEXT[queue.pop()!]) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+    }
+    expect([...ALL_LIVE_PHASES].filter((p) => !seen.has(p)), "unreachable").toEqual([]);
+    // (c) and every phase has a way BACK to rest, or it is a pill you have to
+    //     quit the app to clear.
+    for (const p of ALL_LIVE_PHASES) {
+      const back = new Set<LivePhase>([p]);
+      const q: LivePhase[] = [p];
+      while (q.length) {
+        for (const n of PHASE_NEXT[q.pop()!]) if (!back.has(n)) { back.add(n); q.push(n); }
+      }
+      expect(back.has("idle"), `${p} never reaches idle again`).toBe(true);
+    }
+  });
+
+  it("no_path_from_listening_to_done_without_an_intermediate_phase", () => {
+    // The gap Wilson named. Releasing the hotkey CANNOT put a check mark on
+    // the pill: something is always happening between "talking stopped" and
+    // "text appeared", and the pill has to say which thing.
+    expect(PHASE_NEXT.listening).not.toContain("done");
+    expect(isLegalTransition("listening", "done")).toBe(false);
+    // …and the reducer refuses to produce it, which is the part that matters:
+    // a table nothing obeys is a comment. `busy` has not been set yet here —
+    // the status events race, and this exact race is what used to show a check
+    // mark over a take that had not been decoded.
+    const afterHold = reduceTakePhase("listening", { type: "status", status: st({}) });
+    expect(afterHold).not.toBe("done");
+    expect(afterHold).toBe("thinking");
+    // Nor by the other road: a transcript cannot arrive while still listening
+    // without the intermediate phase the reducer just inserted.
+    let ph: LivePhase = "listening";
+    const trace: LivePhase[] = [ph];
+    for (const ev of [
+      { type: "status" as const, status: st({ busy: true, engineLoading: true }) },
+      { type: "progress" as const },
+      { type: "transcript" as const, words: 42 },
+    ]) { ph = reduceTakePhase(ph, ev); trace.push(ph); }
+    expect(trace).toEqual(["listening", "model-loading", "transcribing", "done"]);
+    // Every step of that real trace is a legal transition.
+    for (let i = 1; i < trace.length; i++) {
+      expect(isLegalTransition(trace[i - 1], trace[i]), `${trace[i - 1]} -> ${trace[i]}`).toBe(true);
+    }
+  });
+
+  it("every_phase_has_copy_in_every_tone", () => {
+    // The tone presets are rude|friendly|rose and `friendly` is the default
+    // (companion_tone, lib.rs:412). A phase with no line in ONE tone is a
+    // blank pill for whoever chose that tone.
+    for (const p of ALL_LIVE_PHASES) {
+      for (const tone of TONES) {
+        const line = phaseCopy(p, tone);
+        expect(typeof line, `${p}/${tone}`).toBe("string");
+        expect(line.trim().length, `${p} has no ${tone} line`).toBeGreaterThan(0);
+        expect(line, `${p}/${tone} is a placeholder`).not.toMatch(/^(TODO|TBD|\?+)$/i);
+      }
+      // Three tones means three DIFFERENT voices, not one string copied.
+      expect(new Set(TONES.map((t) => phaseCopy(p, t))).size, `${p} reuses one line`).toBe(3);
+    }
+    expect(Object.keys(PHASE_COPY).sort()).toEqual([...ALL_LIVE_PHASES].sort());
+  });
+
+  it("every_phase_renders_within_the_side_dock_strip", () => {
+    // On a left/right dock the capsule hugs the screen edge and its max-width
+    // is the hard budget for anything drawn inside it, so a phrase that is
+    // comfortable on a bottom dock is the phrase that clips on a side one
+    // (`white-space: nowrap`). This is why it is a test and not a look.
+    for (const p of ALL_LIVE_PHASES) {
+      for (const tone of TONES) {
+        const line = phaseCopy(p, tone);
+        expect(fitsSideDockStrip(line), `${p}/${tone} overflows the strip: "${line}"`).toBe(true);
+      }
+    }
+    // And the one line that is NOT a preset — a backend error string — is cut
+    // to the same budget rather than clipped mid-word.
+    const long = "Error: accessibility permission was revoked so the paste receipt never came back from the focused application";
+    const cut = errorSentence(long)!;
+    expect(fitsSideDockStrip(cut), cut).toBe(true);
+    expect(cut.startsWith("accessibility"), "the word `Error:` is chrome, not the reason").toBe(true);
+    expect(cut.endsWith("\u2026")).toBe(true);
+    // A short one is passed through untouched; nothing is a code.
+    expect(errorSentence("Clipboard was empty")).toBe("Clipboard was empty");
+    expect(errorSentence(null)).toBe(null);
+    expect(errorSentence("   ")).toBe(null);
+    // The CSS max-width and the TS budget have to agree or one of them lies.
+    expect(SIDE_DOCK_TEXT_PX).toBe(192);
+  });
+
+  it("every_shipped_character_has_copy_and_art_for_every_phase", () => {
+    // Driven off the list of characters that SHIP, so adding a creature adds a
+    // row and not a test file — the fixture matrix Y5-K formalises.
+    const ART = { classic: CLASSIC_PHASE_ART, yappy: YAPPY_PHASE_ART } as const;
+    expect(Object.keys(ART).sort()).toEqual([...SHIPPED_CHARACTERS].sort());
+    for (const character of SHIPPED_CHARACTERS) {
+      const table = ART[character];
+      expect(Object.keys(table).sort(), `${character} art table`).toEqual([...ALL_LIVE_PHASES].sort());
+      for (const p of ALL_LIVE_PHASES) {
+        const art = table[p];
+        expect(art?.sprite?.length, `${character} has no sprite for ${p}`).toBeGreaterThan(0);
+        expect(["still", "breathe", "work", "pulse", "shake"], `${character}/${p} motion`)
+          .toContain(art.motion);
+        // The COPY is shared — that is the point of putting it in live.ts —
+        // so every character inherits a line for every phase in every tone.
+        for (const tone of TONES) expect(phaseCopy(p, tone).length).toBeGreaterThan(0);
+      }
+      // A settled state must not be given a working animation, or the pill
+      // looks busy while nothing is happening.
+      for (const p of ["done", "empty", "cancelled", "blocked", "gated"] as LivePhase[]) {
+        expect(table[p].motion, `${character} animates ${p} like work`).not.toBe("work");
+      }
+    }
+  });
+
+  it("precedence: blocked > gated > error > cancelled > the happy path", () => {
+    const at = (p: LivePhase) => PHASE_PRECEDENCE.indexOf(p);
+    expect(at("blocked")).toBeLessThan(at("gated"));
+    expect(at("gated")).toBeLessThan(at("error"));
+    expect(at("error")).toBeLessThan(at("cancelled"));
+    expect(at("cancelled")).toBeLessThan(at("listening"));
+    for (const happy of ["listening", "model-loading", "transcribing", "polishing", "pasting", "thinking", "done"] as LivePhase[]) {
+      expect(at("cancelled"), `cancelled must outrank ${happy}`).toBeLessThan(at(happy));
+      expect(winningPhase("blocked", happy)).toBe("blocked");
+      expect(winningPhase(happy, "error")).toBe("error");
+    }
+    // `idle`/`sleepy` are unranked: the absence of a phase never wins a tie.
+    expect(phaseRank("idle")).toBeGreaterThanOrEqual(PHASE_PRECEDENCE.length);
+    expect(winningPhase("idle", "polishing")).toBe("polishing");
+  });
+
+  it("only the phases that wait on the user or the OS may hold forever", () => {
+    // Everything Yap is DOING either finishes or has failed, so everything
+    // else has a deadline and the table says it.
+    expect([...UNBOUNDED_PHASES].sort())
+      .toEqual(["blocked", "idle", "listening", "sleepy", "waiting"]);
+    for (const p of ALL_LIVE_PHASES) {
+      const hold = phaseHoldMs(p);
+      if (hold === null) continue;
+      expect(hold, `${p} holds for no time at all`).toBeGreaterThan(0);
+      expect(hold, `${p} holds so long it reads as stuck`).toBeLessThanOrEqual(30_000);
+    }
+    // The polish stage must outlive the sidecar it is narrating, or the pill
+    // paints a failure over work that is still running (polish.rs:59 = 1200ms).
+    expect(phaseHoldMs("polishing")!).toBeGreaterThan(1200);
+    expect(phaseHoldMs("cancelled")).toBe(CANCELLED_SETTLE_MS);
+    expect(phaseHoldMs("gated")).toBe(GATED_SETTLE_MS);
+    expect(PHASE_HOLD_MS.done).toBeLessThan(PHASE_HOLD_MS.error!);
+  });
+
+  it("a hold that runs out settles the pill instead of freezing it", () => {
+    // A WORKING phase that ran out of time has failed; an acknowledgement that
+    // ran out of time has simply been read.
+    expect(reduceTakePhase("polishing", { type: "hold_elapsed", phase: "polishing" })).toBe("error");
+    expect(reduceTakePhase("done", { type: "hold_elapsed", phase: "done" })).toBe("idle");
+    // A STALE timer may never move a phase the pill has already left — the
+    // flashing-refusal bug in another costume.
+    expect(reduceTakePhase("listening", { type: "hold_elapsed", phase: "done" })).toBe("listening");
+    expect(reduceTakePhase("listening", { type: "hold_elapsed", phase: "listening" })).toBe("listening");
+  });
+
+  it("the no-speech exit is visible as `empty` rather than a dead hotkey", () => {
+    // YV16: the hallucination / no-speech gate refuses to paste garbage and
+    // emits NO `transcript` at all (lib.rs:2026), so `busy` simply goes false
+    // with no error. That used to be silence — a user pressing a hotkey and
+    // getting nothing, with no way to tell it from a crash.
+    let ph = reduceTakePhase("listening", { type: "status", status: st({ busy: true }) });
+    expect(ph).toBe("thinking");
+    ph = reduceTakePhase(ph, { type: "status", status: st({}) });
+    expect(ph).toBe("empty");
+    // A take that DID produce text goes to `done`, never `empty`.
+    expect(reduceTakePhase("thinking", { type: "transcript", words: 7 })).toBe("done");
+    // And a failure is a failure, not an absence.
+    expect(reduceTakePhase("thinking", { type: "status", status: st({ lastError: "no mic" }) }))
+      .toBe("error");
+  });
+
+  it("the engine warming up is its own phase, not an indefinite wait", () => {
+    // YV80's lazy arm (lib.rs:1156-1158): the first take of a session loads the
+    // model while capture is already live. Saying "Transcribing" there is a lie
+    // about which multi-second thing is happening.
+    const ph = reduceTakePhase("listening", {
+      type: "status", status: st({ busy: true, engineLoading: true }),
+    });
+    expect(ph).toBe("model-loading");
+    expect(PHASE_ID[ph]).toBe("model_loading");
+    expect(phaseHoldMs(ph)).not.toBe(null);
+    // …and it keeps the canvas alive, because something is moving in it.
+    expect(framePlan(ph, { level: 0, busyVisuals: false, reduceMotion: false, settled: true }).mode)
+      .toBe("raf");
+    // while a settled failure does NOT hold a 60Hz loop open for four seconds.
+    expect(framePlan("error", { level: 0, busyVisuals: false, reduceMotion: false, settled: true }).mode)
+      .not.toBe("raf");
+    expect(framePlan("empty", { level: 0, busyVisuals: false, reduceMotion: false, settled: true }).mode)
+      .not.toBe("raf");
+  });
+
+  it("the canonical phase ids are snake_case, unique, and cover the union", () => {
+    // `<html data-phase>` is the CSS hook and the only handle a screenshot has.
+    expect(Object.keys(PHASE_ID).sort()).toEqual([...ALL_LIVE_PHASES].sort());
+    const ids = ALL_LIVE_PHASES.map((p) => PHASE_ID[p]);
+    expect(new Set(ids).size, "two phases share an id").toBe(ids.length);
+    for (const id of ids) expect(id, id).toMatch(/^[a-z][a-z_]*$/);
+    expect(PHASE_ID["model-loading"]).toBe("model_loading");
   });
 });
