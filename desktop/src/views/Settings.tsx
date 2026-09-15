@@ -8,9 +8,27 @@ import Privacy from "./settings/Privacy";
 import License from "./settings/License";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { ErrorState, LoadingState } from "../ViewStates";
 
 export default function Settings() {
-  const { settingsTab, setSettingsTab } = useAppCtx();
+  const { bootError, booting, refreshAll, settings, settingsTab, setSettingsTab } =
+    useAppCtx();
+  // PANEL 2026-09-12 — Settings has no empty state either: there is nothing it
+  // could be empty OF. Loading + error, and its settled state is the panels.
+  const state = viewState(settings, booting, bootError);
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="settings"
+        view="settings"
+        error={bootError}
+        actionLabel="Read settings again"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="settings" noun="settings" rows={5} onRetry={() => void refreshAll()} />;
   return (
             <div className="settings">
               {/* YV27 — segmented sub-nav: one panel at a time, no infinite scroll. */}

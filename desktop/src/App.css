@@ -2915,3 +2915,146 @@ button.primary.big {
 .linklike:hover {
   opacity: 0.75;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Y5-B — empty, loading and error states.
+
+   Seven views used to share one answer to "there is nothing here": render
+   nothing. Three of them literally returned null. These are the three states
+   that replaced that, and they are deliberately NOT one generic block —
+   `.view-state-glyph` holds a different drawing per view, and the copy is
+   written per view, because generic is the thing this item is fixing.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.view-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  padding: 56px 32px;
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  min-height: 260px;
+}
+
+.view-state h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.view-state p {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.view-state-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.view-state-glyph {
+  width: 72px;
+  height: 48px;
+  color: var(--accent);
+  opacity: 0.85;
+  margin-bottom: 2px;
+}
+
+.view-state-glyph svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────
+   A determinate label where the count is knowable, a calm one where it is
+   not — and a DEADLINE. The bars stop animating at 8s and the copy admits
+   it, because a skeleton that pulses forever is how nineteen Drivia pages
+   sat "still loading at 15s".                                             */
+
+.view-loading {
+  align-items: stretch;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 28px 24px;
+}
+
+.skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.skeleton-row {
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  animation: yap-skeleton 1.6s ease-in-out infinite;
+}
+
+.skeleton-row:nth-child(2) { animation-delay: 0.18s; }
+.skeleton-row:nth-child(3) { animation-delay: 0.36s; }
+.skeleton-row:nth-child(4) { animation-delay: 0.54s; }
+.skeleton-row:nth-child(5) { animation-delay: 0.72s; }
+
+@keyframes yap-skeleton {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.9; }
+}
+
+/* The deadline. Nothing pulses after this. */
+.view-loading.stalled .skeleton-row {
+  animation: none;
+  opacity: 0.35;
+}
+
+.view-loading .view-state-label {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: none;
+}
+
+.view-loading.stalled .view-state-label {
+  color: var(--warn-ink, var(--text));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row { animation: none; }
+}
+
+/* ── Error ───────────────────────────────────────────────────────────────
+   The headline is what failed in the user's terms. The raw rejection is
+   still on screen — small, last, and never the first thing read.          */
+
+.view-error {
+  border-color: var(--danger);
+  background: var(--bg-card);
+}
+
+.view-error h3 {
+  color: var(--danger-ink, var(--danger));
+}
+
+.view-state-detail {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.7;
+  max-width: 60ch;
+  word-break: break-word;
+}

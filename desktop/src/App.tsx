@@ -22,7 +22,7 @@ export default function App() {
   const {
     bootError, buyPrompt, buyYap, closeConsentNotice, consentOpen, copyAgainId,
     copyText, dictionary, finishOnboarding, flash,
-    history, insights, installUpdateNow, installedVersion, installing, 
+    history, installUpdateNow, installedVersion, installing, 
     licenseChip, meetings, modelSetup, nav, needsPerms, openLicenseTab,
     perms, pillClass, refreshAll, retryFailed, retryId, retrying,
     scratch, sendSupportBundle, setBuyPrompt, setCopyAgainId, setNav, setSettingsTab,
@@ -295,7 +295,12 @@ export default function App() {
           {nav === "meetings" && <Meetings />}
 
 
-          {nav === "insights" && insights && <Insights />}
+          {/* Y5-B — was `nav === "insights" && insights && <Insights />`. The
+              `insights &&` guard is exactly the blank page: on a fresh install
+              insights is null, so the shell rendered the Insights HEADING and
+              then nothing at all. The view now owns its own loading, empty and
+              error states, so the shell must let it render to show them. */}
+          {nav === "insights" && <Insights />}
 
           {nav === "dictionary" && <Dictionary />}
 

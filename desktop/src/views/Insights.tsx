@@ -1,13 +1,48 @@
 import { heatLevel, HEAT_FILL, formatMonth, monthName, formatDay, formatDayShort } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { EmptyState, ErrorState, LoadingState, SeriesGlyph } from "../ViewStates";
 
 export default function Insights() {
   const {
-    daily30, hasActivity, heat, heatSummary, insights,
+    bootError, booting, daily30, hasActivity, heat, heatSummary, insights, refreshAll, setNav, toggleRecord,
     maxApp, maxDaily30, maxWeek, monthlySeries, monthlyView,
     settings, status,
   } = useAppCtx();
-  if (!insights) return null;
+  // Y5-B — the second case the item names by hand. App.tsx rendered
+  // `nav === "insights" && insights && <Insights/>` and this module opened with
+  // `if (!insights) return null`, so zero takes was a heading over nothing.
+  const state = viewState(
+    insights === null ? null : insights.totalSessions,
+    booting,
+    bootError,
+  );
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="insights"
+        view="insights"
+        error={bootError}
+        actionLabel="Read stats again"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="insights" noun="stats" rows={4} onRetry={() => void refreshAll()} />;
+  if (state === "empty" || !insights)
+    return (
+      <EmptyState
+        data-empty-state="insights"
+        glyph={<SeriesGlyph />}
+        title="No takes to measure yet"
+        body="Words, speed, streaks and a year of activity chart here once you have dictated something. One take is enough to start."
+        actionLabel="Hold fn and say something"
+        onAction={() => {
+          setNav("home");
+          toggleRecord();
+        }}
+      />
+    );
   return (
             <div className="insights">
               <div className="stats-row">
@@ -208,8 +243,8 @@ export default function Insights() {
                   </svg>
                 ) : (
                   <p className="muted chart-empty">
-                    No dictation yet. Hold your hotkey and start talking — your
-                    daily words will chart here.
+                    Nothing in the last 30 days. Your next take starts the chart
+                    again — today's bar appears as soon as you stop talking.
                   </p>
                 )}
               </div>
