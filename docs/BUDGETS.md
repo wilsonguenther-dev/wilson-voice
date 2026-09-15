@@ -156,3 +156,130 @@ Two consumers of this row:
 
 Caveat, stated rather than buried: this is a single measurement on one machine, on a debug build,
 with the model load folded in. It bounds the order of magnitude — it is not a distribution.
+
+---
+
+## long_take_budget (Y3-G)
+
+**Measured on:** Apple M4 Pro, 24 GB unified memory, macOS 26.6.2, `aarch64-apple-darwin`,
+`cargo test --features custom-protocol` (dev profile for the app crate, release for the sidecars),
+on AC power, no other load. **Measured at:** 2026-09-15.
+**Falsifier:** `desktop/src-tauri/tests/long_take_budget.rs`. Every number below is a named
+constant in that file; the two that need model weights SKIP with a line that names the missing
+path rather than passing quietly.
+
+```
+cd desktop/src-tauri
+cargo test --features custom-protocol --test long_take_budget -- --nocapture
+```
+
+| budget | measured | ceiling | shape |
+|---|---|---|---|
+| `press_to_capture_start`, spill-writer overhead | **0 ms** (arm p50 48 µs with spill, 0 µs without, n=21) | 25 ms | absolute |
+| `chunk_decode_wall_per_audio_second` | **10.3 ms/s chunked vs 11.4 ms/s single-window — ratio 0.90** (0.83 and 0.68 on earlier runs of the same command; the two arms move together, which is why this is a ratio) | 1.60× | ratio, same fixture, same run |
+| `progress_events_per_minute_of_audio` | **2.40/min** — Y3-C's `TRANSCRIBE_PROGRESS_EVENT`, driven for real at its worst legal window (25 s) | 60/min | ceiling, measured by running the emitter |
+| `resident_bytes_after_a_long_take_return_to_baseline` | **0 bytes** growth after a 20-minute take (peak 76 800 000 B live during it) | 1 MiB | exact, thread-local meter |
+| `peak_resident_bytes_with_asr_and_polish_loaded` | **1 882 420 768 B (1 795.2 MiB)** — ASR delta 765 100 032 B + polish weights floor 1 117 320 736 B | 2 621 440 000 B (2.44 GiB) | ceiling, floor machine |
+| `no_new_polling_timer_was_introduced` | census below, exact match required | allowlist | census |
+
+### The floor machine is named, because a budget without one is a wish
+
+`Y6-E` is the release-engineering item that ratifies it; until it lands, `FLOOR_MACHINE_BYTES` in
+the test is the single place the number is written down: a **fanless 8 GB M1 Air**, which is
+already what `transcription.rs:582`, `tests/meeting_capture_memory.rs` and
+`tests/meeting_no_model_resident.rs` name as the target machine. The footprint ceiling is set at
+2.44 GiB — under a third of that machine's RAM, and ~45% headroom over the 1 795.2 MiB measured
+here. `docs/BUDGETS.md`'s `memory_ceiling` section records the *live-child* composition
+(2 241 462 272 B) measured by `polish_envelope.rs`; Y3-G's test uses the polish weights **file
+size** as the child's floor so it does not have to spawn a sidecar, which is why its number is
+lower. Both are under the ceiling.
+
+### The progress ceiling is measured by running the emitter, not by grepping for a throttle
+
+This budget was wrong once, in the way that matters most, and the correction is the point of
+keeping it written down. The first version scanned the three Y3 take-path modules for
+`.emit("…progress…")` and treated the absence of a `const …PROGRESS…_MS` as "unthrottled". It
+reported `sites=[]` and passed — on a tree where `Y3-C` had **already landed a live progress
+stream**. Two independent blind spots produced that green:
+
+* **Scope.** `Y3-C`'s emitter lives in `src/transcribe_progress.rs`, a module that did not exist
+  when those three files were listed. The sweep now walks every `.rs` in `src/` (52 files) and
+  asserts it swept more than ten, so a sweep that found the wrong directory cannot report clean.
+* **Pattern.** The shipped emitter names its event with a `const` — `TRANSCRIBE_PROGRESS_EVENT` —
+  and spans three lines. A scanner looking for a quoted string on one line cannot see it. The
+  scanner now reads the first argument of any `.emit`/`.emit_to` call, literal or ident, and
+  proves on synthetic bait that it catches **both** shapes and still refuses the two download
+  streams (`MODEL_DOWNLOAD_PROGRESS_EVENT`, `POLISH_DOWNLOAD_PROGRESS_EVENT`).
+
+Widening the scan alone would have been the opposite error. `Y3-C` has **no timer at all** — it
+emits once per *completed decode window* — so a test demanding a millisecond throttle constant
+would have failed a correct implementation for the wrong reason. The rate is therefore no longer
+inferred from source at all: the test constructs the real `ChunkProgress` with a counting
+`ProgressSink` and **counts the events a twenty-minute take actually puts on the wire**, at the
+narrowest window `ChunkConfig` may legally emit (`min_seconds` = 25 s). That is 48 events over
+1 200 s of audio = **2.40/min**, against a ceiling of 60.
+
+The instrument falsifies itself before it is believed: the same emitter driven at a quarter of the
+ceiling's interval measures **240/min**, so a green result is a measurement and not a silence. Two
+negative controls were run against the committed file — dropping the ceiling to 2 fails with
+`fires 2.4 times per minute … ceiling is 2`, and adding one unaccounted
+`app.emit("dictation_progress", …)` to `lib.rs` fails the allowlist with
+`the set of take-path progress emitters changed`.
+
+The allowlist is the standing guard: `ACCOUNTED_PROGRESS_EMITTERS` names every take-path progress
+stream in the tree and what bounds its cadence. A second one cannot be added without saying so
+here.
+
+### Why the decode budget is a ratio and not a millisecond
+
+A wall-clock decode budget measures the runner's GPU, so it would be a different number on every
+machine and a red gate on the slowest one. The test decodes the committed
+`tests/fixtures/quick-brown-fox-16k.wav`, tiled to 60 s, twice in the same run on the same engine:
+once as one window, once as four 15 s windows. Only the ratio is asserted. The first decode after
+a load is thrown away, because charging the graph build to whichever arm ran first would make the
+ratio an artefact of test ordering.
+
+Chunking measured **faster** than single-window here (0.83), which is not a paradox: the engine's
+cost is superlinear in window length on this model, so four short decodes beat one long one. The
+ceiling is still 1.60 — it exists to catch a chunker that halves throughput, not to reward this
+particular curve.
+
+### Process RSS cannot be asserted inside a shared test binary
+
+The memory test was first written against process RSS and it **failed red on the first run**,
+reporting a 1 824 374 784 B "leak" across one twenty-minute take. There was no leak:
+`cargo test` runs a binary's tests concurrently in one process, and
+`chunk_decode_wall_per_audio_second` had a ~900 MB ASR engine resident at the same moment. That is
+the same defect `tests/meeting_capture_rt_safety.rs` hit with a process-global allocation counter,
+and it has the same fix — the meter is now a **thread-local metering `GlobalAlloc`**, armed for
+exactly the take. It reports 0 bytes of growth against a 76 800 000 B peak during the take, and it
+proves it saw the take before it reports a verdict. RSS is still printed, labelled
+INFORMATIONAL, and asserted on nothing. The two engine-loading tests additionally serialize on one
+mutex, because two engines resident at once is a state no user's machine is ever in.
+
+### The YV81 polling-timer census
+
+`no_new_polling_timer_was_introduced` counts every sub-1000 ms `Duration` **literal** in the three
+modules Y3 touches and compares the counts, exactly, against an allowlist. A second is the line
+because YV81's finding was sub-second wakeups; a 5 s or 60 s deadline is supervision, a 5 ms one in
+a loop is a busy-wait wearing a `Duration`'s clothes. As measured on
+`344a335`:
+
+```
+src/record.rs        {1:1, 2:1, 5:3, 10:3, 60:2, 300:1, 500:4}
+src/transcription.rs {2:2, 5:2, 10:2, 20:2, 50:3, 80:1, 120:1, 150:1, 200:1, 300:1, 400:3}
+src/lib.rs           {5:2, 10:1, 50:1, 100:1, 150:2, 400:1, 500:1}
+```
+
+**Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
+variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
+census against an allowlist and not a proof of absence — it makes the cheap regression (a
+`from_millis(16)` dropped into a decode loop) impossible to land silently, and adding a row is a
+deliberate act that has to be written down here.
+
+### Every scanner in this file falsifies itself first
+
+The emitter scan, the throttle scan and the timer census each run over a synthetic source that
+contains the shape they are meant to catch, and assert they catch it, before they run over the
+real tree. A grep proving absence with the wrong pattern is a green test that guards nothing;
+these three prove the pattern can match the shape feared, not just the shape remembered.
