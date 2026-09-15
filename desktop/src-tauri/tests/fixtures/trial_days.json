@@ -1,0 +1,115 @@
+{
+  "day_ms": 86400000,
+  "expires_at_ms": 1761209600000,
+  "generated_by": "desktop/src-tauri/tests/trial_state_machine.rs :: each_day_reports_one_fewer_and_zero_is_the_last_day",
+  "rows": [
+    {
+      "days_left": 14,
+      "elapsed_days": 0,
+      "elapsed_ms": 0,
+      "expired": false,
+      "label": "14 days left"
+    },
+    {
+      "days_left": 13,
+      "elapsed_days": 1,
+      "elapsed_ms": 86400000,
+      "expired": false,
+      "label": "13 days left"
+    },
+    {
+      "days_left": 12,
+      "elapsed_days": 2,
+      "elapsed_ms": 172800000,
+      "expired": false,
+      "label": "12 days left"
+    },
+    {
+      "days_left": 11,
+      "elapsed_days": 3,
+      "elapsed_ms": 259200000,
+      "expired": false,
+      "label": "11 days left"
+    },
+    {
+      "days_left": 10,
+      "elapsed_days": 4,
+      "elapsed_ms": 345600000,
+      "expired": false,
+      "label": "10 days left"
+    },
+    {
+      "days_left": 9,
+      "elapsed_days": 5,
+      "elapsed_ms": 432000000,
+      "expired": false,
+      "label": "9 days left"
+    },
+    {
+      "days_left": 8,
+      "elapsed_days": 6,
+      "elapsed_ms": 518400000,
+      "expired": false,
+      "label": "8 days left"
+    },
+    {
+      "days_left": 7,
+      "elapsed_days": 7,
+      "elapsed_ms": 604800000,
+      "expired": false,
+      "label": "7 days left"
+    },
+    {
+      "days_left": 6,
+      "elapsed_days": 8,
+      "elapsed_ms": 691200000,
+      "expired": false,
+      "label": "6 days left"
+    },
+    {
+      "days_left": 5,
+      "elapsed_days": 9,
+      "elapsed_ms": 777600000,
+      "expired": false,
+      "label": "5 days left"
+    },
+    {
+      "days_left": 4,
+      "elapsed_days": 10,
+      "elapsed_ms": 864000000,
+      "expired": false,
+      "label": "4 days left"
+    },
+    {
+      "days_left": 3,
+      "elapsed_days": 11,
+      "elapsed_ms": 950400000,
+      "expired": false,
+      "label": "3 days left"
+    },
+    {
+      "days_left": 2,
+      "elapsed_days": 12,
+      "elapsed_ms": 1036800000,
+      "expired": false,
+      "label": "2 days left"
+    },
+    {
+      "days_left": 1,
+      "elapsed_days": 13,
+      "elapsed_ms": 1123200000,
+      "expired": false,
+      "label": "1 day left"
+    },
+    {
+      "days_left": 0,
+      "elapsed_days": 14,
+      "elapsed_ms": 1209600000,
+      "expired": true,
+      "label": "Last day"
+    }
+  ],
+  "started_at_ms": 1760000000000,
+  "trial_days": 14,
+  "why": "One table, two languages. Rust's evaluate_trial() owns these numbers; src/license/status.test.ts asserts daysLeft()/trialCountdown() reproduce them, so the countdown the user reads cannot drift from the gate that closes."
+}
