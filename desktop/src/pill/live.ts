@@ -483,15 +483,29 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
     case "transcribing":
       return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: false };
     case "polishing":
-      return { tone: "busy", label: "Polishing", needsPermission: false, placeholder: true };
+      // Y5-C — `busy` like `transcribing`, but it is NOT the same state and the
+      // copy says so: this is the LLM rewriting a transcript that already
+      // exists, and it has its own bounded deadline (see `PHASE_HOLD_MS`).
+      return { tone: "busy", label: "Polishing", needsPermission: false, placeholder: false };
     case "pasting":
-      return { tone: "busy", label: "Pasting", needsPermission: false, placeholder: true };
+      // Y5-C — its own phase because the paste has its own failure: a receipt
+      // that never comes back is an ACCESSIBILITY problem (YV39), not a
+      // transcription one, and `error`'s sentence has to be able to say which.
+      return { tone: "busy", label: "Pasting", needsPermission: false, placeholder: false };
     case "error":
-      return { tone: "warn", label: "Something went wrong", needsPermission: false, placeholder: true };
+      // Y5-C — the generic terminal state. The LABEL is the accessible name;
+      // the one-line REASON comes off the take's `last_error` through
+      // [`errorSentence`], never a code and never this placeholder sentence.
+      return { tone: "warn", label: "Something went wrong", needsPermission: false, placeholder: false };
     case "model-loading":
-      return { tone: "busy", label: "Loading speech engine", needsPermission: false, placeholder: true };
+      // Y5-C — YV80's lazy arm: capture is already live while the engine comes
+      // off disk, so the pill says it is WARMING instead of looking stuck.
+      return { tone: "busy", label: "Loading speech engine", needsPermission: false, placeholder: false };
     case "empty":
-      return { tone: "calm", label: "Nothing to type", needsPermission: false, placeholder: true };
+      // Y5-C — YV16's payoff. `calm`, not `warn`: refusing to paste garbage is
+      // Yap working correctly, and today it says nothing at all, so the user
+      // experiences a dead hotkey. This state IS the visible part of that gate.
+      return { tone: "calm", label: "Nothing to type", needsPermission: false, placeholder: false };
     case "cancelled":
       return { tone: "calm", label: "Cancelled", needsPermission: false, placeholder: false };
   }
@@ -560,9 +574,24 @@ export const PHASE_PRECEDENCE: readonly LivePhase[] = [
   "blocked",
   "waiting",
   "gated",
+  // Y5-C — a take that FAILED, then a take the user CANCELLED, both above the
+  // happy path: either one means the pipeline the happy path describes is no
+  // longer running, so painting "Polishing" over a failure would be a lie
+  // about the only thing the user needs to know. `error` outranks `cancelled`
+  // because a cancel is expected and a failure is not.
+  "error",
+  "cancelled",
   "listening",
+  "model-loading",
+  "transcribing",
+  "polishing",
+  "pasting",
   "thinking",
   "done",
+  // `empty` sits below `done`: both are "the take is over", and if a transcript
+  // did arrive it outranks the absence of one. `idle`/`sleepy` stay unranked
+  // (they are the absence of a phase, and must never win a tie).
+  "empty",
 ];
 
 /** Rank of a phase in [`PHASE_PRECEDENCE`]; lower wins, unranked sorts last. */
@@ -702,8 +731,14 @@ export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
   // Y3-C — `transcribing` joins the active set. It is the phase that fills the
   // dead time after talking stops, and a determinate fill that does not repaint
   // is the undifferentiated busy state this item removes.
+  // Y5-C — `model-loading`, `polishing` and `pasting` join the active set: each
+  // is a bounded stage with something moving in it, and a parked loop through
+  // one of them is the frozen pill this item exists to delete. `empty`,
+  // `error` and `cancelled` deliberately DO NOT join: they are settled states
+  // that repaint once and then let the loop go quiet, exactly like `blocked`.
   const active = phase === "listening" || phase === "thinking" || phase === "done"
-    || phase === "transcribing";
+    || phase === "transcribing" || phase === "model-loading" || phase === "polishing"
+    || phase === "pasting";
   if (active || f.busyVisuals || f.level >= 0.02) {
     return { mode: "raf", intervalMs: f.reduceMotion ? REDUCED_FRAME_MS : 0 };
   }
@@ -733,4 +768,431 @@ export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
 export function frameIntervalMs(phase: LivePhase, f: FrameInputs): number {
   const plan = framePlan(phase, f);
   return plan.mode === "raf" ? plan.intervalMs : Infinity;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Y5-C — THE PHASE VOCABULARY, COMPLETE: policy here, rendering in the pills.
+//
+// `phaseVisual` already said how a phase is DRAWN. What was missing is
+// everything that makes a phase a state rather than a label:
+//
+//   * a DURATION POLICY  — how long it may hold before it is a stuck pill
+//   * a SUCCESSOR SET    — what it is allowed to become
+//   * COPY, in every tone — a phase with no line in one tone is a blank pill
+//   * a canonical ID     — the name the product, the CSS and a screenshot use
+//
+// And one defect, in Wilson's words: "fill the dead time after talking stops
+// and before text appears". Before this, a take ran `listening → thinking →
+// done`, where `thinking` was a single undifferentiated boolean (`status.busy`)
+// covering engine load, ASR and polish — minutes of one frozen state on a long
+// take, and on a SHORT take `busy` could come and go between two status events
+// so the pill went `listening → done` with nothing in between at all. The
+// transition table below makes that sequence ILLEGAL, and `reduceTakePhase`
+// refuses to produce it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Every phase, once, in one array — the fixture every table test drives off.
+ *
+ * Exported because the test file kept its OWN copy of this list and it had
+ * already drifted: `cancelled` was in the union and not in the list, so Y3-D's
+ * phase was silently exempt from "every declared phase has a treatment". One
+ * list, or the table tests test whatever someone remembered to type.
+ */
+export const ALL_LIVE_PHASES: readonly LivePhase[] = [
+  "idle", "sleepy", "listening", "model-loading", "transcribing", "polishing",
+  "pasting", "thinking", "done", "empty", "cancelled", "error", "gated",
+  // `blocked` before `waiting`: PERM-C asserts that order for the two phases a
+  // click sends to the Permissions pane, and it is also the precedence order.
+  "blocked", "waiting",
+];
+
+/**
+ * The canonical PRODUCT id of each phase — snake_case, which is the vocabulary
+ * Wilson enumerates (`model_loading`) and the one the backend's own event
+ * payloads already speak (`mic_permission_required`, `take_cancelled`,
+ * `words_so_far`). The TypeScript variant name is an implementation detail that
+ * a refactor may rename; this string is the NAME, and it is stable.
+ *
+ * It is not decoration: the shell writes it to `<html data-phase>`, which is
+ * the single CSS hook every phase treatment keys off and the only handle a
+ * test — or a screenshot of a running pill — has on "which state is this".
+ */
+export const PHASE_ID: Record<LivePhase, string> = {
+  idle: "idle",
+  sleepy: "sleepy",
+  listening: "listening",
+  "model-loading": "model_loading",
+  transcribing: "transcribing",
+  polishing: "polishing",
+  pasting: "pasting",
+  thinking: "thinking",
+  done: "done",
+  empty: "empty",
+  cancelled: "cancelled",
+  error: "error",
+  gated: "gated",
+  waiting: "waiting",
+  blocked: "blocked",
+};
+
+/** The polish sidecar's own wall-clock deadline (polish.rs:59). */
+export const POLISH_DEADLINE_MS = 1200;
+
+/**
+ * How long a phase may HOLD before it is indistinguishable from a stuck pill.
+ *
+ * `null` means "waits on the user or the OS, and may wait forever" — and that
+ * is the WHOLE list of phases allowed to: `idle` and `sleepy` (at rest, waiting
+ * for a press), `listening` (waiting for the user to stop talking), `blocked`
+ * and `waiting` (waiting on macOS, which can take days or never answer).
+ * Everything else has a number, because everything else is Yap working and
+ * anything Yap is doing either finishes or has failed.
+ *
+ * Each number is the deadline of the thing it describes plus slack, never less:
+ * a pill that times out BEFORE the stage it is narrating would paint a failure
+ * over work that is still running.
+ */
+export const PHASE_HOLD_MS: Record<LivePhase, number | null> = {
+  // ── wait on the user or the OS ───────────────────────────────────────────
+  idle: null,
+  sleepy: null,
+  listening: null,
+  blocked: null,
+  waiting: null,
+  // ── bounded work ─────────────────────────────────────────────────────────
+  /** YV80's lazy arm — a large model off a cold disk. Generous on purpose. */
+  "model-loading": 20_000,
+  /** One CHUNK of ASR. Real progress re-arms it, so a 12-chunk take is fine. */
+  transcribing: 30_000,
+  /** The sidecar gives up at [`POLISH_DEADLINE_MS`]; the pill outlives it. */
+  polishing: POLISH_DEADLINE_MS + 600,
+  /** A receipt-sequenced paste (YV39) is fast or it has failed. */
+  pasting: 1_500,
+  /** The undifferentiated legacy busy state, still the fallback. */
+  thinking: 30_000,
+  // ── bounded acknowledgements ─────────────────────────────────────────────
+  /** Matches the check-mark hold both capsules already run. */
+  done: 1_100,
+  /** Long enough to READ that nothing was heard, short enough not to nag. */
+  empty: 2_200,
+  cancelled: CANCELLED_SETTLE_MS,
+  gated: GATED_SETTLE_MS,
+  /** A failure is news the user did not ask for, so it holds the longest. */
+  error: 4_000,
+};
+
+/** The phases that may hold forever, derived so the two can never disagree. */
+export const UNBOUNDED_PHASES: readonly LivePhase[] =
+  ALL_LIVE_PHASES.filter((p) => PHASE_HOLD_MS[p] === null);
+
+/** How long `phase` may hold, or `null` if it legitimately waits forever. */
+export const phaseHoldMs = (phase: LivePhase): number | null => PHASE_HOLD_MS[phase];
+
+/**
+ * What each phase is allowed to become next.
+ *
+ * Read the `listening` row first: `done` IS NOT IN IT, and that is the defect
+ * Wilson named. Stopping the hotkey cannot put a check mark on the pill,
+ * because between "talking stopped" and "text appeared" there is always at
+ * least one thing happening and the pill has to say which one.
+ *
+ * Every phase reaches `idle` again, directly or through an acknowledgement:
+ * `every_phase_has_a_way_back_to_idle` is a test, not a hope.
+ */
+export const PHASE_NEXT: Record<LivePhase, readonly LivePhase[]> = {
+  idle: ["listening", "sleepy", "blocked", "waiting", "gated"],
+  sleepy: ["idle", "listening", "blocked", "waiting", "gated"],
+  // NB: no "done". See above.
+  listening: ["model-loading", "transcribing", "thinking", "cancelled", "error", "blocked"],
+  "model-loading": ["transcribing", "thinking", "error", "cancelled"],
+  // `done` directly: polish is SKIPPABLE (`polish_skip_reason`), so a decoded
+  // take can land its text without an LLM stage ever running.
+  transcribing: ["polishing", "pasting", "thinking", "done", "empty", "error", "cancelled"],
+  thinking: ["polishing", "pasting", "done", "empty", "error", "cancelled"],
+  polishing: ["pasting", "done", "empty", "error"],
+  pasting: ["done", "error"],
+  done: ["idle", "sleepy", "listening"],
+  empty: ["idle", "listening"],
+  cancelled: ["idle", "listening"],
+  error: ["idle", "listening"],
+  gated: ["idle", "listening"],
+  waiting: ["idle", "blocked", "listening"],
+  blocked: ["idle", "listening"],
+};
+
+/** May the pill move straight from `from` to `to`? */
+export const isLegalTransition = (from: LivePhase, to: LivePhase): boolean =>
+  from === to || PHASE_NEXT[from].includes(to);
+
+/**
+ * The line the pill SAYS in each phase, in each tone.
+ *
+ * Distinct from `phaseVisual().label`, which is the accessible NAME of the
+ * capsule (read aloud, unbounded, tone-free). This is the text that is DRAWN,
+ * so every one of these has to fit the side-dock strip — see
+ * [`fitsSideDockStrip`], which is a test and not a promise.
+ *
+ * `friendly` is the default (`companion_tone: "friendly"`, lib.rs:412); a phase
+ * missing a line in ONE tone is a blank pill for whoever chose that tone, which
+ * is why this is a total `Record` and not a `Partial`.
+ */
+export const PHASE_COPY: Record<LivePhase, Record<ChatTone, string>> = {
+  idle: {
+    rude: "well? press it.",
+    friendly: "ready when you are!",
+    rose: "ready for you 🌹",
+  },
+  sleepy: {
+    rude: "zzz. wake me.",
+    friendly: "just napping…",
+    rose: "resting my eyes 🌹",
+  },
+  listening: {
+    rude: "talking. finally.",
+    friendly: "listening!",
+    rose: "i'm all yours 🌹",
+  },
+  "model-loading": {
+    rude: "warming up. wait.",
+    friendly: "warming up the engine…",
+    rose: "just waking up 🌹",
+  },
+  transcribing: {
+    rude: "decoding your mumbling…",
+    friendly: "writing it down…",
+    rose: "every word, love 🌹",
+  },
+  polishing: {
+    rude: "fixing your grammar…",
+    friendly: "tidying it up…",
+    rose: "making it pretty 🌹",
+  },
+  pasting: {
+    rude: "dropping it in…",
+    friendly: "popping it in!",
+    rose: "handing it over 🌹",
+  },
+  thinking: {
+    rude: "working on it…",
+    friendly: "one sec…",
+    rose: "almost there 🌹",
+  },
+  done: {
+    rude: "there. happy?",
+    friendly: "done!",
+    rose: "all yours 🌹",
+  },
+  empty: {
+    // YV16: this is the gate WORKING. Never an apology, never an error face.
+    rude: "you said nothing.",
+    friendly: "i didn't hear words!",
+    rose: "i heard only quiet 🌹",
+  },
+  cancelled: {
+    rude: "fine, forget it.",
+    friendly: "cancelled, no worries!",
+    rose: "another time 🌹",
+  },
+  error: {
+    rude: "that broke.",
+    friendly: "that didn't work…",
+    rose: "something went wrong 🌹",
+  },
+  gated: {
+    rude: "pay up first.",
+    friendly: "dictation is paused",
+    rose: "paused for now 🌹",
+  },
+  waiting: {
+    rude: "answer the dialog.",
+    friendly: "allow the mic…",
+    rose: "let me hear you? 🌹",
+  },
+  blocked: {
+    rude: "mic's blocked. fix it.",
+    friendly: "mic blocked",
+    rose: "i can't hear you 🌹",
+  },
+};
+
+/** The line for a phase in the user's tone. */
+export const phaseCopy = (phase: LivePhase, tone: ChatTone): string => PHASE_COPY[phase][tone];
+
+// ── the side-dock strip: the narrowest place any of this has to fit ─────────
+//
+// On a left/right dock the window is parked flush to the screen edge and the
+// capsule hugs it (`:root[data-dock] .stage` in float.css). The capsule's own
+// `max-width` is therefore the hard budget for anything drawn INSIDE it, and
+// the shell's phase line is drawn inside it — so a phrase that is comfortable
+// on a bottom dock can be the phrase that overflows on a side one.
+//
+// These mirror float.css. They are an ESTIMATE of text width (a real advance
+// width needs a laid-out browser), deliberately PESSIMISTIC: 6.0px per
+// character against an 11px system sans whose true average is nearer 5.6.
+
+/** `.pill { max-width }` in float.css. */
+export const PILL_MAX_WIDTH_PX = 260;
+/** `:root[data-dock="left"] .stage { padding-left }` — the screen-edge inset. */
+export const SIDE_DOCK_INSET_PX = 10;
+/** `.pill { padding: 0 10px }`, both sides. */
+export const PILL_PADDING_PX = 20;
+/** The mic/stop control plus the flex gap that always sits beside the text. */
+export const PILL_CONTROL_PX = 30;
+/** `.pill.blocked .gate-note { padding-right: 8px }`. */
+export const STRIP_TAIL_PX = 8;
+/** Pessimistic average advance width at `11px` system sans. */
+export const STRIP_CHAR_PX = 6.0;
+
+/** The drawable width left for a phase line on a SIDE dock, in px. */
+export const SIDE_DOCK_TEXT_PX =
+  PILL_MAX_WIDTH_PX - SIDE_DOCK_INSET_PX - PILL_PADDING_PX - PILL_CONTROL_PX - STRIP_TAIL_PX;
+
+/** Estimated drawn width of a phase line, in px. */
+export const stripTextWidthPx = (text: string): number => text.length * STRIP_CHAR_PX;
+
+/** Does a line fit the side-dock strip without clipping (`white-space: nowrap`)? */
+export const fitsSideDockStrip = (text: string): boolean =>
+  stripTextWidthPx(text) <= SIDE_DOCK_TEXT_PX;
+
+/** Every dock the shell has to place the phase line at (float-main's `DOCKS`). */
+export const DOCK_SIDES = ["bottom", "left", "right"] as const;
+export type DockSide = (typeof DOCK_SIDES)[number];
+
+// ── the characters that ship ────────────────────────────────────────────────
+
+/**
+ * The faces that ship today. Y5-K lifts the per-character art tables out of the
+ * two components into a registry; until it does, this list is the fixture the
+ * coverage test drives off, so ADDING A CREATURE ADDS A ROW and not a test file.
+ */
+export const SHIPPED_CHARACTERS = ["classic", "yappy"] as const;
+export type PillCharacter = (typeof SHIPPED_CHARACTERS)[number];
+
+/**
+ * What one character owes ONE phase: something to draw, and how it moves.
+ * `motion` is a hint the component's own renderer reads — the components keep
+ * their art, this type keeps them honest about covering every phase.
+ */
+export interface PhaseArt {
+  /** The sprite/glyph key this character draws for the phase. */
+  sprite: string;
+  /** How it animates while the phase holds. `still` is a settled state. */
+  motion: "still" | "breathe" | "work" | "pulse" | "shake";
+}
+
+/** A character's art, one entry per phase — no `Partial`, by design. */
+export type PhaseArtTable = Record<LivePhase, PhaseArt>;
+
+// ── the take, as a reducer ──────────────────────────────────────────────────
+
+/**
+ * The part of the backend's `status` payload that decides a take's phase. Every
+ * field here is one the backend ALREADY emits (`build_status`, lib.rs:873) —
+ * this adds no new channel and no new Rust.
+ */
+export interface TakeStatus {
+  recording: boolean;
+  busy: boolean;
+  /** YV80 — the engine is coming off disk while capture is already live. */
+  engineLoading?: boolean;
+  /** Set by lib.rs:1460 / 2497; the sentence `error` shows comes from here. */
+  lastError?: string | null;
+}
+
+/** What can move a take's phase. Both are events the frontend already gets. */
+export type TakeEvent =
+  | { type: "status"; status: TakeStatus }
+  /** The `transcript` event — emitted ONLY on a take that produced text. */
+  | { type: "transcript"; words: number }
+  /** Y3-C's per-chunk progress: real chunks, so really `transcribing`. */
+  | { type: "progress" }
+  /** The phase's [`PHASE_HOLD_MS`] elapsed without anything else arriving. */
+  | { type: "hold_elapsed"; phase: LivePhase };
+
+/** The phases that mean "Yap is working on this take right now". */
+const WORKING: readonly LivePhase[] = [
+  "model-loading", "transcribing", "polishing", "pasting", "thinking",
+];
+const isWorking = (p: LivePhase): boolean => WORKING.includes(p);
+
+/**
+ * A backend error string as ONE HUMAN LINE — never a code, never a stack.
+ *
+ * `status_message` prefixes the same string with `Error: ` for the main window;
+ * the pill has a warn treatment and does not need the word, and a 200-character
+ * paste-receipt message has to be cut somewhere or it clips mid-word on a side
+ * dock. Empty/absent falls back to the phase's own copy, which is why this
+ * returns `null` rather than an empty string.
+ */
+export function errorSentence(lastError?: string | null): string | null {
+  if (!lastError) return null;
+  const one = lastError.replace(/^\s*error:\s*/i, "").replace(/\s+/g, " ").trim();
+  if (!one) return null;
+  const budget = Math.floor(SIDE_DOCK_TEXT_PX / STRIP_CHAR_PX);
+  if (one.length <= budget) return one;
+  // Cut on a word boundary when there is one in the last quarter of the budget.
+  const cut = one.slice(0, budget - 1);
+  const sp = cut.lastIndexOf(" ");
+  return `${(sp > budget * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
+/**
+ * The take's phase, as a pure reducer over events the frontend already
+ * receives. The permission/license phases are NOT its business — they live in
+ * `reduceGatePhase` and outrank it; the shell combines the two with
+ * [`winningPhase`].
+ *
+ * The rule that closes Wilson's gap is the `recording: false` case: a take that
+ * stopped while the pill was `listening` becomes `thinking` — NOT `done`, and
+ * NOT `idle`. Something is always happening between the hotkey release and the
+ * text landing, and if the backend has not said WHICH thing yet, the pill says
+ * the honest generic one rather than skipping the whole pipeline.
+ */
+export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
+  switch (ev.type) {
+    case "progress":
+      // Real chunks came back, so this is really `transcribing` (Y3-C). It may
+      // not resurrect a take that has already ended.
+      return isWorking(prev) || prev === "listening" ? "transcribing" : prev;
+    case "transcript":
+      // A transcript event is only ever emitted for a take that produced text
+      // (lib.rs:2509), so words <= 0 should be impossible — handled anyway,
+      // because a `done` check mark over nothing is the dead hotkey again.
+      return ev.words > 0 ? "done" : "empty";
+    case "hold_elapsed": {
+      // Only the phase that armed the timer may be moved by it: by the time it
+      // fires the pill may already have moved on, and a stale timer that
+      // clobbers a live phase is the flashing refusal bug in another costume.
+      if (prev !== ev.phase || PHASE_HOLD_MS[prev] === null) return prev;
+      // A WORKING phase that ran out of time has failed; an acknowledgement
+      // that ran out of time has simply been read. Both settle, differently.
+      return isWorking(prev) ? "error" : "idle";
+    }
+    case "status": {
+      const s = ev.status;
+      if (s.recording) return "listening";
+      if (s.busy) {
+        if (s.engineLoading) return "model-loading";
+        // Y3-C owns `transcribing` and only real progress opens it, so a busy
+        // status never downgrades a pill that is already reporting chunks.
+        return prev === "transcribing" || prev === "polishing" || prev === "pasting"
+          ? prev
+          : "thinking";
+      }
+      // Not recording, not busy: the take is over. WHY it is over is the
+      // interesting part.
+      if (s.lastError) return isWorking(prev) || prev === "listening" ? "error" : prev;
+      // The hold just ended and `busy` has not been set yet — the status
+      // events race. Never `done` (see above), never `idle`.
+      if (prev === "listening") return "thinking";
+      // Working, then quiet, with NO transcript event: that is YV16's
+      // no-speech / hallucination-gate exit, which emits no `transcript` at
+      // all (lib.rs:2026). Today the pill says nothing and the user
+      // experiences a dead hotkey. This is the whole visible payoff of the
+      // gate.
+      if (isWorking(prev)) return "empty";
+      return prev;
+    }
+  }
 }

@@ -726,3 +726,87 @@ body,
 /* The dock edge decides where the fill can sit without leaving the window. */
 html[data-dock="left"] .kami-progress,
 html[data-dock="right"] .kami-progress { bottom: 4px; }
+
+/* ── Y5-C — the phase strip: the pill's sentence, placed ONCE ──────────────
+   The shell draws this, not the capsules, so the copy for a phase exists in
+   exactly one place and both characters get it for free (OWNER DECISION
+   2026-09-13). It is placed at all THREE docks below — three rules, not three
+   components — and it never takes the cursor, so it can never eat the pill's
+   hitbox or the drag that re-docks it.
+
+   `nowrap` is deliberate: the strip is ONE line by contract, and `live.ts`'s
+   `fitsSideDockStrip` test is what keeps every phase's copy inside the width
+   a side dock leaves for it. A phrase that would wrap is a failing test, not a
+   two-line pill. */
+.phase-strip {
+  position: fixed;
+  z-index: 4;
+  max-width: 192px; /* SIDE_DOCK_TEXT_PX in live.ts — kept in step by test */
+  font: 500 11px/1.25 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+/* Only a phase with something to SAY is shown. At rest the pill is a seed and
+   a line of chatter under it would be noise; the states that exist to fill
+   Wilson's "dead time after talking stops" are exactly the ones that show. */
+html[data-phase="model_loading"] .phase-strip,
+html[data-phase="transcribing"] .phase-strip,
+html[data-phase="polishing"] .phase-strip,
+html[data-phase="pasting"] .phase-strip,
+html[data-phase="thinking"] .phase-strip,
+html[data-phase="empty"] .phase-strip,
+html[data-phase="cancelled"] .phase-strip,
+html[data-phase="error"] .phase-strip { opacity: 1; }
+/* A failure reads as one. Everything else stays the quiet working voice. */
+html[data-phase="error"] .phase-strip { color: rgba(252, 165, 165, 0.92); }
+html[data-phase="empty"] .phase-strip { color: rgba(255, 255, 255, 0.58); }
+
+/* ── the three docks ─────────────────────────────────────────────────────── */
+/* bottom (default): centred above the capsule. */
+.phase-strip {
+  left: 50%;
+  bottom: calc(50% + 18px);
+  transform: translateX(-50%);
+  text-align: center;
+}
+/* left dock: the capsule hugs the left edge, so the line sits above it, left
+   aligned to the same 10px screen inset the stage uses. */
+html[data-dock="left"] .phase-strip {
+  left: 10px;
+  right: auto;
+  transform: none;
+  text-align: left;
+}
+/* right dock: mirrored, and right aligned so it grows INWARD and never off
+   the screen edge the window is parked against. */
+html[data-dock="right"] .phase-strip {
+  left: auto;
+  right: 10px;
+  transform: none;
+  text-align: right;
+}
+
+/* Y5-C — the per-character motion hint both capsules publish as `data-motion`.
+   `shake` is the only one that is a real animation here; `work`/`pulse`/
+   `breathe` are already carried by the capsule's own state classes, and
+   `still` is the absence of one. Reduced motion removes it entirely. */
+@keyframes phase-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1.5px); }
+  75% { transform: translateX(1.5px); }
+}
+.pill[data-motion="shake"],
+.kami-stage[data-motion="shake"] .kami-canvas {
+  animation: phase-shake 320ms ease-in-out 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill[data-motion="shake"],
+  .kami-stage[data-motion="shake"] .kami-canvas { animation: none; }
+  .phase-strip { transition: none; }
+}

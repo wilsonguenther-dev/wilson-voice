@@ -8,12 +8,45 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { Mic, MicOff, Square } from "lucide-react";
 import {
-  phaseVisual, progressFraction, progressLabel, progressNumeral,
-  type LivePhase, type TranscribeProgress,
+  PHASE_ID, phaseVisual, progressFraction, progressLabel, progressNumeral,
+  type LivePhase, type PhaseArtTable, type TranscribeProgress,
 } from "./live";
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
+
+/**
+ * Y5-C — Classic's art for EVERY phase, as DATA.
+ *
+ * Classic is a DOM capsule, so its "sprite" is the element the capsule swaps in
+ * (the mic glyph, the waveform, the determinate fill, the check) and its
+ * "motion" is the CSS animation the capsule wears while the phase holds. Both
+ * ride out as `data-sprite` / `data-motion` on the capsule, so float.css can
+ * key a treatment off a phase without this component growing a branch per
+ * phase — and so a phase with no art is a TYPE ERROR here rather than an
+ * invisible state in a running app.
+ *
+ * It lives in this component on purpose (Y5-C's brief): Y5-K's first act is to
+ * lift exactly this table, and Yappy's twin, into the character registry. Until
+ * then nothing outside these two components may branch on the pill style.
+ */
+export const CLASSIC_PHASE_ART: PhaseArtTable = {
+  idle: { sprite: "seed", motion: "breathe" },
+  sleepy: { sprite: "seed", motion: "still" },
+  listening: { sprite: "wave", motion: "pulse" },
+  "model-loading": { sprite: "mic", motion: "breathe" },
+  transcribing: { sprite: "xscribe", motion: "work" },
+  polishing: { sprite: "spark", motion: "work" },
+  pasting: { sprite: "caret", motion: "work" },
+  thinking: { sprite: "dots", motion: "work" },
+  done: { sprite: "check", motion: "still" },
+  empty: { sprite: "hush", motion: "still" },
+  cancelled: { sprite: "hush", motion: "still" },
+  error: { sprite: "alert", motion: "shake" },
+  gated: { sprite: "lock", motion: "still" },
+  waiting: { sprite: "mic-off", motion: "breathe" },
+  blocked: { sprite: "mic-off", motion: "still" },
+};
 
 interface AppStatus {
   recording: boolean;
@@ -171,6 +204,9 @@ export default function ClassicPill(
       : transcribing ? "pill busy transcribing"
         : busy ? "pill busy" : done ? "pill done" : "pill";
   const cls = meeting.recording && !blocked && !gated ? `${base} meeting` : base;
+  // Y5-C — the phase's art, drawn from this character's own table. Every phase
+  // has a row, so this is never undefined and there is no fallback to forget.
+  const art = CLASSIC_PHASE_ART[gate];
   const onToggle = useCallback(() => {
     // YV65 — the click that closes a drag must never start/stop dictation.
     if (drag.dragged()) return;
@@ -201,6 +237,9 @@ export default function ClassicPill(
       <div
         ref={pillRef}
         className={cls}
+        data-phase={PHASE_ID[gate]}
+        data-sprite={art.sprite}
+        data-motion={art.motion}
         role="button"
         tabIndex={0}
         aria-label={

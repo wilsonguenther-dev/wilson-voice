@@ -16,11 +16,45 @@ import { usePillDrag, reportPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
-  advanceLive, createLiveState, framePlan, phaseVisual, progressFraction, progressLabel,
-  progressNumeral, resetLive, toChatTone, transcribeLine,
-  type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
+  advanceLive, createLiveState, framePlan, PHASE_ID, phaseVisual, progressFraction,
+  progressLabel, progressNumeral, resetLive, toChatTone, transcribeLine,
+  type ChatTone, type FrameMode, type LivePhase, type LiveProp, type PhaseArtTable,
+  type TranscribeProgress,
 } from "./live";
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
+
+/**
+ * Y5-C — Yappy's art for EVERY phase, as DATA.
+ *
+ * Yappy is a canvas creature, so a "sprite" here is the pose the draw loop puts
+ * her in and "motion" is how she moves while the phase holds. The pair rides
+ * out as `data-sprite` / `data-motion` on the stage, which is what the DOM
+ * overlays and float.css key off — and what makes "does the chick have a face
+ * for `empty`?" a table test instead of a bug report.
+ *
+ * Deliberately a SECOND TABLE and not a second copy of the phase LOGIC: the
+ * durations, the successors and the copy are all in live.ts, shared. What is
+ * per-character is only what a character looks like. Y5-K lifts this table and
+ * Classic's twin into the character registry; until it does, nothing outside
+ * these two components branches on the pill style.
+ */
+export const YAPPY_PHASE_ART: PhaseArtTable = {
+  idle: { sprite: "face-rest", motion: "breathe" },
+  sleepy: { sprite: "face-asleep", motion: "still" },
+  listening: { sprite: "world-listen", motion: "pulse" },
+  "model-loading": { sprite: "world-stretch", motion: "breathe" },
+  transcribing: { sprite: "world-type", motion: "work" },
+  polishing: { sprite: "world-polish", motion: "work" },
+  pasting: { sprite: "world-hand-off", motion: "work" },
+  thinking: { sprite: "world-think", motion: "work" },
+  done: { sprite: "face-happy", motion: "still" },
+  empty: { sprite: "face-confused", motion: "still" },
+  cancelled: { sprite: "face-shrug", motion: "still" },
+  error: { sprite: "face-worried", motion: "shake" },
+  gated: { sprite: "face-locked", motion: "still" },
+  waiting: { sprite: "face-ear", motion: "breathe" },
+  blocked: { sprite: "face-deaf", motion: "still" },
+};
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -496,8 +530,11 @@ export default function YappyPill(
   // Y3-C — and the transcribing phase from the progress prop (float-main owns it).
   useEffect(() => { applyProgressRef.current(progress); }, [progress]);
 
+  // Y5-C — Yappy's own art for the phase, from her own table. Total record, so
+  // a new phase cannot reach the canvas without a pose to draw.
+  const art = YAPPY_PHASE_ART[gate];
   return (
-    <div className="kami-stage">
+    <div className="kami-stage" data-phase={PHASE_ID[gate]} data-sprite={art.sprite} data-motion={art.motion}>
       <div ref={bubbleRef} className="kami-bubble"></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
