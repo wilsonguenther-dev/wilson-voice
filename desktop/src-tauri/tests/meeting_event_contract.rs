@@ -127,15 +127,30 @@ fn the_frontend_listens_to_the_name_the_backend_emits() {
         !watch.contains("\"meeting\""),
         "consentWatch.ts re-types the event name instead of using the constant"
     );
-    // And App.tsx delegates rather than opening a second, untested subscription.
+    // And the shell delegates rather than opening a second, untested
+    // subscription.
+    //
+    // Y5-G split App.tsx into `views/` and lifted the shell's state machine —
+    // every `listen()` included — into `appShell.ts`, which App.tsx mounts via
+    // `useAppShell()`. So look for the wiring in the shell wherever it lives,
+    // and keep the "no second raw subscription" rule on BOTH files: a view
+    // growing its own listener is the leak this contract exists to prevent.
     let app = frontend("App.tsx");
+    let shell = frontend("appShell.ts");
+    for (name, src) in [("App.tsx", &app), ("appShell.ts", &shell)] {
+        assert!(
+            !src.contains("listen<{ recording: boolean }>(\"meeting\""),
+            "{name} must go through watchMeetingConsent so the wiring stays tested"
+        );
+    }
     assert!(
-        !app.contains("listen<{ recording: boolean }>(\"meeting\""),
-        "App.tsx must go through watchMeetingConsent so the wiring stays tested"
+        app.contains("useAppShell"),
+        "App.tsx must mount the shell state machine, or appShell.ts is an orphan \
+         module and nothing subscribes at all"
     );
     assert!(
-        app.contains("watchMeetingConsent"),
-        "App.tsx no longer wires the notice to anything"
+        shell.contains("watchMeetingConsent"),
+        "the shell no longer wires the notice to anything"
     );
 }
 
