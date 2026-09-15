@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type DictEntry, type DictCandidate } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { EmptyState, ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 
 export default function Dictionary() {
   const {
-    candidates, dictionary, editPreferred, editTerm, editingTermId, newPreferred,
+    bootError, booting, candidates, dictionary, editPreferred, editTerm, editingTermId, newPreferred,
+    refreshAll,
     newTerm, setCandidates, setDictionary, setEditPreferred, setEditTerm, setEditingTermId,
     setNewPreferred, setNewTerm, toast,
   } = useAppCtx();
@@ -84,6 +87,19 @@ export default function Dictionary() {
       toast(String(e));
     }
   }
+  const state = viewState(dictionary, booting, bootError);
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="dictionary"
+        view="dictionary"
+        error={bootError}
+        actionLabel="Open the dictionary again"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="dictionary" noun="dictionary" onRetry={() => void refreshAll()} />;
   return (
             <div className="dict">
               <div className="panel intro">
@@ -155,6 +171,21 @@ export default function Dictionary() {
                     ))}
                   </ul>
                 </div>
+              )}
+
+              {dictionary.length === 0 && candidates.length === 0 && (
+                <EmptyState
+                  data-empty-state="dictionary"
+                  glyph={<WordGlyph />}
+                  title="No words taught yet"
+                  body="Names, jargon and spellings Yap keeps getting wrong go here. Star one and the recognizer expects it before it even decodes."
+                  actionLabel="Add a word"
+                  onAction={() =>
+                    document
+                      .querySelector<HTMLInputElement>(".dict-add input")
+                      ?.focus()
+                  }
+                />
               )}
 
               <ul className="dict-list">
