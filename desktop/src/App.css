@@ -756,6 +756,20 @@ code {
   font-size: 0.82rem;
 }
 
+/* DB-B — the words a long take had already decoded before the app went away.
+   Clamped to two lines: it is evidence that the offer is real, not a transcript
+   view, and the full text is on the element's title. */
+.card.failed .failed-partial {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* YV64 — the Stability list in Settings → Privacy & Diagnostics. Same card
    material as the rest of the app; an UNacknowledged crash carries the warn
    edge the failed-take card uses, because it is the one row that is news. */

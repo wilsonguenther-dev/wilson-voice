@@ -381,6 +381,15 @@ interface FailedDictation {
   error: string;
   sourceApp?: string | null;
   createdAt: string;
+  /** DB-B — the id the take's audio carries on disk, for a recovered take. */
+  takeId?: string | null;
+  /**
+   * DB-B — the words this take had ALREADY decoded before the app went away,
+   * read back from `take_chunks` at launch. Its presence is what turns "Retry"
+   * (decode this clip again) into "Finish transcribing" (resume from here) —
+   * the backend decodes only the remainder and keeps these words.
+   */
+  partialText?: string | null;
 }
 
 /**
@@ -2714,10 +2723,10 @@ export default function App() {
               {failed.length > 0 && (
                 <section className="failed-takes">
                   <div className="failed-head">
-                    <h3>Failed dictations</h3>
+                    <h3>Failed and unfinished dictations</h3>
                     <span className="tiny">
-                      Audio kept for 7 days — retry when the engine is ready,
-                      nothing was lost.
+                      Audio kept for 7 days — finish or retry when the engine is
+                      ready, nothing was lost. Nothing here is pasted for you.
                     </span>
                   </div>
                   <ul className="feed">
@@ -2735,13 +2744,24 @@ export default function App() {
                           </span>
                         </div>
                         <p className="failed-why">{f.error}</p>
+                        {f.partialText ? (
+                          <p className="failed-partial" title={f.partialText}>
+                            Already transcribed: “{f.partialText}”
+                          </p>
+                        ) : null}
                         <div className="actions">
                           <button
                             className="primary"
                             disabled={retrying === f.id}
                             onClick={() => retryFailed(f.id)}
                           >
-                            {retrying === f.id ? "Retrying…" : "Retry"}
+                            {retrying === f.id
+                              ? f.partialText
+                                ? "Finishing…"
+                                : "Retrying…"
+                              : f.partialText
+                                ? "Finish transcribing"
+                                : "Retry"}
                           </button>
                           <button
                             className="ghost danger"
