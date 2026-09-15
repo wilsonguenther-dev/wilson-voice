@@ -19,6 +19,73 @@ The updater artifacts only appear when `bundle.createUpdaterArtifacts` is true
 prints `A public key has been found, but no private key` and skips the tarball —
 a release built that way looks fine and updates nothing.
 
+## Code signing — which identity signs what
+
+macOS keys every TCC grant (Microphone, Accessibility, Input Monitoring) to the
+**code signature's designated requirement**, not to the path or the bundle name.
+So the rule that matters is short: *if a grant disappeared after a rebuild, the
+signature changed.* Nothing about the permission itself broke — macOS is looking
+at a program it has never seen before and correctly refusing it.
+
+That is why `bundle.macOS.signingIdentity` in `tauri.conf.json` is `null` and
+must stay `null`. It used to be `"-"` — ad-hoc — which has no stable designated
+requirement at all: the cdhash changes on every build, so every
+`npm run tauri build` handed the user a stranger and every grant had to be
+re-given. **Unsigned is not the safer fallback; it is worse.** An unsigned
+bundle has no designated requirement either, and it passes any "no ad-hoc"
+check. Neither is ever produced on purpose here.
+
+The identity is resolved at sign time from `APPLE_SIGNING_IDENTITY`, or from the
+keychain by `scripts/sign-local.sh`. No certificate name, team id or SHA is
+committed to this repo.
+
+| | RELEASE | LOCAL |
+|---|---|---|
+| identity | `Developer ID Application` | `Apple Development` |
+| who signs | `.github/workflows/release.yml` → `tauri-action`, via the `APPLE_SIGNING_IDENTITY` repo secret | `scripts/sign-local.sh`, from the keychain |
+| notarized + stapled | yes (`APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`) | no |
+| `spctl --assess` says | "Notarized Developer ID" | *not* notarized — do not assert that string on a local build |
+| designated requirement | stable | stable |
+| TCC grants survive a rebuild | yes | yes |
+
+Both profiles give a **stable** designated requirement, which is the only
+property TCC persistence needs. Notarization is about Gatekeeper on someone
+else's Mac, not about whether your own grants stick. So a locally signed build
+is a fully legitimate daily driver; it just cannot pass a notarization assertion,
+and any smoke check that asserts "Notarized Developer ID" is asserting a RELEASE
+property and must say so.
+
+```bash
+# What is on this machine (this is the command every failure prints):
+security find-identity -v -p codesigning
+
+# Build + sign in one step. Refuses to run if no identity is present — it never
+# falls back to ad-hoc and never leaves the bundle unsigned.
+cd desktop && npm run desktop:build
+
+# Sign (or re-sign) a bundle that already exists:
+scripts/sign-local.sh "/Applications/Yap.app"
+
+# Just resolve the identity, sign nothing — the preflight:
+scripts/sign-local.sh --identity
+```
+
+`scripts/sign-local.sh` prefers `Developer ID Application`, falls back to
+`Apple Development`, and honours an explicit `APPLE_SIGNING_IDENTITY` (verifying
+it is actually in the keychain, so a typo fails loudly instead of producing an
+unsigned app). After signing it verifies with `codesign -dv --verbose=4` and
+`codesign -d --entitlements :-`, and fails if the result reports `Signature=adhoc`,
+carries no `Authority=` chain, or shows `com.apple.security.app-sandbox` as true.
+`scripts/rebuild_app.sh` calls it rather than repeating the incantation.
+
+**Never enable the App Sandbox.** It silently kills the CGEvent tap, the
+synthesized Cmd-V and `AXIsProcessTrusted`, and the failure looks exactly like a
+permissions bug even when every grant is present. `tests/entitlements.rs` fails
+the build if `com.apple.security.app-sandbox` is missing or true, if the
+microphone entitlement is dropped, or if either dylib-injection entitlement
+(`cs.disable-library-validation`, `cs.allow-dyld-environment-variables`) is
+granted.
+
 ## Signing keys
 
 The updater keypair is minisign; the app trusts exactly one public key, the one
