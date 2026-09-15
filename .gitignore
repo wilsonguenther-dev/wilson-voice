@@ -40,3 +40,8 @@ desktop/src-tauri/binaries/
 
 # Landing page is hand-authored source, not build output
 !site/dist/
+
+# Y0-E — windowed smoke captures. PNGs are evidence of one run on one machine,
+# not source; --check-only deliberately fails on a fresh checkout because there
+# is nothing captured yet.
+docs/smoke-shots/
