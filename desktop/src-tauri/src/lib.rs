@@ -1901,7 +1901,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // after . ? ! / a new line / in an empty field, and add the leading
             // space only when the character before the caret needs one. Purely
             // additive (casing + at most one space), so "never lose text" holds.
-            let text = dictation::join_with_context(&text, cursor_context.as_deref());
+            // Y4-F: mode-aware. Every prose mode gets the R5 casing rule; `Code`
+            // gets the spacing and nothing else, because a caret after `let x = 5. `
+            // is not the end of a sentence and `foo` must not become `Foo`.
+            let text = dictation::join_for_mode(&text, cursor_context.as_deref(), dictation_mode);
             // YV48 snippets: expand saved trigger phrases AFTER cleanup and
             // before the clipboard. Its own stage — never inside the dictionary
             // closure above, and never on the history command paths — so only a

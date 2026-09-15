@@ -171,7 +171,7 @@ fn pipeline(case: &Case, polish: impl Fn(&str) -> Option<String>) -> String {
         |t| t.to_string(),
         polish,
     );
-    dictation::join_with_context(&text, case.context.as_deref())
+    dictation::join_for_mode(&text, case.context.as_deref(), mode_of(case))
 }
 
 /// Rules-only output: the LLM stage injected as a no-op, which is what
