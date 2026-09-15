@@ -22,6 +22,8 @@ import {
   type LivePhase,
   type TranscribeProgress,
 } from "./pill/live";
+import { pillLicense } from "./pill/license";
+import { type LicenseStatus } from "./license/status";
 import "./float.css";
 
 interface Settings { pillStyle?: string; pillPosition?: string }
@@ -56,6 +58,32 @@ function Float() {
   // property of the take, not of whichever capsule happens to be drawn. Both
   // pills receive it; neither invents it, and neither interpolates it.
   const [progress, setProgress] = useState<TranscribeProgress | null>(null);
+  // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
+  // it is a property of the app, not of whichever capsule happens to be drawn.
+  // `null` until the first payload lands, which is silence and not an
+  // assumption (see `pillLicense`).
+  //
+  // EVENT-DRIVEN, NOT POLLED. One read at mount for the value that already
+  // exists, then the backend's own emissions: `license` on every change
+  // (activation, removal, a revocation refresh — lib.rs:4464/4511/4524) and
+  // `license_required` from the dictation gate itself (lib.rs:1232), which is
+  // the only way the hotkey and pill paths can say why a press did nothing.
+  // There is no interval here and there is no second clock: `days_left` arrives
+  // already computed, rollback floor included.
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const push = (u: () => void) => (dead ? u() : unsubs.push(u));
+    invoke<LicenseStatus>("license_status")
+      .then((s) => { if (!dead) setLicense(s); })
+      .catch(() => {
+        /* a licensing read that fails must never stop the pill from drawing */
+      });
+    listen<LicenseStatus>("license", (e) => setLicense(e.payload)).then(push);
+    listen<LicenseStatus>("license_required", (e) => setLicense(e.payload)).then(push);
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
   useEffect(() => {
     let dead = false;
     const unsubs: Array<() => void> = [];
@@ -131,9 +159,19 @@ function Float() {
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
+  // Y2-A — the POLICY is decided once, here, above both capsules. Y2-B/C/D
+  // render `lic`; neither pill re-decides whether the trial is worth
+  // mentioning.
+  const lic = pillLicense(license);
+  // The tone rides on <html> the same way the dock edge does (and for the same
+  // reason: it drives CSS and must not remount the pill). It is also what makes
+  // this wiring observable in a running app before any capsule draws a chip.
+  useEffect(() => {
+    document.documentElement.dataset.license = lic.show ? lic.tone : "";
+  }, [lic.show, lic.tone]);
   return style === "yappy"
-    ? <YappyPill gate={gate} progress={progress} />
-    : <ClassicPill gate={gate} progress={progress} />;
+    ? <YappyPill gate={gate} progress={progress} license={lic} />
+    : <ClassicPill gate={gate} progress={progress} license={lic} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
