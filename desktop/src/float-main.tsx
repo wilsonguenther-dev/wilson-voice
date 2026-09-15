@@ -15,7 +15,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
-import { acceptProgress, reduceGatePhase, type LivePhase, type TranscribeProgress } from "./pill/live";
+import {
+  acceptProgress,
+  reduceGatePhase,
+  CANCELLED_SETTLE_MS,
+  type LivePhase,
+  type TranscribeProgress,
+} from "./pill/live";
 import "./float.css";
 
 interface Settings { pillStyle?: string; pillPosition?: string }
@@ -94,6 +100,19 @@ function Float() {
     listen<boolean>("recording", (e) =>
       setGate((p) => reduceGatePhase(p, { type: "recording", recording: e.payload })),
     ).then(push);
+
+    // Y3-D — the user cancelled the take. The pill acknowledges it and SETTLES
+    // back to idle on its own (`cancel_settled`); it never paints an error,
+    // because nothing went wrong. The timer is fire-and-forget on purpose: if a
+    // new take has already started by the time it fires, `cancel_settled` only
+    // ever moves the phase it owns and leaves the new take's alone.
+    listen("take_cancelled", () => {
+      setGate((p) => reduceGatePhase(p, { type: "take_cancelled" }));
+      setTimeout(
+        () => setGate((p) => reduceGatePhase(p, { type: "cancel_settled" })),
+        CANCELLED_SETTLE_MS,
+      );
+    }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
   useEffect(() => {

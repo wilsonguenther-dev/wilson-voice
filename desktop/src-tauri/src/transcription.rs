@@ -84,6 +84,26 @@ pub const PREEMPTED_FOR_DICTATION: &str = "meeting chunk preempted by a dictatio
 /// [`drain_and_unload`]: TranscriptionManager::drain_and_unload
 pub const ABANDONED_FOR_EXIT: &str = "meeting chunk abandoned — the app is exiting";
 
+/// Y3-D — what a decode gets back when THE USER cancelled the take that owns it.
+///
+/// The third member of the family above, and deliberately its own constant
+/// rather than a re-use of [`PREEMPTED_FOR_DICTATION`]. The three mean three
+/// different things to the caller:
+///
+/// * [`PREEMPTED_FOR_DICTATION`] — something else wanted the engine. The work is
+///   still wanted; re-decode after the handback.
+/// * [`ABANDONED_FOR_EXIT`] — the process is leaving. The work is still wanted,
+///   but by the NEXT launch, not this one.
+/// * `CANCELLED_BY_USER` — the work is not wanted at all. Nothing re-decodes it,
+///   nothing retries it, and no transcript row is written. The audio is still
+///   kept (parked under the recovery lifecycle) so "actually, transcribe that"
+///   stays possible from History, but that is a user decision, not a retry.
+///
+/// Collapsing this into `PREEMPTED_FOR_DICTATION` would make a cancelled
+/// dictation look to a meeting driver like a chunk worth re-decoding, which is
+/// the exact class of bug the doc comment on [`ABANDONED_FOR_EXIT`] describes.
+pub const CANCELLED_BY_USER: &str = "transcription cancelled by the user";
+
 /// The share of [`TRANSCRIBE_TIMEOUT`] one full-width meeting chunk is allowed
 /// to spend, at a real-time factor of 1.0.
 ///
@@ -419,6 +439,10 @@ enum Discard {
     /// The exit drain cancelled it. Do NOT re-decode: the engine has been
     /// unloaded and the process is leaving. The next launch resumes here.
     ForExit,
+    /// Y3-D — the user cancelled the take this decode belongs to. Do NOT
+    /// re-decode and do NOT retry: unlike the two above, the result is not
+    /// wanted by anyone.
+    ForUserCancel,
 }
 
 /// The decode holding the engine right now.
@@ -886,6 +910,45 @@ impl TranscriptionManager {
         }
     }
 
+    /// Y3-D — stop the in-flight decode because the USER asked, whatever kind
+    /// of work it is.
+    ///
+    /// This is the third caller of YV70's cancel hook, and it is the only one
+    /// that ignores `preemptible`. That flag answers "may something else STEAL
+    /// this work?", and for a dictation the answer is still no — its audio
+    /// exists nowhere else, so no meeting and no other take may take the engine
+    /// off it. The user abandoning their own take is a different question, and
+    /// the person who spoke the words is allowed to decide they are not wanted.
+    ///
+    /// Returns `true` when a decode was actually asked to stop, so the caller
+    /// can tell "there was a decode and it is cancelled" from "there was
+    /// nothing running" — the recording-phase cancel and the decode-phase
+    /// cancel do different things with the clip.
+    ///
+    /// No-op when the in-flight decode has no cancel hook: marking it cancelled
+    /// would discard a decode that runs to completion anyway, and the take's
+    /// own cooperative checkpoints still refuse to paste the result.
+    pub fn cancel_in_flight_for_user(&self) -> bool {
+        let cancel = {
+            let mut slot = self.inner.in_flight.lock();
+            match slot.as_mut() {
+                Some(f) if f.discard.is_none() && f.cancel.is_some() => {
+                    f.discard = Some(Discard::ForUserCancel);
+                    f.cancel.clone()
+                }
+                _ => None,
+            }
+        };
+        match cancel {
+            Some(cancel) => {
+                log::info!("the user cancelled the take — cancelling its in-flight decode");
+                cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Take the engine off an in-flight PREEMPTIBLE decode for an interactive
     /// one (YV93).
     ///
@@ -1072,6 +1135,7 @@ impl TranscriptionManager {
         match discard {
             Some(Discard::ForDictation) => return Err(PREEMPTED_FOR_DICTATION.into()),
             Some(Discard::ForExit) => return Err(ABANDONED_FOR_EXIT.into()),
+            Some(Discard::ForUserCancel) => return Err(CANCELLED_BY_USER.into()),
             None => {}
         }
         result

@@ -135,6 +135,12 @@ pub use record::{
     CUT_GRACE, MAX_SESSION, MAX_SESSION_SECONDS, SESSION_WARN_AT, SESSION_WARN_PERCENT,
     TARGET_RATE,
 };
+/// Y3-D — the clip guard, re-exported so `tests/cancel_long_take.rs` can drive
+/// the REAL keep-the-audio path (`keep_cancelled_take` takes a `&mut ClipWav`)
+/// instead of a parallel reimplementation of it that would stop describing the
+/// code the moment the two drifted. One type, not the whole `record` module:
+/// capture internals stay private.
+pub use record::ClipWav;
 /// Y3 — the dictation capture consumer's test seam and its memory ceiling.
 /// `record` itself stays crate-private; these two are what
 /// `tests/dictation_capture_memory.rs` drives.
@@ -593,6 +599,16 @@ struct AppState {
     /// before the paste, so a dictation the user cancelled while ASR was still
     /// running can never land ⌘V in their app seconds later.
     paste_generation: AtomicU64,
+    /// Y3-D — set while the user has asked THIS take to stop.
+    ///
+    /// `paste_generation` (YV39) already invalidates a stale paste, but it is a
+    /// weaker statement than a cancel: a stale take is still copied to the
+    /// clipboard, still written to history, and still decoded to completion. A
+    /// cancel means none of those happen. Cleared when a take arms, so a cancel
+    /// can never leak into the next one; read at every stage boundary of the
+    /// worker by [`take_is_cancelled`], which is the same checkpoint a chunked
+    /// decode loop calls once per chunk.
+    take_cancelled: AtomicBool,
     /// YP2 licensing. Owns `license.json`, the corroborating trial rows in
     /// SQLite, and the cached revocation list. Read (never cached) by the ONE
     /// gate in front of a new dictation; nothing else in the app consults it.
@@ -1343,6 +1359,12 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     if !license_allows_new_dictation(app, state) {
         return;
     }
+    // Y3-D: a take ARMS with a clear cancel flag, so a cancel that arrived
+    // during the previous take can never kill this one. Cleared here rather
+    // than in the worker: the worker starts after the hold ends, and a cancel
+    // fired in the gap between press and release must still be honoured.
+    state.take_cancelled.store(false, Ordering::SeqCst);
+    register_cancel_shortcut(app);
     let denoise = state.settings.lock().denoise;
     // YV35: anchor the press→capture_start span on the physical key-down when
     // this take came from the PTT hold (None for tray/button/hands-free starts).
@@ -1439,6 +1461,121 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     }
 }
 
+/// Y3-D — take Escape off the system for the duration of ONE take.
+///
+/// See [`shortcuts::CANCEL`] for why this is not registered at launch like the
+/// other four: a bare Escape held for the life of the process would swallow
+/// Escape in every other app. Registration failures are logged and nothing else
+/// — the tray's Cancel item and the pill's own button still work, so a Mac where
+/// something else owns Escape loses the shortcut, not the feature.
+///
+/// Idempotent: `register` on an already-registered shortcut is an error the
+/// plugin reports, and a re-arm inside one take (hands-free re-latch) must not
+/// look like a failure, so the already-registered case is logged at debug.
+fn register_cancel_shortcut(app: &AppHandle) {
+    // Y0-D: a `--smoke` launch registers NOTHING system-wide.
+    if !smoke::global_hotkeys_allowed() {
+        return;
+    }
+    let sc = shortcuts::CANCEL.shortcut();
+    if app.global_shortcut().is_registered(sc) {
+        log::debug!("{} cancel already registered", shortcuts::CANCEL.label);
+        return;
+    }
+    match app.global_shortcut().register(sc) {
+        Ok(()) => log::info!(
+            "{} cancel registered for this take",
+            shortcuts::CANCEL.label
+        ),
+        Err(e) => log::warn!("{} register failed: {e}", shortcuts::CANCEL.label),
+    }
+}
+
+/// Give Escape back to the rest of the Mac. Called on EVERY exit of a take —
+/// the normal end, the failure arms, and the cancel itself — because the one
+/// path that forgets is the one that leaves Escape broken system-wide until Yap
+/// quits.
+fn unregister_cancel_shortcut(app: &AppHandle) {
+    if !smoke::global_hotkeys_allowed() {
+        return;
+    }
+    let sc = shortcuts::CANCEL.shortcut();
+    if !app.global_shortcut().is_registered(sc) {
+        return;
+    }
+    match app.global_shortcut().unregister(sc) {
+        Ok(()) => log::info!("{} cancel released", shortcuts::CANCEL.label),
+        Err(e) => log::warn!("{} unregister failed: {e}", shortcuts::CANCEL.label),
+    }
+}
+
+/// Y3-D — what a cancelled take writes on its recovery row.
+///
+/// A distinct reason from YV52's failures and YV67's rejections, because it is
+/// a distinct thing: nothing went wrong. History shows it as a take the user
+/// stopped, and Retry on it is "actually, transcribe that after all" rather
+/// than "try again, it may work this time".
+pub const CANCELLED_TAKE_REASON: &str = "cancelled";
+
+/// The message the cancelled take's terminal event carries. Not an error: the
+/// pill settles to idle on it rather than painting a failure.
+pub const CANCELLED_TAKE_MESSAGE: &str = "Cancelled";
+
+/// Y3-D — the take-level cancellation checkpoint.
+///
+/// Called at every stage boundary of the transcribe worker (capture handoff,
+/// pre-decode, post-decode, immediately before paste) and, in a chunked decode,
+/// once per chunk boundary. Cooperative on purpose: the alternative is killing
+/// the engine, and the engine is in-process and SHARED with meetings, so
+/// killing it to end one dictation would take a running meeting down with it.
+fn take_is_cancelled(state: &AppState) -> bool {
+    state.take_cancelled.load(Ordering::SeqCst)
+}
+
+/// Y3-D — park a cancelled take's audio under the recovery lifecycle.
+///
+/// The same move + row that YV52 gives a FAILED take, which is the point: a
+/// cancel must never be the thing that destroys fifteen minutes of audio. It
+/// lands in `recovery_dir()` and therefore inherits YV52/YV63's 7-day purge and
+/// shows up in History with a Retry, so "actually, transcribe that" survives a
+/// mis-pressed Escape. `dir` is a parameter so the whole path is drivable
+/// against a temp dir from a test rather than the user's real recovery folder.
+///
+/// Best-effort like `keep_failed_take`: if the clip cannot be preserved the user
+/// is exactly where a pre-Y3-D cancel left them, never worse, and never with a
+/// row pointing at audio that is not there.
+pub fn keep_cancelled_take(
+    db: &Database,
+    dir: &Path,
+    clip: &mut record::ClipWav,
+    speech_seconds: f64,
+    source_app: Option<String>,
+) -> Option<FailedDictation> {
+    let path = match clip.keep_for_recovery(dir) {
+        Ok(path) => path,
+        Err(e) => {
+            log::warn!("cancelled take not recoverable (clip could not be kept): {e}");
+            return None;
+        }
+    };
+    match db.record_failed_dictation(&path, speech_seconds, CANCELLED_TAKE_REASON, source_app) {
+        Ok(row) => {
+            log::info!(
+                "Y3-D: cancelled take {} ({:.2}s) parked for retry",
+                row.id,
+                speech_seconds
+            );
+            Some(row)
+        }
+        Err(e) => {
+            // No row means nothing can ever reach this wav — don't leak audio.
+            log::warn!("cancelled-take row not written ({e}) — removing kept clip");
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
 /// Discard in-flight take (FN interrupt / cancel) — no ASR.
 fn cancel_recording(app: &AppHandle, state: &AppState) {
     // YV39: bump BEFORE the recording check. A cancel that arrives while a
@@ -1458,15 +1595,115 @@ fn cancel_recording(app: &AppHandle, state: &AppState) {
     // YV28: un-mute the Mac the moment the take ends (cancel path).
     restore_system_output(state);
     let _ = app.emit("recording", false);
+    let mut recoverable = None;
     if let Some(active) = state.recorder.lock().take() {
         // Discarded take — no ASR, so skip the Silero isolation pass entirely.
-        // The returned clip guard unlinks the recovery wav as it drops here.
-        let _ = record::stop_recording(active, None);
+        //
+        // Y3-D: the clip is PARKED, not unlinked. Before this, the returned clip
+        // guard dropped here and took the only copy of the audio with it, so a
+        // mis-pressed cancel at minute fifteen of a take was fifteen minutes
+        // gone with nothing in History to show for it. A take too short to have
+        // a wav at all still comes back `Err` from `stop_recording`, and there
+        // is correspondingly nothing to keep.
+        match record::stop_recording(active, None) {
+            Ok(mut rec) => {
+                recoverable = keep_cancelled_take(
+                    &state.db,
+                    &recovery_dir(),
+                    &mut rec.clip,
+                    rec.speech_seconds,
+                    None,
+                );
+            }
+            Err(e) => log::info!("cancelled take had no clip to keep: {e}"),
+        }
     }
-    *state.last_error.lock() = Some("Dictation cancelled (key while holding)".into());
+    // NOT a hard `last_error`: a cancel is something the user did on purpose, so
+    // the pill settles to idle rather than painting a failure (the item's "the
+    // pill shows a cancelled state that settles to idle — not an error").
+    *state.last_error.lock() = None;
+    let _ = app.emit(
+        TAKE_CANCELLED_EVENT,
+        serde_json::json!({ "message": CANCELLED_TAKE_MESSAGE, "failed": recoverable }),
+    );
+    // The terminal marker every waiting view already listens for (YV79), so a
+    // spinner clears on the cancel instead of running to its watchdog.
+    let _ = app.emit(
+        TAKE_DONE_EVENT,
+        serde_json::json!({ "ok": false, "message": CANCELLED_TAKE_MESSAGE }),
+    );
     emit_status(app, state);
     float_pill::after_recording(app, state.settings.lock().show_floating_pill);
+    // The bare literal is load-bearing and must stay intact: `vocab`'s
+    // redaction corpus is LITERALS ONLY, so a word survives a packed support
+    // log only if Yap compiled that exact literal into itself. Folding the new
+    // clip-kept detail into this string dropped "cancelled" from the corpus and
+    // redacted it out of every shipped support bundle —
+    // `tests/support_bundle_contents.rs:156` caught it. The detail gets its own
+    // line instead.
     log::info!("recording cancelled");
+    log::info!("cancelled take clip kept: {}", recoverable.is_some());
+}
+
+/// Y3-D — cancel the take that is running RIGHT NOW, at whatever stage it is at.
+///
+/// `cancel_recording` only ever answered half the question. It stops a
+/// RECORDING; the moment the hold ended and decode began there was nothing left
+/// to press, so a fifteen-minute take the user regretted the instant they let go
+/// occupied the engine to completion. This is the other half, and it is one
+/// entry point on purpose: the user pressing Escape does not know or care which
+/// stage the take is in, and a UI that offers cancel only during the hold is the
+/// bug.
+///
+/// Three things happen, in this order:
+///
+/// 1. The cooperative flag goes up. Every stage boundary of the worker reads it
+///    (see [`take_is_cancelled`]), so a take between stages stops without the
+///    engine being involved at all.
+/// 2. If a take is still recording, [`cancel_recording`] ends it and PARKS its
+///    clip.
+/// 3. If a decode is in flight, the engine's own cancel hook is fired with
+///    [`transcription::CANCELLED_BY_USER`], so the decode returns at the next
+///    point it checks rather than running to completion.
+///
+/// What deliberately does NOT happen: the engine is not killed and not
+/// unloaded. It is in-process and shared with meeting ASR, so tearing it down
+/// to end one dictation would take a running meeting down with it.
+///
+/// Returns true when something was actually cancelled, so the caller can tell a
+/// real cancel from an Escape pressed at an idle pill.
+#[tauri::command]
+fn cancel_transcription(app: AppHandle, state: State<'_, Arc<AppState>>) -> bool {
+    cancel_take(&app, &state)
+}
+
+/// The body of [`cancel_transcription`], callable without a `State` extractor.
+///
+/// The Escape hotkey fires on the global-shortcut handler thread, which has no
+/// `State<'_, _>` to hand it, and the tray item is in the same position — so the
+/// command is a one-line wrapper over this and there is exactly ONE cancel
+/// implementation rather than one per entry point.
+fn cancel_take(app: &AppHandle, state: &Arc<AppState>) -> bool {
+    let was_recording = *state.recording.lock();
+    let was_busy = *state.busy.lock();
+    if !was_recording && !was_busy {
+        log::debug!("cancel requested with no take in flight — ignored");
+        unregister_cancel_shortcut(app);
+        return false;
+    }
+    state.take_cancelled.store(true, Ordering::SeqCst);
+    if was_recording {
+        cancel_recording(app, state);
+    }
+    // Fired even when the take was still recording: the hold may have ended
+    // between the two lines above, and cancelling nothing is a no-op that
+    // returns false, while missing the decode is a fifteen-minute wait.
+    let stopped_decode = state.transcription.cancel_in_flight_for_user();
+    unregister_cancel_shortcut(app);
+    log::info!(
+        "Y3-D cancel: recording={was_recording} busy={was_busy} decode_cancelled={stopped_decode}"
+    );
+    true
 }
 
 /// Panic-safety net for the transcribe worker (audit finding [8]). `busy` is set
@@ -1546,6 +1783,13 @@ pub const POLISH_SKIPPED_EVENT: &str = "polish_skipped";
 /// so there is no transcription to have failed, and the ACTION differs — a
 /// revoked grant needs the permission screen, not a four-second toast.
 pub const TAKE_FAILED_EVENT: &str = "take_failed";
+
+/// Y3-D — the take the user cancelled. Distinct from [`TAKE_FAILED_EVENT`] and
+/// [`TRANSCRIPT_ERROR_EVENT`] because a cancel is not a failure: the pill
+/// settles to idle on it, no red state, no notification. `failed` carries the
+/// parked recovery row (or null) so History can offer "transcribe it after all"
+/// on exactly this take.
+pub const TAKE_CANCELLED_EVENT: &str = "take_cancelled";
 
 /// PERM-D — the `code` on [`TAKE_FAILED_EVENT`] for an all-zero buffer.
 pub const SILENT_CAPTURE_CODE: &str = "silent_capture";
@@ -1706,6 +1950,14 @@ enum TakeOutcome {
         /// `status` is not `Authorized`: surface the permission screen.
         needs_permission: bool,
     },
+    /// Y3-D — the user cancelled this take mid-decode.
+    ///
+    /// Its own arm rather than a `Soft` or an `Err`: `Soft` pastes nothing but
+    /// also keeps nothing (there is no audio worth saving behind a fumbled tap),
+    /// and `Err` is a failure, which a deliberate cancel is not. This arm keeps
+    /// the audio under the recovery lifecycle, writes NO transcript row, pastes
+    /// NOTHING, and settles the pill to idle.
+    Cancelled,
 }
 
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
@@ -1799,6 +2051,13 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // wav still exists only for the life of this take on every path that
             // is not an outright failure.
             pending = Some((rec.clip, rec.speech_seconds, source_app.clone()));
+            // Y3-D checkpoint — the capture→decode boundary, placed immediately
+            // after `pending` takes the clip so the cancel arm inherits YV52's
+            // keep-the-audio guarantee instead of re-deriving it. Every later
+            // checkpoint is the same two lines for the same reason.
+            if take_is_cancelled(&state2) {
+                return Ok(TakeOutcome::Cancelled);
+            }
             // YV67 — the mic died mid-hold (unplugged, format change). Whatever
             // it captured before that is real audio and is already on disk, but
             // the take is TRUNCATED at an arbitrary word, so transcribing and
@@ -1895,7 +2154,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // between completions.
             let sink = transcribe_progress::AppProgress(app2.clone());
             let mut progress = transcribe_progress::TakeProgress::new(&sink);
-            let asr = transcribe_native(
+            // Y3-D checkpoint — pre-decode. The last chance to not start a
+            // fifteen-minute decode at all.
+            if take_is_cancelled(&state2) {
+                return Ok(TakeOutcome::Cancelled);
+            }
+            let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
                 &model_path,
@@ -1903,7 +2167,22 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 &settings.language,
                 bias_prompt,
                 &mut progress,
-            )?;
+            ) {
+                Ok(asr) => asr,
+                // Y3-D — the engine stopped because the user asked, which is
+                // not a decode failure. Compared against the CONSTANT, never a
+                // literal: transcription.rs:74-77 documents exactly this bug.
+                Err(e) if e == transcription::CANCELLED_BY_USER => {
+                    return Ok(TakeOutcome::Cancelled);
+                }
+                Err(e) => return Err(e),
+            };
+            // Y3-D checkpoint — post-decode. A decode with no cancel hook runs
+            // to completion however loudly it is asked to stop; this is what
+            // stops its text reaching the clipboard anyway.
+            if take_is_cancelled(&state2) {
+                return Ok(TakeOutcome::Cancelled);
+            }
             // Y3-B — a DEGRADED take is text the user keeps AND audio we refuse
             // to throw away: some window of it never decoded, so the recovery
             // row (YV52/YV66's Recover path) is what lets them retry the same
@@ -2124,6 +2403,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // clipboard-only if the user switched apps during the ASR delay.
             // YV39 cancellation guard: a stale take (cancelled while this one
             // was transcribing) is copied but NEVER pasted.
+            // Y3-D checkpoint — the last boundary before anything reaches the
+            // user's app. A cancel here pastes NOTHING: not even the
+            // copy-to-clipboard a stale take still gets below, because a stale
+            // take is one the user replaced and a cancelled one is one they
+            // rejected.
+            if take_is_cancelled(&state2) {
+                return Ok(TakeOutcome::Cancelled);
+            }
             let current_generation = state2.paste_generation.load(Ordering::SeqCst);
             if current_generation != generation {
                 log::warn!(
@@ -2262,6 +2549,44 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     entry.word_count,
                     outcome.pasted,
                     pipeline_ms
+                );
+            }
+            Ok(TakeOutcome::Cancelled) => {
+                // Y3-D. Three assertions live in this arm, and each one is a
+                // test in tests/cancel_long_take.rs:
+                //   * NO transcript row — we never reach `insert_transcript_at`
+                //     from here, so History gains a recovery row and nothing
+                //     else.
+                //   * NOTHING pasted — no `copy_and_maybe_paste`, not even the
+                //     clipboard-only fallback a STALE take gets. A stale take is
+                //     one the user superseded; a cancelled one is one they
+                //     rejected.
+                //   * The audio SURVIVES — parked under the same recovery-dir
+                //     lifecycle (YV52/YV63, 7-day purge) a failed take gets, so
+                //     "actually, transcribe that" is a Retry away. A cancel that
+                //     destroys fifteen minutes of audio is a worse bug than the
+                //     one this item fixes.
+                // Not a hard `last_error`: the pill settles to idle, not to an
+                // error state.
+                *state2.last_error.lock() = None;
+                let recoverable = pending.take().and_then(|(mut clip, speech_seconds, src)| {
+                    keep_cancelled_take(&db, &recovery_dir(), &mut clip, speech_seconds, src)
+                });
+                let _ = app2.emit(
+                    TAKE_CANCELLED_EVENT,
+                    serde_json::json!({
+                        "message": CANCELLED_TAKE_MESSAGE,
+                        "failed": recoverable,
+                    }),
+                );
+                // YV79 terminal marker, so any spinner clears on the cancel.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "message": CANCELLED_TAKE_MESSAGE }),
+                );
+                log::info!(
+                    "take cancelled by the user (clip kept={})",
+                    recoverable.is_some()
                 );
             }
             Ok(TakeOutcome::Soft(msg)) => {
@@ -2405,6 +2730,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
         }
         *state2.busy.lock() = false;
         *state2.hands_free.lock() = false;
+        // Y3-D: the take is over on EVERY path that reaches here — success,
+        // soft, rejection, silent capture, error and cancel alike — so Escape
+        // goes back to the rest of the Mac here, once, instead of in six arms
+        // where one would eventually be forgotten.
+        unregister_cancel_shortcut(&app2);
         // Keep island on all Spaces if always-on; else hide after take
         float_pill::after_recording(&app2, state2.settings.lock().show_floating_pill);
         emit_status(&app2, &state2);
@@ -4802,6 +5132,7 @@ pub fn run() {
         secure_input: PLMutex::new(secure_input::SecureInputStatus::default()),
         vad: PLMutex::new(None),
         paste_generation: AtomicU64::new(0),
+        take_cancelled: AtomicBool::new(false),
         license: license_manager,
         transcription: transcription::TranscriptionManager::new(),
         support_bundle: PLMutex::new(None),
@@ -4938,6 +5269,25 @@ pub fn run() {
                             }
                             return;
                         }
+                        // Y3-D esc — cancel the take in flight. Registered
+                        // only WHILE a take is in flight (see
+                        // `shortcuts::CANCEL`), so this handler cannot fire at
+                        // an idle Yap: outside a take, Escape is not ours and
+                        // the event never reaches this closure at all.
+                        if shortcut == &shortcuts::CANCEL.shortcut() {
+                            if event.state == ShortcutState::Pressed {
+                                log::info!("esc pressed — cancel the take in flight");
+                                let st = state.clone();
+                                let h = app.clone();
+                                // Off the shortcut thread: the cancel joins the
+                                // recorder's stop, and blocking the global
+                                // shortcut handler blocks every other chord.
+                                std::thread::spawn(move || {
+                                    cancel_take(&h, &st);
+                                });
+                            }
+                            return;
+                        }
                         // ⌃⌘V — Paste Last Transcript (Wispr-parity, always on,
                         // independent of the ⌘⇧V dictation toggle below).
                         let paste_last_sc = shortcuts::PASTE_LAST.shortcut();
@@ -4977,6 +5327,8 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
+            cancel_transcription,
             user_display_name,
             get_settings,
             formatting_options,
@@ -6552,6 +6904,10 @@ mod tests {
             // rejected one does: the clip is the evidence, and the gate can be
             // wrong.
             super::TakeOutcome::SilentCapture { .. } => AudioDuty::MustPersist,
+            // Y3-D — a cancelled take keeps its audio for the strongest reason
+            // of the four: the user may have cancelled a fifteen-minute take by
+            // accident, and there is no second copy anywhere.
+            super::TakeOutcome::Cancelled => AudioDuty::MustPersist,
         }
     }
 
@@ -6564,7 +6920,7 @@ mod tests {
             .map(|i| 0.4 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
             .collect();
         crate::record::write_wav_i16(&path, 16_000, &spoken).unwrap();
-        (path.clone(), crate::record::ClipWav::adopt_for_test(path))
+        (path.clone(), crate::record::ClipWav::adopt_existing(path))
     }
 
     #[test]
@@ -6765,6 +7121,7 @@ mod tests {
             secure_input: super::PLMutex::new(crate::secure_input::SecureInputStatus::default()),
             vad: super::PLMutex::new(None),
             paste_generation: std::sync::atomic::AtomicU64::new(0),
+            take_cancelled: std::sync::atomic::AtomicBool::new(false),
             license,
             transcription,
             support_bundle: super::PLMutex::new(None),

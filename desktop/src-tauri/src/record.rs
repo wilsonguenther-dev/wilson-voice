@@ -640,11 +640,19 @@ impl ClipWav {
         &self.path
     }
 
-    /// Test-only guard over a wav that is ALREADY on disk, so the recovery path
-    /// (YV52/YV67) can be driven from a unit test without a capture device. Same
-    /// drop semantics as a real clip — it unlinks unless `keep_for_recovery` ran.
-    #[cfg(test)]
-    pub fn adopt_for_test(path: PathBuf) -> Self {
+    /// A guard over a wav that is ALREADY on disk, so the recovery path
+    /// (YV52/YV67/Y3-D) can be driven without a capture device. Same drop
+    /// semantics as a real clip — it unlinks unless `keep_for_recovery` ran.
+    ///
+    /// Y3-D removed the `#[cfg(test)]` gate. `tests/cancel_long_take.rs` is an
+    /// INTEGRATION test: it links the library the way the app does, without
+    /// `cfg(test)`, so a unit-test-only seam is invisible to it. The choice was
+    /// between exposing this constructor and writing a second, parallel
+    /// implementation of "park a clip in the recovery dir" that the test could
+    /// reach — and a parallel implementation is a test that stops describing
+    /// the code the moment the two drift. This way the cancel test drives the
+    /// SAME `keep_for_recovery` the app calls.
+    pub fn adopt_existing(path: PathBuf) -> Self {
         Self {
             path,
             writer: None,
