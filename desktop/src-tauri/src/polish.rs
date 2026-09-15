@@ -63,6 +63,52 @@ pub const DEFAULT_POLISH_DEADLINE_MS: u64 = 1200;
 const MIN_POLISH_DEADLINE_MS: u64 = 100;
 const MAX_POLISH_DEADLINE_MS: u64 = 5000;
 
+/// Y4-H — `polish_deadline_ms` is a bounded number on disk and a NAMED choice on
+/// screen. These are the only three values the Settings screen ever writes:
+/// `(id, label, one-line description, deadline in ms)`, fastest first. The
+/// middle one is [`DEFAULT_POLISH_DEADLINE_MS`] by construction, so the shipped
+/// default is always a selectable row rather than an unnamed number the picker
+/// cannot show as selected.
+pub const POLISH_SPEEDS: [(&str, &str, &str, u64); 3] = [
+    (
+        "fast",
+        "Fast",
+        "Paste sooner; the model is dropped if it is still thinking.",
+        600,
+    ),
+    (
+        "balanced",
+        "Balanced",
+        "The default — enough time for a sentence or two.",
+        DEFAULT_POLISH_DEADLINE_MS,
+    ),
+    (
+        "careful",
+        "Careful",
+        "Wait longer on long takes; pasting can lag behind you.",
+        2500,
+    ),
+];
+
+/// The bounded range, as one function instead of two private consts every
+/// caller re-clamps by hand. Below the floor the stage could never answer;
+/// above the ceiling it stops being a dictation app.
+pub fn clamp_polish_deadline_ms(ms: u64) -> u64 {
+    ms.clamp(MIN_POLISH_DEADLINE_MS, MAX_POLISH_DEADLINE_MS)
+}
+
+/// Which named speed a stored deadline reads as — the nearest row, so a value
+/// written by an older build (or hand-edited) still shows a selected button
+/// instead of none.
+pub fn polish_speed_for(ms: u64) -> &'static str {
+    let ms = clamp_polish_deadline_ms(ms);
+    POLISH_SPEEDS
+        .iter()
+        .min_by_key(|(_, _, _, d)| d.abs_diff(ms))
+        .map(|(id, _, _, _)| *id)
+        .unwrap_or("balanced")
+}
+
 /// Nothing to fix below this — a 3-word utterance costs a model round trip and
 /// gains nothing (§2.3).
 const MIN_POLISH_WORDS: usize = 4;
@@ -194,9 +240,7 @@ impl PolishConfig {
     pub fn from_settings(settings: &crate::AppSettings, mode: DictationMode) -> Self {
         Self {
             model: settings.polish_model.trim().to_string(),
-            deadline_ms: settings
-                .polish_deadline_ms
-                .clamp(MIN_POLISH_DEADLINE_MS, MAX_POLISH_DEADLINE_MS),
+            deadline_ms: clamp_polish_deadline_ms(settings.polish_deadline_ms),
             style: style_for_mode(settings, mode),
         }
     }
