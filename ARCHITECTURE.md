@@ -67,6 +67,38 @@ dictionary + (future) LoRA
 → accuracy / jargon
 ```
 
+## Runtime Dependencies
+
+Nothing here is "found on the machine". Every row is either shipped in the
+bundle or supplied by the caller, and the two environment rows below are the
+contract every automated launch must honour.
+
+| Dependency | How it is supplied | Default when absent | Notes |
+|---|---|---|---|
+| `YAP_DATA_DIR` (env) | Caller exports it before launch | `<Application Support>/WilsonVoice` — the shipped behaviour, unchanged | Relocates the app's ENTIRE state root: SQLite history, `settings.json`, `models/`, `recordings/`, `recovery/`, `meetings/`, `logs/`. Resolved ONCE per process (`src/app_paths.rs`) and then frozen, so it cannot move the history out from under an open SQLite connection. It is an OVERRIDE, never a rename — the default directory name is frozen because renaming it orphans every existing install's history. |
+| `--smoke` (argv) | Caller passes the flag | Normal GUI launch | A launch an automated agent may make. It registers NO global hotkey (no CGEvent PTT tap, no ⌃⌘V / ⌃⌘M / ⌃⌘Z / ⌘⇧V), synthesizes NO ⌘V and no Delete keystroke, and **refuses to start** — exiting non-zero with a named `SMOKE_REFUSED_*` message on stderr — when `YAP_DATA_DIR` is unset or resolves to the default root. It never degrades into using the real data dir. |
+| ASR / diarization models (GGUF, ONNX) | Downloaded once, sha256-verified, into `<state root>/models` | none — first run fetches | Moves with `YAP_DATA_DIR`, so two concurrent launches do not share one multi-gigabyte dir. |
+| `yap-polish`, `yap-diarize` sidecars | Bundled via `bundle.externalBin`, staged at `src-tauri/binaries/<name>-<triple>` | none — a cargo build of the app FAILS without them | Build with `cargo build -p yap-polish --release` (and `-p yap-diarize`), then copy into `binaries/`. |
+| macOS TCC grants (Microphone, Accessibility, Input Monitoring) | Granted by the user, keyed to the bundle identifier | none — the app degrades to clipboard-only | The bundle id is irreversible: renaming it resets all three grants. |
+
+**Run contract — no agent launches the app without `YAP_DATA_DIR`.**
+
+The harness isolates working directories, cargo target dirs and preview ports.
+It does not isolate the app's state. Two concurrent launches plus the installed
+copy would otherwise read and write one SQLite history, one settings store and
+one models dir, all register the same global PTT binding, and all synthesize a
+paste into whatever window happens to be frontmost. So:
+
+```bash
+export YAP_DATA_DIR="$(mktemp -d)/yap-state"
+npm run desktop:dev            # or the built binary
+# automated / unattended runs additionally pass:
+#   wilson-voice --smoke
+```
+
+`--smoke` is the enforcement: it is the only launch mode that cannot silently
+fall back to the real dictation history, because it exits non-zero instead.
+
 ## Explicit non-goals
 
 - Always-on AWS GPU for short dictation

@@ -866,11 +866,10 @@ mod tests {
     /// exactly the condition under which the app falls back to the energy VAD.
     #[test]
     fn real_model_finds_speech_in_the_fixture_and_none_in_silence() {
-        let model = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("WilsonVoice")
-            .join("models")
-            .join("silero_vad_v4.onnx");
+        // Y0-D: the ONE resolved models dir, not a third hand-rolled copy of
+        // `dirs::data_dir()/WilsonVoice`. Under `YAP_DATA_DIR` this looks in the
+        // scratch root and skips, which is the correct answer there.
+        let model = crate::models::models_dir().join("silero_vad_v4.onnx");
         if !model.exists() {
             eprintln!("skipping: no cached silero model at {}", model.display());
             return;
