@@ -22,36 +22,100 @@ pub enum DictationMode {
     List,
 }
 
+/// The mode an app we do NOT recognise gets: the CONSERVATIVE one.
+///
+/// `Plain` never reflows, never adds a sign-off, never cuts paragraphs and never
+/// drops a trailing period — it only expands punctuation dictated by name. That
+/// is the right guess for an unknown surface, because every mistake it can make
+/// is one the user can see and ignore, while the aggressive modes make mistakes
+/// the user has to delete: an `Email` sign-off appearing in a random text field
+/// is the kind of thing an app gets uninstalled over.
+pub const DEFAULT_MODE: DictationMode = DictationMode::Plain;
+
+/// Browsers, matched before every other family.
+///
+/// LIMITATION (deliberate, Y4-F): a browser is ambiguous — Gmail in Chrome is an
+/// email surface, Google Docs in Chrome is a document, and a GitHub comment box
+/// is chat. Resolving that needs the tab URL or the focused `AXSelectedText`
+/// element, which is P1 #11 in the Wispr parity backlog and is explicitly OUT of
+/// scope here. Until it exists, a browser resolves to [`DEFAULT_MODE`], so the
+/// wrong guess is cheap: the user gets their words with punctuation and nothing
+/// else. `resolve_mode_with_context` still upgrades a browser to `Email` when the
+/// text already before the caret is an email greeting, which is the one signal we
+/// can read today without a new permission.
+const BROWSER_KEYS: &[&str] = &[
+    "chrome",
+    "chromium",
+    "safari",
+    "firefox",
+    "com.microsoft.edge",
+    "microsoft edge",
+    "brave",
+    "vivaldi",
+    "opera",
+    "company.thebrowser", // Arc — "arc" alone is too short to match on safely.
+];
+
 /// Map a frontmost app name (or bundle id) to a dictation mode via keyword match.
 ///
 /// Matching is substring-based and case-insensitive so it works on both human titles
 /// ("Google Chrome") and bundle ids ("com.google.Chrome"). Order matters where keyword
-/// sets could overlap; the most specific product families are checked first.
+/// sets could overlap; browsers are checked FIRST (see [`BROWSER_KEYS`]) and the most
+/// specific product families after that. Anything unrecognised gets [`DEFAULT_MODE`].
 pub fn mode_for_app(app_name: &str) -> DictationMode {
     let a = app_name.to_lowercase();
     let has = |kw: &str| a.contains(kw);
 
+    // Browsers first: ambiguous surface, conservative answer. Checked ahead of the
+    // families below so a browser can never be captured by a coincidental keyword.
+    if BROWSER_KEYS.iter().any(|kw| has(kw)) {
+        return DEFAULT_MODE;
+    }
+    // Editors / terminals — code or plain technical text. Checked ahead of the prose
+    // families because an IDE that capitalises identifiers is worse than no dictation
+    // at all, so a surface that MIGHT be code must not be claimed by a prose rule.
+    if has("terminal")
+        || has("iterm")
+        || has("ghostty")
+        || has("alacritty")
+        || has("code")
+        || has("xcode")
+        || has("cursor")
+        || has("zed")
+        || has("jetbrains")
+        || has("sublime")
+        || has("warp")
+    {
+        return DictationMode::Code;
+    }
     // Email clients.
     if has("gmail") || has("outlook") || has("superhuman") || has("airmail") || has("mail") {
         return DictationMode::Email;
     }
     // Long-form documents.
-    if has("docs") || has("word") || has("pages") || has("notion") {
+    if has("textedit") || has("docs") || has("word") || has("pages") || has("notion") {
         return DictationMode::Document;
     }
     // Note-takers.
     if has("notes") || has("bear") || has("obsidian") {
         return DictationMode::Notes;
     }
-    // Editors / terminals — code or plain technical text.
-    if has("terminal") || has("iterm") || has("code") || has("xcode") || has("warp") {
-        return DictationMode::Code;
-    }
     // Chat surfaces.
-    if has("slack") || has("discord") || has("messages") || has("telegram") || has("whatsapp") {
+    // `messages` is the human title; `mobilesms` is the bundle id macOS actually
+    // reports for Messages (com.apple.MobileSMS), and matching only the title is
+    // how a chat surface silently fell through to the conservative default.
+    if has("slack")
+        || has("discord")
+        || has("messages")
+        || has("mobilesms")
+        || has("imessage")
+        || has("telegram")
+        || has("whatsapp")
+        || has("signal")
+    {
         return DictationMode::Chat;
     }
-    DictationMode::Plain
+    DEFAULT_MODE
 }
 
 /// Format a raw transcript: render clear list intent as a numbered list, otherwise
@@ -189,6 +253,10 @@ pub fn needs_leading_space(context: Option<&str>, text: &str) -> bool {
 /// Join the dictated text onto the text before the caret: apply the casing
 /// decision, then the spacing decision. Never removes characters, so the
 /// "never lose text" contract holds (`None` context ⇒ verbatim passthrough).
+///
+/// This is the CONTEXT primitive and it knows nothing about the dictation mode.
+/// Pipeline callers must go through [`join_for_mode`], which is the same rule for
+/// every prose mode and a verbatim join in `Code`.
 pub fn join_with_context(text: &str, context: Option<&str>) -> String {
     let cased = apply_lead_case(text, lead_case_for_context(context));
     if needs_leading_space(context, &cased) {
@@ -196,6 +264,26 @@ pub fn join_with_context(text: &str, context: Option<&str>) -> String {
     } else {
         cased
     }
+}
+
+/// Join a take onto the caret context FOR A MODE — the entry point the dictation
+/// pipeline uses, and the one that keeps `Code` verbatim.
+///
+/// [`join_with_context`] decides casing from the caret context alone, which is the
+/// right rule for prose and the wrong rule in an editor: a caret sitting after
+/// `let x = 5. ` reads as "a sentence just ended", and capitalising the next word
+/// turns `foo` into `Foo`. In [`DictationMode::Code`] the casing decision is
+/// therefore skipped entirely and only the spacing decision survives — the same
+/// stance `should_format` and [`apply_spoken_marks`] already take for that mode.
+pub fn join_for_mode(text: &str, context: Option<&str>, mode: DictationMode) -> String {
+    if mode == DictationMode::Code {
+        return if needs_leading_space(context, text) {
+            format!(" {text}")
+        } else {
+            text.to_string()
+        };
+    }
+    join_with_context(text, context)
 }
 
 /// Apply a [`LeadCase`] to the first word of `text`.
