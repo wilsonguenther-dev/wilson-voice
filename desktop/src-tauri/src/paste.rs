@@ -235,6 +235,25 @@ pub fn copy_and_maybe_paste(
             )
         }
         Err(no_receipt) => {
+            // PERM-E — a take that SUCCEEDED and a paste that did not land has
+            // a different cause from a take that heard nothing, and the user
+            // must not read it as a transcription failure. The one grant that
+            // produces exactly this shape is Accessibility: it was trusted when
+            // we checked at the top of this function and revoked (or never
+            // really granted) by the time enigo tried to post ⌘V. Re-read it
+            // here, name it in the message, and poke the watcher so the health
+            // row agrees with the toast.
+            if !permissions::is_accessibility_trusted() {
+                permissions::poke(permissions::WatchReason::Refusal);
+                log::error!(
+                    "paste not confirmed AND Accessibility is no longer trusted — reporting the grant, not the transcript"
+                );
+                return copy_only(
+                    app,
+                    text,
+                    &permissions::paste_failure_detail(false, &no_receipt.reason),
+                );
+            }
             log::error!(
                 "paste not confirmed: {} (frontmost={}, window={}ms)",
                 no_receipt.reason,

@@ -6,7 +6,11 @@ import {
   parseMicPermissionStatus,
   permissionAction,
   permissionCopy,
+  permissionHealth,
+  grantNags,
+  type GrantStatus,
   type MicPermissionStatus,
+  type PermissionGrantRow,
 } from "./permission";
 
 describe("permissionCopy", () => {
@@ -157,5 +161,93 @@ describe("parseMicPermissionStatus", () => {
       expect(MIC_PERMISSION_STATUSES).toContain(out);
       expect(out).toBe("not_determined");
     }
+  });
+});
+
+// ── PERM-E — permissionHealth ──────────────────────────────────────────────
+
+const row = (
+  key: string,
+  label: string,
+  status: GrantStatus,
+  pane: string,
+): PermissionGrantRow => ({
+  key,
+  label,
+  status,
+  pane,
+  detail: `${label} detail sentence.`,
+});
+
+const FOUR = (
+  mic: GrantStatus,
+  ax: GrantStatus,
+  hid: GrantStatus,
+  audio: GrantStatus,
+): PermissionGrantRow[] => [
+  row("microphone", "Microphone", mic, "Microphone"),
+  row("accessibility", "Accessibility", ax, "Accessibility"),
+  row("input_monitoring", "Input Monitoring", hid, "InputMonitoring"),
+  row("audio_capture", "System audio recording", audio, "SystemAudio"),
+];
+
+describe("permissionHealth", () => {
+  it("is INVISIBLE when all four are authorized — no banner, no nag", () => {
+    const health = permissionHealth({
+      grants: FOUR("authorized", "authorized", "authorized", "authorized"),
+    });
+    expect(health.visible).toBe(false);
+    expect(health.line).toBe("");
+    expect(health.action.kind).toBe("none");
+  });
+
+  it("is invisible for UNKNOWN grants too — an unreadable grant is not a problem", () => {
+    // System audio is unknown by construction on every fresh install; a
+    // permanent banner for it is exactly the nagware this item forbids.
+    expect(
+      permissionHealth({
+        grants: FOUR("authorized", "authorized", "unknown", "unknown"),
+      }).visible,
+    ).toBe(false);
+  });
+
+  it("shows ONE calm line and ONE button when a single grant is denied", () => {
+    const health = permissionHealth({
+      grants: FOUR("authorized", "denied", "authorized", "unknown"),
+    });
+    expect(health.visible).toBe(true);
+    expect(health.line).toBe("Accessibility detail sentence.");
+    expect(health.action).toEqual({
+      kind: "settings",
+      label: "Open Accessibility settings",
+      pane: "Accessibility",
+    });
+  });
+
+  it("stays ONE line and ONE button when several are denied — not four cards", () => {
+    const health = permissionHealth({
+      grants: FOUR("denied", "denied", "authorized", "unknown"),
+    });
+    expect(health.visible).toBe(true);
+    expect(health.line).toMatch(/Microphone and Accessibility/);
+    expect(health.action.kind).toBe("settings");
+    if (health.action.kind === "settings") {
+      expect(health.action.pane).toBe("Microphone");
+    }
+  });
+
+  it("is invisible with no report at all, rather than guessing a failure", () => {
+    expect(permissionHealth(undefined).visible).toBe(false);
+    expect(permissionHealth(null).visible).toBe(false);
+    expect(permissionHealth({}).visible).toBe(false);
+    expect(permissionHealth({ grants: [] }).visible).toBe(false);
+  });
+});
+
+describe("grantNags", () => {
+  it("only a denial nags", () => {
+    expect(grantNags("denied")).toBe(true);
+    expect(grantNags("authorized")).toBe(false);
+    expect(grantNags("unknown")).toBe(false);
   });
 });

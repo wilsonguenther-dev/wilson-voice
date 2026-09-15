@@ -162,3 +162,96 @@ export function deriveMicStatus(input: {
   if (input.microphone) return "authorized";
   return input.asked ? "denied" : "not_determined";
 }
+
+// ── PERM-E — the one permission health surface ─────────────────────────────
+//
+// Yap needs four grants and used to report them in three unrelated places: the
+// onboarding checklist, `PermissionReport.summary`, and the meeting setup flow.
+// A user whose Accessibility grant an OS update revoked found out when paste
+// silently failed. This is the single source: `permissions.rs` builds the four
+// rows, this function decides whether a human should be told anything at all,
+// and `PermissionHealthRow.tsx` renders the answer.
+//
+// It is PURE, like everything else in this module — no `invoke`, no React.
+
+/** The tri-state `permissions.rs::GrantState` serialises to. */
+export type GrantStatus = "authorized" | "denied" | "unknown";
+
+/** One row of `PermissionReport.grants`, verbatim off the wire. */
+export interface PermissionGrantRow {
+  /** `"microphone" | "accessibility" | "input_monitoring" | "audio_capture"` */
+  key: string;
+  label: string;
+  status: GrantStatus;
+  /** The `open_privacy_settings` pane argument. Rust owns the URL. */
+  pane: string;
+  detail: string;
+}
+
+/** The health row's single button, or none at all. */
+export type PermissionHealthAction =
+  | { kind: "settings"; label: string; pane: string }
+  | { kind: "none" };
+
+export interface PermissionHealth {
+  /**
+   * FALSE whenever nothing is denied — which includes the all-authorized case
+   * AND every `unknown`. A permanent banner for a grant nobody can read is how
+   * a good app becomes nagware, so `unknown` is silent by construction.
+   */
+  visible: boolean;
+  /** One calm line. Empty when `visible` is false. */
+  line: string;
+  action: PermissionHealthAction;
+}
+
+const INVISIBLE: PermissionHealth = {
+  visible: false,
+  line: "",
+  action: { kind: "none" },
+};
+
+/**
+ * Is this a grant the user should be told about? Only a denial.
+ *
+ * `unknown` is deliberately NOT a problem: system audio capture has no readable
+ * status at all (there is no `authorizationStatus` for it), and Input Monitoring
+ * reports `kIOHIDAccessTypeUnknown` in ordinary situations where the fn hold is
+ * working fine under an Accessibility grant.
+ */
+export function grantNags(status: GrantStatus): boolean {
+  return status === "denied";
+}
+
+/**
+ * The whole health decision, from the report.
+ *
+ * All four fine (or merely unreadable) → `{ visible: false }`, and NOTHING
+ * renders. One denied → that row's own sentence and the one button that fixes
+ * it. Several denied → still one line and still ONE button, pointing at the
+ * first, because four persistent cards is the dashboard this item exists to not
+ * build.
+ */
+export function permissionHealth(report: {
+  grants?: PermissionGrantRow[] | null;
+} | null | undefined): PermissionHealth {
+  const grants = report?.grants ?? [];
+  const denied = grants.filter((g) => grantNags(g.status));
+  if (denied.length === 0) return INVISIBLE;
+
+  const first = denied[0];
+  const line =
+    denied.length === 1
+      ? first.detail
+      : `${denied.map((g) => g.label).join(" and ")} are off for Yap. ${first.detail}`;
+
+  return {
+    visible: true,
+    line,
+    action: {
+      kind: "settings",
+      label: `Open ${first.label} settings`,
+      pane: first.pane,
+    },
+  };
+}
