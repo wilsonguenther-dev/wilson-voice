@@ -4970,8 +4970,6 @@ fn update_is_skipped(version: &str, skipped: Option<&str>) -> bool {
     skipped.is_some_and(|s| s == version)
 }
 
-/// Ask the release endpoint whether a newer Yap exists — and ONLY ask (YV44).
-/// Nothing downloads, nothing installs, nothing relaunches here; the answer is
 /// Every updater endpoint this build will try, in the order the plugin tries
 /// them, read straight out of the compiled `tauri.conf.json` so it can never
 /// drift from what the plugin actually contacts (UPD-A).
@@ -5004,6 +5002,8 @@ fn describe_update_failure(err: &str, endpoints: &[String]) -> String {
     format!("{err} — tried {}", endpoints.join(", "))
 }
 
+/// Ask the release endpoint whether a newer Yap exists — and ONLY ask (YV44).
+/// Nothing downloads, nothing installs, nothing relaunches here; the answer is
 /// handed to the UI, which prompts. Returns `None` when updates are turned off,
 /// when there is nothing newer, when the user skipped this exact version, or
 /// when no manifest is published yet (every endpoint answers 404 for
