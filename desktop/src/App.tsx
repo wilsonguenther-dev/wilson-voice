@@ -183,9 +183,35 @@ interface AppSettings {
   /**
    * Auto-Cleanup level (backend `cleanup_level`): none | light | medium | high.
    * Gates the cleanup pipeline — "none" pastes the raw transcript; higher levels
-   * add dictionary → backtrack → formatting → local-LLM polish. Default "light".
+   * add dictionary → backtrack → formatting → local-LLM polish. Default
+   * "medium" since Y4-A — "light" stopped one stage short of the formatting
+   * stage, so a fresh install did no spoken punctuation, lists or email shape.
    */
   cleanupLevel?: string;
+  /**
+   * Y4-A provenance (backend `cleanup_level_set_by_user`): true once the user
+   * has actually MOVED the Auto-Cleanup picker. Only `save_settings` writes it,
+   * and only when the saved level differs from the live one — so the app can
+   * tell a level somebody chose from one it shipped, and a future default
+   * change can migrate the second without touching the first.
+   */
+  cleanupLevelSetByUser?: boolean;
+  /**
+   * Y4-A (backend `formatting_notice_pending`): set by the v1 → v2 settings
+   * migration, which raised a stored "light" to "medium". It is the flag behind
+   * the ONE quiet line telling the user formatting is on now and where to turn
+   * it off. Cleared here when they dismiss it.
+   */
+  formattingNoticePending?: boolean;
+  /**
+   * The local polish model's id (backend `polish_model`), empty when none is
+   * installed — which is the shipped state, since no model is bundled. Declared
+   * here (Y4-A) because the Auto-Cleanup picker's generated copy depends on it:
+   * "High" describes an AI pass when a model is present and says the stage
+   * no-ops when it is not, and the effect that re-fetches that copy has to be
+   * able to watch this field.
+   */
+  polishModel?: string;
   /**
    * Where snippet triggers may fire (backend `snippet_scope`, YV48): "inline"
    * (anywhere in the transcript, the default) or "utterance" (only when the
@@ -3872,13 +3898,38 @@ export default function App() {
                       untouched — only the label a person reads changed. */}
                   <div className="panel">
                     <h3>How much should Yap clean up?</h3>
+                    {/* Y4-A — ONE quiet line, and only for a user whose stored
+                        level was migrated. `formattingNoticePending` is set by
+                        the v1 → v2 settings migration and by nothing else, so a
+                        fresh install never sees this: there is no change to
+                        explain. It says what changed and where to undo it,
+                        because a silent behaviour change on somebody's existing
+                        install is the thing being avoided, not shipped. */}
+                    {settings.formattingNoticePending && (
+                      <p className="notice" role="status">
+                        Formatting is on now — spoken punctuation, lists and
+                        email shape. Change it in the picker below.{" "}
+                        <button
+                          type="button"
+                          className="linklike"
+                          onClick={() =>
+                            saveSettings({
+                              ...settings,
+                              formattingNoticePending: false,
+                            })
+                          }
+                        >
+                          Got it
+                        </button>
+                      </p>
+                    )}
                     <div className="profile-row">
                       {formatting.cleanupLevels.map((level) => (
                         <button
                           key={level.id}
                           type="button"
                           className={
-                            (settings.cleanupLevel ?? "light") === level.id
+                            (settings.cleanupLevel ?? "medium") === level.id
                               ? "profile active"
                               : "profile"
                           }
@@ -3902,7 +3953,7 @@ export default function App() {
                       ))}
                     </div>
                     {levelNeedsPolishModel(
-                      settings.cleanupLevel ?? "light",
+                      settings.cleanupLevel ?? "medium",
                       formatting.cleanupLevels,
                     ) &&
                       !polishSetup.active && (
@@ -3916,7 +3967,7 @@ export default function App() {
                         number (100..5000) no screen showed. It is a named
                         choice now, and only where it can change anything. */}
                     {levelNeedsPolishModel(
-                      settings.cleanupLevel ?? "light",
+                      settings.cleanupLevel ?? "medium",
                       formatting.cleanupLevels,
                     ) &&
                       polishSetup.active && (
