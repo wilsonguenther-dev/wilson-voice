@@ -42,7 +42,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -605,9 +605,59 @@ type Launcher = Box<dyn Fn(&Path) -> Result<Command, PolishError> + Send + Sync>
 
 /// The production launcher: the staged `yap-polish` next to the app executable.
 fn staged_command(model: &Path) -> Result<Command, PolishError> {
-    let mut command = Command::new(sidecar_binary().ok_or(PolishError::Unavailable)?);
+    let binary = match sidecar_binary() {
+        Some(path) => path,
+        None => {
+            if let Some(expected) = expected_sidecar_path() {
+                note_missing_sidecar(&expected);
+            }
+            return Err(PolishError::Unavailable);
+        }
+    };
+    let mut command = Command::new(binary);
     command.arg("--model").arg(model);
     Ok(command)
+}
+
+/// Where the staged sidecar is EXPECTED to be, whether or not it is there.
+/// [`sidecar_binary`] answers "is it there?"; this answers "where should it
+/// be?", which is the half a broken build needs printed.
+pub fn expected_sidecar_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(SIDECAR_BIN))
+}
+
+/// Latched by [`note_missing_sidecar`]. Process-global on purpose: the report
+/// is about the BUILD, and the build does not change while the app runs.
+static MISSING_SIDECAR_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// SEC-C — say ONCE, with the path, that the staged sidecar is missing, and
+/// return whether this call was the one that said it.
+///
+/// A missing `binaries/yap-polish-<triple>` is a broken build, not a runtime
+/// condition, and before this the only symptom was every take quietly paying
+/// `polish_deadline_ms` against a deadline nothing could ever meet. Once per
+/// process, not once per take: a user dictating all day would otherwise get a
+/// log line for every sentence and the first one — the only one that names the
+/// build defect — would be buried.
+pub fn note_missing_sidecar(expected: &Path) -> bool {
+    if MISSING_SIDECAR_REPORTED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    log::error!(
+        "polish sidecar binary is missing — expected it at {}. The LLM polish stage \
+         is off for this session and every take falls back to the rules output. This is \
+         a packaging defect (bundle.externalBin staged nothing), not a setting.",
+        expected.display()
+    );
+    true
+}
+
+/// Test-only reset of the once-latch, so one test binary can assert the
+/// once-not-per-take property without leaking the latch into its neighbours.
+#[doc(hidden)]
+pub fn reset_missing_sidecar_report_for_tests() {
+    MISSING_SIDECAR_REPORTED.store(false, Ordering::SeqCst);
 }
 
 /// The warm sidecar slot and the policy around it (YV75).

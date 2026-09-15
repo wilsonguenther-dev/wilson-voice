@@ -311,3 +311,167 @@ export function ModelPicker({ setup }: { setup: ModelSetup }) {
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// SEC-C — the polish model's install path.
+//
+// `models::polish_models()`, the pinned catalog entries, `download_polish_model_with`
+// and the whole `yap-polish` sidecar have existed since YV60/YV75, and until
+// now NOTHING in this frontend could reach any of it: the weights could be
+// fetched by Rust and never by a user, so `polish_model` stayed `""` on every
+// installed copy and the LLM formatting stage was dead code in the field.
+//
+// The runtime-dependency rule says a dependency is either SHIPPED in the bundle
+// or its install is MANAGED by the app. A 1.1 GB GGUF cannot be shipped, so it
+// is managed — here, explicitly, and OPTIONALLY. This never runs during
+// onboarding and never starts on mount: `autoDownload` has no analogue below on
+// purpose. With no model the pipeline is byte-identical to today.
+// ---------------------------------------------------------------------------
+
+/** One polish model as `list_polish_models` reports it (camelCase on the wire). */
+export interface PolishModelEntry {
+  id: string;
+  name: string;
+  description: string;
+  parameters: string;
+  license: string;
+  sizeBytes: number;
+  downloaded: boolean;
+  selected: boolean;
+}
+
+export interface PolishModelSetup {
+  models: PolishModelEntry[];
+  /** A polish model is installed AND selected — the LLM stage can actually run. */
+  active: boolean;
+  downloading: string | null;
+  pct: number;
+  error: string | null;
+  refresh: () => Promise<void>;
+  install: (id: string) => Promise<void>;
+  turnOff: () => Promise<void>;
+}
+
+/**
+ * The polish model's state. Note what is absent: any mount-time download. The
+ * user asks for this one.
+ */
+export function usePolishModel(): PolishModelSetup {
+  const [models, setModels] = useState<PolishModelEntry[]>([]);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setModels(await invoke<PolishModelEntry[]>("list_polish_models"));
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const install = useCallback(
+    async (id: string) => {
+      setDownloading(id);
+      setProgress({ model_id: id, downloaded: 0, total: 0 });
+      setError(null);
+      try {
+        // Rust refuses on a free-space shortfall BEFORE the first byte, and
+        // only sets `polish_model` once a full-size, digest-verified file is on
+        // disk. Both failures arrive here as a plain sentence.
+        await invoke("download_polish_model", { id });
+      } catch (e) {
+        setError(String(e));
+      }
+      setDownloading(null);
+      setProgress(null);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const turnOff = useCallback(async () => {
+    try {
+      await invoke("clear_polish_model");
+    } catch (e) {
+      setError(String(e));
+    }
+    await refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    refresh();
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    listen<DownloadProgress>("polish_download_progress", (e) =>
+      setProgress(e.payload),
+    ).then((u) => (dead ? u() : unsubs.push(u)));
+    return () => {
+      dead = true;
+      unsubs.forEach((u) => u());
+    };
+  }, [refresh]);
+
+  const active = models.some((m) => m.downloaded && m.selected);
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+      : 0;
+
+  return { models, active, downloading, pct, error, refresh, install, turnOff };
+}
+
+/**
+ * The polish model row, next to the speech model. Says the size, says what it
+ * changes, and says it is optional — because it is, and because a 1.1 GB
+ * download offered without those three facts is a trap.
+ */
+export function PolishModelPicker({ polish }: { polish: PolishModelSetup }) {
+  return (
+    <>
+      <ul className="onboard-models">
+        {polish.models.map((m) => (
+          <li key={m.id} className={m.downloaded ? "ok" : "bad"}>
+            <StatusDot ok={m.downloaded && m.selected} />
+            <div>
+              <strong>
+                {m.name}{" "}
+                <span className="muted tiny">
+                  {fmtSize(m.sizeBytes)} · {m.parameters} · optional
+                </span>
+              </strong>
+              <p>{m.description}</p>
+              {polish.downloading === m.id ? (
+                <div
+                  className="onboard-bar"
+                  role="progressbar"
+                  aria-valuenow={polish.pct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <span style={{ width: `${polish.pct}%` }} />
+                  <em className="muted tiny">Downloading… {polish.pct}%</em>
+                </div>
+              ) : m.downloaded && m.selected ? (
+                <button onClick={() => polish.turnOff()}>Turn off</button>
+              ) : (
+                <button
+                  className="primary"
+                  onClick={() => polish.install(m.id)}
+                  disabled={!!polish.downloading}
+                >
+                  {m.downloaded ? "Turn on" : `Download ${fmtSize(m.sizeBytes)}`}
+                </button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {polish.models.length === 0 && (
+        <p className="muted tiny">Loading the polish catalog…</p>
+      )}
+      {polish.error && <p className="onboard-error">{polish.error}</p>}
+    </>
+  );
+}

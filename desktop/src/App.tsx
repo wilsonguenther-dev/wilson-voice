@@ -3,7 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Onboarding from "./Onboarding";
 import { awaitMicDecision } from "./micStatus";
-import { ModelPicker, ModelRibbon, useModelSetup } from "./ModelSetup";
+import {
+  ModelPicker,
+  ModelRibbon,
+  PolishModelPicker,
+  useModelSetup,
+  usePolishModel,
+} from "./ModelSetup";
 import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
@@ -818,6 +824,10 @@ export default function App() {
   const modelSetup = useModelSetup({
     autoDownload: settings?.onboarded === true,
   });
+
+  // SEC-C — the OPTIONAL polish model. No `autoDownload` twin: nothing here
+  // fetches 1.1 GB unless the user presses the button in Settings → Advanced.
+  const polishSetup = usePolishModel();
 
   // Read the live query without making `refreshAll` depend on it — otherwise the
   // mount effect that registers event listeners re-runs on every keystroke,
@@ -4323,6 +4333,19 @@ export default function App() {
                       for you — swap it here if you'd rather choose.
                     </p>
                     <ModelPicker setup={modelSetup} />
+                  </div>
+                  <div className="panel">
+                    <h3>AI polish model (optional)</h3>
+                    <p className="muted">
+                      Everything above runs with no extra download. This one is
+                      a separate, optional language model that runs on your Mac
+                      and rewrites a finished take into cleaner prose — it fixes
+                      run-ons, drops fillers and shapes an email like an email.
+                      It is off until you install it, it never leaves this Mac,
+                      and with it off Yap formats exactly as it does today. It
+                      is large, so Yap checks you have room before it starts.
+                    </p>
+                    <PolishModelPicker polish={polishSetup} />
                     <p className="muted tiny" style={{ marginTop: 8 }}>
                       {perms?.asrDetail}
                     </p>

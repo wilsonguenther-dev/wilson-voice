@@ -223,6 +223,146 @@ where
     .await
 }
 
+/// SEC-C — the fast tier is NOT offered. Measured (Y4-I): the 0.5B returns
+/// `err=max_out` at 100, 150, 200, 300 and 400 words, i.e. it is worse than no
+/// model at all. The catalog still carries it so the measurement has something
+/// to point at, but the installer only ever offers `recommended_rank == 1`
+/// until a measured curve says otherwise.
+pub const OFFERED_POLISH_RANK: u32 = 1;
+
+/// The polish models a USER may install. See [`OFFERED_POLISH_RANK`] — this is
+/// deliberately narrower than [`polish_models`], which is the whole catalog.
+pub fn offered_polish_models() -> Vec<&'static PolishCatalogModel> {
+    polish_models()
+        .iter()
+        .filter(|m| m.recommended_rank == Some(OFFERED_POLISH_RANK))
+        .collect()
+}
+
+/// Free bytes kept clear ON TOP of the model's own size. A 1.12 GB download
+/// that fills the volume to the last byte leaves a Mac that cannot page, cannot
+/// write the SQLite history and cannot finish the take it was installed for.
+pub const POLISH_FREE_SPACE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Bytes that must be free before the download may start: the file itself plus
+/// [`POLISH_FREE_SPACE_HEADROOM_BYTES`]. The `.partial` and the finished file
+/// never coexist (the partial is RENAMED into place, not copied), so one
+/// file-size is the true peak.
+pub fn polish_required_free_bytes(model: &PolishCatalogModel) -> u64 {
+    model
+        .file
+        .size_bytes
+        .saturating_add(POLISH_FREE_SPACE_HEADROOM_BYTES)
+}
+
+/// The free-space precondition, as a PURE decision so it is testable without a
+/// full volume. `available == None` means the volume could not be measured
+/// (`statvfs` failed) — that is NOT a refusal: the download's own write errors
+/// are a better signal than a guess. A measured shortfall IS a refusal, and it
+/// is named: "not enough free space", with the numbers.
+pub fn check_polish_free_space(
+    model: &PolishCatalogModel,
+    available: Option<u64>,
+) -> Result<(), String> {
+    let required = polish_required_free_bytes(model);
+    match available {
+        Some(free) if free < required => Err(format!(
+            "not enough free space to install {}: {} free, {} needed ({} for the model plus {} headroom). Free up {} and try again.",
+            model.name,
+            bytes_human(free),
+            bytes_human(required),
+            bytes_human(model.file.size_bytes),
+            bytes_human(POLISH_FREE_SPACE_HEADROOM_BYTES),
+            bytes_human(required.saturating_sub(free)),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Bytes as a short human string. Local to the models module on purpose — the
+/// meeting module's identical helper is private to its own disk-preflight.
+fn bytes_human(bytes: u64) -> String {
+    let gb = bytes as f64 / 1e9;
+    if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else {
+        format!("{} MB", (bytes as f64 / 1e6).round() as u64)
+    }
+}
+
+/// THE ONLY FUNCTION THAT MAY PRODUCE A NON-EMPTY `polish_model` (SEC-C).
+///
+/// `polish_model` naming a model that is not on disk is not a cosmetic bug: the
+/// stage then spawns a sidecar that cannot load, and every take pays the full
+/// `polish_deadline_ms` before falling back. So a selection is only ever minted
+/// from a file that is present at EXACTLY its catalog size with no `.partial`
+/// beside it — and since [`finalize_download`] renames the partial into place
+/// only after the sha256 matched, a file at that path and that size IS a
+/// digest-verified file.
+pub fn verified_polish_selection(id: &str, path: &Path) -> Result<String, String> {
+    let model = polish_model(id).ok_or_else(|| format!("unknown polish model '{id}'"))?;
+    let meta = std::fs::metadata(path).map_err(|e| {
+        format!(
+            "polish model '{id}' is not on disk at {}: {e}",
+            path.display()
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(format!(
+            "polish model '{id}': {} is not a file",
+            path.display()
+        ));
+    }
+    if meta.len() != model.file.size_bytes {
+        return Err(format!(
+            "polish model '{id}' is incomplete: {} bytes on disk, {} expected — not selecting it",
+            meta.len(),
+            model.file.size_bytes
+        ));
+    }
+    let partial = partial_path(path);
+    if partial.exists() {
+        return Err(format!(
+            "polish model '{id}' still has an interrupted download beside it ({}) — not selecting it",
+            partial.display()
+        ));
+    }
+    Ok(model.id.clone())
+}
+
+/// Progress event for a polish-model download. SEPARATE from
+/// [`MODEL_DOWNLOAD_PROGRESS_EVENT`] so the ASR ribbon never renders a polish
+/// percentage (and vice versa) — two downloads can be in flight at once.
+pub const POLISH_DOWNLOAD_PROGRESS_EVENT: &str = "polish_download_progress";
+
+/// [`download_polish_model_with`] wired to the app's event bus, throttled the
+/// same way [`download_model`] is.
+pub async fn download_polish_model(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    let app = app.clone();
+    let model_id = id.to_string();
+    let mut last_emitted: Option<u64> = None;
+    download_polish_model_with(id, |downloaded, total| {
+        let due = match last_emitted {
+            None => true,
+            Some(prev) => {
+                downloaded >= total || downloaded.saturating_sub(prev) >= PROGRESS_EMIT_STEP
+            }
+        };
+        if due {
+            last_emitted = Some(downloaded);
+            let _ = app.emit(
+                POLISH_DOWNLOAD_PROGRESS_EVENT,
+                &ModelDownloadProgress {
+                    model_id: model_id.clone(),
+                    downloaded,
+                    total,
+                },
+            );
+        }
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Diarization models (YV123) — Wilson's closed O6 decision, executed:
 // "VENDOR the diarization models — Wilson-owned HF mirror, pinned revisions +
