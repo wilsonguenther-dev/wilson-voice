@@ -78,6 +78,41 @@ vercel deploy --prod --yes --archive=tgz --scope drivia --token "$VERCEL_NEW_TOK
 is a slow, flaky single request. `vercel link` is idempotent — it creates the
 project the first time and re-links after that.
 
+## The updater manifest ships with the DMG (UPD-A)
+
+`plugins.updater.endpoints` in `desktop/src-tauri/tauri.conf.json` now reads,
+in order:
+
+1. `https://yap-lemon.vercel.app/updates/latest.json` — **primary**, the same
+   host that serves the DMG, so the manifest and the bytes it points at can
+   never disagree about where the build is.
+2. the GitHub `releases/latest/download/latest.json` URL — **fallback only**.
+   It is kept because Tauri tries endpoints in order, but it must never be
+   first: it stops resolving the instant this repo is flipped private, and
+   flipping it is a routine, recurring procedure (`docs/loop/HARNESS.md`).
+
+So the staging step above has a third file. `latest.json` and the `.sig` are
+produced by `npm run desktop:build` with `createUpdaterArtifacts: true`; stage
+them next to the DMG:
+
+```bash
+mkdir -p "$STAGE/updates"
+gh release download v0.7.0 --repo wilsonguenther-dev/wilson-voice \
+  --pattern 'latest.json' --dir "$STAGE/updates"
+```
+
+The URLs inside `latest.json` must point at this host too — a manifest served
+from Vercel whose `url` field still names a GitHub release asset has moved the
+lookup and left the download behind, which is exactly the split this item
+closed. Verify it the same way as the pages, twice:
+
+```bash
+curl -s https://yap-lemon.vercel.app/updates/latest.json | python3 -m json.tool
+```
+
+`plugins.updater.pubkey` is **never** regenerated as part of a deploy. A new
+keypair makes every installed copy unable to verify any update.
+
 Then bump the version everywhere it is written down: the three `href`s and the
 `v0.7.0` label in `site/dist/index.html`, and the `--pattern` above.
 
