@@ -182,9 +182,14 @@ function Float() {
   // The tone rides on <html> the same way the dock edge does (and for the same
   // reason: it drives CSS and must not remount the pill). It is also what makes
   // this wiring observable in a running app before any capsule draws a chip.
+  // Y2-F — the ACTION rides alongside the tone, and for a second reason: it is
+  // the one bit that says whether a purchase surface may be reached at all. It
+  // is written here, ABOVE the style switch, so `problem` is distinct from
+  // `ended` in BOTH capsules without either face deciding anything.
   useEffect(() => {
     document.documentElement.dataset.license = lic.show ? lic.tone : "";
-  }, [lic.show, lic.tone]);
+    document.documentElement.dataset.licenseAction = lic.show ? lic.action : "";
+  }, [lic.show, lic.tone, lic.action]);
   return style === "yappy"
     ? <YappyPill gate={gate} progress={progress} license={lic} />
     : <ClassicPill gate={gate} progress={progress} license={lic} />;
