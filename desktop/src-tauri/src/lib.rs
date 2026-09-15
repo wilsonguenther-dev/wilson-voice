@@ -4036,6 +4036,112 @@ async fn select_model(
     Ok(())
 }
 
+/// One polish model as `list_polish_models` reports it (camelCase on the wire).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolishModelEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub parameters: String,
+    pub license: String,
+    pub size_bytes: u64,
+    /// Present at its full catalog size — i.e. sha256-verified at download time.
+    pub downloaded: bool,
+    /// This id is the live `polish_model` setting.
+    pub selected: bool,
+}
+
+/// The polish models a user may install (SEC-C).
+///
+/// This is the FIRST surface that ever offered them: `download_polish_model_with`
+/// has existed since YV60 and nothing in the frontend could reach it, so the
+/// whole LLM stage was dead code on every installed copy. Deliberately narrower
+/// than the catalog — see `models::OFFERED_POLISH_RANK` for why the 0.5B fast
+/// tier is withheld.
+#[tauri::command]
+async fn list_polish_models(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<PolishModelEntry>, String> {
+    let selected = state.settings.lock().polish_model.trim().to_string();
+    Ok(models::offered_polish_models()
+        .into_iter()
+        .map(|m| PolishModelEntry {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            description: m.description.clone(),
+            parameters: m.parameters.clone(),
+            license: m.license.clone(),
+            size_bytes: m.file.size_bytes,
+            downloaded: models::is_polish_downloaded(m),
+            selected: m.id == selected,
+        })
+        .collect())
+}
+
+/// Install a polish model: free-space precondition, then the resumable,
+/// sha256-verified download, then — and ONLY then — `polish_model` becomes
+/// non-empty.
+///
+/// Optional by construction. Nothing calls this on the first-run path; the user
+/// presses a button in Settings → Advanced, and until they do the stage no-ops
+/// exactly as it does today.
+#[tauri::command]
+async fn download_polish_model(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<String, String> {
+    let model = models::polish_model(&id).ok_or_else(|| format!("unknown polish model '{id}'"))?;
+    if model.recommended_rank != Some(models::OFFERED_POLISH_RANK) {
+        return Err(format!(
+            "polish model '{id}' is in the catalog but is not offered for install"
+        ));
+    }
+
+    // Free space BEFORE the first byte. A 1.1 GB fetch that dies at 98% on a
+    // full volume leaves a `.partial` and a user with no idea why.
+    let dir = models::models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))?;
+
+    let path = models::download_polish_model(&app, &id).await?;
+
+    // The gate. `verified_polish_selection` is the only producer of a non-empty
+    // `polish_model` — a download that "succeeded" but left a short file never
+    // becomes a setting.
+    let selection = models::verified_polish_selection(&id, &path)?;
+    let next = {
+        let mut settings = state.settings.lock();
+        settings.polish_model = selection;
+        settings.clone()
+    };
+    persist_settings(&next)?;
+    let _ = app.emit("settings", &next);
+    log::info!(
+        "polish model '{id}' installed to {} and selected",
+        path.display()
+    );
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Turn the polish stage back off: `polish_model` returns to `""`, which is the
+/// documented OFF state (lib.rs `polish_model`, `polish::build_request`). The
+/// weights stay on disk — deleting a gigabyte the user may re-enable in a minute
+/// is a separate decision they did not make here.
+#[tauri::command]
+async fn clear_polish_model(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let next = {
+        let mut settings = state.settings.lock();
+        settings.polish_model = String::new();
+        settings.clone()
+    };
+    persist_settings(&next)?;
+    let _ = app.emit("settings", &next);
+    log::info!("polish model cleared — the LLM polish stage is off");
+    Ok(())
+}
+
 /// Delete a downloaded model's file (and any interrupted `.partial`). Unloads
 /// it first if it is the warm one, so the bytes aren't in use.
 #[tauri::command]
@@ -4674,6 +4780,9 @@ pub fn run() {
             show_main,
             list_models,
             download_model,
+            list_polish_models,
+            download_polish_model,
+            clear_polish_model,
             select_model,
             delete_model,
             engine_status,
