@@ -84,6 +84,26 @@ pub const PREEMPTED_FOR_DICTATION: &str = "meeting chunk preempted by a dictatio
 /// [`drain_and_unload`]: TranscriptionManager::drain_and_unload
 pub const ABANDONED_FOR_EXIT: &str = "meeting chunk abandoned — the app is exiting";
 
+/// Y3-D — what a decode gets back when THE USER cancelled the take that owns it.
+///
+/// The third member of the family above, and deliberately its own constant
+/// rather than a re-use of [`PREEMPTED_FOR_DICTATION`]. The three mean three
+/// different things to the caller:
+///
+/// * [`PREEMPTED_FOR_DICTATION`] — something else wanted the engine. The work is
+///   still wanted; re-decode after the handback.
+/// * [`ABANDONED_FOR_EXIT`] — the process is leaving. The work is still wanted,
+///   but by the NEXT launch, not this one.
+/// * `CANCELLED_BY_USER` — the work is not wanted at all. Nothing re-decodes it,
+///   nothing retries it, and no transcript row is written. The audio is still
+///   kept (parked under the recovery lifecycle) so "actually, transcribe that"
+///   stays possible from History, but that is a user decision, not a retry.
+///
+/// Collapsing this into `PREEMPTED_FOR_DICTATION` would make a cancelled
+/// dictation look to a meeting driver like a chunk worth re-decoding, which is
+/// the exact class of bug the doc comment on [`ABANDONED_FOR_EXIT`] describes.
+pub const CANCELLED_BY_USER: &str = "transcription cancelled by the user";
+
 /// The share of [`TRANSCRIBE_TIMEOUT`] one full-width meeting chunk is allowed
 /// to spend, at a real-time factor of 1.0.
 ///
@@ -419,6 +439,10 @@ enum Discard {
     /// The exit drain cancelled it. Do NOT re-decode: the engine has been
     /// unloaded and the process is leaving. The next launch resumes here.
     ForExit,
+    /// Y3-D — the user cancelled the take this decode belongs to. Do NOT
+    /// re-decode and do NOT retry: unlike the two above, the result is not
+    /// wanted by anyone.
+    ForUserCancel,
 }
 
 /// The decode holding the engine right now.
@@ -479,6 +503,16 @@ struct Inner {
     /// dictation coming without the engine mutex having any fairness at all.
     /// Raised BEFORE the engine is taken, dropped only once it is back.
     interactive_waiting: AtomicU64,
+    /// Y3-D — the STICKY user-cancel latch for the take that is decoding now.
+    ///
+    /// `InFlight::discard` is consumed per decode (`*slot = None`), so it can
+    /// only ever stop ONE chunk. Y3-B's windowed dictation decode runs a dozen
+    /// of them in a row: without a latch that outlives a single chunk, a cancel
+    /// lands on chunk 4, chunk 4 reports `CANCELLED_BY_USER`, the loop logs it
+    /// as an ordinary chunk failure and decodes chunks 5 through 12 anyway —
+    /// i.e. the fifteen-minute decode the user cancelled still runs to the end.
+    /// This flag is what the loop reads at every chunk boundary.
+    user_cancelled: AtomicBool,
     last_activity_ms: AtomicU64,
     idle_timeout: Duration,
     idle_check_interval: Duration,
@@ -542,6 +576,7 @@ impl TranscriptionManager {
                 load_gate: Mutex::new(()),
                 loading: AtomicBool::new(false),
                 interactive_waiting: AtomicU64::new(0),
+                user_cancelled: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(now_ms()),
                 idle_timeout,
                 idle_check_interval,
@@ -886,6 +921,51 @@ impl TranscriptionManager {
         }
     }
 
+    /// Y3-D — stop the in-flight decode because the USER asked, whatever kind
+    /// of work it is.
+    ///
+    /// This is the third caller of YV70's cancel hook, and it is the only one
+    /// that ignores `preemptible`. That flag answers "may something else STEAL
+    /// this work?", and for a dictation the answer is still no — its audio
+    /// exists nowhere else, so no meeting and no other take may take the engine
+    /// off it. The user abandoning their own take is a different question, and
+    /// the person who spoke the words is allowed to decide they are not wanted.
+    ///
+    /// Returns `true` when a decode was actually asked to stop, so the caller
+    /// can tell "there was a decode and it is cancelled" from "there was
+    /// nothing running" — the recording-phase cancel and the decode-phase
+    /// cancel do different things with the clip.
+    ///
+    /// No-op when the in-flight decode has no cancel hook: marking it cancelled
+    /// would discard a decode that runs to completion anyway, and the take's
+    /// own cooperative checkpoints still refuse to paste the result.
+    pub fn cancel_in_flight_for_user(&self) -> bool {
+        // Raise the STICKY latch FIRST and unconditionally — before the hook is
+        // even looked for. It is deliberately not tied to there being an
+        // in-flight decode: a cancel that arrives in the gap between two chunks
+        // of a windowed take finds `in_flight` empty, and if that were the end
+        // of it the next chunk would start regardless.
+        self.inner.user_cancelled.store(true, Ordering::SeqCst);
+        let cancel = {
+            let mut slot = self.inner.in_flight.lock();
+            match slot.as_mut() {
+                Some(f) if f.discard.is_none() && f.cancel.is_some() => {
+                    f.discard = Some(Discard::ForUserCancel);
+                    f.cancel.clone()
+                }
+                _ => None,
+            }
+        };
+        match cancel {
+            Some(cancel) => {
+                log::info!("the user cancelled the take — cancelling its in-flight decode");
+                cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Take the engine off an in-flight PREEMPTIBLE decode for an interactive
     /// one (YV93).
     ///
@@ -1072,9 +1152,25 @@ impl TranscriptionManager {
         match discard {
             Some(Discard::ForDictation) => return Err(PREEMPTED_FOR_DICTATION.into()),
             Some(Discard::ForExit) => return Err(ABANDONED_FOR_EXIT.into()),
+            Some(Discard::ForUserCancel) => return Err(CANCELLED_BY_USER.into()),
             None => {}
         }
         result
+    }
+
+    /// Y3-D — arm a new take: drop any cancel latch left by the previous one.
+    ///
+    /// Called where `AppState::take_cancelled` is cleared, so the manager-side
+    /// latch and the worker-side flag are armed and disarmed together and a
+    /// cancelled take can never poison the one after it.
+    pub fn begin_user_take(&self) {
+        self.inner.user_cancelled.store(false, Ordering::SeqCst);
+    }
+
+    /// Y3-D — has the user cancelled the take currently decoding? This is the
+    /// chunk-boundary checkpoint of Y3-B's windowed loop.
+    pub fn user_cancel_requested(&self) -> bool {
+        self.inner.user_cancelled.load(Ordering::SeqCst)
     }
 
     /// Take the engine out of the slot, waiting out another caller who has it.
@@ -1298,6 +1394,20 @@ impl TranscriptionManager {
         let mut first_error: Option<String> = None;
         let mut deadline_tripped = false;
         for window in &windows {
+            // Y3-D — THE CHUNK BOUNDARY. Checked before every window, including
+            // the first, so a cancel that lands while chunk 4 decodes stops the
+            // take at the top of chunk 5 instead of riding out chunks 5..12.
+            // This returns `Err` rather than assembling what decoded so far:
+            // partial text from a take the user rejected is not a partial
+            // result, it is text they asked not to have.
+            if self.user_cancel_requested() {
+                log::info!(
+                    "dictation decode cancelled by the user at chunk {} of {}",
+                    window.index,
+                    windows.len()
+                );
+                return Err(CANCELLED_BY_USER.into());
+            }
             if deadline_tripped || started.elapsed() >= take_deadline {
                 // PARTIAL RESULT, not a lost take: every window already decoded
                 // stays in `outcomes` and is merged below.

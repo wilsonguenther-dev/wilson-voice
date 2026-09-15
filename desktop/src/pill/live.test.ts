@@ -11,8 +11,8 @@ import {
   acceptProgress, advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
   speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
-  AMBIENT_FRAME_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
-  MIN_REPORTABLE_CHUNKS,
+  AMBIENT_FRAME_MS, CANCELLED_SETTLE_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS,
+  MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS,
   type ChatTone, type LiveFrame, type LivePhase, type TranscribeProgress,
 } from "./live";
 
@@ -473,5 +473,45 @@ describe("transcribe progress (Y3-C)", () => {
     // …and it is NOT `thinking`, which is the polish/LLM gap after a transcript.
     expect(phaseVisual("thinking").label).toBe("Transcribing");
     expect(v.needsPermission).toBe(false);
+  });
+});
+
+/**
+ * Y3-D — the pill's cancelled state.
+ *
+ * A cancel is not a failure, and a pill that paints red at someone who pressed
+ * cancel on purpose is wrong. It is also not a resting state: it settles.
+ */
+describe("Y3-D cancelled phase", () => {
+  it("is calm, not a failure, and is a real state rather than a placeholder", () => {
+    const v = phaseVisual("cancelled");
+    expect(v.tone).toBe("calm");
+    expect(v.tone).not.toBe("warn");
+    expect(v.needsPermission).toBe(false);
+    expect(v.placeholder).toBe(false);
+    // The failure phase is what it must NOT look like.
+    expect(v.tone).not.toBe(phaseVisual("error").tone);
+  });
+
+  it("settles back to idle rather than parking on Cancelled", () => {
+    const cancelled = reduceGatePhase("thinking", { type: "take_cancelled" });
+    expect(cancelled).toBe("cancelled");
+    expect(reduceGatePhase(cancelled, { type: "cancel_settled" })).toBe("idle");
+    expect(CANCELLED_SETTLE_MS).toBeGreaterThan(0);
+  });
+
+  it("survives the recording:false that arrives right behind the cancel", () => {
+    // The backend emits `recording:false` on the cancel path. If that could
+    // overwrite the phase, the acknowledgement would flash and vanish — the
+    // same bug `blocked` is protected from.
+    const cancelled = reduceGatePhase("listening", { type: "take_cancelled" });
+    expect(reduceGatePhase(cancelled, { type: "recording", recording: false })).toBe("cancelled");
+  });
+
+  it("never clears a permission refusal, and never overwrites a NEW take", () => {
+    expect(reduceGatePhase("blocked", { type: "take_cancelled" })).toBe("blocked");
+    expect(reduceGatePhase("waiting", { type: "take_cancelled" })).toBe("waiting");
+    // A settle timer that fires after the next take started leaves it alone.
+    expect(reduceGatePhase("listening", { type: "cancel_settled" })).toBe("listening");
   });
 });

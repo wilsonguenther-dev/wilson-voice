@@ -102,17 +102,52 @@ fn every_accelerator_string_describes_its_own_chord() {
 /// A registered chord always carries a real key. The argument for why a global
 /// shortcut can never shadow the fn-hold rests on this, so it is asserted rather
 /// than assumed.
+///
+/// Y3-D SCOPED THE MODIFIER HALF OF THIS, and the reason is the reason the
+/// assertion gave for itself: "it would swallow a bare keypress system-wide".
+/// That is a statement about a chord Yap holds for the life of the PROCESS, and
+/// until Y3-D every chord in the table was one. `shortcuts::CANCEL` is a bare
+/// `Escape` registered only while a take is in flight and unregistered the
+/// moment it settles, so there is no window in which it can swallow anything
+/// the user wanted elsewhere — and a bare key is the entire point of it, since
+/// `⌃⌘Escape` is not what anyone reaches for to abort a dictation.
+///
+/// So the modifier rule now runs over `registered_while_idle()` — the chords
+/// Yap actually holds while nothing is being dictated — which is what the old
+/// loop was reaching for when `ALL` and "always registered" were the same list.
+/// The KEY half is unchanged and still runs over the whole table: every binding
+/// carries a `Code`, which is what the fn-hold argument rests on.
 #[test]
 fn every_global_chord_has_a_modifier_and_a_key() {
-    for b in shortcuts::ALL {
+    for b in shortcuts::registered_while_idle() {
         assert!(
             b.ctrl || b.cmd || b.shift || b.alt,
-            "{} has no modifier — it would swallow a bare keypress system-wide",
+            "{} has no modifier and is held while idle — it would swallow a bare keypress system-wide",
             b.id
         );
         assert!(
             !b.modifiers().is_empty(),
             "{}'s Modifiers value lost its flags",
+            b.id
+        );
+    }
+    // The escape hatch is exactly one binding wide. Anything else that wants to
+    // be modifier-less has to justify itself here first.
+    for b in shortcuts::registered_while_take_active() {
+        assert_eq!(
+            b.id,
+            shortcuts::CANCEL.id,
+            "{} is take-scoped but is not the cancel key — a second modifier-less \
+             chord needs its own argument",
+            b.id
+        );
+    }
+    // Unchanged, and over the WHOLE table: a key-less binding is what would
+    // break the fn-hold argument, and no scope makes that acceptable.
+    for b in shortcuts::ALL {
+        assert!(
+            !shortcuts::collides_with_dictation_hold(b, true, true, true),
+            "{} could be produced by the dictation hold",
             b.id
         );
     }

@@ -233,6 +233,10 @@ export default function YappyPill(
       blocked: "0 0% 55%", waiting: "0 0% 55%", gated: "38 92% 55%",
       transcribing: "38 92% 55%", polishing: "38 92% 55%", pasting: "38 92% 55%",
       error: "0 72% 58%", "model-loading": "38 92% 55%", empty: "230 20% 60%",
+      // Y3-D — the SAME muted slate the two calm non-take phases use. A
+      // cancelled take is not a failure, so it deliberately does not borrow the
+      // red `error` accent it would be easiest to reach for.
+      cancelled: "230 20% 60%",
     };
     // listening → prop comes from the live state machine (escalates with actual
     // speech); thinking/done → keyed off the transcript word count

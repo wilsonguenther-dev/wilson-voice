@@ -1289,6 +1289,20 @@ export default function App() {
       if (!row) return;
       setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
     }).then((u) => (dead ? u() : unsubs.push(u)));
+    // Y3-D — the user cancelled a take. NOT an error channel: no red state, no
+    // notification. The clip was parked under the recovery lifecycle, so the
+    // row rides along and History offers "transcribe it after all".
+    listen<{ message: string; failed?: FailedDictation | null }>(
+      "take_cancelled",
+      (e) => {
+        const p = e.payload;
+        setFlash(p?.message || "Cancelled");
+        setTimeout(() => setFlash(null), 2500);
+        const row = p?.failed;
+        if (!row) return;
+        setFailed((f) => [row, ...f.filter((x) => x.id !== row.id)]);
+      },
+    ).then((u) => (dead ? u() : unsubs.push(u)));
     // Menu-bar "Settings…" jumps the app to the Settings view (YV26).
     listen<string>("navigate", (e) => {
       const dest = e.payload as Nav;
@@ -2660,6 +2674,26 @@ export default function App() {
                       : "Hold fn⌃ · double-tap hands-free"}
                 </span>
               </button>
+
+              {/* Y3-D — the button that did not exist. The record button above
+                  is DISABLED while `busy`, so from the moment the hold ended
+                  until the decode finished there was nothing on screen to
+                  press: a fifteen-minute take the user regretted the instant
+                  they let go ran to completion anyway. This is live for BOTH
+                  halves of a take (recording and decoding), because the user
+                  pressing "stop this" does not know or care which stage it is
+                  in. The audio is parked in recovery, not deleted — History
+                  offers it back. */}
+              {(status.recording || status.busy) && (
+                <button
+                  className="ghost cancel-take"
+                  onClick={() => {
+                    void invoke("cancel_transcription");
+                  }}
+                >
+                  Cancel this take (esc)
+                </button>
+              )}
 
               <div className="toolbar">
                 <input

@@ -410,7 +410,16 @@ export type LivePhase =
   /** The speech engine is loading before it can decode. */
   | "model-loading" // OWNED BY Y3-C
   /** The take produced no words at all. */
-  | "empty"; // OWNED BY Y8-D
+  | "empty" // OWNED BY Y8-D
+  // ── Y3-D (this item) ─────────────────────────────────────────────────────
+  /**
+   * The user cancelled the take. Deliberately `calm`, not `warn`: nothing went
+   * wrong, so the pill must not paint a failure at someone who pressed cancel
+   * on purpose. It SETTLES — see [`CANCELLED_SETTLE_MS`] and the
+   * `cancel_settled` event — rather than being a resting state, because a pill
+   * parked on "Cancelled" forever is just a stuck pill.
+   */
+  | "cancelled"; // OWNED BY Y3-D
 
 /** How a phase is drawn, and what a click on it means. */
 export interface PhaseVisual {
@@ -472,6 +481,8 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
       return { tone: "busy", label: "Loading speech engine", needsPermission: false, placeholder: true };
     case "empty":
       return { tone: "calm", label: "Nothing to type", needsPermission: false, placeholder: true };
+    case "cancelled":
+      return { tone: "calm", label: "Cancelled", needsPermission: false, placeholder: false };
   }
 }
 
@@ -482,7 +493,21 @@ export type GateEvent =
   /** TCC answered: the `microphone-status` event. */
   | { type: "microphone-status"; status: string }
   /** A take started or stopped. */
-  | { type: "recording"; recording: boolean };
+  | { type: "recording"; recording: boolean }
+  /** Y3-D — the backend's `take_cancelled`: the user stopped this take. */
+  | { type: "take_cancelled" }
+  /** Y3-D — [`CANCELLED_SETTLE_MS`] has elapsed; the pill returns to rest. */
+  | { type: "cancel_settled" };
+
+/**
+ * Y3-D — how long the pill holds "Cancelled" before settling to idle.
+ *
+ * Long enough to be read as an acknowledgement (the press produced a visible
+ * effect, which is the whole reason the state exists) and short enough that it
+ * never reads as a state the pill is stuck in. Exported so the settle is a unit
+ * test rather than a stopwatch held against a running app.
+ */
+export const CANCELLED_SETTLE_MS = 1400;
 
 /** Denied / restricted / an unknown string all mean "Yap cannot hear you". */
 const micUsable = (status: string): boolean => status === "authorized";
@@ -511,7 +536,20 @@ export function reduceGatePhase(prev: LivePhase, ev: GateEvent): LivePhase {
     case "recording":
       // A permission phase survives both edges of a take.
       if (gated) return prev;
+      // Y3-D: so does the cancelled acknowledgement. Cancelling a take emits
+      // `recording:false` right behind `take_cancelled`, and if that could
+      // overwrite the phase the acknowledgement would flash and vanish — the
+      // same bug `blocked` is protected from one case above.
+      if (prev === "cancelled" && !ev.recording) return prev;
       return ev.recording ? "listening" : "idle";
+    case "take_cancelled":
+      // A permission refusal still outranks it: a cancel cannot make a blocked
+      // mic look resolved.
+      return gated ? prev : "cancelled";
+    case "cancel_settled":
+      // Only ever moves the phase it owns. A take that has already started
+      // again by the time the timer fires keeps its own phase.
+      return prev === "cancelled" ? "idle" : prev;
   }
 }
 
