@@ -25,6 +25,7 @@ import {
 } from "./pill/live";
 import { pillLicense } from "./pill/license";
 import { type LicenseStatus } from "./license/status";
+import "./tokens.css";
 import "./float.css";
 
 interface Settings { pillStyle?: string; pillPosition?: string }

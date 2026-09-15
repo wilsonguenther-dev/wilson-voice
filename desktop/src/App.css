@@ -1,3 +1,5 @@
+@import "./tokens.css";
+
 @font-face {
   /* Departure Mono (OFL) — the pixel voice of Yappy's world. Numerals,
      eyebrows, and metadata only; body text stays native SF. */
@@ -8,95 +10,15 @@
 }
 
 :root {
+  /* Tokens live in tokens.css. What remains here is document-level: the ground
+     and the body voice of the MAIN window only. */
   color-scheme: light dark;
-  /* Liquid-glass-ish tokens (macOS Tahoe-inspired; CSS fallback for WebView) */
-  --bg: #f8f0e0;
-  --bg-side: rgba(255, 251, 244, 0.5);
-  --bg-card: rgba(255, 252, 246, 0.66);
-  --bg-elev: rgba(255, 253, 248, 0.75);
-  --glass: rgba(255, 252, 246, 0.55);
-  --glass-border: rgba(255, 255, 255, 0.55);
-  --border: rgba(74, 48, 20, 0.12);
-  --text: #2c2216;
-  /* YV56 — #8a7658 measured 3.85:1 on the cream, and it carries the ledes,
-     stat labels and every card-meta line at 0.66–0.9rem. One shade deeper in
-     the same warm brown puts the smallest type in the app over 4.5:1. */
-  --muted: #7a6547;
-  --accent: #ef7d3c;
-  --accent-soft: rgba(239, 125, 60, 0.14);
-  /* Data/second voice: the pill-world sky. Orange = action, sky = information. */
-  --accent-data: #4ba3d8;
-  --accent-data-soft: rgba(75, 163, 216, 0.16);
-  /* YV56 · ink pair for every semantic colour. The vivid tokens above are FILL
-     colours — they sit under white/ink text on buttons, bars and the heat ramp,
-     and they have to stay the brand hue. As TEXT on the cream they were washed
-     (accent 2.42:1, accent-data 2.46:1, and worse inside their own soft chips),
-     which is exactly what small mono chips are made of. So text takes the -ink
-     token and fills keep the hue: same colour, one weight deeper. Dark mode
-     maps the ink back to the vivid token, which already reads 8–11:1 there. */
-  --accent-ink: #9c4a15;
-  --accent-data-ink: #17638d;
-  --danger-ink: #be123c;
-  --warn-ink: #9a4708;
-  /* Activity heatmap ramp (YV55) — a warm amber climb out of the soil, so an
-     empty day is the page itself and a loud day is the accent ember. */
-  --heat-0: rgba(74, 48, 20, 0.07);
-  --heat-1: #f6dcb4;
-  --heat-2: #f2b878;
-  --heat-3: #ef7d3c;
-  --heat-4: #c4551c;
-  --mono: "Departure Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --radius-sm: 10px;
-  --danger: #be123c;
-  --warn: #b45309;
-  --radius: 16px;
-  --shadow: 0 12px 40px rgba(74, 48, 20, 0.1);
-  --blur: 28px;
-  font-family:
-    "SF Pro Text",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
-  line-height: 1.45;
+  line-height: var(--leading-body);
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #201811;
-    --bg-side: rgba(40, 32, 26, 0.55);
-    --bg-card: rgba(48, 40, 32, 0.55);
-    --bg-elev: rgba(58, 48, 38, 0.65);
-    --glass: rgba(44, 36, 28, 0.5);
-    --glass-border: rgba(255, 238, 214, 0.12);
-    --border: rgba(255, 238, 214, 0.12);
-    --text: #f4e9d6;
-    --muted: #b6a184;
-    --accent: #ff9a5c;
-    --accent-soft: rgba(255, 154, 92, 0.16);
-    --accent-data: #8fd6ff;
-    --accent-data-soft: rgba(143, 214, 255, 0.14);
-    /* YV56 — dark never overrode danger/warn, so #be123c / #b45309 were being
-       drawn on #201811 at 2.78:1 and 3.48:1: the Permissions count badge, the
-       error/busy states of the ready-pill and the warning banners were all
-       barely legible after dark. The accents already read here, so the ink
-       tokens are just the vivid values; danger/warn get a lifted pair. */
-    --accent-ink: var(--accent);
-    --accent-data-ink: var(--accent-data);
-    --danger-ink: #ff8098;
-    --warn-ink: #f5b45c;
-    --heat-0: rgba(255, 238, 214, 0.07);
-    --heat-1: #5c3a1d;
-    --heat-2: #9a5c26;
-    --heat-3: #d97f38;
-    --heat-4: #ff9a5c;
-    --shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
-  }
 }
 
 * {
@@ -147,15 +69,9 @@ button:disabled {
 
 button.primary {
   background: var(--accent);
-  color: white;
+  color: var(--text-on-accent);
   border-color: transparent;
   font-weight: 600;
-}
-
-@media (prefers-color-scheme: dark) {
-  button.primary {
-    color: #042f2e;
-  }
 }
 
 button.ghost {
@@ -259,12 +175,12 @@ body:has(.float-pill),
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #2dd4bf;
-  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.2);
+  background: var(--status-ready);
+  box-shadow: 0 0 0 3px var(--status-ready-halo);
 }
 
 .float-pill.live .float-dot {
-  background: #fb7185;
+  background: var(--status-live);
   animation: pulse 1s infinite;
 }
 
@@ -336,7 +252,7 @@ body:has(.float-pill),
 }
 
 .dot.pulse {
-  background: #fb7185;
+  background: var(--status-live);
   animation: pulse 1s infinite;
 }
 
@@ -581,7 +497,7 @@ code {
   justify-content: center;
   gap: 8px;
   background: var(--accent);
-  color: white;
+  color: var(--text-on-accent);
   border: none;
   font-weight: 650;
   padding: 0.75rem;
@@ -600,15 +516,9 @@ code {
   background: rgba(255, 255, 255, 0.22);
 }
 
-@media (prefers-color-scheme: dark) {
-  .dictate-side {
-    color: #042f2e;
-  }
-}
-
 .dictate-side.live {
-  background: #e11d48;
-  color: white;
+  background: var(--status-live-fill);
+  color: var(--text-on-fill);
 }
 
 .main {
@@ -681,7 +591,7 @@ code {
 }
 
 /* YV56 — the toast was the last surface still speaking the pre-warm palette
-   (slate #0f172a under mint #a7f3d0 with a teal rule), so a "Settings saved"
+   (a slate ink under a mint ground with a teal rule), so a "Settings saved"
    landed as a foreign object on the cream. It is now the app's own ink and
    cream with an ember rule: one overlay treatment for both schemes, because a
    toast is a thing laid ON the page rather than part of it, and inverting it is
@@ -694,8 +604,8 @@ code {
   top: 14px;
   right: 18px;
   z-index: 40;
-  background: #2c2216;
-  color: #f8f0e0;
+  background: var(--surface-inverse);
+  color: var(--text-on-inverse);
   border: 1px solid rgba(239, 125, 60, 0.45);
   padding: 0.55rem 0.85rem;
   border-radius: var(--radius-sm);
@@ -717,7 +627,7 @@ code {
 .toast-copy-again {
   background: rgba(255, 154, 92, 0.18);
   border: 1px solid rgba(255, 154, 92, 0.5);
-  color: #ffb98a;
+  color: var(--accent-on-inverse);
   border-radius: var(--radius-sm);
   padding: 0.2rem 0.55rem;
   font-size: 0.78rem;
@@ -1440,7 +1350,7 @@ button.star.on {
   text-align: center;
   font-size: 11px;
   font-weight: 800;
-  color: #fff;
+  color: var(--text-on-fill);
   background: var(--accent);
   border-radius: 50%;
 }
@@ -1859,7 +1769,7 @@ button.star.on {
 }
 .onboard-record.live {
   background: var(--danger);
-  color: #fff;
+  color: var(--text-on-fill);
   border-color: transparent;
 }
 .onboard-record:disabled {
@@ -1910,33 +1820,33 @@ button.star.on {
   left: 50%;
   transform: translateX(-50%);
   z-index: 2;
-  background: #6f3f27;
-  color: #ffe9c6;
+  background: var(--retro-wood-deep);
+  color: var(--retro-paper);
   font-family: var(--mono);
   font-size: 10.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   padding: 4px 12px;
   border-radius: 999px;
-  box-shadow: 0 3px 8px -2px rgba(78, 52, 24, 0.4);
+  box-shadow: var(--elevation-tag);
   white-space: nowrap;
 }
 .yappy-house .yh-frame {
   position: relative;
-  background: #a5673f;
+  background: var(--retro-wood);
   border-radius: 20px;
   padding: 12px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.3) inset,
-    0 -3px 0 #6f3f27 inset,
-    0 18px 40px -12px rgba(78, 52, 24, 0.28);
+    0 -3px 0 var(--retro-wood-deep) inset,
+    var(--elevation-house);
 }
 .yappy-house .yh-frame::after {
   content: "";
   position: absolute;
   inset: 12px;
   border-radius: 10px;
-  box-shadow: 0 0 0 3px #6f3f27 inset;
+  box-shadow: 0 0 0 3px var(--retro-wood-deep) inset;
   pointer-events: none;
 }
 .yappy-house .yh-stage {
@@ -1952,7 +1862,7 @@ button.star.on {
   border-radius: 8px;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  background: #20233f;
+  background: var(--retro-lcd-backdrop);
 }
 .yappy-house .yh-stats {
   display: grid;
@@ -1993,14 +1903,14 @@ button.star.on {
 }
 @media (prefers-color-scheme: dark) {
   .yappy-house .yh-frame {
-    background: #8a5333;
+    background: var(--retro-wood-shadow);
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.14) inset,
-      0 -3px 0 #4d2c1a inset,
-      0 18px 40px -12px rgba(0, 0, 0, 0.45);
+      0 -3px 0 var(--retro-wood-darkest) inset,
+      var(--elevation-house);
   }
   .yappy-house .yh-frame::after {
-    box-shadow: 0 0 0 3px #4d2c1a inset;
+    box-shadow: 0 0 0 3px var(--retro-wood-darkest) inset;
   }
 }
 
@@ -2800,7 +2710,7 @@ button.primary.big {
   margin: 0 0 10px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  background: color-mix(in srgb, #f0b429 12%, transparent);
+  background: color-mix(in srgb, var(--accent-caution-tint) 12%, transparent);
   font-size: 13px;
   line-height: 1.45;
 }
