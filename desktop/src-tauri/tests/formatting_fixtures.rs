@@ -81,11 +81,12 @@ struct Case {
     source: String,
 }
 
-/// Every rule and measured failure the corpus has to cover.
-const REQUIRED_COVERAGE: &[&str] = &[
-    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "F1",
-    "F2", "F3", "F4", "F5", "F6",
-];
+/// Every rule and measured failure the corpus has to cover. Y0-C moved the
+/// table itself to `support/formatting_rules.rs` so `shipped_defaults.rs`'s
+/// "every rule has a row at the SHIPPED level" tripwire reads the same list
+/// this corpus does, instead of a second copy that can drift green.
+#[path = "support/formatting_rules.rs"]
+mod formatting_rules;
 
 const STYLES: &[&str] = &["very_casual", "casual", "default", "formal"];
 
@@ -527,7 +528,7 @@ fn fixtures_cover_every_rule_and_measured_failure() {
         .iter()
         .flat_map(|c| c.rules.iter().map(String::as_str))
         .collect();
-    for id in REQUIRED_COVERAGE {
+    for id in formatting_rules::required_coverage() {
         assert!(
             covered.contains(id),
             "no fixture covers {id} — see docs/research/wispr-formatting-deep-dive.md §1"
@@ -535,7 +536,7 @@ fn fixtures_cover_every_rule_and_measured_failure() {
     }
     for id in &covered {
         assert!(
-            REQUIRED_COVERAGE.contains(id),
+            formatting_rules::required_coverage().contains(id),
             "fixture claims unknown rule id {id:?}"
         );
     }
