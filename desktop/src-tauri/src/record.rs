@@ -4,6 +4,7 @@
 //! attributes Microphone permission to com.wilsonguenther.wilson-voice.
 //! Live RMS level is exposed for the floating HUD waveform.
 
+use crate::dictation;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
@@ -112,6 +113,11 @@ pub struct RecordingResult {
     /// signal: the no-speech gate reads it to reject a near-silent tap before
     /// ASR, so Whisper never hallucinates repetitive garbage on silence.
     pub voiced_seconds: f64,
+    /// The silences the speaker left, as shares of this take's voiced time
+    /// (Y4-C). The rules stage paragraphs on these — see
+    /// [`dictation::insert_paragraphs`]. Empty when the clip has no measurable
+    /// speech, which is exactly the "no timing" case the rule falls back from.
+    pub pause_spans: Vec<dictation::PauseSpan>,
     /// Wall-clock hold (press→release), for latency telemetry only.
     pub hold_wall_seconds: f64,
     /// YV36 voice isolation — Silero VAD's verdict on whether the clip actually
@@ -308,6 +314,9 @@ pub fn stop_recording(
     // below read the SAME in-memory buffer — no wav read-back (YV37).
     let voiced = voiced_seconds(&samples, TARGET_RATE);
     let speech_seconds = if voiced >= 0.1 { voiced } else { clip_seconds };
+    // Y4-C — the pauses, measured on the UNTRIMMED buffer and before the ASR
+    // swap below, from the same mask `voiced_seconds` just summed.
+    let take_pauses = pause_spans(&samples, TARGET_RATE);
 
     // YV36 — Silero VAD voice isolation through the WARM engine loaded once at
     // startup (`vad::WarmVad`, held in the app state). `None` means no model on
@@ -363,6 +372,7 @@ pub fn stop_recording(
         // The TRUE voiced value — no clip-length fallback, so a silent tap reads
         // 0.0 and the no-speech gate can reject it before ASR.
         voiced_seconds: voiced,
+        pause_spans: take_pauses,
         hold_wall_seconds,
         speech_present,
         capture_start_ms: active.capture_start_ms,
@@ -948,8 +958,59 @@ pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
 /// continuous speaking; leading/trailing silence and long pauses stay excluded.
 /// Deterministic and pure → unit-tested below.
 fn voiced_seconds(samples: &[f32], sample_rate: u32) -> f64 {
-    if sample_rate == 0 || samples.is_empty() {
+    let Some((mask, frame_secs)) = voiced_frames(samples, sample_rate) else {
         return 0.0;
+    };
+    mask.iter().filter(|&&b| b).count() as f64 * frame_secs
+}
+
+/// The SILENCES between voiced runs of a take (Y4-C), as
+/// [`dictation::PauseSpan`]s the rules stage can paragraph on.
+///
+/// Same bridged energy-VAD mask [`voiced_seconds`] sums — the mask was already
+/// being computed on every take and thrown away. Nothing new is measured here
+/// and no model is required, which is the point: paragraphing has to work with
+/// no polish model and no Silero model installed, which is the default.
+///
+/// Each span's position is carried as a share of the take's total VOICED time,
+/// so it survives the Silero trim that may follow (trimming leading silence
+/// changes wall-clock offsets and changes no voiced fraction at all).
+/// Leading and trailing silence are not pauses BETWEEN anything and are dropped.
+pub fn pause_spans(samples: &[f32], sample_rate: u32) -> Vec<dictation::PauseSpan> {
+    let Some((mask, frame_secs)) = voiced_frames(samples, sample_rate) else {
+        return Vec::new();
+    };
+    let total_voiced = mask.iter().filter(|&&b| b).count() as f64 * frame_secs;
+    if total_voiced <= 0.0 {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut voiced_before = 0.0f64;
+    let mut gap = 0usize;
+    let mut seen_voice = false;
+    for &v in &mask {
+        if v {
+            if seen_voice && gap > 0 {
+                spans.push(dictation::PauseSpan {
+                    seconds: gap as f64 * frame_secs,
+                    at_voiced_fraction: voiced_before / total_voiced,
+                });
+            }
+            gap = 0;
+            seen_voice = true;
+            voiced_before += frame_secs;
+        } else if seen_voice {
+            gap += 1;
+        }
+    }
+    spans
+}
+
+/// The bridged per-frame voiced mask, plus the frame duration in seconds.
+/// `None` when there is nothing to analyse.
+fn voiced_frames(samples: &[f32], sample_rate: u32) -> Option<(Vec<bool>, f64)> {
+    if sample_rate == 0 || samples.is_empty() {
+        return None;
     }
     let frame = (sample_rate as usize / 50).max(1); // 20 ms
     let frame_secs = frame as f64 / sample_rate as f64;
@@ -964,7 +1025,7 @@ fn voiced_seconds(samples: &[f32], sample_rate: u32) -> f64 {
         i += frame;
     }
     if rms.is_empty() {
-        return 0.0;
+        return None;
     }
     let mut sorted = rms.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1000,8 +1061,7 @@ fn voiced_seconds(samples: &[f32], sample_rate: u32) -> f64 {
             last_voiced = Some(idx);
         }
     }
-    let voiced = bridged.iter().filter(|&&b| b).count();
-    voiced as f64 * frame_secs
+    Some((bridged, frame_secs))
 }
 
 fn push_level(level: &LevelHandle, chunk: &[f32]) {

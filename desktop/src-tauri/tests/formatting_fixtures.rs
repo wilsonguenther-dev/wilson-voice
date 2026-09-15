@@ -167,6 +167,7 @@ fn pipeline(case: &Case, polish: impl Fn(&str) -> Option<String>) -> String {
         level_of(case),
         mode_of(case),
         style_of(case),
+        &[],
         |t| t.to_string(),
         polish,
     );

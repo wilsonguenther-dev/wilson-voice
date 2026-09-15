@@ -1760,6 +1760,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                     None
                 }
             };
+            // Y4-C — the take's silences, taken BEFORE `rec.samples` is moved
+            // into the engine. This is the paragraphing signal: measured at
+            // capture, thrown away until now.
+            let take_pauses = rec.pause_spans.clone();
             let asr = transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -1887,6 +1891,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // YV62: the same tone dial the model's overlay gets, so R3's
                 // trailing-period rule holds with the polish stage off.
                 polish_config.style,
+                // Y4-C: the pauses this speaker actually left.
+                &take_pauses,
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
                 |t| polish::polish_llm(t, dictation_mode, &polish_config),
             );
@@ -2894,6 +2900,7 @@ fn retry_failed_dictation(
         dictation::CleanupLevel::from_setting(&settings.cleanup_level),
         mode,
         polish_config.style,
+        &[],
         |t| {
             state
                 .db
