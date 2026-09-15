@@ -20,16 +20,16 @@
 
 mod support;
 
-#[path = "support/two_track.rs"]
-mod two_track;
-
 use std::sync::Arc;
 
-use support::{open_db, temp_dir};
-use two_track::{
+// `mod support;` above already loads `support/two_track.rs` through
+// `support::two_track`; a second `#[path]` module for the same file compiled it
+// twice under two names (`clippy::duplicate_mod`).
+use support::two_track::{
     index_records, index_records_bursty, index_records_lossy, index_records_rebased,
     index_records_stalled, with_pairing_slack,
 };
+use support::{open_db, temp_dir};
 use wilson_voice_lib::meeting::{
     measure_true_rate, MIC_TRACK, SYSTEM_TRACK, TARGET_RATE, TRUE_RATE_MIN_SPAN_SECONDS,
     TRUE_RATE_PPM_LIMIT,
