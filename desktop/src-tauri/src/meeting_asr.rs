@@ -2959,8 +2959,8 @@ mod tests {
     #[test]
     fn a_seam_can_only_move_the_overlaps_worth_of_tokens() {
         assert_eq!(MAX_TAIL_TRIM, OVERLAP_TOKEN_BUDGET);
-        assert!(MAX_HEAD_SKIP <= OVERLAP_TOKEN_BUDGET);
-        assert!(MIN_ANCHOR_TOKENS >= 3, "two tokens is a coincidence");
+        const { assert!(MAX_HEAD_SKIP <= OVERLAP_TOKEN_BUDGET) };
+        const { assert!(MIN_ANCHOR_TOKENS >= 3, "two tokens is a coincidence") };
     }
 
     /// A failed chunk is a hole in the transcript, not the end of it — and the

@@ -913,8 +913,8 @@ fn voiced_seconds(samples: &[f32], sample_rate: u32) -> f64 {
     let max_gap = (0.30 / frame_secs).round() as usize;
     let mut bridged = mask.clone();
     let mut last_voiced: Option<usize> = None;
-    for idx in 0..mask.len() {
-        if mask[idx] {
+    for (idx, &voiced) in mask.iter().enumerate() {
+        if voiced {
             if let Some(lv) = last_voiced {
                 if idx - lv <= max_gap + 1 {
                     for slot in bridged.iter_mut().take(idx).skip(lv + 1) {
@@ -2577,10 +2577,7 @@ fn agc_gain(rms: f32, peak: f32, target_dbfs: f32) -> f32 {
     // scale (peak-limit) → boost stays clip-free. Cap runaway gain on very quiet
     // input. Also refuses to invent signal (>0 always).
     let peak_ceiling = 0.99f32;
-    let gain = (target_rms / rms)
-        .min(peak_ceiling / peak)
-        .min(64.0)
-        .max(0.0);
+    let gain = (target_rms / rms).min(peak_ceiling / peak).clamp(0.0, 64.0);
     if !gain.is_finite() {
         return 1.0;
     }

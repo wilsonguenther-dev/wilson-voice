@@ -190,11 +190,17 @@ fn default_max_out(req: &PolishRequest) -> u32 {
 
 /// The user turn: `{topic_line?}\n---\n{text}` (spec §2.4). Never the AX cursor
 /// context — that never leaves the app process.
+///
+/// Test-only: every shipping path goes through [`user_prompt_with`], because
+/// the overflow path has to be able to re-cost a shortened body. This is the
+/// spec's whole-text case, kept so the §2.4 shape is asserted directly rather
+/// than only through a substitution.
+#[cfg(test)]
 fn user_prompt(req: &PolishRequest) -> String {
     user_prompt_with(req, &req.text)
 }
 
-/// [`user_prompt`] over a substituted body — how the overflow path re-costs a
+/// The user turn over a substituted body — how the overflow path re-costs a
 /// shortened text without hand-building the prompt a second way.
 fn user_prompt_with(req: &PolishRequest, text: &str) -> String {
     match req
