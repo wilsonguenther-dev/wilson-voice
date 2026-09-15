@@ -291,6 +291,8 @@ pub fn polish_with(text: &str, req: PolishRequest, client: &dyn PolishClient) ->
     let answered = std::panic::catch_unwind(AssertUnwindSafe(|| client.rewrite(&req)));
     let rewritten = match answered {
         Ok(Ok(text)) => text,
+        Ok(Err(PolishError::Unavailable)) => return reject("no_sidecar"),
+        Ok(Err(PolishError::Deadline)) => return reject("deadline"),
         Ok(Err(_)) => return reject("client_error"),
         Err(_) => return reject("client_panic"),
     };
@@ -368,8 +370,85 @@ pub fn rejected_total() -> u64 {
 /// rejected text and the input are never logged — YV20/M2 hygiene.
 fn reject(reason: &'static str) -> Option<String> {
     POLISH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    note_polish_skip(reason);
     log::info!("polish rejected: {reason}");
     None
+}
+
+// ---------------------------------------------------------------------------
+// Y4-G — the silent-skip signal.
+//
+// Both polish failure modes are invisible by construction: a missed deadline
+// returns `Err(Deadline)` and the parent keeps the rules text, and a rewrite
+// that overruns is discarded by `validate_polish`. Those are the NORMAL
+// outcomes for a take over ~150 words, so a user who installs a 1.12 GB model
+// and picks High gets rules-only output on every real dictation with no
+// indication the model was ever consulted. That is exactly how the defect this
+// item exists for stayed invisible for a release cycle.
+//
+// So: every skip is LATCHED with its reason (the take records it, the diff
+// panel shows it) and COUNTED per reason (one counter per reason in the local
+// log). The reason is always a closed-set `&'static str` tag — never text —
+// so nothing dictated can reach the log or the UI through this path.
+// ---------------------------------------------------------------------------
+
+/// Why the LLM stage produced nothing, and how often each reason has fired.
+#[derive(Debug, Default)]
+struct PolishSkipLog {
+    /// The most recent reason, consumed by [`take_polish_skip_reason`].
+    last: Option<&'static str>,
+    /// One counter per reason. A `Vec` and not a map: the reason set is closed
+    /// and tiny, and this keeps the static `const`-constructible.
+    counts: Vec<(&'static str, u64)>,
+}
+
+static POLISH_SKIP_LOG: Mutex<PolishSkipLog> = Mutex::new(PolishSkipLog {
+    last: None,
+    counts: Vec::new(),
+});
+
+/// Record one skip: latch the reason for the take being processed, and bump
+/// that reason's counter.
+pub fn note_polish_skip(reason: &'static str) {
+    let mut log = POLISH_SKIP_LOG.lock();
+    log.last = Some(reason);
+    match log.counts.iter_mut().find(|(r, _)| *r == reason) {
+        Some((_, n)) => *n += 1,
+        None => log.counts.push((reason, 1)),
+    }
+}
+
+/// Take the latched reason, clearing it. `None` means "no skip since the last
+/// take" — the caller then has nothing to attribute.
+pub fn take_polish_skip_reason() -> Option<&'static str> {
+    POLISH_SKIP_LOG.lock().last.take()
+}
+
+/// Every reason seen this session with its count, newest reason last.
+pub fn polish_skip_counts() -> Vec<(&'static str, u64)> {
+    POLISH_SKIP_LOG.lock().counts.clone()
+}
+
+/// One line, all counters — the local-log half of the silent-skip signal.
+/// Called once per take that ran the LLM stage. Never transmitted anywhere.
+pub fn log_polish_skip_counts() {
+    let counts = polish_skip_counts();
+    if counts.is_empty() {
+        return;
+    }
+    let line = counts
+        .iter()
+        .map(|(r, n)| format!("{r}={n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    log::info!("polish-skips: {line}");
+}
+
+/// Test seam: forget every latched reason and counter.
+pub fn reset_polish_skip_log_for_tests() {
+    let mut l = POLISH_SKIP_LOG.lock();
+    l.last = None;
+    l.counts.clear();
 }
 
 /// Length for the V2 compare: non-whitespace characters, with a leading list
@@ -486,10 +565,36 @@ pub(crate) fn non_ascii_ratio(text: &str) -> f64 {
 /// [`validate_polish`]. Absent a model this is exactly the no-op the pipeline
 /// has always had.
 pub fn polish_llm(text: &str, mode: DictationMode, cfg: &PolishConfig) -> Option<String> {
-    let model = models::polish_model(cfg.model.trim())
+    polish_llm_result(text, mode, cfg).ok()
+}
+
+/// The same stage, but saying WHY when it produces nothing (Y4-G).
+///
+/// `Err` carries a closed-set tag — `no_model`, `no_sidecar`, `deadline`,
+/// `client_error`, `client_panic`, `v1_empty` … `v7_script_drift`, `unknown` —
+/// which the take records and the "see what changed" panel attributes to the
+/// polish stage. It is NEVER text: nothing dictated escapes through it.
+pub fn polish_llm_result(
+    text: &str,
+    mode: DictationMode,
+    cfg: &PolishConfig,
+) -> Result<String, &'static str> {
+    // Drop any reason latched by an earlier take before this one can read it.
+    let _ = take_polish_skip_reason();
+    let Some(model) = models::polish_model(cfg.model.trim())
         .filter(|m| models::is_polish_downloaded(m))
-        .map(models::polish_model_path)?;
-    polish_stage(text, mode, cfg, &SidecarClient::new(model))
+        .map(models::polish_model_path)
+    else {
+        note_polish_skip("no_model");
+        return Err("no_model");
+    };
+    match polish_stage(text, mode, cfg, &SidecarClient::new(model)) {
+        Some(out) => Ok(out),
+        // `polish_stage` funnels every refusal through `reject`, which latches
+        // the tag. `build_request` returning `None` is the one path that does
+        // not, and it can only happen in `Code` mode, where the stage is off.
+        None => Err(take_polish_skip_reason().unwrap_or("unknown")),
+    }
 }
 
 /// The polish model this machine could actually run right now: the catalog's

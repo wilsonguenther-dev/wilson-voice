@@ -39,6 +39,21 @@ pub struct TranscriptEntry {
     /// is `None` only for legacy rows written before the column existed.
     #[serde(default)]
     pub raw_text: Option<String>,
+    /// Y4-G — the cleanup stages that actually ran for this take, comma
+    /// separated in pipeline order (`dictionary,backtrack,rules,polish`). A
+    /// closed set of tags, never text. `None` for legacy rows.
+    #[serde(default)]
+    pub stages_that_ran: Option<String>,
+    /// Y4-G silent-skip signal — why the LLM stage produced nothing when it was
+    /// enabled (`deadline`, `no_model`, `no_sidecar`, `v2_truncated`, …).
+    /// `None` when the stage was off, or when its rewrite was accepted.
+    #[serde(default)]
+    pub polish_skip_reason: Option<String>,
+    /// Y4-G — local-only thumbs up (1) / down (-1) on this take. Stored so a
+    /// future rules change can be scored against real dissatisfaction. NEVER
+    /// transmitted anywhere.
+    #[serde(default)]
+    pub feedback: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +269,11 @@ fn new_transcript_entry(
         created_at,
         source_app,
         raw_text: Some(raw),
+        // Y4-G: filled in by `set_take_formatting` once the pipeline reports
+        // what it did, and by `set_take_feedback` when the user rates the take.
+        stages_that_ran: None,
+        polish_skip_reason: None,
+        feedback: None,
     }
 }
 
@@ -725,6 +745,18 @@ impl Database {
         // YV10: store the raw ASR transcript alongside the polished `text`. Nullable
         // so legacy rows (written before the cleanup pipeline) stay valid as NULL.
         let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN raw_text TEXT", []);
+        // Y4-G: what the cleanup pipeline did to this take, why the LLM stage
+        // skipped, and the user's local-only verdict. All nullable — every row
+        // written before this item stays valid as NULL.
+        let _ = conn.execute(
+            "ALTER TABLE transcripts ADD COLUMN stages_that_ran TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE transcripts ADD COLUMN polish_skip_reason TEXT",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE transcripts ADD COLUMN feedback INTEGER", []);
         let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1112,7 +1144,8 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                            COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
+                            COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
+                            stages_that_ran, polish_skip_reason, feedback
                      FROM transcripts ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -1132,7 +1165,8 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT t.id, t.text, t.backend, t.asr_seconds, COALESCE(t.speech_seconds,0),
-                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at, t.raw_text
+                            COALESCE(t.pipeline_ms,0), t.word_count, t.source_app, t.created_at, t.raw_text,
+                            t.stages_that_ran, t.polish_skip_reason, t.feedback
                      FROM transcripts_fts f
                      JOIN transcripts t ON t.rowid = f.rowid
                      WHERE transcripts_fts MATCH ?1
@@ -1147,7 +1181,8 @@ impl Database {
                     let mut stmt2 = conn
                         .prepare(
                             "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
+                                    COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
+                            stages_that_ran, polish_skip_reason, feedback
                              FROM transcripts
                              WHERE text LIKE ?1
                              ORDER BY created_at DESC LIMIT ?2",
@@ -1168,6 +1203,52 @@ impl Database {
             }
         }
         Ok(out)
+    }
+
+    /// Y4-G — record what the cleanup pipeline did to one take.
+    ///
+    /// A separate UPDATE rather than three more columns on the INSERT: the row
+    /// is already durable and the text is already in the user's app by the time
+    /// this runs, so a failure here costs the diff panel its stage list and
+    /// costs the dictation nothing. `stages` and `reason` are closed-set tags
+    /// from `dictation::FormattingTrace`, never transcript text.
+    pub fn set_take_formatting(
+        &self,
+        id: &str,
+        stages: &str,
+        polish_skip_reason: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE transcripts SET stages_that_ran = ?2, polish_skip_reason = ?3
+             WHERE id = ?1",
+            params![id, stages, polish_skip_reason],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Y4-G — the user's local-only verdict on one take: `Some(1)` thumbs up,
+    /// `Some(-1)` thumbs down, `None` to clear it.
+    ///
+    /// Used for NOTHING today, on purpose. It costs one nullable column now and
+    /// it is the only way a future rules change can be evaluated against real
+    /// dissatisfaction instead of a guess. It is never transmitted: there is no
+    /// network call on this path and there is no analytics SDK in this app.
+    pub fn set_take_feedback(&self, id: &str, feedback: Option<i64>) -> Result<(), String> {
+        let value = match feedback {
+            Some(v) if v > 0 => Some(1_i64),
+            Some(v) if v < 0 => Some(-1_i64),
+            // 0 and None both mean "no verdict" — never store a third state.
+            _ => None,
+        };
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE transcripts SET feedback = ?2 WHERE id = ?1",
+            params![id, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn delete_transcript(&self, id: &str) -> Result<(), String> {
@@ -3036,7 +3117,8 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, text, backend, asr_seconds, COALESCE(speech_seconds,0),
-                        COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text
+                        COALESCE(pipeline_ms,0), word_count, source_app, created_at, raw_text,
+                            stages_that_ran, polish_skip_reason, feedback
                  FROM transcripts ORDER BY created_at ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -3153,7 +3235,9 @@ fn map_meeting_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegme
 }
 
 fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> {
-    // id, text, backend, asr_seconds, speech_seconds, pipeline_ms, word_count, source_app, created_at, raw_text
+    // id, text, backend, asr_seconds, speech_seconds, pipeline_ms, word_count,
+    // source_app, created_at, raw_text, stages_that_ran, polish_skip_reason,
+    // feedback
     Ok(TranscriptEntry {
         id: row.get(0)?,
         text: row.get(1)?,
@@ -3165,6 +3249,9 @@ fn map_transcript(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptEntry> 
         source_app: row.get(7)?,
         created_at: parse_dt(row.get::<_, String>(8)?),
         raw_text: row.get(9)?,
+        stages_that_ran: row.get(10)?,
+        polish_skip_reason: row.get(11)?,
+        feedback: row.get(12)?,
     })
 }
 
@@ -4150,6 +4237,9 @@ mod tests {
                     created_at: base + Duration::seconds(i as i64),
                     source_app: None,
                     raw_text: None,
+                    stages_that_ran: None,
+                    polish_skip_reason: None,
+                    feedback: None,
                 };
                 db.insert_transcript_row_tx(&tx, &entry).unwrap();
             }

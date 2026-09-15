@@ -14,6 +14,7 @@ import YappyHouse from "./home/YappyHouse";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
 import { PermissionHealthRow } from "./PermissionHealthRow";
+import DiffView from "./DiffView";
 import type { GrantStatus, PermissionGrantRow } from "./permission";
 // YV95 — the meeting status shape and its label rules are shared with the pill
 // (src/pill/meeting.ts) so the two surfaces cannot render the same second
@@ -313,6 +314,18 @@ interface TranscriptEntry {
    * before the column existed. Powers the YV51 "Paste raw" / undo action.
    */
   rawText?: string | null;
+  /**
+   * Y4-G — the cleanup stages that actually ran, comma separated in pipeline
+   * order (`dictionary,backtrack,rules,polish`). Null for legacy rows.
+   */
+  stagesThatRan?: string | null;
+  /**
+   * Y4-G silent-skip signal — why the AI polish stage produced nothing when it
+   * was enabled. Null when the stage was off or its rewrite was accepted.
+   */
+  polishSkipReason?: string | null;
+  /** Y4-G — local-only thumbs: 1, -1, or null. Never transmitted. */
+  feedback?: number | null;
 }
 
 /**
@@ -708,6 +721,16 @@ export default function App() {
   // YV47 — the history entry open in "Fix transcription", and its draft text.
   const [fixingId, setFixingId] = useState<string | null>(null);
   const [fixDraft, setFixDraft] = useState("");
+  /** Y4-G — which history row has its "see what changed" panel open. */
+  const [diffId, setDiffId] = useState<string | null>(null);
+  /**
+   * Y4-G — thumbs the user set this session, keyed by take id. The row itself
+   * carries the stored value; this is the optimistic overlay so the button
+   * reacts immediately instead of waiting for a history refetch.
+   */
+  const [feedbackEdits, setFeedbackEdits] = useState<
+    Record<string, number | null>
+  >({});
   // YV48 — saved snippets plus the "add" draft and the row being edited.
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [newTrigger, setNewTrigger] = useState("");
@@ -1904,6 +1927,34 @@ export default function App() {
   // YV47 — "Fix transcription": the honest correction path. The user edits a
   // known transcript and Yap diffs the result, so what it learns is exactly
   // what they changed — no clipboard sniffing, no accessibility guesswork.
+  /** The thumbs value to render: this session's edit, else the stored one. */
+  function feedbackFor(e: TranscriptEntry): number | null {
+    return e.id in feedbackEdits ? feedbackEdits[e.id] : (e.feedback ?? null);
+  }
+
+  /**
+   * Y4-G — record a local-only verdict on one take.
+   *
+   * Written to SQLite and read by NOTHING today. It is the only way a future
+   * rules change can be scored against real dissatisfaction rather than a
+   * guess, and it never leaves this Mac: this invoke writes one row, and the
+   * app ships no analytics SDK.
+   */
+  function rateTake(id: string, value: number | null) {
+    setFeedbackEdits((prev) => ({ ...prev, [id]: value }));
+    invoke("set_take_feedback", { id, feedback: value }).catch((err) => {
+      // A failed write costs a future evaluation signal and costs this take
+      // nothing, so it must never surface as an error toast over the user's
+      // transcript. Roll the button back so it does not lie.
+      console.warn("set_take_feedback failed", err);
+      setFeedbackEdits((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    });
+  }
+
   function startFix(e: TranscriptEntry) {
     setFixingId(e.id);
     setFixDraft(e.text);
@@ -2705,6 +2756,23 @@ export default function App() {
                                 Paste raw
                               </button>
                             )}
+                            {/* Y4-G: offered on every row that stored a raw
+                                take, INCLUDING the ones the pipeline left
+                                alone — "nothing changed" is the answer a user
+                                who distrusts the formatting most needs. */}
+                            {e.rawText != null && (
+                              <button
+                                className="ghost"
+                                aria-expanded={diffId === e.id}
+                                onClick={() =>
+                                  setDiffId(diffId === e.id ? null : e.id)
+                                }
+                              >
+                                {diffId === e.id
+                                  ? "Hide changes"
+                                  : "See what changed"}
+                              </button>
+                            )}
                             <button
                               className="ghost"
                               onClick={() => startFix(e)}
@@ -2729,6 +2797,21 @@ export default function App() {
                               Delete
                             </button>
                           </div>
+                          {diffId === e.id && e.rawText != null && (
+                            <DiffView
+                              raw={e.rawText}
+                              formatted={e.text}
+                              stages={e.stagesThatRan}
+                              polishSkipReason={e.polishSkipReason}
+                              feedback={feedbackFor(e)}
+                              onFeedback={(v) => rateTake(e.id, v)}
+                              onUndo={
+                                undoAiEditText(e)
+                                  ? () => pasteText(undoAiEditText(e) as string)
+                                  : undefined
+                              }
+                            />
+                          )}
                         </>
                       )}
                     </li>
