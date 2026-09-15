@@ -8,7 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords, resetLive,
+  advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
+  phaseVisual, reduceGatePhase, resetLive,
   speechThreshold, AMBIENT_FRAME_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
   type ChatTone, type LiveFrame, type LivePhase,
 } from "./live";
@@ -301,5 +302,76 @@ describe("frame policy — parking (YV81)", () => {
     expect(framePlan("idle", quiet).intervalMs).toBe(IDLE_FRAME_MS);
     expect(framePlan("idle", { ...quiet, settled: true, busyVisuals: true }).mode).toBe("raf");
     expect(framePlan("idle", { ...quiet, settled: true, level: 0.4 }).mode).toBe("raf");
+  });
+});
+
+/** Every variant of the union PERM-C owns — kept literal so a new one is a type error here too. */
+const ALL_PHASES: LivePhase[] = [
+  "idle", "listening", "thinking", "done", "sleepy",
+  "blocked", "waiting", "gated", "transcribing", "polishing",
+  "pasting", "error", "model-loading", "empty",
+];
+
+// ── PERM-C — the microphone refusal, as a state machine ─────────────────────
+// The defect: a denied grant still opened the capture stream (a denied stream
+// delivers SILENCE), so the pill painted a normal recording of nothing. The fix
+// is a refusal the user can SEE, and the thing that can silently regress is not
+// the drawing — it is the ranking. These are the three ways `blocked` used to
+// get wiped off the pill before anyone read it.
+describe("PERM-C — the permission phase", () => {
+  it("blocked outranks listening", () => {
+    // A refused press still produces `recording` churn around it. If a take
+    // event could overwrite the refusal, it would flash and vanish.
+    expect(reduceGatePhase("blocked", { type: "recording", recording: true })).toBe("blocked");
+    expect(reduceGatePhase("idle", { type: "recording", recording: true })).toBe("listening");
+  });
+
+  it("blocked survives a recording:false event", () => {
+    expect(reduceGatePhase("blocked", { type: "recording", recording: false })).toBe("blocked");
+    expect(reduceGatePhase("waiting", { type: "recording", recording: false })).toBe("waiting");
+    // …while an ordinary take still falls back to idle.
+    expect(reduceGatePhase("listening", { type: "recording", recording: false })).toBe("idle");
+  });
+
+  it("blocked clears on an authorized status event", () => {
+    expect(reduceGatePhase("blocked", { type: "microphone-status", status: "authorized" })).toBe("idle");
+    expect(reduceGatePhase("waiting", { type: "microphone-status", status: "authorized" })).toBe("idle");
+    // Nothing else clears it: macOS owns the grant, so only TCC's own answer may.
+    expect(reduceGatePhase("blocked", { type: "microphone-status", status: "denied" })).toBe("blocked");
+    expect(reduceGatePhase("blocked", { type: "microphone-status", status: "restricted" })).toBe("blocked");
+    // An authorized answer while nothing is gated must not disturb a live take.
+    expect(reduceGatePhase("listening", { type: "microphone-status", status: "authorized" })).toBe("listening");
+  });
+
+  it("routes the backend's refusal by status: not_determined waits, everything else blocks", () => {
+    expect(reduceGatePhase("idle", { type: "mic_permission_required", status: "not_determined", prompting: true })).toBe("waiting");
+    expect(reduceGatePhase("idle", { type: "mic_permission_required", status: "denied" })).toBe("blocked");
+    expect(reduceGatePhase("idle", { type: "mic_permission_required", status: "restricted" })).toBe("blocked");
+    // An unknown status is never treated as a grant.
+    expect(reduceGatePhase("idle", { type: "mic_permission_required", status: "" })).toBe("blocked");
+  });
+
+  it("the refusal phases are the only ones a click sends to Permissions", () => {
+    const needs = ALL_PHASES.filter((p) => phaseVisual(p).needsPermission);
+    expect(needs).toEqual(["blocked", "waiting"]);
+  });
+
+  it("every declared phase has a treatment — placeholders included", () => {
+    // PERM-C lands the WHOLE union so five later items can render into it
+    // without touching the type. A variant with no case here would fall through
+    // `phaseVisual` as undefined and paint nothing at all.
+    for (const p of ALL_PHASES) {
+      const v = phaseVisual(p);
+      expect(v.label.length, `${p} has no label`).toBeGreaterThan(0);
+      expect(["calm", "live", "busy", "good", "warn"]).toContain(v.tone);
+    }
+    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("a blocked pill never holds a 60Hz rAF open", () => {
+    // The refusal is CSS. It must repaint, then let the loop settle — a revoked
+    // grant can last for days.
+    const plan = framePlan("blocked", { level: 0, busyVisuals: false, reduceMotion: false, settled: true });
+    expect(plan.mode).not.toBe("raf");
   });
 });

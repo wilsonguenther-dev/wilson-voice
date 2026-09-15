@@ -24,6 +24,12 @@ const LICENSE_RS: &str = include_str!("../src/license.rs");
 const ALLOWED_CALLERS: &[&str] = &[
     // The gate itself.
     "license_allows_new_dictation",
+    // PERM-C, added on purpose. The MICROPHONE gate sits beside the license gate
+    // on the same choke point and its name ends in the same words, so its own
+    // `fn` line matches `allows_new_dictation` here. It gates nothing on the
+    // license — `tests/mic_gate.rs` owns it — but it must be named, not
+    // pattern-matched away, or the next rename hides a real escape.
+    "microphone_allows_new_dictation",
     // The ONE choke point: hotkey, hands-free, tray, pill, Home button and
     // onboarding calibration all reach capture through here.
     "start_recording",

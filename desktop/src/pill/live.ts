@@ -249,7 +249,151 @@ export function advanceLive(
 // `hidden` does. This is the fix OS-12 (1) asks for; without it "the canvas loop
 // can stay parked through a three-hour meeting" is false.
 
-export type LivePhase = "idle" | "listening" | "thinking" | "done" | "sleepy";
+/**
+ * Every phase the pill can be in — the WHOLE union, landed in one commit on
+ * purpose (PERM-C).
+ *
+ * Six items across two parallel lanes need a variant of this type, each branched
+ * off main independently. A builder that finds its predecessor's PR unlanded
+ * invents its own variant, and the merge conflicts land on the one file that
+ * carries the pill's defects. So the earliest of the six declares the complete
+ * union up front: variants nobody renders yet are PLACEHOLDERS with a named
+ * owner, and later items add rendering and copy WITHOUT editing this union.
+ *
+ * If you are here to add a phase: don't. Claim one of the placeholders below and
+ * give it a real `phaseVisual` treatment instead.
+ */
+export type LivePhase =
+  // ── shipped, rendered by both pills ──────────────────────────────────────
+  | "idle"
+  | "listening"
+  | "thinking"
+  | "done"
+  | "sleepy"
+  // ── PERM-C (this item): the microphone gate's two refusals ───────────────
+  /** Denied or Restricted: macOS is blocking the mic and will not re-prompt. */
+  | "blocked" // OWNED BY PERM-C
+  /** NotDetermined: the system dialog is up; the press did not wait for it. */
+  | "waiting" // OWNED BY PERM-C
+  // ── placeholders: declared here, rendered by the item that owns them ─────
+  /** Trial over / no license — a refused take that is NOT a permission fault. */
+  | "gated" // OWNED BY Y2-C
+  /** Audio captured, ASR running. */
+  | "transcribing" // OWNED BY Y3-C
+  /** Transcript in hand, the polish sidecar is rewriting it. */
+  | "polishing" // OWNED BY Y5-C
+  /** Text going into the focused app. */
+  | "pasting" // OWNED BY Y7-D
+  /** The take failed and the user has to know. */
+  | "error" // OWNED BY Y8-D
+  /** The speech engine is loading before it can decode. */
+  | "model-loading" // OWNED BY Y3-C
+  /** The take produced no words at all. */
+  | "empty"; // OWNED BY Y8-D
+
+/** How a phase is drawn, and what a click on it means. */
+export interface PhaseVisual {
+  /**
+   * The treatment bucket both pills key off. `warn` is the muted, struck-through
+   * capsule; `live`/`busy`/`good` are the existing take states; `calm` is at rest.
+   */
+  tone: "calm" | "live" | "busy" | "good" | "warn";
+  /** Short human label — also the accessible name of the capsule. */
+  label: string;
+  /** Clicking this phase should open Permissions, not start/stop a take. */
+  needsPermission: boolean;
+  /** Declared but not yet designed: its owning item still has to render it. */
+  placeholder: boolean;
+}
+
+/**
+ * The single place a phase becomes a treatment. Both pills read it, so a phase
+ * can never be drawn two different ways, and a variant added to the union
+ * without a case here is a compile error rather than a silently invisible state.
+ */
+export function phaseVisual(phase: LivePhase): PhaseVisual {
+  switch (phase) {
+    case "idle":
+      return { tone: "calm", label: "Start dictation", needsPermission: false, placeholder: false };
+    case "listening":
+      return { tone: "live", label: "Stop dictation", needsPermission: false, placeholder: false };
+    case "thinking":
+      return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: false };
+    case "done":
+      return { tone: "good", label: "Done", needsPermission: false, placeholder: false };
+    case "sleepy":
+      return { tone: "calm", label: "Start dictation", needsPermission: false, placeholder: false };
+    case "blocked":
+      return {
+        tone: "warn",
+        label: "Microphone blocked — open Permissions",
+        needsPermission: true,
+        placeholder: false,
+      };
+    case "waiting":
+      return {
+        tone: "warn",
+        label: "Waiting for microphone permission",
+        needsPermission: true,
+        placeholder: false,
+      };
+    case "gated":
+      return { tone: "warn", label: "Dictation locked", needsPermission: false, placeholder: true };
+    case "transcribing":
+      return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: true };
+    case "polishing":
+      return { tone: "busy", label: "Polishing", needsPermission: false, placeholder: true };
+    case "pasting":
+      return { tone: "busy", label: "Pasting", needsPermission: false, placeholder: true };
+    case "error":
+      return { tone: "warn", label: "Something went wrong", needsPermission: false, placeholder: true };
+    case "model-loading":
+      return { tone: "busy", label: "Loading speech engine", needsPermission: false, placeholder: true };
+    case "empty":
+      return { tone: "calm", label: "Nothing to type", needsPermission: false, placeholder: true };
+  }
+}
+
+/** The events that can move the pill in or out of a permission phase. */
+export type GateEvent =
+  /** The backend refused a press: `mic_permission_required`. */
+  | { type: "mic_permission_required"; status: string; prompting?: boolean }
+  /** TCC answered: the `microphone-status` event. */
+  | { type: "microphone-status"; status: string }
+  /** A take started or stopped. */
+  | { type: "recording"; recording: boolean };
+
+/** Denied / restricted / an unknown string all mean "Yap cannot hear you". */
+const micUsable = (status: string): boolean => status === "authorized";
+
+/**
+ * The permission phase, as a pure reducer — the part of the pill that a test can
+ * hold still.
+ *
+ * Two rules the pill got wrong before, and the reason this is not just a
+ * `setState` in a listener:
+ *  - `blocked` OUTRANKS a take. A refused press still emits `recording` churn
+ *    around it; if a recording event could overwrite `blocked`, the refusal
+ *    would flash and vanish, which is the invisible refusal being fixed.
+ *  - Only the authoritative status clears it. The grant is macOS state, so
+ *    nothing but TCC answering `authorized` may put the pill back to idle.
+ */
+export function reduceGatePhase(prev: LivePhase, ev: GateEvent): LivePhase {
+  const gated = prev === "blocked" || prev === "waiting";
+  switch (ev.type) {
+    case "mic_permission_required":
+      if (micUsable(ev.status)) return gated ? "idle" : prev;
+      return ev.status === "not_determined" ? "waiting" : "blocked";
+    case "microphone-status":
+      if (micUsable(ev.status)) return gated ? "idle" : prev;
+      return ev.status === "not_determined" ? "waiting" : "blocked";
+    case "recording":
+      // A permission phase survives both edges of a take.
+      if (gated) return prev;
+      return ev.recording ? "listening" : "idle";
+  }
+}
+
 /** Redraw budget while idle: ~18fps keeps the breathing perceptible. */
 export const IDLE_FRAME_MS = 55;
 /** Reduced-motion redraw budget while a take is live: slow, but never parked. */
@@ -304,6 +448,10 @@ export interface FramePlan {
  * (`live.test.ts` — "never parks while a take is live").
  */
 export function framePlan(phase: LivePhase, f: FrameInputs): FramePlan {
+  // PERM-C: `blocked`/`waiting` are deliberately NOT "active". They are static
+  // refusals — a muted capsule and a struck-through glyph, both CSS — so they
+  // must repaint once and then let the loop settle, never hold a 60Hz rAF for
+  // as long as a grant stays revoked.
   const active = phase === "listening" || phase === "thinking" || phase === "done";
   if (active || f.busyVisuals || f.level >= 0.02) {
     return { mode: "raf", intervalMs: f.reduceMotion ? REDUCED_FRAME_MS : 0 };

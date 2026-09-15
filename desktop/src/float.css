@@ -557,3 +557,59 @@ body,
     inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
     0 8px 20px rgba(0, 0, 0, 0.42);
 }
+
+/* ── PERM-C — the refused press, made visible ───────────────────────────────
+   A pill that cannot record must never look like one that can. `blocked` is a
+   MUTED capsule (colour drained, glow gone) carrying a struck-through mic, and
+   the whole capsule is the button to Permissions. Static by design: no pulse,
+   no waveform, nothing that reads as "listening". */
+.pill.blocked {
+  background: rgba(24, 24, 27, 0.92);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: none;
+  filter: saturate(0.15);
+  cursor: pointer;
+}
+.pill.blocked .ctrl { color: rgba(255, 255, 255, 0.55); }
+.pill.blocked .wave,
+.pill.blocked .seed { display: none; }
+.pill.blocked .gate-note {
+  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  padding-right: 8px;
+}
+/* Waiting on the system dialog is the SAME refusal with a softer voice: the
+   user has not said no, macOS just has not been answered yet. */
+.pill.blocked.waiting { filter: saturate(0.35); }
+
+/* Yappy's capsule is canvas, so its refusal is a DOM overlay on top of it. */
+.kami-blocked {
+  position: absolute;
+  inset: auto 0 6px 0;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 96%;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.92);
+  color: rgba(255, 255, 255, 0.78);
+  font: 500 11px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.kami-blocked svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kami-blocked .slash { stroke: #f87171; }

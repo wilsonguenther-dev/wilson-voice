@@ -15,9 +15,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
+import { reduceGatePhase, type LivePhase } from "./pill/live";
 import "./float.css";
 
 interface Settings { pillStyle?: string; pillPosition?: string }
+
+/**
+ * PERM-C — the backend's refusal payload. `prompting` is true only while the
+ * system dialog is on its way (NotDetermined), which is the difference between
+ * "waiting" and "blocked" on the pill.
+ */
+interface MicGateNotice { status?: string; prompting?: boolean }
 
 const DOCKS = ["bottom", "left", "right"];
 const dockOf = (s?: Settings) => {
@@ -27,6 +35,36 @@ const dockOf = (s?: Settings) => {
 
 function Float() {
   const [style, setStyle] = useState<string>("classic");
+  // PERM-C — the permission phase lives HERE, above both pill styles, because it
+  // is a property of the app and not of whichever capsule happens to be drawn.
+  // Both pills receive it; neither invents it.
+  const [gate, setGate] = useState<LivePhase>("idle");
+  useEffect(() => {
+    let dead = false;
+    const unsubs: Array<() => void> = [];
+    const push = (u: () => void) => (dead ? u() : unsubs.push(u));
+    // A press was refused for the microphone. The pill must SHOW it — an
+    // invisible refusal is the bug PERM-C exists to fix.
+    listen<MicGateNotice>("mic_permission_required", (e) =>
+      setGate((p) =>
+        reduceGatePhase(p, {
+          type: "mic_permission_required",
+          status: e.payload?.status ?? "denied",
+          prompting: e.payload?.prompting,
+        }),
+      ),
+    ).then(push);
+    // TCC answered (the non-blocking request, or the Permissions pane polling).
+    listen<string>("microphone-status", (e) =>
+      setGate((p) => reduceGatePhase(p, { type: "microphone-status", status: e.payload })),
+    ).then(push);
+    // A take starting or stopping. Never clears a permission phase — see
+    // `reduceGatePhase`.
+    listen<boolean>("recording", (e) =>
+      setGate((p) => reduceGatePhase(p, { type: "recording", recording: e.payload })),
+    ).then(push);
+    return () => { dead = true; unsubs.forEach((u) => u()); };
+  }, []);
   useEffect(() => {
     // A synchronous cleanup can run before the listen() promise resolves
     // (StrictMode double-mount). A `dead` flag unsubscribes a listener that
@@ -43,7 +81,7 @@ function Float() {
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
-  return style === "yappy" ? <YappyPill /> : <ClassicPill />;
+  return style === "yappy" ? <YappyPill gate={gate} /> : <ClassicPill gate={gate} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

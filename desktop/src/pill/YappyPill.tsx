@@ -8,15 +8,15 @@
  * Driven by the real app events (get_status/status/recording/audio_level/transcript),
  * the shared MouthDriver, and the tone data table (rude/friendly/rose).
  */
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { usePillDrag, reportPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
-  advanceLive, createLiveState, framePlan, resetLive, toChatTone,
+  advanceLive, createLiveState, framePlan, phaseVisual, resetLive, toChatTone,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp,
 } from "./live";
 
@@ -68,7 +68,14 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 // much that it stops reading as docked. Mirrors the .stage inset in float.css.
 const DOCK_PAD = 10;
 
-export default function YappyPill() {
+/**
+ * PERM-C — `gate` is the microphone permission phase, owned by `float-main`:
+ * "blocked" (macOS is refusing and will not re-prompt) or "waiting" (the system
+ * dialog is up). It outranks every take state, and it is BOTH a canvas phase
+ * (so Yappy's accent goes muted) and a DOM overlay (the struck-through mic
+ * glyph, which is also the button to the fix).
+ */
+export default function YappyPill({ gate = "idle" }: { gate?: LivePhase }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
@@ -77,6 +84,17 @@ export default function YappyPill() {
   const drag = usePillDrag();
   // YV95 — a meeting's recording state rides above the canvas as DOM.
   const meeting = useMeetingStatus();
+  // PERM-C — set by the draw effect; called when the gate prop changes.
+  const applyGateRef = useRef<(g: LivePhase) => void>(() => {});
+  const gateVisual = phaseVisual(gate);
+  const blocked = gateVisual.needsPermission;
+  const openPermissions = useCallback(() => {
+    if (drag.dragged()) return;
+    // A blocked capsule is a BUTTON to the fix: raise the main window and land
+    // on the Permissions screen (PERM-B), which owns the Settings deep link.
+    invoke("show_main").catch(() => {});
+    emit("navigate", "permissions").catch(() => {});
+  }, [drag]);
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
   // ambient tick open for the whole session. The draw loop lives in a mount-once
@@ -198,7 +216,18 @@ export default function YappyPill() {
     let chatTone: ChatTone = toChatTone(DEFAULT_TONE.tone === "off" ? undefined : DEFAULT_TONE.tone);
     const say = (t: string) => { bubble.textContent = t; bubble.classList.toggle("show", !!t); };
 
-    const ACC: Record<Phase, string> = { idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%", done: "152 69% 52%", sleepy: "230 20% 60%" };
+    // PERM-C — a Record over the WHOLE phase union, so a variant added to
+    // `LivePhase` without an accent here is a compile error, never a blank pill.
+    // The placeholder phases borrow the nearest shipped accent until the item
+    // that owns them draws its own scene; the two refusal phases are grey on
+    // purpose — a muted capsule is the whole visual point.
+    const ACC: Record<Phase, string> = {
+      idle: "351 95% 71%", listening: "351 95% 71%", thinking: "38 92% 55%",
+      done: "152 69% 52%", sleepy: "230 20% 60%",
+      blocked: "0 0% 55%", waiting: "0 0% 55%", gated: "38 92% 55%",
+      transcribing: "38 92% 55%", polishing: "38 92% 55%", pasting: "38 92% 55%",
+      error: "0 72% 58%", "model-loading": "38 92% 55%", empty: "230 20% 60%",
+    };
     // listening → prop comes from the live state machine (escalates with actual
     // speech); thinking/done → keyed off the transcript word count
     const wantPropFor = (p: Phase, w: number): Prop =>
@@ -389,15 +418,27 @@ export default function YappyPill() {
     // The meeting effect above holds the only reference that can un-park a loop
     // parked BY a meeting: nothing else fires when a meeting ends.
     wakeRef.current = wake;
+    // PERM-C — the permission phase arrives as a PROP (float-main owns it) while
+    // the scene lives in this mount-once effect, so it is applied through a ref,
+    // the same way the meeting flag is. Clearing only ever unwinds a permission
+    // phase: it must never yank a live take back to idle.
+    applyGateRef.current = (g: LivePhase) => {
+      if (g === "blocked" || g === "waiting") setPhase(g);
+      else if (phase === "blocked" || phase === "waiting") setPhase("idle");
+    };
     raf = requestAnimationFrame(loop);
     return () => {
       dead = true;
       wakeRef.current = () => {};
       cancelAnimationFrame(raf); window.clearTimeout(tick);
       document.removeEventListener("visibilitychange", onVisibility);
+      applyGateRef.current = () => {};
       ro.disconnect(); unsubs.forEach((u) => u());
     };
   }, []);
+
+  // PERM-C — drive the canvas phase from the gate prop.
+  useEffect(() => { applyGateRef.current(gate); }, [gate]);
 
   return (
     <div className="kami-stage">
@@ -409,6 +450,25 @@ export default function YappyPill() {
           is what actually has to stop, which is `meetingRecording` in the frame
           policy above (live.ts) — an overlay that costs nothing does not park a
           loop that was still redrawing behind it 10 times a second. */}
+      {blocked && (
+        <button
+          type="button"
+          className={`kami-blocked ${gate}`}
+          aria-label={gateVisual.label}
+          title={gateVisual.label}
+          onClick={openPermissions}
+        >
+          {/* A mic with a slash through it — the one glyph that reads as
+              "cannot hear you" without a word of copy. */}
+          <svg viewBox="0 0 24 24" aria-hidden>
+            <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3 3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z" />
+            <path d="M5 11a7 7 0 0 0 14 0" />
+            <path d="M12 18v3" />
+            <path className="slash" d="M3 3l18 18" />
+          </svg>
+          <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
+        </button>
+      )}
       <MeetingBadge status={meeting} />
     </div>
   );

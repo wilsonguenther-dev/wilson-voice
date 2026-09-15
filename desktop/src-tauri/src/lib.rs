@@ -1149,18 +1149,128 @@ fn license_allows_new_dictation(app: &AppHandle, state: &AppState) -> bool {
     false
 }
 
+/// PERM-C — the mic gate's own notification throttle, the same shape as
+/// `LicenseManager::should_announce_gate` (license.rs, 15s): a held or
+/// repeatedly-tapped hotkey must refuse every press, but it must not become a
+/// notification storm while it does.
+const MIC_GATE_NOTICE_INTERVAL_SECS: u64 = 15;
+static MIC_GATE_NOTICE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+/// One `requestAccessForMediaType:` per NotDetermined session. macOS shows the
+/// dialog exactly once and answers every later call from the stored decision,
+/// so re-asking on every press is a no-op that makes the hotkey feel dead.
+static MIC_ACCESS_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn should_announce_mic_gate() -> bool {
+    let Ok(mut last) = MIC_GATE_NOTICE.lock() else {
+        return true;
+    };
+    let now = std::time::Instant::now();
+    let quiet = last
+        .map(|t| now.duration_since(t).as_secs() < MIC_GATE_NOTICE_INTERVAL_SECS)
+        .unwrap_or(false);
+    if quiet {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+/// What the pill is told when a press is refused for the microphone.
+/// `prompting` is true only for the NotDetermined case, where the system dialog
+/// is on its way and the honest pill state is "waiting", not "blocked".
+#[derive(Clone, serde::Serialize)]
+struct MicGateNotice {
+    status: String,
+    prompting: bool,
+}
+
+const MIC_REQUIRED_MESSAGE: &str =
+    "Yap cannot hear you — macOS is blocking the microphone. Open Yap → Permissions to turn it \
+     back on.";
+
+/// PERM-C — the SECOND gate on the one dictation-start path, and the FIRST one
+/// asked. Modelled on `license_allows_new_dictation` directly above: refuse a
+/// new take, say why once, never touch a byte of existing data.
+///
+/// Why it exists: opening the capture stream is not a permission check. A denied
+/// stream opens and delivers SILENCE, so before this gate the hotkey recorded a
+/// perfect, empty take and the pill showed a normal, cheerful recording. The
+/// only question macOS actually answers is
+/// `+[AVCaptureDevice authorizationStatusForMediaType:]`, which is a cheap,
+/// prompt-free read (`mic_auth::authorization_status`) — cheap enough to ask on
+/// EVERY press, which is the point: a grant revoked in System Settings mid-session
+/// is seen by the very next press.
+///
+/// Nothing here waits. This runs on the AppKit main thread, so the NotDetermined
+/// branch fires the non-blocking `request_access` and RETURNS false; the answer
+/// arrives as `microphone-status` and the pill either clears or paints blocked.
+/// Blocking for the length of a human decision on the TCC dialog stops the run
+/// loop — see the PERM-A notes in `mic_auth`.
+///
+/// Order matters: this is asked BEFORE the license. "Yap cannot hear you" is the
+/// truer message than "buy a license", and a user with no mic grant must never be
+/// shown a purchase prompt. `tests/mic_gate.rs` asserts that order in the source.
+fn microphone_allows_new_dictation(app: &AppHandle, _state: &AppState) -> bool {
+    let status = mic_auth::authorization_status();
+    match mic_auth::gate_decision(status) {
+        mic_auth::MicGate::Proceed => true,
+        mic_auth::MicGate::Prompt => {
+            let _ = app.emit(
+                "mic_permission_required",
+                MicGateNotice {
+                    status: status.as_str().to_string(),
+                    prompting: true,
+                },
+            );
+            if !MIC_ACCESS_REQUESTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let app_answer = app.clone();
+                mic_auth::request_access(move |answered| {
+                    log::info!("mic gate: TCC answered {}", answered.as_str());
+                    // The same event the Permissions pane already listens to, so
+                    // one reader owns the status everywhere in the app.
+                    let _ = app_answer.emit("microphone-status", answered.as_str());
+                });
+            }
+            log::info!(
+                "mic gate: new dictation declined — microphone grant not determined; \
+                 asked macOS once, this press does not wait for the answer"
+            );
+            false
+        }
+        mic_auth::MicGate::Refuse => {
+            let _ = app.emit(
+                "mic_permission_required",
+                MicGateNotice {
+                    status: status.as_str().to_string(),
+                    prompting: false,
+                },
+            );
+            if should_announce_mic_gate() {
+                notify(app, "Yap", MIC_REQUIRED_MESSAGE);
+            }
+            log::info!(
+                "mic gate: new dictation declined — microphone {} (macOS will not re-prompt)",
+                status.as_str()
+            );
+            false
+        }
+    }
+}
+
 fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     if *state.recording.lock() || *state.busy.lock() {
+        return;
+    }
+    // PERM-C — the microphone is asked FIRST. A refused press must produce a
+    // visible pill state instead of a silent take, and a user with no mic grant
+    // must never be shown a purchase prompt. Neither gate waits on anything.
+    if !microphone_allows_new_dictation(app, state) {
         return;
     }
     if !license_allows_new_dictation(app, state) {
         return;
     }
-    // PERM-A — this path is the AppKit main thread, so it may only ever perform
-    // the PURE TCC read (`mic_auth::authorization_status()`). It must never wait
-    // on a TCC decision: that stops the run loop for the length of a human
-    // choice and the pill cannot repaint. Prompting belongs to the Permissions
-    // pane (`request_microphone`), which returns immediately.
     let denoise = state.settings.lock().denoise;
     // YV35: anchor the press→capture_start span on the physical key-down when
     // this take came from the PTT hold (None for tray/button/hands-free starts).
