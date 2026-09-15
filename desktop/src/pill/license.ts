@@ -28,10 +28,13 @@
  * `days_left` arrives already computed on every `license` / `license_required`
  * event.
  *
- * NO PRICE, EVER. The money copy is the purchase surface's job (Y2-D). Nothing
- * under `desktop/src/pill/` imports `PRICE_LABEL`, which is why the ended-trial
- * copy below is taken from the branches of `chipFor` / `statusCopy` that carry
- * no figure.
+ * NO PRICE, EVER. The money copy is the purchase surface's job (Y2-D). No file
+ * under `desktop/src/pill/` imports the price-label constant that
+ * `../license/status` exports, which is why the ended-trial copy below is taken
+ * from the branches of `chipFor` / `statusCopy` that carry no figure. That rule
+ * is enforced by a plain `git grep` of this directory for the constant's name,
+ * so do not spell that name out here either: to a grep, a mention in a comment
+ * and an import look the same.
  */
 import {
   chipFor,
