@@ -345,6 +345,64 @@ pub fn has_enough_speech(voiced_seconds: f64) -> bool {
     voiced_seconds >= MIN_SPEECH_SECONDS
 }
 
+/// PERM-D — the loudest sample in a take, as a magnitude. `-0.0` and `0.0` are
+/// the same silence, hence `abs()`.
+pub fn peak_amplitude(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()))
+}
+
+/// PERM-D — a take whose ENTIRE buffer is exactly zero.
+///
+/// This is deliberately not a threshold and must never become one. A muted or
+/// unauthorized input device does not produce quiet audio, it produces
+/// arithmetic zero: macOS hands a denied `AVCaptureSession` a stream of digital
+/// silence, and so does a hardware-muted interface. Real capture — even a
+/// whisper in a treated room, even the noise floor of a good preamp — is never
+/// bit-for-bit zero for the length of a take.
+///
+/// So EXACT zero is the only safe discriminator. Treating "very quiet" as
+/// silent would suppress genuine takes in a quiet room, which is a worse bug
+/// than the one this closes (see `tests/silent_capture.rs`).
+///
+/// An EMPTY buffer is not classified silent: there is no capture to diagnose,
+/// and that path (a take that never opened a stream, or died mid-hold) is
+/// already owned by `device_failed` in the take pipeline.
+pub fn is_silent_capture(samples: &[f32]) -> bool {
+    !samples.is_empty() && peak_amplitude(samples) == 0.0
+}
+
+/// PERM-D — what the take pipeline should do with the audio it just captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeAudioVerdict {
+    /// There is signal. Carry on to the speech gates and ASR.
+    Usable,
+    /// The buffer is digital silence. Never transcribe, never paste, never
+    /// store a transcript row — diagnose it instead.
+    Silent {
+        /// The microphone grant was re-read at the END of the take and is not
+        /// `Authorized`: the honest surface is the permission screen. When this
+        /// is false the grant is fine and the input device (or its mute switch)
+        /// is the suspect.
+        needs_permission: bool,
+    },
+}
+
+/// PERM-D — classify a finished take's buffer against the microphone grant as
+/// it stands RIGHT NOW.
+///
+/// `status` is passed in rather than read here so this stays pure and the
+/// caller is forced to re-read it at take end: a grant revoked in System
+/// Settings mid-take is exactly the case that produces an all-zero buffer, and
+/// a status captured when the take STARTED would report the stale answer.
+pub fn classify_take_audio(samples: &[f32], status: crate::mic_auth::MicAuth) -> TakeAudioVerdict {
+    if !is_silent_capture(samples) {
+        return TakeAudioVerdict::Usable;
+    }
+    TakeAudioVerdict::Silent {
+        needs_permission: status != crate::mic_auth::MicAuth::Authorized,
+    }
+}
+
 /// Width, in whitespace tokens, of the sliding window the degenerate-ratio test
 /// (rule 2) measures over. YV66: the ratio used to be taken over the WHOLE take,
 /// which made it length-dependent by construction — ordinary English reuses

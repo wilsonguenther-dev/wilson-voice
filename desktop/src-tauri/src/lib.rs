@@ -1416,6 +1416,36 @@ pub const TAKE_DONE_EVENT: &str = "take_done";
 /// Emitted only alongside a `paste_outcome` that already says what went wrong.
 pub const PASTE_FAILED_EVENT: &str = "paste_failed";
 
+/// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
+/// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
+/// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
+/// is the microphone grant as re-read at the END of the take, and `failed` is
+/// the recovery row for the preserved clip (or null if it could not be kept).
+///
+/// Why a separate channel from `transcript_error`: this take never reached ASR,
+/// so there is no transcription to have failed, and the ACTION differs — a
+/// revoked grant needs the permission screen, not a four-second toast.
+pub const TAKE_FAILED_EVENT: &str = "take_failed";
+
+/// PERM-D — the `code` on [`TAKE_FAILED_EVENT`] for an all-zero buffer.
+pub const SILENT_CAPTURE_CODE: &str = "silent_capture";
+
+/// PERM-D — what the user is told when the buffer is silent and the grant is
+/// FINE. The mic is authorized and a device exists, so the remaining suspects
+/// are the device selection and its mute switch.
+const SILENT_CAPTURE_DEVICE_MESSAGE: &str =
+    "That take recorded pure silence — check your input device, it may be muted.";
+
+/// PERM-D — the same take, when the grant is the reason. The permission screen
+/// is surfaced alongside this, so the sentence names the cause and not an
+/// errand.
+const SILENT_CAPTURE_PERMISSION_MESSAGE: &str =
+    "That take recorded pure silence — macOS is not letting Yap hear the microphone.";
+
+/// PERM-D — what a silent take writes on its recovery row. `'static`, like
+/// every other reason on that row, so no transcript text can reach it.
+const SILENT_CAPTURE_REASON: &str = "silent capture: input delivered digital silence";
+
 /// Soft status for a take that produced nothing to paste — a fumbled tap or a
 /// rejected hallucination loop. Normal, not an error.
 const NO_SPEECH_MESSAGE: &str = "Didn't catch any speech — hold and speak";
@@ -1526,6 +1556,17 @@ enum TakeOutcome {
         message: String,
         reason: &'static str,
     },
+    /// PERM-D — the take's buffer was EXACTLY zero for its whole length: a
+    /// muted or unauthorized input, not quiet speech. Nothing is transcribed,
+    /// nothing is pasted, no transcript row is written — and, like `Rejected`,
+    /// the audio is KEPT under the recovery-dir lifecycle, because the clip is
+    /// the evidence of what the device actually delivered.
+    SilentCapture {
+        /// The grant as re-read at the end of the take.
+        status: mic_auth::MicAuth,
+        /// `status` is not `Authorized`: surface the permission screen.
+        needs_permission: bool,
+    },
 }
 
 fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
@@ -1633,6 +1674,34 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // which is the bug, not the fix.
             if rec.device_failed {
                 return Err(DEVICE_FAILED_MESSAGE.into());
+            }
+            // PERM-D — SILENT-CAPTURE gate, and it is asked BEFORE the
+            // no-speech gate on purpose. An all-zero buffer passes through
+            // YV16 as "didn't catch any speech", which is a sentence about the
+            // SPEAKER; the truth is that the input delivered nothing at all,
+            // which is a sentence about the DEVICE or the grant. Answering the
+            // second question with the first is what made a first-run take
+            // with no microphone permission look like a user who mumbled.
+            //
+            // The grant is re-read HERE, at the end of the take, not reused
+            // from the press: revoking it in System Settings mid-take is
+            // exactly the case that produces this buffer.
+            //
+            // Exactly zero, never a threshold — see `dictation::is_silent_capture`.
+            let mic_status_at_take_end = mic_auth::authorization_status();
+            if let dictation::TakeAudioVerdict::Silent { needs_permission } =
+                dictation::classify_take_audio(&rec.samples, mic_status_at_take_end)
+            {
+                let status = mic_status_at_take_end;
+                log::warn!(
+                    "silent-capture gate: peak=0 over {} samples, mic={} — not transcribing",
+                    rec.samples.len(),
+                    status.as_str()
+                );
+                return Ok(TakeOutcome::SilentCapture {
+                    status,
+                    needs_permission,
+                });
             }
             // No-speech gate (YV16): a near-silent / sub-second tap has ~0 TRUE
             // voiced time. Skip ASR entirely so Whisper never hallucinates
@@ -2012,6 +2081,68 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 let _ = app2.emit(
                     TAKE_DONE_EVENT,
                     serde_json::json!({ "ok": false, "message": &message }),
+                );
+            }
+            Ok(TakeOutcome::SilentCapture {
+                status,
+                needs_permission,
+            }) => {
+                // PERM-D — the take recorded nothing at all. Not a crash (no
+                // hard `last_error`), and NOT the no-speech toast: the user did
+                // nothing wrong, the input did.
+                *state2.last_error.lock() = None;
+                let message = if needs_permission {
+                    SILENT_CAPTURE_PERMISSION_MESSAGE
+                } else {
+                    SILENT_CAPTURE_DEVICE_MESSAGE
+                };
+                // The clip is preserved under the SAME recovery-dir lifecycle a
+                // rejected take gets (YV52/YV67). Deleting it would destroy the
+                // one artefact that proves what the device delivered, and the
+                // gate — like every gate — can be wrong.
+                let recoverable = pending.take().and_then(|(clip, speech_seconds, src)| {
+                    keep_failed_take(
+                        &db,
+                        &recovery_dir(),
+                        clip,
+                        speech_seconds,
+                        src,
+                        SILENT_CAPTURE_REASON,
+                    )
+                });
+                // The permission screen, not a toast, when the grant is the
+                // reason. This is the event PERM-C already wired to the pill and
+                // the Permissions pane, so one emit paints both.
+                if needs_permission {
+                    let _ = app2.emit(
+                        "mic_permission_required",
+                        MicGateNotice {
+                            status: status.as_str().to_string(),
+                            prompting: false,
+                        },
+                    );
+                }
+                let _ = app2.emit(
+                    TAKE_FAILED_EVENT,
+                    serde_json::json!({
+                        "code": SILENT_CAPTURE_CODE,
+                        "status": status.as_str(),
+                        "needsPermission": needs_permission,
+                        "message": message,
+                        "failed": recoverable,
+                    }),
+                );
+                // Terminal marker (YV79), so onboarding's calibration spinner
+                // clears with this reason instead of running to its watchdog.
+                let _ = app2.emit(
+                    TAKE_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "message": message }),
+                );
+                log::warn!(
+                    "silent capture: mic={} needs_permission={} (recoverable={})",
+                    status.as_str(),
+                    needs_permission,
+                    recoverable.is_some()
                 );
             }
             Err(e) => {
@@ -5932,6 +6063,10 @@ mod tests {
             super::TakeOutcome::Dictated(..) => AudioDuty::Transcribed,
             super::TakeOutcome::Soft(_) => AudioDuty::Discardable,
             super::TakeOutcome::Rejected { .. } => AudioDuty::MustPersist,
+            // PERM-D — a silent take keeps its audio for the same reason a
+            // rejected one does: the clip is the evidence, and the gate can be
+            // wrong.
+            super::TakeOutcome::SilentCapture { .. } => AudioDuty::MustPersist,
         }
     }
 
