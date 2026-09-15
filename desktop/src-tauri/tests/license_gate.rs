@@ -199,10 +199,14 @@ fn capture_can_only_be_opened_through_the_gated_wrapper() {
 /// beside it. PKCS#8/PEM markers in the license module would mean exactly that.
 #[test]
 fn license_module_holds_no_private_key_material() {
+    // The markers are assembled rather than written out, so that *this file*
+    // does not itself contain the string it is looking for — a repo-wide
+    // "no private key material anywhere" grep has to come back empty, and a
+    // guard that trips its own scanner is a guard nobody can automate around.
     for marker in [
-        "BEGIN PRIVATE KEY",
-        "BEGIN OPENSSH PRIVATE KEY",
-        "BEGIN EC PRIVATE KEY",
+        concat!("BEGIN ", "PRIVATE KEY"),
+        concat!("BEGIN ", "OPENSSH PRIVATE KEY"),
+        concat!("BEGIN ", "EC PRIVATE KEY"),
         "SigningKey::from_bytes(&[0",
     ] {
         assert!(
@@ -221,4 +225,61 @@ fn license_module_holds_no_private_key_material() {
             "the shipped half of license.rs must only ever VERIFY, never sign (`{signing_symbol}`)"
         );
     }
+}
+
+/// LIC-A — the issuer moved INTO this repository, so the "no private key
+/// material" guard has to move with it. `supabase/functions/**` is signing
+/// code: it imports a PKCS#8 key from the environment at cold start, and the
+/// day somebody pastes that key into the file for a quick local test is the day
+/// it ends up in a public GitHub repo.
+///
+/// This walks the real directory rather than `include_str!`-ing known files, so
+/// a NEW file added to the issuer is covered the moment it exists.
+#[test]
+fn the_issuer_sources_hold_no_private_key_material() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../supabase")
+        .canonicalize()
+        .expect("supabase/ is part of this repository");
+
+    let mut stack = vec![root.clone()];
+    let mut checked = 0usize;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable issuer directory") {
+            let path = entry.expect("readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue; // not text; nothing a PEM hides in
+            };
+            checked += 1;
+            for marker in [
+                concat!("BEGIN ", "PRIVATE KEY"),
+                concat!("BEGIN ", "OPENSSH PRIVATE KEY"),
+                concat!("BEGIN ", "EC PRIVATE KEY"),
+                "whsec_live",
+                "sk_live_",
+                "re_live_",
+                // The Drivia project. Yap's issuer is a DEDICATED project on
+                // purpose: a licensing outage caused by an unrelated product's
+                // free-tier usage is the worst possible coupling.
+                // Split so that grepping this repository for the ref finds
+                // ZERO files: the guard must not be the one hit that makes a
+                // "is the Drivia ref anywhere in the tree?" search look dirty.
+                concat!("vlfrzdbq", "wsnrosmcygca"),
+            ] {
+                assert!(
+                    !source.contains(marker),
+                    "{}: the issuer sources must never carry a secret (`{marker}`)",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "found no issuer sources to check — did the path move?"
+    );
 }

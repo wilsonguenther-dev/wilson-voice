@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import YappySprite from "./YappySprite";
+import { errorText } from "../errors";
 import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, PRICE_LABEL } from "./status";
 
 /**
@@ -12,22 +13,49 @@ import { FOUNDING_CODE, FOUNDING_PRICE_LABEL, PRICE_LABEL } from "./status";
  *    app — history, search, exports, settings, the dictionary, the scratchpad.
  *    Nothing behind this sheet is locked. Saying so plainly is the difference
  *    between a purchase and a chargeback;
- *  * it offers the two things that actually help — buy, or paste the key you
- *    already own — and nothing else;
+ *  * it offers the three things that actually help — buy, paste the key you
+ *    already own, or (LIC-A) get that key back when the email is gone — and
+ *    nothing else. "I already paid" is the single most expensive sentence a
+ *    paywall can fail to answer, and until LIC-A the only answer was a support
+ *    thread;
  *  * Yappy is here because the companion has been on screen for fourteen days
  *    and this is the moment to be warm, not stern.
  */
 export default function PurchasePrompt({
   onBuy,
   onEnterKey,
+  onRetrieve,
   onDismiss,
 }: {
   onBuy: () => Promise<void> | void;
   /** Jump to Settings → License with the key box in view. */
   onEnterKey: () => void;
+  /** LIC-A — ask the issuer for the key that was signed for this address and
+   *  activate it in place. Rejects with the backend's `{code, message}`. */
+  onRetrieve: (email: string) => Promise<void>;
   onDismiss: () => void;
 }) {
   const buyRef = useRef<HTMLButtonElement | null>(null);
+  const [retrieving, setRetrieving] = useState<"closed" | "open" | "sending">("closed");
+  const [email, setEmail] = useState("");
+  const [retrieveError, setRetrieveError] = useState<string | null>(null);
+
+  async function retrieve(e: React.FormEvent) {
+    e.preventDefault();
+    if (retrieving === "sending") return;
+    setRetrieveError(null);
+    setRetrieving("sending");
+    try {
+      await onRetrieve(email);
+    } catch (err) {
+      // One sentence with a next step, from the backend. A retrieval that
+      // fails costs the person nothing: the sheet stays open, the pasted-key
+      // route is still right there, and offline verification never involved
+      // this call in the first place.
+      setRetrieveError(errorText(err));
+      setRetrieving("open");
+    }
+  }
 
   // Esc closes it, and focus starts on the primary action so the whole sheet is
   // reachable from the keyboard — the person who got here pressed a hotkey.
@@ -72,6 +100,43 @@ export default function PurchasePrompt({
             I already have a key
           </button>
         </div>
+
+        {retrieving === "closed" ? (
+          <button
+            type="button"
+            className="ghost buy-retrieve-open"
+            onClick={() => setRetrieving("open")}
+          >
+            I already paid — retrieve my license
+          </button>
+        ) : (
+          <form className="buy-retrieve" onSubmit={retrieve}>
+            <label htmlFor="buy-retrieve-email">
+              The email address you paid with — we will look up your key and turn Yap
+              back on right here.
+            </label>
+            <div className="buy-retrieve-row">
+              <input
+                id="buy-retrieve-email"
+                type="email"
+                autoComplete="email"
+                required
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={retrieving === "sending"}
+              />
+              <button type="submit" className="primary" disabled={retrieving === "sending"}>
+                {retrieving === "sending" ? "Looking…" : "Retrieve"}
+              </button>
+            </div>
+            {retrieveError && (
+              <p className="buy-retrieve-error" role="alert">
+                {retrieveError}
+              </p>
+            )}
+          </form>
+        )}
 
         <p className="buy-fine">
           One time, no subscription, no account. Founding price{" "}

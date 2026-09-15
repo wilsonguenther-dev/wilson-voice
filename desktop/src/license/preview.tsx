@@ -106,6 +106,10 @@ function Preview() {
   const status = MOCKS[scene] ?? MOCKS.trial;
   const chip = chipFor(status);
   const noop = async () => {};
+  // LIC-A — the failure branch of retrieval, which is the state you cannot
+  // produce on demand (it needs the issuer to be down).
+  const RETRIEVAL_FAILED_PREVIEW =
+    "We could not reach Yap's licensing service just now. Nothing is lost — paste the key from your purchase email, which works with no internet at all, or try this again in a minute.";
 
   return (
     <div className="shell">
@@ -223,7 +227,14 @@ function Preview() {
       </section>
 
       {scene === "prompt" && (
-        <PurchasePrompt onBuy={noop} onEnterKey={() => setScene("trial")} onDismiss={noop} />
+        <PurchasePrompt
+          onBuy={noop}
+          onEnterKey={() => setScene("trial")}
+          onRetrieve={async () => {
+            throw { code: "retrieval_failed", message: RETRIEVAL_FAILED_PREVIEW };
+          }}
+          onDismiss={noop}
+        />
       )}
 
       {/* Harness controls, deliberately unstyled by the app's own classes so

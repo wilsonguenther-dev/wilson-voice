@@ -1608,6 +1608,18 @@ export default function App() {
     }
   }
 
+  /**
+   * LIC-A — "I already paid". Rejects with the backend's typed
+   * `{code, message}` so the sheet can show one sentence and keep the pasted-key
+   * route open; nothing about offline verification runs through here.
+   */
+  async function retrieveLicense(email: string) {
+    const status = await invoke<LicenseStatus>("retrieve_license", { email });
+    setLicense(status);
+    setBuyPrompt(false);
+    toast("Yap is licensed on this Mac");
+  }
+
   /** From the purchase sheet: land on the key box, not just the tab. */
   function openLicenseTab() {
     setBuyPrompt(false);
@@ -4903,6 +4915,7 @@ export default function App() {
         <PurchasePrompt
           onBuy={buyYap}
           onEnterKey={openLicenseTab}
+          onRetrieve={retrieveLicense}
           onDismiss={() => setBuyPrompt(false)}
         />
       )}
