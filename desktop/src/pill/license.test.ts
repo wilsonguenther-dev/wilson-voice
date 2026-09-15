@@ -114,6 +114,32 @@ describe("pillLicense — the trial fortnight", () => {
   });
 });
 
+describe("Y2-D — where a press on the pill goes", () => {
+  it("offers a purchase surface only to somebody who has not paid", () => {
+    // The two tones the item routes to the sheet.
+    expect(offersPurchase(pillLicense(trial(0)))).toBe(true); // urgent
+    expect(offersPurchase(pillLicense(required()))).toBe(true); // ended
+    expect(offersPurchase(pillLicense(trial(5)))).toBe(true); // counting down
+  });
+
+  it("is inert for a licensed install — no mark, no route, no dead click region", () => {
+    const got = pillLicense(licensed());
+    expect(got.show).toBe(false);
+    expect(got.action).toBe("none");
+    expect(offersPurchase(got)).toBe(false);
+  });
+
+  it("never sends a stored-key holder to a checkout (Y2-F)", () => {
+    // Somebody who PAID and whose key stopped granting gets the re-activate
+    // box. Asking them to buy what they already bought is the one sentence
+    // this policy exists to make impossible.
+    const got = pillLicense(required("trial_expired", { has_stored_license: true }));
+    expect(got.tone).toBe("problem");
+    expect(got.action).toBe("license");
+    expect(offersPurchase(got)).toBe(false);
+  });
+});
+
 describe("pillLicense — licensed is silent, unconditionally", () => {
   it("shows nothing for a plain lifetime license", () => {
     expect(pillLicense(licensed()).show).toBe(false);

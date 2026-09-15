@@ -20,7 +20,10 @@ import {
   progressNumeral, resetLive, toChatTone, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
 } from "./live";
-import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
+import {
+  GATED_GLYPH, GATED_TITLE, REVEAL_PURCHASE_COMMAND, SHOW_MAIN_COMMAND,
+  type PillLicense,
+} from "./license";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -78,14 +81,16 @@ const DOCK_PAD = 10;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", progress = null }: {
+  { gate = "idle", progress = null, license = null }: {
     gate?: LivePhase;
     progress?: TranscribeProgress | null;
     /**
      * Y2-A — the license as the pill is allowed to say it, already decided by
-     * `pillLicense` in float-main. Accepted here so the wiring is complete and
-     * typed; the capsule that DRAWS it is Y2-B (classic) / Y2-C (yappy), and
-     * this component deliberately does not read it yet.
+     * `pillLicense` in float-main. Y2-D reads `action` so this face routes a
+     * gated press to the SAME surface the classic capsule does. Yappy's capsule
+     * is canvas-drawn and grows no DOM upgrade mark here — drawing the chip is
+     * Y2-B/C's job — but where a press GOES must not differ between two styles
+     * of the same pill.
      */
     license?: PillLicense | null;
   },
@@ -118,13 +123,19 @@ export default function YappyPill(
   }, [drag]);
   const openPurchase = useCallback(() => {
     if (drag.dragged()) return;
-    // Y2-C — raise the main window and land on Settings → License, which owns
-    // the checkout link. Existing `navigate` / `settings-tab` plumbing: no new
-    // command, no new capability.
-    invoke("show_main").catch(() => {});
+    // Y2-D — `pillLicense.action` decides, not this component. `purchase` raises
+    // the PurchasePrompt sheet (price, founding code, seats, keep-forever line);
+    // `license` lands on the re-activate box, because Y2-F's `problem` tone is a
+    // paying customer with a broken key and must never be shown a price. The
+    // classic capsule routes identically — one policy, two faces.
+    if (license?.show && license.action === "purchase") {
+      invoke(REVEAL_PURCHASE_COMMAND).catch(() => {});
+      return;
+    }
+    invoke(SHOW_MAIN_COMMAND).catch(() => {});
     emit("navigate", "settings").catch(() => {});
     emit("settings-tab", "license").catch(() => {});
-  }, [drag]);
+  }, [drag, license]);
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
   // ambient tick open for the whole session. The draw loop lives in a mount-once

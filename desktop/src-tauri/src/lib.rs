@@ -4471,6 +4471,40 @@ fn activate_license(
     }
 }
 
+/// Y2-D — the pill's ONE way to ask for the purchase surface.
+///
+/// The float window is an ambient capsule sitting over every app the user owns.
+/// It must never open a browser, and it must never be the thing that shows a
+/// price: the $29 / $19-founding copy, the seats line and the keep-forever
+/// promise all live in `src/license/PurchasePrompt.tsx`, and dropping somebody
+/// into a Stripe checkout straight from a corner of their screen would put them
+/// in front of a payment form with none of that context.
+///
+/// So the pill's job ends at "ask the main window". This command unminimizes and
+/// focuses `main` and emits `show_purchase`; the app shell listens and raises the
+/// sheet that already exists. No new money surface, no second price string, no
+/// second Payment Link.
+///
+/// IT HANDS NO URL TO ANYTHING, AND THAT IS A SECURITY PROPERTY, NOT A STYLE
+/// PREFERENCE. `open_purchase_page` below stays the only function in this binary
+/// that may pass a string to `open(1)`, so "open an arbitrary URL" never becomes
+/// a primitive reachable from the float webview — the least-trusted window in
+/// the app. `tests/purchase_from_pill.rs` reads this function's own source and
+/// fails if a URL, a payment constant or an opener call ever appears inside it.
+#[tauri::command]
+fn reveal_purchase_prompt(app: AppHandle) {
+    // Unminimize first: `show()` alone leaves a minimized window in the Dock, so
+    // a person who pressed the pill would see nothing happen at all.
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+    }
+    focus_main_window(&app);
+    // The frontend raises the sheet; this command only asks. Emitting rather
+    // than navigating keeps the decision about WHICH surface answers in one
+    // place, in `appShell.ts`.
+    let _ = app.emit("show_purchase", ());
+}
+
 /// YP3 — open Stripe's hosted checkout in the user's browser.
 ///
 /// Takes **no argument on purpose**. The destination is
@@ -5420,7 +5454,8 @@ pub fn run() {
             license_status,
             activate_license,
             deactivate_license,
-            open_purchase_page
+            open_purchase_page,
+            reveal_purchase_prompt
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window

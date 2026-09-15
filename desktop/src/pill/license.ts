@@ -89,6 +89,26 @@ export interface PillLicense {
   action: PillLicenseAction;
 }
 
+/**
+ * Y2-D — the Rust command a `purchase` action reaches, named ONCE.
+ *
+ * It is not `open_purchase_page`, and the difference is the whole item. That
+ * command hands `license::PAYMENT_LINK_URL` to `open(1)`; this one only
+ * unminimizes the main window and emits `show_purchase`, so the sheet — which
+ * owns the price, the founding code and the keep-forever line — is what a person
+ * sees before a checkout. The float webview is the least-trusted window in the
+ * app and it never gets to name a URL.
+ */
+export const REVEAL_PURCHASE_COMMAND = "reveal_purchase_prompt";
+
+/**
+ * Y2-D — the Rust command a `license` action reaches (the re-activate box), and
+ * the two `emit` topics that land it on the right tab. Named here beside the
+ * purchase command so both capsules read the routing out of the POLICY module
+ * instead of each spelling it out, which is how the two faces drift apart.
+ */
+export const SHOW_MAIN_COMMAND = "show_main";
+
 /** Is a purchase surface reachable from this result? The Y2-D rule, as a test. */
 export function offersPurchase(pill: PillLicense): boolean {
   return pill.show && pill.action === "purchase";
