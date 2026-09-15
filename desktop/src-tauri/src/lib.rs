@@ -175,6 +175,11 @@ pub mod vocab;
 /// — one implementation, compiled on both sides of the wall.
 pub mod vocab_extract;
 
+/// Y0-D — the ONE place the app's state root is decided (`YAP_DATA_DIR`).
+pub mod app_paths;
+/// Y0-D — `--smoke`: the launch mode that registers no hotkey and never pastes.
+pub mod smoke;
+
 // YV91 finding #27: the two counters `tests/meeting_no_model_resident.rs` reads
 // to prove a meeting capture never brings an ASR model resident and never
 // defeats the idle sweepers. Re-exported (rather than making the whole module
@@ -548,10 +553,23 @@ struct AppState {
     support_bundle: PLMutex<Option<support::PreparedBundle>>,
 }
 
-fn data_dir() -> PathBuf {
-    let p = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("WilsonVoice");
+/// The environment variable that relocates the app's ENTIRE state root (Y0-D).
+///
+/// Unset — the shipped default, `<Application Support>/WilsonVoice`, unchanged.
+/// Set — every stateful path (history DB, settings, models, recordings,
+/// recovery, meetings, logs) moves under it, so a second launch cannot read or
+/// write the first one's dictation history. This is an OVERRIDE, not a rename:
+/// the default directory name is frozen because renaming it orphans the SQLite
+/// history of every existing install.
+///
+/// Resolved exactly once, by [`app_paths::paths`]. `--smoke` REFUSES to start
+/// unless this names a directory outside the default root (see [`smoke`]).
+pub const DATA_DIR_ENV: &str = "YAP_DATA_DIR";
+
+/// The app's state root. Honours [`DATA_DIR_ENV`]; identical to the shipped
+/// behaviour when that is unset.
+pub fn data_dir() -> PathBuf {
+    let p = app_paths::paths().root.clone();
     let _ = std::fs::create_dir_all(&p);
     let _ = std::fs::create_dir_all(p.join("recordings"));
     p
@@ -568,8 +586,8 @@ fn home_dir() -> PathBuf {
 /// Deliberately NOT the recordings dir: `record::sweep_stale_wavs` empties that
 /// at every startup, which would destroy exactly the clips a recovery needs.
 /// Everything in here is purged after `db::FAILED_TAKE_RETENTION_DAYS`.
-fn recovery_dir() -> PathBuf {
-    data_dir().join("recovery")
+pub fn recovery_dir() -> PathBuf {
+    app_paths::paths().recovery.clone()
 }
 
 /// YV95 — where a meeting's audio is written.
@@ -579,8 +597,8 @@ fn recovery_dir() -> PathBuf {
 /// crashed out of) and not `recovery/` (purged on the failed-take schedule). A
 /// meeting's WAV is owned by its row and by YV94's 7-day retention sweep, and
 /// nothing else may decide it is garbage.
-fn meetings_dir() -> PathBuf {
-    let p = data_dir().join("meetings");
+pub fn meetings_dir() -> PathBuf {
+    let p = app_paths::paths().meetings.clone();
     let _ = std::fs::create_dir_all(&p);
     p
 }
@@ -4019,6 +4037,23 @@ pub fn run() {
         std::process::exit(code);
     }
 
+    // Y0-D `--smoke`: a launch an automated agent may make. It registers no
+    // global hotkey and synthesizes no paste, and it REFUSES TO START unless
+    // `YAP_DATA_DIR` points outside the default state root — a smoke run that
+    // silently used the default root would be reading and writing the real
+    // dictation history, which is the whole failure this mode prevents. Decided
+    // before the logger is initialised, because the logger itself writes under
+    // the data dir.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    match smoke::preflight(&argv, std::env::var(DATA_DIR_ENV).ok().as_deref()) {
+        Err(refusal) => {
+            eprintln!("{}", refusal.message());
+            std::process::exit(refusal.exit_code());
+        }
+        Ok(true) => smoke::arm(),
+        Ok(false) => {}
+    }
+
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
     logging::init(&data_dir());
@@ -4850,6 +4885,14 @@ pub fn run() {
                 let h = app.handle().clone();
                 let st = state.clone();
                 let _ = app.handle().run_on_main_thread(move || {
+                    // Y0-D: a `--smoke` launch registers NOTHING system-wide, so
+                    // two lanes plus Wilson's own install cannot fight over the
+                    // same four accelerators.
+                    if !smoke::global_hotkeys_allowed() {
+                        log::warn!("{}", smoke::HOTKEY_REFUSAL);
+                        emit_status(&h, &st);
+                        return;
+                    }
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
                     let paste_sc = shortcuts::PASTE_LAST.shortcut();

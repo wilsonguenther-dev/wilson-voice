@@ -171,6 +171,13 @@ pub fn copy_and_maybe_paste(
     want_paste: bool,
     source_app: Option<&str>,
 ) -> PasteOutcome {
+    // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
+    // happens to be frontmost on the developer's machine. The transcript still
+    // goes on the clipboard, so this is a refusal, not a lost take.
+    if want_paste && !crate::smoke::paste_allowed() {
+        log::warn!("{}", crate::smoke::PASTE_REFUSAL);
+        return copy_only(app, text, crate::smoke::PASTE_REFUSAL);
+    }
     if !want_paste {
         return copy_only(app, text, "Copied to clipboard (⌘V to paste)");
     }
@@ -268,6 +275,15 @@ pub fn copy_and_maybe_paste(
 /// must still be frontmost — because a stray Delete in the WRONG app destroys
 /// text just as effectively as a wrong paste.
 pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutcome {
+    // Y0-D: same rule as the paste path — a smoke run posts no Delete chord.
+    if !crate::smoke::paste_allowed() {
+        log::warn!("{}", crate::smoke::DELETE_REFUSAL);
+        return PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: crate::smoke::DELETE_REFUSAL.into(),
+        };
+    }
     if !permissions::is_accessibility_trusted() {
         return PasteOutcome {
             copied: false,

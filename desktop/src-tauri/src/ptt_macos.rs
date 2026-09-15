@@ -194,6 +194,14 @@ mod ffi {
 }
 
 pub fn start(binding: PttBinding, command_binding: CommandBinding, callback: Callback) {
+    // Y0-D: a `--smoke` launch installs NO system-wide keyboard tap. This is the
+    // single chokepoint for the PTT hotkey, so refusing here is refusing for
+    // every caller — two lanes plus Wilson's own install can no longer all claim
+    // fn⌃ at once.
+    if !crate::smoke::global_hotkeys_allowed() {
+        log::warn!("{}", crate::smoke::HOTKEY_REFUSAL);
+        return;
+    }
     if RUNNING.swap(true, Ordering::SeqCst) {
         if let Some(s) = GLOBAL_STATE.lock().as_ref() {
             *s.binding.lock() = binding;

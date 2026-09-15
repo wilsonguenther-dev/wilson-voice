@@ -707,13 +707,16 @@ pub fn download_urls(model: &CatalogModel, file: &ModelFile) -> Vec<String> {
     urls
 }
 
-/// Where downloaded models live: `<data_dir>/WilsonVoice/models` (same
-/// Application Support root as the rest of the app — never ~/Desktop).
+/// Where downloaded models live: `<state root>/models` (the same root as the
+/// rest of the app — never ~/Desktop).
+///
+/// Y0-D: this used to re-derive `dirs::data_dir()/WilsonVoice` itself, which
+/// made it the ONE path that ignored the `YAP_DATA_DIR` override and left two
+/// concurrent launches sharing a single multi-gigabyte models dir. It now reads
+/// the root [`crate::app_paths`] resolved once, so the override moves the models
+/// dir with everything else and an unset override is byte-identical to before.
 pub fn models_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("WilsonVoice")
-        .join("models")
+    crate::app_paths::paths().models.clone()
 }
 
 // ---------------------------------------------------------------------------
