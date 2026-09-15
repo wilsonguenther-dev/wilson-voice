@@ -142,7 +142,10 @@ mod secure_input;
 // reading the same constants `run()` registers, not an eyeball over three
 // literals.
 pub mod shortcuts;
-mod snippets;
+/// Y4-G: `pub` so `tests/undo_restores_raw.rs` can drive `append_signature`
+/// directly — the signature block is the one stage that copies bytes verbatim
+/// after polish, so undo has to be asserted against the real function.
+pub mod snippets;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
@@ -1438,6 +1441,18 @@ pub const TAKE_DONE_EVENT: &str = "take_done";
 /// Emitted only alongside a `paste_outcome` that already says what went wrong.
 pub const PASTE_FAILED_EVENT: &str = "paste_failed";
 
+/// Y4-G — the LLM polish stage was enabled for this take and produced nothing.
+/// The payload is the closed-set REASON tag (`deadline`, `no_model`,
+/// `no_sidecar`, `v2_truncated`, …) — never transcript text.
+///
+/// This exists because both polish failure modes are invisible by
+/// construction: a missed deadline falls back to the rules text and a rejected
+/// rewrite is discarded, and for any take over ~150 words those are the NORMAL
+/// outcomes. Without this a user who installs a 1.12 GB model and picks High
+/// gets rules-only output on every real dictation with no indication the model
+/// was ever consulted.
+pub const POLISH_SKIPPED_EVENT: &str = "polish_skipped";
+
 /// PERM-D — a take that captured DIGITAL SILENCE, and what to do about it.
 /// Payload: `{ code, status, needsPermission, message, failed }`. `code` is the
 /// machine-readable reason (`SILENT_CAPTURE_CODE` today, the only one), `status`
@@ -1884,7 +1899,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // rules text byte for byte.
             let polish_config = polish::PolishConfig::from_settings(&settings, dictation_mode);
             let t_cleanup = std::time::Instant::now();
-            let text = dictation::run_cleanup(
+            let (text, formatting_trace) = dictation::run_cleanup_traced(
                 &raw_text,
                 cleanup_level,
                 dictation_mode,
@@ -1894,7 +1909,11 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // Y4-C: the pauses this speaker actually left.
                 &take_pauses,
                 |t| db.apply_dictionary(t).unwrap_or_else(|_| t.to_string()),
-                |t| polish::polish_llm(t, dictation_mode, &polish_config),
+                // Y4-G: the Result twin, so a refusal arrives with its REASON
+                // (`deadline` / `no_model` / `no_sidecar` / a validator tag)
+                // instead of as an indistinguishable `None`. Both polish
+                // failure modes are otherwise invisible by construction.
+                |t| polish::polish_llm_result(t, dictation_mode, &polish_config),
             );
             // YV50: join the take onto the text already at the caret — lowercase
             // the lead word when the user is continuing a sentence, capitalise it
@@ -1933,6 +1952,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 dictation_mode,
             );
             let cleanup_ms = t_cleanup.elapsed().as_millis() as i64;
+            // Y4-G — one counter per skip reason in the local log. Only when
+            // the stage was actually asked for, so a Light/Medium user never
+            // sees a line about a model they never enabled.
+            if cleanup_level == dictation::CleanupLevel::High {
+                polish::log_polish_skip_counts();
+            }
             log::info!(
                 "cleanup-pipeline: level={:?} mode={:?} dictation_setting={} cleanup_level={}",
                 cleanup_level,
@@ -1989,7 +2014,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // still has a transcript row to write.
             hygiene::log_snapshot_async(data_dir());
             // Store BOTH the polished text and the raw ASR transcript (YV10).
-            let entry = db.insert_transcript_at(
+            let mut entry = db.insert_transcript_at(
                 text,
                 asr.backend,
                 asr.seconds,
@@ -1999,6 +2024,18 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 chrono::Utc::now(),
                 Some(raw_text),
             )?;
+            // Y4-G — attribute this take's shape to the stages that made it.
+            // AFTER the insert on purpose: the row is durable and the text is
+            // already in the user's app, so a failure here costs the diff panel
+            // its stage list and costs the dictation nothing.
+            let stages = formatting_trace.stages_that_ran();
+            if let Err(e) =
+                db.set_take_formatting(&entry.id, &stages, formatting_trace.llm_skip_reason)
+            {
+                log::warn!("formatting trace not recorded: {e}");
+            }
+            entry.stages_that_ran = Some(stages);
+            entry.polish_skip_reason = formatting_trace.llm_skip_reason.map(|r| r.to_string());
             // Hygiene: the history wav is unlinked by `rec.clip` on scope exit
             // (audio stays local only during the process, success or error alike).
             Ok(TakeOutcome::Dictated(
@@ -2027,6 +2064,12 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 *state2.undo_available.lock() =
                     dictation::undo_ai_edit_text(&entry.text, entry.raw_text.as_deref()).is_some();
                 let _ = app2.emit("transcript", &entry);
+                // Y4-G silent-skip signal — say ONCE, quietly, that the model
+                // was enabled and produced nothing for this take. Its own event
+                // so the pill can show it without reading the history row.
+                if let Some(reason) = entry.polish_skip_reason.as_deref() {
+                    let _ = app2.emit(POLISH_SKIPPED_EVENT, reason);
+                }
                 let _ = app2.emit(PASTE_OUTCOME_EVENT, &outcome.message);
                 // YV74 — we tried to paste and got no receipt. Say so with an
                 // action instead of a dead sentence: the toast offers "Copy
@@ -3091,6 +3134,22 @@ fn paste_raw_last_transcript(app: &AppHandle, state: &AppState) {
             log::warn!("undo ai edit failed: {}", o.message);
         }
     });
+}
+
+/// Y4-G — the user's local-only verdict on one take (1 up, -1 down, `None` to
+/// clear). Stored in SQLite and used for NOTHING today.
+///
+/// It costs one nullable column now and it is the only way a future rules
+/// change can be scored against real dissatisfaction rather than a guess. It is
+/// never transmitted: this command writes one row and returns, there is no
+/// network call on the path, and this app ships no analytics SDK.
+#[tauri::command]
+fn set_take_feedback(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    feedback: Option<i64>,
+) -> Result<(), String> {
+    state.db.set_take_feedback(&id, feedback)
 }
 
 #[tauri::command]
@@ -4756,6 +4815,7 @@ pub fn run() {
             delete_scratch,
             copy_entry,
             paste_entry,
+            set_take_feedback,
             open_data_dir,
             open_logs_dir,
             list_crash_events,

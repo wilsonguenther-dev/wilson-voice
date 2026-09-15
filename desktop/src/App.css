@@ -2825,3 +2825,60 @@ button.primary.big {
 .perm-health-action:hover {
   background: color-mix(in srgb, currentColor 8%, transparent);
 }
+
+/* ── Y4-G: "see what changed" ───────────────────────────────────────────── */
+.diff-view {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.06);
+}
+.diff-view .diff-summary {
+  margin: 0 0 6px;
+  opacity: 0.7;
+}
+.diff-view .diff-body {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.diff-view .diff-added {
+  background: rgba(64, 192, 112, 0.22);
+  border-radius: 3px;
+  box-shadow: inset 0 -1px 0 rgba(64, 192, 112, 0.55);
+}
+.diff-view .diff-removed {
+  background: rgba(230, 86, 86, 0.18);
+  border-radius: 3px;
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+.diff-view .diff-stages {
+  margin: 0;
+  opacity: 0.65;
+}
+.diff-view .diff-skip {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(230, 176, 64, 0.14);
+  border: 1px solid rgba(230, 176, 64, 0.3);
+}
+.diff-view .diff-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.diff-view .diff-feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.diff-view .diff-feedback button.on {
+  background: rgba(127, 127, 127, 0.22);
+}

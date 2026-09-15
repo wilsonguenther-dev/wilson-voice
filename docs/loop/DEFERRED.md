@@ -120,3 +120,22 @@ floor moves up or the matrix grows.
 
 **Destination.** `scripts/loop/template.mjs` + `docs/loop/HARNESS.md`, before the run starts. These
 are listed as blocking in PLAN.md §Panel revisions, "Before launch".
+
+## Y4-G — the in-the-moment diff panel, and the pill's skip line
+
+**Deferred:** a "see what changed" surface shown right after a take, and the
+one-line silent-skip notice on the pill itself.
+
+**Why.** After `done` the pill is a small non-activating `NSPanel` with no text
+region (`float_pill.rs:343-371`) and no window appears. An in-the-moment panel
+therefore needs real geometry that does not exist yet: size per dock position,
+dismiss rules, how it avoids stealing focus from a non-activating panel, and
+what happens if the user keeps typing while it is up. Inventing that inside a
+build item produces a window nobody specified.
+
+**What shipped instead (Y4-G).** The diff, the stage attribution and the
+silent-skip reason all land in History, on the existing `⌃⌘Z` undo, and — for
+the skip — in the local log as one counter per reason. The Rust side already
+emits `POLISH_SKIPPED_EVENT` (`polish_skipped`, payload = the closed-set reason
+tag) on every take whose LLM stage was enabled and produced nothing, so the
+pill's line is one `listen()` away once the panel geometry is decided.

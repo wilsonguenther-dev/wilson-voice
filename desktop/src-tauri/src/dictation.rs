@@ -789,6 +789,49 @@ impl CleanupLevel {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Y4-G — what the pipeline actually did to this take.
+//
+// Formatting that silently rewrites what you said is only acceptable if you can
+// see it and revert it, and "see it" means more than a diff: a surprising change
+// has to be ATTRIBUTABLE to a stage. The stage set is knowable from
+// `CleanupLevel`, and the LLM stage's outcome is knowable from the polish call,
+// so the pipeline records both as it runs instead of the UI guessing later.
+// ---------------------------------------------------------------------------
+
+/// Stage tags. A closed set of `&'static str` — never text, so nothing dictated
+/// can reach the log, the database or the UI through this field.
+pub const STAGE_DICTIONARY: &str = "dictionary";
+pub const STAGE_BACKTRACK: &str = "backtrack";
+pub const STAGE_RULES: &str = "rules";
+pub const STAGE_POLISH: &str = "polish";
+
+/// Which cleanup stages ran for one take, and why the LLM stage produced
+/// nothing when it was enabled.
+///
+/// `llm_skip_reason` is the silent-skip signal: `Some("deadline")`,
+/// `Some("no_model")`, `Some("no_sidecar")` and friends mean the model WAS
+/// asked (or could not be) and its answer was discarded — the take you are
+/// reading is rules-only. Before this, both of those outcomes were invisible by
+/// construction.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormattingTrace {
+    /// Stages that ran AND changed nothing or something — in pipeline order.
+    pub stages: Vec<&'static str>,
+    /// Set only when `CleanupLevel::High` asked for the LLM stage and got
+    /// nothing usable back. `None` at every other level, and `None` when the
+    /// model's rewrite was accepted.
+    pub llm_skip_reason: Option<&'static str>,
+}
+
+impl FormattingTrace {
+    /// The stage list as one comma-separated column value.
+    pub fn stages_that_ran(&self) -> String {
+        self.stages.join(",")
+    }
+}
+
 /// Run the ordered cleanup pipeline over a raw transcript.
 ///
 /// Stages, in order (each gated by `level`, each guarded so it can never empty a
@@ -823,9 +866,37 @@ where
     D: Fn(&str) -> String,
     P: Fn(&str) -> Option<String>,
 {
-    // `None` = raw passthrough: return the transcript exactly as dictated.
+    run_cleanup_traced(raw, level, mode, style, pauses, apply_dictionary, |t| {
+        polish(t).ok_or("unknown")
+    })
+    .0
+}
+
+/// [`run_cleanup`], plus the [`FormattingTrace`] of what it did (Y4-G).
+///
+/// Identical pipeline — this IS the implementation, and `run_cleanup` is a
+/// wrapper over it — with two additions: each stage that runs appends its tag,
+/// and the polish closure returns `Result` so a refusal arrives with its reason
+/// instead of as an indistinguishable `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cleanup_traced<D, P>(
+    raw: &str,
+    level: CleanupLevel,
+    mode: DictationMode,
+    style: Style,
+    pauses: &[PauseSpan],
+    apply_dictionary: D,
+    polish: P,
+) -> (String, FormattingTrace)
+where
+    D: Fn(&str) -> String,
+    P: Fn(&str) -> Result<String, &'static str>,
+{
+    let mut trace = FormattingTrace::default();
+    // `None` = raw passthrough: return the transcript exactly as dictated, with
+    // an empty trace — no stage ran, and that is the honest answer.
     if level == CleanupLevel::None {
-        return raw.to_string();
+        return (raw.to_string(), trace);
     }
 
     // Guarded assignment: only accept a stage's output when it's non-empty, so
@@ -834,6 +905,7 @@ where
 
     // Stage 1 — dictionary/vocabulary replacement.
     if level.runs_dictionary() {
+        trace.stages.push(STAGE_DICTIONARY);
         let out = apply_dictionary(&text);
         if !out.trim().is_empty() {
             text = out;
@@ -841,6 +913,7 @@ where
     }
     // Stage 2 — backtrack cleanup (fillers + self-correction).
     if level.runs_backtrack() {
+        trace.stages.push(STAGE_BACKTRACK);
         let out = clean_backtrack(&text);
         if !out.trim().is_empty() {
             text = out;
@@ -849,6 +922,7 @@ where
     // Stage 3 — rules formatting. `format_dictation` also runs a backtrack pass
     // internally, so at Medium/High the standalone Stage 2 above is idempotent.
     if level.runs_format() {
+        trace.stages.push(STAGE_RULES);
         if should_format(mode) {
             let out = format_dictation(&text);
             if !out.trim().is_empty() {
@@ -892,18 +966,23 @@ where
     }
     // Stage 4 — local-LLM polish (guarded). `None`/empty ⇒ keep current text.
     if level.runs_llm() {
-        if let Some(out) = polish(&text) {
-            if !out.trim().is_empty() {
+        match polish(&text) {
+            Ok(out) if !out.trim().is_empty() => {
                 text = out;
+                trace.stages.push(STAGE_POLISH);
             }
+            // An accepted-but-empty rewrite is still a skip, and the reason the
+            // user needs is "it produced nothing", not silence.
+            Ok(_) => trace.llm_skip_reason = Some("v1_empty"),
+            Err(reason) => trace.llm_skip_reason = Some(reason),
         }
     }
 
     // Final "never lose text" backstop.
     if text.trim().is_empty() && !raw.trim().is_empty() {
-        return raw.to_string();
+        return (raw.to_string(), trace);
     }
-    text
+    (text, trace)
 }
 
 // ---------------------------------------------------------------------------
