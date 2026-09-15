@@ -324,6 +324,12 @@ impl StreamResampler {
     }
 
     /// The input rate this resampler is currently converting FROM.
+    /// Bytes of retained audio this resampler holds — the part of a take's
+    /// resident footprint that is not `out` or the downmix scratch (Y3).
+    pub fn resident_bytes(&self) -> usize {
+        (self.scratch.capacity() + self.pending.capacity()) * std::mem::size_of::<f32>()
+    }
+
     pub fn from_rate(&self) -> u32 {
         self.from
     }

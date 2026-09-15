@@ -136,6 +136,76 @@ pub struct RecordingResult {
     pub device_failed: bool,
 }
 
+/// Y3 test seam — drive the dictation capture consumer with synthetic frames,
+/// with no microphone, no capture worker and no Tauri app, so
+/// `tests/dictation_capture_memory.rs` can measure what a real take holds.
+///
+/// `#[doc(hidden)]`: this is a harness, not product API. It exposes exactly two
+/// things — push frames in, ask how many bytes are resident — plus the take
+/// hand-off, which is what makes the byte-identity assertion possible.
+#[doc(hidden)]
+pub mod capture_probe {
+    use super::{CapturedAudio, SpillWriter, StreamDsp};
+    use std::path::Path;
+
+    /// One take's capture consumer, spilling to `recordings_dir` and moving an
+    /// aborted spill to `recovery_dir`. `None` for `recordings_dir` builds the
+    /// pre-Y3 unbounded-RAM path, which is what the byte-identity test compares
+    /// against.
+    pub struct CaptureProbe {
+        dsp: StreamDsp,
+    }
+
+    impl CaptureProbe {
+        pub fn new(
+            sample_rate: u32,
+            channels: u16,
+            spill_wav: Option<(&Path, &Path)>,
+        ) -> Result<Self, String> {
+            let mut dsp = StreamDsp::new(sample_rate, channels);
+            if let Some((wav_path, recovery_dir)) = spill_wav {
+                dsp.spill = Some(
+                    SpillWriter::open(wav_path, recovery_dir)
+                        .ok_or_else(|| "capture spill would not open".to_string())?,
+                );
+            }
+            Ok(Self { dsp })
+        }
+
+        /// One capture callback's interleaved native-rate frames.
+        pub fn push(&mut self, interleaved: &[f32]) {
+            self.dsp.push(interleaved);
+        }
+
+        /// Bytes of audio held in RAM right now (see `StreamDsp::resident_bytes`).
+        pub fn resident_bytes(&self) -> usize {
+            self.dsp.resident_bytes()
+        }
+
+        /// File name of this take's spill, so a test can look for it in the
+        /// recovery dir after an abort.
+        pub fn spill_file_name(&self) -> Option<String> {
+            self.dsp
+                .spill
+                .as_ref()
+                .and_then(|s| s.path.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+        }
+
+        /// Abandon the take WITHOUT closing it — the mid-take abort. The spill
+        /// is finalized as a playable prefix and moved to the recovery dir.
+        pub fn abort(self) {
+            drop(self.dsp);
+        }
+
+        /// Close the take and run it through the real finalize chain.
+        pub fn finish(mut self, denoise: bool) -> Result<Vec<f32>, String> {
+            let captured: CapturedAudio = self.dsp.take();
+            super::finalize_take(captured, denoise)
+        }
+    }
+}
+
 /// Arm a take on the persistent capture worker (YV35).
 ///
 /// The worker keeps the cpal input stream — and its cached device + stream
@@ -166,10 +236,15 @@ pub fn start_recording(
     // `hold_wall_seconds` reports the real press→release wall time.
     let started = Instant::now();
     let journal = CaptureJournal::start(journal_dir);
+    // Y3 — the take's audio goes straight to `<id>.capture.wav` next to the
+    // history wav as it is captured, so a long dictation costs a bounded window
+    // of RAM instead of growing two Vecs for as long as the key is held.
+    let spill = SpillWriter::open(&wav_path, journal_dir);
 
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Arm {
         journal,
+        spill,
         reply: reply_tx,
     })?;
     await_reply(&reply_rx, ARM_TIMEOUT, "arm")?;
@@ -1004,12 +1079,16 @@ const NO_AUDIO_ERR: &str = "No audio captured — click Allow once for Microphon
 /// and (optionally) denoises it.
 struct CapturedAudio {
     /// 16 kHz mono, high-passed — streamed frame by frame while the user spoke.
+    ///
+    /// Since Y3 this is EMPTY whenever `spill` is `Some`: the take's audio
+    /// lives in the spill and `finalize_take` reads it back. It carries the
+    /// whole take only on the degraded path where no spill could be written.
     samples: Vec<f32>,
-    /// The same take as raw mono at `sample_rate`, untouched by any filter. The
-    /// never-lose-audio fallback: if the streamed buffer is empty or went
-    /// non-finite, `finalize_take` rebuilds the clip from this instead.
-    raw: Vec<f32>,
-    /// Native capture rate — the rate `raw` is at (`samples` is always 16 kHz).
+    /// Y3 — the take on disk, written incrementally during capture. This
+    /// replaced the unbounded native-rate `raw` Vec that used to be the
+    /// never-lose-audio fallback; a finished WAV is the stronger copy.
+    spill: Option<CaptureSpill>,
+    /// Native capture rate (`samples`/the spill are always 16 kHz).
     sample_rate: u32,
     /// Soft-AGC gain accumulated over the take, applied at finalize. `1.0` means
     /// "leave the level alone" (silence / degenerate input).
@@ -1046,6 +1125,9 @@ enum CaptureCmd {
     /// this take's crash journal (YV63) for the capture path to spill into.
     Arm {
         journal: Option<CaptureJournal>,
+        /// Y3 — this take's capture spill, opened by `start_recording` in the
+        /// recordings dir so the capture worker never has to know a path.
+        spill: Option<SpillWriter>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     /// Stop buffering and hand back the take. The stream STAYS open.
@@ -1283,10 +1365,11 @@ impl LiveStream {
     /// SAFE, because a meeting's audio does not live in `StreamDsp` — it is a
     /// separate consumer of the same fanned-out block. Wiping the take state
     /// here can no longer wipe a meeting that is recording.
-    fn begin(&mut self, journal: Option<CaptureJournal>) {
+    fn begin(&mut self, journal: Option<CaptureJournal>, spill: Option<SpillWriter>) {
         if let Ok(mut dsp) = self.dsp.lock() {
             dsp.reset();
             dsp.journal = journal;
+            dsp.spill = spill;
         }
         self.watch.restart_segments();
         capture_level().store(0, Ordering::Relaxed);
@@ -1297,8 +1380,8 @@ impl LiveStream {
         self.window.open(self.rt.frames_accepted());
     }
 
-    /// End a take: close the gate and take the streamed 16 kHz buffer (plus its
-    /// raw fallback and AGC stats) off the DSP state.
+    /// End a take: close the gate, close the take's spill and take the 16 kHz
+    /// buffer (plus its AGC stats) off the DSP state.
     fn end(&self) -> CapturedAudio {
         // Disarm before closing the window — the take is over, so a reopen
         // racing this must not resurrect it.
@@ -1315,7 +1398,7 @@ impl LiveStream {
             .map(|mut dsp| dsp.take())
             .unwrap_or_else(|_| CapturedAudio {
                 samples: Vec::new(),
-                raw: Vec::new(),
+                spill: None,
                 sample_rate: TARGET_RATE,
                 gain: 1.0,
                 journal: None,
@@ -1362,7 +1445,10 @@ impl LiveStream {
     /// How many 16 kHz output samples the take has produced so far — the marker's
     /// segment boundary.
     fn output_samples(&self) -> u64 {
-        self.dsp.lock().map(|d| d.out.len() as u64).unwrap_or(0)
+        self.dsp
+            .lock()
+            .map(|d| (d.spilled + d.out.len()) as u64)
+            .unwrap_or(0)
     }
 
     /// YV92/OS-9 — fold one reading of "what does the OS say the input is now"
@@ -1505,7 +1591,11 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
             rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         };
         match next {
-            Ok(CaptureCmd::Arm { journal, reply }) => {
+            Ok(CaptureCmd::Arm {
+                journal,
+                spill,
+                reply,
+            }) => {
                 // A stream whose device errored (unplugged, format changed) is
                 // useless — drop it and re-query the hardware from scratch.
                 if live.as_ref().is_some_and(LiveStream::has_failed) {
@@ -1526,7 +1616,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
-                    stream.begin(journal);
+                    stream.begin(journal, spill);
                     let _ = reply.send(Ok(()));
                 }
             }
@@ -2261,6 +2351,228 @@ const CONSUMER_IDLE_SLEEP: Duration = Duration::from_millis(2);
 // non-finite, `finalize_take` rebuilds the clip from the raw samples with the
 // batch chain instead of losing the utterance.
 
+// ── Bounded capture: the take lives on disk, not in RAM (Y3) ───────────────
+//
+// Before Y3 a take grew TWO unbounded `Vec<f32>`s for as long as the user held
+// the key: `out` (16 kHz, 64 KB/s) and `raw` (native rate, 192 KB/s at 48 kHz).
+// A twenty-minute dictation was ~307 MB of resident audio before a single DSP
+// stage ran, and `finalize_take` then took the whole thing by value. Nothing
+// bounded either buffer; the only ceiling was the user's patience.
+//
+// Now the consumer thread — NOT the audio callback, which still only copies
+// into the ring (see `rtring.rs`) — drains `out` into the take's own WAV as it
+// goes and keeps a bounded working window in RAM. `finalize_take` reads the
+// take back with the `read_wav_16k_mono` that already existed. The raw
+// native-rate fallback Vec is gone entirely: the spill IS the never-lose-audio
+// copy, and a file on disk survives strictly more than a Vec does.
+
+/// The ceiling on the audio buffers `StreamDsp` keeps resident for a take of
+/// **any** length — the number `tests/dictation_capture_memory.rs` asserts
+/// against, counted the same way `tests/meeting_capture_memory.rs` counts a
+/// meeting's: the capacity of every `f32` buffer the take owns (`out`, the
+/// downmix scratch `mono`, and the resampler's retained `pending` + `scratch`).
+///
+/// 4 MiB, which is ~8% of the ~32 MB the item budgets for capture and leaves
+/// the rest of that budget to the read-back `finalize_take` does once at the
+/// end. It is a ceiling, not a target: steady state sits near
+/// [`SPILL_WINDOW_SAMPLES`] plus one callback of scratch, roughly 200 KB.
+pub const MAX_RESIDENT_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+
+/// How much finished 16 kHz audio stays in RAM behind the spill cursor.
+///
+/// Sized from the DSP's *actual* lookahead, not from a round number. Of the
+/// three stages that run over a finished take — `high_pass` (a biquad, one
+/// sample of state, carried across frames during capture), `normalize_rms`
+/// (two passes over statistics this path already accumulates incrementally)
+/// and `denoise_rnnoise` (RNNoise, which is strictly frame-local: 480 samples
+/// at 48 kHz, i.e. **160 samples at 16 kHz**, 10 ms) — the largest true
+/// dependency is one RNNoise frame, 160 samples.
+///
+/// 16 000 samples (one second, 64 000 bytes) is 100 whole RNNoise frames, so
+/// the retained window can never split one, and it keeps the spill to one
+/// write per second of speech instead of one per callback. That is a hundredfold
+/// margin over the dependency and still 1/64th of [`MAX_RESIDENT_CAPTURE_BYTES`].
+const SPILL_WINDOW_SAMPLES: usize = TARGET_RATE as usize;
+
+/// Suffix of a take's capture spill: `<id>.capture.wav`.
+///
+/// A file of its own, deliberately NOT the history/recovery WAV (`ClipWav`,
+/// still i16 and still written at the end) and NOT the YV63 journal spill
+/// (`<id>.spill.pcm`, i16, lossy under backpressure by design). This one is
+/// 32-bit float so the read-back is bit-exact — an i16 round-trip would quietly
+/// requantise every take, which is the regression `dictation_capture_memory`'s
+/// byte-identity test exists to catch.
+const CAPTURE_SPILL_EXT: &str = "capture.wav";
+
+/// The WAV spec every capture spill is written with. 16 kHz mono f32 — the
+/// same rate and channel count `out` already holds, so spilling is a copy and
+/// never a conversion.
+fn capture_spill_spec() -> hound::WavSpec {
+    hound::WavSpec {
+        channels: 1,
+        sample_rate: TARGET_RATE,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    }
+}
+
+/// A finished capture spill: the take, complete, on disk.
+pub struct CaptureSpill {
+    path: PathBuf,
+}
+
+impl CaptureSpill {
+    /// Read the whole take back as 16 kHz mono floats. This is the one place
+    /// the take is fully resident, and it happens once, after the key is up —
+    /// not for every callback while the user is still speaking.
+    fn read_back(&self) -> Result<Vec<f32>, String> {
+        read_wav_16k_mono(&self.path)
+    }
+}
+
+impl Drop for CaptureSpill {
+    fn drop(&mut self) {
+        // The take made it out of capture and `finalize_take` has read it, so
+        // the spill has done its job. Same disposability rule as `ClipWav`.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Writes one take's 16 kHz frames to `<recordings>/<id>.capture.wav` as they
+/// arrive, on the capture CONSUMER thread (normal priority, already holding the
+/// DSP mutex) — never on the audio callback, which still does nothing but copy
+/// into the ring.
+///
+/// Failure is not fatal and is never silent: the first write error abandons the
+/// spill and flips `failed`, and `StreamDsp` then stops draining `out`, which
+/// degrades to exactly the pre-Y3 unbounded-RAM behaviour rather than losing
+/// the utterance. A disk that has gone away costs memory, not words.
+struct SpillWriter {
+    writer: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>,
+    path: PathBuf,
+    /// `data_dir()/recovery/` — where an ABORTED take's spill is moved so it
+    /// sits alongside the YV63 journal artefacts the retry path already reads.
+    recovery_dir: PathBuf,
+    written: usize,
+    failed: bool,
+    finished: bool,
+}
+
+impl SpillWriter {
+    /// Open the spill for the take whose history WAV will be `wav_path`.
+    /// `None` on any failure — a take with no spill simply keeps its audio in
+    /// RAM the old way.
+    fn open(wav_path: &Path, recovery_dir: &Path) -> Option<Self> {
+        let path = wav_path.with_extension(CAPTURE_SPILL_EXT);
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("Y3 capture spill off for this take (dir): {e}");
+                return None;
+            }
+        }
+        match hound::WavWriter::create(&path, capture_spill_spec()) {
+            Ok(writer) => Some(Self {
+                writer: Some(writer),
+                path,
+                recovery_dir: recovery_dir.to_path_buf(),
+                written: 0,
+                failed: false,
+                finished: false,
+            }),
+            Err(e) => {
+                log::warn!("Y3 capture spill off for this take: {e}");
+                None
+            }
+        }
+    }
+
+    /// Append finished 16 kHz samples. Returns `false` once the spill has
+    /// failed, which is the caller's signal to stop draining its buffer.
+    fn append(&mut self, samples: &[f32]) -> bool {
+        if self.failed {
+            return false;
+        }
+        let Some(writer) = self.writer.as_mut() else {
+            self.failed = true;
+            return false;
+        };
+        for &s in samples {
+            if let Err(e) = writer.write_sample(s) {
+                log::warn!(
+                    "Y3 capture spill failed after {} samples ({e}) — the take stays in RAM",
+                    self.written
+                );
+                self.failed = true;
+                return false;
+            }
+        }
+        self.written += samples.len();
+        true
+    }
+
+    /// Close the WAV and hand back the finished take. `None` when the spill
+    /// failed or never received a sample, in which case the caller's in-memory
+    /// buffer is still the take.
+    fn finish(mut self) -> Option<CaptureSpill> {
+        self.finished = true;
+        let writer = self.writer.take()?;
+        if self.failed || self.written == 0 {
+            drop(writer);
+            let _ = std::fs::remove_file(&self.path);
+            return None;
+        }
+        match writer.finalize() {
+            Ok(()) => Some(CaptureSpill {
+                path: self.path.clone(),
+            }),
+            Err(e) => {
+                log::warn!("Y3 capture spill could not be closed: {e}");
+                let _ = std::fs::remove_file(&self.path);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for SpillWriter {
+    /// A take that died mid-spill — the stream was torn down, the take was
+    /// abandoned, the process is unwinding. The WAV header is finalized so the
+    /// prefix on disk is a PLAYABLE file, and it is moved into the recovery dir
+    /// next to the YV63 journal's artefacts. Its name (`<id>.capture.wav`) is
+    /// not a journal marker, so `recover_orphaned_journals` walks straight past
+    /// it and the two recovery mechanisms cannot confuse each other.
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let Some(writer) = self.writer.take() else {
+            return;
+        };
+        if self.failed || self.written == 0 || writer.finalize().is_err() {
+            let _ = std::fs::remove_file(&self.path);
+            return;
+        }
+        if std::fs::create_dir_all(&self.recovery_dir).is_err() {
+            return;
+        }
+        let Some(name) = self.path.file_name() else {
+            return;
+        };
+        let dest = self.recovery_dir.join(name);
+        if std::fs::rename(&self.path, &dest).is_err() {
+            if std::fs::copy(&self.path, &dest).is_ok() {
+                let _ = std::fs::remove_file(&self.path);
+            }
+            return;
+        }
+        log::warn!(
+            "Y3 take aborted mid-spill — {} samples kept at {}",
+            self.written,
+            dest.display()
+        );
+    }
+}
+
 /// One take's streaming DSP state + buffers. Lives behind the capture stream's
 /// mutex and is written by the audio callback.
 struct StreamDsp {
@@ -2276,10 +2588,18 @@ struct StreamDsp {
     /// Cleared the moment a non-finite sample is seen — AGC then leaves the
     /// level alone rather than acting on garbage stats.
     finite: bool,
-    /// 16 kHz mono, high-passed — the ASR buffer, built during capture.
+    /// 16 kHz mono, high-passed — the bounded working window (Y3). Everything
+    /// behind [`SPILL_WINDOW_SAMPLES`] has already gone to `spill`; what is
+    /// here is the tail, plus whatever has accumulated since the last drain.
+    /// With no spill (open failed, or a write failed mid-take) this is the
+    /// whole take, exactly as it was before Y3.
     out: Vec<f32>,
-    /// Raw mono at the native rate — the fallback (see above).
-    raw: Vec<f32>,
+    /// This take's on-disk spill (Y3). `None` means the take is riding in RAM.
+    spill: Option<SpillWriter>,
+    /// 16 kHz samples already drained out of `out` into `spill` — the offset
+    /// that keeps `output_samples()` (and therefore every journal marker's
+    /// segment boundary) counting the whole take and not just the window.
+    spilled: usize,
     /// Reused downmix scratch so a callback allocates nothing steady-state.
     mono: Vec<f32>,
     /// YV63 crash journal for the take in flight, installed by `LiveStream::begin`
@@ -2300,7 +2620,8 @@ impl StreamDsp {
             peak: 0.0,
             finite: true,
             out: Vec::new(),
-            raw: Vec::new(),
+            spill: None,
+            spilled: 0,
             mono: Vec::new(),
             journal: None,
         }
@@ -2310,6 +2631,8 @@ impl StreamDsp {
     /// no audio — and no biquad tail — ever bleeds from one dictation into the
     /// next.
     fn reset(&mut self) {
+        // An unfinished spill here belongs to a take nobody collected; dropping
+        // it is what moves its audio to the recovery dir (see `SpillWriter`).
         *self = Self::new(self.sample_rate, self.channels);
     }
 
@@ -2373,9 +2696,6 @@ impl StreamDsp {
                     .map(|c| c.iter().sum::<f32>() / c.len() as f32),
             );
         }
-        // Fallback copy first — kept exactly as captured.
-        self.raw.extend_from_slice(&self.mono);
-
         // Signal hygiene (Tier 0, docs/research/voice-isolation.md) at the NATIVE
         // rate: kill sub-80 Hz rumble/hum before anything else looks at the frame.
         // A filter that goes non-finite leaves the frame unfiltered (and resets
@@ -2406,10 +2726,47 @@ impl StreamDsp {
         if let Some(journal) = self.journal.as_ref() {
             journal.append(&self.out[before..]);
         }
+        // …and Y3's drain: everything behind the working window goes to the
+        // take's own WAV, so `out` stops growing with the length of the take.
+        self.drain_to_spill(false);
+    }
+
+    /// Move finished samples out of `out` and into the spill, keeping
+    /// [`SPILL_WINDOW_SAMPLES`] resident (or nothing at all when `all`).
+    ///
+    /// A no-op when the take has no spill, which is the degraded path: `out`
+    /// then grows the way it did before Y3 rather than losing audio.
+    fn drain_to_spill(&mut self, all: bool) {
+        let keep = if all { 0 } else { SPILL_WINDOW_SAMPLES };
+        if self.out.len() <= keep {
+            return;
+        }
+        let Some(spill) = self.spill.as_mut() else {
+            return;
+        };
+        let cut = self.out.len() - keep;
+        if !spill.append(&self.out[..cut]) {
+            // The disk gave up. Keep every sample in RAM and stop draining —
+            // memory is the cost, never the words.
+            self.spill = None;
+            return;
+        }
+        self.out.drain(..cut);
+        self.spilled += cut;
+    }
+
+    /// Bytes of audio this take is holding in RAM right now — the number
+    /// `MAX_RESIDENT_CAPTURE_BYTES` bounds. Counted like
+    /// `meeting_capture_memory.rs` counts a meeting's: CAPACITY (not length) of
+    /// every retained `f32` buffer, including the resampler's.
+    fn resident_bytes(&self) -> usize {
+        (self.out.capacity() + self.mono.capacity()) * std::mem::size_of::<f32>()
+            + self.resampler.resident_bytes()
     }
 
     /// Close the take: flush the resampler's tail and hand the buffers over.
     fn take(&mut self) -> CapturedAudio {
+        let before_tail = self.out.len();
         self.resampler.finish(&mut self.out);
         let rms = if self.finite && self.counted > 0 {
             (self.sum_sq / self.counted as f64).sqrt() as f32
@@ -2421,9 +2778,24 @@ impl StreamDsp {
         } else {
             1.0
         };
+        // Y3: the resampler's tail has landed, so the take is complete — push
+        // ALL of it to the spill and close the file. When there is a spill the
+        // take now lives entirely on disk and `samples` goes out empty; when
+        // there is not, `samples` carries the whole take as it always did.
+        if let Some(journal) = self.journal.as_ref() {
+            journal.append(&self.out[before_tail..]);
+        }
+        self.drain_to_spill(true);
+        let spill = self.spill.take().and_then(SpillWriter::finish);
+        let samples = if spill.is_some() {
+            self.out.clear();
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.out)
+        };
         let captured = CapturedAudio {
-            samples: std::mem::take(&mut self.out),
-            raw: std::mem::take(&mut self.raw),
+            samples,
+            spill,
             sample_rate: self.sample_rate,
             gain,
             // Taken (not reset) so the journal rides out with its take — the
@@ -2445,22 +2817,46 @@ impl StreamDsp {
 fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, String> {
     let CapturedAudio {
         samples,
-        raw,
+        spill,
         sample_rate,
         gain,
         ..
     } = captured;
-    if samples.is_empty() && raw.is_empty() {
+    // Y3 — the take comes off the disk, not out of a giant Vec. A spill that
+    // cannot be read back is not allowed to lose the utterance: `samples` is
+    // the in-RAM copy on the degraded path and is used as-is.
+    let streamed = match spill.as_ref() {
+        Some(spill) => match spill.read_back() {
+            Ok(read) => read,
+            Err(e) => {
+                log::warn!("Y3 capture spill unreadable ({e}) — falling back to the RAM buffer");
+                samples
+            }
+        },
+        None => samples,
+    };
+    if streamed.is_empty() {
         return Err(NO_AUDIO_ERR.into());
     }
-    let leveled = if samples.is_empty() || samples.iter().any(|s| !s.is_finite()) {
+    let leveled = if streamed.iter().any(|s| !s.is_finite()) {
+        // The streamed chain produced garbage. Pre-Y3 this rebuilt the clip
+        // from the untouched native-rate `raw` Vec; there is no such Vec any
+        // more, so the salvage runs over the 16 kHz capture with the
+        // non-finite samples zeroed. Same intent, same batch chain
+        // (`fallback_chain` at TARGET_RATE is high-pass + normalize_rms, with
+        // no resample), and it keeps every sample that was not garbage.
         log::warn!(
-            "YV37 streamed DSP unusable ({} samples) — rebuilding the clip from the raw capture",
-            samples.len()
+            "YV37 streamed DSP unusable ({} samples, captured at {sample_rate}Hz) — \
+             salvaging the capture",
+            streamed.len()
         );
-        fallback_chain(&raw, sample_rate)
+        let sane: Vec<f32> = streamed
+            .iter()
+            .map(|&s| if s.is_finite() { s } else { 0.0 })
+            .collect();
+        fallback_chain(&sane, TARGET_RATE)
     } else {
-        apply_gain(&samples, gain)
+        apply_gain(&streamed, gain)
     };
     let faded = edge_fade(&leveled, TARGET_RATE, EDGE_FADE_MS);
     // Denoise (Tier 1, docs/research/voice-isolation.md) — RNNoise, gated by the
@@ -2478,8 +2874,10 @@ fn finalize_take(captured: CapturedAudio, denoise: bool) -> Result<Vec<f32>, Str
     Ok(out)
 }
 
-/// Never-lose-audio path: the pre-YV37 batch chain over the untouched raw mono
-/// capture, used only when the streamed buffer came back unusable.
+/// Never-lose-audio path: the pre-YV37 batch chain, used only when the streamed
+/// buffer came back unusable. Since Y3 its input is the 16 kHz capture read
+/// back from the spill rather than a native-rate `raw` Vec, so `sample_rate`
+/// is `TARGET_RATE` on the live path and the resample below is skipped.
 fn fallback_chain(raw: &[f32], sample_rate: u32) -> Vec<f32> {
     let hp = high_pass(raw, sample_rate, HIGH_PASS_HZ);
     let leveled = normalize_rms(&hp, NORMALIZE_TARGET_DBFS);
@@ -3670,18 +4068,11 @@ mod tests {
         );
         let captured = dsp.take();
         assert_eq!(captured.sample_rate, NATIVE_SR);
-        assert_eq!(
-            captured.raw.len(),
-            mono_in.len(),
-            "the raw fallback keeps every captured mono sample"
-        );
+        // Y3 — no spill was installed on this DSP, so the take comes back in
+        // RAM exactly as it did before the spill existed.
         assert!(
-            captured
-                .raw
-                .iter()
-                .zip(&mono_in)
-                .all(|(a, b)| (a - b).abs() < 1e-6),
-            "downmix must average the channels"
+            captured.spill.is_none(),
+            "a probe with no spill keeps the take in RAM"
         );
         let expected = mono_in.len() / 3;
         assert!(
@@ -3693,7 +4084,7 @@ mod tests {
         // A quiet take is lifted, never attenuated to nothing.
         assert!(captured.gain > 1.0, "quiet take should get AGC gain");
         // …and the state is gone with the take: the next dictation starts clean.
-        assert!(dsp.out.is_empty() && dsp.raw.is_empty());
+        assert!(dsp.out.is_empty() && dsp.spilled == 0 && dsp.spill.is_none());
     }
 
     /// YV92/OS-9 — the take must survive an input format change. Feed the DSP at
@@ -3877,7 +4268,7 @@ mod tests {
         let journal = CaptureJournal::start(&dir).expect("journal opens");
         let markers = journal.markers_path();
         let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
-        live.begin(Some(journal));
+        live.begin(Some(journal), None);
 
         let mut indices = Vec::new();
         let mut boundaries = Vec::new();
@@ -3946,7 +4337,7 @@ mod tests {
     #[test]
     fn a_reopen_is_not_a_segment_and_a_new_take_restarts_the_numbering() {
         let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
-        live.begin(None);
+        live.begin(None, None);
 
         let action = live.observe_input(
             "AirPods Pro".into(),
@@ -3983,7 +4374,7 @@ mod tests {
         assert_eq!(second.marker().unwrap().segment_index, 2);
 
         // …and the next take starts its own numbering at 0.
-        live.begin(None);
+        live.begin(None, None);
         assert_eq!(live.watch.segment_index(), 0);
         let fresh = live.observe_input(
             "MacBook Pro Microphone".into(),
@@ -4028,7 +4419,7 @@ mod tests {
     #[test]
     fn a_reopen_mid_take_rearms_the_window_in_the_new_rings_frame_space() {
         let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
-        live.begin(None);
+        live.begin(None, None);
         // Enough frames that the old window's `from` is far from zero AND the
         // ring has advanced well past where the new one will start.
         for _ in 0..8 {
@@ -4104,7 +4495,7 @@ mod tests {
     #[test]
     fn a_transient_reopen_failure_still_resumes_the_take() {
         let mut live = hardware_free_stream("MacBook Pro Microphone", fmt(48_000));
-        live.begin(None);
+        live.begin(None, None);
         feed_one_callback(&live, &tone_at(48_000, 0.2, 220.0, 0.3));
         let before = live.output_samples();
         assert!(before > 0, "the take is recording before the swap");
@@ -4223,7 +4614,7 @@ mod tests {
         let captured = mark_device_failure(
             CapturedAudio {
                 samples: partial.clone(),
-                raw: partial.clone(),
+                spill: None,
                 sample_rate: SR,
                 gain: 1.0,
                 journal: None,
@@ -4243,12 +4634,11 @@ mod tests {
             captured.samples, partial,
             "Disarm must not touch the samples"
         );
-        assert_eq!(captured.raw, partial, "…nor the never-lose-audio fallback");
         // …and a healthy stream still reports a healthy take.
         let healthy = mark_device_failure(
             CapturedAudio {
                 samples: partial.clone(),
-                raw: Vec::new(),
+                spill: None,
                 sample_rate: SR,
                 gain: 1.0,
                 journal: None,
@@ -4266,7 +4656,7 @@ mod tests {
         let gain = agc_gain(rms(&quiet), max_abs(&quiet), NORMALIZE_TARGET_DBFS);
         let captured = CapturedAudio {
             samples: quiet.clone(),
-            raw: Vec::new(),
+            spill: None,
             sample_rate: SR,
             gain,
             journal: None,
@@ -4286,15 +4676,17 @@ mod tests {
         );
         assert!(max_abs(&out) <= 1.0 && out.iter().all(|s| s.is_finite()));
 
-        // Never lose audio: a streamed buffer that went non-finite falls back to
-        // the raw capture (native rate, unfiltered) instead of losing the take.
-        let raw = tone_at(NATIVE_SR, 0.5, 220.0, 0.3);
+        // Never lose audio (Y3): a 16 kHz capture that went non-finite is
+        // SALVAGED — the garbage samples are zeroed and the batch chain runs
+        // over everything else — instead of losing the take. Before Y3 this
+        // rebuilt from a native-rate `raw` Vec that no longer exists.
         let mut broken = tone_at(SR, 0.5, 220.0, 0.3);
         broken[100] = f32::NAN;
+        let broken_len = broken.len();
         let out = finalize_take(
             CapturedAudio {
                 samples: broken,
-                raw: raw.clone(),
+                spill: None,
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
                 journal: None,
@@ -4302,34 +4694,19 @@ mod tests {
             },
             false,
         )
-        .expect("the fallback still produces the utterance");
-        let expected = raw.len() / 3;
-        assert!(
-            out.len().abs_diff(expected) <= 2,
-            "fallback must resample the raw capture to 16 kHz, got {}",
-            out.len()
+        .expect("the salvage still produces the utterance");
+        assert_eq!(
+            out.len(),
+            broken_len,
+            "the salvage keeps every sample it can, at 16 kHz"
         );
         assert!(out.iter().all(|s| s.is_finite()) && rms(&out) > 0.0);
 
-        // An empty streamed buffer takes the same fallback…
-        let out = finalize_take(
-            CapturedAudio {
-                samples: Vec::new(),
-                raw,
-                sample_rate: NATIVE_SR,
-                gain: 1.0,
-                journal: None,
-                device_failed: false,
-            },
-            false,
-        )
-        .expect("empty streamed buffer falls back to raw");
-        assert!(!out.is_empty());
-        // …and a take with NO audio at all is an actionable error, never silence.
+        // A take with NO audio at all is an actionable error, never silence.
         let err = finalize_take(
             CapturedAudio {
                 samples: Vec::new(),
-                raw: Vec::new(),
+                spill: None,
                 sample_rate: NATIVE_SR,
                 gain: 1.0,
                 journal: None,
