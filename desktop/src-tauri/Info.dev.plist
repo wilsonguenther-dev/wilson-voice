@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PERM-A — the usage strings, for the DEV run.
+
+  `requestAccessForMediaType:` reads these out of the main bundle's Info.plist,
+  and TCC kills the process when the key it needs is absent. Tauri merges
+  src-tauri/Info.plist into the .app at BUNDLE time only, so `npm run tauri dev`
+  and `cargo test` execute a bare Mach-O with no bundle and no usage strings at
+  all. `mic_auth::request_access` refuses to call into TCC in that state.
+
+  This file is the same three strings as Info.plist, kept next to it so a dev
+  build can be given a bundle (or embedded via a __TEXT,__info_plist section)
+  without copying the shipped plist and dragging its bundle identifier along.
+  The identifier deliberately is NOT here: renaming it resets every TCC grant.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Yap records your voice locally to transcribe dictation with Whisper. Audio never leaves your Mac.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Yap records the audio from your meeting — the other people on the call as well as you — so it can write the notes. Recording stays on your Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Yap pastes transcribed text into the app you're typing in.</string>
+</dict>
+</plist>

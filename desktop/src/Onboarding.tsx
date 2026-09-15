@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ModelRibbon, useModelSetup } from "./ModelSetup";
 import { errorText } from "./errors";
+import { awaitMicDecision } from "./micStatus";
 
 // YV9 — first-run onboarding. Rendered as a full-screen overlay over the main
 // app while AppSettings.onboarded is false. Self-contained: it invokes the
@@ -22,6 +23,8 @@ type Step = "welcome" | "permissions" | "calibration" | "done";
 interface PermissionReport {
   accessibility: boolean;
   microphone: boolean;
+  /** PERM-A — see App.tsx. */
+  microphoneStatus: string;
   ffmpegOk: boolean;
   asrOk: boolean;
   asrDetail: string;
@@ -194,12 +197,28 @@ export default function Onboarding({
   }, [step, refreshModels]);
 
   async function requestMic() {
+    // PERM-A: non-blocking request + authoritative read-back. A denial comes
+    // back instantly with no dialog, so waiting a fixed 900 ms was both wrong
+    // and slow; a first-run grant can take a human several seconds.
     try {
-      await invoke("request_microphone");
+      const status = await awaitMicDecision({
+        request: () => invoke("request_microphone"),
+        read: () => invoke("microphone_status"),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      });
+      if (status === "denied") {
+        setNote(
+          "Microphone denied — macOS will not ask again. Turn Yap on in System Settings → Privacy & Security → Microphone.",
+        );
+      } else if (status === "restricted") {
+        setNote(
+          "Microphone is restricted by a device policy — an administrator has to allow it.",
+        );
+      }
     } catch (e) {
       setNote(String(e));
     }
-    setTimeout(refreshPerms, 900);
+    refreshPerms();
   }
 
   async function requestAccessibility() {

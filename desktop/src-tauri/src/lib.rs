@@ -91,7 +91,10 @@ pub mod meetings;
 // engine instead of a stopwatch.
 pub mod meeting_control;
 pub mod meeting_energy;
-mod mic_auth;
+// PERM-A — public so `tests/mic_auth_status.rs` can assert the
+// AVAuthorizationStatus discriminants and the call-site sweep without a
+// microphone, a grant or a window server.
+pub mod mic_auth;
 // YV93 — public so the English-only meeting gate can be asserted against the
 // real bundled catalog from `tests/meeting_english_only_gate.rs`.
 pub mod models;
@@ -1135,8 +1138,11 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
     if !license_allows_new_dictation(app, state) {
         return;
     }
-    // Do NOT call mic_auth::request_microphone_access here — that is Permissions-only.
-    // Opening the real capture stream is enough for TCC (Allow once after install).
+    // PERM-A — this path is the AppKit main thread, so it may only ever perform
+    // the PURE TCC read (`mic_auth::authorization_status()`). It must never wait
+    // on a TCC decision: that stops the run loop for the length of a human
+    // choice and the pill cannot repaint. Prompting belongs to the Permissions
+    // pane (`request_microphone`), which returns immediately.
     let denoise = state.settings.lock().denoise;
     // YV35: anchor the press→capture_start span on the physical key-down when
     // this take came from the PTT hold (None for tray/button/hands-free starts).
@@ -2415,9 +2421,28 @@ fn request_accessibility() -> bool {
     permissions::request_accessibility_prompt()
 }
 
+/// Ask macOS for the microphone — and RETURN, without waiting for the answer.
+///
+/// PERM-A. `async` so Tauri runs it off the main thread, and non-blocking even
+/// there: the system dialog is a human decision, and the completion handler
+/// arrives on an arbitrary dispatch queue. The return value is the status *at
+/// the moment of asking* (`"not_determined"` when the dialog is about to
+/// appear); the real outcome is emitted as `microphone-status` when TCC answers.
+#[tauri::command(async)]
+fn request_microphone(app: AppHandle) -> String {
+    let before = mic_auth::authorization_status();
+    mic_auth::request_access(move |status| {
+        log::info!("mic auth: TCC answered {}", status.as_str());
+        let _ = app.emit("microphone-status", status.as_str());
+    });
+    before.as_str().to_string()
+}
+
+/// The authoritative microphone status, as a string the UI branches on.
+/// Pure: reading never prompts, so the permissions pane may poll it.
 #[tauri::command]
-fn request_microphone() -> bool {
-    mic_auth::request_microphone_access()
+fn microphone_status() -> String {
+    mic_auth::authorization_status().as_str().to_string()
 }
 
 #[tauri::command]
@@ -4283,6 +4308,7 @@ pub fn run() {
             get_permissions,
             request_accessibility,
             request_microphone,
+            microphone_status,
             get_insights,
             daily_series,
             monthly_series,

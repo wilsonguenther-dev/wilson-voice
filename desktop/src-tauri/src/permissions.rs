@@ -5,6 +5,7 @@
 //! Yap execs no helper interpreter, so that bundle is the ONLY row users ever
 //! need to enable.
 
+use crate::mic_auth::MicAuth;
 use serde::Serialize;
 use std::process::Command;
 
@@ -13,8 +14,15 @@ use std::process::Command;
 pub struct PermissionReport {
     /// AXIsProcessTrusted — required for enigo Cmd+V paste
     pub accessibility: bool,
-    /// Best-effort mic readiness (ffmpeg can open default device)
+    /// TCC says Authorized **and** an input device is attached. Kept for the
+    /// existing call sites; `microphone_status` is what the UI branches on.
     pub microphone: bool,
+    /// The raw AVFoundation authorization status:
+    /// `"not_determined" | "denied" | "restricted" | "authorized"`.
+    ///
+    /// A bool cannot tell "never asked" from "the user said no", and those two
+    /// need opposite UI: one shows a prompt button, the other a Settings link.
+    pub microphone_status: String,
     /// ffmpeg present on PATH
     pub ffmpeg_ok: bool,
     /// A speech model is on disk, so the embedded engine can transcribe
@@ -61,37 +69,39 @@ mod macos {
     }
 }
 
-/// Probe default input device via cpal (same stack as recording).
-/// First successful capture creates the TCC Microphone row for Wilson Voice.
+/// The microphone answer, read from macOS rather than inferred from hardware.
+///
+/// PERM-A: this used to ask `cpal` whether the default input device would hand
+/// over a stream config and report that success as "mic ready", which is blind
+/// to a revoked grant — and the prose it printed ("If Yap is missing from System Settings → Microphone, click Dictate
+/// once to trigger the prompt") was advice built on that wrong model. macOS only
+/// shows the prompt from `NotDetermined`; clicking Dictate after a denial does
+/// nothing at all. Each status now gets the one next step that actually works.
 pub fn microphone_probe() -> (bool, String) {
-    use cpal::traits::{DeviceTrait, HostTrait};
-    let host = cpal::default_host();
-    match host.default_input_device() {
-        Some(dev) => {
-            let name = dev
-                .description()
-                .map(|d| d.name().to_string())
-                .unwrap_or_else(|_| "default mic".into());
-            match dev.default_input_config() {
-                Ok(cfg) => (
-                    true,
-                    format!(
-                        "Mic ready: {name} ({} Hz). If Yap is missing from System Settings → Microphone, click Dictate once to trigger the prompt.",
-                        cfg.sample_rate()
-                    ),
-                ),
-                Err(e) => (
-                    false,
-                    format!(
-                        "Mic found ({name}) but config failed: {e}. Toggle Microphone for Yap in System Settings."
-                    ),
-                ),
+    let status = crate::mic_auth::authorization_status();
+    (status == MicAuth::Authorized, microphone_detail(status))
+}
+
+/// Prose per status. Pure, so `tests/mic_auth_status.rs` can read it without a
+/// microphone, a grant, or a window server.
+pub fn microphone_detail(status: MicAuth) -> String {
+    match status {
+        MicAuth::Authorized => {
+            if crate::mic_auth::input_device_present() {
+                "Microphone authorized for Yap.".into()
+            } else {
+                "Microphone authorized, but no input device is attached — plug one in or pick one in System Settings → Sound.".into()
             }
         }
-        None => (
-            false,
-            "No input device. Click Dictate once so macOS prompts for Microphone, then enable Yap in System Settings → Privacy → Microphone.".into(),
-        ),
+        MicAuth::NotDetermined => {
+            "macOS has not been asked for the microphone yet — click Request Microphone to show the system prompt.".into()
+        }
+        MicAuth::Denied => {
+            "Microphone is DENIED for Yap. macOS will not ask again — turn Yap on in System Settings → Privacy & Security → Microphone.".into()
+        }
+        MicAuth::Restricted => {
+            "Microphone is restricted by a device policy (Screen Time or MDM). Yap cannot request it; an administrator has to allow it.".into()
+        }
     }
 }
 
@@ -115,29 +125,49 @@ pub fn asr_probe(native_ready: bool) -> (bool, String) {
 
 pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionReport {
     let accessibility = macos::accessibility_trusted(prompt_accessibility);
-    let (microphone, mic_detail) = microphone_probe();
-    let ffmpeg_ok = true; // no longer required — cpal in-process
+    let status = crate::mic_auth::authorization_status();
     let (asr_ok, asr_detail) = asr_probe(native_ready);
+    build_report(accessibility, status, asr_ok, asr_detail)
+}
 
-    let mut parts = Vec::new();
+/// The report, as a pure function of its four inputs.
+///
+/// Split out of [`report`] so `all_critical_ok` is testable on a CI runner with
+/// no microphone and no grant — the exact machine on which the old bool-only
+/// report was wrong.
+pub fn build_report(
+    accessibility: bool,
+    status: MicAuth,
+    asr_ok: bool,
+    asr_detail: String,
+) -> PermissionReport {
+    // Authorization is TCC's answer; readiness additionally needs hardware.
+    let microphone = status == MicAuth::Authorized && crate::mic_auth::input_device_present();
+    let mic_detail = microphone_detail(status);
+    let ffmpeg_ok = true; // no longer required — cpal in-process
+
+    let mut parts: Vec<String> = Vec::new();
     if !accessibility {
         parts.push(
-            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Yap)",
+            "Accessibility OFF — enable for FN hold + auto-paste (Privacy → Accessibility → Yap)"
+                .into(),
         );
     }
-    if !microphone {
-        parts.push("Microphone not ready");
+    if status != MicAuth::Authorized {
+        parts.push(mic_detail.clone());
     }
     if !asr_ok {
-        parts.push("Speech model needed");
+        parts.push("Speech model needed".into());
     }
 
-    // Mic + ASR are critical for dictation. Accessibility only for paste (clipboard always works).
-    let all_critical_ok = microphone && asr_ok;
+    // Mic + ASR are critical for dictation. Accessibility only for paste
+    // (clipboard always works). A microphone that is not AUTHORIZED can never
+    // be critical-ok, whatever the hardware says.
+    let all_critical_ok = status == MicAuth::Authorized && microphone && asr_ok;
     let summary = if all_critical_ok {
-        "All critical permissions look good for Yap.".into()
+        "All critical permissions look good for Yap.".to_string()
     } else if parts.is_empty() {
-        mic_detail
+        mic_detail.clone()
     } else {
         parts.join(" · ")
     };
@@ -145,6 +175,7 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     PermissionReport {
         accessibility,
         microphone,
+        microphone_status: status.as_str().to_string(),
         ffmpeg_ok,
         asr_ok,
         asr_detail,
