@@ -8,7 +8,8 @@
 import { describe, expect, it } from "vitest";
 import { type LicenseStatus } from "../license/status";
 import {
-  PILL_TRIAL_DAYS,
+  PILL_SHOW_DAYS,
+  PILL_URGENT_DAYS,
   offersPurchase,
   pillLicense,
   type PillLicense,
@@ -94,9 +95,18 @@ describe("pillLicense — the trial fortnight", () => {
   }
 
   it("goes quiet above the pill's own window, which is wider than the toast's", () => {
-    expect(PILL_TRIAL_DAYS).toBe(7);
-    expect(pillLicense(trial(PILL_TRIAL_DAYS + 1)).show).toBe(false);
-    expect(pillLicense(trial(PILL_TRIAL_DAYS)).show).toBe(true);
+    expect(PILL_SHOW_DAYS).toBe(7);
+    expect(pillLicense(trial(PILL_SHOW_DAYS + 1)).show).toBe(false);
+    expect(pillLicense(trial(PILL_SHOW_DAYS)).show).toBe(true);
+  });
+
+  // Y2-E — the urgency threshold is now a named constant shared with the menu
+  // bar, so the boundary is asserted against the NAME as well as the day. The
+  // cross-language half of this lives in `src-tauri/tests/tray_license.rs`.
+  it("turns urgent exactly one threshold-day out, by name", () => {
+    expect(PILL_URGENT_DAYS).toBe(1);
+    expect(pillLicense(trial(PILL_URGENT_DAYS)).tone).toBe("trial");
+    expect(pillLicense(trial(PILL_URGENT_DAYS - 1)).tone).toBe("urgent");
   });
 
   it("never says 0d — the last day still has a day in it", () => {

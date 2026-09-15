@@ -10,7 +10,7 @@
  * none of them reaches for `days_left` on its own.
  *
  * TWO DIFFERENT NUMBERS, BOTH DELIBERATE:
- *   - `PILL_TRIAL_DAYS = 7` — the pill starts showing a countdown a full week
+ *   - `PILL_SHOW_DAYS = 7` — the pill starts showing a countdown a full week
  *     out. It is ambient and cheap to glance at; a quiet "5d" in the corner
  *     costs nothing and is read in passing.
  *   - `TRIAL_WARN_DAYS = 3` (in `../license/status`) — the ONE-SHOT toast. That
@@ -48,8 +48,28 @@ import {
 /**
  * How many days out the pill starts counting down. Deliberately larger than
  * `TRIAL_WARN_DAYS` (3) — see the header.
+ *
+ * Y2-E: THIS NUMBER IS SHARED WITH THE MENU BAR. `license::PILL_SHOW_DAYS` in
+ * `desktop/src-tauri/src/license.rs` carries the same value under the same
+ * name, and `src-tauri/tests/tray_license.rs` parses BOTH files and fails if
+ * they drift — numbers AND comparison operators, since `> 7` and `>= 7` are the
+ * same constant and a different boundary. If you change it here, change it
+ * there; the test will tell you if you forget.
  */
-export const PILL_TRIAL_DAYS = 7;
+export const PILL_SHOW_DAYS = 7;
+
+/**
+ * How few days must remain before the countdown turns URGENT. The rule below is
+ * `days < PILL_URGENT_DAYS`, i.e. the last day — `daysLeft` floors at zero, so
+ * this is the day on which no whole day is left. Strictly-less is what makes
+ * `1` the honest number: on the day the pill reads "1d" there is still a day in
+ * it, so that day is not yet urgent.
+ *
+ * Shared with `license::PILL_URGENT_DAYS` on the Rust side under the same name
+ * and held there by the same parsing test. The menu-bar ICON keys off this, and
+ * off nothing else — see `license::tray_line`.
+ */
+export const PILL_URGENT_DAYS = 1;
 
 /**
  * The pill has four voices and no fifth. `licensed` is absent on purpose:
@@ -167,8 +187,8 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
   if (status.state === "trial") {
     // Borrowed, not recomputed: the backend's day count, floored at zero.
     const days = daysLeft(status);
-    if (days > PILL_TRIAL_DAYS) return PILL_LICENSE_SILENT;
-    if (days <= 0) {
+    if (days > PILL_SHOW_DAYS) return PILL_LICENSE_SILENT;
+    if (days < PILL_URGENT_DAYS) {
       return {
         show: true,
         tone: "urgent",
