@@ -216,6 +216,7 @@ fn absent_model_leaves_the_pipeline_byte_identical() {
                     CleanupLevel::High,
                     mode,
                     Style::Default,
+                    &[],
                     |t| t.to_string(),
                     |_| None,
                 );
@@ -225,6 +226,7 @@ fn absent_model_leaves_the_pipeline_byte_identical() {
                     CleanupLevel::High,
                     mode,
                     Style::Default,
+                    &[],
                     |t| t.to_string(),
                     |t| polish_llm(t, mode, cfg),
                 );
