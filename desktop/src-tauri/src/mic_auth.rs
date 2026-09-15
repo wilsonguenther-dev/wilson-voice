@@ -253,3 +253,36 @@ pub fn input_device_present() -> bool {
 pub fn microphone_ready() -> bool {
     authorization_status() == MicAuth::Authorized && input_device_present()
 }
+
+/// PERM-C — what the ONE dictation gate must DO about a given authorization
+/// status, as a pure function of that status and nothing else.
+///
+/// It lives here, beside the status it reads, and it is deliberately separate
+/// from the gate in `lib.rs`: the gate needs an `AppHandle` to emit and notify,
+/// which makes it unreachable from a test, while the DECISION — the part that
+/// can silently regress into "denied is close enough to authorized" — is a
+/// three-line match that `tests/mic_gate.rs` can assert on directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicGate {
+    /// Authorized. Open the stream.
+    Proceed,
+    /// NotDetermined. Fire the NON-BLOCKING request once and refuse THIS take —
+    /// the answer arrives on a completion handler, and waiting for it on the
+    /// AppKit main thread is the freeze PERM-A documents.
+    Prompt,
+    /// Denied or Restricted. macOS will not re-prompt, so asking again is a
+    /// no-op that makes the hotkey feel dead. Refuse, and SHOW it.
+    Refuse,
+}
+
+/// The whole decision, in one place. `Restricted` refuses with `Denied`
+/// because the user-visible truth is identical — Yap cannot hear you — and
+/// `from_raw` maps an unreadable status to `Restricted`, so this is also the
+/// branch an unknown `AVAuthorizationStatus` lands on. It must never proceed.
+pub fn gate_decision(status: MicAuth) -> MicGate {
+    match status {
+        MicAuth::Authorized => MicGate::Proceed,
+        MicAuth::NotDetermined => MicGate::Prompt,
+        MicAuth::Denied | MicAuth::Restricted => MicGate::Refuse,
+    }
+}

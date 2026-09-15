@@ -5,8 +5,9 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { Mic, Square } from "lucide-react";
+import { emit, listen } from "@tauri-apps/api/event";
+import { Mic, MicOff, Square } from "lucide-react";
+import { phaseVisual, type LivePhase } from "./live";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
@@ -18,7 +19,13 @@ interface AppStatus {
 
 const BARS = Array.from({ length: 9 }, (_, i) => i);
 
-export default function ClassicPill() {
+/**
+ * PERM-C — `gate` is the microphone permission phase, owned by `float-main` and
+ * passed down: "blocked" (macOS is refusing, and will not re-prompt) or
+ * "waiting" (the system dialog is up). It OUTRANKS every take state, because a
+ * refused press must not look like a normal recording.
+ */
+export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
   const [status, setStatus] = useState<AppStatus>({ recording: false, busy: false, message: "Ready" });
   const [done, setDone] = useState(false);
   const levelRef = useRef(0);
@@ -120,19 +127,33 @@ export default function ClassicPill() {
     };
   }, []);
 
-  const live = status.recording;
-  const busy = status.busy && !live;
+  // PERM-C — a permission refusal outranks the take states below it: the whole
+  // point is that a press which cannot record NEVER paints as one that can.
+  const visual = phaseVisual(gate);
+  const blocked = visual.needsPermission;
+  const live = status.recording && !blocked;
+  const busy = status.busy && !live && !blocked;
   // A meeting expands the capsule for as long as it runs, and outranks the
   // resting "seed" — but never the live dictation state, which is the shorter,
   // more urgent thing on screen.
-  const base = live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
-  const cls = meeting.recording ? `${base} meeting` : base;
+  const base = blocked
+    ? `pill blocked ${gate}`
+    : live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
+  const cls = meeting.recording && !blocked ? `${base} meeting` : base;
   const onToggle = useCallback(() => {
-    if (busy) return;
     // YV65 — the click that closes a drag must never start/stop dictation.
     if (drag.dragged()) return;
+    if (blocked) {
+      // PERM-C — a blocked capsule is a BUTTON to the fix, not a dead pill:
+      // raise the main window and land on the Permissions screen (PERM-B), which
+      // owns the System Settings deep link.
+      invoke("show_main").catch(() => {});
+      emit("navigate", "permissions").catch(() => {});
+      return;
+    }
+    if (busy) return;
     invoke("manual_toggle").catch(() => {});
-  }, [busy, drag]);
+  }, [blocked, busy, drag]);
 
   return (
     <div className="stage">
@@ -141,7 +162,8 @@ export default function ClassicPill() {
         className={cls}
         role="button"
         tabIndex={0}
-        aria-label={live ? "Stop dictation" : busy ? "Transcribing" : "Start dictation"}
+        aria-label={blocked ? visual.label : live ? "Stop dictation" : busy ? "Transcribing" : "Start dictation"}
+        title={blocked ? visual.label : undefined}
         {...drag.handlers}
         onClick={onToggle}
         onKeyDown={(e) => {
@@ -150,9 +172,11 @@ export default function ClassicPill() {
       >
         <MeetingBadge status={meeting} />
         <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
-          {live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
+          {blocked ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
         </button>
-        {done ? (
+        {blocked ? (
+          <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
+        ) : done ? (
           <svg className="check" viewBox="0 0 24 24" aria-hidden><path d="M4 12.5l5 5L20 6.5" /></svg>
         ) : (
           <>
