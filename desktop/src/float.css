@@ -603,6 +603,37 @@ body,
   padding-right: 5px;
 }
 
+/* ── Y2-D · the upgrade mark on the classic capsule ──
+   Rendered only while `pillLicense().show` is true, so a licensed pill carries
+   nothing here and there is no invisible click target on it. It sits INSIDE the
+   capsule, which is the rect `watchPillHitbox` publishes, so it needs no hitbox
+   of its own. Quiet on purpose: this is ambient furniture over somebody else's
+   work, not a banner — the `urgent` and `ended` tones are the only ones that
+   raise the contrast, and none of them is ever a price. */
+.pill-upgrade {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.62);
+  font: inherit;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.pill-upgrade:hover { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.86); }
+.pill-upgrade-glyph { font-style: normal; font-size: 11px; }
+.pill-upgrade.lic-urgent,
+.pill-upgrade.lic-ended { color: rgba(251, 191, 36, 0.92); background: rgba(251, 191, 36, 0.14); }
+.pill-upgrade.lic-problem { color: rgba(248, 113, 113, 0.92); background: rgba(248, 113, 113, 0.14); }
+@media (prefers-reduced-motion: reduce) { .pill-upgrade { transition: none; } }
+
 /* Yappy's capsule is canvas, so its refusal is a DOM overlay on top of it. */
 .kami-blocked {
   position: absolute;
