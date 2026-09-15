@@ -175,11 +175,11 @@ cargo test --features custom-protocol --test long_take_budget -- --nocapture
 
 | budget | measured | ceiling | shape |
 |---|---|---|---|
-| `press_to_capture_start`, spill-writer overhead | **0 ms** (arm p50 44 µs with spill, 0 µs without, n=21) | 25 ms | absolute |
-| `chunk_decode_wall_per_audio_second` | **9.8 ms/s chunked vs 11.8 ms/s single-window — ratio 0.83** (0.68 on an earlier run of the same command; the arms move together) | 1.60× | ratio, same fixture, same run |
-| `progress_events_per_minute_of_audio` | **0/min** — no take-path progress emitter exists on this base | 60/min | ceiling |
+| `press_to_capture_start`, spill-writer overhead | **0 ms** (arm p50 48 µs with spill, 0 µs without, n=21) | 25 ms | absolute |
+| `chunk_decode_wall_per_audio_second` | **10.3 ms/s chunked vs 11.4 ms/s single-window — ratio 0.90** (0.83 and 0.68 on earlier runs of the same command; the two arms move together, which is why this is a ratio) | 1.60× | ratio, same fixture, same run |
+| `progress_events_per_minute_of_audio` | **2.40/min** — Y3-C's `TRANSCRIBE_PROGRESS_EVENT`, driven for real at its worst legal window (25 s) | 60/min | ceiling, measured by running the emitter |
 | `resident_bytes_after_a_long_take_return_to_baseline` | **0 bytes** growth after a 20-minute take (peak 76 800 000 B live during it) | 1 MiB | exact, thread-local meter |
-| `peak_resident_bytes_with_asr_and_polish_loaded` | **2 021 864 992 B (1 928.2 MiB)** — ASR delta 904 544 256 B + polish weights floor 1 117 320 736 B | 2 621 440 000 B (2.44 GiB) | ceiling, floor machine |
+| `peak_resident_bytes_with_asr_and_polish_loaded` | **1 882 420 768 B (1 795.2 MiB)** — ASR delta 765 100 032 B + polish weights floor 1 117 320 736 B | 2 621 440 000 B (2.44 GiB) | ceiling, floor machine |
 | `no_new_polling_timer_was_introduced` | census below, exact match required | allowlist | census |
 
 ### The floor machine is named, because a budget without one is a wish
@@ -188,11 +188,47 @@ cargo test --features custom-protocol --test long_take_budget -- --nocapture
 the test is the single place the number is written down: a **fanless 8 GB M1 Air**, which is
 already what `transcription.rs:582`, `tests/meeting_capture_memory.rs` and
 `tests/meeting_no_model_resident.rs` name as the target machine. The footprint ceiling is set at
-2.44 GiB — under a third of that machine's RAM, and ~30% headroom over the 1 928.2 MiB measured
+2.44 GiB — under a third of that machine's RAM, and ~45% headroom over the 1 795.2 MiB measured
 here. `docs/BUDGETS.md`'s `memory_ceiling` section records the *live-child* composition
 (2 241 462 272 B) measured by `polish_envelope.rs`; Y3-G's test uses the polish weights **file
 size** as the child's floor so it does not have to spawn a sidecar, which is why its number is
 lower. Both are under the ceiling.
+
+### The progress ceiling is measured by running the emitter, not by grepping for a throttle
+
+This budget was wrong once, in the way that matters most, and the correction is the point of
+keeping it written down. The first version scanned the three Y3 take-path modules for
+`.emit("…progress…")` and treated the absence of a `const …PROGRESS…_MS` as "unthrottled". It
+reported `sites=[]` and passed — on a tree where `Y3-C` had **already landed a live progress
+stream**. Two independent blind spots produced that green:
+
+* **Scope.** `Y3-C`'s emitter lives in `src/transcribe_progress.rs`, a module that did not exist
+  when those three files were listed. The sweep now walks every `.rs` in `src/` (52 files) and
+  asserts it swept more than ten, so a sweep that found the wrong directory cannot report clean.
+* **Pattern.** The shipped emitter names its event with a `const` — `TRANSCRIBE_PROGRESS_EVENT` —
+  and spans three lines. A scanner looking for a quoted string on one line cannot see it. The
+  scanner now reads the first argument of any `.emit`/`.emit_to` call, literal or ident, and
+  proves on synthetic bait that it catches **both** shapes and still refuses the two download
+  streams (`MODEL_DOWNLOAD_PROGRESS_EVENT`, `POLISH_DOWNLOAD_PROGRESS_EVENT`).
+
+Widening the scan alone would have been the opposite error. `Y3-C` has **no timer at all** — it
+emits once per *completed decode window* — so a test demanding a millisecond throttle constant
+would have failed a correct implementation for the wrong reason. The rate is therefore no longer
+inferred from source at all: the test constructs the real `ChunkProgress` with a counting
+`ProgressSink` and **counts the events a twenty-minute take actually puts on the wire**, at the
+narrowest window `ChunkConfig` may legally emit (`min_seconds` = 25 s). That is 48 events over
+1 200 s of audio = **2.40/min**, against a ceiling of 60.
+
+The instrument falsifies itself before it is believed: the same emitter driven at a quarter of the
+ceiling's interval measures **240/min**, so a green result is a measurement and not a silence. Two
+negative controls were run against the committed file — dropping the ceiling to 2 fails with
+`fires 2.4 times per minute … ceiling is 2`, and adding one unaccounted
+`app.emit("dictation_progress", …)` to `lib.rs` fails the allowlist with
+`the set of take-path progress emitters changed`.
+
+The allowlist is the standing guard: `ACCOUNTED_PROGRESS_EMITTERS` names every take-path progress
+stream in the tree and what bounds its cadence. A second one cannot be added without saying so
+here.
 
 ### Why the decode budget is a ratio and not a millisecond
 

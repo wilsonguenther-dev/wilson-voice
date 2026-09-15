@@ -461,26 +461,57 @@ fn chunk_decode_wall_per_audio_second() {
 // 3. progress_events_per_minute_of_audio
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Every take-path progress emitter found in a source file, by event name.
+use wilson_voice_lib::transcribe_progress::{ChunkProgress, ProgressSink, TranscribeProgress};
+
+/// Every take-path progress emitter this tree is KNOWN to contain, with the
+/// thing that bounds its rate. A scan finding anything not on this list fails:
+/// adding a second progress stream is a deliberate act that has to be argued
+/// for here, not a diff that slips past because the suite only knew about one.
 ///
-/// SCOPE: `.emit("…")` / `.emit_to(…, "…")` whose event name contains
-/// `progress`. `model_download_progress` is excluded by name — a download is
-/// not a take, and its cadence is bounded by the network, not by a decode loop.
+/// `(file, event ident or literal, what bounds its cadence)`
+const ACCOUNTED_PROGRESS_EMITTERS: [(&str, &str, &str); 1] = [(
+    "src/transcribe_progress.rs",
+    "TRANSCRIBE_PROGRESS_EVENT",
+    "one event per COMPLETED decode window — bounded by ChunkConfig::min_seconds, not by a timer",
+)];
+
+/// Every take-path progress emitter found in a source file.
+///
+/// SCOPE: the FIRST ARGUMENT of a `.emit(…)` / `.emit_to(…)` call, which is
+/// either a string literal or a `const` ident. Both shapes count — this is the
+/// pattern that matters, because the emitter Y3-C actually shipped names its
+/// event with a `const` (`TRANSCRIBE_PROGRESS_EVENT`) and an earlier version of
+/// this scanner looked only for string literals. It therefore reported
+/// `sites=[]` on a tree that had had a live progress stream in it since Y3-C
+/// landed: a green test guarding nothing, which is the exact failure mode this
+/// file exists to refuse.
+///
+/// Downloads are excluded by name: a download is not a take, and its cadence is
+/// bounded by the network and by `models.rs`'s own byte-step throttle.
 fn take_progress_emitters(src: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for (i, _) in src.match_indices("emit") {
+    for (i, _) in src.match_indices(".emit") {
         let rest = &src[i..];
-        let Some(open) = rest.find('"') else { continue };
-        if open > 32 {
+        let Some(open) = rest.find('(') else { continue };
+        // ".emit(" and ".emit_to(" only — never ".emitted" or a longer name.
+        if open > "_to".len() + ".emit".len() {
             continue;
         }
         let after = &rest[open + 1..];
-        let Some(close) = after.find('"') else {
+        // The first argument runs to the first comma. It may sit on the next
+        // line: `app.emit(\n    SOME_EVENT,\n    payload,\n)` is idiomatic here
+        // and is the shape half of lib.rs's emits use.
+        let end = after.find(',').unwrap_or(0);
+        if end == 0 {
             continue;
-        };
-        let name = &after[..close];
-        if name.contains("progress") && !name.contains("download") {
-            found.push(name.to_string());
+        }
+        let arg = after[..end].trim().trim_matches('"').trim();
+        if arg.is_empty() || arg.contains('(') {
+            continue;
+        }
+        let lower = arg.to_ascii_lowercase();
+        if lower.contains("progress") && !lower.contains("download") {
+            found.push(arg.to_string());
         }
     }
     found.sort();
@@ -488,110 +519,163 @@ fn take_progress_emitters(src: &str) -> Vec<String> {
     found
 }
 
-/// The smallest throttle interval declared in a file, in milliseconds — a
-/// `const …PROGRESS…_MS: … = N;`. `None` means a file emits progress with no
-/// named interval anywhere, which is the unthrottled shape.
-fn declared_progress_interval_ms(src: &str) -> Option<u64> {
-    let mut best: Option<u64> = None;
-    for line in src.lines() {
-        let line = line.trim();
-        if !line.starts_with("const ") || !line.contains("_MS") {
-            continue;
-        }
-        let upper_name = line.split(':').next().unwrap_or("");
-        if !upper_name.contains("PROGRESS") {
-            continue;
-        }
-        let Some(eq) = line.find('=') else { continue };
-        let value: String = line[eq + 1..]
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '_')
-            .collect();
-        if let Ok(n) = value.replace('_', "").parse::<u64>() {
-            best = Some(best.map_or(n, |b: u64| b.min(n)));
-        }
+/// A `ProgressSink` that counts. The exact instrument for "how many events does
+/// a take really put on the wire" — the production sink with the IPC hop
+/// replaced by a counter, and nothing else changed.
+#[derive(Default)]
+struct CountingSink(Cell<u64>);
+
+impl ProgressSink for CountingSink {
+    fn progress(&self, _event: TranscribeProgress) {
+        self.0.set(self.0.get() + 1);
     }
-    best
+}
+
+/// Drive the REAL emitter through a take of `audio_seconds` split into windows
+/// of `window_seconds`, and return events per MINUTE OF AUDIO.
+///
+/// This runs `ChunkProgress` itself — the shipped type, its real rules — rather
+/// than reasoning about it. `finish()` is called and then one more `chunk_done`
+/// is attempted, so a late chunk that repainted a closed pill would show up in
+/// the count as well as in `transcribe_progress.rs`'s own unit tests.
+fn measured_progress_events_per_minute(audio_seconds: f64, window_seconds: f64) -> f64 {
+    let windows = (audio_seconds / window_seconds).ceil().max(1.0) as u32;
+    let sink = CountingSink::default();
+    let mut progress = ChunkProgress::new(windows, &sink);
+    for _ in 0..windows {
+        progress.chunk_done("a window of really decoded words");
+    }
+    progress.finish();
+    progress.chunk_done("a late chunk, after the take is over");
+    sink.0.get() as f64 * 60.0 / audio_seconds
 }
 
 /// A CEILING on the progress stream's event rate. An event storm is a pure
 /// energy regression: the transcript is still correct, every correctness test
-/// still passes, and the machine wakes the JS event loop four times a second
+/// still passes, and the machine wakes the JS event loop several times a second
 /// for an hour.
 ///
-/// Enforced structurally rather than by running the app, because the rate that
-/// matters is the one the code can produce, not the one a five-second test
-/// happened to observe.
+/// MEASURED, not inferred. The first version of this test greped for a
+/// `const …PROGRESS…_MS` throttle and treated its absence as unthrottled. Y3-C's
+/// emitter has no such constant because it has NO TIMER — it emits once per
+/// completed decode window — so that scanner would have failed a correct
+/// implementation for the wrong reason, having already passed a tree it could
+/// not see at all. The rate is therefore obtained by running the real emitter
+/// over the real chunk geometry and counting.
 #[test]
 fn progress_events_per_minute_of_audio() {
-    // SELF-FALSIFICATION FIRST. A scanner that cannot see the shape it claims
-    // to forbid is a test that passes on a broken tree. Prove the pattern
-    // matches the shape feared, not the shape remembered.
-    const UNTHROTTLED: &str = r#"
-        fn decode_loop(app: &AppHandle) {
-            for chunk in chunks {
-                let _ = app.emit("dictation_progress", chunk.index);
-            }
-        }
-    "#;
-    let bait = take_progress_emitters(UNTHROTTLED);
-    assert_eq!(
-        bait,
-        vec!["dictation_progress".to_string()],
-        "the emitter scanner cannot see an unthrottled take-progress emit — it would report a \
-         clean census on exactly the regression this test exists to catch"
-    );
-    assert_eq!(
-        declared_progress_interval_ms(UNTHROTTLED),
-        None,
-        "the throttle scanner reported an interval in a source that declares none"
-    );
-    // ...and that it does NOT fire on the download stream, which is out of scope.
+    // A twenty-minute take: long enough that a per-window emitter and a
+    // per-tick emitter are far apart, and the case the audit actually measured.
+    const PROBE_AUDIO_SECONDS: f64 = 20.0 * 60.0;
+
+    // ── SELF-FALSIFICATION FIRST ──────────────────────────────────────────
+    // An instrument that cannot report a failure is not evidence. Drive the
+    // same emitter at a cadence four times finer than the ceiling allows and
+    // prove the measurement goes OVER.
+    let storm_window = (MIN_PROGRESS_INTERVAL_MS as f64 / 1000.0) / 4.0;
+    let storm = measured_progress_events_per_minute(PROBE_AUDIO_SECONDS, storm_window);
     assert!(
-        take_progress_emitters(r#"app.emit("model_download_progress", pct);"#).is_empty(),
+        storm > PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING as f64,
+        "the rate instrument measured {storm:.1}/min for an emitter firing every \
+         {storm_window:.3}s of audio — it cannot see the storm it exists to catch, so a green \
+         result from it would mean nothing"
+    );
+
+    // The scanner must see BOTH shapes, and must not claim a download.
+    assert_eq!(
+        take_progress_emitters(r#"let _ = app.emit("dictation_progress", chunk.index);"#),
+        vec!["dictation_progress".to_string()],
+        "the emitter scanner cannot see a string-literal take-progress emit"
+    );
+    assert_eq!(
+        take_progress_emitters(
+            "let _ = self.0.emit(\n    TRANSCRIBE_PROGRESS_EVENT,\n    event,\n);"
+        ),
+        vec!["TRANSCRIBE_PROGRESS_EVENT".to_string()],
+        "the emitter scanner cannot see a CONST-named emit spanning lines — exactly the shape \
+         Y3-C shipped, and exactly the blindness that made this test report sites=[] on a tree \
+         that already had a progress stream"
+    );
+    assert!(
+        take_progress_emitters(r#"app.emit(MODEL_DOWNLOAD_PROGRESS_EVENT, pct);"#).is_empty(),
         "the scanner claimed the model download stream as a take-path emitter"
     );
 
-    let mut worst: u64 = 0;
-    let mut sites: Vec<(String, String, u64)> = Vec::new();
-    for rel in Y3_TAKE_PATH_MODULES {
-        let src =
-            std::fs::read_to_string(manifest(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
-        let emitters = take_progress_emitters(&src);
-        if emitters.is_empty() {
-            continue;
+    // ── THE REAL NUMBER ───────────────────────────────────────────────────
+    // Production geometry, at its WORST legal window: the narrowest chunk the
+    // planner may emit is the highest event rate the take can produce.
+    let geometry = wilson_voice_lib::transcription::DictationChunking::default().config;
+    let worst_case_window = geometry.min_seconds;
+    let measured = measured_progress_events_per_minute(PROBE_AUDIO_SECONDS, worst_case_window);
+
+    // A take the planner did not split must report NOTHING — a flicker of 1/1
+    // is worse than silence, and it is also an event nobody needed to pay for.
+    let single = CountingSink::default();
+    let mut unsplit = ChunkProgress::new(1, &single);
+    unsplit.chunk_done("the whole take in one window");
+    unsplit.finish();
+
+    // ── THE STRUCTURAL GUARD ──────────────────────────────────────────────
+    // Scan ALL of src/, not the three Y3 take-path modules: Y3-C's emitter
+    // lives in a module that did not exist when those three were listed.
+    let mut sites: Vec<(String, String)> = Vec::new();
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&src_dir)
+        .unwrap_or_else(|e| panic!("read src/: {e}"))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() > 10,
+        "the emitter scan swept {} files — src/ is flat and has far more than that, so the sweep \
+         found the wrong directory and its clean result means nothing",
+        files.len()
+    );
+    for path in &files {
+        let rel = format!("src/{}", path.file_name().unwrap().to_string_lossy());
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        for name in take_progress_emitters(&src) {
+            sites.push((rel.clone(), name));
         }
-        let interval = declared_progress_interval_ms(&src);
-        let rate = match interval {
-            Some(ms) if ms > 0 => 60_000 / ms,
-            _ => u64::MAX,
-        };
-        for name in emitters {
-            sites.push((rel.to_string(), name, rate));
-        }
-        worst = worst.max(rate);
     }
+    sites.sort();
 
     println!(
-        "progress_events_per_minute_of_audio: sites={sites:?} worst_rate_per_min={worst} \
+        "progress_events_per_minute_of_audio: measured={measured:.2}/min \
          ceiling={PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING} \
-         min_interval={MIN_PROGRESS_INTERVAL_MS}ms measured_on={MEASURED_ON}"
+         worst_case_window={worst_case_window}s storm_control={storm:.1}/min \
+         single_window_events={} sites={sites:?} files_swept={} measured_on={MEASURED_ON}",
+        single.0.get(),
+        files.len()
     );
-    if sites.is_empty() {
-        println!(
-            "progress_events_per_minute_of_audio: no take-path progress emitter exists yet \
-             (Y3-C has not landed on this base). The ceiling is armed and will bind the first \
-             emitter that does."
-        );
-    }
+
+    assert_eq!(
+        single.0.get(),
+        0,
+        "an unsplit take emitted {} progress events; a single-window take must report nothing",
+        single.0.get()
+    );
+
+    let expected: Vec<(String, String)> = ACCOUNTED_PROGRESS_EMITTERS
+        .iter()
+        .map(|(f, n, _)| (f.to_string(), n.to_string()))
+        .collect();
+    assert_eq!(
+        sites, expected,
+        "the set of take-path progress emitters changed. Every one of them costs an IPC hop, a JS \
+         event loop wake and a React render per event. Add it to ACCOUNTED_PROGRESS_EMITTERS with \
+         the thing that bounds its cadence, and re-measure the rate below."
+    );
+
     assert!(
-        worst <= PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING,
-        "a take-path progress emitter can fire {worst} times per minute of audio, ceiling is \
-         {PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING}. Sites: {sites:?}. Gate the emit behind a \
-         `const …PROGRESS…_MS` of at least {MIN_PROGRESS_INTERVAL_MS} ms."
+        measured <= PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING as f64,
+        "the take-path progress emitter fires {measured:.1} times per minute of audio at its \
+         worst legal window ({worst_case_window}s), ceiling is \
+         {PROGRESS_EVENTS_PER_MINUTE_OF_AUDIO_CEILING}. Either widen the chunk geometry or gate \
+         the emit behind a throttle of at least {MIN_PROGRESS_INTERVAL_MS} ms."
     );
 }
-
 // ───────────────────────────────────────────────────────────────────────────
 // 4. resident_bytes_after_a_long_take_return_to_baseline
 // ───────────────────────────────────────────────────────────────────────────
