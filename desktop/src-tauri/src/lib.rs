@@ -124,6 +124,10 @@ pub mod polish_protocol;
 #[cfg(target_os = "macos")]
 pub mod ptt_macos;
 mod record;
+/// Y3 — the dictation capture consumer's test seam and its memory ceiling.
+/// `record` itself stays crate-private; these two are what
+/// `tests/dictation_capture_memory.rs` drives.
+pub use record::{capture_probe, MAX_RESIDENT_CAPTURE_BYTES};
 // YV92 — rate conversion and the anti-alias filter that now sits in front of
 // it. Public for the same reason `input_format` is: the ≥20 dB-at-10 kHz claim
 // belongs in a test that can measure it (`tests/biquad_lowpass_response.rs`),
