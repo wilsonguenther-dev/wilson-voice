@@ -8,10 +8,12 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
-  phaseVisual, reduceGatePhase, resetLive,
-  speechThreshold, AMBIENT_FRAME_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
-  type ChatTone, type LiveFrame, type LivePhase,
+  acceptProgress, advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
+  phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
+  speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
+  AMBIENT_FRAME_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS, MAX_CHATTER_GAP,
+  MIN_REPORTABLE_CHUNKS,
+  type ChatTone, type LiveFrame, type LivePhase, type TranscribeProgress,
 } from "./live";
 
 /** The pill redraws on rAF; `audio_level` lands at HUD_FPS underneath it. */
@@ -365,7 +367,11 @@ describe("PERM-C — the permission phase", () => {
       expect(v.label.length, `${p} has no label`).toBeGreaterThan(0);
       expect(["calm", "live", "busy", "good", "warn"]).toContain(v.tone);
     }
-    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(7);
+    // Y3-C claimed `transcribing`, so the placeholder count is one lower than
+    // PERM-C landed it at. Each later item that renders its variant drops this
+    // by one more; the point of the assertion is that the union is not GROWING.
+    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(6);
+    expect(phaseVisual("transcribing").placeholder, "Y3-C renders it").toBe(false);
   });
 
   it("a blocked pill never holds a 60Hz rAF open", () => {
@@ -373,5 +379,99 @@ describe("PERM-C — the permission phase", () => {
     // grant can last for days.
     const plan = framePlan("blocked", { level: 0, busyVisuals: false, reduceMotion: false, settled: true });
     expect(plan.mode).not.toBe("raf");
+  });
+});
+
+/**
+ * Y3-C — progress through a chunked decode.
+ *
+ * Two dishonesty bugs live here, both named by Wilson. The escalation used to be
+ * a TIMER (`wordsFromVoiced`, an estimate off a stopwatch), and after the hold
+ * ended there was no progress signal AT ALL — `busy` is a boolean, so a
+ * 15-minute take across 12 chunks showed one undifferentiated state for minutes.
+ */
+describe("transcribe progress (Y3-C)", () => {
+  const ev = (chunk: number, of: number, wordsSoFar: number): TranscribeProgress => ({
+    chunk, of, wordsSoFar,
+  });
+
+  it("transcribing_uses_real_chunk_words_not_the_voiced_estimate", () => {
+    // A 10-minute take that was mostly SILENCE: 600s of wall clock, but only
+    // ~40s of it voiced. The estimate says ~100 words ("desk"); the decoder came
+    // back with 12 real words across 4 chunks ("quick"). They disagree, and the
+    // transcribing phase must follow the DECODER.
+    const estimate = wordsFromVoiced(40);
+    expect(estimate).toBeGreaterThan(60);
+    expect(liveTierForWords(estimate)).toBe("essay");
+
+    const p = acceptProgress(null, ev(4, 4, 5))!;
+    expect(p).not.toBeNull();
+    expect(transcribeTierForWords(p.wordsSoFar)).toBe("quick");
+    // …and the line Yappy says comes off the REAL count, not the estimate.
+    for (const tone of ["rude", "friendly", "rose"] as ChatTone[]) {
+      expect(transcribeLine(tone, p)).toBe(transcribeLine(tone, ev(4, 4, 5)));
+      expect(transcribeLine(tone, p)).not.toBe(transcribeLine(tone, ev(4, 4, Math.round(estimate))));
+    }
+
+    // The other direction too: a fast talker whose voiced seconds under-read.
+    const many = acceptProgress(null, ev(2, 9, 300))!;
+    expect(transcribeTierForWords(many.wordsSoFar)).toBe("saga");
+    expect(transcribeTierForWords(many.wordsSoFar)).not.toBe(liveTierForWords(wordsFromVoiced(2)));
+  });
+
+  it("single_window_take_emits_no_progress_phase", () => {
+    // A short take decodes in ONE window. There is no progress to report, and a
+    // flicker of 1/1 is worse than silence — so the phase is never entered.
+    expect(MIN_REPORTABLE_CHUNKS).toBe(2);
+    expect(acceptProgress(null, ev(1, 1, 7))).toBeNull();
+    expect(acceptProgress(null, ev(1, 0, 7))).toBeNull();
+    // Two chunks IS reportable — the boundary is not off by one.
+    expect(acceptProgress(null, ev(1, 2, 7))).not.toBeNull();
+  });
+
+  it("progress_is_monotonic_and_never_exceeds_of", () => {
+    let p: TranscribeProgress | null = null;
+    const seen: number[] = [];
+    for (const e of [ev(1, 12, 20), ev(2, 12, 55), ev(3, 12, 91)]) {
+      p = acceptProgress(p, e);
+      seen.push(progressFraction(p!));
+    }
+    expect(progressNumeral(p!)).toBe("3/12");
+    expect(seen).toEqual([1 / 12, 2 / 12, 3 / 12]);
+    // A duplicate, a backwards chunk and a shrinking word count all change nothing.
+    expect(acceptProgress(p, ev(3, 12, 91))).toBe(p);
+    expect(acceptProgress(p, ev(2, 12, 55))).toBe(p);
+    expect(acceptProgress(p, ev(4, 12, 10))).toBe(p);
+    // Nothing can fill past 100%: an out-of-range chunk is rejected outright…
+    expect(acceptProgress(p, ev(13, 12, 400))).toBe(p);
+    // …and the fill is clamped for every accepted value along the way.
+    let q: TranscribeProgress | null = null;
+    for (let i = 1; i <= 12; i++) {
+      q = acceptProgress(q, ev(i, 12, i * 30));
+      expect(progressFraction(q!)).toBeLessThanOrEqual(1);
+      expect(progressFraction(q!)).toBeGreaterThan(0);
+    }
+    expect(progressFraction(q!)).toBe(1);
+  });
+
+  it("listening_tier_still_uses_the_estimate", () => {
+    // The deliberate exception. While LISTENING nothing has been decoded, so the
+    // voiced-seconds estimate is the only signal there is and the ladder keeps
+    // running off it — a playful state, never a stated number.
+    const s = createLiveState();
+    let f: LiveFrame | null = null;
+    for (let t = 0; t < 30; t += FRAME) f = advanceLive(s, FRAME, 0.05, "friendly");
+    expect(f!.estWords).toBeGreaterThan(0);
+    expect(f!.tier).toBe(liveTierForWords(wordsFromVoiced(s.voicedT)));
+    expect(f!.estWords).toBeCloseTo(wordsFromVoiced(s.voicedT), 6);
+  });
+
+  it("transcribing is a first-class phase, no longer a placeholder", () => {
+    const v = phaseVisual("transcribing");
+    expect(v.placeholder).toBe(false);
+    expect(v.tone).toBe("busy");
+    // …and it is NOT `thinking`, which is the polish/LLM gap after a transcript.
+    expect(phaseVisual("thinking").label).toBe("Transcribing");
+    expect(v.needsPermission).toBe(false);
   });
 });

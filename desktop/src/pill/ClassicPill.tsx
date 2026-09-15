@@ -7,7 +7,10 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { Mic, MicOff, Square } from "lucide-react";
-import { phaseVisual, type LivePhase } from "./live";
+import {
+  phaseVisual, progressFraction, progressLabel, progressNumeral,
+  type LivePhase, type TranscribeProgress,
+} from "./live";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
@@ -25,7 +28,9 @@ const BARS = Array.from({ length: 9 }, (_, i) => i);
  * "waiting" (the system dialog is up). It OUTRANKS every take state, because a
  * refused press must not look like a normal recording.
  */
-export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
+export default function ClassicPill(
+  { gate = "idle", progress = null }: { gate?: LivePhase; progress?: TranscribeProgress | null },
+) {
   const [status, setStatus] = useState<AppStatus>({ recording: false, busy: false, message: "Ready" });
   const [done, setDone] = useState(false);
   const levelRef = useRef(0);
@@ -132,13 +137,21 @@ export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
   const visual = phaseVisual(gate);
   const blocked = visual.needsPermission;
   const live = status.recording && !blocked;
-  const busy = status.busy && !live && !blocked;
+  // Y3-C — a chunked decode is no longer "busy". `busy` is a boolean, so a
+  // 15-minute take across 12 chunks showed one undifferentiated state for
+  // minutes; `transcribing` is a first-class phase carrying real, measured
+  // progress. A single-window take never reports any, so it stays `busy`:
+  // there is nothing to show and a 1/1 flicker is worse than silence.
+  const transcribing = progress !== null && !live && !blocked;
+  const busy = status.busy && !live && !blocked && !transcribing;
   // A meeting expands the capsule for as long as it runs, and outranks the
   // resting "seed" — but never the live dictation state, which is the shorter,
   // more urgent thing on screen.
   const base = blocked
     ? `pill blocked ${gate}`
-    : live ? "pill live" : busy ? "pill busy" : done ? "pill done" : "pill";
+    : live ? "pill live"
+      : transcribing ? "pill busy transcribing"
+        : busy ? "pill busy" : done ? "pill done" : "pill";
   const cls = meeting.recording && !blocked ? `${base} meeting` : base;
   const onToggle = useCallback(() => {
     // YV65 — the click that closes a drag must never start/stop dictation.
@@ -151,9 +164,9 @@ export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
       emit("navigate", "permissions").catch(() => {});
       return;
     }
-    if (busy) return;
+    if (busy || transcribing) return;
     invoke("manual_toggle").catch(() => {});
-  }, [blocked, busy, drag]);
+  }, [blocked, busy, transcribing, drag]);
 
   return (
     <div className="stage">
@@ -162,7 +175,13 @@ export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
         className={cls}
         role="button"
         tabIndex={0}
-        aria-label={blocked ? visual.label : live ? "Stop dictation" : busy ? "Transcribing" : "Start dictation"}
+        aria-label={
+          blocked ? visual.label
+            : live ? "Stop dictation"
+              : progress ? progressLabel(progress)
+                : busy ? "Transcribing" : "Start dictation"
+        }
+        style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
         title={blocked ? visual.label : undefined}
         {...drag.handlers}
         onClick={onToggle}
@@ -176,6 +195,17 @@ export default function ClassicPill({ gate = "idle" }: { gate?: LivePhase }) {
         </button>
         {blocked ? (
           <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
+        ) : progress ? (
+          // A DETERMINATE fill — never a spinner. The count is knowable now, and
+          // the bar advances only on a chunk that actually completed: no easing,
+          // no interpolation between events, because a smooth bar that is lying
+          // is exactly the defect this replaces.
+          <>
+            <span className="xscribe-track" aria-hidden>
+              <i className="xscribe-fill" />
+            </span>
+            <span className="xscribe-count" aria-hidden>{progressNumeral(progress)}</span>
+          </>
         ) : done ? (
           <svg className="check" viewBox="0 0 24 24" aria-hidden><path d="M4 12.5l5 5L20 6.5" /></svg>
         ) : (

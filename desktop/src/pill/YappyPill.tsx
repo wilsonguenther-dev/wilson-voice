@@ -16,8 +16,9 @@ import { usePillDrag, reportPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 import { reactiveLine, DEFAULT_TONE, bucketFor, type Bucket } from "./tone";
 import {
-  advanceLive, createLiveState, framePlan, phaseVisual, resetLive, toChatTone,
-  type ChatTone, type FrameMode, type LivePhase, type LiveProp,
+  advanceLive, createLiveState, framePlan, phaseVisual, progressFraction, progressLabel,
+  progressNumeral, resetLive, toChatTone, transcribeLine,
+  type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
 } from "./live";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
@@ -75,7 +76,9 @@ const DOCK_PAD = 10;
  * (so Yappy's accent goes muted) and a DOM overlay (the struck-through mic
  * glyph, which is also the button to the fix).
  */
-export default function YappyPill({ gate = "idle" }: { gate?: LivePhase }) {
+export default function YappyPill(
+  { gate = "idle", progress = null }: { gate?: LivePhase; progress?: TranscribeProgress | null },
+) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   // YV65 — press-and-drag the capsule to re-dock the pill. Yappy's capsule is
@@ -86,6 +89,9 @@ export default function YappyPill({ gate = "idle" }: { gate?: LivePhase }) {
   const meeting = useMeetingStatus();
   // PERM-C — set by the draw effect; called when the gate prop changes.
   const applyGateRef = useRef<(g: LivePhase) => void>(() => {});
+  // Y3-C — decode progress reaches the mount-once scene the same way the gate
+  // does: through a ref, because the canvas loop is not re-created per render.
+  const applyProgressRef = useRef<(p: TranscribeProgress | null) => void>(() => {});
   const gateVisual = phaseVisual(gate);
   const blocked = gateVisual.needsPermission;
   const openPermissions = useCallback(() => {
@@ -426,6 +432,22 @@ export default function YappyPill({ gate = "idle" }: { gate?: LivePhase }) {
       if (g === "blocked" || g === "waiting") setPhase(g);
       else if (phase === "blocked" || phase === "waiting") setPhase("idle");
     };
+    // Y3-C — every accepted chunk. `setPhase` is a no-op on re-entry (YV71), so
+    // the LINE is said here rather than in setPhase: the point of the phase is
+    // that Yappy's commentary escalates on the words REALLY decoded so far, not
+    // on `wordsFromVoiced`'s stopwatch estimate. A permission refusal still
+    // outranks it, and a live take is never yanked out from under the mic.
+    applyProgressRef.current = (p: TranscribeProgress | null) => {
+      if (phase === "blocked" || phase === "waiting" || phase === "listening") return;
+      if (!p) {
+        if (phase === "transcribing") setPhase("thinking");
+        return;
+      }
+      setPhase("transcribing");
+      words = p.wordsSoFar;
+      say(transcribeLine(chatTone, p));
+      wake();
+    };
     raf = requestAnimationFrame(loop);
     return () => {
       dead = true;
@@ -439,10 +461,27 @@ export default function YappyPill({ gate = "idle" }: { gate?: LivePhase }) {
 
   // PERM-C — drive the canvas phase from the gate prop.
   useEffect(() => { applyGateRef.current(gate); }, [gate]);
+  // Y3-C — and the transcribing phase from the progress prop (float-main owns it).
+  useEffect(() => { applyProgressRef.current(progress); }, [progress]);
 
   return (
     <div className="kami-stage">
       <div ref={bubbleRef} className="kami-bubble"></div>
+      {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
+          DOM: the bar is a compositor transform and the numeral is text in
+          Departure Mono, so neither costs the draw loop a repaint. Never a
+          spinner — the count is knowable, so it is stated. */}
+      {progress ? (
+        <div
+          className="kami-progress"
+          role="status"
+          aria-label={progressLabel(progress)}
+          style={{ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties}
+        >
+          <span className="kami-progress-track" aria-hidden><i /></span>
+          <span className="kami-progress-count" aria-hidden>{progressNumeral(progress)}</span>
+        </div>
+      ) : null}
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
       {/* YV95 — the recording state is a DOM overlay, not a canvas layer, so
           the pulse is a compositor animation and the clock is text the backend
