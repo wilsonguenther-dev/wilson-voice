@@ -584,6 +584,25 @@ body,
    user has not said no, macOS just has not been answered yet. */
 .pill.blocked.waiting { filter: saturate(0.35); }
 
+/* ── Y2-C — the trial ended, and this press was refused ────────────────────
+   The SAME muted capsule the microphone refusal wears, because it is the same
+   fact: the press produced no take. It is NOT drained to grey — an ended trial
+   is a sales moment, not a fault — and it is NOT modal, NOT focus-stealing and
+   it does not disable a single other affordance: history, search, export and
+   settings all keep working past the trial (KEEP_FOREVER_LINE). */
+.pill.blocked.gated {
+  filter: none;
+  border-color: rgba(251, 191, 36, 0.28);
+}
+.pill.blocked.gated .ctrl { color: rgba(251, 191, 36, 0.85); }
+.pill.blocked.gated .gate-note { color: rgba(255, 255, 255, 0.82); }
+.gate-glyph {
+  font-style: normal;
+  font-size: 12px;
+  color: rgba(251, 191, 36, 0.9);
+  padding-right: 5px;
+}
+
 /* Yappy's capsule is canvas, so its refusal is a DOM overlay on top of it. */
 .kami-blocked {
   position: absolute;
@@ -613,6 +632,17 @@ body,
   stroke-linejoin: round;
 }
 .kami-blocked .slash { stroke: #f87171; }
+/* Y2-C — Yappy's refused-press chip, same capsule as the mic refusal above. */
+.kami-blocked.gated {
+  border-color: rgba(251, 191, 36, 0.28);
+  color: rgba(255, 255, 255, 0.86);
+}
+.kami-gated-glyph {
+  font-style: normal;
+  font-size: 13px;
+  line-height: 1;
+  color: rgba(251, 191, 36, 0.9);
+}
 
 /* ── Y3-C — real progress through a chunked decode ────────────────────────
  *

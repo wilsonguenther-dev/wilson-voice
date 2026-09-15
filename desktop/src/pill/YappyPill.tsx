@@ -20,7 +20,7 @@ import {
   progressNumeral, resetLive, toChatTone, transcribeLine,
   type ChatTone, type FrameMode, type LivePhase, type LiveProp, type TranscribeProgress,
 } from "./live";
-import { type PillLicense } from "./license";
+import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 
 interface AppStatus { recording: boolean; busy: boolean; message: string }
 interface Transcript { wordCount: number; text: string }
@@ -105,12 +105,25 @@ export default function YappyPill(
   const applyProgressRef = useRef<(p: TranscribeProgress | null) => void>(() => {});
   const gateVisual = phaseVisual(gate);
   const blocked = gateVisual.needsPermission;
+  // Y2-C — the trial ended and this press was refused. Same "the press produced
+  // nothing" shape as `blocked`, different reason and a different destination:
+  // the fix is a license, not a macOS grant.
+  const gated = gate === "gated";
   const openPermissions = useCallback(() => {
     if (drag.dragged()) return;
     // A blocked capsule is a BUTTON to the fix: raise the main window and land
     // on the Permissions screen (PERM-B), which owns the Settings deep link.
     invoke("show_main").catch(() => {});
     emit("navigate", "permissions").catch(() => {});
+  }, [drag]);
+  const openPurchase = useCallback(() => {
+    if (drag.dragged()) return;
+    // Y2-C — raise the main window and land on Settings → License, which owns
+    // the checkout link. Existing `navigate` / `settings-tab` plumbing: no new
+    // command, no new capability.
+    invoke("show_main").catch(() => {});
+    emit("navigate", "settings").catch(() => {});
+    emit("settings-tab", "license").catch(() => {});
   }, [drag]);
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
@@ -444,8 +457,12 @@ export default function YappyPill(
     // the same way the meeting flag is. Clearing only ever unwinds a permission
     // phase: it must never yank a live take back to idle.
     applyGateRef.current = (g: LivePhase) => {
-      if (g === "blocked" || g === "waiting") setPhase(g);
-      else if (phase === "blocked" || phase === "waiting") setPhase("idle");
+      // Y2-C — `gated` joins the two refusal phases here: it is the same kind of
+      // thing (a press that produced no take) and it unwinds the same way, so
+      // the scene must be able to enter AND leave it. Clearing still only ever
+      // unwinds a refusal — it must never yank a live take back to idle.
+      if (g === "blocked" || g === "waiting" || g === "gated") setPhase(g);
+      else if (phase === "blocked" || phase === "waiting" || phase === "gated") setPhase("idle");
     };
     // Y3-C — every accepted chunk. `setPhase` is a no-op on re-entry (YV71), so
     // the LINE is said here rather than in setPhase: the point of the phase is
@@ -453,7 +470,7 @@ export default function YappyPill(
     // on `wordsFromVoiced`'s stopwatch estimate. A permission refusal still
     // outranks it, and a live take is never yanked out from under the mic.
     applyProgressRef.current = (p: TranscribeProgress | null) => {
-      if (phase === "blocked" || phase === "waiting" || phase === "listening") return;
+      if (phase === "blocked" || phase === "waiting" || phase === "gated" || phase === "listening") return;
       if (!p) {
         if (phase === "transcribing") setPhase("thinking");
         return;
@@ -504,6 +521,19 @@ export default function YappyPill(
           is what actually has to stop, which is `meetingRecording` in the frame
           policy above (live.ts) — an overlay that costs nothing does not park a
           loop that was still redrawing behind it 10 times a second. */}
+      {gated && (
+        <button
+          type="button"
+          className="kami-blocked gated"
+          aria-label={gateVisual.label}
+          title={GATED_TITLE}
+          onClick={openPurchase}
+        >
+          {/* The SAME ⊘ the ended license chip wears — one mark for one state. */}
+          <i className="kami-gated-glyph" aria-hidden>{GATED_GLYPH}</i>
+          <span>{gateVisual.label}</span>
+        </button>
+      )}
       {blocked && (
         <button
           type="button"

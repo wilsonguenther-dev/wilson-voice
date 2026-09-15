@@ -135,3 +135,40 @@ export function pillLicense(status: LicenseStatus | null | undefined): PillLicen
     title: statusCopy(status).headline,
   };
 }
+
+/**
+ * Y2-C — the two sentences the `gated` PILL PHASE says after a refused press.
+ *
+ * BORROWED, NEVER REWRITTEN. Both strings are read out of `statusCopy`'s
+ * `license_required` branch at module load, so the pill's refused-press copy and
+ * the Settings → License card are physically the same two strings: editing the
+ * card edits the pill, and there is no second sentence to drift.
+ *
+ * The status object below exists only to ask `statusCopy` a question it already
+ * answers. It is NOT a license: nothing reads it, nothing renders it, and it
+ * never reaches the backend — `reason` is the one the gate actually emits when
+ * a trial simply ran out (`license.rs`), so the branch taken here is the branch
+ * a real refusal takes.
+ */
+const ENDED_FOR_COPY: LicenseStatus = {
+  state: "license_required",
+  reason: "trial_expired",
+  license_problem: null,
+  license_problem_message: null,
+  has_stored_license: false,
+  trial_days_left: 0,
+  trial_expires_at_ms: 0,
+  revocation_checked_at_ms: null,
+  revoked_count: 0,
+};
+
+/** "Dictation is paused" — the headline the capsule wears. */
+export const GATED_HEADLINE = statusCopy(ENDED_FOR_COPY).headline;
+// The supporting line. NOT exported: the pill never shows it on its own, only
+// as the second half of `GATED_TITLE`, so exporting it would be a symbol with
+// no consumer.
+const GATED_BODY = statusCopy(ENDED_FOR_COPY).body;
+/** Headline + body as one hover string: what a refused press explains. */
+export const GATED_TITLE = `${GATED_HEADLINE} ${GATED_BODY}`;
+/** The mark a gated capsule wears — the same ⊘ the ended chip already uses. */
+export const GATED_GLYPH = GLYPH_ENDED;

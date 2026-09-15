@@ -11,8 +11,9 @@ import {
   acceptProgress, advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
   speechThreshold, transcribeLine, transcribeTierForWords, wordsFromVoiced,
-  AMBIENT_FRAME_MS, CANCELLED_SETTLE_MS, DEFAULT_LIVE, IDLE_FRAME_MS, LIVE_TIERS,
-  MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS,
+  phaseRank, winningPhase,
+  AMBIENT_FRAME_MS, CANCELLED_SETTLE_MS, DEFAULT_LIVE, GATED_SETTLE_MS, IDLE_FRAME_MS, LIVE_TIERS,
+  MAX_CHATTER_GAP, MIN_REPORTABLE_CHUNKS, PHASE_PRECEDENCE,
   type ChatTone, type LiveFrame, type LivePhase, type TranscribeProgress,
 } from "./live";
 
@@ -367,11 +368,13 @@ describe("PERM-C — the permission phase", () => {
       expect(v.label.length, `${p} has no label`).toBeGreaterThan(0);
       expect(["calm", "live", "busy", "good", "warn"]).toContain(v.tone);
     }
-    // Y3-C claimed `transcribing`, so the placeholder count is one lower than
-    // PERM-C landed it at. Each later item that renders its variant drops this
-    // by one more; the point of the assertion is that the union is not GROWING.
-    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(6);
+    // Y3-C claimed `transcribing` and Y2-C claimed `gated`, so the placeholder
+    // count is two lower than PERM-C landed it at. Each later item that renders
+    // its variant drops this by one more; the point of the assertion is that the
+    // union is not GROWING.
+    expect(ALL_PHASES.filter((p) => phaseVisual(p).placeholder).length).toBeGreaterThanOrEqual(5);
     expect(phaseVisual("transcribing").placeholder, "Y3-C renders it").toBe(false);
+    expect(phaseVisual("gated").placeholder, "Y2-C renders it").toBe(false);
   });
 
   it("a blocked pill never holds a 60Hz rAF open", () => {
@@ -513,5 +516,95 @@ describe("Y3-D cancelled phase", () => {
     expect(reduceGatePhase("waiting", { type: "take_cancelled" })).toBe("waiting");
     // A settle timer that fires after the next take started leaves it alone.
     expect(reduceGatePhase("listening", { type: "cancel_settled" })).toBe("listening");
+  });
+});
+
+/**
+ * Y2-C — the refused press, made visible.
+ *
+ * The defect these keep dead: past the trial, `license_allows_new_dictation`
+ * emitted `license_required`, maybe notified (throttled), logged, and returned
+ * false — and THE PILL DID NOT MOVE. Holding the hotkey produced nothing a human
+ * could see, which is indistinguishable from a broken app.
+ */
+describe("Y2-C — the license gate on the pill", () => {
+  it("gated_holds_then_settles_to_the_ended_chip", () => {
+    // A refused press moves the pill. This is the whole item.
+    const gated = reduceGatePhase("idle", { type: "license_required" });
+    expect(gated).toBe("gated");
+    // It is a rendered state now, not a declared placeholder.
+    const visual = phaseVisual("gated");
+    expect(visual.placeholder).toBe(false);
+    expect(visual.tone).toBe("warn");
+    // The copy is BORROWED from statusCopy's license_required branch.
+    expect(visual.label).toBe("Dictation is paused");
+    // The fix is a license, not a macOS grant: never the Permissions route.
+    expect(visual.needsPermission).toBe(false);
+
+    // It HOLDS: the `recording:false` churn around a refused press must not
+    // clear it, or the explanation flashes and vanishes all over again.
+    expect(reduceGatePhase(gated, { type: "recording", recording: false })).toBe("gated");
+
+    // …and then it SETTLES, so the pill is never parked on a refusal. What
+    // remains between presses is the persistent `ended` chip (pillLicense),
+    // which is a property of the license and not of this phase.
+    expect(GATED_SETTLE_MS).toBeGreaterThan(CANCELLED_SETTLE_MS);
+    expect(reduceGatePhase(gated, { type: "gate_settled" })).toBe("idle");
+
+    // Leaning on the hotkey is answered EVERY time: re-entry is not throttled.
+    const again = reduceGatePhase("idle", { type: "license_required" });
+    expect(again).toBe("gated");
+
+    // The settle only ever moves the phase it owns.
+    expect(reduceGatePhase("listening", { type: "gate_settled" })).toBe("listening");
+  });
+
+  it("blocked_outranks_gated", () => {
+    // The microphone reason WINS. Telling someone to buy a license when Yap
+    // cannot hear them is the wrong sentence, and it is the one they would act
+    // on. Same order the backend enforces in start_recording (PERM-C).
+    expect(phaseRank("blocked")).toBeLessThan(phaseRank("gated"));
+    expect(phaseRank("waiting")).toBeLessThan(phaseRank("gated"));
+    expect(winningPhase("blocked", "gated")).toBe("blocked");
+    expect(winningPhase("gated", "blocked")).toBe("blocked");
+
+    // A license refusal cannot overwrite a mic refusal…
+    expect(reduceGatePhase("blocked", { type: "license_required" })).toBe("blocked");
+    expect(reduceGatePhase("waiting", { type: "license_required" })).toBe("waiting");
+    // …but a mic refusal DOES overwrite a license refusal.
+    expect(reduceGatePhase("gated", { type: "mic_permission_required", status: "denied" }))
+      .toBe("blocked");
+    expect(reduceGatePhase("gated", { type: "microphone-status", status: "denied" }))
+      .toBe("blocked");
+
+    // The full order the item asserts, end to end.
+    expect(PHASE_PRECEDENCE.indexOf("blocked")).toBeLessThan(PHASE_PRECEDENCE.indexOf("gated"));
+    const order: LivePhase[] = ["blocked", "gated", "listening", "thinking", "done"];
+    for (let i = 1; i < order.length; i++) {
+      expect(phaseRank(order[i - 1])).toBeLessThan(phaseRank(order[i]));
+    }
+  });
+
+  it("gated_never_suppresses_the_done_state_of_a_take_already_in_flight", () => {
+    // license.rs's own doc (lib.rs:1100-1108): the gate stops NEW dictation and
+    // "never takes back the ones already spoken". A trial that ends while a take
+    // is decoding must not eat that take's result.
+    expect(reduceGatePhase("listening", { type: "license_required" })).toBe("listening");
+    expect(reduceGatePhase("thinking", { type: "license_required" })).toBe("thinking");
+    expect(reduceGatePhase("transcribing", { type: "license_required" })).toBe("transcribing");
+
+    // The in-flight take still reaches its own end, un-gated: the refusal never
+    // entered the phase at all, so there is nothing to clear.
+    const stillLive = reduceGatePhase("listening", { type: "license_required" });
+    expect(reduceGatePhase(stillLive, { type: "recording", recording: false })).toBe("idle");
+
+    // And a take that really starts clears a stale refusal rather than being
+    // suppressed by it — a gate that is no longer shut must not keep saying so.
+    expect(reduceGatePhase("gated", { type: "recording", recording: true })).toBe("listening");
+
+    // The other affordances are untouched: `gated` is not `needsPermission`, is
+    // not an error tone, and history/search/export/settings keep working past
+    // the trial (KEEP_FOREVER_LINE). The pill must not imply otherwise.
+    expect(phaseVisual("gated").needsPermission).toBe(false);
   });
 });

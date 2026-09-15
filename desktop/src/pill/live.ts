@@ -25,6 +25,12 @@
  *    room" actually means — no absolute constant to be wrong about the mic.
  */
 
+// Y2-C — the refused-press copy is BORROWED from the Settings → License card
+// through `./license`, which reads it out of `statusCopy`. `./license` imports
+// only `../license/status` (both pure, neither imports this file), so this adds
+// a leaf dependency and no cycle.
+import { GATED_HEADLINE } from "./license";
+
 /** The user's companion tone (YV27). Anything unknown reads as friendly. */
 export type ChatTone = "rude" | "friendly" | "rose";
 export const toChatTone = (t?: string): ChatTone => (t === "rude" || t === "rose" ? t : "friendly");
@@ -468,7 +474,12 @@ export function phaseVisual(phase: LivePhase): PhaseVisual {
         placeholder: false,
       };
     case "gated":
-      return { tone: "warn", label: "Dictation locked", needsPermission: false, placeholder: true };
+      // Y2-C — no longer a placeholder. `warn` is the same muted, drained
+      // capsule `blocked` wears, which is right: both are a press that produced
+      // no take. `needsPermission` stays FALSE — the fix is a license, not a
+      // macOS grant, and sending someone to the Permissions pane over a trial
+      // that ended is the wrong sentence twice over.
+      return { tone: "warn", label: GATED_HEADLINE, needsPermission: false, placeholder: false };
     case "transcribing":
       return { tone: "busy", label: "Transcribing", needsPermission: false, placeholder: false };
     case "polishing":
@@ -497,7 +508,15 @@ export type GateEvent =
   /** Y3-D — the backend's `take_cancelled`: the user stopped this take. */
   | { type: "take_cancelled" }
   /** Y3-D — [`CANCELLED_SETTLE_MS`] has elapsed; the pill returns to rest. */
-  | { type: "cancel_settled" };
+  | { type: "cancel_settled" }
+  /**
+   * Y2-C — the backend refused a NEW take for the license: `license_required`
+   * (lib.rs:1111-1126). Carries nothing, because the pill re-decides nothing:
+   * the payload's own `days_left` is already handled by `pillLicense`.
+   */
+  | { type: "license_required" }
+  /** Y2-C — [`GATED_SETTLE_MS`] has elapsed; the refusal stops shouting. */
+  | { type: "gate_settled" };
 
 /**
  * Y3-D — how long the pill holds "Cancelled" before settling to idle.
@@ -508,6 +527,54 @@ export type GateEvent =
  * test rather than a stopwatch held against a running app.
  */
 export const CANCELLED_SETTLE_MS = 1400;
+
+/**
+ * Y2-C — how long a refused press holds the `gated` phase before settling.
+ *
+ * Longer than [`CANCELLED_SETTLE_MS`] on purpose: a cancel is an acknowledgement
+ * of something the USER just did, while this is news the user did not ask for
+ * and has to READ ("Dictation is paused"). Still bounded, because a pill parked
+ * on a refusal forever is indistinguishable from a stuck pill — and because the
+ * persistent `ended` chip is what carries the state between presses. Leaning on
+ * the hotkey re-enters the phase every time; it never becomes permanent noise.
+ *
+ * This is also what makes `should_announce_gate`'s throttle SAFE to keep as it
+ * is: the SYSTEM notification stays rate-limited, and this cheap in-place signal
+ * answers every single press.
+ */
+export const GATED_SETTLE_MS = 2500;
+
+/**
+ * Y2-C — which phase wins when more than one is true at once, most urgent
+ * first. Anything absent ranks below everything present.
+ *
+ *   blocked (no mic)  >  gated (no license)  >  listening  >  thinking  >  done
+ *
+ * THE MICROPHONE REASON WINS. Telling someone to buy a license when Yap cannot
+ * hear them is the wrong sentence, and it is the one they would act on. This is
+ * the same order the backend enforces in `start_recording` (PERM-C), and the
+ * pill is not allowed to disagree with the backend about why a press did
+ * nothing.
+ */
+export const PHASE_PRECEDENCE: readonly LivePhase[] = [
+  "blocked",
+  "waiting",
+  "gated",
+  "listening",
+  "thinking",
+  "done",
+];
+
+/** Rank of a phase in [`PHASE_PRECEDENCE`]; lower wins, unranked sorts last. */
+export function phaseRank(phase: LivePhase): number {
+  const i = PHASE_PRECEDENCE.indexOf(phase);
+  return i === -1 ? PHASE_PRECEDENCE.length : i;
+}
+
+/** The more urgent of two phases. Ties keep `a`, so it is stable. */
+export function winningPhase(a: LivePhase, b: LivePhase): LivePhase {
+  return phaseRank(a) <= phaseRank(b) ? a : b;
+}
 
 /** Denied / restricted / an unknown string all mean "Yap cannot hear you". */
 const micUsable = (status: string): boolean => status === "authorized";
@@ -525,31 +592,52 @@ const micUsable = (status: string): boolean => status === "authorized";
  *    nothing but TCC answering `authorized` may put the pill back to idle.
  */
 export function reduceGatePhase(prev: LivePhase, ev: GateEvent): LivePhase {
-  const gated = prev === "blocked" || prev === "waiting";
+  // NB: this is the MICROPHONE refusal, not Y2-C's `gated` license phase. The
+  // two are different reasons a press did nothing and the mic one outranks it.
+  const micRefused = prev === "blocked" || prev === "waiting";
   switch (ev.type) {
     case "mic_permission_required":
-      if (micUsable(ev.status)) return gated ? "idle" : prev;
+      if (micUsable(ev.status)) return micRefused ? "idle" : prev;
       return ev.status === "not_determined" ? "waiting" : "blocked";
     case "microphone-status":
-      if (micUsable(ev.status)) return gated ? "idle" : prev;
+      if (micUsable(ev.status)) return micRefused ? "idle" : prev;
       return ev.status === "not_determined" ? "waiting" : "blocked";
     case "recording":
       // A permission phase survives both edges of a take.
-      if (gated) return prev;
+      if (micRefused) return prev;
       // Y3-D: so does the cancelled acknowledgement. Cancelling a take emits
       // `recording:false` right behind `take_cancelled`, and if that could
       // overwrite the phase the acknowledgement would flash and vanish — the
       // same bug `blocked` is protected from one case above.
       if (prev === "cancelled" && !ev.recording) return prev;
+      // Y2-C: and so does the license refusal. A refused press emits `recording`
+      // churn around it exactly the way a refused MIC press does, so if
+      // `recording:false` could clear `gated` the explanation would flash and
+      // vanish — the invisible refusal all over again. `recording:true` DOES
+      // clear it: a take that really started means the gate is no longer shut.
+      if (prev === "gated" && !ev.recording) return prev;
       return ev.recording ? "listening" : "idle";
     case "take_cancelled":
       // A permission refusal still outranks it: a cancel cannot make a blocked
       // mic look resolved.
-      return gated ? prev : "cancelled";
+      return micRefused ? prev : "cancelled";
     case "cancel_settled":
       // Only ever moves the phase it owns. A take that has already started
       // again by the time the timer fires keeps its own phase.
       return prev === "cancelled" ? "idle" : prev;
+    case "license_required":
+      // The microphone reason wins — see [`PHASE_PRECEDENCE`].
+      if (micRefused) return prev;
+      // AND a take that was ALREADY ALLOWED TO START keeps its own phase. The
+      // gate stops NEW dictation only; `license.rs` promises it "never takes
+      // back the ones already spoken", so the trial ending mid-flight must not
+      // eat the take that is still on its way to `done`.
+      if (prev === "listening" || prev === "thinking" || prev === "transcribing") return prev;
+      return "gated";
+    case "gate_settled":
+      // Only ever moves the phase it owns, for the same reason `cancel_settled`
+      // does: a later press may already have moved the pill on.
+      return prev === "gated" ? "idle" : prev;
   }
 }
 

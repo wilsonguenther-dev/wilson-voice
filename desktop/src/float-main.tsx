@@ -19,6 +19,7 @@ import {
   acceptProgress,
   reduceGatePhase,
   CANCELLED_SETTLE_MS,
+  GATED_SETTLE_MS,
   type LivePhase,
   type TranscribeProgress,
 } from "./pill/live";
@@ -81,7 +82,22 @@ function Float() {
         /* a licensing read that fails must never stop the pill from drawing */
       });
     listen<LicenseStatus>("license", (e) => setLicense(e.payload)).then(push);
-    listen<LicenseStatus>("license_required", (e) => setLicense(e.payload)).then(push);
+    // Y2-C — `license_required` is not just a payload, it is a REFUSED PRESS.
+    // Before this, the only thing it moved was the license state, so past the
+    // trial the user held the hotkey and the pill did not move — indistinguishable
+    // from a broken app. It now also drives the pill's phase, and settles itself
+    // back out again so the refusal is answered every press without becoming
+    // permanent noise. Fire-and-forget like Y3-D's cancel timer: `gate_settled`
+    // only ever moves the phase it owns, so a press that has already moved the
+    // pill on is left alone.
+    listen<LicenseStatus>("license_required", (e) => {
+      setLicense(e.payload);
+      setGate((p) => reduceGatePhase(p, { type: "license_required" }));
+      setTimeout(
+        () => setGate((p) => reduceGatePhase(p, { type: "gate_settled" })),
+        GATED_SETTLE_MS,
+      );
+    }).then(push);
     return () => { dead = true; unsubs.forEach((u) => u()); };
   }, []);
   useEffect(() => {

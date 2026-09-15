@@ -11,7 +11,7 @@ import {
   phaseVisual, progressFraction, progressLabel, progressNumeral,
   type LivePhase, type TranscribeProgress,
 } from "./live";
-import { type PillLicense } from "./license";
+import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
@@ -147,26 +147,43 @@ export default function ClassicPill(
   // point is that a press which cannot record NEVER paints as one that can.
   const visual = phaseVisual(gate);
   const blocked = visual.needsPermission;
-  const live = status.recording && !blocked;
+  // Y2-C — the trial ended and this press was refused. A SEPARATE reason from
+  // `blocked`, deliberately: the capsule looks equally stopped, but the fix is a
+  // license and the click goes somewhere else entirely. `blocked` still outranks
+  // it (see PHASE_PRECEDENCE) — `gate` can only hold one phase, and
+  // `reduceGatePhase` already decided which.
+  const gated = gate === "gated";
+  const live = status.recording && !blocked && !gated;
   // Y3-C — a chunked decode is no longer "busy". `busy` is a boolean, so a
   // 15-minute take across 12 chunks showed one undifferentiated state for
   // minutes; `transcribing` is a first-class phase carrying real, measured
   // progress. A single-window take never reports any, so it stays `busy`:
   // there is nothing to show and a 1/1 flicker is worse than silence.
-  const transcribing = progress !== null && !live && !blocked;
-  const busy = status.busy && !live && !blocked && !transcribing;
+  const transcribing = progress !== null && !live && !blocked && !gated;
+  const busy = status.busy && !live && !blocked && !gated && !transcribing;
   // A meeting expands the capsule for as long as it runs, and outranks the
   // resting "seed" — but never the live dictation state, which is the shorter,
   // more urgent thing on screen.
   const base = blocked
     ? `pill blocked ${gate}`
+    : gated ? "pill blocked gated"
     : live ? "pill live"
       : transcribing ? "pill busy transcribing"
         : busy ? "pill busy" : done ? "pill done" : "pill";
-  const cls = meeting.recording && !blocked ? `${base} meeting` : base;
+  const cls = meeting.recording && !blocked && !gated ? `${base} meeting` : base;
   const onToggle = useCallback(() => {
     // YV65 — the click that closes a drag must never start/stop dictation.
     if (drag.dragged()) return;
+    if (gated) {
+      // Y2-C — a gated capsule is a BUTTON to the purchase surface, not a dead
+      // pill: raise the main window and land on Settings → License, which owns
+      // the checkout link. No new command and no new capability — this is the
+      // `navigate` / `settings-tab` plumbing the tray menu already uses.
+      invoke("show_main").catch(() => {});
+      emit("navigate", "settings").catch(() => {});
+      emit("settings-tab", "license").catch(() => {});
+      return;
+    }
     if (blocked) {
       // PERM-C — a blocked capsule is a BUTTON to the fix, not a dead pill:
       // raise the main window and land on the Permissions screen (PERM-B), which
@@ -177,7 +194,7 @@ export default function ClassicPill(
     }
     if (busy || transcribing) return;
     invoke("manual_toggle").catch(() => {});
-  }, [blocked, busy, transcribing, drag]);
+  }, [blocked, gated, busy, transcribing, drag]);
 
   return (
     <div className="stage">
@@ -188,12 +205,13 @@ export default function ClassicPill(
         tabIndex={0}
         aria-label={
           blocked ? visual.label
+            : gated ? visual.label
             : live ? "Stop dictation"
               : progress ? progressLabel(progress)
                 : busy ? "Transcribing" : "Start dictation"
         }
         style={progress ? ({ ["--progress" as string]: progressFraction(progress).toFixed(4) } as React.CSSProperties) : undefined}
-        title={blocked ? visual.label : undefined}
+        title={blocked ? visual.label : gated ? GATED_TITLE : undefined}
         {...drag.handlers}
         onClick={onToggle}
         onKeyDown={(e) => {
@@ -202,10 +220,17 @@ export default function ClassicPill(
       >
         <MeetingBadge status={meeting} />
         <button type="button" className="ctrl" tabIndex={-1} aria-hidden onClick={(e) => { e.stopPropagation(); onToggle(); }}>
-          {blocked ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
+          {blocked || gated ? <MicOff strokeWidth={2.2} /> : live ? <Square fill="currentColor" strokeWidth={0} /> : <Mic strokeWidth={2.2} />}
         </button>
         {blocked ? (
           <span className="gate-note">{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
+        ) : gated ? (
+          // The trial-ended glyph plus the SAME headline the License card
+          // shows; the body rides in the tooltip. Reused, never rewritten.
+          <span className="gate-note">
+            <i className="gate-glyph" aria-hidden>{GATED_GLYPH}</i>
+            {visual.label}
+          </span>
         ) : progress ? (
           // A DETERMINATE fill — never a spinner. The count is knowable now, and
           // the bar advances only on a chunk that actually completed: no easing,
