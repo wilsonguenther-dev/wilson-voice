@@ -857,6 +857,11 @@ conflicting PRs and zero shipped work.
 
     gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --json number,headRefName,mergeable,statusCheckRollup
 
+${ONLY_PREFIXES ? `THIS PASS IS SCOPED to args.only = [${ONLY_PREFIXES.join(', ')}] (Panel revision 2026-09-26T17:35:00Z:
+added after a scoped notetaker pass would otherwise land an unrelated stale PR, e.g. a licensing
+item on a backend the product ledger has since moved off). From the list above, land ONLY a PR
+whose headRefName names an item id starting with one of those prefixes. SKIP every other PR,
+however green — name it "outside args.only \u2014 left for its own pass," never merge it here.` : ''}
 MERGE every PR in that list that clears the gate below, and NOTHING else. The gate depends on
 whether GitHub Actions can run at all in this run; Recon has already decided, and this is it:
 ${CI_GATE(dir, target)}
@@ -5240,10 +5245,25 @@ ITEMS.push({
   acceptance: `
     test -x scripts/release-local.sh
     bash -n scripts/release-local.sh
+    bash scripts/release-local.sh 0.0.0-ci --dry-run --check-only
     grep -q "keychain-profile yap-notary" scripts/release-local.sh
     grep -q "release-local.sh" docs/RELEASE.md
+    grep -q "yap-polish" scripts/release-local.sh
+    grep -q "yap-diarize" scripts/release-local.sh
   `,
 })
+
+// Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED): the DO text
+// above already specifies --options runtime --timestamp and signing the app before the DMG,
+// which is correct — but tauri.conf.json's signingIdentity is null, so a plain "tauri build"
+// leaves the externalBin sidecars (yap-polish, yap-diarize) UNSIGNED, and notarization then
+// rejects them (or, signed with --deep, they wrongly inherit the app's JIT entitlements). Sign
+// INSIDE-OUT: each Contents/MacOS/yap-polish-* and yap-diarize-* binary first, with
+// --options runtime --timestamp and NO entitlements, then the .app itself WITHOUT --deep. The
+// acceptance above now runs the script's own --dry-run --check-only and greps for both sidecar
+// names, so a plan that skips them fails the gate instead of only failing notarization later.
+// Reword the audit's D27 to: keep manual notarized builds (product ledger, non-negotiable);
+// PKG1 is a hand-invoked local script, never CI, never automatic.
 
 ITEMS.push({
   id: 'yap24-PKG2', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg2-first-run-without-a-network', gated: 'panel',
@@ -5271,10 +5291,16 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --lib models
+    test "$(cargo test --features custom-protocol --lib models::tests::first_run_offline_ 2>&1 | tee /dev/stderr | grep -c '0 passed')" -eq 0
     cargo clippy --all-targets --features custom-protocol
   `,
 })
+
+// Panel revision 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, LOW, GROUNDED): the
+// pre-flight/acceptance named no test, so cargo test --lib models passed on a branch containing
+// only the first_run_offline IDENTIFIER with zero matching tests (an unmatched cargo filter
+// exits 0 and prints "0 passed"). The acceptance above now filters on the concrete test-name
+// prefix and fails when nothing matched.
 
 // ── 65-yap24-expansions.mjs ───────────────────────────────────────────────
 // yap24-X — EXPANSIONS: the things that make Yap better than Wispr Flow rather than equal to it.

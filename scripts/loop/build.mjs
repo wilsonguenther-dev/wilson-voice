@@ -957,6 +957,24 @@ function dryRun(label, src, argsIn) {
 if (problems.length) die()
 
 // ── 6. WRITE ────────────────────────────────────────────────────────────────
+// STALENESS (Panel round 2, 2026-09-26). The generated parts + parent are COMMITTED and the Workflow
+// tool runs them from the live checkout, so an item/template edit merged without a re-stamp launches
+// the OLD loop (PR #199 shipped exactly that: yap24-NT10 and the LAND-scope fix were in the sources
+// and in neither generated part). --validate-only therefore compares what it WOULD write with what
+// is on disk and exits non-zero when anything differs — "nothing needs writing" is the launch bar.
+function staleTargets() {
+  const out = []
+  const same = (file, src) => fs.existsSync(file) && fs.readFileSync(file, 'utf8') === src
+  for (const p of parts) if (!same(p.file, p.src)) out.push(path.relative(ROOT, p.file))
+  if (!same(PARENT_OUT, parent.src)) out.push(path.relative(ROOT, PARENT_OUT))
+  const keep = new Set(parts.map((p) => path.basename(p.file)))
+  if (fs.existsSync(GEN_DIR)) {
+    for (const f of fs.readdirSync(GEN_DIR).filter((f) => /^part-\d+\.mjs$/.test(f) && !keep.has(f))) {
+      out.push(`${path.relative(ROOT, path.join(GEN_DIR, f))} (orphan part)`)
+    }
+  }
+  return out
+}
 if (VALIDATE_ONLY) {
   console.log(`✓ loop:validate — ${parts.length} part(s) + 1 parent would be written, ${ITEMS.length} item(s), every check passed.`)
   console.log(`  items      ${path.relative(ROOT, ITEMS_DIR)} — ${itemFiles.length} file(s): ${itemFiles.join(', ')}`)
@@ -964,6 +982,13 @@ if (VALIDATE_ONLY) {
   console.log(`  parent     ${parent.size} bytes (meta.name ${LOOP_NAME})`)
   console.log(`  dry run    ${DRY_RUN_REPORT}`)
   console.log('  NOTHING WAS WRITTEN (--validate-only).')
+  const stale = staleTargets()
+  if (stale.length) {
+    console.error(`✗ generated  STALE — ${stale.length} file(s) differ from what the items + template stamp: ${stale.join(', ')}`)
+    console.error('  run `node scripts/loop/build.mjs` (or `npm run loop:build` from desktop/), commit the output, then launch.')
+    process.exit(1)
+  }
+  console.log('  generated  up to date — nothing needs writing (parts + parent on disk == this stamp).')
   process.exit(0)
 }
 fs.mkdirSync(GEN_DIR, { recursive: true })

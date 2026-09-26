@@ -21,7 +21,8 @@ Yap's gate.
 ```bash
 cd ~/code/wilson-voice
 node scripts/loop/build.mjs                 # stamp parts + parent
-node scripts/loop/build.mjs --validate-only # validate only; writes nothing
+node scripts/loop/build.mjs --validate-only # validate only; writes nothing; EXITS 1 if the committed
+                                            # parts/parent are stale (must print "nothing needs writing")
 # from desktop/: npm run loop:build  /  npm run loop:validate
 ```
 

@@ -86,7 +86,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 59 items (Y0-A..SEC-B), 22 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 62 items (Y0-A..SEC-B), 25 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -94,6 +94,7 @@ export const meta = {
     { title: "Y0-E", detail: "The instrument that can see \"looks broken\" ships BEFORE the nine UI items it judges — and it fails on today's tree" },
     { title: "Y0-B", detail: "One command proves a fresh clone builds, tests and stages both sidecars — no host-found dependencies" },
     { title: "Y0-C", detail: "A test asserts the SHIPPED defaults, so a feature that is off by default can never be called tested again" },
+    { title: "yap24-NT0", detail: "Provisioning, not product: the pinned parakeet model sits sha256-verified in the lane cache and the meeting eval corpus is materialised at its fixed path" },
     { title: "yap24-NT1", detail: "Meeting audio is never deleted before it has been transcribed, and stranded \"transcribing\" rows are reconciled on launch" },
     { title: "yap24-NT2", detail: "The meeting transcript exists: stop hands the audio to the shipped MeetingAsr job, which writes segments and completes the row" },
     { title: "yap24-NT3", detail: "Silence is not a denial: an in-person meeting never attaches the system tap, and a quiet call is never told macOS refused it" },
@@ -103,6 +104,8 @@ export const meta = {
     { title: "yap24-NT7", detail: "The pill and the menu bar follow the meeting after stop: transcribing 42%, notes ready, or what went wrong" },
     { title: "yap24-NT8", detail: "Calendar-aware: an upcoming meeting or class raises a \"Record?\" prompt on the pill — opt-in, EventKit, no OAuth" },
     { title: "yap24-NT9", detail: "Phase-closing proof: one headless command runs a two-track fixture through capture, transcript, notes and export" },
+    { title: "yap24-NT10", detail: "A meeting survives a lid close or sleep: the journal finalizes on WillSleep and the row is marked paused_by_sleep, not left recording forever" },
+    { title: "yap24-NT11", detail: "A call on built-in speakers is transcribed once: mic segments that re-hear the system track are dropped, and the dedupe is skipped on headphones" },
     { title: "yap24-PILL1", detail: "The trial is visible from day 14 to day 1: a quiet numeral for the first week, the Y2-B treatment for the last" },
     { title: "yap24-PILL2", detail: "The backend says which stage a take is in, so \"polishing\" and \"pasting\" finally appear on the pill" },
     { title: "yap24-PILL3", detail: "When the hotkey cannot hear you, the pill says so: Secure Input, a disabled tap, and missing Accessibility are pill states" },
@@ -226,7 +229,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -861,6 +864,11 @@ conflicting PRs and zero shipped work.
 
     gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --json number,headRefName,mergeable,statusCheckRollup
 
+${ONLY_PREFIXES ? `THIS PASS IS SCOPED to args.only = [${ONLY_PREFIXES.join(', ')}] (Panel revision 2026-09-26T17:35:00Z:
+added after a scoped notetaker pass would otherwise land an unrelated stale PR, e.g. a licensing
+item on a backend the product ledger has since moved off). From the list above, land ONLY a PR
+whose headRefName names an item id starting with one of those prefixes. SKIP every other PR,
+however green — name it "outside args.only \u2014 left for its own pass," never merge it here.` : ''}
 MERGE every PR in that list that clears the gate below, and NOTHING else. The gate depends on
 whether GitHub Actions can run at all in this run; Recon has already decided, and this is it:
 ${CI_GATE(dir, target)}
@@ -1967,6 +1975,78 @@ ITEMS.push({
 // SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs and docs/loop/HARNESS.md.
 // Never touch the bundle identifier or the data directory name. Never sandbox. Headless only:
 // no test in this file opens a window, and no acceptance command needs a microphone or a TCC grant.
+//
+// ACCEPTANCE HYGIENE (Panel round 2, 2026-09-26): the command runner executes every acceptance line
+// ON ITS OWN, so a standalone `export` line sets nothing for the lines after it. Every cargo/bash
+// line in this file therefore carries YAP_DATA_DIR="$(mktemp -d)/yap-state" INLINE — without it,
+// cargo test on the loop machine writes into Wilson's real ~/Library/Application Support/WilsonVoice.
+
+ITEMS.push({
+  id: 'yap24-NT0', prompt: 'yap24-NT', branch: 'loop/yap24-nt0-provision-the-notetaker-eval-model-and-corpus', gated: 'panel',
+  title: 'Provisioning, not product: the pinned parakeet model sits sha256-verified in the lane cache and the meeting eval corpus is materialised at its fixed path',
+  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26. Pure infrastructure (no app code), so it is in the pass-1 panelApproved list. yap24-NT2 (WER/RTF gate) and yap24-NT9 (the e2e proof) DEPEND on it: both used to be unable to run their model-backed gates on a throwaway YAP_DATA_DIR, which is how the e2e proof ended up specified as SKIP-exit-0.',
+  preflight: `
+    test -x scripts/provision-notetaker-eval.sh
+    test "$(shasum -a 256 "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf" | cut -c1-64)" = 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795
+    (R="$(git rev-parse --show-toplevel)" && cd "$HOME/yap-eval-corpus/meetings" && shasum -a 256 -c "$R/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256")
+  `,
+  spec: `
+    Panel: APPROVED for pass 1 (round-2 verify 2026-09-26) — infrastructure only, no product surface.
+    DEPENDS: none. yap24-NT2 and yap24-NT9 depend on THIS.
+
+    WHY: a throwaway YAP_DATA_DIR never has a model (app_paths.rs:71 puts models under
+    root.join("models")), so every model-backed gate in this chain either touched Wilson's real
+    install or skipped. The fix is to provision the two inputs ONCE, at fixed paths, verified by
+    hash, and have each gate point at them explicitly — never at the real install, never skip.
+
+    THE TWO FIXED PATHS (acceptance lines in NT0, NT2 and NT9 name them literally):
+      - model:  $HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf
+                (the lane cache; Drain removes only the target-* dirs and the worktrees, never
+                cache/). This directory is what YAP_MODEL_DIR means everywhere in this file.
+      - corpus: $HOME/yap-eval-corpus/meetings (the durable location meeting_eval.rs already
+                defaults to, CORPUS_HOME_RELATIVE). This is what YAP_EVAL_CORPUS means.
+
+    DO
+      1. scripts/provision-notetaker-eval.sh (bash, set -euo pipefail, executable, idempotent):
+         a. Read the pin from desktop/src-tauri/src/catalog.json — the models[] entry with
+            id handy-computer/parakeet-unified-en-0.6b-gguf, its revision, and the files[] row with
+            quant Q8_0 (filename, size_bytes, sha256). The catalog is the one source of truth; do
+            not hardcode a second copy of the hash in the script.
+         b. If the cached file exists and its sha256 matches, print "model ok" and move on.
+            Otherwise: if Wilson's installed copy exists at
+            ~/Library/Application Support/WilsonVoice/models/<filename> AND its sha256 matches,
+            clone it READ-ONLY into the cache (cp -c, APFS clone — never move, never modify the
+            installed copy). Else download to <file>.partial from
+            https://huggingface.co/<id>/resolve/<revision>/<filename>, falling back to each
+            catalog mirror at <mirror>/<id>/<revision>/<filename> (the same order models.rs
+            download_urls uses); verify sha256 BEFORE the atomic rename; a mismatch deletes the
+            partial and exits non-zero.
+         c. Corpus: if $HOME/yap-eval-corpus/meetings verifies with
+            shasum -a 256 -c desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256 (run from
+            the corpus dir), print "corpus ok". Otherwise grow it with the SHIPPED generator
+            (cargo test --features custom-protocol --test meeting_eval meeting_eval_generate_corpus
+            -- --ignored --nocapture, with YAP_DATA_DIR="$(mktemp -d)/yap-state" inline and
+            YAP_EVAL_CORPUS pointing at the fixed path) and verify again. A regrown corpus whose
+            bytes disagree with the committed manifest (a different macOS say voice build) is a
+            hard failure with that sentence — NEVER rewrite meeting_eval_manifest.* to match.
+         d. Print the two paths and exit 0 only when both verified.
+      2. docs/loop/HARNESS.md: a short "Notetaker eval inputs" note naming the two paths, the
+         script, and YAP_MODEL_DIR / YAP_EVAL_CORPUS.
+
+    NOT: no Rust or TypeScript change; no write into Wilson's installed data dir (read + clone only);
+    no audio committed; no edit to catalog.json or the eval manifest.
+  `,
+  acceptance: `
+    test -x scripts/provision-notetaker-eval.sh
+    bash -n scripts/provision-notetaker-eval.sh
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" bash scripts/provision-notetaker-eval.sh
+    grep -q 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 desktop/src-tauri/src/catalog.json
+    test -f "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf"
+    test "$(shasum -a 256 "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf" | cut -c1-64)" = 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795
+    test -f "$HOME/yap-eval-corpus/meetings/lecture-15min/audio.wav"
+    (R="$(git rev-parse --show-toplevel)" && cd "$HOME/yap-eval-corpus/meetings" && shasum -a 256 -c "$R/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256")
+  `,
+})
 
 ITEMS.push({
   id: 'yap24-NT1', prompt: 'yap24-NT', branch: 'loop/yap24-nt1-never-purge-untranscribed-meeting-audio', gated: 'panel',
@@ -1978,6 +2058,35 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: none (first item of the chain — it stops the data loss before anything else lands)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Retention keys off a NEW pipeline_done_at column (set only once transcription, summary
+        and diarization all reach a terminal state), never off started_at — db.rs:1945-1969's
+        cutoff on started_at alone lets audio purge between "transcription complete" and
+        NT5's diarize read or a Retry re-decode. Add MIGRATION_6_MEETING_NOTES in meetings.rs
+        (SCHEMA_VERSION = 6) for this column (shared with NT4's meeting_items table below).
+      - Failed/partial-with-audio meetings get a LONGER retention window (>=30 days), not
+        indefinite: at ~230 MB/hour of two-track audio a backlog of failed meetings otherwise
+        grows without bound. Add a disk ceiling (default 5 GB retained meeting audio); past it
+        the oldest non-complete audio purges first, one sentence about it in Settings.
+      - At launch, BEFORE reconcile, call meeting::recover_orphaned_meetings(meetings_dir) —
+        it already exists (meeting.rs:1599) but has NO production caller today (only a unit
+        test and meeting_matrix.rs reference it), so a crash mid-meeting leaves the row stuck
+        in "recording" forever. Wire its FinalizedMeeting results into finish_meeting /
+        set_meeting_sys_wav_path via wav_for_track (never a positional index), set state from
+        FinalizedMeeting.state, then hand it to yap24-NT2's queue.
+      - "Complete with zero segments" is a documented VALID outcome (a genuinely silent
+        meeting) — do not special-case it out of purge eligibility; use pipeline_done_at, not
+        segment count, as the purge criterion.
+      - Delete the per-track ASR progress ledger (<id>.tN.asr-progress.json, see NT2) and the
+        kept per-track host-time anchors (<id>.tN.index.jsonl, see NT2) together with the WAV
+        whenever audio is purged or the meeting is deleted — today neither is referenced by
+        purge_meeting_audio or the delete cascade.
+      - Every cargo/bash acceptance command below carries YAP_DATA_DIR="$(mktemp -d)/yap-state"
+        INLINE (round-2 verify: a standalone export line does not persist — the runner executes
+        each line on its own). Without it, cargo test on this machine has already written into
+        ~/Library/Application Support/WilsonVoice (a stray probe file from an earlier run is
+        proof) — never touch Wilson's real install.
 
     EVIDENCE
       - db.rs:1936-1972  purge_meeting_audio selects every meeting with a WAV path and
@@ -2019,10 +2128,10 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
-    cargo test --features custom-protocol --test meeting_audio_retention
-    cargo test --features custom-protocol --lib meeting
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_audio_retention
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2036,7 +2145,86 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending
-    DEPENDS: yap24-NT1 (audio must not be purged out from under a queued job)
+    DEPENDS: yap24-NT0 (the pinned model + eval corpus its WER/RTF gate runs against),
+    yap24-NT1 (audio must not be purged out from under a queued job)
+
+    Panel round-2 verify 2026-09-26 (applied — acceptance now enforces what the revision below says):
+      - The WER/RTF run is IN the acceptance, not prose: meeting_eval runs with
+        YAP_EVAL_REQUIRE=1, YAP_EVAL_CORPUS=$HOME/yap-eval-corpus/meetings and
+        YAP_MODEL_DIR=$HOME/code/wilson-voice-loop/cache/models (both provisioned and
+        hash-verified by yap24-NT0). Implement in tests/meeting_eval.rs: (a) YAP_EVAL_REQUIRE=1
+        turns the CORPUS_ABSENT skip into a panic, and a missing model into a panic — never a
+        green skip; (b) when YAP_MODEL_DIR is set, the Decoder links (symlink or cp -c clone) the
+        pinned parakeet Q8_0 file from it into <YAP_DATA_DIR>/models/ before the first decode, and
+        refuses to run if YAP_DATA_DIR is unset (it must never seed or read the default root);
+        (c) print WER, real-time factor and lecture-15min stop-to-notes wall clock, and commit
+        the measured numbers to docs/BUDGETS.md.
+      - The launch call site is pinned: lib.rs's start path calls meeting_pipeline::spawn (that
+        exact path — the acceptance greps for it; "or the equivalent" is gone).
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, 3x BLOCKING + HIGH, GROUNDED):
+      - BLOCKING — per-track ledger collision: JsonProgressStore keys ONLY on meeting_id
+        (meeting_asr.rs:1597-1599), so the system track's run() resumes from the mic track's
+        processed_through_seconds and dedups chunk.index against the mic track's chunks. Key
+        the ledger per track, e.g. run(&format!("{id}.t{track}")), and add a
+        meeting_pipeline_wired test with two tracks of different lengths asserting each track's
+        own processed_through and no chunk-index collision.
+      - BLOCKING — segments must NOT land per-chunk. append_meeting_segments (db.rs:1652) is a
+        non-idempotent INSERT with a fresh row id every call: writing "as each chunk completes"
+        (as this spec said) double-writes every seam and duplicates rows on any resume-after-quit.
+        Instead: run BOTH tracks' MeetingAsr to completion (interrupted == false), call the
+        shipped merge_two_tracks_by_host_time(ledger_a.chunks, ledger_b.chunks, anchors, epochs,
+        kind) (meeting_asr.rs:1123), then in ONE transaction DELETE FROM meeting_segments WHERE
+        meeting_id=? and INSERT the merged spans, set state complete. Drive progress EVENTS from
+        the ledger's processed_through_seconds, not from segment-row writes.
+      - BLOCKING — the two-track merge needs the per-track host-time anchors
+        (<id>.tN.index.jsonl), which finalize_meeting_marker deletes today "for a consumer that
+        does not exist" (meeting.rs:1794-1798, :1842-1845). NT2 IS that consumer: keep the
+        anchor files (or persist records+epochs to a new meeting_anchors table) through
+        finalize, and clean them up only via NT1's purge/delete path, never independently.
+      - HIGH — max_yield: Duration::from_secs(120) (meeting_asr.rs:1675) breaks "dictation
+        always wins": a hands-free take over ~2 minutes (routine in Wilson's logs) makes meeting
+        ASR take the engine back mid-take. A live-recording demand must never count toward
+        max_yield; the 120 s cap applies only to a stuck "busy, not recording" flag. Add a test:
+        a 180 s simulated dictation never observes a meeting chunk take the engine.
+      - HIGH — no crash-loop guard: the launch-time requeue of every stranded "transcribing" row
+        runs in-process, on the SAME warm engine dictation uses (unlike polish/diarize, which are
+        sidecars). Two unexplained SIGSEGVs already exist in the audit (0.8.0, worker threads
+        39/40). Add an attempt counter per meeting; two crash-without-progress launches ->
+        failed with an honest sentence, never a silent retry loop. Wrap the worker body in
+        catch_unwind so one panic marks that row failed and keeps the FIFO worker alive. Start
+        the queue ~30 s after launch, after the dictation engine's first warm-up.
+      - HIGH — enqueue every row that has audio and zero segments in state {transcribing,
+        partial}, not "transcribing" only — stop() and finalize both downgrade to partial on a
+        capture hole or spliced silence, and those meetings currently never reach the pipeline
+        and never free their disk under NT1's new state-aware retention.
+      - "The compiler is the proof the pipeline is wired" is FALSE — meeting_asr.rs's items are
+        pub in a lib crate (Cargo.toml crate-type includes rlib), so rustc's dead_code lint never
+        fires on them regardless of wiring. Drop that claim from the acceptance's rationale; the
+        real proof is behavioral: meeting_pipeline_wired must drive MeetingController::stop (not
+        the worker directly) and observe segments > 0, plus a source-scan grep that
+        MeetingAsr is constructed outside meeting_asr.rs AND that lib.rs's start path spawns the
+        pipeline (grep -q 'meeting_pipeline::spawn' src/lib.rs or the equivalent call site).
+      - Reuse the SHIPPED EngineDemand impl: TranscriptionManager already implements it
+        (meeting_asr.rs:600-604, exercised by tests/meeting_dictation_preempts_transcription.rs)
+        — do not invent a second AppState-based demand. Build the audio source with
+        WavWindows::open (meeting_asr.rs:507), never MemoryWindows (690 MB for a 3-hour meeting).
+      - Model gating: meeting_availability_for's NoModel/UnknownModel checks only that a model id
+        is configured, never that its files are on disk (app_paths.rs:71 puts models under
+        root.join("models"), which a fresh/offline install lacks). A refusal on a missing-but-
+        configured model must produce a NEW waiting_for_model state that KEEPS the audio and
+        auto-requeues on the model-download-complete event, not a permanent "failed" row.
+      - Pin meeting ASR to the catalog's recommended model (parakeet, Q8_0), not "whatever
+        engine happens to be loaded" — PKG2's interim whisper-tiny path must never become the
+        model a meeting is permanently transcribed by; record asr_model on the row, and NT1 only
+        purges audio transcribed by the recommended model.
+      - Measurability: run the existing WER harness (meeting_eval.rs, WER_GATE 0.02) against
+        ~/yap-eval-corpus/meetings inside this item's acceptance when the corpus is present, and
+        FAIL (not silently pass) when it is absent from a machine expected to have it (gate via
+        YAP_EVAL_REQUIRE=1). Print real-time factor and stop-to-notes wall clock for
+        lecture-15min into docs/BUDGETS.md — nothing today measures either number.
+      - Every cargo/bash acceptance command below carries YAP_DATA_DIR="$(mktemp -d)/yap-state"
+        INLINE — see the NT1 revision for why.
 
     EVIDENCE — the whole reason "the notetaker is not even working":
       - meeting_control.rs:652-656 sets transcribing with the comment "YV93's transcription
@@ -2092,12 +2280,16 @@ ITEMS.push({
   acceptance: `
     ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
     grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
+    grep -q 'meeting_pipeline::spawn' desktop/src-tauri/src/lib.rs
+    grep -q 'YAP_EVAL_REQUIRE' desktop/src-tauri/tests/meeting_eval.rs
+    grep -q 'YAP_MODEL_DIR' desktop/src-tauri/tests/meeting_eval.rs
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_pipeline_wired
-    cargo test --features custom-protocol --test meeting_manual_start_stop
-    cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
-    cargo test --features custom-protocol --lib meeting
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_manual_start_stop
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" cargo test --features custom-protocol --test meeting_eval -- --nocapture --test-threads=1
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2111,6 +2303,26 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: yap24-NT2 (the verdict is written on the same stop path the pipeline now owns)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - The code already has the right per-process probe field (TapEnvironment.
+        system_output_active, syscapture.rs:680-683) and the right verdict function
+        (TapLiveness::verdict, :501-518), but observe_environment (:2617-2619) has NO caller
+        anywhere in src/, so env stays Default and the stop path falls back to the naive,
+        device-level permission_verdict (:2334, :2628) this item was meant to replace. Implement
+        the probe: kAudioHardwarePropertyProcessObjectList, then per process (skipping getpid())
+        kAudioProcessPropertyPID and kAudioProcessPropertyIsRunningOutput; sample it on the pump
+        tick and call observe_environment. Route BOTH the stop-path and pre-warm verdicts through
+        TapLiveness::verdict and delete the LooksDenied arm of the old permission_verdict.
+      - A muted call app (Zoom/Meet) or a mid-meeting default-output-device change (AirPods
+        connect) still makes kAudioDevicePropertyDeviceIsRunningSomewhere true with no audible
+        output. Evaluate over the WHOLE meeting, track every device that was default at any
+        point during it, and require the tap to have delivered nothing for the entire meeting
+        AND output to have run >=60s before writing LooksDenied; anything short of that is
+        Unknown, and Unknown is never stored as an error. Never flip the setup row to LooksDenied
+        from a single meeting — require two consecutive ones.
+      - Fix the pre-flight: grep -q "output_was_running" is satisfied by a comment. Gate on the
+        test file's existence and passing, not the string.
 
     EVIDENCE
       - syscapture.rs:2243 DENIAL_GRACE = 3 s; :2334-2341 permission_verdict returns LooksDenied
@@ -2146,11 +2358,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial
-    cargo test --features custom-protocol --test meeting_track_b_wiring
-    cargo test --features custom-protocol --test meeting_kind_branch
-    cargo test --features custom-protocol --lib syscapture
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_track_b_wiring
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_kind_branch
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib syscapture
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2164,6 +2376,36 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: yap24-NT2 (segments must exist), SEC-C (merged #184 — the polish model install path)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Installing the summary model must NOT silently turn on LLM polish for dictation:
+        summarize_meeting_blocking and the dictation-polish path both read state.settings.
+        polish_model today (lib.rs:4225-4227, :320-325), and SEC-C's one-click install writes
+        that same setting (lib.rs:4823-4826). Give summaries their OWN setting, summary_model,
+        independent of dictation's polish_model. Add a test asserting polish_model is
+        byte-unchanged after a summary-model install.
+      - Schema: rename the meeting_actions table to meeting_items(kind CHECK IN ('action',
+        'decision','question'), text, speaker_label, segment_id, start_seconds). Drop the
+        'owner' column — summarize.rs:1026-1040 is explicit that the speaker is not a claim
+        about who OWES the action. Map the positional seg_NNNN label to a real segment_id inside
+        summarize before persisting (the mapping never otherwise leaves that process). Write the
+        rows and meetings.summary in ONE transaction so the two stores cannot drift on a
+        re-summarize. Add this table via the SAME MIGRATION_6 as NT1's pipeline_done_at, not an
+        unversioned ALTER TABLE/CREATE TABLE IF NOT EXISTS — db.rs's own comment says shipped
+        migration steps are immutable and its ad hoc let _ = conn.execute("ALTER TABLE ...")
+        discards errors (db.rs:476-522, finding #26 cited at :480).
+      - Give the summary job the SAME EngineDemand suspend-between-map-chunks behavior as
+        MeetingAsr: on an 8 GB Mac, the ASR engine (warm 15 min), the dictation polish sidecar
+        (warm for the process lifetime) and a second Qwen-1.5B summary sidecar together approach
+        ~3 GB resident. Unload the ASR engine before summarizing when no dictation is pending, or
+        route the summary through the already-warm polish sidecar on a low-priority queue.
+        Record peak RSS (app + sidecars) during a summary into docs/BUDGETS.md with a ceiling
+        (e.g. 2.5 GB on 8 GB machines) that falls back to summarizing on the next idle tick.
+      - Add ONE measured eval: extend the synthetic corpus generator to plant K explicit
+        commitments in a 15-minute fixture, run the REAL 1.5B sidecar (#[ignore] — the loop runs
+        it only when the model is installed) and gate action-item recall >= 0.8 and precision
+        >= 0.8, numbers committed to docs/BUDGETS.md. Shape/groundedness validators alone do not
+        tell Wilson whether the notes are useful.
 
     EVIDENCE
       - lib.rs:4201-4260 summarize_meeting is a MANUAL command and refuses when there are no
@@ -2197,11 +2439,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_notes_auto_summary
-    cargo test --features custom-protocol --test meeting_delete_cascade
-    cargo test --features custom-protocol --test meeting_markdown_export
-    cargo test --features custom-protocol --lib summarize
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_auto_summary
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_delete_cascade
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_markdown_export
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib summarize
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2213,7 +2455,16 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/meeting_pipeline_diarizes_in_person.rs
   `,
   spec: `
-    Panel: pending
+    Panel: DEFERRED 2026-09-26T17:35:00Z — see docs/loop/DEFERRED.md. Excluded from pass-1 panelApproved.
+    Re-approve only after Y11-A..Y11-E are merged AND Y11-F's real-voice DER/FAR is measured
+    against a stated threshold. DEPENDS is prose the harness does NOT enforce (no 'DEPENDS'
+    handling exists in template.mjs/build.mjs — grep confirms it), and pass 1 runs
+    only:['yap24-NT'], which hard-skips every Y11-* id, so an approved NT5 would build speaker
+    enrollment on a path independently measured at FAR 1.000 (Y11-C) with DER 0.34-0.45 on clean
+    synthetic voices (Y11 audit). Meeting notes that confidently attribute words to the wrong
+    person are worse than notes with no speaker labels — 3 of 5 panel seats named this the single
+    item to kill from pass 1. yap24-NT6/NT7 already render labels only when present, so leaving
+    NT5 out costs nothing else in the chain.
     DEPENDS: yap24-NT2, Y11-A..Y11-E (the six parked diarization defects — FAR 1.000 on the shipped
     enrollment path, split_partition seeding, the pinned-digest skip — must be fixed first or this
     item ships known-wrong labels)
@@ -2241,11 +2492,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_pipeline_diarizes_in_person
-    cargo test --features custom-protocol --test meeting_cluster_attribution
-    cargo test --features custom-protocol --lib diarize
-    cargo test -p yap-diarize --release
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_diarizes_in_person
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cluster_attribution
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib diarize
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test -p yap-diarize --release
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2277,6 +2528,10 @@ ITEMS.push({
       2. Meetings.tsx renders it: a progress bar that moves with the pipeline event, the notes
          (summary + action items, each item linking to its transcript segment), Retry for
          failed/partial (re-enqueues through a new retry_meeting command), Export Markdown.
+         Panel revision 2026-09-26T17:35:00Z: Retry is offered ONLY when a WAV path exists and
+         audio_kept = 1 — NT1 marks old rows failed with their audio already gone, and a Retry
+         button that can never work is worse than none. meetingViewState needs a test for the
+         no-audio failed case (actions: delete/export only).
       3. The empty state offers "Start a meeting" with the kind picker (in person / call) and
          carries notetaker_status when system audio is unavailable.
       4. Follow the token layer (Y5-A) and the empty/loading/error pattern (Y5-B) if merged;
@@ -2342,7 +2597,16 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
   `,
   spec: `
-    Panel: pending (a NEW TCC permission — Calendars — so the panel and Wilson must bless it)
+    Panel: DEFERRED 2026-09-26T17:35:00Z — see docs/loop/DEFERRED.md. Excluded from pass-1 panelApproved (and
+    from the yap24-NT chain's intent). It adds a NEW permanent TCC permission (Calendars), a
+    5-minute EventKit background poll, and a pill interruption — none of it fixes stop ->
+    transcript -> notes, which is the whole mandate of this pass ("the notetaker is not even
+    working"). Its own spec already requires the panel AND Wilson to bless it, and it is the
+    only pass-1 item whose acceptance can prove nothing beyond a synthetic policy table. 2 of 5
+    panel seats named this the single item to kill from pass 1. Reconsider it after yap24-NT9
+    has passed on one real meeting on Wilson's own Mac, and only after his explicit Calendars
+    yes (ledger: pricing/product identity decisions are his; a new permanent TCC grant belongs
+    in the same bucket).
     DEPENDS: yap24-NT6, yap24-NT7
 
     EVIDENCE
@@ -2374,8 +2638,8 @@ ITEMS.push({
     grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
     cd src-tauri
-    cargo test --features custom-protocol --test calendar_prompt_policy
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test calendar_prompt_policy
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2388,20 +2652,48 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending
-    DEPENDS: yap24-NT1..NT7 (NT8 optional)
+    DEPENDS: yap24-NT0 (the provisioned model + corpus the proof runs against), yap24-NT1-NT4,
+    yap24-NT6, yap24-NT7 (NT5 and NT8 are DEFERRED — see their own Panel revisions
+    above; NT9 does not wait on either)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING, GROUNDED — 4 of 5 seats):
+      - The phase-closing proof must actually run. Acceptance today is test -x + bash -n +
+        two cargo tests — notetaker-e2e.sh itself is NEVER executed, and even when it is, it
+        SKIPs (exit 0) on ANY throwaway YAP_DATA_DIR because a fresh scratch root never has a
+        model (app_paths.rs:71 puts models under root.join("models")). "Reuse the repo's meeting
+        fixtures, do not add audio" cannot be honored either: tests/fixtures has one 2.5 s mono
+        WAV — no two-track meeting audio exists in the repo. This repeats the exact
+        "verification that verifies nothing" failure this whole chain exists to end.
+      - FIX: acceptance runs YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh for real (added
+        below). The script takes YAP_MODEL_DIR / YAP_EVAL_CORPUS overrides pointing at a
+        lane-cached, sha256-verified parakeet model and a two-track fixture; when
+        YAP_E2E_REQUIRE=1 is set, SKIP becomes a hard failure (non-zero exit) instead of exit 0.
+        (Round-2 verify: SKIP-as-pass is removed entirely — see DO step 1.)
+      - Commit ONE small generated two-track fixture under
+        tests/fixtures/meeting-two-track/ (macOS say -> afconvert to 16 kHz mono, a few
+        seconds per track — the same recipe the repo already used for quick-brown-fox-16k.wav),
+        so the wired-path assertions (segments > 0 on BOTH tracks) have something to run against
+        with no network and no owner-gated corpus.
 
     WHY: the 2026-08 loops closed the notetaker phases with 135 green meeting tests while the
     pipeline had no caller (see the header of this file). A phase is closed by the behaviour, not
     by the mechanisms.
 
-    DO
-      1. scripts/notetaker-e2e.sh: exports a throwaway YAP_DATA_DIR, runs the release binary with
-         --transcribe-meeting on the repo's meeting fixtures (tests/fixtures — reuse, do not add
-         audio), asserts: row state complete, segments > 0 on both tracks, summary present when
-         the summary model is installed or summary_status needs_model when it is not, Markdown
-         export contains Summary / Action items / transcript. Exits non-zero on any miss. Skips
-         (exit 0, prints SKIP with the reason) ONLY when the ASR model is not installed in the
-         scratch root — and says how to install it headlessly.
+    DO (step 1 rewritten by the Panel round-2 verify 2026-09-26 — the gate EXECUTES, it never skips)
+      1. scripts/notetaker-e2e.sh (set -euo pipefail): REQUIRES YAP_DATA_DIR (a throwaway root —
+         refuses the default root, like --smoke), YAP_MODEL_DIR and YAP_EVAL_CORPUS; a missing or
+         unset one is a non-zero exit with the sentence naming it and the command that provisions
+         it (scripts/provision-notetaker-eval.sh, yap24-NT0). It links the pinned parakeet Q8_0
+         file from YAP_MODEL_DIR into <YAP_DATA_DIR>/models/ (symlink or cp -c clone, never a
+         write into YAP_MODEL_DIR), then runs the release binary with --transcribe-meeting on the
+         committed two-track fixture tests/fixtures/meeting-two-track/ (generated per the Panel
+         revision above: say -> afconvert, 16 kHz mono, a few seconds per track), and also on
+         YAP_EVAL_CORPUS/two-track-ordering. It asserts: row state complete, segments > 0 on BOTH
+         tracks, summary present when the summary model is installed or summary_status
+         needs_model when it is not, Markdown export contains Summary / Action items /
+         transcript. Any miss is a non-zero exit. There is NO skip path (the script never prints
+         SKIP — the acceptance greps for it) and no exit-0-on-SKIP branch: under YAP_E2E_REQUIRE=1 (the loop always sets it) a missing input is a failure,
+         and without it the script still fails — it only adds the provisioning hint.
       2. docs/MEETING-DEMO.md gains a "yap24 — what a meeting does now" section with the
          command and a pasted run.
       3. meeting_matrix.rs: every row whose call site now exists is Test, with its test named.
@@ -2412,9 +2704,129 @@ ITEMS.push({
   acceptance: `
     test -x scripts/notetaker-e2e.sh
     bash -n scripts/notetaker-e2e.sh
+    ! grep -q 'SKIP' scripts/notetaker-e2e.sh
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --lib meeting_matrix
-    cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT10', prompt: 'yap24-NT', branch: 'loop/yap24-nt10-meeting-survives-sleep-and-lid-close', gated: 'panel',
+  title: 'A meeting survives a lid close or sleep: the journal finalizes on WillSleep and the row is marked paused_by_sleep, not left recording forever',
+  notes: 'NEW item added by Senior Panel synthesis 2026-09-26T17:35:00Z (User/wildcard seat, BLOCKING — grounded). The audit counted Y1-B (register NSWorkspaceWillSleepNotification / IORegisterForSystemPower) as already-done, but its own pre-flight only matches a COMMENT in power.rs, not a real observer call site (meeting_matrix.rs row 16 still reads PolicyOnly{absent_call_site:"NSWorkspaceWillSleepNotification"}; grep -c for that literal returns 4 on main today). only:[\'yap24-NT\'] never reaches Y1-B, so without this item a lid-close mid-meeting (walking between rooms, closing the laptop) leaves the row stuck in "recording" with no finalize, and yap24-NT1\'s reconcile only handles a crash, not a clean sleep. Corrects docs/ARCHITECTURE-AUDIT-2026-09-26.md §10\'s already-done count from 2 to 1 (Y4-D only).',
+  preflight: `
+    grep -qE "NSWorkspaceWillSleepNotification|IORegisterForSystemPower" desktop/src-tauri/src/power.rs
+    test -f desktop/src-tauri/tests/meeting_survives_sleep.rs
+    ! grep -q 'absent_call_site: "NSWorkspaceWillSleepNotification"' desktop/src-tauri/src/meeting_matrix.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT1 (reuses its capture-journal recovery path; this item is the sleep-triggered
+    twin of NT1's crash-triggered reconcile)
+
+    EVIDENCE
+      - power.rs mentions NSWorkspaceWillSleepNotification only in a comment (no registration
+        call site exists in src/); a grep for WillSleep across power.rs and permissions.rs
+        matches comments only.
+      - meeting_matrix.rs row 16: PolicyOnly { absent_call_site: "NSWorkspaceWillSleepNotification" }.
+      - meeting::recover_orphaned_meetings (meeting.rs:1599) already recovers a crash-abandoned
+        journal — this item registers the real observer and calls the SAME recovery path on a
+        clean sleep, rather than duplicating it.
+
+    DO
+      1. Register NSWorkspaceWillSleepNotification (and the IORegisterForSystemPower fallback
+         already scoped in Y1-B) in power.rs. On fire, if a meeting is recording: finalize the
+         capture journal exactly as recover_orphaned_meetings does for a crash, and mark the row
+         paused_by_sleep (a new, honest state distinct from partial — the recording was stopped
+         cleanly by the OS, not lost).
+      2. On wake (NSWorkspaceDidWakeNotification), a paused_by_sleep meeting is left for the user
+         to resume (Start again, producing a second meeting) or stop-and-finalize; it is NEVER
+         silently resumed into the old row.
+      3. yap24-NT6 renders paused_by_sleep with a one-sentence explanation and the same Retry/
+         Export affordances as a normal complete meeting once transcribed.
+      4. Update meeting_matrix.rs row 16 to Test once the call site and its test exist.
+
+    NOT: no change to dictation's own sleep handling (already shipped/separate). No new TCC
+    permission — NSWorkspace notifications need none.
+
+    Tests (tests/meeting_survives_sleep.rs): simulate WillSleep mid-recording -> row finalizes to
+    paused_by_sleep with both WAV paths intact; WillSleep with no active meeting is a no-op.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_survives_sleep
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT11', prompt: 'yap24-NT', branch: 'loop/yap24-nt11-speaker-bleed-mic-dedupe-with-route-detection', gated: 'panel',
+  title: 'A call on built-in speakers is transcribed once: mic segments that re-hear the system track are dropped, and the dedupe is skipped on headphones',
+  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26 (THE USER seat, HIGH). NOT in pass 1 (gated panel, left out of the pass-1 panelApproved) — the destination is pass 2, see docs/loop/DEFERRED.md #12. It needs yap24-NT2 (the one-shot two-track merge) and yap24-NT3 (the output-device tracking) merged first.',
+  preflight: `
+    test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
+    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+  `,
+  spec: `
+    Panel: APPROVED for pass 2 only (round-2 verify 2026-09-26) — NOT pass 1.
+    DEPENDS: yap24-NT2 (the merge stage this dedupe lives in), yap24-NT3 (the whole-meeting output
+    device tracking it reuses)
+
+    WHY (THE USER seat): a founder's real call is a laptop on a desk with the far side playing out
+    of the built-in speakers. The system track (process tap) carries the far side cleanly; the mic
+    track ALSO hears it, a few hundred ms later, through the room. Once NT2 transcribes both tracks
+    and merges them by host time, every remote sentence appears twice — once as Them (system) and
+    once as You (mic) — and NT4's summary then attributes the other side's commitments to Wilson.
+    On headphones/AirPods there is no bleed and nothing must be removed.
+
+    DO
+      1. Output route detection (syscapture.rs, beside NT3's per-meeting device tracking): at
+         meeting start and on every kAudioHardwarePropertyDefaultOutputDevice change, classify the
+         default output as speakers (built-in device whose kAudioDevicePropertyDataSource is
+         internal speakers, or an external non-headphone device) | headphones (built-in device on
+         its headphone data source, or a Bluetooth/USB headset transport) | unknown. Record the
+         route as time spans on the meeting (host time, same epoch as the track anchors) and
+         expose fn output_route(...) for tests. unknown is treated as speakers (dedupe on) — a
+         missed dedupe is a duplicated sentence, a wrong dedupe on headphones would be the bug
+         below.
+      2. The dedupe runs INSIDE NT2's one-shot merge stage (after both tracks' ASR finished, before
+         the single transactional write) and ONLY for mic segments whose host-time span falls in a
+         speakers/unknown route span and overlaps a system-track segment (allow up to 500 ms
+         acoustic + buffer lag, measured, not guessed — commit the number to docs/BUDGETS.md).
+         A mic segment is dropped only when its normalized word sequence is substantially contained
+         in the overlapping system text (e.g. >= 0.6 of its tokens, in order); double-talk —
+         the mic segment carries words the system span does not — keeps the mic segment. Never
+         trim words out of a kept segment in this item.
+      3. Audio is never touched — the dedupe acts on segments only, so a re-transcribe re-derives
+         it. The row records how many mic segments were suppressed (one diagnostics field), and one
+         log line per meeting says how many and on which route.
+      4. Headphones spans skip the dedupe entirely; kind in_person meetings (MicOnly per NT3) never
+         run it.
+
+    NOT: no echo cancellation / DSP on the capture path, no new TCC permission, no change to
+    dictation, no second ASR pass.
+
+    Tests (tests/meeting_cross_track_bleed.rs, synthetic ChunkOutcome spans, no model):
+      - speakers route, mic re-hears a system sentence 250 ms late -> the mic copy is suppressed,
+        the system copy stays, the merged transcript has the sentence once;
+      - the same audio spans on a headphones route -> nothing suppressed;
+      - double-talk (mic speaks different words over a system sentence) -> both kept;
+      - mic speech with no overlapping system segment -> kept;
+      - a route change mid-meeting (speakers -> AirPods) applies the dedupe to the first span only;
+      - no real mic word is lost: across the fixture, every word that exists only on the mic track
+        survives (mirror meeting_eval's seam_dedupe_never_deletes_real_words posture).
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
+    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+    cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cross_track_bleed
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -2459,6 +2871,21 @@ ITEMS.push({
     EVIDENCE
       - pill/license.ts:136-165 display policy: "trial, more than 7 days -> nothing (ambient
         silence)". For half the trial the pill says nothing; Wilson's report is exactly this.
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, MEDIUM + HIGH, GROUNDED):
+      - Introduce a SEPARATE shared constant for the new "quiet" threshold (e.g.
+        PILL_QUIET_FROM_DAYS = 14) in BOTH license.rs and license.ts. Do NOT repurpose
+        PILL_SHOW_DAYS = 7 — it is documented as shared with the Rust tray's own purchase-offer
+        threshold (license.ts:52's comment, license.rs:680, tray_offers_purchase at :760) and an
+        existing test pins it to 7 (license.test.ts:98); changing it would silently move when the
+        tray offers to sell, not just when the pill goes quiet. Add a twin-constant equality test
+        and cargo test --lib license to this item's acceptance (today it runs vitest only).
+      - Do NOT let a working countdown promise a purchase that cannot happen: as of this panel,
+        the Stripe payment link is inactive and the license issuer (Forge) does not answer, so
+        this item's countdown/urgent copy must say plainly that purchasing is not open yet
+        instead of showing a Buy action that dead-ends — coordinate with LIC-A's Panel revision
+        in 20-y2-trial-and-limits.mjs, which is the item that actually restores a working
+        purchase path (via the Drivia Consulting app, per the product ledger).
       - The trial is 14 days (license.rs; memory project_yap_build_state YP2 "14-day full trial").
       - Y2-B (#186) draws the numeral but was built against the 7-day policy and was never
         visually QA'd (STATUS-yap.md row Y2-B).
@@ -2543,6 +2970,23 @@ ITEMS.push({
       - lib.rs:893-922 build_status already computes secure.blocked, the tap health message and
         accessibility. float-main.tsx:60-65 BackendStatus declares only recording, busy,
         engine_loading, last_error.
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Do NOT move the Secure Input check to key-down + a backstop (see the REJECTED plan noted
+        in yap24-OS5's Panel revision) — the tap is blind under Secure Input and never sees that
+        key-down. Keep secure_input.rs's 2 s poll as the source for this pill state.
+      - Add a FOURTH blind-hotkey cause this item's original three (Secure Input, tap disabled,
+        Accessibility missing) do not cover: the hotkey tap was never created because Input
+        Monitoring was missing at launch (ptt_macos.rs logs this and returns without ever
+        retrying). Wire OS3's grant-flip detection to call ptt_macos::start again, and give this
+        pill state a distinct cause/copy ("hotkey not installed") with the Privacy_ListenEvent
+        deep link, not just "disabled."
+      - Add a dwell rule before showing "blind": ignore loginwindow as an owner of Secure Input
+        (Wilson's log shows it firing most often at the lock screen, when the pill is not visible
+        anyway) and require >=1 s of continuous Secure Input before the state appears, clearing
+        immediately once it is gone — otherwise a brief Chrome password-field focus flickers the
+        pill. Acceptance gains a no-flicker case (secure input for 500 ms -> no blind state) and
+        keeps the existing <=2.1 s appearance bound.
       - Wilson's logs: well over 100 WARN lines "Secure Input ENABLED by loginwindow / Google
         Chrome — the fn PTT event tap is blind" across yap.log, yap.log.1 and yap.log.2.
       - The live gate reducer (live.ts reduceGatePhase) handles mic permission, recording and
@@ -2616,6 +3060,19 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: none
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED, 2+ seats):
+      - Arm speculatively ONLY when the persistent stream is already warm (inside IDLE_CLOSE).
+        On a COLD stream, key-down handling is fn/Globe first (flags-changed), and whether this
+        is a tap, hold or chord (fn+arrow, fn+Delete, Globe for emoji/input-switch) is only known
+        once the gesture resolves — arming on every cold key-down would open the mic, light the
+        orange indicator and force a Bluetooth headset into its HFP call profile on plain text
+        editing and input-source switching, dozens of times an hour. On a cold stream: begin the
+        device open at key-down but do not start delivering audio until the gesture resolves;
+        add an explicit Interrupted -> discard branch (today only "released before TAP_MAX_MS"
+        discards) and tests "fn+arrow opens no stream" / "a tap on a cold stream leaves it closed".
+      - Measure BOTH the warm-stream and cold-stream press-to-first-sample paths separately in
+        docs/BUDGETS.md — they are not the same number.
 
     EVIDENCE
       - ptt_macos.rs:32 HOLD_ARM_MS = 280; :488-509 a thread sleeps 280 ms after key-down and only
@@ -2737,6 +3194,19 @@ ITEMS.push({
     Panel: pending (SECURITY-class: the signing path)
     DEPENDS: SEC-A (merged #165 — stable signing identity)
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED, 2 seats):
+      - The experiment as specified cannot fail: sign-local.sh's codesign call has no
+        "--options runtime", so the hardened runtime is OFF for every variant and cs.allow-jit /
+        cs.allow-unsigned-executable-memory are inert either way — every removal passes
+        vacuously, which could strip something the NOTARIZED (runtime-enabled) release actually
+        needs. Sign each variant with "--options runtime --timestamp" under the real Developer ID
+        identity and assert codesign -d --entitlements shows flags=0x10000(runtime) before
+        trusting a pass/fail. Run the SIGNED binary's real work per variant (in-process
+        transcribe-cpp Metal decode via --transcribe-file, plus --transcribe-meeting once NT2
+        exists), against a scratch YAP_DATA_DIR with the lane's cached model linked in — an empty
+        scratch root never reaches Metal/ASR at all. Give the yap-polish / yap-diarize sidecars
+        their own entitlement files and drop --deep from sign-local.sh.
+
     EVIDENCE
       - Entitlements.plist carries device.audio-input, app-sandbox=false, cs.allow-jit and
         cs.allow-unsigned-executable-memory. The last two weaken the hardened runtime for the whole
@@ -2766,6 +3236,18 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: yap24-PILL3 (Secure Input state consumer), Y10-F (idle RAM/CPU publication)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH — REJECTS part of
+    yap24-PILL3's original plan, GROUNDED):
+      - Do NOT move the Secure Input check to key-down + a >=10 s backstop, which yap24-PILL3
+        proposed and which this item's "consolidate the polls" framing would otherwise adopt:
+        under Secure Input the fn PTT event tap is BLIND and never receives that key-down, so the
+        only signal left would be the slow backstop — worsening detection from ~4 s to as much as
+        ~20 s, in both directions (on and off). KEEP the 2 s poll; it is one Carbon flag read.
+        Exempt it BY NAME from this item's "every wakeup needs a reason" table, citing
+        secure_input.rs:41's own comment on why 2 s is the interval. Spend the consolidation
+        effort on the ioreg owner-PID spawn (secure_input.rs:176) instead — run it only on a
+        false-to-true transition, not on every poll tick.
 
     EVIDENCE
       - secure_input.rs:48 POLL_INTERVAL = 2 s; its own doc (secure_input.rs:41) says macOS
@@ -3472,10 +3954,13 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-B', prompt: 'Y1', branch: 'loop/y1-b-register-the-sleep-wake-observer-that-does-not-exist', gated: null,
-  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
+  notes: `STATUS 2026-09-26: NOT ALREADY-DONE — Panel correction 2026-09-26T17:35:00Z (Senior Panel synthesis, BLOCKING, GROUNDED, User/wildcard seat): the earlier ALREADY-DONE call was wrong. The pre-flight's grep matches power.rs line 18, a doc comment ('//! ... matrix row #16's NSWorkspaceWillSleepNotification path'), not a real registration — confirmed firsthand: power.rs has zero real call sites, and meeting_matrix.rs still carries FOUR absent_call_site: "NSWorkspaceWillSleepNotification" entries today, which is this item's OWN acceptance criterion for done (test 0 -eq grep -c ...) and it reads 4, not 0. Correct docs/ARCHITECTURE-AUDIT-2026-09-26.md section 10's already-done count from 2 to 1 (Y4-D only). This item is real, unbuilt work. A scoped notetaker pass (only:['yap24-NT']) never reaches it by prefix, so yap24-NT10 (added to 01-yap24-notetaker.mjs by this same panel) ships a meetings-only subset of this fix inside pass 1; when Y1-B itself is later built, wire its one publisher into NT10's meeting consumer instead of registering a second NSWorkspace observer. PANEL ROUND-2 VERIFY 2026-09-26: the pre-flight is now this item's OWN acceptance lines (absent_call_site count == 0, the DidWake registration, the fan-out and unregister test names, the row-16 test) — the old doc-comment grep plus the already-passing policy-only matrix_row16 test retired it as done once and must not again. Note yap24-NT10 alone cannot satisfy it: NT10 flips the absent_call_site rows but never adds the dictation/permissions fan-out test.`,
   title: 'Register the sleep/wake observer two later items already claim exists',
   preflight: `
-    grep -qE 'NSWorkspaceWillSleepNotification|IORegisterForSystemPower' desktop/src-tauri/src/power.rs
+    test 0 -eq "$(grep -c 'absent_call_site: "NSWorkspaceWillSleepNotification"' desktop/src-tauri/src/meeting_matrix.rs)"
+    grep -q 'NSWorkspaceDidWakeNotification' desktop/src-tauri/src/power.rs
+    grep -q 'one_observer_fans_out_to_dictation_meetings_and_permissions' desktop/src-tauri/tests/matrix_row16_sleep_wake.rs
+    grep -q 'the_observer_is_unregistered_on_shutdown' desktop/src-tauri/tests/matrix_row16_sleep_wake.rs
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test matrix_row16_sleep_wake
   `,
   spec: `
@@ -5027,7 +5512,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key. Still blocked only on Wilson provisioning the dedicated Yap Supabase project.`,
+  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it) — Panel revision 2026-09-26T17:35:00Z: DO NOT LAND #183 AS-IS. It targets "a dedicated Yap Supabase project," which the product ledger (2026-09-26 panel) now overrides: issuance moves to the Drivia Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and already licensing other products) — see the Panel revisions block in the spec below. Relabel #183 needs-human until that redirect is done; a scoped notetaker-only loop pass must never merge it as written (see the LAND-scope fix in scripts/loop/template.mjs). RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key, AND every launch still sends an unauthenticated GET to a hostname resolving to an IP Wilson no longer controls, accepting whatever unsigned {kids:[]} revocation list comes back with no signature check (license.rs:1100-1124) — ship the one-line mitigation in the Panel revisions block FIRST, independent of the rest of this item.`,
   title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
     test -f supabase/functions/yap-license/index.ts
@@ -5103,7 +5588,42 @@ ITEMS.push({
          neither path has copy. One sentence, one action, never a raw Rust
          string, and a retrieval failure must NEVER block offline verification.
 
-    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS.
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING ledger-conflict + HIGH
+    security, GROUNDED):
+      - SHIP THIS ONE LINE NOW, independent of the rest of the item: in license.rs, make
+        REVOCATION_URL an Option set to None so no fetch happens at all until the real endpoint
+        below exists. Today every launch sends an unauthenticated GET to
+        forge.87-99-149-214.sslip.io — sslip.io maps any name to its embedded IP, so whoever
+        holds that IP today can also get a TLS cert for it — and deserializes whatever
+        {kids:[]} comes back with NO signature check (license.rs:1100-1124), which contradicts
+        both license.rs:111-113's own "the ONLY host this module ever contacts" comment and the
+        "nothing leaves the Mac" privacy claim (it sends the client IP and launch timing to a
+        third party). Correct docs/ARCHITECTURE-AUDIT-2026-09-26.md §9's "harmless no-op"
+        characterization to match.
+      - THE ISSUER MOVES TO THE DRIVIA CONSULTING APP'S SUPABASE DB #2 (the products licensing
+        backend), NOT a new "dedicated Yap Supabase project" — the product ledger (2026-09-26
+        panel, binding) is explicit that issuance moves there; the panel shapes HOW, never
+        WHETHER. DB #2 already seeds a 'yap' product (purchase_enabled=true) with
+        /api/v1/licensing/{activate,deactivate,refresh,entitlements,settings} and a Stripe
+        webhook that issues licenses — this item becomes "make Yap a CLIENT of that issuer,"
+        not "build a second issuer." Everything below in "WHAT TO BUILD" that describes a new
+        Supabase Edge Function in THIS repo is superseded: delete the
+        supabase/functions/yap-license/index.ts step; instead license.rs gains a verifier for
+        DB #2's token format (a signed JWS carrying sub, act, prd, plan, ent — Ed25519/EdDSA,
+        kid in the header, key pinned from licensing.signing_keys), kept ALONGSIDE the legacy
+        base64url-claims-plus-signature format so Wilson's existing lifetime license keeps
+        verifying. PAYMENT_LINK_URL points at the Consulting product's checkout. Activation
+        happens once, when the token is pasted or deep-linked — never on a hot path — to honor
+        "the ONLY host this module ever contacts" as far as it can still be kept true.
+      - Pricing, trial length and whether the Stripe payment link goes live are Wilson's calls
+        (ledger), unaffected by this redirect — this item does not resolve $29-lifetime vs the
+        DB #2 seeded monthly/annual plans; flag both to Wilson (see forWilson).
+      - Cross-repo follow-up (drivia-consulting, out of THIS repo's loop): a Yap-facing checkout
+        page and license-delivery email on the Consulting app so a purchase actually reaches a
+        Yap user. Record this as a handoff, not an item in this file.
+
+    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS. [SUPERSEDED BY THE PANEL
+    REVISION ABOVE — kept verbatim below for history; do not build it as written.]
       * A DEDICATED YAP PROJECT. Explicitly NOT the Drivia project
         (\`vlfrzdbqwsnrosmcygca\`), which is over its free-tier limits; a
         licensing outage caused by an unrelated product's usage is the worst
