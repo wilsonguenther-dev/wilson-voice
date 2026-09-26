@@ -30,6 +30,78 @@
 // SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs and docs/loop/HARNESS.md.
 // Never touch the bundle identifier or the data directory name. Never sandbox. Headless only:
 // no test in this file opens a window, and no acceptance command needs a microphone or a TCC grant.
+//
+// ACCEPTANCE HYGIENE (Panel round 2, 2026-09-26): the command runner executes every acceptance line
+// ON ITS OWN, so a standalone `export` line sets nothing for the lines after it. Every cargo/bash
+// line in this file therefore carries YAP_DATA_DIR="$(mktemp -d)/yap-state" INLINE — without it,
+// cargo test on the loop machine writes into Wilson's real ~/Library/Application Support/WilsonVoice.
+
+ITEMS.push({
+  id: 'yap24-NT0', prompt: 'yap24-NT', branch: 'loop/yap24-nt0-provision-the-notetaker-eval-model-and-corpus', gated: 'panel',
+  title: 'Provisioning, not product: the pinned parakeet model sits sha256-verified in the lane cache and the meeting eval corpus is materialised at its fixed path',
+  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26. Pure infrastructure (no app code), so it is in the pass-1 panelApproved list. yap24-NT2 (WER/RTF gate) and yap24-NT9 (the e2e proof) DEPEND on it: both used to be unable to run their model-backed gates on a throwaway YAP_DATA_DIR, which is how the e2e proof ended up specified as SKIP-exit-0.',
+  preflight: `
+    test -x scripts/provision-notetaker-eval.sh
+    test "$(shasum -a 256 "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf" | cut -c1-64)" = 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795
+    (R="$(git rev-parse --show-toplevel)" && cd "$HOME/yap-eval-corpus/meetings" && shasum -a 256 -c "$R/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256")
+  `,
+  spec: `
+    Panel: APPROVED for pass 1 (round-2 verify 2026-09-26) — infrastructure only, no product surface.
+    DEPENDS: none. yap24-NT2 and yap24-NT9 depend on THIS.
+
+    WHY: a throwaway YAP_DATA_DIR never has a model (app_paths.rs:71 puts models under
+    root.join("models")), so every model-backed gate in this chain either touched Wilson's real
+    install or skipped. The fix is to provision the two inputs ONCE, at fixed paths, verified by
+    hash, and have each gate point at them explicitly — never at the real install, never skip.
+
+    THE TWO FIXED PATHS (acceptance lines in NT0, NT2 and NT9 name them literally):
+      - model:  $HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf
+                (the lane cache; Drain removes only the target-* dirs and the worktrees, never
+                cache/). This directory is what YAP_MODEL_DIR means everywhere in this file.
+      - corpus: $HOME/yap-eval-corpus/meetings (the durable location meeting_eval.rs already
+                defaults to, CORPUS_HOME_RELATIVE). This is what YAP_EVAL_CORPUS means.
+
+    DO
+      1. scripts/provision-notetaker-eval.sh (bash, set -euo pipefail, executable, idempotent):
+         a. Read the pin from desktop/src-tauri/src/catalog.json — the models[] entry with
+            id handy-computer/parakeet-unified-en-0.6b-gguf, its revision, and the files[] row with
+            quant Q8_0 (filename, size_bytes, sha256). The catalog is the one source of truth; do
+            not hardcode a second copy of the hash in the script.
+         b. If the cached file exists and its sha256 matches, print "model ok" and move on.
+            Otherwise: if Wilson's installed copy exists at
+            ~/Library/Application Support/WilsonVoice/models/<filename> AND its sha256 matches,
+            clone it READ-ONLY into the cache (cp -c, APFS clone — never move, never modify the
+            installed copy). Else download to <file>.partial from
+            https://huggingface.co/<id>/resolve/<revision>/<filename>, falling back to each
+            catalog mirror at <mirror>/<id>/<revision>/<filename> (the same order models.rs
+            download_urls uses); verify sha256 BEFORE the atomic rename; a mismatch deletes the
+            partial and exits non-zero.
+         c. Corpus: if $HOME/yap-eval-corpus/meetings verifies with
+            shasum -a 256 -c desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256 (run from
+            the corpus dir), print "corpus ok". Otherwise grow it with the SHIPPED generator
+            (cargo test --features custom-protocol --test meeting_eval meeting_eval_generate_corpus
+            -- --ignored --nocapture, with YAP_DATA_DIR="$(mktemp -d)/yap-state" inline and
+            YAP_EVAL_CORPUS pointing at the fixed path) and verify again. A regrown corpus whose
+            bytes disagree with the committed manifest (a different macOS say voice build) is a
+            hard failure with that sentence — NEVER rewrite meeting_eval_manifest.* to match.
+         d. Print the two paths and exit 0 only when both verified.
+      2. docs/loop/HARNESS.md: a short "Notetaker eval inputs" note naming the two paths, the
+         script, and YAP_MODEL_DIR / YAP_EVAL_CORPUS.
+
+    NOT: no Rust or TypeScript change; no write into Wilson's installed data dir (read + clone only);
+    no audio committed; no edit to catalog.json or the eval manifest.
+  `,
+  acceptance: `
+    test -x scripts/provision-notetaker-eval.sh
+    bash -n scripts/provision-notetaker-eval.sh
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" bash scripts/provision-notetaker-eval.sh
+    grep -q 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 desktop/src-tauri/src/catalog.json
+    test -f "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf"
+    test "$(shasum -a 256 "$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf" | cut -c1-64)" = 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795
+    test -f "$HOME/yap-eval-corpus/meetings/lecture-15min/audio.wav"
+    (R="$(git rev-parse --show-toplevel)" && cd "$HOME/yap-eval-corpus/meetings" && shasum -a 256 -c "$R/desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256")
+  `,
+})
 
 ITEMS.push({
   id: 'yap24-NT1', prompt: 'yap24-NT', branch: 'loop/yap24-nt1-never-purge-untranscribed-meeting-audio', gated: 'panel',
@@ -65,8 +137,9 @@ ITEMS.push({
         kept per-track host-time anchors (<id>.tN.index.jsonl, see NT2) together with the WAV
         whenever audio is purged or the meeting is deleted — today neither is referenced by
         purge_meeting_audio or the delete cascade.
-      - Every acceptance command below exports YAP_DATA_DIR="$(mktemp -d)/yap-state" first.
-        Without it, cargo test on this machine has already written into
+      - Every cargo/bash acceptance command below carries YAP_DATA_DIR="$(mktemp -d)/yap-state"
+        INLINE (round-2 verify: a standalone export line does not persist — the runner executes
+        each line on its own). Without it, cargo test on this machine has already written into
         ~/Library/Application Support/WilsonVoice (a stray probe file from an earlier run is
         proof) — never touch Wilson's real install.
 
@@ -110,10 +183,10 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
-    cargo test --features custom-protocol --test meeting_audio_retention
-    cargo test --features custom-protocol --lib meeting
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_audio_retention
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -127,7 +200,22 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending
-    DEPENDS: yap24-NT1 (audio must not be purged out from under a queued job)
+    DEPENDS: yap24-NT0 (the pinned model + eval corpus its WER/RTF gate runs against),
+    yap24-NT1 (audio must not be purged out from under a queued job)
+
+    Panel round-2 verify 2026-09-26 (applied — acceptance now enforces what the revision below says):
+      - The WER/RTF run is IN the acceptance, not prose: meeting_eval runs with
+        YAP_EVAL_REQUIRE=1, YAP_EVAL_CORPUS=$HOME/yap-eval-corpus/meetings and
+        YAP_MODEL_DIR=$HOME/code/wilson-voice-loop/cache/models (both provisioned and
+        hash-verified by yap24-NT0). Implement in tests/meeting_eval.rs: (a) YAP_EVAL_REQUIRE=1
+        turns the CORPUS_ABSENT skip into a panic, and a missing model into a panic — never a
+        green skip; (b) when YAP_MODEL_DIR is set, the Decoder links (symlink or cp -c clone) the
+        pinned parakeet Q8_0 file from it into <YAP_DATA_DIR>/models/ before the first decode, and
+        refuses to run if YAP_DATA_DIR is unset (it must never seed or read the default root);
+        (c) print WER, real-time factor and lecture-15min stop-to-notes wall clock, and commit
+        the measured numbers to docs/BUDGETS.md.
+      - The launch call site is pinned: lib.rs's start path calls meeting_pipeline::spawn (that
+        exact path — the acceptance greps for it; "or the equivalent" is gone).
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, 3x BLOCKING + HIGH, GROUNDED):
       - BLOCKING — per-track ledger collision: JsonProgressStore keys ONLY on meeting_id
@@ -190,8 +278,8 @@ ITEMS.push({
         FAIL (not silently pass) when it is absent from a machine expected to have it (gate via
         YAP_EVAL_REQUIRE=1). Print real-time factor and stop-to-notes wall clock for
         lecture-15min into docs/BUDGETS.md — nothing today measures either number.
-      - Every acceptance command below exports YAP_DATA_DIR="$(mktemp -d)/yap-state" first — see
-        the NT1 revision for why.
+      - Every cargo/bash acceptance command below carries YAP_DATA_DIR="$(mktemp -d)/yap-state"
+        INLINE — see the NT1 revision for why.
 
     EVIDENCE — the whole reason "the notetaker is not even working":
       - meeting_control.rs:652-656 sets transcribing with the comment "YV93's transcription
@@ -247,12 +335,16 @@ ITEMS.push({
   acceptance: `
     ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
     grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
+    grep -q 'meeting_pipeline::spawn' desktop/src-tauri/src/lib.rs
+    grep -q 'YAP_EVAL_REQUIRE' desktop/src-tauri/tests/meeting_eval.rs
+    grep -q 'YAP_MODEL_DIR' desktop/src-tauri/tests/meeting_eval.rs
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_pipeline_wired
-    cargo test --features custom-protocol --test meeting_manual_start_stop
-    cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
-    cargo test --features custom-protocol --lib meeting
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_manual_start_stop
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" cargo test --features custom-protocol --test meeting_eval -- --nocapture --test-threads=1
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -321,11 +413,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial
-    cargo test --features custom-protocol --test meeting_track_b_wiring
-    cargo test --features custom-protocol --test meeting_kind_branch
-    cargo test --features custom-protocol --lib syscapture
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_track_b_wiring
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_kind_branch
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib syscapture
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -402,11 +494,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_notes_auto_summary
-    cargo test --features custom-protocol --test meeting_delete_cascade
-    cargo test --features custom-protocol --test meeting_markdown_export
-    cargo test --features custom-protocol --lib summarize
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_auto_summary
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_delete_cascade
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_markdown_export
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib summarize
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -455,11 +547,11 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_pipeline_diarizes_in_person
-    cargo test --features custom-protocol --test meeting_cluster_attribution
-    cargo test --features custom-protocol --lib diarize
-    cargo test -p yap-diarize --release
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_diarizes_in_person
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cluster_attribution
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib diarize
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test -p yap-diarize --release
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -601,8 +693,8 @@ ITEMS.push({
     grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
     cd src-tauri
-    cargo test --features custom-protocol --test calendar_prompt_policy
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test calendar_prompt_policy
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -615,8 +707,9 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending
-    DEPENDS: yap24-NT1-NT4, yap24-NT6, yap24-NT7 (NT5 and NT8 are DEFERRED — see their own
-    Panel revisions above; NT9 does not wait on either)
+    DEPENDS: yap24-NT0 (the provisioned model + corpus the proof runs against), yap24-NT1-NT4,
+    yap24-NT6, yap24-NT7 (NT5 and NT8 are DEFERRED — see their own Panel revisions
+    above; NT9 does not wait on either)
 
     Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING, GROUNDED — 4 of 5 seats):
       - The phase-closing proof must actually run. Acceptance today is test -x + bash -n +
@@ -629,8 +722,8 @@ ITEMS.push({
       - FIX: acceptance runs YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh for real (added
         below). The script takes YAP_MODEL_DIR / YAP_EVAL_CORPUS overrides pointing at a
         lane-cached, sha256-verified parakeet model and a two-track fixture; when
-        YAP_E2E_REQUIRE=1 is set, SKIP becomes a hard failure (non-zero exit) instead of exit 0 —
-        SKIP-as-pass survives only for a developer running it locally with neither cached.
+        YAP_E2E_REQUIRE=1 is set, SKIP becomes a hard failure (non-zero exit) instead of exit 0.
+        (Round-2 verify: SKIP-as-pass is removed entirely — see DO step 1.)
       - Commit ONE small generated two-track fixture under
         tests/fixtures/meeting-two-track/ (macOS say -> afconvert to 16 kHz mono, a few
         seconds per track — the same recipe the repo already used for quick-brown-fox-16k.wav),
@@ -641,14 +734,21 @@ ITEMS.push({
     pipeline had no caller (see the header of this file). A phase is closed by the behaviour, not
     by the mechanisms.
 
-    DO
-      1. scripts/notetaker-e2e.sh: exports a throwaway YAP_DATA_DIR, runs the release binary with
-         --transcribe-meeting on the repo's meeting fixtures (tests/fixtures — reuse, do not add
-         audio), asserts: row state complete, segments > 0 on both tracks, summary present when
-         the summary model is installed or summary_status needs_model when it is not, Markdown
-         export contains Summary / Action items / transcript. Exits non-zero on any miss. Skips
-         (exit 0, prints SKIP with the reason) ONLY when the ASR model is not installed in the
-         scratch root — and says how to install it headlessly.
+    DO (step 1 rewritten by the Panel round-2 verify 2026-09-26 — the gate EXECUTES, it never skips)
+      1. scripts/notetaker-e2e.sh (set -euo pipefail): REQUIRES YAP_DATA_DIR (a throwaway root —
+         refuses the default root, like --smoke), YAP_MODEL_DIR and YAP_EVAL_CORPUS; a missing or
+         unset one is a non-zero exit with the sentence naming it and the command that provisions
+         it (scripts/provision-notetaker-eval.sh, yap24-NT0). It links the pinned parakeet Q8_0
+         file from YAP_MODEL_DIR into <YAP_DATA_DIR>/models/ (symlink or cp -c clone, never a
+         write into YAP_MODEL_DIR), then runs the release binary with --transcribe-meeting on the
+         committed two-track fixture tests/fixtures/meeting-two-track/ (generated per the Panel
+         revision above: say -> afconvert, 16 kHz mono, a few seconds per track), and also on
+         YAP_EVAL_CORPUS/two-track-ordering. It asserts: row state complete, segments > 0 on BOTH
+         tracks, summary present when the summary model is installed or summary_status
+         needs_model when it is not, Markdown export contains Summary / Action items /
+         transcript. Any miss is a non-zero exit. There is NO skip path (the script never prints
+         SKIP — the acceptance greps for it) and no exit-0-on-SKIP branch: under YAP_E2E_REQUIRE=1 (the loop always sets it) a missing input is a failure,
+         and without it the script still fails — it only adds the provisioning hint.
       2. docs/MEETING-DEMO.md gains a "yap24 — what a meeting does now" section with the
          command and a pasted run.
       3. meeting_matrix.rs: every row whose call site now exists is Test, with its test named.
@@ -657,13 +757,13 @@ ITEMS.push({
     meeting on Wilson's Mac) is listed in the PR body as the remaining manual check.
   `,
   acceptance: `
-    export YAP_DATA_DIR="$(mktemp -d)/yap-state"
     test -x scripts/notetaker-e2e.sh
     bash -n scripts/notetaker-e2e.sh
-    YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh
+    ! grep -q 'SKIP' scripts/notetaker-e2e.sh
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --lib meeting_matrix
-    cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
   `,
 })
 
@@ -710,10 +810,77 @@ ITEMS.push({
     paused_by_sleep with both WAV paths intact; WillSleep with no active meeting is a no-op.
   `,
   acceptance: `
-    export YAP_DATA_DIR="$(mktemp -d)/yap-state"
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_survives_sleep
-    cargo test --features custom-protocol --lib meeting_matrix
-    cargo clippy --all-targets --features custom-protocol
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_survives_sleep
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting_matrix
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT11', prompt: 'yap24-NT', branch: 'loop/yap24-nt11-speaker-bleed-mic-dedupe-with-route-detection', gated: 'panel',
+  title: 'A call on built-in speakers is transcribed once: mic segments that re-hear the system track are dropped, and the dedupe is skipped on headphones',
+  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26 (THE USER seat, HIGH). NOT in pass 1 (gated panel, left out of the pass-1 panelApproved) — the destination is pass 2, see docs/loop/DEFERRED.md #12. It needs yap24-NT2 (the one-shot two-track merge) and yap24-NT3 (the output-device tracking) merged first.',
+  preflight: `
+    test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
+    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+  `,
+  spec: `
+    Panel: APPROVED for pass 2 only (round-2 verify 2026-09-26) — NOT pass 1.
+    DEPENDS: yap24-NT2 (the merge stage this dedupe lives in), yap24-NT3 (the whole-meeting output
+    device tracking it reuses)
+
+    WHY (THE USER seat): a founder's real call is a laptop on a desk with the far side playing out
+    of the built-in speakers. The system track (process tap) carries the far side cleanly; the mic
+    track ALSO hears it, a few hundred ms later, through the room. Once NT2 transcribes both tracks
+    and merges them by host time, every remote sentence appears twice — once as Them (system) and
+    once as You (mic) — and NT4's summary then attributes the other side's commitments to Wilson.
+    On headphones/AirPods there is no bleed and nothing must be removed.
+
+    DO
+      1. Output route detection (syscapture.rs, beside NT3's per-meeting device tracking): at
+         meeting start and on every kAudioHardwarePropertyDefaultOutputDevice change, classify the
+         default output as speakers (built-in device whose kAudioDevicePropertyDataSource is
+         internal speakers, or an external non-headphone device) | headphones (built-in device on
+         its headphone data source, or a Bluetooth/USB headset transport) | unknown. Record the
+         route as time spans on the meeting (host time, same epoch as the track anchors) and
+         expose fn output_route(...) for tests. unknown is treated as speakers (dedupe on) — a
+         missed dedupe is a duplicated sentence, a wrong dedupe on headphones would be the bug
+         below.
+      2. The dedupe runs INSIDE NT2's one-shot merge stage (after both tracks' ASR finished, before
+         the single transactional write) and ONLY for mic segments whose host-time span falls in a
+         speakers/unknown route span and overlaps a system-track segment (allow up to 500 ms
+         acoustic + buffer lag, measured, not guessed — commit the number to docs/BUDGETS.md).
+         A mic segment is dropped only when its normalized word sequence is substantially contained
+         in the overlapping system text (e.g. >= 0.6 of its tokens, in order); double-talk —
+         the mic segment carries words the system span does not — keeps the mic segment. Never
+         trim words out of a kept segment in this item.
+      3. Audio is never touched — the dedupe acts on segments only, so a re-transcribe re-derives
+         it. The row records how many mic segments were suppressed (one diagnostics field), and one
+         log line per meeting says how many and on which route.
+      4. Headphones spans skip the dedupe entirely; kind in_person meetings (MicOnly per NT3) never
+         run it.
+
+    NOT: no echo cancellation / DSP on the capture path, no new TCC permission, no change to
+    dictation, no second ASR pass.
+
+    Tests (tests/meeting_cross_track_bleed.rs, synthetic ChunkOutcome spans, no model):
+      - speakers route, mic re-hears a system sentence 250 ms late -> the mic copy is suppressed,
+        the system copy stays, the merged transcript has the sentence once;
+      - the same audio spans on a headphones route -> nothing suppressed;
+      - double-talk (mic speaks different words over a system sentence) -> both kept;
+      - mic speech with no overlapping system segment -> kept;
+      - a route change mid-meeting (speakers -> AirPods) applies the dedupe to the first span only;
+      - no real mic word is lost: across the fixture, every word that exists only on the mic track
+        survives (mirror meeting_eval's seam_dedupe_never_deletes_real_words posture).
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
+    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+    cd desktop && npm ci && cd src-tauri
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cross_track_bleed
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })

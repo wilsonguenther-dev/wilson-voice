@@ -214,3 +214,57 @@ and are APPROVED for pass 2 alongside `OS1`/`OS3`.
 **Destination / sequencing recommendation.** Build NT1-4, NT6, NT7, NT9, NT10, PILL1-4, OS1, OS3,
 OS4, OS5, UI1-3, PKG1-2 and the retargeted LIC-A first; revisit OS2/X2/X3 after, once Wilson has
 scoped what a local MCP surface or launch-at-login rework should actually do.
+
+## 12. `yap24-NT11` — cross-track bleed on built-in speakers (pass 2, added by the round-2 verify, 2026-09-26)
+
+**Why it is not in pass 1.** THE USER seat (HIGH) on the round-2 verify: on a call played through
+the built-in speakers the mic track re-hears the far side a few hundred ms late, so once `yap24-NT2`
+transcribes both tracks every remote sentence lands twice (Them + You) and `yap24-NT4`'s summary can
+attribute the other side's commitments to Wilson. It is real, but it needs NT2's one-shot merge and
+NT3's whole-meeting output-device tracking to exist first, and pass 1 is the stop→transcript→notes
+chain alone.
+
+**Design note.** An NT2-merge-stage dedupe (after both tracks' ASR, before the single transactional
+write): drop a mic segment only when it overlaps a system segment in host time (measured lag
+budget) AND its words are substantially contained in the system text; double-talk keeps both;
+audio is never touched. Route detection (built-in speakers vs headphones/AirPods, per span, on
+every default-output change) skips the dedupe where no bleed is possible; `unknown` counts as
+speakers.
+
+**Destination.** Pass 2. The item is `yap24-NT11` in `scripts/loop/items/01-yap24-notetaker.mjs`
+(gated `panel`); the pass-2 launch line carries it explicitly — `only` gains `"yap24-NT11"` and
+`panelApproved` gains `"yap24-NT11"` (see `Loop-Logs/YAP-RESUME-2026-09-26.md`).
+
+## 13. Harness — chain mode / stacked branches (CTO seat, declined by the 2026-09-26 panel)
+
+**The finding.** Each `yap24-NT*` item branches off `origin/main` before its predecessor has
+landed, so NT2..NT9 can each re-implement (or fail to find) what the item before them adds, and the
+LAND step lands the oldest eligible PR per builder turn with no dependency awareness. `DEPENDS:` is
+prose — nothing in `template.mjs` or `build.mjs` reads it.
+
+**Why it was declined then.** Rewriting the branch/land model into a dependency-aware chain is a
+harness-wide change (every pass uses it; the only test is the build dry run) and the panel judged it
+too risky to make untested inside its own budget. Mitigations in place: the LAND-scope fix
+(`args.only` prefixes bound what a scoped pass may merge) and the runbook ordering (review pass
+right after pass 1, before pass 2).
+
+**Destination.** A harness PR of its own, before any later multi-item chain: either parse
+`DEPENDS:` into a machine-readable `depends: [...]` field that the lane honours (skip-until-merged,
+or branch off the predecessor's branch and rebase when it lands), or run a chain file strictly
+build→land→build. Needs a dry-run shape that proves an item never builds before its dependency
+merged.
+
+## 14. Harness — review mode ignores `args.only` (follow-up, 2026-09-26 round-2 verify)
+
+**The finding.** `ONLY_PREFIXES` is computed only when `MODE === 'build'` (`template.mjs`,
+`args.only` section), so `{mode: 'review'}` sweeps EVERY open `loop-build` PR — including the 11
+stale Y-plan PRs (#156, #163, #178, #183, #186, #190-#192, #195-#197) built against older specs.
+A review pass run right after pass 1 would review/land those too.
+
+**Mitigation today.** Run the review pass only when no stale `loop-build` PRs remain open (list them
+with `gh pr list -R wilsonguenther-dev/wilson-voice --label loop-build --state open`); close,
+supersede or rebase them first.
+
+**Destination.** Harness PR: honour `args.only` in review mode (filter the PR queue by branch prefix
+derived from the matching items' `branch` fields), plus a dry-run shape `{mode:'review', only:[...]}`
+in `build.mjs`.
