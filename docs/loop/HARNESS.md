@@ -80,6 +80,15 @@ Workflow {scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop
   concurrent agents → land sweeper → main verify. Add `args: {dmg: true}` to make main verify build
   the bundle once.
 - Panel-gated items need `args: {panelApproved: ["ID", ...]}` or they cost nothing and are skipped.
+- **`args.only` (added 2026-09-26, ported from the sibling harness)** — an array of item-id
+  PREFIXES, build mode only. A non-matching item is hard-skipped like a panel-gated one (no agent,
+  no pre-flight); a part with no matching item is skipped whole by the parent, Recon included. An
+  `only` run therefore leaves the lane worktrees standing (only the LAST part's Drain tears down) —
+  use the manual cleanup below when the pass is the last one for a while. `args.now` (ISO-8601) is
+  echoed into the Recon log; no Yap item carries a not-before hold. The yap24 passes launch as:
+  `args: {mode: 'build', now: '<ISO now>', only: ['yap24-NT'], panelApproved: ['yap24-NT1', ...]}`.
+  See `docs/ARCHITECTURE-AUDIT-2026-09-26.md` §10 and the Obsidian resume doc
+  `Projects/Loop-Logs/YAP-RESUME-2026-09-26.md`.
 - Every part runs in order; a part that throws is logged and the run continues. A part that HALTS
   (session/usage limit, or `agent()` resolving to `null` three times) stops the run dead.
 

@@ -608,6 +608,29 @@ function panelSkip(item) {
   return null
 }
 
+// ── args.only — run ONLY the named items (build mode) ──
+// Ported from the sibling harness 2026-09-26. args.only is an array of item-id PREFIXES, e.g.
+//   Workflow {scriptPath: ..., args: {mode: 'build', only: ['yap24-NT'], panelApproved: [...]}}
+// In build mode an item whose id starts with none of them is HARD-skipped exactly like a panel-gated
+// item: no build agent, no pre-flight, no lane time, no tokens. It exists so a pass over the yap24
+// notetaker chain does not re-pre-flight the ~30 finished Y-items. Absent, empty or not an array ->
+// no filter. Review mode ignores it (the review pass is PR-driven). The parent
+// (scripts/cicd-loop-all.mjs, emitted by build.mjs) applies the same prefixes one level up and skips
+// a whole part, Recon included, when none of its items match — so an args.only run can leave the
+// lane worktrees standing; the next full run's Recon reuses them (manual teardown: HARNESS.md).
+const ONLY_PREFIXES =
+  MODE === 'build' && typeof args !== 'undefined' && args && Array.isArray(args.only) && args.only.length
+    ? args.only.map(String)
+    : null
+function onlySkip(item) {
+  if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
+  return { itemId: item.id, status: 'skipped: not in args.only', only: true }
+}
+// args.now — the launcher's clock, ISO-8601 (this runtime has no clock of its own). Informational
+// here: it is echoed into the Recon log so a run's journal says when it was launched. No Yap item
+// carries a not-before hold today, so nothing is compared against it.
+const RUN_NOW = typeof args !== 'undefined' && args && typeof args.now === 'string' ? args.now : null
+
 /**
  * ══ COMMANDS ARE EXECUTED, NOT DESCRIBED ══════════════════════════════════════════════════
  *
@@ -1605,12 +1628,20 @@ log(
     `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
 )
 
+if (ONLY_PREFIXES) {
+  const kept = ITEMS.filter((it) => !onlySkip(it)).map((it) => it.id)
+  log(
+    `args.only = [${ONLY_PREFIXES.join(', ')}]: ${kept.length} item(s) run (${kept.join(', ') || 'none'}), ` +
+      `${ITEMS.length - kept.length} hard-skipped with no agent. args.now = ${RUN_NOW || 'not passed'}.`
+  )
+}
+
 /** ONE BUILDER LANE. It walks its own items and never awaits the other lane, ever. */
 async function buildLane(lane) {
   for (const item of laneItems[lane]) {
     if (halted) break
     const at = indexOfItem(item)
-    const skipped = panelSkip(item)
+    const skipped = onlySkip(item) || panelSkip(item)
     if (skipped) {
       slots[at] = skipped
       continue

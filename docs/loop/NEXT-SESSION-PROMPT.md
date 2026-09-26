@@ -1,10 +1,10 @@
-Yap CI/CD build loop — launch immediately. You are Fable: orchestrate only, Opus executes, max 3 concurrent agents (loop lanes count), never wait on a running task (dispatch, end the turn, react to the completion notification). agent()===null means a usage limit; the harness halts itself — do not relaunch until the limit resets.
+Yap CI/CD loop — yap24 (2026-09-26). You are Fable: orchestrate only, Opus executes, max 3 concurrent agents (loop lanes count), never wait on a running task (dispatch, end the turn, react to the completion notification). agent()===null means a usage limit; the harness halts itself.
 
-Already done, do not redo: the 88-item plan at ~/code/wilson-voice/docs/loop/PLAN.md was Senior-Panel audited 2026-09-12 (verdict revise-first → revisions applied and verified, telemetry logged). Harness contract: docs/loop/HARNESS.md. Memory: project_yap_loop_state_20260912. Panel-gate exemption when the hook fires: already-audited plan. Main is at 1f0cf10 (this prompt file is committed on top of it — step 1 pulls both).
+READ FIRST: ~/Obsidian/Wilson-Brain/Projects/Loop-Logs/YAP-RESUME-2026-09-26.md (the full runbook), then docs/ARCHITECTURE-AUDIT-2026-09-26.md (why), docs/loop/HARNESS.md (how). Memory anchor: project_yap_loop_state_20260912 (UPDATE 2026-09-26 line).
 
-Status: build loop 42/88 processed (31 merged, 11 open PRs) as of main c79acd6; stopped by Wilson 2026-09-15. Relaunch cold in build mode (pre-flight skips merged items and re-evaluates open PRs), then run mode review. Before launch: `tmutil thinlocalsnapshots / 80000000000 4` and confirm >=40 GB free.
+State: 114 items = the 88-item Y-plan (30 merged, 2 already-done, 11 stale open PRs, 43 not started, 2 owner-gated) + 26 new yap24 items, ALL gated:'panel'. The notetaker records but never transcribes (MeetingAsr has no production caller) — the yap24-NT chain runs FIRST.
 
-Step 1, one line: cd ~/code/wilson-voice && git pull --ff-only origin main && cd desktop && npm run loop:validate
-Step 2: Workflow({scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop-all.mjs", args: {mode: "build"}}) — then END THE TURN.
-Step 3, on the completion notification: if halted on a usage limit, keep the runId and resume with Workflow({scriptPath, resumeFromRunId, args:{mode:"build"}}) in the same session once the limit resets, or relaunch cold in a new session (pre-flight skips finished items). When build mode completes: log to Obsidian (Claude-Sessions, Daily, the Yap project note), update memory project_yap_loop_state, then launch the review-and-fix pass with the same scriptPath and args {mode: "review"}.
-Owner decisions applied 2026-09-13: pill = pluggable character system (ClassicPill + YappyPill + habitat, more creatures later); LIC-A = Stripe → Supabase Edge Function issuer on a dedicated Yap Supabase project (runtime dep Wilson provisions). Still pending, non-blocking: support floor (arm64-only vs universal). Gated, do not build: DB-A, Y11-F.
+Step 0: run the Senior Panel (/panel) on docs/ARCHITECTURE-AUDIT-2026-09-26.md + scripts/loop/items/0[1-4]-yap24-*.mjs, 60-, 65-. Record approved ids.
+Step 1: git -C ~/code/wilson-voice pull --ff-only origin main && cd ~/code/wilson-voice/desktop && npm run loop:validate
+Step 2 (pass 1): Workflow({scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/cicd-loop-all.mjs", args: {mode: "build", now: "<ISO now>", only: ["yap24-NT"], panelApproved: [<approved yap24-NT ids>]}}) — then END THE TURN.
+Later passes, the review pass and teardown: see the resume doc.

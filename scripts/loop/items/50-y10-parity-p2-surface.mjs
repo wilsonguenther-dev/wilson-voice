@@ -10,6 +10,7 @@
 
 ITEMS.push({
   id: 'Y10-A', prompt: 'Y10', branch: 'loop/y10-a-multi-language-and-the-in-bar-picker', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Multi-language: expose what the engine can already do, with the picker in the bar',
   preflight: `
     grep -q 'language_set' desktop/src-tauri/src/lib.rs
@@ -70,6 +71,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-H', prompt: 'Y10', branch: 'loop/perm-h-microphone-ranking-and-device-intelligence', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings',
   preflight: `
     grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
@@ -134,6 +136,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-B', prompt: 'Y10', branch: 'loop/y10-b-rich-text-snippets-on-the-pasteboard', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste',
   preflight: `
     grep -q 'rtf\\|public.rtf' desktop/src-tauri/src/paste.rs
@@ -194,6 +197,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-D', prompt: 'Y10', branch: 'loop/y10-d-mouse-button-push-to-talk', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A non-primary mouse button as push-to-talk',
   preflight: `
     grep -q 'mouse_ptt\\|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
@@ -249,6 +253,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-E', prompt: 'Y10', branch: 'loop/y10-e-local-insights-v2-and-the-yappy-profile', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy\'s dialogue',
   preflight: `
     grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
@@ -314,6 +319,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-F', prompt: 'Y10', branch: 'loop/y10-f-publish-the-idle-cost-number', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: yap23 install measured idle RSS ~135-138 MB (pid 87890); wakeups were never measured — yap24-OS5 depends on this item.`,
   title: 'Measure and publish Yap\'s idle RAM and CPU — the free marketing line the research asked for',
   preflight: `
     test -f desktop/src-tauri/tests/idle_cost.rs

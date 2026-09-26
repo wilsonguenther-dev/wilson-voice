@@ -86,9 +86,34 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 25 items (Y8-A..Y11-F), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 55 items (Y5-G..yap24-X3), 6 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
+    { title: "Y5-G", detail: "Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all" },
+    { title: "Y5-A", detail: "A token layer so the seven views stop each inventing their own colours, spacing and radii" },
+    { title: "Y5-B", detail: "The \"looks broken\" fix: all seven views get a real empty state, a real loading state and a real error state" },
+    { title: "Y5-C", detail: "The pill gets every state the product has, including the transcribe/think gap Wilson named" },
+    { title: "Y5-D", detail: "Soft-body pill motion using Wispr's measured spring constants, with Reduce Motion respected" },
+    { title: "Y5-E", detail: "The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about" },
+    { title: "Y5-F", detail: "One error surface, one sentence per failure, one action — replacing raw strings and silent failures" },
+    { title: "Y5-J", detail: "The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer" },
+    { title: "Y5-I", detail: "Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way" },
+    { title: "Y5-K", detail: "The pill becomes a pluggable character system, and the habitat comes back as its habitat layer" },
+    { title: "UPD-A", detail: "The updater points at an endpoint that can serve a private repo — today it points at a dead URL" },
+    { title: "UPD-B", detail: "Publish latest.json + .app.tar.gz + .sig to the host the updater now points at, and keep the previous build" },
+    { title: "Y6-A", detail: "Onboarding ends with one successful pasted dictation, or it tells you exactly what is missing" },
+    { title: "PRIV-A", detail: "Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever" },
+    { title: "Y6-B", detail: "The menu bar becomes a usable surface: state, the last transcript, hide-for-an-hour, quit" },
+    { title: "Y6-C", detail: "The paste lands in the app you dictated into, or it does not paste — including secure-input fields" },
+    { title: "DB-C", detail: "History, FTS search and export hold up at real volume, and Clear History still destroys the words" },
+    { title: "PRIV-B", detail: "Clear History erases the audio and the partial words, not only the SQLite rows" },
+    { title: "Y6-D", detail: "Cold launch, sleep/wake, display change and a second copy of Yap all behave" },
+    { title: "Y6-E", detail: "README, ARCHITECTURE, ROADMAP and PRODUCT stop describing an app that no longer exists" },
+    { title: "Y7-A", detail: "A headless smoke that runs the real built binary end to end, not a unit test of its parts" },
+    { title: "Y7-B", detail: "A windowed smoke that launches Yap, walks all seven views and captures them at two sizes" },
+    { title: "Y7-C", detail: "Every test this loop added is proven non-vacuous by a mutation that makes it fail" },
+    { title: "Y7-D", detail: "The pure frontend modules get real coverage, so the pill and the states are testable without a window" },
+    { title: "Y7-E", detail: "The shipped DMG is smoke-tested the way a first-time user meets it" },
     { title: "Y8-A", detail: "The hotkey suite: hands-free, cancel, copy-last, paste-last, scratchpad, with real validation rules" },
     { title: "DB-D", detail: "Scratchpad: a second window on a hotkey, dictate-into-note, versions — the half-built feature finished" },
     { title: "Y8-B", detail: "The pill becomes a bar: five affordance slots, each with a tooltip and a vertical-dock layout" },
@@ -114,6 +139,11 @@ export const meta = {
     { title: "Y11-D", detail: "Issue #153: split_partition's farthest-pair seeding does not separate speakers when an outlier is the far point" },
     { title: "Y11-E", detail: "Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist" },
     { title: "Y11-F", detail: "A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists" },
+    { title: "yap24-PKG1", detail: "One local release command: build, Developer ID sign, hdiutil DMG, notarize, staple, verify, updater artifacts — with a dry run" },
+    { title: "yap24-PKG2", detail: "A fresh Mac with no network at first launch is told exactly why dictation is waiting — or can dictate with a bundled tiny model" },
+    { title: "yap24-X1", detail: "Your notes outlive the app: every meeting and (optionally) every dictation mirrors to Markdown in a folder you choose" },
+    { title: "yap24-X2", detail: "A local, read-only MCP server so Claude and other agents can search your dictations and meeting notes — nothing leaves the Mac" },
+    { title: "yap24-X3", detail: "Ask your meeting: \"what did I miss / what did we decide\" answered by the local model, every answer citing its transcript lines" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -192,7 +222,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y8-A":0,"DB-D":0,"Y8-B":0,"Y8-C":0,"Y8-D":0,"Y9-A":1,"Y9-B":1,"Y9-C":1,"PERM-F":1,"PERM-G":1,"Y9-D":1,"Y9-E":1,"Y10-A":0,"PERM-H":0,"Y10-B":0,"Y10-D":0,"Y10-E":0,"Y10-F":0,"Y11-A":1,"Y11-B":1,"DB-E":1,"Y11-C":1,"Y11-D":1,"Y11-E":1,"Y11-F":1}
+const LANE_BY_ID = {"Y5-G":1,"Y5-A":1,"Y5-B":1,"Y5-C":1,"Y5-D":1,"Y5-E":1,"Y5-F":1,"Y5-J":1,"Y5-I":1,"Y5-K":1,"UPD-A":0,"UPD-B":0,"Y6-A":0,"PRIV-A":0,"Y6-B":0,"Y6-C":0,"DB-C":0,"PRIV-B":0,"Y6-D":0,"Y6-E":0,"Y7-A":1,"Y7-B":1,"Y7-C":1,"Y7-D":1,"Y7-E":1,"Y8-A":0,"DB-D":0,"Y8-B":0,"Y8-C":0,"Y8-D":0,"Y9-A":1,"Y9-B":1,"Y9-C":1,"PERM-F":1,"PERM-G":1,"Y9-D":1,"Y9-E":1,"Y10-A":0,"PERM-H":0,"Y10-B":0,"Y10-D":0,"Y10-E":0,"Y10-F":0,"Y11-A":1,"Y11-B":1,"DB-E":1,"Y11-C":1,"Y11-D":1,"Y11-E":1,"Y11-F":1,"yap24-PKG1":0,"yap24-PKG2":0,"yap24-X1":1,"yap24-X2":1,"yap24-X3":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -641,6 +671,29 @@ function panelSkip(item) {
   }
   return null
 }
+
+// ── args.only — run ONLY the named items (build mode) ──
+// Ported from the sibling harness 2026-09-26. args.only is an array of item-id PREFIXES, e.g.
+//   Workflow {scriptPath: ..., args: {mode: 'build', only: ['yap24-NT'], panelApproved: [...]}}
+// In build mode an item whose id starts with none of them is HARD-skipped exactly like a panel-gated
+// item: no build agent, no pre-flight, no lane time, no tokens. It exists so a pass over the yap24
+// notetaker chain does not re-pre-flight the ~30 finished Y-items. Absent, empty or not an array ->
+// no filter. Review mode ignores it (the review pass is PR-driven). The parent
+// (scripts/cicd-loop-all.mjs, emitted by build.mjs) applies the same prefixes one level up and skips
+// a whole part, Recon included, when none of its items match — so an args.only run can leave the
+// lane worktrees standing; the next full run's Recon reuses them (manual teardown: HARNESS.md).
+const ONLY_PREFIXES =
+  MODE === 'build' && typeof args !== 'undefined' && args && Array.isArray(args.only) && args.only.length
+    ? args.only.map(String)
+    : null
+function onlySkip(item) {
+  if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
+  return { itemId: item.id, status: 'skipped: not in args.only', only: true }
+}
+// args.now — the launcher's clock, ISO-8601 (this runtime has no clock of its own). Informational
+// here: it is echoed into the Recon log so a run's journal says when it was launched. No Yap item
+// carries a not-before hold today, so nothing is compared against it.
+const RUN_NOW = typeof args !== 'undefined' && args && typeof args.now === 'string' ? args.now : null
 
 /**
  * ══ COMMANDS ARE EXECUTED, NOT DESCRIBED ══════════════════════════════════════════════════
@@ -1418,6 +1471,2014 @@ async function runBuildSafe(item, lane) {
 // PREVIEW_PORT, PREVIEW_PORT_B, LOG, TELEMETRY, NPM_CACHE, STATUS_BOARD — and nothing else
 // (build.mjs fails the build on any other ${IDENT} in an item file).
 const ITEMS = []
+// ── 25-y5-ui-ux-polish.mjs ────────────────────────────────────────────────
+// Y5 — UI/UX. Wilson, 2026-09-12, verbatim: "the app looks broken, not smooth —
+// lots of UI/UX problems." And, standing: "we got to really think about this
+// thing end to end."
+//
+// AUDIT, structural, at 4e8c9adf:
+//   desktop/src/App.tsx      3,439 lines  — ONE component holding seven views
+//                            (Nav: home | permissions | meetings | insights |
+//                            dictionary | scratchpad | settings, App.tsx:55-61)
+//                            and eight settings sub-tabs (App.tsx:66-85).
+//   desktop/src/App.css      2,789 lines  — one stylesheet, no token layer.
+//   desktop/src/home/YappyHouse.tsx  919 lines
+//   Empty / loading / error states:
+//     git grep -c "empty-state\|EmptyState\|skeleton" -- desktop/src
+//       -> App.css: 1, App.tsx: 1.  For SEVEN views. That is the "looks broken"
+//          report: a view with no data renders a bare frame with no explanation
+//          and no action.
+//   The pill's whole state vocabulary is four values:
+//     ClassicPill.tsx:23-24  {recording, busy, message} + a `done` flag
+//     live.ts:252   LivePhase = idle | listening | thinking | done | sleepy
+//   Wispr's Flow Bar has TWELVE states with exact geometry per dock
+//   (reference_wispr_parity_research §4.2, [BUNDLE]): resting · ready ·
+//   activePtt · activePopo · processing · polishProcessing · polishCompleted ·
+//   autoCleanupCompleted · error · growthNudgeActive · navigationActive ·
+//   postInstructBubble · instructCollapsing.
+//   project_yap_pill_vision, Wilson's own words: "fill the dead time after
+//   talking stops and before text appears (transcribe/think gap) and every
+//   other micro-state — idle->listening->transcribing->polishing->pasting->
+//   done->fold-back + errors/permission/model-loading/empty. Today only
+//   listening/busy/done exist."
+//
+// MOTION CONSTANTS, primary-sourced, use these exact numbers
+// (reference_wispr_parity_research §4.3 [BUNDLE]):
+//   springs stiffness:600 damping:35 restDelta:0.05 (snappy morphs)
+//   springs stiffness:300 damping:28 (the slower one)
+//   cubic-bezier(0.05,0.6,0.4,0.95) @ 100ms for state changes
+//   300-400ms for expand/collapse
+//   hover hysteresis: an invisible ::before alpha margin at inset:-12px,
+//   painted ONLY while expanded
+//   rgba(0,0,0,0.004) background so the box is clickable while invisible
+//
+// AESTHETIC LOCK — not negotiable, do not re-litigate:
+//   feedback_companion_must_be_cute: PIXEL ART on a little LCD screen/pod
+//   (Tamagotchi / Bitzee). Chunky pixels, imageSmoothingEnabled=false, limited
+//   retro palette. NOT smooth vector. NO angled "angry" eyebrows. Paper/origami
+//   is REJECTED ("def a no on the paper").
+//   feedback_no_generic_ui: reject AI-dashboard aesthetics.
+//   feedback_ui_quality: truly native feel, no webview tells.
+//   feedback_think_ux_first: controls first, prose last.
+//
+// ── OWNER DECISION 2026-09-13 (Wilson) — THE PILL IS A CHARACTER SYSTEM ──
+//   Verbatim: "I thought we were gonna develop it and then make more characters
+//   and make it more flexible ... there's a classic pill and there's a yappy
+//   pill and there's gonna be different pills with the different creatures that
+//   are coming."
+//   So "which pill ships in v1" was the WRONG QUESTION and is closed: BOTH ship,
+//   as the first two CHARACTERS of a pluggable system, and more creatures come
+//   later. The panel's cost objection was real and is answered STRUCTURALLY,
+//   not by picking one:
+//     * THE SHELL owns everything that is not the creature — the window, the
+//       dock, the geometry table, hover/hit-testing, motion, the phase state
+//       machine, a11y names. Dock positions are handled ONCE, in the shell.
+//     * A CHARACTER is a DATA-DRIVEN MODULE behind one interface: given a phase
+//       and a tone it returns a sprite/animation and copy. It knows nothing
+//       about docks, windows or license logic.
+//     * TESTS RUN A FIXTURE MATRIX OVER THE REGISTERED CHARACTERS instead of
+//       duplicating a code path per pill. Y5-C's "13 phases x 2 styles x 3 docks"
+//       becomes 13 phases x 3 docks in the shell, plus one data completeness
+//       sweep per registered character.
+//     * A NEW CREATURE IS A NEW MODULE + A FIXTURE ROW. No shell change.
+//   Y5-K builds that system and reinstates the living habitat (the killed Y5-H)
+//   as its habitat layer. The aesthetic lock below is unchanged and binding.
+//
+// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
+// EVERY item here owes the two-size screenshots (980x700 and 720x520) plus the
+// pill at three dock positions for each state it touches.
+
+ITEMS.push({
+  id: 'Y5-G', prompt: 'Y5', branch: 'loop/y5-g-split-app-tsx-into-views', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #188) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all',
+  preflight: `
+    test 900 -ge "$(wc -l < desktop/src/App.tsx)"
+    test -d desktop/src/views
+    cd ${APP} && npm ci && npm run build && npm test
+  `,
+  spec: `
+    \`App.tsx\` is 4,660 lines holding seven views and eight settings sub-tabs
+    (PANEL 2026-09-12: the audit's 3,439 was measured against an older tree and
+    is 1,221 lines low — \`wc -l desktop/src/App.tsx\` at 4e8c9adf is 4,660, so
+    this is a ~3,760-line move, not a ~2,500-line one).
+    Every later UI item in this loop has to edit it, which makes them serially
+    conflicting and makes each one hard to review. This is the enabling refactor.
+
+    Do:
+      * \`desktop/src/views/{Home,Permissions,Meetings,Insights,Dictionary,Scratchpad,Settings}.tsx\`,
+        one per \`Nav\` value (App.tsx:55-61), and
+        \`desktop/src/views/settings/\` for the eight \`SettingsTab\`s
+        (App.tsx:66-85). App.tsx keeps the shell: nav, the license chip, the
+        toast host, the event listeners.
+      * PURE MECHANICAL MOVE. No behaviour change, no restyling, no renaming of
+        a state field. The gate is that \`npm test\` and \`npm run build\` pass and
+        Y0-E's structural smoke reports the same result before and after; a
+        mixed refactor-plus-redesign diff
+        is unreviewable and is how a regression ships.
+      * Shared state that currently lives in one component body has to be lifted
+        deliberately. Prefer props and a small number of explicit contexts over
+        a global store; do not add a state-management dependency.
+      * The event listeners (App.tsx:1190-1210 license, plus the take/status
+        listeners) stay in ONE place in the shell. Seven views each subscribing
+        to \`recording\` is seven listeners and a leak.
+
+    Tests: existing suites must pass unchanged, and add
+    \`desktop/src/views/views.test.tsx\` asserting each view module exports a
+    default component and that no view module registers a Tauri \`listen\` —
+    the sweep that keeps the listener discipline from eroding.
+
+    PANEL 2026-09-12 — ORDER REVERSED. This item now runs FIRST in this file.
+    Four seats converged: eleven items across both lanes edit App.tsx, this item
+    empties it, and the build agent's LAND step is told to SKIP a conflicting PR
+    rather than fix it. Doing the states first means Y5-B/Y5-F write markup into
+    the monolith and then this item moves it again, with the cross-lane items
+    (PERM-B, PERM-E, Y2-D, Y4-G, DB-D, Y10-E, Y7-D) all branched off the old
+    shape. So: pure mechanical move FIRST, on the smallest possible diff, then
+    every later UI item writes into desktop/src/views/<View>.tsx.
+    Because it moves first, the gate is the existing suites plus Y0-E's
+    structural windowed smoke (same assertions before and after) — NOT
+    "the screenshots are pixel-identical", which named a golden-image gate that
+    does not exist and that Y7-B explicitly forbids.
+    Split the landing if the diff is unreviewable: views first, then settings/*,
+    two PRs, identical gate on each.
+
+    What NOT to do:
+      - Do NOT restyle while moving.
+      - Do NOT add Redux/Zustand/Jotai.
+      - Do NOT leave a re-export shim that lets code keep importing views from
+        App.tsx.
+  `,
+  acceptance: `
+    test 900 -ge "$(wc -l < desktop/src/App.tsx)"                 # MEASURED baseline: 4660
+    # PANEL: views.test.tsx used to live in views/ and matched this glob, so the
+    # count was 8 and \`test 7 -eq\` could never pass however well the item was built.
+    test 7 -eq "$(ls desktop/src/views/*.tsx | wc -l | tr -d ' ')"
+    test 8 -eq "$(ls desktop/src/views/settings/*.tsx | wc -l | tr -d ' ')"
+    test -f desktop/src/views/__tests__/views.test.tsx
+    grep -q 'no_view_module_registers_a_listener' desktop/src/views/__tests__/views.test.tsx
+    # a PURE MOVE adds no behaviour: the moved lines land, they do not multiply
+    test 5200 -ge "$(cat desktop/src/App.tsx desktop/src/views/*.tsx desktop/src/views/settings/*.tsx | wc -l)"
+    test 0 -eq "$(grep -c 'settingsTab === ' desktop/src/App.tsx)"
+    cd ${APP} && npm ci
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build ; test $? -eq 0
+    npm test      ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-A', prompt: 'Y5', branch: 'loop/y5-a-design-tokens-and-one-visual-system', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #190 OPEN and stale (main moved 30+ times under it), labelled needs-human. Rebase that PR onto main and finish it; do not open a second PR.`,
+  title: 'A token layer so the seven views stop each inventing their own colours, spacing and radii',
+  preflight: `
+    test -f desktop/src/tokens.css
+    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"
+    cd ${APP} && npm ci && npm run build
+  `,
+  spec: `
+    \`App.css\` is 2,789 lines with literal colours, spacings and radii repeated
+    throughout, which is mechanically why unrelated screens look like different
+    apps — the "looks broken, not smooth" report is largely inconsistency, not
+    any single broken screen.
+
+    Do:
+      * \`desktop/src/tokens.css\`: one \`:root\` block. Colour, elevation,
+        radius, spacing (a 4px-based scale), type scale, motion durations and
+        the two spring curves from the header. Name tokens by ROLE
+        (--surface-raised, --text-muted, --accent-urgent), never by value
+        (--gray-3). A role-named token survives a palette change; a
+        value-named one guarantees the next inconsistency.
+      * Migrate App.css and float.css to the tokens. Zero hex literals left in
+        either. The gate greps for that, so a partial migration fails.
+      * Keep the LOOK as it is in this item, to within a rounding error. This is
+        a refactor whose whole value is that it is invisible; changing the
+        palette at the same time makes every later visual diff unreadable.
+      * Palette: pin the retro/LCD palette the companion already uses so the
+        chrome and the character share one world instead of two
+        (feedback_companion_must_be_cute — chunky pixels, limited retro
+        palette). Read the palette off docs/prototypes/yappy-house.html and
+        src/home/YappyHouse.tsx rather than inventing one.
+      * Dark/light: whichever the app ships today is the one that must keep
+        working. Define both token sets if both exist; define one and say so if
+        only one does. Do not add a theme switcher in this item.
+
+    PR body owes a before/after screenshot of all seven views at both window
+    sizes, and the statement "no intentional visual change" with any unavoidable
+    diff called out by name.
+
+    What NOT to do:
+      - Do NOT add Tailwind or a CSS framework. The CSP is strict
+        (tauri.conf.json app.security.csp: style-src 'self' 'unsafe-inline',
+        no external hosts) and a framework here buys nothing.
+      - Do NOT restyle anything in this item. Y5-B..I do the visual work on top.
+  `,
+  acceptance: `
+    test -f desktop/src/tokens.css
+    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"     # 0 literals left
+    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/float.css)"
+    grep -q -- '--surface' desktop/src/tokens.css
+    grep -q -- 'cubic-bezier(0.05, *0.6, *0.4, *0.95)' desktop/src/tokens.css
+    grep -q 'tokens.css' desktop/src/main.tsx desktop/src/float-main.tsx
+    cd ${APP} && npm ci && npm run build ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-B', prompt: 'Y5', branch: 'loop/y5-b-every-view-has-empty-loading-and-error-states', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #192 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
+  title: 'The "looks broken" fix: all seven views get a real empty state, a real loading state and a real error state',
+  preflight: `
+    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
+    cd ${APP} && npm ci && npm test -- states
+  `,
+  spec: `
+    MEASURED: \`git grep -c "empty-state\\|EmptyState\\|skeleton" -- desktop/src\`
+    returns one match in App.tsx and one in App.css, for seven views
+    (App.tsx:55-61: home, permissions, meetings, insights, dictionary,
+    scratchpad, settings). A fresh install has no history, no meetings, no
+    dictionary entries, no scratchpad notes and no insights — which is to say
+    every view a new user opens is in its least-designed state. That is the
+    first impression and it is the complaint.
+
+    For EACH of the seven views ship three states:
+      * EMPTY: one sentence saying what lives here, and ONE primary action that
+        creates the first thing. Home's empty action is "hold fn and say
+        something"; Dictionary's is "add a word"; Scratchpad's is "new note".
+        Never a shrug, never a bare illustration with no action.
+      * LOADING: a determinate state where the count is knowable and a calm
+        indeterminate one where it is not. Not a full-page spinner. Not a
+        skeleton that pulses forever (a skeleton with no timeout is how the
+        Drivia audit found nineteen pages "still loading at 15s").
+      * ERROR: what failed, in the user's terms, and the one button that retries
+        or fixes it. A DB error is "Yap could not open its history file", not an
+        SQLite code.
+    Mark each with \`data-empty-state\` / \`data-loading-state\` /
+    \`data-error-state\` so the gate can count them and a future browser walk
+    can assert them.
+
+    Two specific measured cases that must be covered by name:
+      * Home before the model is downloaded. \`status.modelReady\` and
+        \`needsPerms\` already gate a banner (App.tsx:2227) — make the whole view
+        coherent in that state rather than a normal view with a warning strip.
+      * Insights with zero takes. \`nav === "insights" && insights &&\`
+        (App.tsx:2953) renders NOTHING when \`insights\` is falsy — a blank
+        screen with a heading. That is a literal blank page in the shipped app.
+
+    Copy rules: sentence case, no exclamation marks, name the action in the
+    button ("Add a word", not "OK"), say what happens next rather than what went
+    wrong (feedback_think_ux_first).
+
+    Tests: extract each view's state decision into a pure function
+    (\`viewState(data, loading, error)\`) in \`desktop/src/viewState.ts\` with
+    \`viewState.test.ts\` covering the 3x7 matrix, so the assertions do not
+    require rendering 3,439 lines of App.tsx.
+
+    What NOT to do:
+      - Do NOT ship an empty state without an action.
+      - Do NOT use the same generic illustration for all seven. Generic is the
+        thing being fixed (feedback_no_generic_ui).
+      - Do NOT satisfy the gate by adding the attribute to a div that renders
+        nothing. The gate counts attributes; the reviewer looks at the
+        screenshots, and a hollow marker is a failed item.
+    PANEL 2026-09-12 — three corrections.
+      * Enumerate each view's REAL state set instead of demanding all three
+        everywhere. A permissions screen with nothing in it is a bug, not an
+        empty state, and a settings screen has no empty state either: those two
+        get loading + error plus a settled "nothing to fix here" state. The list
+        views (History, Meetings, Dictionary, Insights, Scratchpad) get all
+        three. Lower the counts to match the enumeration — markers that exist
+        only to satisfy a count are the hollow markers this item's own "What NOT
+        to do" forbids, and build mode runs NO reviewer to catch them.
+      * The gate that decides is Y0-E's structural smoke (it already fails a
+        view that renders zero rows with no \`data-empty-state\`), not an
+        attribute count. The counts are a cheap pre-flight.
+      * Scratchpad's shape changes in DB-D (a real second window, versions), so
+        its states are provisional here — say so in the PR body and do not build
+        them twice.
+      * Write the markers into the view MODULES (Y5-G has already moved them);
+        never into the App.tsx shell.
+
+  `,
+  acceptance: `
+    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
+    test 7 -le "$(grep -ro 'data-loading-state' desktop/src --include=*.tsx | wc -l)"
+    test 7 -le "$(grep -ro 'data-error-state' desktop/src --include=*.tsx | wc -l)"
+    test -f desktop/src/viewState.ts
+    test -f desktop/src/viewState.test.ts
+    grep -q 'insights' desktop/src/viewState.test.ts
+    cd ${APP} && npm ci
+    npm test -- viewState ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build         ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-C', prompt: 'Y5', branch: 'loop/y5-c-the-full-pill-state-machine', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #193) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'The pill gets every state the product has, including the transcribe/think gap Wilson named',
+  preflight: `
+    grep -q '"polishing"' desktop/src/pill/live.ts
+    grep -q '"pasting"' desktop/src/pill/live.ts
+    grep -q '"model_loading"' desktop/src/pill/live.ts
+    cd ${APP} && npm ci && npm test -- pill/live
+  `,
+  spec: `
+    \`LivePhase\` (live.ts:252) is \`idle | listening | thinking | done | sleepy\`.
+    PERM-C adds \`blocked\`, Y2-C adds \`gated\`, Y3-C adds \`transcribing\`. This
+    item completes the vocabulary against project_yap_pill_vision's list, which
+    is Wilson's own enumeration:
+
+      idle -> listening -> transcribing -> polishing -> pasting -> done
+      plus: error · blocked (permission) · gated (license) · model_loading ·
+            empty (nothing was said) · cancelled · sleepy
+
+    Add the missing ones — \`polishing\`, \`pasting\`, \`error\`, \`model_loading\`,
+    \`empty\`, \`cancelled\` — and make each REAL:
+      * \`polishing\` is distinct from \`transcribing\`. It is the LLM stage and it
+        has its own deadline (1200 ms, polish.rs:59), so its state has a
+        knowable duration and must not look like an indefinite wait.
+      * \`pasting\` exists because the paste is receipt-sequenced (YV39) and can
+        fail on its own — a failure there is an Accessibility problem, not a
+        transcription problem, and the pill must say the right one.
+      * \`empty\` is the YV16 no-speech / hallucination-gate outcome: Yap
+        correctly refuses to paste garbage, and today says nothing, so a user
+        experiences a dead hotkey. This state is the whole visible payoff of
+        that gate.
+      * \`model_loading\` covers YV80's lazy arm: the first dictation after
+        launch loads the engine while capture is already live (lib.rs:1156-1158).
+        The pill should say the engine is warming rather than appear stuck.
+      * \`error\` is the generic terminal state with a one-line reason from the
+        take's \`last_error\` (lib.rs:1147 sets it) — never a code.
+
+    Every phase needs: a duration policy (how long it holds), a next phase, and
+    a rendering that the SHELL places at ALL THREE dock positions — once, not
+    once per pill (OWNER DECISION 2026-09-13, top of this file). Both
+    ClassicPill and YappyPill ship; they are the first two characters, so what
+    each owes this item is PHASE COVERAGE AS DATA (a sprite/animation and copy
+    for every phase in every tone), never a second copy of the phase logic or of
+    the dock placement. Until Y5-K lands the registry, keep the per-character
+    data in the component that already holds it and DO NOT add a third branch
+    on \`pill_style\` anywhere outside those two components — Y5-K's first act
+    is to lift exactly that data out.
+    Put the policy in the pure state machine (live.ts) and only the rendering in
+    the components — the
+    file is already 310 lines of pure logic with 271 lines of tests precisely so
+    this is possible, and ci.yml calls out that vitest is a gate because a
+    regression here shipped once.
+
+    Also fix the state-gap problem directly: Wilson's words are "fill the dead
+    time after talking stops and before text appears". Assert in tests that
+    there is NO reachable sequence in which the pill sits in a single
+    undifferentiated phase across the whole post-hold pipeline. Concretely:
+    \`listening -> done\` with no intervening phase is illegal.
+
+    Tests, in \`desktop/src/pill/live.test.ts\`:
+      * a transition table test — every phase has a defined successor set, and
+        no phase is unreachable.
+      * \`no_path_from_listening_to_done_without_an_intermediate_phase\`
+      * \`every_phase_has_copy_in_every_tone\` — the tone presets are
+        rude|friendly|rose (live.ts:29) and \`companion_tone: "friendly"\` is the
+        default (lib.rs:412). A phase with no copy in one tone is a blank pill.
+      * \`every_phase_renders_within_the_side_dock_strip\`
+      * \`every_shipped_character_has_copy_and_art_for_every_phase\` — a table
+        test driven off the list of characters that ship (classic, yappy), so
+        adding a creature adds a row and not a test file. This is the fixture
+        matrix the character system formalises in Y5-K.
+      * precedence: blocked > gated > error > cancelled > the happy path.
+
+    Depends on PERM-C, Y2-C, Y3-C.
+
+    What NOT to do:
+      - Do NOT add a phase without copy in all three tones.
+      - Do NOT let a phase hold indefinitely with no timeout except \`idle\`,
+        \`listening\`, \`blocked\` and \`gated\` (the four that legitimately wait on
+        the user or the OS). Everything else has a deadline; say it in the table.
+    PANEL 2026-09-12 — PERM-C now lands the COMPLETE \`LivePhase\` union in one
+    commit (see PERM-C (b)), because six items across two unsynchronised lanes
+    were each adding a variant to the same 310-line pure module from their own
+    branch off main. So this item ADDS RENDERING AND COPY for phases that
+    already exist in the union; it does not edit the union. If a phase is
+    missing when this item starts, that is a signal PERM-C has not landed —
+    report it, add the rendering against the union as PERM-C specifies it, and
+    do not invent a differently-named variant.
+
+  `,
+  acceptance: `
+    grep -q '"polishing"' desktop/src/pill/live.ts
+    grep -q '"pasting"' desktop/src/pill/live.ts
+    grep -q '"model_loading"' desktop/src/pill/live.ts
+    grep -q '"empty"' desktop/src/pill/live.ts
+    grep -q '"cancelled"' desktop/src/pill/live.ts
+    grep -q '"error"' desktop/src/pill/live.ts
+    grep -q 'no_path_from_listening_to_done_without_an_intermediate_phase' desktop/src/pill/live.test.ts
+    grep -q 'every_phase_has_copy_in_every_tone' desktop/src/pill/live.test.ts
+    grep -q 'every_phase_renders_within_the_side_dock_strip' desktop/src/pill/live.test.ts
+    grep -q 'every_shipped_character_has_copy_and_art_for_every_phase' desktop/src/pill/live.test.ts
+    cd ${APP} && npm ci
+    npm test -- pill ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-D', prompt: 'Y5', branch: 'loop/y5-d-pill-physics-and-motion-from-the-parity-constants', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #196 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
+  title: 'Soft-body pill motion using Wispr\'s measured spring constants, with Reduce Motion respected',
+  preflight: `
+    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
+    cd ${APP} && npm ci && npm test -- motion
+  `,
+  spec: `
+    reference_wispr_parity_research P0 #2: "Soft-body pill physics (M · D).
+    Wispr uses \`motion\` springs \`stiffness:600 damping:35 restDelta:0.05\` for
+    snappy morphs and \`stiffness:300 damping:28\` for the slower one, plus
+    \`cubic-bezier(0.05,0.6,0.4,0.95)\` at 100 ms for state changes and
+    300-400 ms for expand/collapse. Yappy should go further: a squash-and-
+    stretch response on click/drag and a settle bounce on dock. Why: Wilson's
+    exact words — 'bounces when touched, feels soft not stiff'."
+
+    Do:
+      * \`desktop/src/pill/motion.ts\` — a hand-written critically-damped spring
+        integrator (about forty lines) exposing the two named springs and the
+        state-change easing, driven off the rAF loop the pill ALREADY runs
+        (ClassicPill.tsx:48-62, which smooths \`--level\` and parks itself at
+        rest). Do not add a motion library: the CSP blocks external hosts and
+        the parked-rAF discipline from the YV81 energy pass must survive.
+      * Squash-and-stretch on press and on drag release; a settle bounce on dock
+        (the drag machinery is \`pill/drag.ts\`, YV65).
+      * Every morph between the Y5-C phases uses the 100 ms state-change curve;
+        expand/collapse uses 300-400 ms. One table, in motion.ts, so no
+        component hardcodes a duration.
+      * REDUCE MOTION: \`ClassicPill.tsx:44-47\` already paints one calm static
+        frame under \`prefers-reduced-motion: reduce\`. All new motion must be
+        behind the same check, and the information (phase, numeral, progress)
+        must still be fully present in the static frame. Assert it.
+      * ENERGY: the loop must still park when at rest. YV81 removed busy timers
+        on purpose and YV24 idle-throttles canvases; a spring that never settles
+        is a 60 fps rAF forever. Assert the integrator reaches rest and stops
+        scheduling frames within a bounded number of ticks.
+
+    Tests \`desktop/src/pill/motion.test.ts\`, pure and deterministic (inject the
+    timestep, never use real time):
+      * \`spring_600_35_settles_within_the_expected_tick_budget\`
+      * \`spring_never_overshoots_past_the_soft_limit\`
+      * \`reduce_motion_returns_the_target_immediately\`
+      * \`integrator_reports_at_rest_and_stops\`
+      * \`no_duration_literal_outside_motion_ts\` — a source sweep over
+        desktop/src/pill.
+
+    Depends on Y5-A (the motion tokens), Y5-C (the phases to morph between).
+
+    PR body owes a screen recording of press, drag, dock and a phase morph, plus
+    the same four with Reduce Motion on.
+
+    What NOT to do:
+      - Do NOT add framer-motion, motion, or GSAP.
+      - Do NOT animate the trial numeral (Y2-B forbids it) or any other
+        informational text.
+      - Do NOT let the spring run while the pill is idle and off-screen.
+  `,
+  acceptance: `
+    test -f desktop/src/pill/motion.ts
+    test -f desktop/src/pill/motion.test.ts
+    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
+    grep -q 'damping: 35' desktop/src/pill/motion.ts
+    grep -q 'stiffness: 300' desktop/src/pill/motion.ts
+    grep -q 'reduce_motion_returns_the_target_immediately' desktop/src/pill/motion.test.ts
+    grep -q 'integrator_reports_at_rest_and_stops' desktop/src/pill/motion.test.ts
+    node -e "const d=require('./desktop/package.json').dependencies;process.exit(Object.keys(d).some(k=>/framer|^motion$|gsap|popmotion/.test(k))?1:0)"
+    cd ${APP} && npm ci
+    npm test -- pill/motion ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build           ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-E', prompt: 'Y5', branch: 'loop/y5-e-hover-hysteresis-and-alpha-hit-testing', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: the lane-b worktree that held local commit 04e4a94 no longer exists (~/code/wilson-voice-loop is gone), so that partial work is lost — build from scratch.`,
+  title: 'The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about',
+  preflight: `
+    grep -q 'inset: -12px' desktop/src/float.css
+    cd ${APP} && npm ci && npm test -- hitbox
+  `,
+  spec: `
+    reference_wispr_parity_research P0 #3, and the reason it is ranked P0:
+    "an invisible \`inset: -12px\` alpha margin painted only in the expanded
+    state, and a ~0.004-alpha background so the panel is clickable while
+    invisible. Why: without it, an edge-docked pill oscillates expand/collapse
+    when the cursor dwells on the screen edge — Wispr shipped a comment
+    explaining they hit exactly this." §4.4 is titled "Hit-testing and hover
+    (the part that breaks naive implementations)" and scores Yap ❌ with the note
+    "Yap will hit this exact bug", plus 🟡 "NSPanel ignores margin clicks" on
+    alpha hit-testing.
+
+    Yap has half the machinery: \`ClassicPill.tsx:38-42\` publishes the capsule's
+    rect via \`watchPillHitbox\` (YV65) "so the panel only takes the cursor over
+    the pill itself; the transparent shadow margin stays click-through".
+
+    Do:
+      * The \`::before\` alpha margin at \`inset: -12px\`, painted ONLY while
+        expanded. Painted always, it makes a 12 px dead zone around an idle
+        pill; painted never, the boundary oscillates. The conditionality IS the
+        fix.
+      * \`rgba(0,0,0,0.004)\` background on the hot area so the box is clickable
+        while visually absent.
+      * Feed the expanded rect (capsule + margin) to \`watchPillHitbox\` so the
+        NSPanel's ignore-mouse-events region matches what CSS is painting. A
+        margin CSS believes in and the panel does not is worse than no margin.
+      * Hysteresis in the state machine, not only in CSS: expand on enter,
+        collapse only after the cursor has been outside the EXPANDED rect for a
+        debounce. Put the thresholds in motion.ts's table.
+
+    Tests \`desktop/src/pill/hitbox.test.ts\`, pure over a
+    \`hoverState(rect, cursorPath)\` reducer:
+      * \`dwell_at_the_dock_edge_produces_at_most_one_transition\` — the exact
+        acceptance the parity note specifies: "simulated pointer dwell at the
+        dock edge produces <=1 state transition". Drive a synthetic path that
+        crosses the collapsed boundary repeatedly by one pixel.
+      * \`collapsed_pill_has_no_margin_dead_zone\`
+      * \`published_hitbox_matches_the_painted_rect_in_both_states\`
+      * all three dock edges.
+
+    Depends on Y5-D.
+
+    What NOT to do:
+      - Do NOT paint the margin in the collapsed state.
+      - Do NOT fix oscillation with a long timeout. A 500 ms lag on expand makes
+        the pill feel dead; hysteresis is a geometry fix, not a delay.
+  `,
+  acceptance: `
+    grep -q 'inset: -12px' desktop/src/float.css
+    grep -qE 'rgba\\(0, *0, *0, *0?\\.004\\)' desktop/src/float.css
+    test -f desktop/src/pill/hitbox.test.ts
+    grep -q 'dwell_at_the_dock_edge_produces_at_most_one_transition' desktop/src/pill/hitbox.test.ts
+    grep -q 'collapsed_pill_has_no_margin_dead_zone' desktop/src/pill/hitbox.test.ts
+    grep -q 'published_hitbox_matches_the_painted_rect_in_both_states' desktop/src/pill/hitbox.test.ts
+    cd ${APP} && npm ci
+    npm test -- hitbox ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build      ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-F', prompt: 'Y5', branch: 'loop/y5-f-error-toasts-that-say-what-to-do', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'One error surface, one sentence per failure, one action — replacing raw strings and silent failures',
+  preflight: `
+    test -f desktop/src/toast.ts
+    grep -q 'errorAdvice' desktop/src/errors.ts
+    cd ${APP} && npm ci && npm test -- toast
+  `,
+  spec: `
+    \`errors.ts\` is the right foundation and only half the job. It converts a
+    rejection to a sentence (\`errorText\`, errors.ts:27-30) and falls back to
+    \`String(e)\` — which is a raw Rust error string in front of a user. Nearly
+    every Tauri command in Yap answers \`Result<_, String>\` (errors.ts:3-4 says
+    so), so \`String(e)\` is the common path, not the rare one.
+
+    Do:
+      * An error CATALOGUE: \`errorAdvice(code) -> { line, action }\` in
+        errors.ts, keyed on the structured codes the backend already returns
+        (\`license_required\` exists at errors.ts:38; Y1/Y3 add
+        \`mic_permission_required\`, \`silent_capture\`, \`cancelled\`). Every code
+        Yap can emit gets a line and, where there is one, a button. An unknown
+        code gets a generic line that still tells the user what to do (open the
+        support bundle sheet, which already exists:
+        src/support/SupportBundleSheet.tsx).
+      * Make the backend emit codes where it emits strings on the take path.
+        Do NOT boil the ocean: the take path, the paste path, the model path and
+        the permission path. List the ones you converted in the PR body and
+        leave the rest as strings with the generic advice.
+      * ONE toast implementation, \`desktop/src/toast.ts\`, replacing whatever
+        ad-hoc surfaces exist (audit them first and say in the PR body how many
+        you found — \`git grep -n "note\\|setNote\\|banner" desktop/src/App.tsx\`
+        is the starting point; Onboarding.tsx has its own \`note\` string).
+        Queue, dedupe by code, auto-dismiss with a duration proportional to
+        length, manual dismiss, and a cap so a storm cannot cover the app.
+      * Errors also reach the PILL as \`error\` phase (Y5-C). Both surfaces, one
+        catalogue: the pill shows the line, the main window adds the action.
+      * A FAILURE MUST NEVER BE SILENT. Add a test that sweeps the take path for
+        \`Err(...)\` returns that reach no emit and no toast. If a full sweep is
+        impractical, enumerate the take path's error returns explicitly in the
+        test and assert each is surfaced — an explicit list that must be updated
+        is better than a clever grep that proves nothing.
+
+    Tests: \`desktop/src/toast.test.ts\` (queue, dedupe, cap, duration) and
+    \`desktop/src/errors.test.ts\` extended (it exists, 1 case at errors.test.ts:6)
+    — every catalogued code has a non-empty line; no line contains a Rust type
+    name, \`Error(\`, \`unwrap\` or a file path.
+
+    What NOT to do:
+      - Do NOT show a raw error string. If you have nothing better, say "Yap
+        could not finish that take" and offer the support bundle.
+      - Do NOT add Sentry or PostHog. Local crash capture (crash.rs) is the
+        observability stack (feedback_queryguard).
+      - Do NOT stack more than the cap. Three visible toasts is a broken app.
+  `,
+  acceptance: `
+    test -f desktop/src/toast.ts
+    test -f desktop/src/toast.test.ts
+    grep -q 'errorAdvice' desktop/src/errors.ts
+    grep -q 'every_catalogued_code_has_a_human_line' desktop/src/errors.test.ts
+    grep -q 'no_line_leaks_a_rust_type_or_path' desktop/src/errors.test.ts
+    test 0 -eq "$(git grep -ci 'sentry\\|posthog' -- desktop | wc -l)"
+    cd ${APP} && npm ci
+    npm test -- toast  ; test $? -eq 0
+    npm test -- errors ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build      ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-J', prompt: 'Y5', branch: 'loop/y5-j-focus-names-announcements-and-contrast-floors', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer',
+  preflight: `
+    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
+    cd ${APP} && npm ci && npm test -- a11y
+  `,
+  spec: `
+    PANEL 2026-09-12. This loop adds roughly thirteen pill phases and
+    twenty-one view states and not one item requires a focus ring, an
+    accessible name, an announcement or a contrast ratio. MEASURED at 4e8c9adf:
+      grep -rniE 'aria|screen ?reader|focus-visible|contrast|WCAG' over all item
+        files -> only prefers-reduced-motion hits
+      desktop/src/App.css — three focus-related selectors in 2,789 lines
+        (:957, :1408, :2397)
+      desktop/src/pill/ClassicPill.tsx:142-144 — one aria-label covering three
+        of the planned thirteen phases
+      only pill/MeetingBadge.tsx:53 has aria-live
+      desktop/src/App.tsx:2228 — a clickable <div className="banner warn">
+      desktop/src-tauri/src/float_pill.rs:355 \`.focused(false)\` + the
+        non-activating NSPanel: every pill affordance is mouse-only
+    Y5-A freezes the look while centralising every colour, so the one cheap
+    moment to fix contrast is the moment the plan forbids touching it. Hence a
+    separate item, after Y5-G's split and after the states exist.
+
+    Do:
+      * A contrast test over the token pairs in tokens.css: 4.5:1 for body text,
+        3:1 for large text and UI boundaries. A failing pair is a failed item,
+        not a TODO — adjust the token, and say which.
+      * Every state Y5-B added: its primary action is a real \`<button>\` and is
+        keyboard reachable; \`:focus-visible\` is styled once, globally.
+      * Every pill phase supplies an accessible name, and the pill root carries
+        \`aria-live="polite"\` so a state change is announced once, not on every
+        frame. Because the panel is non-activating, any affordance the pill
+        gains must ALSO be reachable from the main window or a binding — state
+        which, per affordance.
+      * Sweep the clickable divs (App.tsx:2228 and its siblings) into buttons.
+
+    What NOT to do:
+      - Do NOT add an accessibility library or a linter plugin to satisfy this.
+      - Do NOT put aria-live on the pill's frame-by-frame amplitude value.
+  `,
+  acceptance: `
+    test -f desktop/src/a11y/contrast.test.ts
+    grep -q 'every_token_pair_meets_its_contrast_floor' desktop/src/a11y/contrast.test.ts
+    grep -q 'every_phase_has_an_accessible_name' desktop/src/pill/live.test.ts
+    grep -rq 'aria-live' desktop/src/pill
+    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
+    test 0 -eq "$(grep -rn 'className="banner warn"' desktop/src --include=*.tsx | wc -l)"
+    cd ${APP} && npm ci
+    npx tsc --noEmit ; test $? -eq 0
+    npm test         ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-I', prompt: 'Y5', branch: 'loop/y5-i-vertical-dock-as-the-css-base', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way',
+  preflight: `
+    grep -q 'data-bar-position' desktop/src/float.css
+    grep -q -- '--flow-bar-length' desktop/src/float.css
+    cd ${APP} && npm ci && npm test -- dock
+  `,
+  spec: `
+    THE MOST IMPORTANT ARCHITECTURAL NOTE IN THE PARITY RESEARCH, verbatim from
+    reference_wispr_parity_research (MUST-KNOW section, primary-sourced from the
+    extracted bundle): "Wispr's vertical bar is NOT a rotated horizontal capsule
+    — vertical/column layout is the CSS BASE and horizontal is the override,
+    with orientation-neutral tokens (\`$flow-bar-length\`/\`$flow-bar-thickness\`);
+    their first rotate-the-capsule attempt failed (their comment records the
+    '30x6-always-horizontal collapse bug'). Only the primary listening states
+    (ready/activePtt/activePopo) rotate into the strip — processing/error/
+    completion banners STAY horizontal even when side-docked (fixed-width labels
+    crush in a 30px column). Waveform inverts axis when docked (side dock = 2px
+    bars animating on X). Yap's current YV53/65 move-the-capsule approach is the
+    exact architecture Wispr abandoned — the design loop must rebuild with
+    vertical-as-base."
+
+    §4.2 gives the exact geometry table to build against, per state, with the
+    side-dock overrides. Use it as the golden table; it is [BUNDLE]-sourced:
+      resting 8x40 rgba(0,0,0,.5) 1px rgba(255,255,255,.5) border radius 6 ·
+      ready 30x50 solid radius 22.5 · activePtt 30x73 ·
+      activePopo 30x102.5 (+cancel/stop, row gap 8; padding 6px 0 on side docks) ·
+      processing 30x98 padding 12px 6px, STAYS HORIZONTAL in both docks ·
+      polishProcessing 136x30, on side docks column with label hidden and the
+      progress fill flipping bottom-up · polishCompleted 30x152, side dock
+      152x30 · error 30x91 stays horizontal · navigationActive 72x84 gap 4.
+
+    Do:
+      * Orientation-neutral tokens \`--flow-bar-length\` / \`--flow-bar-thickness\`
+        in tokens.css (Y5-A). Column layout is the BASE. \`[data-bar-position]\`
+        on the pill root supplies the bottom-dock horizontal override.
+      * Map every Y5-C phase onto the table: which rotate into the strip and
+        which stay horizontal. Yap has phases Wispr does not (blocked, gated,
+        transcribing); decide and DOCUMENT each one's orientation, with the
+        30 px-crush rule as the deciding test.
+      * The waveform inverts axis on a side dock (2 px bars animating on X).
+        ClassicPill.tsx drives 9 bars off a \`--level\` CSS var
+        (ClassicPill.tsx:20, :52) — that is already the right seam; make the
+        axis a token.
+      * A golden geometry test: for each of \`left|right|bottom\` x each phase,
+        assert the rendered bounding box matches the table, and that NO state
+        exceeds the 30 px strip on a side dock. This is verbatim the parity
+        note's own acceptance for P0 #1.
+
+    Tests \`desktop/src/pill/dock.test.ts\` with the table as a committed
+    fixture \`desktop/src/pill/dock-geometry.json\` so the numbers are reviewable
+    as data.
+
+    Depends on Y5-A, Y5-C, Y5-D, Y5-E. This item supersedes the YV53/65
+    move-the-capsule approach; delete that code path rather than leaving both.
+
+    What NOT to do:
+      - Do NOT rotate the horizontal capsule with a CSS transform. That is the
+        approach Wispr tried and abandoned, and their bug comment is the evidence.
+      - Do NOT force the banner states into the column. They crush; the research
+        says so explicitly and the golden table encodes it.
+      - Do NOT keep the old positioning code alongside the new base.
+    PANEL 2026-09-12, SUPERSEDED BY THE OWNER DECISION 2026-09-13 — THE
+    GEOMETRY TABLE BELONGS TO THE SHELL AND IS CHARACTER-INDEPENDENT. The panel
+    said "scope it to ClassicPill" because it read the two pills as two products
+    and expected one to be cut. Both ship (top of this file), so scoping the
+    table to one of them would have left the other with no dock contract at all.
+    The correct target is the PILL SHELL: the measured Wispr per-state box
+    (8x40 resting, 30x50 ready, 30x73, 30x102.5, 136x30 polishing ...) is the
+    size and orientation of the WINDOW CONTENT BOX for a phase, and every
+    character renders INSIDE that box. So:
+      * \`dock-geometry.json\` is the shell's table, keyed by phase x dock, with
+        NO style dimension in it. One table, forever, for every creature.
+      * A character declares only how it fills the box it is given — a pixel
+        character on an LCD pod scales or crops to the box, and a capsule paints
+        it. If a character cannot render a phase inside the box the table gives
+        it, that is a CHARACTER defect and the character's fallback covers it;
+        it is never a reason to fork the table.
+      * The golden test asserts the SHELL's boxes. The per-character sweep is
+        Y5-C's completeness table and Y5-K's registry contract test, not this one.
+      * Do not delete either renderer, and do not add a style dimension to the
+        fixture.
+
+  `,
+  acceptance: `
+    grep -q 'data-bar-position' desktop/src/float.css
+    grep -q -- '--flow-bar-length' desktop/src/tokens.css
+    grep -q -- '--flow-bar-thickness' desktop/src/tokens.css
+    test -f desktop/src/pill/dock-geometry.json
+    test 0 -eq "$(grep -c 'pill_style\\|pillStyle\\|classic\\|yappy' desktop/src/pill/dock-geometry.json)"
+    test -f desktop/src/pill/dock.test.ts
+    grep -q 'no_state_exceeds_the_thirty_pixel_strip_on_a_side_dock' desktop/src/pill/dock.test.ts
+    grep -q 'banner_states_stay_horizontal_in_every_dock' desktop/src/pill/dock.test.ts
+    grep -q 'waveform_axis_inverts_on_a_side_dock' desktop/src/pill/dock.test.ts
+    test 0 -eq "$(grep -c 'transform: rotate' desktop/src/float.css)"
+    cd ${APP} && npm ci
+    npm test -- dock ; test $? -eq 0
+    npm test         ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y5-K', prompt: 'Y5', branch: 'loop/y5-k-pill-character-system-and-habitat-layer', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The pill becomes a pluggable character system, and the habitat comes back as its habitat layer',
+  preflight: `
+    test -f desktop/src/pill/characters/registry.ts
+    test -f desktop/src/pill/characters/characters.test.ts
+    test -d desktop/src/home/habitat
+    cd ${APP} && npm ci && npm test -- characters
+  `,
+  spec: `
+    OWNER DECISION 2026-09-13 (Wilson), and it REINSTATES \`Y5-H\`, which the
+    panel killed on a two-seat convergence. Wilson, verbatim: "I thought we were
+    gonna develop it and then make more characters and make it more flexible ...
+    there's a classic pill and there's a yappy pill and there's gonna be
+    different pills with the different creatures that are coming."
+
+    The panel's cost objection was CORRECT and is not waved away: a second pill
+    style doubles the render and test surface of every pill item, and Y5-C alone
+    was 13 phases x 2 styles x 3 docks. The remedy is structural. The shell
+    stops knowing about creatures and the creatures stop knowing about the
+    shell, so the matrix stops multiplying.
+
+    THIS ITEM RUNS LAST IN THIS FILE ON PURPOSE: shell first (Y5-A tokens, Y5-C
+    phases, Y5-D motion, Y5-E hit-testing, Y5-I dock geometry), then the
+    characters, then the habitat. Do not start it before Y5-I has landed — the
+    shell's box contract is the thing the character interface is defined
+    against.
+
+    (1) THE SHELL / CHARACTER SEAM.
+      * \`desktop/src/pill/characters/types.ts\` — ONE interface. A character is
+        \`{ id, label, render(frame) }\` where \`frame\` is what the shell already
+        computed: \`{ phase, tone, level, box: {w,h}, dock, reducedMotion }\`.
+        A character receives a BOX and paints inside it. It never reads
+        \`pill_style\`, never reads settings, never reads license state, never
+        positions a window, never knows a dock exists beyond the axis hint in
+        \`frame\`.
+      * \`registry.ts\` — \`registerCharacter()\` + \`characters()\`. The shell
+        resolves \`settings.pill_style\` to a registered id ONCE, at the mount
+        point, and falls back to \`classic\` for an unknown id rather than
+        rendering nothing. \`pill_style\` stays a free string in
+        \`AppSettings\` (lib.rs:234-235, default "classic", lib.rs:366/411) —
+        do NOT turn it into a Rust enum: a new creature must be shippable
+        without touching Rust.
+      * PORT, do not rewrite: \`ClassicPill.tsx\` and \`YappyPill.tsx\` become
+        \`characters/classic/\` and \`characters/yappy/\` with their phase art and
+        copy as DATA, and everything that is not the creature — the capsule
+        chrome, the waveform placement, dock geometry, hover hysteresis, the
+        license chip placement, aria names — moves UP into the shell. The two
+        characters must end up with NO duplicated shell logic between them; that
+        deduplication is the whole point and it is measurable (see acceptance).
+      * A NEW CREATURE IS A NEW MODULE PLUS A FIXTURE ROW, WITH NO SHELL CHANGE.
+        Prove it: the item ships a third, deliberately minimal character
+        (\`characters/example/\`) whose only purpose is to be the proof that the
+        seam holds, and the contract test registers it with zero shell edits.
+
+    (2) THE TEST MATRIX STOPS DUPLICATING.
+      * The shell owns phase x dock. That suite runs ONCE, character-agnostic,
+        against \`dock-geometry.json\` (Y5-I).
+      * Each registered character is swept by ONE data-completeness contract
+        test over the registry: every phase in the \`LivePhase\` union, in every
+        tone (rude|friendly|rose, live.ts:29), has art and copy; nothing exceeds
+        the box it was handed; \`imageSmoothingEnabled\` is false wherever a
+        character paints to a canvas.
+      * Registering an INCOMPLETE character must turn that contract test RED.
+        That is the test's reason to exist and it is the item's mutation proof.
+
+    (3) THE HABITAT LAYER — the reinstated \`Y5-H\`, with its design note
+        preserved in docs/loop/DEFERRED.md §1. \`desktop/src/home/YappyHouse.tsx\`
+        is 919 lines of working real-clock canvas scene with an ambient
+        director; this is a REFACTOR PLUS A LAYER, not a rewrite.
+      * \`desktop/src/home/habitat/\` — the habitat is the CHARACTER'S WORLD, and
+        it is selected by the same registered character id, so a new creature
+        brings its own pod. Split what exists into: the director (clock,
+        routines, intent pathing), the scene (pod interior, dithered depth,
+        parallax), and the character's own idle/reaction sprites, which come
+        from the SAME character module the pill uses — one creature, two
+        surfaces, one source of art.
+      * EVENT-DRIVEN REACTIONS, from the design note: a take starting, a paste
+        landing, a model finishing its download. The habitat subscribes to the
+        same events the pill does; it never polls.
+      * Routines on a real clock and intent pathing rather than a random walk.
+      * AESTHETIC LOCK, unchanged and binding (top of this file): pixel art,
+        chunky pixels, \`imageSmoothingEnabled = false\`, limited retro palette,
+        Tamagotchi / Bitzee. Hand-coded. NOT smooth vector. No angled "angry"
+        eyebrows. Paper/origami is REJECTED.
+      * Wilson's taste is the real gate on the ART and cannot be automated in a
+        build-first pass — which is why this item's acceptance gates the
+        STRUCTURE (the seam, the completeness sweep, the deduplication, the
+        no-shell-change proof) and the PR body carries the screenshots and a
+        recording of the habitat for him to judge. Say that in the PR body.
+
+    Depends on Y5-A, Y5-C, Y5-D, Y5-E, Y5-I. Consumes PERM-C's complete
+    \`LivePhase\` union.
+
+    What NOT to do:
+      - Do NOT delete either shipped character. Both ship.
+      - Do NOT let a character read settings, license state or dock position
+        directly. Everything it needs arrives in \`frame\`.
+      - Do NOT add a style dimension to \`dock-geometry.json\`.
+      - Do NOT turn \`pill_style\` into a Rust enum or a TypeScript union of two
+        literals — the whole point is that the next creature is additive.
+      - Do NOT rewrite YappyHouse from scratch, and do not lose its ambient
+        director.
+      - Do NOT smooth the pixels.
+  `,
+  acceptance: `
+    test -f desktop/src/pill/characters/types.ts
+    test -f desktop/src/pill/characters/registry.ts
+    test -d desktop/src/pill/characters/classic
+    test -d desktop/src/pill/characters/yappy
+    test -d desktop/src/pill/characters/example
+    test -f desktop/src/pill/characters/characters.test.ts
+    test -d desktop/src/home/habitat
+    test -f desktop/src/home/habitat/habitat.test.ts
+    grep -q 'registerCharacter' desktop/src/pill/characters/registry.ts
+    grep -q 'every_registered_character_covers_every_phase_in_every_tone' desktop/src/pill/characters/characters.test.ts
+    grep -q 'a_character_never_exceeds_the_box_the_shell_hands_it' desktop/src/pill/characters/characters.test.ts
+    grep -q 'a_new_creature_needs_no_shell_change' desktop/src/pill/characters/characters.test.ts
+    grep -q 'imageSmoothingEnabled' desktop/src/pill/characters/characters.test.ts
+    grep -q 'the_director_runs_on_the_real_clock_not_a_random_walk' desktop/src/home/habitat/habitat.test.ts
+    grep -q 'the_habitat_reacts_to_take_paste_and_model_events' desktop/src/home/habitat/habitat.test.ts
+    test 0 -eq "$(grep -rc 'pill_style\\|pillStyle' desktop/src/pill/characters | grep -v ':0$' | wc -l | tr -d ' ')"
+    test 0 -eq "$(grep -rl 'data-bar-position' desktop/src/pill/characters | wc -l | tr -d ' ')"
+    test 0 -eq "$(grep -c 'classic\\|yappy' desktop/src/pill/dock-geometry.json)"
+    cd ${APP} && npm ci
+    npm test -- characters ; test $? -eq 0
+    npm test -- habitat    ; test $? -eq 0
+    npm test               ; test $? -eq 0
+    npx tsc --noEmit       ; test $? -eq 0
+    npm run build          ; test $? -eq 0
+    printf '\\nregisterCharacter({ id: "mutant", label: "mutant", render: () => null });\\n' >> src/pill/characters/registry.ts
+    npm test -- characters ; test $? -ne 0
+    cd .. && git checkout -- desktop/src/pill/characters/registry.ts
+    git diff --exit-code -- desktop/src/pill/characters/registry.ts
+  `,
+})
+
+// ── 30-y6-end-to-end-wiring.mjs ───────────────────────────────────────────
+// Y6 — END TO END. Wilson: "we got to really think about this thing end to end."
+// The seams between the features, which is where a product that works in pieces
+// still feels broken.
+//
+// AUDIT at 4e8c9adf. SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+// Gate, from docs/loop/HARNESS.md "The gate", run from the worktree's app dir:
+//   npx tsc --noEmit · npm test · npm run build ·
+//   cargo build -p yap-polish --release + stage src-tauri/binaries/yap-polish-<triple> ·
+//   cargo test -p yap-polish --release ·
+//   cargo clippy --all-targets --features custom-protocol (in src-tauri) ·
+//   cargo test --features custom-protocol (in src-tauri).
+// cargo fmt is INFORMATIONAL and exits 1 on unmodified main — never reformat to silence it.
+//
+// NEVER touch the bundle identifier (com.wilsonguenther.wilson-voice) or the data
+// directory (WilsonVoice). Renaming the id resets every macOS TCC grant; renaming
+// the data dir orphans the SQLite history.
+
+ITEMS.push({
+  id: 'UPD-A', prompt: 'Y6', branch: 'loop/upd-a-updater-endpoint-that-can-actually-serve', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #197 OPEN and stale (main moved 30+ times under it), labelled needs-human. Rebase that PR onto main and finish it; do not open a second PR. AMENDED 2026-09-26: the premise "points at a dead URL" is FALSE while the repo is public — releases/latest/download/latest.json returns HTTP 200 and serves 0.8.0 (darwin-aarch64). The item is still required before the repo is privatized at app-completion (Wilson 2026-08-11); until then it is not urgent. Wilson's log also shows "update check failed: error sending request" on launches without network — honest, keep it quiet.`,
+  title: 'The updater points at an endpoint that can serve a private repo — today it points at a dead URL',
+  preflight: `
+    test 0 -eq "$(grep -c 'releases/latest/download/latest.json' desktop/src-tauri/tauri.conf.json)"
+    test -f desktop/src-tauri/tests/updater_endpoint.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test updater_endpoint
+  `,
+  spec: `
+    MEASURED, desktop/src-tauri/tauri.conf.json plugins.updater.endpoints:
+      "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
+    and the repo's own history records why that cannot work: commit 2eabf33
+    "site: serve the DMG from Forge — repo went private, GitHub release assets
+    are no longer publicly downloadable", then 734aa8c "YV83 site + DMG served
+    from Vercel, past Forge's 25MB edge cap". The DMG moved twice and the
+    updater manifest URL did not move with it. docs/loop/HARNESS.md records the
+    repo as PUBLIC again as of 2026-09-12 — which means the URL may resolve
+    today and will silently die the next time the repo is flipped private
+    (project_github_actions_public_window is an explicit, recurring procedure).
+    An updater whose correctness depends on repo visibility is not an updater.
+
+    Do:
+      * Point \`plugins.updater.endpoints\` at the same host that serves the DMG,
+        so the manifest and the asset can never disagree about where the build
+        is. Read docs/DEPLOY-SITE.md and site/ for the current host before
+        choosing, and state in the PR body which host you chose and why.
+      * Keep the GitHub URL as a SECOND endpoint, after the primary. Tauri tries
+        endpoints in order, so a private-repo window degrades to the primary
+        instead of failing.
+      * The signing pubkey stays exactly as it is
+        (plugins.updater.pubkey, verified present at 4e8c9adf — a base64
+        minisign key, not a placeholder). Never regenerate it in this item: a
+        new keypair makes every installed copy unable to verify an update, and
+        project_yap_build_state records one keypair regeneration already (YV82).
+      * \`src/updater.ts\` is already correct in shape — check-only, no auto
+        install, DEBUG not ERROR when there is no manifest (its own doc says
+        so). Do not change its contract. Add ONE thing: when every endpoint
+        fails, the manual "Check for updates" button must say which endpoint was
+        tried, because a silent "you're up to date" on a dead endpoint is the
+        failure this item exists to prevent.
+      * \`tests/updater_endpoint.rs\`: the config parses; there are >= 2
+        endpoints; the primary is not a github.com release-asset URL; the pubkey
+        is non-empty and is not the string "PLACEHOLDER" or a bare newline; and
+        \`createUpdaterArtifacts\` is still true.
+
+    What NOT to do:
+      - Do NOT regenerate the updater keypair.
+      - Do NOT make the updater install on startup. User-triggered only
+        (src/updater.ts's own contract: "USER-TRIGGERED ONLY").
+      - Do NOT print any key material into a log, a test name or the PR body.
+  `,
+  acceptance: `
+    # PANEL: the old line anchored the URL to end-of-line, so it passed only
+    # while that endpoint happened to be last with no trailing comma. Parse it.
+    node -e "const e=require('./desktop/src-tauri/tauri.conf.json').plugins.updater.endpoints; process.exit(e.length>=2 && !/github\\.com\\/.*\\/releases\\//.test(e[0]) ? 0 : 1)"
+    node -e "const u=require('./desktop/src-tauri/tauri.conf.json').plugins.updater; process.exit(u.pubkey && u.pubkey.length>40 ? 0 : 1)"
+    test -f desktop/src-tauri/tests/updater_endpoint.rs
+    grep -q 'at_least_two_endpoints' desktop/src-tauri/tests/updater_endpoint.rs
+    grep -q 'primary_endpoint_is_not_a_github_release_asset' desktop/src-tauri/tests/updater_endpoint.rs
+    grep -q 'pubkey_is_present_and_not_a_placeholder' desktop/src-tauri/tests/updater_endpoint.rs
+    grep -q 'createUpdaterArtifacts' desktop/src-tauri/tests/updater_endpoint.rs
+    cd ${APP} && npm ci
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+    cd src-tauri && cargo test --features custom-protocol --test updater_endpoint ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'UPD-B', prompt: 'Y6', branch: 'loop/upd-b-publish-the-updater-triple-and-keep-a-rollback', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: lane A was in pre-flight at the 2026-09-15 stop and wrote nothing.`,
+  title: 'Publish latest.json + .app.tar.gz + .sig to the host the updater now points at, and keep the previous build',
+  preflight: `
+    test -x scripts/release-local.sh
+    grep -q 'latest.json' docs/DEPLOY-SITE.md
+    grep -q 'app.tar.gz' docs/DEPLOY-SITE.md
+  `,
+  spec: `
+    PANEL 2026-09-12, two seats independently. UPD-A repoints
+    plugins.updater.endpoints at "the same host that serves the DMG" — and
+    nothing publishes a manifest there. MEASURED at 4e8c9adf:
+      docs/DEPLOY-SITE.md:40-46  the staging block copies *.html *.css *.woff2 +
+        vercel.json and one \`gh release download --pattern '*.dmg'\`. No
+        latest.json, no .app.tar.gz, no .sig.
+      .github/workflows/release.yml:91-120  the ONLY producer of the updater
+        manifest and the minisign .sig — and Actions is disabled account-wide
+        (docs/loop/HARNESS.md, CI mode: the expected answer is \`local\`).
+      tauri.conf.json:42 createUpdaterArtifacts true; :66-69 the endpoint and
+        the pubkey.
+    macOS's updater consumes the .app.tar.gz plus its .sig, not the DMG, so
+    serving the DMG at that host is necessary and insufficient. Left as is,
+    every installed copy reports "up to date" forever — src/updater.ts logs
+    DEBUG, not ERROR, when there is no manifest — and a security fix reaches
+    nobody. There is also no rollback: no known-good DMG retained on the host.
+
+    Do:
+      * \`scripts/release-local.sh\`: build, sign with SEC-A's identity,
+        notarize, staple, emit Yap.app.tar.gz + .sig + latest.json with
+        TAURI_SIGNING_PRIVATE_KEY, and stage all four next to the DMG.
+      * Amend docs/DEPLOY-SITE.md's staging block to copy all four.
+      * Verify the LIVE endpoint at the end of a release: fetch latest.json over
+        the network and verify the .sig against the pubkey already in
+        tauri.conf.json. Offline, skip with a NAMED reason — never pass quietly.
+      * Keep the previous DMG + manifest on the host as the documented rollback,
+        and write the downgrade steps into docs/RELEASE.md.
+      * Until a manifest is actually published, the updater check ships DISABLED
+        rather than pointed at a 404. Say which state shipped in the PR body.
+
+    Runs immediately after UPD-A, whose config change is inert without it.
+  `,
+  acceptance: `
+    test -x scripts/release-local.sh
+    grep -q 'set -euo pipefail' scripts/release-local.sh
+    grep -q 'TAURI_SIGNING_PRIVATE_KEY' scripts/release-local.sh
+    grep -q 'app.tar.gz' scripts/release-local.sh
+    grep -q 'latest.json' docs/DEPLOY-SITE.md
+    grep -q 'app.tar.gz' docs/DEPLOY-SITE.md
+    grep -q 'rollback' docs/RELEASE.md
+    test 0 -eq "$(grep -c 'TAURI_SIGNING_PRIVATE_KEY=' scripts/release-local.sh)"
+    bash -n scripts/release-local.sh ; test $? -eq 0
+    ./scripts/release-local.sh --verify-endpoint-or-name-the-reason ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y6-A', prompt: 'Y6', branch: 'loop/y6-a-onboarding-that-ends-in-a-working-dictation', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Onboarding ends with one successful pasted dictation, or it tells you exactly what is missing',
+  preflight: `
+    grep -q 'first_paste\\|firstPaste' desktop/src/Onboarding.tsx
+    cd ${APP} && npm ci && npm test
+  `,
+  spec: `
+    MEASURED: \`src/Onboarding.tsx:41\`
+    \`STEP_ORDER = ["welcome","permissions","calibration","done"]\`. Calibration
+    records a sample; nothing ever pastes. So a user finishes onboarding without
+    having seen Yap's one and only trick work, and the four things that can
+    break it — microphone TCC, Accessibility TCC, a missing ASR model, a missing
+    paste target — each fail later, separately, with no context.
+
+    Add a final step: TRY IT. The user clicks into a real text field inside the
+    Yap window, holds the hotkey, speaks, and watches the text arrive. Then:
+      * SUCCESS -> the done step, and mark \`onboarded: true\` (lib.rs:420) only
+        here. Today \`onboarded\` is set without any proof the app works.
+      * FAILURE -> name the stage that failed, using PERM-E's permission health
+        and Y5-F's error catalogue. Four distinct dead ends, four distinct
+        screens, each with the one button that fixes it:
+          no mic grant -> PERM-B's denied screen
+          no Accessibility grant -> the Accessibility deep link
+          no model -> the model download (ModelSetup.tsx)
+          paste refused -> explain the paste target and offer copy-to-clipboard
+            instead (the clipboard path exists; \`auto_paste\` is a setting,
+            lib.rs:405)
+      * A skip is allowed and must be honest: "Skip for now" leaves
+        \`onboarded\` true but raises the permission health row until it works.
+
+    Wispr ships 92 i18n keys for this one flow ("Try it yourself", \`tiy_*\`,
+    reference_wispr_parity_research §2.8 [BUNDLE], scored 🟡 for Yap as
+    "calibration step"). Yap does not need 92 strings; it needs the moment.
+
+    Also fix the ordering hazard already in the file: the model may still be
+    downloading when the user reaches calibration, and the step handles it by
+    WAITING with a ribbon (Onboarding.tsx:~340, YV54). Reuse that exact pattern
+    for the try-it step rather than inventing a second waiting affordance.
+
+    Tests: extract the step machine to \`desktop/src/onboarding.ts\`
+    (\`nextStep(step, outcome)\`) with \`onboarding.test.ts\` covering: the happy
+    path; each of the four failures routing to its own screen; skip; and
+    \`onboarded_is_only_set_after_a_success_or_an_explicit_skip\`.
+
+    Depends on PERM-B, PERM-E, Y5-F.
+
+    What NOT to do:
+      - Do NOT paste into another application during onboarding. The target is a
+        field inside Yap's own window; pasting into whatever was focused before
+        onboarding is a surprise and a paste-target violation (YV21).
+      - Do NOT set \`onboarded: true\` on mount.
+  `,
+  acceptance: `
+    test -f desktop/src/onboarding.ts
+    test -f desktop/src/onboarding.test.ts
+    grep -q 'onboarded_is_only_set_after_a_success_or_an_explicit_skip' desktop/src/onboarding.test.ts
+    grep -qE '"try-it"' desktop/src/onboarding.ts
+    test 4 -le "$(grep -c 'case ' desktop/src/onboarding.ts)"
+    cd ${APP} && npm ci
+    npm test         ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'PRIV-A', prompt: 'Y6', branch: 'loop/priv-a-crash-reporting-stays-local-and-says-so', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever',
+  preflight: `
+    test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test no_outbound
+  `,
+  spec: `
+    \`src-tauri/src/crash.rs\` (777 lines, YV64) is local crash capture with a
+    committed fixture (tests/fixtures/crash/wilson-voice-crash.ips), and the
+    support bundle has redaction tests
+    (tests/support_bundle_redaction.rs, tests/support_bundle_contents.rs).
+    \`git grep -i "sentry|posthog" -- desktop\` returns nothing. This item keeps
+    it that way and turns the claim into a test, because it is a shipped
+    marketing claim and the sharpest one Yap has.
+
+    reference_wispr_parity_research §5.2 records the claim and the missing
+    proof, verbatim: "Audio never leaves the machine ... Assert it: a test that
+    fails if the dictation path opens any outbound connection (already queued as
+    P3.13)". And: "No telemetry — local-only crash capture (YV64). Wispr ships
+    PostHog + Sentry + Segment. Name it."
+
+    Do:
+      * \`tests/no_outbound_on_the_dictation_path.rs\`:
+        - a SOURCE sweep asserting no module on the take path (record, vad,
+          transcription, asr_engine, dictation, polish, polish_protocol, paste,
+          paste_tx, focus, snippets, db) references an HTTP client, a socket or
+          a URL literal. Pattern AND scope, both named in the test.
+        - a DEPENDENCY sweep: the modules above must not import the HTTP client
+          crate at all. Model-download code may; the take path may not. If the
+          crate graph makes that unprovable by grep, state so and assert the
+          narrower thing you CAN prove, naming the gap.
+        - an assertion that the ONLY network call sites in the whole crate are
+          the model download, the revocation list refresh and the updater
+          check — an explicit allowlist by file and function that a new call
+          site forces you to update.
+      * \`crash.rs\` completeness: a crash report must never contain transcript
+        text, a file path inside the user's home beyond the app's data dir, or a
+        license key. Extend the redaction tests with a report synthesized to
+        contain all three and assert all three are gone.
+      * Nothing in crash.rs may upload. The support bundle is produced for the
+        USER to send; assert there is no send path.
+      * Update PRIVACY.md to state the claim in the exact words the test proves,
+        and add the test's name to the doc so the claim is traceable. Do not
+        soften the claim and do not overstate it: the model download, the
+        revocation refresh and the updater DO talk to the network, and PRIVACY.md
+        must say which three and that none of them carry audio or text.
+
+    What NOT to do:
+      - Do NOT add Sentry, PostHog, Segment or any analytics SDK.
+      - Do NOT add an opt-in telemetry toggle. There is no telemetry to toggle.
+      - Do NOT claim in PRIVACY.md that Yap makes no network calls at all. Three
+        calls exist and naming them is what makes the rest credible.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    grep -q 'only_three_network_call_sites_exist' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    grep -q 'the_take_path_has_no_url_literal' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    grep -q 'no_send_path_in_crash_or_support' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    grep -q 'no_outbound_on_the_dictation_path' PRIVACY.md
+    test 0 -eq "$(git grep -ci 'sentry' -- desktop | wc -l)"
+    test 0 -eq "$(git grep -ci 'posthog' -- desktop | wc -l)"
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test no_outbound_on_the_dictation_path ; test $? -eq 0
+    cargo test --features custom-protocol --test support_bundle_redaction          ; test $? -eq 0
+    cargo test --features custom-protocol --test support_bundle_contents           ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y6-B', prompt: 'Y6', branch: 'loop/y6-b-menu-bar-is-a-real-surface', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The menu bar becomes a usable surface: state, the last transcript, hide-for-an-hour, quit',
+  preflight: `
+    grep -q 'hide_for_an_hour\\|hideForAnHour' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test tray_menu
+  `,
+  spec: `
+    Yap has a tray (YV26) and \`sync_tray\` (lib.rs:4468). Wispr's status menu,
+    from reference_wispr_parity_research §2.2 [BUNDLE] \`hub_status_menu_*\`:
+    "Formatting options · Languages · Microphone · Paste last transcript ·
+    Transcript history · Settings · Hide for 1 hour · Show all", against which
+    Yap scores 🟡 "tray menu (YV26)"; and §2.2 scores "Hide the bar" 🟡.
+
+    Ship the subset that is real today and skip the rest:
+      * State header (SEC-B / Y2-E already add the license line here — build on
+        it, do not duplicate).
+      * Paste last transcript. The command EXISTS — \`paste_last_transcript\`
+        (lib.rs:2714) with a global binding (shortcuts.rs:86) — and is not in
+        the menu. One line to expose, and it is the highest-value item on the
+        list.
+      * Copy last transcript. Missing entirely
+        (reference_wispr_parity_research §2.1 scores it ❌). Add the command and
+        the menu item; it is the clipboard sibling of the paste path and must
+        use the same receipt-sequenced discipline (YV39) so it cannot race
+        a paste.
+      * Transcript history -> focus the main window on the History view.
+      * Settings -> focus the main window on Settings.
+      * HIDE THE PILL FOR ONE HOUR, and "show it now". \`show_floating_pill\` is
+        a persistent boolean (lib.rs:406); a temporary hide is a different thing
+        and needs a deadline that survives nothing (not the setting, not a
+        restart — a restart shows the pill again, which is the correct and
+        forgiving behaviour). Say that in the doc comment.
+      * Quit, which must run the existing exit drain (there is one — the meeting
+        path has \`ABANDONED_FOR_EXIT\`, transcription.rs:84) rather than killing
+        the process mid-take.
+
+    \`sync_tray\` stays the ONLY place the tray is rebuilt. Keep
+    \`tests/tray_hotkey_no_collision.rs\` green.
+
+    Tests \`tests/tray_menu.rs\`: every menu item maps to a registered command;
+    no item is unreachable; hide-for-an-hour expires; a restart during the hide
+    window shows the pill; quit drains.
+
+    Depends on Y2-E.
+
+    What NOT to do:
+      - Do NOT add Languages or Formatting submenus. Multi-language is Y10 and
+        an empty submenu is worse than no submenu.
+      - Do NOT make hide-for-an-hour persist across a restart.
+  `,
+  acceptance: `
+    grep -q 'fn copy_last_transcript' desktop/src-tauri/src/lib.rs
+    grep -qE 'hide_for_an_hour' desktop/src-tauri/src/lib.rs
+    test -f desktop/src-tauri/tests/tray_menu.rs
+    grep -q 'every_menu_item_maps_to_a_registered_command' desktop/src-tauri/tests/tray_menu.rs
+    grep -q 'a_restart_during_the_hide_window_shows_the_pill' desktop/src-tauri/tests/tray_menu.rs
+    grep -q 'quit_runs_the_exit_drain' desktop/src-tauri/tests/tray_menu.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test tray_menu                ; test $? -eq 0
+    cargo test --features custom-protocol --test tray_hotkey_no_collision ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y6-C', prompt: 'Y6', branch: 'loop/y6-c-paste-target-and-secure-input-end-to-end', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The paste lands in the app you dictated into, or it does not paste — including secure-input fields',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test paste_target_e2e
+  `,
+  spec: `
+    This is the property Yap can claim and Wispr's docs never do
+    (reference_wispr_parity_research §5.2: "Paste goes only to the app you
+    dictated into ... This is a security property Wispr's docs never claim").
+    The machinery exists — \`focus.rs\` (342), \`paste.rs\` (557),
+    \`paste_tx.rs\` (641, receipt-sequenced, YV39),
+    \`secure_input.rs\` (395) — and yap8's M1 was an auto-paste-target fix. What
+    is missing is one end-to-end test that the whole chain holds under the cases
+    that actually happen.
+
+    Cover, each as a named test in \`tests/paste_target_e2e.rs\`:
+      * The focused app changes between the hold and the paste (the user
+        cmd-tabs while Yap is transcribing). The paste must NOT go to the new
+        app. It must be held, offered, or dropped with a message — pick one,
+        say which in the doc comment, and make the pill say it (Y5-C's \`pasting\`
+        phase and Y5-F's catalogue).
+      * The focused app QUITS between the hold and the paste.
+      * The target is a SECURE INPUT field (a password box).
+        \`secure_input.rs\` exists for this; assert Yap refuses to paste, says
+        why, and does not leave the text on the clipboard either — a password
+        field's dictation sitting in the clipboard is a worse outcome than a
+        refused paste.
+      * Accessibility is granted but the target refuses synthesized ⌘V (some
+        Electron and Java apps do). Fall back to the clipboard with an explicit
+        message, never silently.
+      * \`auto_paste: false\` (a real setting, lib.rs:405): the text goes to the
+        clipboard and the pill says so. Assert no keystroke is synthesized.
+      * A long take (Y3) whose paste arrives minutes after the hold: the target
+        check must be re-run at PASTE time, not cached from hold time.
+      * Two takes in quick succession cannot interleave their pastes. YV39's
+        receipts exist for exactly this; assert ordering.
+
+    Where a case cannot be driven headlessly, drive the decision function and
+    say in the PR body which cases were proven by test and which by a named
+    manual check with a screenshot. Do not claim a test that does not exist —
+    a false capability claim is a blocking finding.
+
+    Depends on Y5-C, Y5-F, Y3-B.
+
+    What NOT to do:
+      - Do NOT paste into a target that was not the hold target.
+      - Do NOT leave dictated text on the clipboard after a refused secure-input
+        paste.
+      - Do NOT cache the target from hold time for a long take.
+    PANEL 2026-09-12 — DECIDED, do not leave this to a doc comment. The first
+    draft said the orphaned text "must be held, offered, or dropped with a
+    message — pick one, say which in the doc comment". Those are three different
+    products and the most consequential of the three was not in the plan's open
+    decisions. It matters more after Y3-B, because the normal case becomes: the
+    user stops talking, switches app while the decode runs, and the take has
+    nowhere to go (paste.rs:99 \`is_same_paste_target\`, :186-192 samples the
+    CURRENT frontmost app immediately before the synthesized paste, :232 "paste
+    not confirmed").
+    THE ANSWER IS HELD AND OFFERED. The text parks in the pill with ONE key that
+    inserts it wherever the user is now, plus a History row. It is never
+    silently clipboard-only behind a two-second toast, and it is never dropped —
+    twelve minutes of talking is not a thing this app throws away. Name the
+    test \`a_long_take_whose_target_moved_is_held_and_insertable\`, and state the
+    same terminal state in Y3-B's and Y3-C's pill copy so the three agree.
+    Wilson can override the choice; a builder cannot.
+
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/paste_target_e2e.rs
+    grep -q 'focus_changed_between_hold_and_paste_does_not_paste_to_the_new_app' desktop/src-tauri/tests/paste_target_e2e.rs
+    grep -q 'secure_input_refuses_and_leaves_no_clipboard_residue' desktop/src-tauri/tests/paste_target_e2e.rs
+    grep -q 'target_is_rechecked_at_paste_time_for_a_long_take' desktop/src-tauri/tests/paste_target_e2e.rs
+    grep -q 'two_takes_cannot_interleave_their_pastes' desktop/src-tauri/tests/paste_target_e2e.rs
+    grep -q 'auto_paste_false_synthesizes_no_keystroke' desktop/src-tauri/tests/paste_target_e2e.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test paste_target_e2e ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'DB-C', prompt: 'Y6', branch: 'loop/db-c-history-search-and-export-hold-up', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'History, FTS search and export hold up at real volume, and Clear History still destroys the words',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test history_at_volume
+  `,
+  spec: `
+    \`db.rs\` is 3,531 lines: SQLite WAL + FTS5, a dictionary, snippets, a
+    scratchpad table (db.rs:648), insights rollups, and YV78's secure delete
+    ("Clear history actually destroys the words — secure_delete, FTS rebuild,
+    VACUUM", commit 16e2f71). History is also the surface that must keep working
+    forever past the trial — \`KEEP_FOREVER_LINE\` in src/license/status.ts is a
+    promise the app makes in writing, and lib.rs:1104-1106 lists history,
+    search and export as things the license gate never touches.
+
+    Prove it at volume, in \`tests/history_at_volume.rs\`:
+      * Seed 10,000 takes with realistic text lengths (including one 4,000-word
+        long-form take from Y3). Assert: the History view's first page query is
+        bounded (a LIMIT, not a full scan); FTS search of a common word returns
+        in a bounded time; and the day-series insights query does not scan the
+        whole table.
+      * Pagination correctness: no duplicated and no skipped row across pages
+        with takes sharing a timestamp. An ORDER BY on a non-unique column is
+        the classic bug here; assert a tiebreaker exists.
+      * Export: full export of 10,000 rows streams rather than building one
+        string in memory, and the export contains no license key and no absolute
+        home path.
+      * YV78 regression: after Clear History, the FTS index holds no residue for
+        a word that was present, and the DB file has been VACUUMed. Assert the
+        WORD is gone from the index, not merely that the row count is zero.
+      * The scratchpad table (db.rs:648, :2667-2721) is covered too: it is
+        user-typed text (db.rs:1191 classifies it as such) and Clear History must
+        make a deliberate, documented choice about it. Say which and test it.
+      * Migration idempotence is already covered
+        (tests/db_migration_idempotent.rs) — keep it green and extend it to any
+        migration this item adds.
+
+    Depends on nothing in this file; can run early. Y3's long takes make the
+    4,000-word case real rather than synthetic, so order it after Y3-B if the
+    lane allows.
+
+    What NOT to do:
+      - Do NOT add an index without measuring. Say what each new index costs on
+        insert; the take path is latency-critical (latency.rs instruments it).
+      - Do NOT gate history, search or export behind the license under any
+        circumstance.
+      - Do NOT write transcript text into any log while testing.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/history_at_volume.rs
+    grep -q 'first_page_query_is_bounded' desktop/src-tauri/tests/history_at_volume.rs
+    grep -q 'pagination_has_a_tiebreaker_and_never_duplicates_a_row' desktop/src-tauri/tests/history_at_volume.rs
+    grep -q 'clear_history_leaves_no_fts_residue_for_a_known_word' desktop/src-tauri/tests/history_at_volume.rs
+    grep -q 'export_streams_and_leaks_no_key_or_home_path' desktop/src-tauri/tests/history_at_volume.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test history_at_volume      ; test $? -eq 0
+    cargo test --features custom-protocol --test db_migration_idempotent ; test $? -eq 0
+    cargo test --features custom-protocol --test license_gate            ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'PRIV-B', prompt: 'Y6', branch: 'loop/priv-b-clear-history-erases-the-audio-too', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Clear History erases the audio and the partial words, not only the SQLite rows',
+  preflight: `
+    grep -q 'recovery_dir' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test erase_everything
+  `,
+  spec: `
+    PANEL 2026-09-12 — this is a privacy regression this LOOP creates, so it
+    ships inside the loop. MEASURED at 4e8c9adf:
+      lib.rs:2386-2388  clear_history() is one line: state.db.clear_transcripts()
+      lib.rs:565-570    recovery_dir() is "deliberately NOT the recordings dir:
+                        record::sweep_stale_wavs empties that at every startup",
+                        and is purged only after FAILED_TAKE_RETENTION_DAYS
+      db.rs:4005        clear_history_leaves_no_plaintext_on_disk scans only
+                        wilson_voice.db / -wal / -shm
+    Today a dictation clip is transient. Three items in this loop convert that
+    into days of retained raw audio and partial transcript text — Y3-A spills
+    the take to disk, Y3-D specifies that "a cancel NEVER deletes the clip, it
+    parks it in the recovery dir with the same 7-day purge lifecycle", DB-B
+    persists per-take chunk TEXT — while DB-C's erase work covers the .db only.
+    So after this loop a user who dictates something regrettable, cancels, and
+    clicks Clear History has their rows VACUUMed and the full audio plus the
+    partial words still on disk for a week, with nothing saying so.
+
+    Do:
+      * Erasure becomes one operation over the whole product: Clear History also
+        deletes recovery/ WAVs, spilled take WAVs, take_chunks rows and
+        orphaned meetings/ audio. Plus a separate, explicit
+        "Delete all recordings" control.
+      * Make the retention VISIBLE: Y3-D's and DB-B's parked clips render in
+        History as "N clips kept for 7 days — review or delete". Invisible
+        retained audio is the scare; visible retained audio is a feature.
+      * Test on the FILESYSTEM, not the query layer: plant a sentinel WAV in
+        recovery/ and a take_chunks row, run the command, assert both are gone
+        from disk. Under YAP_DATA_DIR (Y0-D), never the real data dir.
+      * Say in ARCHITECTURE.md what is kept, where, and for how long.
+
+    Runs after DB-B and DB-C, whose retention this item is the counterweight to.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/erase_everything.rs
+    grep -q 'a_sentinel_wav_in_recovery_is_gone_from_the_filesystem' desktop/src-tauri/tests/erase_everything.rs
+    grep -q 'take_chunks_rows_are_gone_not_just_unqueryable' desktop/src-tauri/tests/erase_everything.rs
+    grep -q 'orphaned_meeting_audio_is_swept' desktop/src-tauri/tests/erase_everything.rs
+    grep -q 'YAP_DATA_DIR' desktop/src-tauri/tests/erase_everything.rs
+    grep -rq 'kept for' desktop/src
+    grep -q 'retention' ARCHITECTURE.md
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test erase_everything ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y6-D', prompt: 'Y6', branch: 'loop/y6-d-launch-sleep-wake-and-single-instance', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Cold launch, sleep/wake, display change and a second copy of Yap all behave',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test lifecycle_e2e
+  `,
+  spec: `
+    The matrix tests cover these for MEETINGS and not for the app as a whole:
+    \`tests/matrix_row15_single_instance.rs\`, \`matrix_row16_sleep_wake.rs\`,
+    \`matrix_row14_output_device_change.rs\`, \`matrix_phase_offline.rs\`,
+    \`matrix_row12_macos_144_gate.rs\`. Every one of them is an event that also
+    breaks dictation, the pill and the hotkey.
+
+    Cover, in \`tests/lifecycle_e2e.rs\`:
+      * COLD LAUNCH with no model, no grants, no settings file: the app opens,
+        lands on onboarding, and the pill either does not appear or appears in a
+        state that explains itself (Y5-C's \`model_loading\` / PERM-C's
+        \`blocked\`). It must never appear as a normal ready pill it cannot honour.
+      * SLEEP/WAKE mid-take: the take is either completed or parked in recovery,
+        never half-written. \`power.rs\` observes this already — assert the
+        dictation path subscribes, not only the meeting path.
+      * DISPLAY CHANGE / a monitor unplugged while the pill is docked to it: the
+        pill must land on a visible screen, not at a negative coordinate
+        off-screen. This is the classic floating-HUD bug and there is no test
+        for it.
+      * FULLSCREEN: ROADMAP.md records that "a normal NSWindow cannot float above
+        FULLSCREEN apps" and names \`tauri-nspanel\` as the real fix. Yap sets
+        \`macOSPrivateApi: true\`. Measure the current behaviour over a fullscreen
+        app and write the ANSWER into the test as an assertion or into the doc
+        as a named limitation with the evidence. Do not claim it works without
+        measuring; do not silently leave it unknown.
+      * OUTPUT DEVICE CHANGE while muted-for-dictation: YV28 snapshots and
+        restores the exact prior mute state; assert a device swap mid-take does
+        not leave the Mac permanently muted. That is the worst-feeling bug in
+        this list.
+      * SECOND INSTANCE: launching Yap twice focuses the first and exits, and
+        does not open a second SQLite handle on the same WAL.
+      * The four TCC grants surviving a relaunch (PERM-E's watcher) with no
+        prompt storm on launch.
+
+    Depends on PERM-C, PERM-E, Y5-C, DB-B.
+
+    What NOT to do:
+      - Do NOT claim fullscreen works without a measurement.
+      - Do NOT leave the system output muted on any exit path.
+      - Do NOT add tauri-nspanel in this item. Measure first; the port is its
+        own item if the measurement says it is needed.
+    PANEL 2026-09-12 — two corrections; without them this item lands green
+    evidence for untested lifecycle behaviour, which is worse than an open gap.
+    (a) DELETE "power.rs observes this already — assert the dictation path
+        subscribes". It does not (power.rs:63-135 is IOPMAssertion only;
+        meeting_matrix.rs:398-408 records the absent call site). Y1-B writes the
+        observer and runs first; subscribe to IT.
+    (b) A \`cargo test\` process has no window-server session: it cannot sleep
+        the machine, unplug a monitor, launch a second copy of Yap or change a
+        TCC grant. So SPLIT the seven promises by what can actually be proven:
+          * State-machine level (cargo test, keep here): the sleep/wake handler's
+            decision table, the display-change placement function, the
+            device-swap unmute rule, the single-instance guard's logic.
+          * Observed level (Y0-E's windowed smoke, under YAP_DATA_DIR): cold
+            launch with nothing installed, the pill landing on a visible screen,
+            fullscreen float.
+          * MANUAL, and written down as a checklist in docs/RELEASE.md with a
+            date and a machine: actual sleep/wake mid-take, an actual monitor
+            unplug, TCC surviving a relaunch. A named manual row is honest; a
+            green unit test standing in for it is not.
+        Do not name a test after a behaviour the test cannot reach.
+
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/lifecycle_e2e.rs
+    grep -q 'cold_launch_with_nothing_installed_never_shows_a_ready_pill' desktop/src-tauri/tests/lifecycle_e2e.rs
+    grep -q 'display_change_lands_the_pill_on_a_visible_screen' desktop/src-tauri/tests/lifecycle_e2e.rs
+    grep -q 'device_swap_mid_take_never_leaves_the_mac_muted' desktop/src-tauri/tests/lifecycle_e2e.rs
+    grep -q 'second_instance_focuses_the_first_and_exits' desktop/src-tauri/tests/lifecycle_e2e.rs
+    grep -qE 'fullscreen' desktop/src-tauri/tests/lifecycle_e2e.rs ARCHITECTURE.md
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test lifecycle_e2e                ; test $? -eq 0
+    cargo test --features custom-protocol --test matrix_row15_single_instance ; test $? -eq 0
+    cargo test --features custom-protocol --test matrix_row16_sleep_wake      ; test $? -eq 0    grep -q 'LIFECYCLE MANUAL CHECKLIST' docs/RELEASE.md
+    grep -q 'subscribes to power::' desktop/src-tauri/tests/lifecycle_e2e.rs
+
+  `,
+})
+
+ITEMS.push({
+  id: 'Y6-E', prompt: 'Y6', branch: 'loop/y6-e-docs-match-the-app', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: ARCHITECTURE.md:5 still says "OpenAI Whisper weights via MLX on-device" and its decision table says Whisper; the engine is transcribe-cpp (Parakeet default, src/catalog.json). docs/ARCHITECTURE-AUDIT-2026-09-26.md §8 lists the rest.`,
+  title: 'README, ARCHITECTURE, ROADMAP and PRODUCT stop describing an app that no longer exists',
+  preflight: `
+    test 0 -eq "$(grep -c 'MLX Whisper' ROADMAP.md)"
+    test 0 -eq "$(grep -c 'Wilson Voice' README.md)"
+    grep -q 'Runtime Dependencies' ARCHITECTURE.md
+  `,
+  spec: `
+    MEASURED. \`ROADMAP.md\` opens "Progress as of 2026-07-17" and its "What
+    works today (v0.4.1)" table says: Hotkey = "Carbon ⌘⇧V hold", ASR =
+    "MLX Whisper large-v3-turbo", Mic = "In-process cpal (TCC identity = Wilson
+    Voice)". All three are wrong at 4e8c9adf: YV34 deleted the Python/MLX
+    sidecar and made the embedded GGUF engine "the app's ONLY transcriber"
+    (lib.rs:539, :1298), the default binding is \`fn⌃\` (lib.rs:404), the product
+    is named Yap, and \`tauri.conf.json\` says version 0.8.0. ROADMAP's "Next
+    build slices" lists as pending several things that shipped (warm daemon,
+    Developer ID notarization).
+
+    A stale ROADMAP is not cosmetic: every agent in this loop reads the repo
+    docs as a spec source (docs/loop/HARNESS.md names PRODUCT.md, ROADMAP.md,
+    ARCHITECTURE.md and docs/ as the spec sources), so a wrong table is a wrong
+    instruction that propagates.
+
+    Do:
+      * ROADMAP.md: replace the "what works today" table with the measured truth
+        at this commit, and move everything shipped into a "shipped" section
+        with its YV number. Keep the research notes — the permissions and
+        fullscreen notes are still accurate and load-bearing.
+      * README.md: the product is Yap. Keep the bundle identifier
+        \`com.wilsonguenther.wilson-voice\` and the data dir \`WilsonVoice\`
+        documented as DELIBERATELY unchanged, with the reason (TCC grants and
+        the SQLite history). That is the single most important sentence in the
+        file for anyone who might "tidy" them.
+      * ARCHITECTURE.md gains a RUNTIME DEPENDENCIES table: for each of the ASR
+        model, the polish model, the yap-polish sidecar, the yap-diarize sidecar
+        and the sherpa-onnx prebuilt archive — is it SHIPPED in the bundle, or
+        MANAGED (downloaded+verified by the app), and where does it land on
+        disk. Nothing may be listed as "assumed present on the machine". Note
+        the sherpa fetch-at-build-time behaviour that .github/workflows/ci.yml
+        documents at length, and the two escape hatches
+        (\`SHERPA_ONNX_ARCHIVE_DIR\`, \`SHERPA_ONNX_LIB_DIR\`).
+      * PRODUCT.md: one honest feature list at 0.8.0 including the notetaker and
+        the license model, and the three network calls PRIV-A names.
+      * A test that keeps them honest:
+        \`tests/docs_match_the_app.rs\` asserting the version in ARCHITECTURE.md
+        matches tauri.conf.json, the default binding named in README matches
+        \`AppSettings::default().ptt_binding\`, and no doc mentions a deleted
+        subsystem (MLX, the Python sidecar, \`⌘⇧V\` as the default).
+
+    What NOT to do:
+      - Do NOT rename the bundle identifier or the data directory. Document them.
+      - Do NOT delete ROADMAP's research notes.
+      - Do NOT write aspirational features into PRODUCT.md as shipped.
+    PANEL 2026-09-12 — the docs must also answer the question the plan never
+    asks: WHICH MAC IS THE WEAKEST ONE THIS MUST WORK ON. Declare it in
+    ARCHITECTURE.md (chip, macOS version, RAM, free disk) and make the config
+    honest about it: tauri.conf.json pins \`minimumSystemVersion: "12.0"\`,
+    which invites 8 GB Intel Macs, while
+    \`git grep -E 'x86_64-apple|universal-apple' -- .github desktop/package.json
+    desktop/src-tauri/tauri.conf.json\` returns NOTHING and the only staged
+    sidecar is aarch64-apple-darwin — so the shipped DMG cannot run on the
+    machines the Info.plist invites. Building universal is out of scope for this
+    loop; raising minimumSystemVersion to the arm64 reality is a one-line
+    change and is Wilson's call (docs/loop/PLAN.md §4). Whichever he picks,
+    ARCHITECTURE.md states the floor and Y3-G's budgets are asserted against it.
+
+  `,
+  acceptance: `
+    test 0 -eq "$(grep -c 'MLX Whisper' ROADMAP.md)"
+    test 0 -eq "$(grep -c 'v0.4.1' ROADMAP.md)"
+    grep -q 'Runtime Dependencies' ARCHITECTURE.md
+    grep -q 'SHERPA_ONNX_ARCHIVE_DIR' ARCHITECTURE.md
+    grep -q 'com.wilsonguenther.wilson-voice' README.md
+    grep -q 'WilsonVoice' README.md
+    test -f desktop/src-tauri/tests/docs_match_the_app.rs
+    grep -q 'version_in_docs_matches_tauri_conf' desktop/src-tauri/tests/docs_match_the_app.rs
+    grep -q 'no_doc_mentions_a_deleted_subsystem' desktop/src-tauri/tests/docs_match_the_app.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test docs_match_the_app ; test $? -eq 0
+  `,
+})
+
+// ── 35-y7-tests-and-smoke.mjs ─────────────────────────────────────────────
+// Y7 — TESTS + A REAL SMOKE. The gate in docs/loop/HARNESS.md is eight commands
+// and none of them launches the app. Yap has 128 Rust integration test files and
+// 25 vitest tests, and Wilson's report ("the app looks broken") was invisible to
+// all of them — a green build is not a working app
+// (feedback_loop_blind_to_visual_ux; feedback_real_browser_smoke_required).
+//
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'Y7-A', prompt: 'Y7', branch: 'loop/y7-a-headless-smoke-against-the-built-binary', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'A headless smoke that runs the real built binary end to end, not a unit test of its parts',
+  preflight: `
+    test -x scripts/smoke-headless.sh
+    ./scripts/smoke-headless.sh
+  `,
+  spec: `
+    Yap ALREADY has the hook this needs and nothing uses it as a gate:
+    \`src-tauri/src/cli.rs\` (161 lines) plus "YV32 headless mode
+    (\`--transcribe-file <wav>\`)" at lib.rs:3982, and a committed fixture
+    \`tests/fixtures/quick-brown-fox-16k.wav\`. So the built binary can be driven
+    with no window, no TCC and no microphone.
+
+    Create \`scripts/smoke-headless.sh\` (\`set -euo pipefail\`, exit codes read
+    bare), which:
+      1. Builds the release binary the way the gate already does (stage
+         \`src-tauri/binaries/yap-polish-<triple>\` first, then
+         \`cargo build --release --features custom-protocol\`).
+      2. Runs the weak-link check that already exists:
+         \`./scripts/assert-weak-linked-14_4-symbols.sh
+          desktop/target/release/wilson-voice\`. Its comment in ci.yml is the
+         reason this whole item matters: "the build is green, the tests are
+         green, and the binary is unlaunchable for a whole population of users."
+      3. \`--transcribe-file tests/fixtures/quick-brown-fox-16k.wav\` against a
+         TEMPORARY data dir (never the user's \`WilsonVoice\` dir) and asserts the
+         transcript contains the expected words. If the ASR model is absent it
+         must FAIL with "no model installed, run <the documented command>" —
+         never skip silently, which is how a smoke test becomes decoration.
+      4. Asserts the run wrote NOTHING into the real data dir.
+      5. Runs the same file through the cleanup pipeline at the SHIPPED default
+         level and prints the before/after, so Y4's "formatting is on" claim is
+         visible in the smoke output rather than only in a fixture.
+      6. Prints a single PASS/FAIL summary and the version from tauri.conf.json.
+
+    Add \`"smoke:headless"\` to desktop/package.json scripts. This is the
+    per-item smoke; Y7-B is the windowed one.
+
+    What NOT to do:
+      - Do NOT touch the user's data dir or their \`/Applications/Yap.app\`.
+      - Do NOT skip when the model is missing.
+      - Do NOT download a model inside the smoke script.
+  `,
+  acceptance: `
+    test -x scripts/smoke-headless.sh
+    grep -q 'set -euo pipefail' scripts/smoke-headless.sh
+    grep -q 'assert-weak-linked-14_4-symbols.sh' scripts/smoke-headless.sh
+    grep -q 'transcribe-file' scripts/smoke-headless.sh
+    test 0 -eq "$(grep -c 'WilsonVoice' scripts/smoke-headless.sh)"
+    node -e "process.exit(require('./desktop/package.json').scripts['smoke:headless']?0:1)"
+    ./scripts/smoke-headless.sh ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y7-B', prompt: 'Y7', branch: 'loop/y7-b-windowed-smoke-that-screenshots-every-view', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: despite the title, scripts/smoke-windowed.mjs drives Chrome with --headless=new against vite preview — it never opens a visible window, so it complies with the headless-only rule.`,
+  title: 'A windowed smoke that launches Yap, walks all seven views and captures them at two sizes',
+  preflight: `
+    test -x scripts/smoke-windowed.sh
+    test -d docs/smoke-shots
+    ./scripts/smoke-windowed.sh --check-only
+  `,
+  spec: `
+    Wilson's report was visual and nothing in the gate looks at pixels. This is
+    the item that makes "looks broken" a detectable condition.
+
+    \`scripts/smoke-windowed.sh\`:
+      * Launches the built app against a TEMPORARY data dir, with a flag that
+        seeds a deterministic fixture state (some history, a dictionary entry, a
+        scratchpad note) and a SECOND run with an EMPTY state — the empty run is
+        the one that catches Y5-B's missing empty states, and it is the more
+        important of the two.
+      * Walks all seven \`Nav\` views and all eight \`SettingsTab\`s, capturing
+        each at 980x700 and at 720x520 (the configured default and the
+        \`minWidth\`/\`minHeight\` floor from tauri.conf.json), into
+        \`docs/smoke-shots/<run>/\`.
+      * Captures the FLOAT PILL for every \`LivePhase\` at all three
+        \`pill_position\` values, driven through a debug command that forces a
+        phase (add one behind \`#[cfg(feature = "custom-protocol")]\` plus an env
+        guard so it cannot be reached in a shipped build — and assert that).
+      * FAILS, not warns, on: a view that renders no text at all; a view with an
+        \`.animate\`/spinner element still present after 10 seconds; a horizontal
+        scrollbar on the window at either size; any element whose bounding box
+        extends past the window; and, in the empty run, a view with no
+        \`data-empty-state\`. These are mechanical proxies for "looks broken" and
+        each one corresponds to a defect this plan found.
+      * \`--check-only\` runs the assertions against the last captured run
+        without relaunching, so the preflight is cheap.
+
+    Use the Playwright/CDP route only if the Tauri webview exposes a debug port
+    in a \`custom-protocol\` build; if it does not, drive it with the OS
+    screenshot tools plus the app's own debug commands and say so in the script
+    header. Either way, do not add a browser automation dependency to
+    desktop/package.json's runtime deps.
+
+    Wire it in: \`npm run smoke:windowed\`, and make Y0-B's loop-smoke script
+    call it when a display is available and skip it with a named message when
+    there is none.
+
+    Depends on Y5-B, Y5-C, Y5-G, Y7-A.
+
+    What NOT to do:
+      - Do NOT commit the screenshots into git history on every run. Commit ONE
+        reference run and gitignore the rest, or the repo grows without bound.
+      - Do NOT leave the forced-phase debug command reachable in a release build.
+      - Do NOT assert pixel equality against a golden image. Assert the
+        STRUCTURAL properties above; pixel goldens on a two-theme, two-size,
+        animated UI are a permanent source of false red.
+    PANEL 2026-09-12 — THIS ITEM IS NOW THE SECOND HALF. Y0-E ships
+    scripts/smoke-windowed.sh with the five structural failure conditions BEFORE
+    the Y5 lane, because an instrument that arrives ten items after the work it
+    judges gates nothing, and build mode dispatches no reviewer. So the
+    dependency line "Depends on Y5-B, Y5-C, Y5-G, Y7-A" now means: EXTEND Y0-E's
+    script to the new pill phases and the dock positions those items added, and
+    re-baseline docs/loop/SMOKE-BASELINE.md against the post-Y5 tree with the
+    diff explained. It launches under \`YAP_DATA_DIR\` and \`--smoke\` (Y0-D) —
+    never against the real data dir, and never with a global hotkey registered.
+    \`--check-only\` remains a pre-flight convenience and is NOT acceptance:
+    with no captured run it exits non-zero by Y0-E's contract.
+    A display IS available on this run, so "no display" is a failure here, not
+    a named skip.
+
+  `,
+  acceptance: `
+    test -x scripts/smoke-windowed.sh
+    grep -q '720' scripts/smoke-windowed.sh
+    grep -q '980' scripts/smoke-windowed.sh
+    grep -q 'data-empty-state' scripts/smoke-windowed.sh
+    grep -q 'check-only' scripts/smoke-windowed.sh
+    test -d docs/smoke-shots
+    node -e "process.exit(require('./desktop/package.json').scripts['smoke:windowed']?0:1)"
+    grep -q 'smoke-windowed' scripts/loop-smoke.sh
+    # the forced-phase debug command cannot exist in a shipped build
+    grep -q 'custom-protocol' desktop/src-tauri/src/lib.rs
+    # PANEL: --check-only asserts against "the last captured run", so with no
+    # run it is a no-op that exits 0. Acceptance runs a FULL capture, counts the
+    # shots, and proves the detector can fail.
+    YAP_DATA_DIR="$(mktemp -d)" ./scripts/smoke-windowed.sh ; test $? -eq 0
+    test 28 -le "$(ls docs/smoke-shots/*/*.png | wc -l | tr -d ' ')"
+    ./scripts/smoke-windowed.sh --check-only --self-test-must-fail ; test $? -ne 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y7-C', prompt: 'Y7', branch: 'loop/y7-c-non-vacuous-mutation-proof-for-the-new-tests', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'Every test this loop added is proven non-vacuous by a mutation that makes it fail',
+  preflight: `
+    test -f docs/loop/MUTATIONS.md
+    test -x scripts/assert-tests-are-non-vacuous.sh
+    ./scripts/assert-tests-are-non-vacuous.sh
+  `,
+  spec: `
+    The repo already practises this: \`docs/pr-screenshots/YV105/…/non-vacuous-mutations.txt\`,
+    YV106, YV107, YV120, YV121 all carry one. Make it mechanical for the tests
+    this loop adds, because the failure mode is specific and this plan is full of
+    greps: a test that asserts a symbol exists, in a file that always contains
+    it, proves nothing; and a grep proving absence with the wrong pattern or the
+    wrong scope proves less than nothing (the "verification that verifies
+    nothing" rule).
+
+    Create \`scripts/assert-tests-are-non-vacuous.sh\` driven by a committed
+    table \`docs/loop/MUTATIONS.md\`: one row per test file added by this loop,
+    naming a SINGLE-LINE source mutation and the test that must then fail.
+    The script applies each mutation to a scratch copy, runs that one test,
+    asserts a NON-ZERO exit, and reverts. It fails if any mutation leaves the
+    suite green.
+
+    Seed the table with the mutations named in the earlier items, which are
+    already written as acceptance steps there and should move here so they run
+    together:
+      shipped_defaults      flip \`auto_paste: true\` -> false
+      formatting_fixtures   set \`cleanup_level\` back to "light"
+      mic_auth_status       return \`Authorized\` unconditionally from
+                            \`authorization_status()\`
+      mic_gate              delete the microphone check from \`start_recording\`
+      trial_state_machine   drop the max-seen-wall-clock floor
+      dictation_chunked     remove the seam dedupe
+      dictation_capture_memory  restore the unbounded \`raw\` append
+      polish_long_form      restore \`MAX_POLISH_WORDS = 400\`
+      paste_target_e2e      cache the paste target from hold time
+      updater_endpoint      reduce the endpoint list to one
+      no_outbound_on_the_dictation_path  add a URL literal to \`record.rs\`
+      history_at_volume     remove the pagination tiebreaker
+      lifecycle_e2e         skip the mute restore on one exit path
+
+    Also assert the SHAPE of every grep-based acceptance this loop uses: a
+    committed checker that scans the item files for \`grep\` invocations without
+    a path scope, and fails. A scopeless grep in an acceptance gate is the
+    single cheapest way to ship a false green.
+
+    Run it as part of Y0-B's loop-smoke script, gated behind a flag so the
+    per-item gate stays fast and the full mutation sweep runs once per part.
+
+    Depends on every test-bearing item; sequence it last in its file.
+
+    What NOT to do:
+      - Do NOT mutate the test file to make it fail. Mutate the SOURCE.
+      - Do NOT accept "the whole suite went red" as proof. The NAMED test must
+        be the one that fails.
+    PANEL 2026-09-12 — the item whose purpose is proving other tests non-vacuous
+    was itself satisfiable by typing a 13-row markdown table, and it is
+    sequenced last, so it can only audit tests that have already merged. Two
+    changes: (1) the per-item mutation requirement now lives in the SHARED
+    PREAMBLE and binds every item as it is built — this item COLLECTS the rows
+    and re-runs them, it does not excuse anyone; (2) the ledger is one row per
+    NEW TEST FILE, and scripts/assert-tests-are-non-vacuous.sh must EXECUTE each
+    mutation (mutate, re-run, require red, restore, \`git diff --exit-code\`) and
+    record the observed transition, not merely list it. A row whose mutation was
+    never executed is a failed row.
+
+  `,
+  acceptance: `
+    test -f docs/loop/MUTATIONS.md
+    test -x scripts/assert-tests-are-non-vacuous.sh
+    # PANEL: 13 rows is not a ledger for a loop that adds ~50 test files, and a
+    # markdown table is not a proof. One row per new test FILE, and the script
+    # must EXECUTE each mutation and record the observed red/green transition.
+    test "$(ls desktop/src-tauri/tests/*.rs | wc -l | tr -d ' ')" -le "$(grep -c '^| ' docs/loop/MUTATIONS.md)"
+    grep -q 'executed' docs/loop/MUTATIONS.md
+    grep -q 'git diff --exit-code' scripts/assert-tests-are-non-vacuous.sh
+    grep -q 'mic_auth_status' docs/loop/MUTATIONS.md
+    grep -q 'no_outbound_on_the_dictation_path' docs/loop/MUTATIONS.md
+    grep -q 'scopeless' scripts/assert-tests-are-non-vacuous.sh
+    ./scripts/assert-tests-are-non-vacuous.sh ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y7-D', prompt: 'Y7', branch: 'loop/y7-d-frontend-coverage-for-the-pure-modules', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The pure frontend modules get real coverage, so the pill and the states are testable without a window',
+  preflight: `
+    test -f desktop/vitest.config.ts
+    cd ${APP} && npm ci && npm test
+  `,
+  spec: `
+    The frontend is 25 vitest tests across \`src/pill/live.test.ts\`,
+    \`src/errors.test.ts\`, \`src/license/status.test.ts\`,
+    \`src/meetings/*.test.ts\` and \`src/support/bundle.test.ts\`. The pattern is
+    right — pure module, pure test, no rendering — and ci.yml explains why it is
+    a gate: "a behavioural regression there shipped once because a type check was
+    the only frontend gate."
+
+    This loop adds a lot of pure modules (permission.ts, viewState.ts, toast.ts,
+    diff.ts, onboarding.ts, pill/license.ts, pill/motion.ts, pill/hitbox.ts,
+    pill/dock.ts, home/house.ts). Make the discipline enforceable:
+      * \`desktop/vitest.config.ts\` with coverage thresholds that apply ONLY to
+        the pure modules (an explicit include list — never a repo-wide number,
+        which would either be trivially met or permanently red because App.tsx
+        cannot be unit-tested).
+      * A test that fails when a new file is added under \`src/pill/\` or a new
+        \`*.ts\` pure module is added without a sibling \`*.test.ts\`. An explicit
+        include list plus that check is what keeps the number honest.
+      * Fix the reverse problem too: assert no pure module imports
+        \`@tauri-apps/api\` — a pure module that invokes is not testable without a
+        window, and that is how \`live.ts\` stays drivable. Components may import
+        it; \`*.ts\` modules on the include list may not.
+
+    Depends on Y5-*, Y6-A. Sequence after them.
+
+    What NOT to do:
+      - Do NOT set a global coverage threshold.
+      - Do NOT add a DOM testing library to chase a number. The value here is
+        the pure state machines, which need no DOM.
+  `,
+  acceptance: `
+    test -f desktop/vitest.config.ts
+    grep -q 'coverage' desktop/vitest.config.ts
+    grep -q 'pill/live.ts' desktop/vitest.config.ts
+    test -f desktop/src/purity.test.ts
+    grep -q 'no_pure_module_imports_the_tauri_api' desktop/src/purity.test.ts
+    grep -q 'every_pure_module_has_a_sibling_test' desktop/src/purity.test.ts
+    cd ${APP} && npm ci
+    npm test         ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y7-E', prompt: 'Y7', branch: 'loop/y7-e-release-dmg-smoke-on-a-clean-mac-path', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  title: 'The shipped DMG is smoke-tested the way a first-time user meets it',
+  preflight: `
+    test -x scripts/smoke-dmg.sh
+    grep -q 'smoke-dmg' docs/RELEASE.md
+  `,
+  spec: `
+    The release path is real: \`.github/workflows/release.yml\` with six repo
+    secrets set, a Developer ID certificate, notarization, and
+    \`reference_yap_dmg_notarization\` recording a notarized v0.5.5 DMG plus the
+    manual flow and the iCloud/keychain gotchas. v0.8.0 shipped with "the first
+    working auto-update" (project_yap_build_state). None of that is smoke-tested
+    from the user's side, and SEC-A + UPD-A both change things that only show up
+    there.
+
+    \`scripts/smoke-dmg.sh <path-to-dmg>\`, run manually and from docs/RELEASE.md:
+      * \`spctl --assess --type exec -vv\` on the .app inside the mounted DMG ->
+        accepted, source "Notarized Developer ID". An un-notarized build is a
+        Gatekeeper wall for every user and nothing else in the pipeline sees it.
+      * \`codesign -dv --verbose=4\` -> the signing identity is a Developer ID,
+        not ad-hoc, and the team id matches what docs/RELEASE.md documents.
+      * \`codesign -d --entitlements :-\` -> assert
+        \`com.apple.security.app-sandbox\` is present and FALSE (the VALUE, not
+        the key — SEC-A's rule), audio-input is true, and the two
+        dylib-injection entitlements are absent.
+      * The bundle identifier is \`com.wilsonguenther.wilson-voice\` — assert it
+        has NOT changed. A rename silently resets every user's TCC grants.
+      * Both sidecars are present inside the bundle's Resources and are
+        themselves signed.
+      * \`Info.plist\` carries all three usage strings (NSMicrophone,
+        NSAudioCapture, NSAppleEvents). A missing one is a TCC failure with no
+        dialog.
+      * The updater manifest URL from UPD-A resolves and its signature verifies
+        against the shipped pubkey — without installing anything.
+      * \`xattr\` shows no quarantine-blocking detritus, and the resource-fork
+        problem project_yap_build_state describes ("the tauri codesign flakes on
+        resource-fork detritus") is checked for by name.
+      * Prints nothing secret. No certificate serial, no key material, no
+        app-specific password. The script must be safe to paste into a PR.
+
+    Then wire it into docs/RELEASE.md as a required step before a release is
+    announced, with the exact command.
+
+    Depends on SEC-A, UPD-A.
+
+    What NOT to do:
+      - Do NOT run this in the per-item gate. It needs a built, signed,
+        notarized DMG, which is minutes plus Apple's servers; it belongs to the
+        release checklist and to \`mode: "review"\` with \`args: {dmg: true}\`.
+      - Do NOT print any secret or certificate detail.
+      - Do NOT install the DMG over the user's running /Applications/Yap.app.
+    PANEL 2026-09-12 — \`bash -n\` is a syntax check, not a smoke test: the
+    checklist this item writes (spctl assess, codesign verbose, entitlement
+    values, bundle id, sidecar signatures, Info.plist usage strings, the updater
+    manifest resolving) was never once executed. Run it for real against the
+    DMG the review pass builds (\`args: {dmg: true}\`), or skip with a NAMED
+    reason the PR body carries. And split the assertions into SEC-A's two
+    profiles: a RELEASE profile (Developer ID + notarized + stapled) and a LOCAL
+    profile (Apple Development, unnotarized, stable designated requirement) —
+    asserting "Notarized Developer ID" unconditionally makes a correctly signed
+    local DMG fail by construction. The updater assertions here are UPD-B's
+    published triple (latest.json + .app.tar.gz + .sig), not the DMG alone.
+
+  `,
+  acceptance: `
+    test -x scripts/smoke-dmg.sh
+    grep -q 'spctl --assess' scripts/smoke-dmg.sh
+    grep -q 'app-sandbox' scripts/smoke-dmg.sh
+    grep -q 'com.wilsonguenther.wilson-voice' scripts/smoke-dmg.sh
+    grep -q 'NSAudioCaptureUsageDescription' scripts/smoke-dmg.sh
+    grep -q 'smoke-dmg' docs/RELEASE.md
+    test 0 -eq "$(grep -c 'APPLE_PASSWORD' scripts/smoke-dmg.sh)"
+    # PANEL: \`bash -n\` is a syntax check, not a smoke test. Run it against a
+    # real artifact, or skip with a NAMED reason that the PR body carries.
+    bash -n scripts/smoke-dmg.sh ; test $? -eq 0
+    ./scripts/smoke-dmg.sh --require-artifact-or-name-the-reason ; test $? -eq 0
+    grep -q 'codesign -dv' scripts/smoke-dmg.sh
+    grep -q 'adhoc' scripts/smoke-dmg.sh
+  `,
+})
+
 // ── 40-y8-parity-p0.mjs ───────────────────────────────────────────────────
 // Y8 — THE P0 PARITY QUEUE. Six items Wilson explicitly asked for, left on the
 // line when the yap23 loop stopped. Source: the Wispr parity teardown
@@ -1436,6 +3497,7 @@ const ITEMS = []
 
 ITEMS.push({
   id: 'Y8-A', prompt: 'Y8', branch: 'loop/y8-a-hotkey-suite-completion', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: paste-last already ships (yap.log "⌃⌘V paste-last registered" on every launch) and cancel mid-decode shipped in Y3-D (#176); the pre-flight must retire those parts and the builder owns only what is missing (copy-last, scratchpad hotkey, validation rules).`,
   title: 'The hotkey suite: hands-free, cancel, copy-last, paste-last, scratchpad, with real validation rules',
   preflight: `
     grep -q 'pub const HANDS_FREE' desktop/src-tauri/src/shortcuts.rs
@@ -1507,6 +3569,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-D', prompt: 'Y8', branch: 'loop/db-d-scratchpad-as-a-real-second-window', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Scratchpad: a second window on a hotkey, dictate-into-note, versions — the half-built feature finished',
   preflight: `
     grep -q 'note_versions' desktop/src-tauri/src/db.rs
@@ -1589,6 +3652,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-B', prompt: 'Y8', branch: 'loop/y8-b-flow-bar-affordance-slots', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The pill becomes a bar: five affordance slots, each with a tooltip and a vertical-dock layout',
   preflight: `
     grep -q 'AffordanceSlot' desktop/src/pill/slots.tsx
@@ -1661,6 +3725,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-C', prompt: 'Y8', branch: 'loop/y8-c-earcons-and-sound-design', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Optional earcons for start, stop, paste and achievement — off by default, Yappy-voiced',
   preflight: `
     test -d desktop/src-tauri/assets/sounds
@@ -1726,6 +3791,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-D', prompt: 'Y8', branch: 'loop/y8-d-coaching-nudges-in-yappys-voice', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Coaching nudges: the bar teaches the app, in Yappy\'s voice, without becoming nagware',
   preflight: `
     test -f desktop/src/pill/nudge.ts
@@ -1806,6 +3872,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-A', prompt: 'Y9', branch: 'loop/y9-a-named-transform-library', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A named transform library over the existing sidecar, with an observable status enum',
   preflight: `
     test -f desktop/src-tauri/src/transforms.rs
@@ -1880,6 +3947,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-B', prompt: 'Y9', branch: 'loop/y9-b-writing-samples-local-style-profile', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Writing samples become a local style profile injected into the polish prompt',
   preflight: `
     grep -q 'writing_samples' desktop/src-tauri/src/db.rs
@@ -1945,6 +4013,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-C', prompt: 'Y9', branch: 'loop/y9-c-spoken-preference-rules', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Spoken preference rules: say a rule once, it applies where it matches — with an explicit Apply step',
   preflight: `
     grep -q 'voice_preferences' desktop/src-tauri/src/db.rs
@@ -2020,6 +4089,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-F', prompt: 'Y9', branch: 'loop/perm-f-deeper-ax-context-selection-and-after-caret', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Deeper accessibility context: the selection and the text after the caret, read in-process',
   preflight: `
     grep -q 'AXSelectedText' desktop/src-tauri/src/focus.rs
@@ -2090,6 +4160,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-G', prompt: 'Y9', branch: 'loop/perm-g-vibe-coding-identifier-bias', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'IDE context: the identifiers in the open file bias the transcription — the highest personal-ROI item',
   preflight: `
     grep -q 'ide_identifiers\\|vibe_context' desktop/src-tauri/src/vocab.rs
@@ -2165,6 +4236,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-D', prompt: 'Y9', branch: 'loop/y9-d-blocked-apps-and-focus-denylist', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A denylist where the hotkey is inert — the honest complement to reading your context',
   preflight: `
     grep -q 'denylist' desktop/src-tauri/src/focus.rs
@@ -2229,6 +4301,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-E', prompt: 'Y9', branch: 'loop/y9-e-dictionary-and-snippet-bulk-io', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'CSV round-trip for the dictionary and snippets, and the usage-frequency ranking that is only half there',
   preflight: `
     grep -q 'import_csv' desktop/src-tauri/src/db.rs
@@ -2301,6 +4374,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-A', prompt: 'Y10', branch: 'loop/y10-a-multi-language-and-the-in-bar-picker', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Multi-language: expose what the engine can already do, with the picker in the bar',
   preflight: `
     grep -q 'language_set' desktop/src-tauri/src/lib.rs
@@ -2361,6 +4435,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-H', prompt: 'Y10', branch: 'loop/perm-h-microphone-ranking-and-device-intelligence', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings',
   preflight: `
     grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
@@ -2425,6 +4500,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-B', prompt: 'Y10', branch: 'loop/y10-b-rich-text-snippets-on-the-pasteboard', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste',
   preflight: `
     grep -q 'rtf\\|public.rtf' desktop/src-tauri/src/paste.rs
@@ -2485,6 +4561,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-D', prompt: 'Y10', branch: 'loop/y10-d-mouse-button-push-to-talk', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A non-primary mouse button as push-to-talk',
   preflight: `
     grep -q 'mouse_ptt\\|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
@@ -2540,6 +4617,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-E', prompt: 'Y10', branch: 'loop/y10-e-local-insights-v2-and-the-yappy-profile', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy\'s dialogue',
   preflight: `
     grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
@@ -2605,6 +4683,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y10-F', prompt: 'Y10', branch: 'loop/y10-f-publish-the-idle-cost-number', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: yap23 install measured idle RSS ~135-138 MB (pid 87890); wakeups were never measured — yap24-OS5 depends on this item.`,
   title: 'Measure and publish Yap\'s idle RAM and CPU — the free marketing line the research asked for',
   preflight: `
     test -f desktop/src-tauri/tests/idle_cost.rs
@@ -2685,10 +4764,11 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-A', prompt: 'Y11', branch: 'loop/y11-a-rebase-the-six-parked-branches-on-min-embed', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. AMENDED 2026-09-26: the pre-flight used to require ZERO open PRs in the whole repo, which can never pass while loop-build PRs are open; it now counts only the six parked feat/yv PRs (#142-#146, #149, still open 2026-09-26).`,
   title: 'Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was',
   preflight: `
     test 0 -eq "$(git branch -r --list 'origin/feat/yv1*' | wc -l)"
-    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json number --jq 'length' | grep -qx 0
+    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("feat/yv"))] | length' | grep -qx 0
   `,
   spec: `
     MEASURED on 2026-09-12:
@@ -2742,6 +4822,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it',
   preflight: `
     gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -2795,6 +4876,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-E', prompt: 'Y11', branch: 'loop/db-e-speaker-profiles-store-the-weights-digest', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest',
   preflight: `
     gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -2854,6 +4936,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-C', prompt: 'Y11', branch: 'loop/y11-c-enrollment-bands-retuned-on-the-scored-population', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path',
   preflight: `
     gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -2920,6 +5003,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-D', prompt: 'Y11', branch: 'loop/y11-d-split-partition-seeding-and-the-outlier', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #153: split_partition\'s farthest-pair seeding does not separate speakers when an outlier is the far point',
   preflight: `
     gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -2985,6 +5069,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist',
   preflight: `
     gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -3046,6 +5131,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-F', prompt: 'Y11', branch: 'loop/y11-f-real-voice-eval-corpus', gated: 'panel',
+  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
   title: 'A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists',
   preflight: `
     test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
@@ -3113,6 +5199,166 @@ ITEMS.push({
     cd ${APP} && npm ci && cd src-tauri
     cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
     cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
+  `,
+})
+
+// ── 60-yap24-packaging.mjs ────────────────────────────────────────────────
+// yap24-PKG — SHIP IT WITHOUT HANDS. Written 2026-09-26 by the architecture audit
+// (docs/ARCHITECTURE-AUDIT-2026-09-26.md §1.7 and §7). Runs after the Y-series packaging items
+// (UPD-A/UPD-B in 30-y6). LIC-A (Stripe -> Supabase issuer) stays the licensing item; the audit
+// only re-verified its premise: the revocation host (license.rs:117) no longer answers.
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap24-PKG1', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg1-one-command-local-release', gated: 'panel',
+  title: 'One local release command: build, Developer ID sign, hdiutil DMG, notarize, staple, verify, updater artifacts — with a dry run',
+  preflight: `
+    test -x scripts/release-local.sh
+    bash scripts/release-local.sh --dry-run --check-only
+  `,
+  spec: `
+    Panel: pending (SECURITY-class: signing and notarization)
+    DEPENDS: UPD-A (#197, open), UPD-B
+
+    EVIDENCE
+      - Releases are hand-run from docs/RELEASE.md; .github/workflows/release.yml is disabled
+        (Actions is off account-wide — HARNESS.md "CI mode").
+      - memory reference_yap_dmg_notarization: bundle_dmg.sh fails headless (Finder osascript),
+        the manual hdiutil path is the reliable one; the notary keychain profile is yap-notary;
+        releases must be built from a non-iCloud clone.
+      - Tauri updater: signatures are mandatory and cannot be disabled; latest.json needs
+        version, platforms.<target>.url and .signature (https://v2.tauri.app/plugin/updater/).
+
+    DO: scripts/release-local.sh <version> [--dry-run] [--check-only]: fresh clone to a scratch
+    dir -> npm ci -> stage both sidecars -> tauri build --bundles app -> codesign Developer ID
+    with --options runtime --timestamp and Entitlements.plist -> hdiutil UDZO with /Applications
+    link -> codesign the DMG -> xcrun notarytool submit --keychain-profile yap-notary --wait ->
+    stapler staple -> spctl -a -t open -> .app.tar.gz + .sig + latest.json. --dry-run stops before
+    notarize and prints each command; --check-only validates tools, identity presence and the
+    keychain profile without building. Never prints a secret; never enables app-sandbox.
+  `,
+  acceptance: `
+    test -x scripts/release-local.sh
+    bash -n scripts/release-local.sh
+    grep -q "keychain-profile yap-notary" scripts/release-local.sh
+    grep -q "release-local.sh" docs/RELEASE.md
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-PKG2', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg2-first-run-without-a-network', gated: 'panel',
+  title: 'A fresh Mac with no network at first launch is told exactly why dictation is waiting — or can dictate with a bundled tiny model',
+  preflight: `
+    grep -q "first_run_offline" desktop/src-tauri/src/models.rs
+  `,
+  spec: `
+    Panel: pending (product decision: bundle whisper-tiny in the DMG, +~40 MB, or not)
+    DEPENDS: Y6-A (onboarding ends in one pasted dictation)
+
+    EVIDENCE
+      - models.rs:134 "NOTHING SHIPS IN THE DMG": every model (ASR, polish, diarize, Silero VAD
+        at vad.rs:491) is fetched on first use from huggingface.co (HEAD 200 on 2026-09-26 for the
+        pinned parakeet, Qwen polish and yap-diarize-models revisions) or github.com, each
+        sha256-verified against catalog.json / vad.rs constants.
+      - A first launch on a plane (Wispr "cannot work on a plane" is Yap's own positioning line)
+        cannot dictate at all until a download succeeds.
+
+    DO: option A (default if the panel says yes) — bundle whisper-tiny-Q8_0 as a resource,
+    sha256-verified on first launch, used only until the recommended model finishes downloading;
+    option B — no bundle, and the onboarding model step detects offline (one HEAD with a 5 s
+    timeout) and says "Yap needs one download (N MB) before it can transcribe; connect once."
+    Either way a test covers the offline branch.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --lib models
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+// ── 65-yap24-expansions.mjs ───────────────────────────────────────────────
+// yap24-X — EXPANSIONS: the things that make Yap better than Wispr Flow rather than equal to it.
+// Written 2026-09-26 by the architecture audit (docs/ARCHITECTURE-AUDIT-2026-09-26.md §7). Wispr is
+// a cloud write-buffer that "literally cannot work on a plane" (Notes/Wispr-Full-Parity-Research-
+// 2026-08-09.md); Yap's moat is local. Each item keeps every byte on the Mac.
+// All gated on the panel; none starts before the notetaker chain (01) closes.
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap24-X1', prompt: 'yap24-X', branch: 'loop/yap24-x1-notes-mirror-to-a-markdown-folder', gated: 'panel',
+  title: 'Your notes outlive the app: every meeting and (optionally) every dictation mirrors to Markdown in a folder you choose',
+  preflight: `
+    grep -q "notes_mirror_dir" desktop/src-tauri/src/lib.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT4 (notes exist), yap24-NT9
+
+    EVIDENCE: Wilson 2026-08-09 (memory project_yap_build_state): "full transcript/file management
+    layer so AIs can always retrieve transcripts even if Yap breaks". Today the only copy is the
+    SQLite DB under Application Support.
+
+    DO: Settings -> Notes folder (default off). When set, each completed meeting writes
+    <folder>/Yap Meetings/<date> <title>.md (the NT4 export) and re-writes it when notes change;
+    an optional daily dictation log <folder>/Yap Dictations/<date>.md. Atomic writes; never
+    deletes a user file; a missing folder pauses the mirror with one sentence in Settings.
+    Obsidian-friendly front matter (date, duration, kind, attendees if known).
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --lib notes_mirror
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-X2', prompt: 'yap24-X', branch: 'loop/yap24-x2-local-mcp-server-over-yap-history', gated: 'panel',
+  title: 'A local, read-only MCP server so Claude and other agents can search your dictations and meeting notes — nothing leaves the Mac',
+  preflight: `
+    test -d desktop/yap-mcp
+  `,
+  spec: `
+    Panel: pending (new surface: a local server; the panel decides stdio-only vs a socket)
+    DEPENDS: yap24-NT4
+
+    EVIDENCE: parity teardown epic list ("Yap MCP server"); Wispr ships MCP ("AI Tools") in its
+    settings (parity note §2.7 and line 235). Yap already has FTS5 over transcripts and meeting
+    segments (db.rs).
+
+    DO: a small stdio MCP binary (workspace member desktop/yap-mcp) that opens the SQLite DB
+    read-only (SQLITE_OPEN_READ_ONLY, WAL-safe) and exposes search_dictations, search_meetings,
+    get_meeting_notes, list_recent. No network listener. Settings shows the one-line config to
+    paste into an MCP client. Tests over a fixture DB.
+  `,
+  acceptance: `
+    test -d desktop/yap-mcp
+    cd desktop && cargo test -p yap-mcp
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-X3', prompt: 'yap24-X', branch: 'loop/yap24-x3-ask-your-meeting-locally', gated: 'panel',
+  title: 'Ask your meeting: "what did I miss / what did we decide" answered by the local model, every answer citing its transcript lines',
+  preflight: `
+    test -f desktop/src-tauri/tests/meeting_ask_cites_segments.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT4, yap24-NT6
+
+    EVIDENCE: Wispr's 2026 notetaker ships "What did I miss" and a notetaker chat (parity note
+    §2.7, lines 214-215) — cloud. Yap has the yap-polish sidecar and GBNF-constrained output
+    (summarize.rs) already.
+
+    DO: an Ask box on a meeting; retrieval = FTS5 over that meeting's segments (no embeddings in
+    v1); the sidecar answers with JSON {answer, citations:[segment ids]}; an answer without a
+    valid citation is refused and shown as "not in this meeting". Runs on the summary worker,
+    never concurrently with dictation.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_ask_cites_segments
+    cargo clippy --all-targets --features custom-protocol
   `,
 })
 
@@ -3336,12 +5582,20 @@ log(
     `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
 )
 
+if (ONLY_PREFIXES) {
+  const kept = ITEMS.filter((it) => !onlySkip(it)).map((it) => it.id)
+  log(
+    `args.only = [${ONLY_PREFIXES.join(', ')}]: ${kept.length} item(s) run (${kept.join(', ') || 'none'}), ` +
+      `${ITEMS.length - kept.length} hard-skipped with no agent. args.now = ${RUN_NOW || 'not passed'}.`
+  )
+}
+
 /** ONE BUILDER LANE. It walks its own items and never awaits the other lane, ever. */
 async function buildLane(lane) {
   for (const item of laneItems[lane]) {
     if (halted) break
     const at = indexOfItem(item)
-    const skipped = panelSkip(item)
+    const skipped = onlySkip(item) || panelSkip(item)
     if (skipped) {
       slots[at] = skipped
       continue

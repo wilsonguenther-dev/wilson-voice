@@ -23,10 +23,11 @@
 
 ITEMS.push({
   id: 'Y11-A', prompt: 'Y11', branch: 'loop/y11-a-rebase-the-six-parked-branches-on-min-embed', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. AMENDED 2026-09-26: the pre-flight used to require ZERO open PRs in the whole repo, which can never pass while loop-build PRs are open; it now counts only the six parked feat/yv PRs (#142-#146, #149, still open 2026-09-26).`,
   title: 'Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was',
   preflight: `
     test 0 -eq "$(git branch -r --list 'origin/feat/yv1*' | wc -l)"
-    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json number --jq 'length' | grep -qx 0
+    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("feat/yv"))] | length' | grep -qx 0
   `,
   spec: `
     MEASURED on 2026-09-12:
@@ -80,6 +81,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it',
   preflight: `
     gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -133,6 +135,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-E', prompt: 'Y11', branch: 'loop/db-e-speaker-profiles-store-the-weights-digest', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest',
   preflight: `
     gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -192,6 +195,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-C', prompt: 'Y11', branch: 'loop/y11-c-enrollment-bands-retuned-on-the-scored-population', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path',
   preflight: `
     gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -258,6 +262,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-D', prompt: 'Y11', branch: 'loop/y11-d-split-partition-seeding-and-the-outlier', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issue #153: split_partition\'s farthest-pair seeding does not separate speakers when an outlier is the far point',
   preflight: `
     gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -323,6 +328,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist',
   preflight: `
     gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
@@ -384,6 +390,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y11-F', prompt: 'Y11', branch: 'loop/y11-f-real-voice-eval-corpus', gated: 'panel',
+  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
   title: 'A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists',
   preflight: `
     test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json

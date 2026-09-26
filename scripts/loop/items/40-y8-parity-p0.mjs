@@ -15,6 +15,7 @@
 
 ITEMS.push({
   id: 'Y8-A', prompt: 'Y8', branch: 'loop/y8-a-hotkey-suite-completion', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: paste-last already ships (yap.log "⌃⌘V paste-last registered" on every launch) and cancel mid-decode shipped in Y3-D (#176); the pre-flight must retire those parts and the builder owns only what is missing (copy-last, scratchpad hotkey, validation rules).`,
   title: 'The hotkey suite: hands-free, cancel, copy-last, paste-last, scratchpad, with real validation rules',
   preflight: `
     grep -q 'pub const HANDS_FREE' desktop/src-tauri/src/shortcuts.rs
@@ -86,6 +87,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-D', prompt: 'Y8', branch: 'loop/db-d-scratchpad-as-a-real-second-window', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Scratchpad: a second window on a hotkey, dictate-into-note, versions — the half-built feature finished',
   preflight: `
     grep -q 'note_versions' desktop/src-tauri/src/db.rs
@@ -168,6 +170,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-B', prompt: 'Y8', branch: 'loop/y8-b-flow-bar-affordance-slots', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The pill becomes a bar: five affordance slots, each with a tooltip and a vertical-dock layout',
   preflight: `
     grep -q 'AffordanceSlot' desktop/src/pill/slots.tsx
@@ -240,6 +243,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-C', prompt: 'Y8', branch: 'loop/y8-c-earcons-and-sound-design', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Optional earcons for start, stop, paste and achievement — off by default, Yappy-voiced',
   preflight: `
     test -d desktop/src-tauri/assets/sounds
@@ -305,6 +309,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y8-D', prompt: 'Y8', branch: 'loop/y8-d-coaching-nudges-in-yappys-voice', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Coaching nudges: the bar teaches the app, in Yappy\'s voice, without becoming nagware',
   preflight: `
     test -f desktop/src/pill/nudge.ts

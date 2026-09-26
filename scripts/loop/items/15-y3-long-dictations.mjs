@@ -45,6 +45,7 @@
 
 ITEMS.push({
   id: 'Y3-A', prompt: 'Y3', branch: 'loop/y3-a-bounded-capture-spill-to-disk', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #170) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling',
   preflight: `
     test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"
@@ -120,6 +121,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-B', prompt: 'Y3', branch: 'loop/y3-b-chunked-decode-for-the-dictation-path', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #172) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call',
   preflight: `
     grep -q 'chunk' desktop/src-tauri/src/lib.rs
@@ -228,6 +230,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-C', prompt: 'Y3', branch: 'loop/y3-c-long-take-progress-in-the-pill', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #174) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The pill reports real progress on a long take instead of an honest-looking lie',
   preflight: `
     grep -q '"transcribing"' desktop/src/pill/live.ts
@@ -307,6 +310,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-D', prompt: 'Y3', branch: 'loop/y3-d-cancel-a-long-take-at-any-stage', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #176) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio',
   preflight: `
     grep -q 'CANCEL' desktop/src-tauri/src/shortcuts.rs
@@ -374,6 +378,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-B', prompt: 'Y3', branch: 'loop/db-b-crash-recovery-for-a-long-take', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #178 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch',
   preflight: `
     grep -q 'resume_take\\|recover_dictation' desktop/src-tauri/src/lib.rs
@@ -438,6 +443,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-F', prompt: 'Y3', branch: 'loop/y3-f-max-session-length-and-the-honest-ceiling', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #180) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A declared maximum session length with a warning before it, instead of an undeclared cliff',
   preflight: `
     grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
@@ -492,6 +498,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-G', prompt: 'Y3', branch: 'loop/y3-g-long-take-latency-and-energy-budget', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #181) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A measured latency and energy budget for long takes, published as a test that fails on regression',
   preflight: `
     test -f desktop/src-tauri/tests/long_take_budget.rs

@@ -44,6 +44,7 @@
 
 ITEMS.push({
   id: 'Y4-A', prompt: 'Y4', branch: 'loop/y4-a-formatting-on-by-default', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #168) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Formatting is on for a fresh install: the shipped default reaches the formatting stage',
   preflight: `
     grep -qE 'cleanup_level: "(medium|high)"' desktop/src-tauri/src/lib.rs
@@ -135,6 +136,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-I', prompt: 'Y4', branch: 'loop/y4-i-measure-the-polish-sidecar-against-the-real-weights', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #169) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Measure the polish stage against the real weights before anything is built on its envelope',
   preflight: `
     test -f docs/BUDGETS.md
@@ -189,6 +191,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-C', prompt: 'Y4', branch: 'loop/sec-c-polish-model-is-actually-installable', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #171 then #184) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The polish model gets an install path, so the LLM stage can exist on a real machine',
   preflight: `
     grep -q 'polish' desktop/src/ModelSetup.tsx
@@ -299,6 +302,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-C', prompt: 'Y4', branch: 'loop/y4-c-paragraphing-the-rule-that-does-not-exist', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #173) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Paragraphing: long speech becomes paragraphs by rule, not one wall of text',
   preflight: `
     grep -q 'fn paragraph_breaks\\|fn insert_paragraphs' desktop/src-tauri/src/dictation.rs
@@ -368,6 +372,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-D', prompt: 'Y4', branch: 'loop/y4-d-lists-and-punctuation-at-the-shipped-level', gated: null,
+  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
   title: 'Lists, nesting and spoken punctuation proven at the level the product ships, with the gaps filled',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
@@ -437,6 +442,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-E', prompt: 'Y4', branch: 'loop/y4-e-polish-long-form-by-chunking', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #175) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Long-form gets polished: the 400-word cliff becomes a chunked pass that keeps the deadline',
   preflight: `
     test 0 -eq "$(grep -c 'MAX_POLISH_WORDS: usize = 400' desktop/src-tauri/src/polish.rs)"
@@ -542,6 +548,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-F', prompt: 'Y4', branch: 'loop/y4-f-app-aware-formatting-that-is-actually-applied', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #177) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'App-aware formatting: the six modes change the output, proven per app, and auto mode picks correctly',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
@@ -609,6 +616,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-G', prompt: 'Y4', branch: 'loop/y4-g-formatting-is-visible-and-reversible', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #179) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The user can see what formatting did and undo it in one key — the trust mechanism',
   preflight: `
     grep -rq 'DiffView\\|formatting_diff' desktop/src
@@ -700,6 +708,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-H', prompt: 'Y4', branch: 'loop/y4-h-formatting-settings-a-person-can-use', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #182) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The formatting settings stop being engineer words, and every one of them persists',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
