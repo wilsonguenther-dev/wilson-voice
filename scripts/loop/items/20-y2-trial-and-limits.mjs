@@ -43,7 +43,7 @@
 
 ITEMS.push({
   id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key. Still blocked only on Wilson provisioning the dedicated Yap Supabase project.`,
+  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it) — Panel revision 2026-09-26T17:35:00Z: DO NOT LAND #183 AS-IS. It targets "a dedicated Yap Supabase project," which the product ledger (2026-09-26 panel) now overrides: issuance moves to the Drivia Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and already licensing other products) — see the Panel revisions block in the spec below. Relabel #183 needs-human until that redirect is done; a scoped notetaker-only loop pass must never merge it as written (see the LAND-scope fix in scripts/loop/template.mjs). RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key, AND every launch still sends an unauthenticated GET to a hostname resolving to an IP Wilson no longer controls, accepting whatever unsigned {kids:[]} revocation list comes back with no signature check (license.rs:1100-1124) — ship the one-line mitigation in the Panel revisions block FIRST, independent of the rest of this item.`,
   title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
     test -f supabase/functions/yap-license/index.ts
@@ -119,7 +119,42 @@ ITEMS.push({
          neither path has copy. One sentence, one action, never a raw Rust
          string, and a retrieval failure must NEVER block offline verification.
 
-    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS.
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING ledger-conflict + HIGH
+    security, GROUNDED):
+      - SHIP THIS ONE LINE NOW, independent of the rest of the item: in license.rs, make
+        REVOCATION_URL an Option set to None so no fetch happens at all until the real endpoint
+        below exists. Today every launch sends an unauthenticated GET to
+        forge.87-99-149-214.sslip.io — sslip.io maps any name to its embedded IP, so whoever
+        holds that IP today can also get a TLS cert for it — and deserializes whatever
+        {kids:[]} comes back with NO signature check (license.rs:1100-1124), which contradicts
+        both license.rs:111-113's own "the ONLY host this module ever contacts" comment and the
+        "nothing leaves the Mac" privacy claim (it sends the client IP and launch timing to a
+        third party). Correct docs/ARCHITECTURE-AUDIT-2026-09-26.md §9's "harmless no-op"
+        characterization to match.
+      - THE ISSUER MOVES TO THE DRIVIA CONSULTING APP'S SUPABASE DB #2 (the products licensing
+        backend), NOT a new "dedicated Yap Supabase project" — the product ledger (2026-09-26
+        panel, binding) is explicit that issuance moves there; the panel shapes HOW, never
+        WHETHER. DB #2 already seeds a 'yap' product (purchase_enabled=true) with
+        /api/v1/licensing/{activate,deactivate,refresh,entitlements,settings} and a Stripe
+        webhook that issues licenses — this item becomes "make Yap a CLIENT of that issuer,"
+        not "build a second issuer." Everything below in "WHAT TO BUILD" that describes a new
+        Supabase Edge Function in THIS repo is superseded: delete the
+        supabase/functions/yap-license/index.ts step; instead license.rs gains a verifier for
+        DB #2's token format (a signed JWS carrying sub, act, prd, plan, ent — Ed25519/EdDSA,
+        kid in the header, key pinned from licensing.signing_keys), kept ALONGSIDE the legacy
+        base64url-claims-plus-signature format so Wilson's existing lifetime license keeps
+        verifying. PAYMENT_LINK_URL points at the Consulting product's checkout. Activation
+        happens once, when the token is pasted or deep-linked — never on a hot path — to honor
+        "the ONLY host this module ever contacts" as far as it can still be kept true.
+      - Pricing, trial length and whether the Stripe payment link goes live are Wilson's calls
+        (ledger), unaffected by this redirect — this item does not resolve $29-lifetime vs the
+        DB #2 seeded monthly/annual plans; flag both to Wilson (see forWilson).
+      - Cross-repo follow-up (drivia-consulting, out of THIS repo's loop): a Yap-facing checkout
+        page and license-delivery email on the Consulting app so a purchase actually reaches a
+        Yap user. Record this as a handoff, not an item in this file.
+
+    THE SUPABASE PROJECT IS A RUNTIME DEPENDENCY WILSON PROVISIONS. [SUPERSEDED BY THE PANEL
+    REVISION ABOVE — kept verbatim below for history; do not build it as written.]
       * A DEDICATED YAP PROJECT. Explicitly NOT the Drivia project
         (\`vlfrzdbqwsnrosmcygca\`), which is over its free-tier limits; a
         licensing outage caused by an unrelated product's usage is the worst

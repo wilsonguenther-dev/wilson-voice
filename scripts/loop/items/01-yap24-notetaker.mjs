@@ -42,6 +42,34 @@ ITEMS.push({
     Panel: pending
     DEPENDS: none (first item of the chain — it stops the data loss before anything else lands)
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Retention keys off a NEW pipeline_done_at column (set only once transcription, summary
+        and diarization all reach a terminal state), never off started_at — db.rs:1945-1969's
+        cutoff on started_at alone lets audio purge between "transcription complete" and
+        NT5's diarize read or a Retry re-decode. Add MIGRATION_6_MEETING_NOTES in meetings.rs
+        (SCHEMA_VERSION = 6) for this column (shared with NT4's meeting_items table below).
+      - Failed/partial-with-audio meetings get a LONGER retention window (>=30 days), not
+        indefinite: at ~230 MB/hour of two-track audio a backlog of failed meetings otherwise
+        grows without bound. Add a disk ceiling (default 5 GB retained meeting audio); past it
+        the oldest non-complete audio purges first, one sentence about it in Settings.
+      - At launch, BEFORE reconcile, call meeting::recover_orphaned_meetings(meetings_dir) —
+        it already exists (meeting.rs:1599) but has NO production caller today (only a unit
+        test and meeting_matrix.rs reference it), so a crash mid-meeting leaves the row stuck
+        in "recording" forever. Wire its FinalizedMeeting results into finish_meeting /
+        set_meeting_sys_wav_path via wav_for_track (never a positional index), set state from
+        FinalizedMeeting.state, then hand it to yap24-NT2's queue.
+      - "Complete with zero segments" is a documented VALID outcome (a genuinely silent
+        meeting) — do not special-case it out of purge eligibility; use pipeline_done_at, not
+        segment count, as the purge criterion.
+      - Delete the per-track ASR progress ledger (<id>.tN.asr-progress.json, see NT2) and the
+        kept per-track host-time anchors (<id>.tN.index.jsonl, see NT2) together with the WAV
+        whenever audio is purged or the meeting is deleted — today neither is referenced by
+        purge_meeting_audio or the delete cascade.
+      - Every acceptance command below exports YAP_DATA_DIR="$(mktemp -d)/yap-state" first.
+        Without it, cargo test on this machine has already written into
+        ~/Library/Application Support/WilsonVoice (a stray probe file from an earlier run is
+        proof) — never touch Wilson's real install.
+
     EVIDENCE
       - db.rs:1936-1972  purge_meeting_audio selects every meeting with a WAV path and
         started_at < cutoff. It does not look at state, so a meeting still in transcribing, partial
@@ -100,6 +128,70 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: yap24-NT1 (audio must not be purged out from under a queued job)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, 3x BLOCKING + HIGH, GROUNDED):
+      - BLOCKING — per-track ledger collision: JsonProgressStore keys ONLY on meeting_id
+        (meeting_asr.rs:1597-1599), so the system track's run() resumes from the mic track's
+        processed_through_seconds and dedups chunk.index against the mic track's chunks. Key
+        the ledger per track, e.g. run(&format!("{id}.t{track}")), and add a
+        meeting_pipeline_wired test with two tracks of different lengths asserting each track's
+        own processed_through and no chunk-index collision.
+      - BLOCKING — segments must NOT land per-chunk. append_meeting_segments (db.rs:1652) is a
+        non-idempotent INSERT with a fresh row id every call: writing "as each chunk completes"
+        (as this spec said) double-writes every seam and duplicates rows on any resume-after-quit.
+        Instead: run BOTH tracks' MeetingAsr to completion (interrupted == false), call the
+        shipped merge_two_tracks_by_host_time(ledger_a.chunks, ledger_b.chunks, anchors, epochs,
+        kind) (meeting_asr.rs:1123), then in ONE transaction DELETE FROM meeting_segments WHERE
+        meeting_id=? and INSERT the merged spans, set state complete. Drive progress EVENTS from
+        the ledger's processed_through_seconds, not from segment-row writes.
+      - BLOCKING — the two-track merge needs the per-track host-time anchors
+        (<id>.tN.index.jsonl), which finalize_meeting_marker deletes today "for a consumer that
+        does not exist" (meeting.rs:1794-1798, :1842-1845). NT2 IS that consumer: keep the
+        anchor files (or persist records+epochs to a new meeting_anchors table) through
+        finalize, and clean them up only via NT1's purge/delete path, never independently.
+      - HIGH — max_yield: Duration::from_secs(120) (meeting_asr.rs:1675) breaks "dictation
+        always wins": a hands-free take over ~2 minutes (routine in Wilson's logs) makes meeting
+        ASR take the engine back mid-take. A live-recording demand must never count toward
+        max_yield; the 120 s cap applies only to a stuck "busy, not recording" flag. Add a test:
+        a 180 s simulated dictation never observes a meeting chunk take the engine.
+      - HIGH — no crash-loop guard: the launch-time requeue of every stranded "transcribing" row
+        runs in-process, on the SAME warm engine dictation uses (unlike polish/diarize, which are
+        sidecars). Two unexplained SIGSEGVs already exist in the audit (0.8.0, worker threads
+        39/40). Add an attempt counter per meeting; two crash-without-progress launches ->
+        failed with an honest sentence, never a silent retry loop. Wrap the worker body in
+        catch_unwind so one panic marks that row failed and keeps the FIFO worker alive. Start
+        the queue ~30 s after launch, after the dictation engine's first warm-up.
+      - HIGH — enqueue every row that has audio and zero segments in state {transcribing,
+        partial}, not "transcribing" only — stop() and finalize both downgrade to partial on a
+        capture hole or spliced silence, and those meetings currently never reach the pipeline
+        and never free their disk under NT1's new state-aware retention.
+      - "The compiler is the proof the pipeline is wired" is FALSE — meeting_asr.rs's items are
+        pub in a lib crate (Cargo.toml crate-type includes rlib), so rustc's dead_code lint never
+        fires on them regardless of wiring. Drop that claim from the acceptance's rationale; the
+        real proof is behavioral: meeting_pipeline_wired must drive MeetingController::stop (not
+        the worker directly) and observe segments > 0, plus a source-scan grep that
+        MeetingAsr is constructed outside meeting_asr.rs AND that lib.rs's start path spawns the
+        pipeline (grep -q 'meeting_pipeline::spawn' src/lib.rs or the equivalent call site).
+      - Reuse the SHIPPED EngineDemand impl: TranscriptionManager already implements it
+        (meeting_asr.rs:600-604, exercised by tests/meeting_dictation_preempts_transcription.rs)
+        — do not invent a second AppState-based demand. Build the audio source with
+        WavWindows::open (meeting_asr.rs:507), never MemoryWindows (690 MB for a 3-hour meeting).
+      - Model gating: meeting_availability_for's NoModel/UnknownModel checks only that a model id
+        is configured, never that its files are on disk (app_paths.rs:71 puts models under
+        root.join("models"), which a fresh/offline install lacks). A refusal on a missing-but-
+        configured model must produce a NEW waiting_for_model state that KEEPS the audio and
+        auto-requeues on the model-download-complete event, not a permanent "failed" row.
+      - Pin meeting ASR to the catalog's recommended model (parakeet, Q8_0), not "whatever
+        engine happens to be loaded" — PKG2's interim whisper-tiny path must never become the
+        model a meeting is permanently transcribed by; record asr_model on the row, and NT1 only
+        purges audio transcribed by the recommended model.
+      - Measurability: run the existing WER harness (meeting_eval.rs, WER_GATE 0.02) against
+        ~/yap-eval-corpus/meetings inside this item's acceptance when the corpus is present, and
+        FAIL (not silently pass) when it is absent from a machine expected to have it (gate via
+        YAP_EVAL_REQUIRE=1). Print real-time factor and stop-to-notes wall clock for
+        lecture-15min into docs/BUDGETS.md — nothing today measures either number.
+      - Every acceptance command below exports YAP_DATA_DIR="$(mktemp -d)/yap-state" first — see
+        the NT1 revision for why.
 
     EVIDENCE — the whole reason "the notetaker is not even working":
       - meeting_control.rs:652-656 sets transcribing with the comment "YV93's transcription
@@ -175,6 +267,26 @@ ITEMS.push({
     Panel: pending
     DEPENDS: yap24-NT2 (the verdict is written on the same stop path the pipeline now owns)
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - The code already has the right per-process probe field (TapEnvironment.
+        system_output_active, syscapture.rs:680-683) and the right verdict function
+        (TapLiveness::verdict, :501-518), but observe_environment (:2617-2619) has NO caller
+        anywhere in src/, so env stays Default and the stop path falls back to the naive,
+        device-level permission_verdict (:2334, :2628) this item was meant to replace. Implement
+        the probe: kAudioHardwarePropertyProcessObjectList, then per process (skipping getpid())
+        kAudioProcessPropertyPID and kAudioProcessPropertyIsRunningOutput; sample it on the pump
+        tick and call observe_environment. Route BOTH the stop-path and pre-warm verdicts through
+        TapLiveness::verdict and delete the LooksDenied arm of the old permission_verdict.
+      - A muted call app (Zoom/Meet) or a mid-meeting default-output-device change (AirPods
+        connect) still makes kAudioDevicePropertyDeviceIsRunningSomewhere true with no audible
+        output. Evaluate over the WHOLE meeting, track every device that was default at any
+        point during it, and require the tap to have delivered nothing for the entire meeting
+        AND output to have run >=60s before writing LooksDenied; anything short of that is
+        Unknown, and Unknown is never stored as an error. Never flip the setup row to LooksDenied
+        from a single meeting — require two consecutive ones.
+      - Fix the pre-flight: grep -q "output_was_running" is satisfied by a comment. Gate on the
+        test file's existence and passing, not the string.
+
     EVIDENCE
       - syscapture.rs:2243 DENIAL_GRACE = 3 s; :2334-2341 permission_verdict returns LooksDenied
         whenever the tap delivered no non-zero sample for 3 s. Nothing playing looks identical.
@@ -228,6 +340,36 @@ ITEMS.push({
     Panel: pending
     DEPENDS: yap24-NT2 (segments must exist), SEC-C (merged #184 — the polish model install path)
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Installing the summary model must NOT silently turn on LLM polish for dictation:
+        summarize_meeting_blocking and the dictation-polish path both read state.settings.
+        polish_model today (lib.rs:4225-4227, :320-325), and SEC-C's one-click install writes
+        that same setting (lib.rs:4823-4826). Give summaries their OWN setting, summary_model,
+        independent of dictation's polish_model. Add a test asserting polish_model is
+        byte-unchanged after a summary-model install.
+      - Schema: rename the meeting_actions table to meeting_items(kind CHECK IN ('action',
+        'decision','question'), text, speaker_label, segment_id, start_seconds). Drop the
+        'owner' column — summarize.rs:1026-1040 is explicit that the speaker is not a claim
+        about who OWES the action. Map the positional seg_NNNN label to a real segment_id inside
+        summarize before persisting (the mapping never otherwise leaves that process). Write the
+        rows and meetings.summary in ONE transaction so the two stores cannot drift on a
+        re-summarize. Add this table via the SAME MIGRATION_6 as NT1's pipeline_done_at, not an
+        unversioned ALTER TABLE/CREATE TABLE IF NOT EXISTS — db.rs's own comment says shipped
+        migration steps are immutable and its ad hoc let _ = conn.execute("ALTER TABLE ...")
+        discards errors (db.rs:476-522, finding #26 cited at :480).
+      - Give the summary job the SAME EngineDemand suspend-between-map-chunks behavior as
+        MeetingAsr: on an 8 GB Mac, the ASR engine (warm 15 min), the dictation polish sidecar
+        (warm for the process lifetime) and a second Qwen-1.5B summary sidecar together approach
+        ~3 GB resident. Unload the ASR engine before summarizing when no dictation is pending, or
+        route the summary through the already-warm polish sidecar on a low-priority queue.
+        Record peak RSS (app + sidecars) during a summary into docs/BUDGETS.md with a ceiling
+        (e.g. 2.5 GB on 8 GB machines) that falls back to summarizing on the next idle tick.
+      - Add ONE measured eval: extend the synthetic corpus generator to plant K explicit
+        commitments in a 15-minute fixture, run the REAL 1.5B sidecar (#[ignore] — the loop runs
+        it only when the model is installed) and gate action-item recall >= 0.8 and precision
+        >= 0.8, numbers committed to docs/BUDGETS.md. Shape/groundedness validators alone do not
+        tell Wilson whether the notes are useful.
+
     EVIDENCE
       - lib.rs:4201-4260 summarize_meeting is a MANUAL command and refuses when there are no
         segments (:4216-4218) — which, before yap24-NT2, is every meeting.
@@ -276,7 +418,16 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/meeting_pipeline_diarizes_in_person.rs
   `,
   spec: `
-    Panel: pending
+    Panel: DEFERRED 2026-09-26T17:35:00Z — see docs/loop/DEFERRED.md. Excluded from pass-1 panelApproved.
+    Re-approve only after Y11-A..Y11-E are merged AND Y11-F's real-voice DER/FAR is measured
+    against a stated threshold. DEPENDS is prose the harness does NOT enforce (no 'DEPENDS'
+    handling exists in template.mjs/build.mjs — grep confirms it), and pass 1 runs
+    only:['yap24-NT'], which hard-skips every Y11-* id, so an approved NT5 would build speaker
+    enrollment on a path independently measured at FAR 1.000 (Y11-C) with DER 0.34-0.45 on clean
+    synthetic voices (Y11 audit). Meeting notes that confidently attribute words to the wrong
+    person are worse than notes with no speaker labels — 3 of 5 panel seats named this the single
+    item to kill from pass 1. yap24-NT6/NT7 already render labels only when present, so leaving
+    NT5 out costs nothing else in the chain.
     DEPENDS: yap24-NT2, Y11-A..Y11-E (the six parked diarization defects — FAR 1.000 on the shipped
     enrollment path, split_partition seeding, the pinned-digest skip — must be fixed first or this
     item ships known-wrong labels)
@@ -340,6 +491,10 @@ ITEMS.push({
       2. Meetings.tsx renders it: a progress bar that moves with the pipeline event, the notes
          (summary + action items, each item linking to its transcript segment), Retry for
          failed/partial (re-enqueues through a new retry_meeting command), Export Markdown.
+         Panel revision 2026-09-26T17:35:00Z: Retry is offered ONLY when a WAV path exists and
+         audio_kept = 1 — NT1 marks old rows failed with their audio already gone, and a Retry
+         button that can never work is worse than none. meetingViewState needs a test for the
+         no-audio failed case (actions: delete/export only).
       3. The empty state offers "Start a meeting" with the kind picker (in person / call) and
          carries notetaker_status when system audio is unavailable.
       4. Follow the token layer (Y5-A) and the empty/loading/error pattern (Y5-B) if merged;
@@ -405,7 +560,16 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
   `,
   spec: `
-    Panel: pending (a NEW TCC permission — Calendars — so the panel and Wilson must bless it)
+    Panel: DEFERRED 2026-09-26T17:35:00Z — see docs/loop/DEFERRED.md. Excluded from pass-1 panelApproved (and
+    from the yap24-NT chain's intent). It adds a NEW permanent TCC permission (Calendars), a
+    5-minute EventKit background poll, and a pill interruption — none of it fixes stop ->
+    transcript -> notes, which is the whole mandate of this pass ("the notetaker is not even
+    working"). Its own spec already requires the panel AND Wilson to bless it, and it is the
+    only pass-1 item whose acceptance can prove nothing beyond a synthetic policy table. 2 of 5
+    panel seats named this the single item to kill from pass 1. Reconsider it after yap24-NT9
+    has passed on one real meeting on Wilson's own Mac, and only after his explicit Calendars
+    yes (ledger: pricing/product identity decisions are his; a new permanent TCC grant belongs
+    in the same bucket).
     DEPENDS: yap24-NT6, yap24-NT7
 
     EVIDENCE
@@ -451,7 +615,27 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending
-    DEPENDS: yap24-NT1..NT7 (NT8 optional)
+    DEPENDS: yap24-NT1-NT4, yap24-NT6, yap24-NT7 (NT5 and NT8 are DEFERRED — see their own
+    Panel revisions above; NT9 does not wait on either)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, BLOCKING, GROUNDED — 4 of 5 seats):
+      - The phase-closing proof must actually run. Acceptance today is test -x + bash -n +
+        two cargo tests — notetaker-e2e.sh itself is NEVER executed, and even when it is, it
+        SKIPs (exit 0) on ANY throwaway YAP_DATA_DIR because a fresh scratch root never has a
+        model (app_paths.rs:71 puts models under root.join("models")). "Reuse the repo's meeting
+        fixtures, do not add audio" cannot be honored either: tests/fixtures has one 2.5 s mono
+        WAV — no two-track meeting audio exists in the repo. This repeats the exact
+        "verification that verifies nothing" failure this whole chain exists to end.
+      - FIX: acceptance runs YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh for real (added
+        below). The script takes YAP_MODEL_DIR / YAP_EVAL_CORPUS overrides pointing at a
+        lane-cached, sha256-verified parakeet model and a two-track fixture; when
+        YAP_E2E_REQUIRE=1 is set, SKIP becomes a hard failure (non-zero exit) instead of exit 0 —
+        SKIP-as-pass survives only for a developer running it locally with neither cached.
+      - Commit ONE small generated two-track fixture under
+        tests/fixtures/meeting-two-track/ (macOS say -> afconvert to 16 kHz mono, a few
+        seconds per track — the same recipe the repo already used for quick-brown-fox-16k.wav),
+        so the wired-path assertions (segments > 0 on BOTH tracks) have something to run against
+        with no network and no owner-gated corpus.
 
     WHY: the 2026-08 loops closed the notetaker phases with 135 green meeting tests while the
     pipeline had no caller (see the header of this file). A phase is closed by the behaviour, not
@@ -473,10 +657,63 @@ ITEMS.push({
     meeting on Wilson's Mac) is listed in the PR body as the remaining manual check.
   `,
   acceptance: `
+    export YAP_DATA_DIR="$(mktemp -d)/yap-state"
     test -x scripts/notetaker-e2e.sh
     bash -n scripts/notetaker-e2e.sh
+    YAP_E2E_REQUIRE=1 bash scripts/notetaker-e2e.sh
     cd desktop && npm ci && cd src-tauri
     cargo test --features custom-protocol --lib meeting_matrix
     cargo test --features custom-protocol --test meeting_pipeline_wired
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT10', prompt: 'yap24-NT', branch: 'loop/yap24-nt10-meeting-survives-sleep-and-lid-close', gated: 'panel',
+  title: 'A meeting survives a lid close or sleep: the journal finalizes on WillSleep and the row is marked paused_by_sleep, not left recording forever',
+  notes: 'NEW item added by Senior Panel synthesis 2026-09-26T17:35:00Z (User/wildcard seat, BLOCKING — grounded). The audit counted Y1-B (register NSWorkspaceWillSleepNotification / IORegisterForSystemPower) as already-done, but its own pre-flight only matches a COMMENT in power.rs, not a real observer call site (meeting_matrix.rs row 16 still reads PolicyOnly{absent_call_site:"NSWorkspaceWillSleepNotification"}; grep -c for that literal returns 4 on main today). only:[\'yap24-NT\'] never reaches Y1-B, so without this item a lid-close mid-meeting (walking between rooms, closing the laptop) leaves the row stuck in "recording" with no finalize, and yap24-NT1\'s reconcile only handles a crash, not a clean sleep. Corrects docs/ARCHITECTURE-AUDIT-2026-09-26.md §10\'s already-done count from 2 to 1 (Y4-D only).',
+  preflight: `
+    grep -qE "NSWorkspaceWillSleepNotification|IORegisterForSystemPower" desktop/src-tauri/src/power.rs
+    test -f desktop/src-tauri/tests/meeting_survives_sleep.rs
+    ! grep -q 'absent_call_site: "NSWorkspaceWillSleepNotification"' desktop/src-tauri/src/meeting_matrix.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT1 (reuses its capture-journal recovery path; this item is the sleep-triggered
+    twin of NT1's crash-triggered reconcile)
+
+    EVIDENCE
+      - power.rs mentions NSWorkspaceWillSleepNotification only in a comment (no registration
+        call site exists in src/); a grep for WillSleep across power.rs and permissions.rs
+        matches comments only.
+      - meeting_matrix.rs row 16: PolicyOnly { absent_call_site: "NSWorkspaceWillSleepNotification" }.
+      - meeting::recover_orphaned_meetings (meeting.rs:1599) already recovers a crash-abandoned
+        journal — this item registers the real observer and calls the SAME recovery path on a
+        clean sleep, rather than duplicating it.
+
+    DO
+      1. Register NSWorkspaceWillSleepNotification (and the IORegisterForSystemPower fallback
+         already scoped in Y1-B) in power.rs. On fire, if a meeting is recording: finalize the
+         capture journal exactly as recover_orphaned_meetings does for a crash, and mark the row
+         paused_by_sleep (a new, honest state distinct from partial — the recording was stopped
+         cleanly by the OS, not lost).
+      2. On wake (NSWorkspaceDidWakeNotification), a paused_by_sleep meeting is left for the user
+         to resume (Start again, producing a second meeting) or stop-and-finalize; it is NEVER
+         silently resumed into the old row.
+      3. yap24-NT6 renders paused_by_sleep with a one-sentence explanation and the same Retry/
+         Export affordances as a normal complete meeting once transcribed.
+      4. Update meeting_matrix.rs row 16 to Test once the call site and its test exist.
+
+    NOT: no change to dictation's own sleep handling (already shipped/separate). No new TCC
+    permission — NSWorkspace notifications need none.
+
+    Tests (tests/meeting_survives_sleep.rs): simulate WillSleep mid-recording -> row finalizes to
+    paused_by_sleep with both WAV paths intact; WillSleep with no active meeting is a no-op.
+  `,
+  acceptance: `
+    export YAP_DATA_DIR="$(mktemp -d)/yap-state"
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_survives_sleep
+    cargo test --features custom-protocol --lib meeting_matrix
+    cargo clippy --all-targets --features custom-protocol
   `,
 })

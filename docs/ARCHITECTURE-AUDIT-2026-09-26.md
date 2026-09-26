@@ -559,3 +559,77 @@ From the Yap loop logs (`Projects/Loop-Logs/yap22b-2026-08-14.md`, `yap22c-2026-
    Recon pays ~9.5 min and ~7.5 GB per lane.
 8. **Visual QA debt compounds**: four merged/open UI items were never looked at. UI3 pays it
    headlessly before any further pixel work lands.
+
+## Panel revisions 2026-09-26T17:35:00Z
+
+Senior Panel (5 seats: CTO, Senior macOS/Rust engineer, Senior AI/Models, Senior PM, THE USER)
+audited this document and the yap24 item files against decision ledger
+`Loop-Logs/PANEL-yap24-2026-09-26.md`. All 61 findings deduped/classified there; every
+BLOCKING/HIGH-GROUNDED finding below is applied in the item files
+(`scripts/loop/items/*.mjs`) as a "Panel revisions 2026-09-26T17:35:00Z" block inside the
+affected item, and in `scripts/loop/template.mjs`'s LAND-step prompt. This section corrects
+claims elsewhere in this document that the panel's re-verification found stale or wrong;
+treat any passage below that this section contradicts as SUPERSEDED.
+
+**Corrections to this document:**
+- **§10 "already-done" count.** `Y1-B` is NOT already-done. Its pre-flight grep matches a doc
+  comment in `power.rs` (line 18, `//! ... NSWorkspaceWillSleepNotification path`), not a real
+  observer registration; `meeting_matrix.rs` still carries 4 `absent_call_site:
+  "NSWorkspaceWillSleepNotification"` entries today (confirmed by direct grep on 2026-09-26),
+  which is Y1-B's own acceptance criterion for done. Correct the already-done count from 2 to 1
+  (`Y4-D` only). See `docs/loop/items/05-y1-audio-permission.mjs`'s corrected `notes` and the new
+  `yap24-NT10` item, which ships a meetings-scoped subset of this fix inside pass 1.
+- **§9 revocation "harmless no-op."** Every launch sends an unauthenticated GET to
+  `forge.87-99-149-214.sslip.io` (a decommissioned box's IP, via a wildcard DNS host Wilson does
+  not control the certificate authority trust for) and accepts whatever unsigned `{kids:[]}`
+  comes back with no signature check (`license.rs:1100-1124`). This is not harmless: it sends
+  client IP and launch timing to a third party, contradicting both `license.rs:111-113`'s "the
+  ONLY host this module ever contacts" and the "nothing leaves the Mac" privacy claim. Mitigation
+  (`REVOCATION_URL: Option<String> = None` until the real endpoint exists) is now specified inside
+  `LIC-A`'s Panel revision in `scripts/loop/items/20-y2-trial-and-limits.mjs` and should ship as
+  its own tiny PR, independent of the rest of `LIC-A`.
+- **§1.3 / §1.8 / D25 licensing destination.** Every reference to "a dedicated Yap Supabase
+  project" is superseded by decision ledger item 8 (2026-09-26): issuance moves to the Drivia
+  Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and
+  already seeded with a `yap` product and `/api/v1/licensing/*` routes), not a new one-off
+  project. `LIC-A`'s spec is amended accordingly; PR #183 must not land as originally scoped.
+- **Capture row ("Works ... OK").** Correct to "recording OK; crash recovery of an abandoned
+  journal is UNWIRED" — `meeting::recover_orphaned_meetings` (`meeting.rs:1599`) has zero
+  production callers (only a unit test and `meeting_matrix.rs` reference it), so a crash
+  mid-meeting leaves the row stuck in `recording` forever. Fixed inside `yap24-NT1`'s Panel
+  revision.
+- **Models "sha256-verified before use."** Accurate only at download time; at load time the
+  check is file size alone (`models.rs:806-812` `is_downloaded`). Reword to "sha256-verified at
+  download; size-checked at load."
+- **§7 win #5, "$29 one-time vs Wispr's subscription."** Downgrade to PENDING WILSON'S PRICING
+  DECISION. The app hardcodes a $29 lifetime SKU (`license.rs:7,104`); the Drivia Consulting DB #2
+  seeds Yap with `free`, `pro_monthly`, `pro_annual` plans only, `trial_days 0`, prices
+  unset ("Wilson sets the price"). The two sides disagree on the product's own pricing shape —
+  this is an owner decision (ledger item 9), not something this loop or this audit resolves. See
+  `forWilson` in the panel log.
+- **Notetaker phase-closing proof.** `yap24-NT9`'s original acceptance (`test -x` + `bash -n`
+  only, script never executed, SKIP-on-missing-model exits 0) repeats this document's own
+  RC-2 finding (135 green tests around a dead pipeline) one level up the chain. Fixed inside
+  `yap24-NT9`'s Panel revision: acceptance now runs the script for real and SKIP is a hard
+  failure under `YAP_E2E_REQUIRE=1`.
+
+**New items added to the loop (see `scripts/loop/items/01-yap24-notetaker.mjs`):**
+- `yap24-NT10` — a meeting survives a lid-close/sleep (registers the real observer this
+  document's Y1-B entry wrongly counted as already done; scoped to meetings for pass 1).
+
+**Items deferred out of pass 1** (full design notes in `docs/loop/DEFERRED.md` #9–#11):
+`yap24-NT8` (calendar-aware Record? prompt — new permanent TCC permission, fixes nothing in
+stop→transcript→notes), `yap24-NT5` (diarization — ships on a FAR-1.000 enrollment path per its
+own unenforced DEPENDS), and (advisory sequencing only, unchanged in the files) `yap24-OS2`,
+`yap24-OS4`, `yap24-OS5`, `yap24-X2`, `yap24-X3`.
+
+**Harness change applied:** `scripts/loop/template.mjs`'s LAND-step prompt now tells the builder
+agent, when `args.only` is set, to merge ONLY a PR whose branch matches one of those prefixes and
+to skip every other open `loop-build`-labelled PR by name — closing the path by which a scoped
+notetaker-only pass could otherwise land an unrelated stale PR (e.g. `LIC-A` #183, on a backend
+the product ledger has since moved off).
+
+Full seat-by-seat verdicts, every classified finding (PLAN-CHANGE / ITEM-CHANGE / DEFER /
+REJECTED), the two killOne contradictions and their resolution, and the exact pass-1/pass-2
+launch lines are recorded in `~/Obsidian/Wilson-Brain/Projects/Loop-Logs/PANEL-yap24-2026-09-26.md`
+and `YAP-RESUME-2026-09-26.md`.

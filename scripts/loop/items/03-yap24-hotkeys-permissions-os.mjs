@@ -19,6 +19,19 @@ ITEMS.push({
     Panel: pending
     DEPENDS: none
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED, 2+ seats):
+      - Arm speculatively ONLY when the persistent stream is already warm (inside IDLE_CLOSE).
+        On a COLD stream, key-down handling is fn/Globe first (flags-changed), and whether this
+        is a tap, hold or chord (fn+arrow, fn+Delete, Globe for emoji/input-switch) is only known
+        once the gesture resolves — arming on every cold key-down would open the mic, light the
+        orange indicator and force a Bluetooth headset into its HFP call profile on plain text
+        editing and input-source switching, dozens of times an hour. On a cold stream: begin the
+        device open at key-down but do not start delivering audio until the gesture resolves;
+        add an explicit Interrupted -> discard branch (today only "released before TAP_MAX_MS"
+        discards) and tests "fn+arrow opens no stream" / "a tap on a cold stream leaves it closed".
+      - Measure BOTH the warm-stream and cold-stream press-to-first-sample paths separately in
+        docs/BUDGETS.md — they are not the same number.
+
     EVIDENCE
       - ptt_macos.rs:32 HOLD_ARM_MS = 280; :488-509 a thread sleeps 280 ms after key-down and only
         then fires Start. The comment (YV38) is right that the gesture needs the window — but
@@ -139,6 +152,19 @@ ITEMS.push({
     Panel: pending (SECURITY-class: the signing path)
     DEPENDS: SEC-A (merged #165 — stable signing identity)
 
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED, 2 seats):
+      - The experiment as specified cannot fail: sign-local.sh's codesign call has no
+        "--options runtime", so the hardened runtime is OFF for every variant and cs.allow-jit /
+        cs.allow-unsigned-executable-memory are inert either way — every removal passes
+        vacuously, which could strip something the NOTARIZED (runtime-enabled) release actually
+        needs. Sign each variant with "--options runtime --timestamp" under the real Developer ID
+        identity and assert codesign -d --entitlements shows flags=0x10000(runtime) before
+        trusting a pass/fail. Run the SIGNED binary's real work per variant (in-process
+        transcribe-cpp Metal decode via --transcribe-file, plus --transcribe-meeting once NT2
+        exists), against a scratch YAP_DATA_DIR with the lane's cached model linked in — an empty
+        scratch root never reaches Metal/ASR at all. Give the yap-polish / yap-diarize sidecars
+        their own entitlement files and drop --deep from sign-local.sh.
+
     EVIDENCE
       - Entitlements.plist carries device.audio-input, app-sandbox=false, cs.allow-jit and
         cs.allow-unsigned-executable-memory. The last two weaken the hardened runtime for the whole
@@ -168,6 +194,18 @@ ITEMS.push({
   spec: `
     Panel: pending
     DEPENDS: yap24-PILL3 (Secure Input state consumer), Y10-F (idle RAM/CPU publication)
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH — REJECTS part of
+    yap24-PILL3's original plan, GROUNDED):
+      - Do NOT move the Secure Input check to key-down + a >=10 s backstop, which yap24-PILL3
+        proposed and which this item's "consolidate the polls" framing would otherwise adopt:
+        under Secure Input the fn PTT event tap is BLIND and never receives that key-down, so the
+        only signal left would be the slow backstop — worsening detection from ~4 s to as much as
+        ~20 s, in both directions (on and off). KEEP the 2 s poll; it is one Carbon flag read.
+        Exempt it BY NAME from this item's "every wakeup needs a reason" table, citing
+        secure_input.rs:41's own comment on why 2 s is the interval. Spend the consolidation
+        effort on the ioreg owner-PID spawn (secure_input.rs:176) instead — run it only on a
+        false-to-true transition, not on every poll tick.
 
     EVIDENCE
       - secure_input.rs:48 POLL_INTERVAL = 2 s; its own doc (secure_input.rs:41) says macOS

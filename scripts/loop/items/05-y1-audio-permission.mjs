@@ -580,7 +580,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-B', prompt: 'Y1', branch: 'loop/y1-b-register-the-sleep-wake-observer-that-does-not-exist', gated: null,
-  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
+  notes: `STATUS 2026-09-26: NOT ALREADY-DONE — Panel correction 2026-09-26T17:35:00Z (Senior Panel synthesis, BLOCKING, GROUNDED, User/wildcard seat): the earlier ALREADY-DONE call was wrong. The pre-flight's grep matches power.rs line 18, a doc comment ('//! ... matrix row #16's NSWorkspaceWillSleepNotification path'), not a real registration — confirmed firsthand: power.rs has zero real call sites, and meeting_matrix.rs still carries FOUR absent_call_site: "NSWorkspaceWillSleepNotification" entries today, which is this item's OWN acceptance criterion for done (test 0 -eq grep -c ...) and it reads 4, not 0. Correct docs/ARCHITECTURE-AUDIT-2026-09-26.md section 10's already-done count from 2 to 1 (Y4-D only). This item is real, unbuilt work. A scoped notetaker pass (only:['yap24-NT']) never reaches it by prefix, so yap24-NT10 (added to 01-yap24-notetaker.mjs by this same panel) ships a meetings-only subset of this fix inside pass 1; when Y1-B itself is later built, wire its one publisher into NT10's meeting consumer instead of registering a second NSWorkspace observer.`,
   title: 'Register the sleep/wake observer two later items already claim exists',
   preflight: `
     grep -qE 'NSWorkspaceWillSleepNotification|IORegisterForSystemPower' desktop/src-tauri/src/power.rs

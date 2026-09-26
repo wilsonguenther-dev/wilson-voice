@@ -35,10 +35,25 @@ ITEMS.push({
   acceptance: `
     test -x scripts/release-local.sh
     bash -n scripts/release-local.sh
+    bash scripts/release-local.sh 0.0.0-ci --dry-run --check-only
     grep -q "keychain-profile yap-notary" scripts/release-local.sh
     grep -q "release-local.sh" docs/RELEASE.md
+    grep -q "yap-polish" scripts/release-local.sh
+    grep -q "yap-diarize" scripts/release-local.sh
   `,
 })
+
+// Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED): the DO text
+// above already specifies --options runtime --timestamp and signing the app before the DMG,
+// which is correct — but tauri.conf.json's signingIdentity is null, so a plain "tauri build"
+// leaves the externalBin sidecars (yap-polish, yap-diarize) UNSIGNED, and notarization then
+// rejects them (or, signed with --deep, they wrongly inherit the app's JIT entitlements). Sign
+// INSIDE-OUT: each Contents/MacOS/yap-polish-* and yap-diarize-* binary first, with
+// --options runtime --timestamp and NO entitlements, then the .app itself WITHOUT --deep. The
+// acceptance above now runs the script's own --dry-run --check-only and greps for both sidecar
+// names, so a plan that skips them fails the gate instead of only failing notarization later.
+// Reword the audit's D27 to: keep manual notarized builds (product ledger, non-negotiable);
+// PKG1 is a hand-invoked local script, never CI, never automatic.
 
 ITEMS.push({
   id: 'yap24-PKG2', prompt: 'yap24-PKG', branch: 'loop/yap24-pkg2-first-run-without-a-network', gated: 'panel',
@@ -66,7 +81,13 @@ ITEMS.push({
   `,
   acceptance: `
     cd desktop && npm ci && cd src-tauri
-    cargo test --features custom-protocol --lib models
+    test "$(cargo test --features custom-protocol --lib models::tests::first_run_offline_ 2>&1 | tee /dev/stderr | grep -c '0 passed')" -eq 0
     cargo clippy --all-targets --features custom-protocol
   `,
 })
+
+// Panel revision 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, LOW, GROUNDED): the
+// pre-flight/acceptance named no test, so cargo test --lib models passed on a branch containing
+// only the first_run_offline IDENTIFIER with zero matching tests (an unmatched cargo filter
+// exits 0 and prints "0 passed"). The acceptance above now filters on the concrete test-name
+// prefix and fails when nothing matched.

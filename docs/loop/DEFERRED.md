@@ -139,3 +139,78 @@ the skip — in the local log as one counter per reason. The Rust side already
 emits `POLISH_SKIPPED_EVENT` (`polish_skipped`, payload = the closed-set reason
 tag) on every take whose LLM stage was enabled and produced nothing, so the
 pill's line is one `listen()` away once the panel geometry is decided.
+
+## 9. `yap24-NT8` — calendar-aware "Record?" prompt (DEFERRED from pass 1, 2026-09-26)
+
+**Why it left.** 2 of 5 Senior Panel seats (CTO, Senior PM) independently named this the single
+item to kill from the yap24-NT pass. It adds a NEW permanent TCC permission (Calendars), a new
+EventKit binding, a 5-minute background poll plus a change observer, and a pill interruption —
+none of it moves stop → transcript → notes, which is the entire mandate of pass 1 ("the notetaker
+is not even working"). Its own spec already says "the panel and Wilson must bless it" (a NEW
+permission grant), which by itself blocks an unattended pass-1 launch, and its acceptance can only
+prove a synthetic event-policy table, never a real Calendar interaction, headlessly. It DEPENDS on
+`yap24-NT6, yap24-NT7`, so deferring it costs nothing else in the chain.
+
+**Design note, preserved.** Settings → Meetings toggle (default OFF); a pure policy module
+(`calendar_prompt.rs`) over synthetic EventKit events — attendees or a video link, or a
+user-tagged "classes" calendar, starting within 2 min → one prompt, snooze 2 min, never during an
+active dictation/meeting, never twice for one event; the pill shows Record / Snooze / Not this
+one; Record starts the meeting with the event's title and infers `kind: call` vs `in_person` from
+whether the event has a video link. EventKit reads stay a ≤5-minute poll plus
+`EKEventStoreChanged`, never a tight poll, and nothing leaves the Mac.
+
+**Destination.** Reconsider after `yap24-NT9` has passed on one real meeting on Wilson's own Mac,
+and only after his explicit yes to the new Calendars permission (a product-identity-adjacent call,
+same bucket as pricing/trial length). The item stays in
+`scripts/loop/items/01-yap24-notetaker.mjs` (`yap24-NT8`), gated `panel`, simply left out of the
+pass-1 `panelApproved` array — see `docs/loop/PLAN.md` / `Loop-Logs/PANEL-yap24-2026-09-26.md` for
+the exact list.
+
+## 10. `yap24-NT5` — diarization / speaker enrollment (DEFERRED from pass 1, 2026-09-26)
+
+**Why it left.** 3 of 5 Senior Panel seats (Senior macOS/Rust engineer, Senior AI/Models, THE USER)
+independently named this the single item to kill from the yap24-NT pass. Its own `DEPENDS` line
+says "Y11-A..Y11-E ... must be fixed first or this item ships known-wrong labels," but `DEPENDS` is
+prose the harness never enforces (no `DEPENDS` handling exists anywhere in `template.mjs` or
+`build.mjs`), and pass 1 runs `only:['yap24-NT']`, which hard-skips every `Y11-*` id. Left approved,
+NT5 would ship speaker enrollment on a path independently measured at FAR 1.000 (Y11-C, the
+pinned-digest skip) with DER 0.34–0.45 on clean synthetic voices, and Y11-F (the real-voice
+corpus) is owner-gated and unrun. Meeting notes that confidently attribute someone else's words to
+Wilson are worse than notes with no speaker labels at all. `yap24-NT6`/`yap24-NT7` already render
+labels only when present, so leaving NT5 out costs nothing else in the chain, and `yap24-NT9`'s
+`DEPENDS` has been corrected (by this panel) to `NT1-NT4, NT6, NT7` so the phase-closing proof does
+not wait on it either.
+
+**Design note, preserved.** After transcription completes, hand the mic track to the shipped
+`diarize::pool()` sidecar (yap-diarize, sherpa-onnx CAM++ 192-dim) for `kind: in_person`
+(and `unknown`) meetings; attribute clusters to segments via the existing
+`attribute_clusters` / `rank_and_floor` path; call kind keeps track labels (You/Them) untouched; a
+new-or-unknown voice raises the shipped "who is this?" prompt, one question per CLUSTER, never per
+segment, stored in `speaker_profiles`; copy states the accuracy honestly ("Speaker labels are a
+best guess — tap to fix"); a diarize failure never fails the meeting — transcript and notes stand,
+labels are absent, one sentence says why.
+
+**Destination.** Re-approve only after Y11-A..Y11-E merge AND Y11-F's real-voice DER/FAR is
+measured against a stated threshold, in a pass scoped `only:['Y11-', 'yap24-NT5']`. The item stays
+in `scripts/loop/items/01-yap24-notetaker.mjs` (`yap24-NT5`), gated `panel`, left out of the
+pass-1 `panelApproved` array.
+
+## 11. `yap24-OS2`, `yap24-X2`, `yap24-X3` — expansions, DEFERRED (advisory, ungrounded
+independently — sequencing only, 2026-09-26 panel)
+
+The Senior PM seat named `OS2` (SMAppService launch-at-login) and `65-yap24-expansions.mjs`'s
+`X2`/`X3` (local MCP server, "ask your meeting") as expansions that serve none of the three day-1
+stories (meeting notes, the day-8 trial, blind hotkeys). These findings were ADVISORY grade and
+this panel did not independently ground a concrete fix for them (unlike `OS4`/`OS5` below, which
+DID receive grounded amendments and are therefore approved, not deferred). Per the panel's own
+rule — advisory findings that are not independently grounded can only be DEFER or REJECTED — these
+three stay out of `panelApproved` for now. They are unchanged in the item files (still gated
+`panel`, still buildable in their own later pass).
+
+**Note — `yap24-OS4` and `yap24-OS5` are NOT in this deferred bucket.** Both received grounded,
+applied Panel revisions (see their items in `scripts/loop/items/03-yap24-hotkeys-permissions-os.mjs`)
+and are APPROVED for pass 2 alongside `OS1`/`OS3`.
+
+**Destination / sequencing recommendation.** Build NT1-4, NT6, NT7, NT9, NT10, PILL1-4, OS1, OS3,
+OS4, OS5, UI1-3, PKG1-2 and the retargeted LIC-A first; revisit OS2/X2/X3 after, once Wilson has
+scoped what a local MCP surface or launch-at-login rework should actually do.
