@@ -105,6 +105,7 @@
 
 ITEMS.push({
   id: 'Y0-A', prompt: 'Y0', branch: 'loop/y0-a-make-the-lint-gates-blocking', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #156 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)',
   preflight: `
     test 0 -eq "$(grep -c '|| true' .github/workflows/ci.yml)"
@@ -176,6 +177,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-D', prompt: 'Y0', branch: 'loop/y0-d-per-instance-state-isolation-and-smoke-mode', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #159) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'One documented state root override and a --smoke mode, so two lanes and Wilson\'s own install stop sharing one history and one hotkey',
   preflight: `
     grep -q 'YAP_DATA_DIR' desktop/src-tauri/src/lib.rs
@@ -238,6 +240,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-E', prompt: 'Y0', branch: 'loop/y0-e-structural-windowed-smoke-before-the-ui-lane', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #160) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The instrument that can see "looks broken" ships BEFORE the nine UI items it judges — and it fails on today\'s tree',
   preflight: `
     test -x scripts/smoke-windowed.sh
@@ -302,6 +305,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-B', prompt: 'Y0', branch: 'loop/y0-b-loop-smoke-and-fresh-clone-proof', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #163 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'One command proves a fresh clone builds, tests and stages both sidecars — no host-found dependencies',
   preflight: `
     test -x scripts/loop-smoke.sh
@@ -371,6 +375,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-C', prompt: 'Y0', branch: 'loop/y0-c-defaults-are-tested-not-just-code-paths', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #166) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A test asserts the SHIPPED defaults, so a feature that is off by default can never be called tested again',
   preflight: `
     test -f desktop/src-tauri/tests/shipped_defaults.rs

@@ -86,7 +86,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 63 items (Y0-A..Y7-E), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 59 items (Y0-A..SEC-B), 22 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -94,6 +94,27 @@ export const meta = {
     { title: "Y0-E", detail: "The instrument that can see \"looks broken\" ships BEFORE the nine UI items it judges — and it fails on today's tree" },
     { title: "Y0-B", detail: "One command proves a fresh clone builds, tests and stages both sidecars — no host-found dependencies" },
     { title: "Y0-C", detail: "A test asserts the SHIPPED defaults, so a feature that is off by default can never be called tested again" },
+    { title: "yap24-NT1", detail: "Meeting audio is never deleted before it has been transcribed, and stranded \"transcribing\" rows are reconciled on launch" },
+    { title: "yap24-NT2", detail: "The meeting transcript exists: stop hands the audio to the shipped MeetingAsr job, which writes segments and completes the row" },
+    { title: "yap24-NT3", detail: "Silence is not a denial: an in-person meeting never attaches the system tap, and a quiet call is never told macOS refused it" },
+    { title: "yap24-NT4", detail: "Notes appear on their own: a completed transcript is summarized locally, action items are stored as rows, and \"no model\" is a state, not an error" },
+    { title: "yap24-NT5", detail: "Who said what: in-person meetings run the shipped diarization sidecar after transcription, with the honest accuracy framing" },
+    { title: "yap24-NT6", detail: "The Meetings view tells the truth about every meeting: progress, notes, failure with Retry, audio kept or expired" },
+    { title: "yap24-NT7", detail: "The pill and the menu bar follow the meeting after stop: transcribing 42%, notes ready, or what went wrong" },
+    { title: "yap24-NT8", detail: "Calendar-aware: an upcoming meeting or class raises a \"Record?\" prompt on the pill — opt-in, EventKit, no OAuth" },
+    { title: "yap24-NT9", detail: "Phase-closing proof: one headless command runs a two-track fixture through capture, transcript, notes and export" },
+    { title: "yap24-PILL1", detail: "The trial is visible from day 14 to day 1: a quiet numeral for the first week, the Y2-B treatment for the last" },
+    { title: "yap24-PILL2", detail: "The backend says which stage a take is in, so \"polishing\" and \"pasting\" finally appear on the pill" },
+    { title: "yap24-PILL3", detail: "When the hotkey cannot hear you, the pill says so: Secure Input, a disabled tap, and missing Accessibility are pill states" },
+    { title: "yap24-PILL4", detail: "Hands-free looks different from hold: a lock mark and \"tap fn⌃ to stop\", in both characters and all docks" },
+    { title: "yap24-OS1", detail: "The first word is never lost and the start is 280 ms sooner: capture arms on key-down and a tap throws the pre-roll away" },
+    { title: "yap24-OS2", detail: "Launch at login through SMAppService.mainApp, the way macOS 13+ expects, instead of a LaunchAgent plist" },
+    { title: "yap24-OS3", detail: "Permission truth: the hotkey asks for Input Monitoring by name, the purpose strings describe today's app, and a grant is noticed on focus" },
+    { title: "yap24-OS4", detail: "Hardened-runtime diet: prove whether allow-jit and allow-unsigned-executable-memory are needed, and drop what is not" },
+    { title: "yap24-OS5", detail: "Idle means idle: the fixed polls (Secure Input 2 s, pill space-keeper, permission watch) are consolidated and measured" },
+    { title: "yap24-UI1", detail: "Every sprite pixel lands on whole device pixels at every dock size and backing scale — no half-pixel blur" },
+    { title: "yap24-UI2", detail: "One animation clock for the pill and the habitat: frame-rate independent, parks at idle, honours Reduce Motion" },
+    { title: "yap24-UI3", detail: "Pay the visual-QA debt: a headless screenshot matrix of every pill phase x dock x character, attached to the PR" },
     { title: "PERM-A", detail: "Ask macOS the actual question: AVCaptureDevice authorizationStatus + requestAccess, replacing the device probe that cannot see a denial" },
     { title: "PERM-B", detail: "A denied microphone gets its own screen with a working System Settings deep link, not a green check" },
     { title: "PERM-C", detail: "Every hotkey press re-checks the grant, and the pill shows a denied state instead of recording silence" },
@@ -127,31 +148,6 @@ export const meta = {
     { title: "Y2-E", detail: "The menu-bar item says the same thing as the pill and the settings card, from one source" },
     { title: "DB-A", detail: "Usage metering and a \"limit reached\" surface — the numbers are Wilson's call" },
     { title: "SEC-B", detail: "The trial state machine gets the adversarial tests its own doc comment promises" },
-    { title: "Y5-G", detail: "Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all" },
-    { title: "Y5-A", detail: "A token layer so the seven views stop each inventing their own colours, spacing and radii" },
-    { title: "Y5-B", detail: "The \"looks broken\" fix: all seven views get a real empty state, a real loading state and a real error state" },
-    { title: "Y5-C", detail: "The pill gets every state the product has, including the transcribe/think gap Wilson named" },
-    { title: "Y5-D", detail: "Soft-body pill motion using Wispr's measured spring constants, with Reduce Motion respected" },
-    { title: "Y5-E", detail: "The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about" },
-    { title: "Y5-F", detail: "One error surface, one sentence per failure, one action — replacing raw strings and silent failures" },
-    { title: "Y5-J", detail: "The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer" },
-    { title: "Y5-I", detail: "Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way" },
-    { title: "Y5-K", detail: "The pill becomes a pluggable character system, and the habitat comes back as its habitat layer" },
-    { title: "UPD-A", detail: "The updater points at an endpoint that can serve a private repo — today it points at a dead URL" },
-    { title: "UPD-B", detail: "Publish latest.json + .app.tar.gz + .sig to the host the updater now points at, and keep the previous build" },
-    { title: "Y6-A", detail: "Onboarding ends with one successful pasted dictation, or it tells you exactly what is missing" },
-    { title: "PRIV-A", detail: "Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever" },
-    { title: "Y6-B", detail: "The menu bar becomes a usable surface: state, the last transcript, hide-for-an-hour, quit" },
-    { title: "Y6-C", detail: "The paste lands in the app you dictated into, or it does not paste — including secure-input fields" },
-    { title: "DB-C", detail: "History, FTS search and export hold up at real volume, and Clear History still destroys the words" },
-    { title: "PRIV-B", detail: "Clear History erases the audio and the partial words, not only the SQLite rows" },
-    { title: "Y6-D", detail: "Cold launch, sleep/wake, display change and a second copy of Yap all behave" },
-    { title: "Y6-E", detail: "README, ARCHITECTURE, ROADMAP and PRODUCT stop describing an app that no longer exists" },
-    { title: "Y7-A", detail: "A headless smoke that runs the real built binary end to end, not a unit test of its parts" },
-    { title: "Y7-B", detail: "A windowed smoke that launches Yap, walks all seven views and captures them at two sizes" },
-    { title: "Y7-C", detail: "Every test this loop added is proven non-vacuous by a mutation that makes it fail" },
-    { title: "Y7-D", detail: "The pure frontend modules get real coverage, so the pill and the states are testable without a window" },
-    { title: "Y7-E", detail: "The shipped DMG is smoke-tested the way a first-time user meets it" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -230,7 +226,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0,"Y5-G":1,"Y5-A":1,"Y5-B":1,"Y5-C":1,"Y5-D":1,"Y5-E":1,"Y5-F":1,"Y5-J":1,"Y5-I":1,"Y5-K":1,"UPD-A":0,"UPD-B":0,"Y6-A":0,"PRIV-A":0,"Y6-B":0,"Y6-C":0,"DB-C":0,"PRIV-B":0,"Y6-D":0,"Y6-E":0,"Y7-A":1,"Y7-B":1,"Y7-C":1,"Y7-D":1,"Y7-E":1}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -679,6 +675,29 @@ function panelSkip(item) {
   }
   return null
 }
+
+// ── args.only — run ONLY the named items (build mode) ──
+// Ported from the sibling harness 2026-09-26. args.only is an array of item-id PREFIXES, e.g.
+//   Workflow {scriptPath: ..., args: {mode: 'build', only: ['yap24-NT'], panelApproved: [...]}}
+// In build mode an item whose id starts with none of them is HARD-skipped exactly like a panel-gated
+// item: no build agent, no pre-flight, no lane time, no tokens. It exists so a pass over the yap24
+// notetaker chain does not re-pre-flight the ~30 finished Y-items. Absent, empty or not an array ->
+// no filter. Review mode ignores it (the review pass is PR-driven). The parent
+// (scripts/cicd-loop-all.mjs, emitted by build.mjs) applies the same prefixes one level up and skips
+// a whole part, Recon included, when none of its items match — so an args.only run can leave the
+// lane worktrees standing; the next full run's Recon reuses them (manual teardown: HARNESS.md).
+const ONLY_PREFIXES =
+  MODE === 'build' && typeof args !== 'undefined' && args && Array.isArray(args.only) && args.only.length
+    ? args.only.map(String)
+    : null
+function onlySkip(item) {
+  if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
+  return { itemId: item.id, status: 'skipped: not in args.only', only: true }
+}
+// args.now — the launcher's clock, ISO-8601 (this runtime has no clock of its own). Informational
+// here: it is echoed into the Recon log so a run's journal says when it was launched. No Yap item
+// carries a not-before hold today, so nothing is compared against it.
+const RUN_NOW = typeof args !== 'undefined' && args && typeof args.now === 'string' ? args.now : null
 
 /**
  * ══ COMMANDS ARE EXECUTED, NOT DESCRIBED ══════════════════════════════════════════════════
@@ -1564,6 +1583,7 @@ const ITEMS = []
 
 ITEMS.push({
   id: 'Y0-A', prompt: 'Y0', branch: 'loop/y0-a-make-the-lint-gates-blocking', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #156 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)',
   preflight: `
     test 0 -eq "$(grep -c '|| true' .github/workflows/ci.yml)"
@@ -1635,6 +1655,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-D', prompt: 'Y0', branch: 'loop/y0-d-per-instance-state-isolation-and-smoke-mode', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #159) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'One documented state root override and a --smoke mode, so two lanes and Wilson\'s own install stop sharing one history and one hotkey',
   preflight: `
     grep -q 'YAP_DATA_DIR' desktop/src-tauri/src/lib.rs
@@ -1697,6 +1718,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-E', prompt: 'Y0', branch: 'loop/y0-e-structural-windowed-smoke-before-the-ui-lane', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #160) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The instrument that can see "looks broken" ships BEFORE the nine UI items it judges — and it fails on today\'s tree',
   preflight: `
     test -x scripts/smoke-windowed.sh
@@ -1761,6 +1783,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-B', prompt: 'Y0', branch: 'loop/y0-b-loop-smoke-and-fresh-clone-proof', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #163 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'One command proves a fresh clone builds, tests and stages both sidecars — no host-found dependencies',
   preflight: `
     test -x scripts/loop-smoke.sh
@@ -1830,6 +1853,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y0-C', prompt: 'Y0', branch: 'loop/y0-c-defaults-are-tested-not-just-code-paths', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #166) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A test asserts the SHIPPED defaults, so a feature that is off by default can never be called tested again',
   preflight: `
     test -f desktop/src-tauri/tests/shipped_defaults.rs
@@ -1910,6 +1934,961 @@ ITEMS.push({
   `,
 })
 
+// ── 01-yap24-notetaker.mjs ────────────────────────────────────────────────
+// yap24-NT — THE NOTETAKER CHAIN. Written 2026-09-26 by the architecture audit
+// (docs/ARCHITECTURE-AUDIT-2026-09-26.md §2). Wilson, dictated 2026-09-26: "The notetaker is not
+// even working and that's one of the most important things — every component of that."
+//
+// ROOT CAUSE, verified from code AND from Wilson's own install (read-only copy of the SQLite DB):
+//   * Recording works: a stop writes the mic WAV and sets the row to `transcribing`
+//     (desktop/src-tauri/src/meeting_control.rs:652-656, :710-712).
+//   * NOTHING EVER TRANSCRIBES IT. The meeting ASR job (meeting_asr.rs:1718 `MeetingAsr`, :1767
+//     `run`, :614 `WarmEngineChunkAsr`) is constructed ONLY in two integration tests
+//     (tests/meeting_dictation_preempts_transcription.rs:145, tests/matrix_new_asr_chunk_timeout.rs:108);
+//     the module opens with `#![allow(dead_code)]` (meeting_asr.rs:52), which is how the compiler was
+//     kept quiet about it. `Database::append_meeting_segments` (db.rs:1652) has no caller in src/.
+//     tests/meeting_manual_start_stop.rs:158-162 asserts `transcribing` and stops — "(YV93 finishes
+//     it)" — so 105 lib meeting tests + 30 integration tests are green around a dead pipeline.
+//   * The summary command then refuses: "that meeting has no transcript to summarize" (lib.rs:4216-4218).
+//   * Diarization is never invoked: `diarize::pool()` has no caller (meeting_matrix.rs:143).
+//   * Then the retention sweep deletes the audio anyway: `purge_meeting_audio` (db.rs:1936-1972)
+//     selects on `started_at` alone, run every hygiene pass (lib.rs:2966-3001), 7 days
+//     (meetings.rs:73). Wilson's DB: 4/4 meetings stuck in `transcribing`, processed_through 0.0,
+//     audio_kept 0, both WAV paths NULL, meetings/ dir 0 B. The audio is gone.
+//   * And the system-audio verdict marks silence as denial: 3/4 of those rows (one of them kind
+//     `in_person`) carry LOOKS_DENIED_MESSAGE (syscapture.rs:2324-2327) because nothing played for
+//     DENIAL_GRACE = 3 s (syscapture.rs:2243, :2334-2341).
+//
+// ORDER IS THE DEPENDENCY CHAIN: capture durability -> transcript -> notes -> UI. This file is ONE
+// lane, sequential, on purpose. Pass 1 of the yap24 loop runs this file alone:
+//   args: {mode:'build', only:['yap24-NT'], panelApproved:[...NT ids the panel approved]}
+// Every item is gated:'panel' until the Senior Panel on the 2026-09-26 audit rules.
+//
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs and docs/loop/HARNESS.md.
+// Never touch the bundle identifier or the data directory name. Never sandbox. Headless only:
+// no test in this file opens a window, and no acceptance command needs a microphone or a TCC grant.
+
+ITEMS.push({
+  id: 'yap24-NT1', prompt: 'yap24-NT', branch: 'loop/yap24-nt1-never-purge-untranscribed-meeting-audio', gated: 'panel',
+  title: 'Meeting audio is never deleted before it has been transcribed, and stranded "transcribing" rows are reconciled on launch',
+  preflight: `
+    test -f desktop/src-tauri/tests/meeting_retention_keeps_untranscribed_audio.rs
+    grep -q "fn reconcile_stranded_meetings" desktop/src-tauri/src/meetings.rs desktop/src-tauri/src/lib.rs desktop/src-tauri/src/meeting_control.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: none (first item of the chain — it stops the data loss before anything else lands)
+
+    EVIDENCE
+      - db.rs:1936-1972  purge_meeting_audio selects every meeting with a WAV path and
+        started_at < cutoff. It does not look at state, so a meeting still in transcribing, partial
+        or failed loses the only copy of its audio after AUDIO_RETENTION_DAYS (meetings.rs:73 = 7).
+      - lib.rs:2960-2965 says why the purge is time-based: "there is no summarize stage yet (YV97)".
+        The stage exists now (summarize.rs), but no transcript ever reaches it (see yap24-NT2).
+      - Wilson's install, read-only DB copy 2026-09-26: 4 meetings, all state=transcribing,
+        processed_through_seconds 0.0, audio_kept 0, mic_wav_path NULL, sys_wav_path NULL;
+        ~/Library/Application Support/WilsonVoice/meetings is empty. yap.log shows each of them
+        "stopped ... -> transcribing" and nothing afterwards.
+
+    DO
+      1. Retention becomes STATE-AWARE: audio is eligible for purge only when the meeting is
+         complete AND it has at least one meeting_segments row AND the retention window has
+         passed. Any other state keeps its audio indefinitely, and the Meetings view (yap24-NT6)
+         says so. Both tracks age out together (the YV106 promise stays).
+      2. reconcile_stranded_meetings(), run once at launch after the DB opens and BEFORE the first
+         hygiene sweep:
+           - state recording with no live capture  -> partial (crash mid-meeting; the capture
+             journal already recovers what it can — reuse it, do not duplicate it);
+           - state transcribing/summarizing whose WAV exists -> left as is and handed to the
+             pipeline queue yap24-NT2 creates (until NT2 lands: left as is, logged once);
+           - state transcribing/summarizing whose WAV is gone -> failed, error = one honest
+             sentence ("The audio for this meeting was removed before Yap transcribed it."),
+             audio_kept 0. Never silently complete.
+      3. One log line per reconciled row with id, old state, new state.
+
+    NOT
+      - Do not change AUDIO_RETENTION_DAYS. Do not delete rows. Do not touch dictation retention.
+      - Do not rename the data directory or any column.
+
+    Tests (new file tests/meeting_retention_keeps_untranscribed_audio.rs):
+      - a transcribing meeting older than the window keeps both WAV paths after purge;
+      - a complete meeting WITH segments older than the window loses both;
+      - a complete meeting with ZERO segments keeps its audio;
+      - reconcile marks a transcribing row whose WAV is missing as failed with the sentence,
+        and leaves a transcribing row whose WAV exists untouched.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio
+    cargo test --features custom-protocol --test meeting_audio_retention
+    cargo test --features custom-protocol --lib meeting
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT2', prompt: 'yap24-NT', branch: 'loop/yap24-nt2-wire-the-meeting-transcription-pipeline', gated: 'panel',
+  title: 'The meeting transcript exists: stop hands the audio to the shipped MeetingAsr job, which writes segments and completes the row',
+  preflight: `
+    test -f desktop/src-tauri/tests/meeting_pipeline_wired.rs
+    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
+    grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT1 (audio must not be purged out from under a queued job)
+
+    EVIDENCE — the whole reason "the notetaker is not even working":
+      - meeting_control.rs:652-656 sets transcribing with the comment "YV93's transcription
+        pipeline moves it on to complete". There is no such pipeline in src/.
+      - meeting_asr.rs:52 #![allow(dead_code)] over the module. MeetingAsr (:1718), its run()
+        (:1767) and WarmEngineChunkAsr (:614) are constructed only in
+        tests/meeting_dictation_preempts_transcription.rs:145 and tests/matrix_new_asr_chunk_timeout.rs:108.
+      - db.rs:1652 append_meeting_segments: no caller outside db.rs.
+      - tests/meeting_manual_start_stop.rs:158-162 asserts transcribing and ends — no test drives
+        stop -> segments -> complete.
+
+    DO
+      1. A new module meeting_pipeline.rs owning ONE background worker thread and a FIFO of meeting
+         ids. Enqueue on: a successful MeetingController::stop whose state is transcribing; and at
+         launch, every row reconcile_stranded_meetings (yap24-NT1) left in transcribing with audio.
+      2. The worker builds the shipped job — do not write a second chunker:
+           MeetingAsr { store: JsonProgressStore under <meetings dir>/<id>.progress.json,
+                        asr: WarmEngineChunkAsr over the ONE warm engine (TranscriptionManager),
+                        demand: an EngineDemand that answers true while a dictation is recording
+                                or busy (AppState recording/busy) — dictation always wins,
+                        quit: the exit-teardown flag, config: MeetingAsrConfig::default() }
+         and runs it per track (mic track, then the system track when sys_wav_path is set, tagged
+         MIC_TRACK / SYSTEM_TRACK exactly as meeting.rs defines them).
+      3. Segments land through Database::append_meeting_segments as each chunk completes (the FTS
+         index follows through its existing triggers), processed_through_seconds advances through
+         the existing ledger, and the row moves transcribing -> complete (or partial with the
+         error sentence when a track failed). The English-only gate (meeting_availability_for) is
+         consulted first and a refusal is a failed row with its sentence, not a silent skip.
+      4. Emit the existing meeting status event after every chunk and at the end, carrying
+         {id, state, processedThroughSeconds, durationSeconds}, so yap24-NT6/NT7 can draw progress.
+      5. Remove #![allow(dead_code)] from meeting_asr.rs. Anything still dead after the wiring is
+         deleted or given a caller — the compiler is the proof that the pipeline is wired.
+      6. A headless CLI entry beside --transcribe-file (cli.rs): --transcribe-meeting <mic.wav>
+         [--sys <sys.wav>] that runs the same worker against a scratch state root
+         (YAP_DATA_DIR required, like --smoke) and prints the segment count and state.
+      7. Update meeting_matrix.rs rows whose PolicyOnly cell existed only because the pipeline had
+         no caller — a row flips to Test only with a test that proves the call site.
+
+    NOT
+      - No second ASR engine, no new model load: meeting ASR shares the warm engine and yields.
+      - Never block the main thread or the hotkey path (spawn a named thread, never the Tauri
+        async runtime for the decode).
+      - Do not touch diarization here (yap24-NT5).
+
+    Tests (tests/meeting_pipeline_wired.rs), stub ChunkAsr, no model, no microphone:
+      - controller start -> stop -> pipeline drain => segments > 0, state complete, both tracks
+        present for a two-track meeting, processed_through_seconds == duration;
+      - a dictation demand mid-meeting preempts at a chunk boundary and the job resumes;
+      - a quit mid-job leaves the ledger; relaunch resumes and the transcript equals an
+        uninterrupted run (reuse the existing resume-seam assertions);
+      - source scan: MeetingAsr is constructed in src/ outside meeting_asr.rs.
+  `,
+  acceptance: `
+    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
+    grep -rln "MeetingAsr {" desktop/src-tauri/src | grep -v "meeting_asr.rs" | grep -q .
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_pipeline_wired
+    cargo test --features custom-protocol --test meeting_manual_start_stop
+    cargo test --features custom-protocol --test meeting_dictation_preempts_transcription
+    cargo test --features custom-protocol --lib meeting
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT3', prompt: 'yap24-NT', branch: 'loop/yap24-nt3-silence-is-not-a-denied-permission', gated: 'panel',
+  title: 'Silence is not a denial: an in-person meeting never attaches the system tap, and a quiet call is never told macOS refused it',
+  preflight: `
+    grep -q "output_was_running" desktop/src-tauri/src/syscapture.rs
+    test -f desktop/src-tauri/tests/system_audio_verdict_silence_is_not_denial.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT2 (the verdict is written on the same stop path the pipeline now owns)
+
+    EVIDENCE
+      - syscapture.rs:2243 DENIAL_GRACE = 3 s; :2334-2341 permission_verdict returns LooksDenied
+        whenever the tap delivered no non-zero sample for 3 s. Nothing playing looks identical.
+      - syscapture.rs:2324-2327 LOOKS_DENIED_MESSAGE ("macOS has not granted System Audio
+        Recording to Yap, and it will not ask again") is stored as the meeting error.
+      - Wilson's DB: 3 of 4 meetings carry that sentence, including cc9f6153 whose kind is
+        in_person — a room recording that never needed system audio at all.
+      - settings_kv meeting_system_audio_setup_ack_v1 = "ran" (2026-08-20), so track_b_plan
+        (syscapture.rs:2462-2485) attaches the tap on every meeting.
+      - Apple: process taps are AudioHardwareCreateProcessTap, macOS 14.2+
+        (https://developer.apple.com/documentation/coreaudio/audiohardwarecreateprocesstap(_:_:));
+        the purpose string is NSAudioCaptureUsageDescription, macOS 14.2+
+        (https://developer.apple.com/documentation/bundleresources/information-property-list/nsaudiocaptureusagedescription).
+        There is no public API to read that grant back, so the verdict must stay a heuristic —
+        make it an honest one.
+
+    DO
+      1. kind in_person => TrackBPlan::MicOnly with NO badge and NO error. The tap is for the
+         can't-join-the-call case (Wilson 2026-08-10: IRL first).
+      2. The verdict gains an input: was the default output device running during the window
+         (kAudioDevicePropertyDeviceIsRunningSomewhere on the default output device,
+         https://developer.apple.com/documentation/coreaudio/kaudiodevicepropertydeviceisrunningsomewhere).
+         No delivery + output idle => Unknown ("No system audio played during this meeting."),
+         never LooksDenied. LooksDenied only when output was running and the tap stayed silent.
+      3. The meeting row stores the verdict sentence only when it is LooksDenied or Failed.
+      4. The Settings pre-warm verdict follows the same rule, so an idle Mac cannot write a
+         sticky LooksDenied into the setup row.
+
+    Tests: pure verdict table (delivery x output_was_running x ran_for) in
+    tests/system_audio_verdict_silence_is_not_denial.rs; an in_person kind yields MicOnly with
+    no badge; existing meeting_track_b_wiring stays green.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial
+    cargo test --features custom-protocol --test meeting_track_b_wiring
+    cargo test --features custom-protocol --test meeting_kind_branch
+    cargo test --features custom-protocol --lib syscapture
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT4', prompt: 'yap24-NT', branch: 'loop/yap24-nt4-notes-summary-and-action-items-automatically', gated: 'panel',
+  title: 'Notes appear on their own: a completed transcript is summarized locally, action items are stored as rows, and "no model" is a state, not an error',
+  preflight: `
+    grep -q "CREATE TABLE IF NOT EXISTS meeting_actions" desktop/src-tauri/src/db.rs
+    test -f desktop/src-tauri/tests/meeting_notes_auto_summary.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT2 (segments must exist), SEC-C (merged #184 — the polish model install path)
+
+    EVIDENCE
+      - lib.rs:4201-4260 summarize_meeting is a MANUAL command and refuses when there are no
+        segments (:4216-4218) — which, before yap24-NT2, is every meeting.
+      - The notetaker plan (Obsidian Notes/Yap-Notetaker-Epic-Plan-2026-08-10.md, schema
+        meetings / meeting_segments / speaker_profiles / meeting_actions) is only partly real:
+        Wilson's DB has no meeting_actions table (sqlite .tables, 2026-09-26).
+      - The summary is a free-text column (meetings.summary). Action items with evidence links
+        were the Read-AI-style promise ("transcript, summary, NEXT ACTIONS" — Wilson 2026-08-10).
+
+    DO
+      1. When the pipeline completes a meeting, enqueue a summarize job on the same worker (after
+         transcription, never concurrently with it). It spawns its OWN sidecar session exactly as
+         summarize_meeting_blocking does (lib.rs:4221-4223) so dictation is never starved.
+      2. No local summary model installed => state stays complete, a new field
+         summary_status = 'needs_model' is set, and the UI (yap24-NT6) offers the one-click
+         install SEC-C already ships. Never an error toast.
+      3. Migration: meeting_actions(id INTEGER PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES
+         meetings(id) ON DELETE CASCADE, idx INTEGER NOT NULL, text TEXT NOT NULL, owner TEXT,
+         evidence_segment_id INTEGER). The summarizer's structured output (summarize.rs, GBNF
+         JSON) writes the action items there; each cites the segment it came from.
+      4. Markdown export (the existing export path) gains Summary and Action items sections above
+         the transcript.
+      5. The manual Summarize command keeps working and re-runs the same job (idempotent: the
+         empty-summary refusal at lib.rs:4250-4262 stays).
+
+    Tests (tests/meeting_notes_auto_summary.rs, stub summary client): completion enqueues a
+    summary; actions land as rows with evidence ids; no model => needs_model and no error;
+    deleting a meeting cascades its actions (extend meeting_delete_cascade); export contains
+    both sections.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_notes_auto_summary
+    cargo test --features custom-protocol --test meeting_delete_cascade
+    cargo test --features custom-protocol --test meeting_markdown_export
+    cargo test --features custom-protocol --lib summarize
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT5', prompt: 'yap24-NT', branch: 'loop/yap24-nt5-diarization-joins-the-pipeline', gated: 'panel',
+  title: 'Who said what: in-person meetings run the shipped diarization sidecar after transcription, with the honest accuracy framing',
+  preflight: `
+    grep -rln "diarize::pool()" desktop/src-tauri/src | grep -v "diarize.rs\|meeting_matrix.rs" | grep -q .
+    test -f desktop/src-tauri/tests/meeting_pipeline_diarizes_in_person.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT2, Y11-A..Y11-E (the six parked diarization defects — FAR 1.000 on the shipped
+    enrollment path, split_partition seeding, the pinned-digest skip — must be fixed first or this
+    item ships known-wrong labels)
+
+    EVIDENCE
+      - meeting_matrix.rs:141-145: "diarize::pool() has no caller, no meeting is ever handed to a
+        sidecar".
+      - yap23 shipped the sidecar (yap-diarize, sherpa-onnx CAM++ 192-dim) and clustering (#141),
+        and parked six items (#142-#146, #149, issues #150-#155).
+      - Eval numbers are floors on a synthetic say-voice corpus (DER 0.34-0.45) — Y11-F gates the
+        real-voice corpus.
+
+    DO
+      1. For kind in_person (and unknown), after transcription completes, hand the mic track to
+         diarize::pool() and attribute clusters to segments with the shipped
+         attribute_clusters / rank_and_floor path. kind call keeps track labels (You / Them).
+      2. New or unknown voice => the "who is this?" prompt the plan specified (one question per
+         cluster, never per segment), stored in speaker_profiles.
+      3. UI copy states the accuracy honestly: "Speaker labels are a best guess — tap to fix."
+      4. A diarize failure never fails the meeting: transcript and notes stand, labels are absent,
+         one sentence says why.
+
+    Tests: tests/meeting_pipeline_diarizes_in_person.rs with a stub DiarizeClient; a failing
+    sidecar leaves the meeting complete with no labels.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test meeting_pipeline_diarizes_in_person
+    cargo test --features custom-protocol --test meeting_cluster_attribution
+    cargo test --features custom-protocol --lib diarize
+    cargo test -p yap-diarize --release
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT6', prompt: 'yap24-NT', branch: 'loop/yap24-nt6-meetings-view-shows-every-state', gated: 'panel',
+  title: 'The Meetings view tells the truth about every meeting: progress, notes, failure with Retry, audio kept or expired',
+  preflight: `
+    test -f desktop/src/meetings/viewState.ts
+    test -f desktop/src/meetings/viewState.test.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT2, yap24-NT4 (states and fields it renders)
+
+    EVIDENCE
+      - views/Meetings.tsx:339-347: a transcribing meeting with no segments renders "Yap is still
+        working through the audio." — forever, because nothing was working through it.
+      - No progress, no failed/partial rendering with a way out, no Retry, no summary-model state,
+        no action items (the summary panel at :332-337 is one paragraph).
+      - notetaker_status (lib.rs, the 14.4 gate sentence) reaches only the Settings setup step
+        (meeting_matrix.rs row 12b).
+
+    DO
+      1. A pure module desktop/src/meetings/viewState.ts: meetingViewState(meeting, segmentsCount)
+         -> { badge, headline, detail, progress: 0..1 | null, actions: ('retry'|'summarize'|
+         'install-model'|'export'|'delete')[] } covering recording, transcribing (with
+         processedThroughSeconds / durationSeconds), summarizing, complete, complete +
+         needs_model, partial, failed, audio expired. Every state has exactly one headline.
+      2. Meetings.tsx renders it: a progress bar that moves with the pipeline event, the notes
+         (summary + action items, each item linking to its transcript segment), Retry for
+         failed/partial (re-enqueues through a new retry_meeting command), Export Markdown.
+      3. The empty state offers "Start a meeting" with the kind picker (in person / call) and
+         carries notetaker_status when system audio is unavailable.
+      4. Follow the token layer (Y5-A) and the empty/loading/error pattern (Y5-B) if merged;
+         otherwise the existing App.css tokens — no new colours.
+
+    Tests: viewState.test.ts — one case per state, the progress arithmetic, and "no state renders
+    an empty headline".
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/meetings
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT7', prompt: 'yap24-NT', branch: 'loop/yap24-nt7-pill-and-tray-follow-the-meeting-after-stop', gated: 'panel',
+  title: 'The pill and the menu bar follow the meeting after stop: transcribing 42%, notes ready, or what went wrong',
+  preflight: `
+    grep -q "notes-ready" desktop/src/pill/meeting.ts
+    grep -q "notes-ready" desktop/src/pill/meeting.test.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT2, yap24-NT6
+
+    EVIDENCE
+      - pill/MeetingBadge.tsx:2 "the pill's persistent recording state (YV95)" — the badge knows
+        recording and nothing after it; the moment a meeting stops the pill goes quiet while the
+        work (now real, yap24-NT2) happens.
+      - The tray meeting item toggles start/stop only (meeting_control.rs:733-757 toggle).
+
+    DO
+      1. pill/meeting.ts gains post-stop phases: processing (with percent), notes-ready (holds
+         until clicked or 10 s), failed (sentence). Driven by the pipeline event from NT2 — no
+         polling.
+      2. Both characters render them through the shell (Y5-K owner decision: the shell owns
+         phases, a character only owns art).
+      3. The tray shows "Meeting notes ready — Open" and a macOS notification (the notification
+         plugin is already initialised) when a meeting completes while Yap is in the background.
+      4. Clicking notes-ready opens that meeting in the Meetings view (navigate event).
+
+    Tests: pill/meeting.test.ts — event sequence recording -> processing 0..100 -> notes-ready;
+    failure path; a dictation during processing still shows the dictation phases (dictation
+    outranks the badge).
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT8', prompt: 'yap24-NT', branch: 'loop/yap24-nt8-calendar-aware-record-prompt', gated: 'panel',
+  title: 'Calendar-aware: an upcoming meeting or class raises a "Record?" prompt on the pill — opt-in, EventKit, no OAuth',
+  preflight: `
+    grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
+    test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
+  `,
+  spec: `
+    Panel: pending (a NEW TCC permission — Calendars — so the panel and Wilson must bless it)
+    DEPENDS: yap24-NT6, yap24-NT7
+
+    EVIDENCE
+      - Wilson 2026-08-10 (memory project_yap_build_state): "calendar-AWARE (knows when
+        meetings/CLASSES are coming — students are a target — and proactively prompts Record?)";
+        stack decided then: EventKit via objc2-event-kit, reads iCloud/Google/Outlook through
+        Calendar.app, zero OAuth.
+      - Wispr ships a meeting reminder pill ("In {{n}} min", Join + Start, snooze) — parity
+        teardown Notes/Wispr-Full-Parity-Research-2026-08-09.md line 100.
+      - Apple: requestFullAccessToEvents is macOS 14.0+
+        (https://developer.apple.com/documentation/eventkit/ekeventstore/requestfullaccesstoevents(completion:));
+        purpose string NSCalendarsFullAccessUsageDescription, macOS 14.0+
+        (https://developer.apple.com/documentation/bundleresources/information-property-list/nscalendarsfullaccessusagedescription).
+
+    DO
+      1. Settings -> Meetings: "Remind me to record meetings and classes" (default OFF). Turning
+         it on requests calendar access; below macOS 14 the toggle is disabled with the reason.
+      2. A pure policy (calendar_prompt.rs): events with attendees or a video link, or on a
+         calendar the user ticked as "classes", starting within 2 min -> one prompt; snooze 2 min;
+         never while a dictation or meeting is running; never twice for one event.
+      3. The pill shows the prompt (Record / Snooze / Not this one); Record starts the meeting
+         with the event title and kind call when the event has a video link, else in_person.
+      4. Calendar reads are an EventKit query every 5 minutes at most and on
+         EKEventStoreChanged — never a tight poll. Nothing leaves the Mac.
+
+    Tests: tests/calendar_prompt_policy.rs over synthetic events (no EventKit in the test).
+  `,
+  acceptance: `
+    grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd src-tauri
+    cargo test --features custom-protocol --test calendar_prompt_policy
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-NT9', prompt: 'yap24-NT', branch: 'loop/yap24-nt9-notetaker-end-to-end-proof', gated: 'panel',
+  title: 'Phase-closing proof: one headless command runs a two-track fixture through capture, transcript, notes and export',
+  preflight: `
+    test -x scripts/notetaker-e2e.sh
+    grep -q "yap24" docs/MEETING-DEMO.md
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-NT1..NT7 (NT8 optional)
+
+    WHY: the 2026-08 loops closed the notetaker phases with 135 green meeting tests while the
+    pipeline had no caller (see the header of this file). A phase is closed by the behaviour, not
+    by the mechanisms.
+
+    DO
+      1. scripts/notetaker-e2e.sh: exports a throwaway YAP_DATA_DIR, runs the release binary with
+         --transcribe-meeting on the repo's meeting fixtures (tests/fixtures — reuse, do not add
+         audio), asserts: row state complete, segments > 0 on both tracks, summary present when
+         the summary model is installed or summary_status needs_model when it is not, Markdown
+         export contains Summary / Action items / transcript. Exits non-zero on any miss. Skips
+         (exit 0, prints SKIP with the reason) ONLY when the ASR model is not installed in the
+         scratch root — and says how to install it headlessly.
+      2. docs/MEETING-DEMO.md gains a "yap24 — what a meeting does now" section with the
+         command and a pasted run.
+      3. meeting_matrix.rs: every row whose call site now exists is Test, with its test named.
+
+    NOT: no microphone, no TCC, no window. This is the headless half; the human half (one real
+    meeting on Wilson's Mac) is listed in the PR body as the remaining manual check.
+  `,
+  acceptance: `
+    test -x scripts/notetaker-e2e.sh
+    bash -n scripts/notetaker-e2e.sh
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --lib meeting_matrix
+    cargo test --features custom-protocol --test meeting_pipeline_wired
+  `,
+})
+
+// ── 02-yap24-pill-and-trial.mjs ───────────────────────────────────────────
+// yap24-PILL — THE PILL SAYS WHAT IS HAPPENING. Written 2026-09-26 by the architecture audit
+// (docs/ARCHITECTURE-AUDIT-2026-09-26.md §3). Wilson, 2026-09-26: "the pill does not indicate
+// when [state] … 14 days".
+//
+// What the pill fails to indicate on main today, each verified from code:
+//   1. The 14-day trial for its first week: pillLicense() is SILENT while more than 7 days remain
+//      (desktop/src/pill/license.ts:136-165, "trial, more than 7 days -> nothing"), and the numeral
+//      itself is not drawn on main — Y2-B is still an open PR (#186).
+//   2. Polishing and pasting: both are declared phases (pill/live.ts:411, :413) but no event
+//      produces them — reduceTakePhase (live.ts:1152-1196) only preserves them. After decode the
+//      pill shows "thinking" labelled "Transcribing" through the LLM polish and the paste.
+//   3. A blind hotkey: Secure Input (secure_input.rs:48, 2 s poll; >100 "Secure Input ENABLED"
+//      lines in Wilson's yap.log, from loginwindow and Chrome) and a disabled event tap (Y1-A tap
+//      health) are on the status payload (lib.rs:893-922) but float-main.tsx:60-65 reads only
+//      recording / busy / engine_loading / last_error. The user presses fn and nothing happens.
+//   4. Hands-free vs hold: status carries hands_free (lib.rs:896); the pill draws the same
+//      "listening" for both, so a double-tapped take (ptt_macos.rs:34, 450 ms) looks like a hold.
+//
+// This file is ONE lane. Pass 2 runs it beside 03-yap24-hotkeys-permissions-os.mjs:
+//   args: {mode:'build', only:['yap24-PILL','yap24-OS'], panelApproved:[...]}
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs. Headless only.
+
+ITEMS.push({
+  id: 'yap24-PILL1', prompt: 'yap24-PILL', branch: 'loop/yap24-pill1-trial-visible-for-the-whole-trial', gated: 'panel',
+  title: 'The trial is visible from day 14 to day 1: a quiet numeral for the first week, the Y2-B treatment for the last',
+  preflight: `
+    grep -q "14d" desktop/src/pill/license.test.ts
+    ! grep -q "trial, more than 7 days   → nothing" desktop/src/pill/license.ts
+  `,
+  spec: `
+    Panel: pending (product copy/threshold — the panel may keep a quiet style, it may not keep silence)
+    DEPENDS: Y2-B (open PR #186 — the numeral in both pill styles and the 30px side dock).
+      Y2-B lives in 20-y2 on the SAME lane and runs AFTER this file, so do not wait for it: if #186
+      is still open when this item starts, carry its commits onto this branch (rebase onto main,
+      keep its tests), then close #186 with a "superseded by #<this PR>" comment naming the commits.
+      Do not redraw the numeral from scratch. Y2-B's own pre-flight then retires it.
+
+    EVIDENCE
+      - pill/license.ts:136-165 display policy: "trial, more than 7 days -> nothing (ambient
+        silence)". For half the trial the pill says nothing; Wilson's report is exactly this.
+      - The trial is 14 days (license.rs; memory project_yap_build_state YP2 "14-day full trial").
+      - Y2-B (#186) draws the numeral but was built against the 7-day policy and was never
+        visually QA'd (STATUS-yap.md row Y2-B).
+
+    DO
+      1. Policy: trial 14..8 -> show, tone "trial-quiet" (the numeral at reduced contrast, no
+         hourglass animation); 7..1 -> the existing "trial"; last day -> "urgent"; licensed ->
+         nothing (unchanged); problem / ended unchanged.
+      2. The numeral is the days remaining the backend computed (days_left, rollback floor
+         included) — never recomputed in the webview.
+      3. Hover/accessible title: "Free trial — N days left". Never a price on the pill (Y2-D rule).
+      4. Both characters, all three docks, through the shell.
+
+    Tests: license.test.ts — every day 14..0, licensed, problem, ended; a snapshot of the
+    accessible title per tone.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill/license.test.ts
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-PILL2', prompt: 'yap24-PILL', branch: 'loop/yap24-pill2-backend-stage-events-for-polish-and-paste', gated: 'panel',
+  title: 'The backend says which stage a take is in, so "polishing" and "pasting" finally appear on the pill',
+  preflight: `
+    grep -q "TAKE_STAGE_EVENT" desktop/src-tauri/src/lib.rs
+    grep -q "take_stage" desktop/src/float-main.tsx
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: Y5-C (merged #193 — the phase machine this feeds)
+
+    EVIDENCE
+      - pill/live.ts:411 "polishing" and :413 "pasting" are declared, owned by Y5-C / Y7-D, and
+        never produced: reduceTakePhase (live.ts:1152-1196) has no event that yields either.
+      - The backend emits recording, status, transcript, transcribe_progress, audio_level,
+        license, license_required and a few UI events — no stage event (grep of .emit in
+        src-tauri/src, 2026-09-26).
+      - Result: the LLM polish (up to the Y4-E chunked deadline) and the paste receipt wait both
+        read as "Transcribing".
+
+    DO
+      1. One event, TAKE_STAGE_EVENT = "take_stage", payload {stage, takeId, words?}, emitted at
+         the real boundaries in the dictation pipeline: decode start, polish start (only when the
+         polish stage actually runs), paste start, paste confirmed / not confirmed, done, empty,
+         error. One emit helper; no stage is emitted from two places.
+      2. reduceTakePhase gains {type:'stage'}; stage outranks the inferred status path, and the
+         existing hold/timeout policy (PHASE_HOLD_MS) still bounds every working phase.
+      3. The paste-not-confirmed receipt ("no app read the clipboard within 1500ms", seen in
+         Wilson's log) becomes a visible one-line state, not only a log line.
+
+    Tests: Rust — the dictation pipeline test harness asserts the stage sequence for
+    polish-on and polish-off takes; TS — live.test.ts stage sequences incl. out-of-order status.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill
+    npm run build
+    cd src-tauri
+    cargo test --features custom-protocol --lib take_stage
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-PILL3', prompt: 'yap24-PILL', branch: 'loop/yap24-pill3-blind-hotkey-and-blind-paste-states', gated: 'panel',
+  title: 'When the hotkey cannot hear you, the pill says so: Secure Input, a disabled tap, and missing Accessibility are pill states',
+  preflight: `
+    grep -q "secure_input" desktop/src/float-main.tsx
+    grep -q '"blind"' desktop/src/pill/live.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: PERM-C (merged #161), Y1-A (merged #162)
+
+    EVIDENCE
+      - lib.rs:893-922 build_status already computes secure.blocked, the tap health message and
+        accessibility. float-main.tsx:60-65 BackendStatus declares only recording, busy,
+        engine_loading, last_error.
+      - Wilson's logs: well over 100 WARN lines "Secure Input ENABLED by loginwindow / Google
+        Chrome — the fn PTT event tap is blind" across yap.log, yap.log.1 and yap.log.2.
+      - The live gate reducer (live.ts reduceGatePhase) handles mic permission, recording and
+        cancel only.
+
+    DO
+      1. A gate phase "blind" with three causes, each one sentence and one action:
+         Secure Input on (name the owning app, which secure_input.rs already resolves);
+         event tap disabled by macOS (re-armed per Y1-A — say so while it is down);
+         Accessibility missing (paste will copy to the clipboard only — say that, deep link).
+      2. It outranks idle/sleepy but not a take in progress; it clears the moment status clears.
+      3. The pill stays click-through except the action chip.
+
+    Tests: live.test.ts — status payloads -> phase for each cause, precedence against a take.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-PILL4', prompt: 'yap24-PILL', branch: 'loop/yap24-pill4-hands-free-looks-different-from-hold', gated: 'panel',
+  title: 'Hands-free looks different from hold: a lock mark and "tap fn⌃ to stop", in both characters and all docks',
+  preflight: `
+    grep -q "hands_free" desktop/src/float-main.tsx
+    grep -q "hands-free" desktop/src/pill/live.test.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-PILL2 (same reducer), Y5-K when merged (characters are data)
+
+    EVIDENCE
+      - lib.rs:896 status carries hands_free; the pill never reads it (float-main.tsx:60-65).
+      - ptt_macos.rs:34 DOUBLE_TAP_MS = 450, :550 double-tap -> hands-free ON; Wilson's log shows
+        dozens of hands-free takes, some several minutes long, with the same pill as a hold.
+
+    DO: a listening variant "listening-locked" (phaseVisual label "Hands-free — tap fn⌃ to stop"),
+    drawn by the shell as a small lock chip; the live commentary keeps running; Escape/cancel copy
+    unchanged. Tests in live.test.ts.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill
+    npm run build
+  `,
+})
+
+// ── 03-yap24-hotkeys-permissions-os.mjs ───────────────────────────────────
+// yap24-OS — FASTER HOTKEY, TRUER PERMISSIONS, BETTER OS CITIZEN. Written 2026-09-26 by the
+// architecture audit (docs/ARCHITECTURE-AUDIT-2026-09-26.md §4 and §6). Wilson, 2026-09-26: "the
+// app should work better with the operating system, the kernel, the permissioning system; the
+// hotkeys faster and smoother; way better than Wispr Flow."
+//
+// Rules that bind every item here: app-sandbox stays false (memory
+// feedback_never_sandbox_utility_apps); the bundle id and the data dir are never renamed (TCC and
+// history); no new vendor; headless tests only.
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap24-OS1', prompt: 'yap24-OS', branch: 'loop/yap24-os1-arm-capture-on-key-down-zero-lost-words', gated: 'panel',
+  title: 'The first word is never lost and the start is 280 ms sooner: capture arms on key-down and a tap throws the pre-roll away',
+  preflight: `
+    grep -q "speculative" desktop/src-tauri/src/ptt_macos.rs
+    test -f desktop/src-tauri/tests/ptt_speculative_arm.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: none
+
+    EVIDENCE
+      - ptt_macos.rs:32 HOLD_ARM_MS = 280; :488-509 a thread sleeps 280 ms after key-down and only
+        then fires Start. The comment (YV38) is right that the gesture needs the window — but
+        capture does not have to wait for the decision.
+      - record.rs:390 arms the persistent capture worker only on Start; there is no pre-roll, so
+        speech in the first ~280 ms after the press is not in the take.
+      - record.rs:1316 IDLE_CLOSE = 60 s: after a minute idle the next take pays a cold stream
+        open (bounded by ARM_TIMEOUT 3 s, record.rs:1312), and with a Bluetooth headset a profile
+        switch.
+
+    DO
+      1. On fn / fn⌃ key-down: arm capture immediately in SPECULATIVE mode (buffering, pill still
+         idle). At HOLD_ARM_MS: still held -> promote to a real take, keeping the buffered audio
+         from key-down (the take starts at the press, not 280 ms later). Released before
+         TAP_MAX_MS -> discard the buffer, then run the existing tap / double-tap logic.
+      2. Measure (latency.rs) press->first-sample for warm and cold streams and record both in
+         docs/BUDGETS.md; the pill's "listening" flips at promotion, unchanged.
+      3. Do not keep the mic open longer than today: speculative arming reuses the same stream and
+         the same IDLE_CLOSE; the orange mic indicator behaviour is unchanged.
+
+    Tests (tests/ptt_speculative_arm.rs, pure state machine): hold -> promote with pre-roll
+    retained; tap -> discard, no take; double-tap -> hands-free with no leftover buffer; a
+    promote after a cold open still starts at the press timestamp.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test ptt_speculative_arm
+    cargo test --features custom-protocol --lib ptt
+    cargo test --features custom-protocol --lib latency
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-OS2', prompt: 'yap24-OS', branch: 'loop/yap24-os2-launch-at-login-via-smappservice', gated: 'panel',
+  title: 'Launch at login through SMAppService.mainApp, the way macOS 13+ expects, instead of a LaunchAgent plist',
+  preflight: `
+    grep -q "SMAppService" desktop/src-tauri/src/lib.rs desktop/src-tauri/src/*.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: none
+
+    EVIDENCE
+      - Cargo.toml:32-34 tauri-plugin-autostart "macOS LaunchAgent"; lib.rs:382-387 the autostart
+        setting drives it (default OFF, correct).
+      - Apple: SMAppService is macOS 13.0+ ("An object the framework uses to control helper
+        executables that live inside an app's main bundle",
+        https://developer.apple.com/documentation/servicemanagement/smappservice), and
+        SMAppService.mainApp is "the main application as a login item", macOS 13.0+
+        (https://developer.apple.com/documentation/servicemanagement/smappservice/mainapp).
+      - Yap's floor is macOS 12.0 (tauri.conf.json bundle.macOS.minimumSystemVersion).
+
+    DO: on macOS 13+ register/unregister SMAppService.mainApp via objc2 (the crate family the app
+    already uses) and read its status back into Settings (enabled / requires approval / not
+    registered — the "requires approval" case gets a deep link to Login Items). On 12.x keep the
+    plugin path. Migrating users: if a LaunchAgent from the plugin exists and the setting is on,
+    register mainApp and remove the agent once. Tests: the pure status->copy mapping and the
+    migration decision table.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --lib autostart
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-OS3', prompt: 'yap24-OS', branch: 'loop/yap24-os3-tcc-truth-pass-input-monitoring-and-copy', gated: 'panel',
+  title: 'Permission truth: the hotkey asks for Input Monitoring by name, the purpose strings describe today\'s app, and a grant is noticed on focus',
+  preflight: `
+    grep -q "CGPreflightListenEventAccess" desktop/src-tauri/src/permissions.rs desktop/src-tauri/src/ptt_macos.rs
+    ! grep -q "with Whisper" desktop/src-tauri/Info.plist
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: PERM-E (merged #167)
+
+    EVIDENCE
+      - ptt_macos.rs:314-323 creates a LISTEN-ONLY tap at the HID location and on failure logs
+        "CGEventTapCreate failed — enable Accessibility". A listen-only tap is gated by Input
+        Monitoring (permissions.rs:403 says as much); the copy sends people to the wrong pane.
+      - Apple: CGPreflightListenEventAccess / CGRequestListenEventAccess, macOS 10.15+
+        (https://developer.apple.com/documentation/coregraphics/cgpreflightlisteneventaccess(),
+        https://developer.apple.com/documentation/coregraphics/cgrequestlisteneventaccess()).
+      - Info.plist NSMicrophoneUsageDescription: "…transcribe dictation with Whisper" — the
+        default engine is Parakeet (src/catalog.json), and meetings also use the mic.
+      - permissions.rs:536-542 revocation watch polls every 45 s (30 s floor). A grant made in
+        System Settings is not seen until the next tick.
+
+    DO
+      1. Input Monitoring: preflight with CGPreflightListenEventAccess, request with
+         CGRequestListenEventAccess from the onboarding permission step, and route the tap-failure
+         copy + deep link (Privacy_ListenEvent, permissions.rs:811) to it.
+      2. Purpose strings: mic = "Yap listens only while you hold the dictation key or record a
+         meeting, and transcribes on this Mac." (final copy: panel). No engine names.
+      3. Re-check every grant on app activation and on every hotkey press (cheap, read-only
+         calls), keeping the 45 s poll as the backstop.
+    Tests: permission copy table; the activation re-check path is a pure function over grant
+    snapshots.
+  `,
+  acceptance: `
+    ! grep -q "with Whisper" desktop/src-tauri/Info.plist
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd src-tauri
+    cargo test --features custom-protocol --lib permissions
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-OS4', prompt: 'yap24-OS', branch: 'loop/yap24-os4-hardened-runtime-entitlement-diet', gated: 'panel',
+  title: 'Hardened-runtime diet: prove whether allow-jit and allow-unsigned-executable-memory are needed, and drop what is not',
+  preflight: `
+    ! grep -q "com.apple.security.cs.allow-jit" desktop/src-tauri/Entitlements.plist
+  `,
+  spec: `
+    Panel: pending (SECURITY-class: the signing path)
+    DEPENDS: SEC-A (merged #165 — stable signing identity)
+
+    EVIDENCE
+      - Entitlements.plist carries device.audio-input, app-sandbox=false, cs.allow-jit and
+        cs.allow-unsigned-executable-memory. The last two weaken the hardened runtime for the whole
+        process. Whether ggml-Metal, llama.cpp (in the yap-polish sidecar, a separate binary) or
+        WKWebView (JIT runs in the WebContent process) needs them in the APP binary is UNVERIFIED.
+
+    DO: build a signed (Apple Development, sign-local.sh) .app with each entitlement removed in
+    turn; run the headless smoke (--smoke with YAP_DATA_DIR, --transcribe-file on the fixture) and
+    record pass/fail per variant in docs/RELEASE.md. Remove every entitlement whose removal passes.
+    app-sandbox stays false. Never ad-hoc sign (resets TCC).
+  `,
+  acceptance: `
+    grep -q "<false/>" desktop/src-tauri/Entitlements.plist
+    grep -q "com.apple.security.app-sandbox" desktop/src-tauri/Entitlements.plist
+    grep -q "Entitlement audit" docs/RELEASE.md
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --lib smoke
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-OS5', prompt: 'yap24-OS', branch: 'loop/yap24-os5-idle-wakeups-event-driven', gated: 'panel',
+  title: 'Idle means idle: the fixed polls (Secure Input 2 s, pill space-keeper, permission watch) are consolidated and measured',
+  preflight: `
+    test -f desktop/src-tauri/tests/idle_timer_budget.rs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-PILL3 (Secure Input state consumer), Y10-F (idle RAM/CPU publication)
+
+    EVIDENCE
+      - secure_input.rs:48 POLL_INTERVAL = 2 s; its own doc (secure_input.rs:41) says macOS
+        publishes no notification for Secure Input, so a poll is legitimate — but it runs even
+        when no hotkey press is pending.
+      - float_pill.rs:47 a space-keeper tick re-asserts the panel's dock and level.
+      - permissions.rs:542 WATCH_INTERVAL 45 s; lib.rs:5283 hygiene telemetry interval.
+      - Yap idles at ~135 MB RSS (yap23 log, pid 87890) — good; wakeups were never measured.
+
+    DO: one table of every periodic timer in the app (name, interval, why, what event could
+    replace it) in docs/BUDGETS.md; Secure Input is checked on key-down and on a slow backstop
+    (>= 10 s) instead of every 2 s; the space-keeper runs on NSWorkspace active-space-change and
+    screen-change notifications instead of a tick where the API allows; a test enumerates the
+    registered timers and fails if any idle-time interval drops below 10 s.
+  `,
+  acceptance: `
+    cd desktop && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test idle_timer_budget
+    cargo test --features custom-protocol --lib secure_input
+    cargo clippy --all-targets --features custom-protocol
+  `,
+})
+
+// ── 04-yap24-ui-pixels-motion.mjs ─────────────────────────────────────────
+// yap24-UI — CLEARER PIXELS, SMOOTHER MOTION. Written 2026-09-26 by the architecture audit
+// (docs/ARCHITECTURE-AUDIT-2026-09-26.md §5). Wilson, 2026-09-26: "make the UI better, the pixels
+// clearer, smoother." Locked aesthetic: pixel-art Tamagotchi on an LCD/pod (memory
+// feedback_companion_must_be_cute) — no vector mascot, no origami, no angry eyebrows. Characters
+// are data behind the shell (owner decision 2026-09-13, Y5-K).
+// Headless verification only: vitest + the headless-Chrome structural smoke (scripts/smoke-windowed.mjs
+// runs Chrome with --headless=new). SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap24-UI1', prompt: 'yap24-UI', branch: 'loop/yap24-ui1-integer-pixel-grid-on-every-display', gated: 'panel',
+  title: 'Every sprite pixel lands on whole device pixels at every dock size and backing scale — no half-pixel blur',
+  preflight: `
+    test -f desktop/src/pill/pixelGrid.ts
+    test -f desktop/src/pill/pixelGrid.test.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: Y5-I (vertical-as-base geometry) and Y5-K (character shell) when merged; standalone otherwise
+
+    EVIDENCE
+      - pill/YappyPill.tsx:262 DPR = Math.min(devicePixelRatio || 1, 2) and the canvas is sized
+        from the CSS box; nothing guarantees the art's cell size is an integer number of device
+        pixels, so at some dock sizes a 1-art-pixel line straddles two device pixels (soft edges).
+      - float.css:379 and App.css:1969-1975 set image-rendering: pixelated / crisp-edges on the
+        upscaled canvases — correct, but it cannot fix a non-integer scale.
+
+    DO: a pure pixelGrid.ts — given CSS box, art grid (w,h) and DPR, return the largest integer
+    device-pixel cell, the canvas backing size and the centring offset in whole device pixels.
+    YappyPill, ClassicPill (where it draws pixel art) and YappyHouse use it; the leftover margin is
+    filled with the scene colour, never stretched. Tests cover DPR 1 and 2, all three docks, the
+    30 px side dock.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill/pixelGrid.test.ts
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-UI2', prompt: 'yap24-UI', branch: 'loop/yap24-ui2-one-animation-clock-that-parks', gated: 'panel',
+  title: 'One animation clock for the pill and the habitat: frame-rate independent, parks at idle, honours Reduce Motion',
+  preflight: `
+    test -f desktop/src/pill/clock.ts
+    test -f desktop/src/pill/clock.test.ts
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: Y5-D (open PR #196 — spring constants) when merged
+
+    EVIDENCE
+      - ClassicPill was fixed to settle-and-park (memory: yap audit [0] "60fps rAF-forever"); the
+        Yappy pill and YappyHouse each run their own loops (YappyPill.tsx canvas loop,
+        home/YappyHouse.tsx) — two clocks, two idle policies.
+      - ProMotion displays run rAF at 120 Hz; animation that advances per frame instead of per
+        millisecond runs twice as fast there (UNVERIFIED for each loop — the builder measures).
+
+    DO: pill/clock.ts — a single requestAnimationFrame scheduler with dt in ms, subscribers,
+    automatic park when no subscriber is animating, and a prefers-reduced-motion switch. Port the
+    three loops onto it; every motion is expressed per millisecond. Tests with a fake rAF: equal
+    motion at 60 and 120 Hz; parks after settle; reduced motion snaps.
+  `,
+  acceptance: `
+    cd desktop && npm ci
+    npx tsc --noEmit
+    npx vitest run src/pill/clock.test.ts
+    npm test
+    npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap24-UI3', prompt: 'yap24-UI', branch: 'loop/yap24-ui3-pay-the-visual-qa-debt-headless', gated: 'panel',
+  title: 'Pay the visual-QA debt: a headless screenshot matrix of every pill phase x dock x character, attached to the PR',
+  preflight: `
+    test -f scripts/pill-matrix.mjs
+  `,
+  spec: `
+    Panel: pending
+    DEPENDS: yap24-PILL1..PILL4, yap24-UI1, Y5-B/Y5-C/Y5-D
+
+    EVIDENCE: the 2026-09-15 run's builders logged "NOT visually QA'd" on Y2-B, Y5-B, Y5-C, Y5-D
+    (memory project_yap_loop_state_20260912; STATUS-yap.md). A green gate cannot see a pill.
+
+    DO: scripts/pill-matrix.mjs reuses smoke-windowed.mjs's headless Chrome (--headless=new) and
+    vite preview, renders float.html with each phase forced through a dev-only query parameter,
+    captures PNGs for every phase x {bottom,left,right} x {classic,yappy}, and fails on the same
+    structural conditions (empty text, clipped text, overflow). Output under
+    docs/pr-screenshots/yap24-UI3/. Never launches the app, never opens a visible window.
+  `,
+  acceptance: `
+    test -f scripts/pill-matrix.mjs
+    node --check scripts/pill-matrix.mjs
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+  `,
+})
+
 // ── 05-y1-audio-permission.mjs ────────────────────────────────────────────
 // Y1 — AUDIO PERMISSION. Wilson, 2026-09-12, verbatim: "audio permission is not
 // requested or handled at all."
@@ -1954,6 +2933,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-A', prompt: 'Y1', branch: 'loop/perm-a-real-tcc-authorization-status', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #157) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Ask macOS the actual question: AVCaptureDevice authorizationStatus + requestAccess, replacing the device probe that cannot see a denial',
   preflight: `
     grep -q 'AVCaptureDevice' desktop/src-tauri/src/mic_auth.rs
@@ -2083,6 +3063,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-B', prompt: 'Y1', branch: 'loop/perm-b-denied-state-ui-and-settings-deeplink', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #158) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A denied microphone gets its own screen with a working System Settings deep link, not a green check',
   preflight: `
     grep -q 'micStatus\\|microphoneStatus' desktop/src/Onboarding.tsx
@@ -2160,6 +3141,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-C', prompt: 'Y1', branch: 'loop/perm-c-recheck-on-every-hotkey-and-pill-denied-state', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #161) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Every hotkey press re-checks the grant, and the pill shows a denied state instead of recording silence',
   preflight: `
     grep -q 'authorization_status' desktop/src-tauri/src/lib.rs
@@ -2266,6 +3248,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-A', prompt: 'Y1', branch: 'loop/y1-a-cgevent-tap-disabled-by-timeout-is-re-armed', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #162) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A tap macOS disabled is re-armed and reported — the other half of "the hotkey is dead"',
   preflight: `
     grep -q 'kCGEventTapDisabledByTimeout\\|0xFFFFFFFE' desktop/src-tauri/src/ptt_macos.rs
@@ -2323,6 +3306,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-D', prompt: 'Y1', branch: 'loop/perm-d-first-run-preflight-before-any-take', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #164) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'First run refuses to reach calibration without a real grant, and a silent take is diagnosed instead of pasted as nothing',
   preflight: `
     grep -q 'silent_take\\|all_zero_samples' desktop/src-tauri/src/lib.rs
@@ -2387,6 +3371,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-A', prompt: 'Y1', branch: 'loop/sec-a-stable-signing-identity-so-grants-survive-rebuilds', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #165) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Stop ad-hoc signing local builds — the reason permissions "reset" on Wilson\'s own machine',
   preflight: `
     test 0 -eq "$(grep -c '"signingIdentity": "-"' desktop/src-tauri/tauri.conf.json)"
@@ -2487,6 +3472,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-B', prompt: 'Y1', branch: 'loop/y1-b-register-the-sleep-wake-observer-that-does-not-exist', gated: null,
+  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
   title: 'Register the sleep/wake observer two later items already claim exists',
   preflight: `
     grep -qE 'NSWorkspaceWillSleepNotification|IORegisterForSystemPower' desktop/src-tauri/src/power.rs
@@ -2540,6 +3526,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-E', prompt: 'Y1', branch: 'loop/perm-e-permission-health-row-and-revocation-watch', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #167) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'One permission health surface, watched for revocation, covering mic + Accessibility + Input Monitoring + audio capture',
   preflight: `
     grep -q 'permission_changed' desktop/src-tauri/src/permissions.rs
@@ -2691,6 +3678,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-A', prompt: 'Y4', branch: 'loop/y4-a-formatting-on-by-default', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #168) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Formatting is on for a fresh install: the shipped default reaches the formatting stage',
   preflight: `
     grep -qE 'cleanup_level: "(medium|high)"' desktop/src-tauri/src/lib.rs
@@ -2782,6 +3770,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-I', prompt: 'Y4', branch: 'loop/y4-i-measure-the-polish-sidecar-against-the-real-weights', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #169) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Measure the polish stage against the real weights before anything is built on its envelope',
   preflight: `
     test -f docs/BUDGETS.md
@@ -2836,6 +3825,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-C', prompt: 'Y4', branch: 'loop/sec-c-polish-model-is-actually-installable', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #171 then #184) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The polish model gets an install path, so the LLM stage can exist on a real machine',
   preflight: `
     grep -q 'polish' desktop/src/ModelSetup.tsx
@@ -2946,6 +3936,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-C', prompt: 'Y4', branch: 'loop/y4-c-paragraphing-the-rule-that-does-not-exist', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #173) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Paragraphing: long speech becomes paragraphs by rule, not one wall of text',
   preflight: `
     grep -q 'fn paragraph_breaks\\|fn insert_paragraphs' desktop/src-tauri/src/dictation.rs
@@ -3015,6 +4006,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-D', prompt: 'Y4', branch: 'loop/y4-d-lists-and-punctuation-at-the-shipped-level', gated: null,
+  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
   title: 'Lists, nesting and spoken punctuation proven at the level the product ships, with the gaps filled',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
@@ -3084,6 +4076,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-E', prompt: 'Y4', branch: 'loop/y4-e-polish-long-form-by-chunking', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #175) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Long-form gets polished: the 400-word cliff becomes a chunked pass that keeps the deadline',
   preflight: `
     test 0 -eq "$(grep -c 'MAX_POLISH_WORDS: usize = 400' desktop/src-tauri/src/polish.rs)"
@@ -3189,6 +4182,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-F', prompt: 'Y4', branch: 'loop/y4-f-app-aware-formatting-that-is-actually-applied', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #177) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'App-aware formatting: the six modes change the output, proven per app, and auto mode picks correctly',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
@@ -3256,6 +4250,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-G', prompt: 'Y4', branch: 'loop/y4-g-formatting-is-visible-and-reversible', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #179) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The user can see what formatting did and undo it in one key — the trust mechanism',
   preflight: `
     grep -rq 'DiffView\\|formatting_diff' desktop/src
@@ -3347,6 +4342,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y4-H', prompt: 'Y4', branch: 'loop/y4-h-formatting-settings-a-person-can-use', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #182) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The formatting settings stop being engineer words, and every one of them persists',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri
@@ -3457,6 +4453,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-A', prompt: 'Y3', branch: 'loop/y3-a-bounded-capture-spill-to-disk', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #170) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling',
   preflight: `
     test 0 -eq "$(grep -c 'self.raw.extend_from_slice(&self.mono)' desktop/src-tauri/src/record.rs)"
@@ -3532,6 +4529,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-B', prompt: 'Y3', branch: 'loop/y3-b-chunked-decode-for-the-dictation-path', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #172) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call',
   preflight: `
     grep -q 'chunk' desktop/src-tauri/src/lib.rs
@@ -3640,6 +4638,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-C', prompt: 'Y3', branch: 'loop/y3-c-long-take-progress-in-the-pill', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #174) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The pill reports real progress on a long take instead of an honest-looking lie',
   preflight: `
     grep -q '"transcribing"' desktop/src/pill/live.ts
@@ -3719,6 +4718,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-D', prompt: 'Y3', branch: 'loop/y3-d-cancel-a-long-take-at-any-stage', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #176) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Cancel works mid-decode, not just mid-recording — and a cancel never loses the audio',
   preflight: `
     grep -q 'CANCEL' desktop/src-tauri/src/shortcuts.rs
@@ -3786,6 +4786,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-B', prompt: 'Y3', branch: 'loop/db-b-crash-recovery-for-a-long-take', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #178 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'A crash or quit mid-long-take loses nothing — the take resumes or is offered back on next launch',
   preflight: `
     grep -q 'resume_take\\|recover_dictation' desktop/src-tauri/src/lib.rs
@@ -3850,6 +4851,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-F', prompt: 'Y3', branch: 'loop/y3-f-max-session-length-and-the-honest-ceiling', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #180) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A declared maximum session length with a warning before it, instead of an undeclared cliff',
   preflight: `
     grep -q 'MAX_SESSION_SECONDS' desktop/src-tauri/src/record.rs
@@ -3904,6 +4906,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y3-G', prompt: 'Y3', branch: 'loop/y3-g-long-take-latency-and-energy-budget', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #181) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A measured latency and energy budget for long takes, published as a test that fails on regression',
   preflight: `
     test -f desktop/src-tauri/tests/long_take_budget.rs
@@ -4024,6 +5027,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key. Still blocked only on Wilson provisioning the dedicated Yap Supabase project.`,
   title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
     test -f supabase/functions/yap-license/index.ts
@@ -4168,6 +5172,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-A', prompt: 'Y2', branch: 'loop/y2-a-license-status-reaches-the-pill-window', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #185) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The float window subscribes to license status — the wiring that does not exist',
   preflight: `
     grep -q 'license' desktop/src-tauri/src/float_pill.rs
@@ -4241,6 +5246,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-B', prompt: 'Y2', branch: 'loop/y2-b-pill-trial-countdown-in-both-styles', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #186 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. AMENDED 2026-09-26 (architecture audit): the display POLICY this item draws is superseded in part by yap24-PILL1 — the pill must show the trial from day 14, not only from day 7 (pill/license.ts:136-165 is silent above 7 days; Wilson 2026-09-26 "the pill does not indicate ... 14 days"). Build Y2-B to the current policy; PILL1 changes the policy on top of it.`,
   title: 'A quiet trial numeral on the pill in both pill styles, in the 30px side dock too',
   preflight: `
     grep -q 'pillLicense' desktop/src/pill/ClassicPill.tsx
@@ -4305,6 +5311,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-C', prompt: 'Y2', branch: 'loop/y2-c-trial-ended-pill-state-and-refused-press', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #187) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A refused hotkey press produces a pill state that explains itself, instead of a throttled notification',
   preflight: `
     grep -q '"gated"' desktop/src/pill/live.ts
@@ -4372,6 +5379,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-F', prompt: 'Y2', branch: 'loop/y2-f-a-stored-key-that-grants-nothing-is-not-a-lapsed-trial', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #189) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A paying customer whose key stops verifying is never shown a price',
   preflight: `
     grep -rq 'storedKeyProblem' desktop/src/pill
@@ -4424,6 +5432,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-D', prompt: 'Y2', branch: 'loop/y2-d-one-upgrade-path-from-the-pill', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #191 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'One click from the pill to purchase, reusing the existing Payment Link — no new money surface',
   preflight: `
     grep -q 'open_purchase_page\\|show_purchase' desktop/src-tauri/src/float_pill.rs
@@ -4481,6 +5490,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-E', prompt: 'Y2', branch: 'loop/y2-e-menu-bar-tray-carries-the-same-truth', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #194) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The menu-bar item says the same thing as the pill and the settings card, from one source',
   preflight: `
     grep -q 'pillLicense\\|license_tray_line' desktop/src-tauri/src/lib.rs
@@ -4535,6 +5545,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-A', prompt: 'Y2', branch: 'loop/db-a-usage-metering-and-limit-surface', gated: 'panel',
+  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
   title: 'Usage metering and a "limit reached" surface — the numbers are Wilson\'s call',
   preflight: `
     grep -q 'usage_window\\|words_this_week' desktop/src-tauri/src/db.rs
@@ -4610,6 +5621,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-B', prompt: 'Y2', branch: 'loop/sec-b-trial-state-machine-hardening', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #195 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'The trial state machine gets the adversarial tests its own doc comment promises',
   preflight: `
     test -f desktop/src-tauri/tests/trial_state_machine.rs
@@ -4693,1989 +5705,6 @@ ITEMS.push({
     cargo test --features custom-protocol --test license_gate                        ; test $? -eq 0    grep -q 'forward_clock_excursion_does_not_expire_the_trial' desktop/src-tauri/tests/trial_state_machine.rs
     grep -q 'a_poisoned_floor_can_be_cleared_by_a_signed_grace_claim' desktop/src-tauri/tests/trial_state_machine.rs
 
-  `,
-})
-
-// ── 25-y5-ui-ux-polish.mjs ────────────────────────────────────────────────
-// Y5 — UI/UX. Wilson, 2026-09-12, verbatim: "the app looks broken, not smooth —
-// lots of UI/UX problems." And, standing: "we got to really think about this
-// thing end to end."
-//
-// AUDIT, structural, at 4e8c9adf:
-//   desktop/src/App.tsx      3,439 lines  — ONE component holding seven views
-//                            (Nav: home | permissions | meetings | insights |
-//                            dictionary | scratchpad | settings, App.tsx:55-61)
-//                            and eight settings sub-tabs (App.tsx:66-85).
-//   desktop/src/App.css      2,789 lines  — one stylesheet, no token layer.
-//   desktop/src/home/YappyHouse.tsx  919 lines
-//   Empty / loading / error states:
-//     git grep -c "empty-state\|EmptyState\|skeleton" -- desktop/src
-//       -> App.css: 1, App.tsx: 1.  For SEVEN views. That is the "looks broken"
-//          report: a view with no data renders a bare frame with no explanation
-//          and no action.
-//   The pill's whole state vocabulary is four values:
-//     ClassicPill.tsx:23-24  {recording, busy, message} + a `done` flag
-//     live.ts:252   LivePhase = idle | listening | thinking | done | sleepy
-//   Wispr's Flow Bar has TWELVE states with exact geometry per dock
-//   (reference_wispr_parity_research §4.2, [BUNDLE]): resting · ready ·
-//   activePtt · activePopo · processing · polishProcessing · polishCompleted ·
-//   autoCleanupCompleted · error · growthNudgeActive · navigationActive ·
-//   postInstructBubble · instructCollapsing.
-//   project_yap_pill_vision, Wilson's own words: "fill the dead time after
-//   talking stops and before text appears (transcribe/think gap) and every
-//   other micro-state — idle->listening->transcribing->polishing->pasting->
-//   done->fold-back + errors/permission/model-loading/empty. Today only
-//   listening/busy/done exist."
-//
-// MOTION CONSTANTS, primary-sourced, use these exact numbers
-// (reference_wispr_parity_research §4.3 [BUNDLE]):
-//   springs stiffness:600 damping:35 restDelta:0.05 (snappy morphs)
-//   springs stiffness:300 damping:28 (the slower one)
-//   cubic-bezier(0.05,0.6,0.4,0.95) @ 100ms for state changes
-//   300-400ms for expand/collapse
-//   hover hysteresis: an invisible ::before alpha margin at inset:-12px,
-//   painted ONLY while expanded
-//   rgba(0,0,0,0.004) background so the box is clickable while invisible
-//
-// AESTHETIC LOCK — not negotiable, do not re-litigate:
-//   feedback_companion_must_be_cute: PIXEL ART on a little LCD screen/pod
-//   (Tamagotchi / Bitzee). Chunky pixels, imageSmoothingEnabled=false, limited
-//   retro palette. NOT smooth vector. NO angled "angry" eyebrows. Paper/origami
-//   is REJECTED ("def a no on the paper").
-//   feedback_no_generic_ui: reject AI-dashboard aesthetics.
-//   feedback_ui_quality: truly native feel, no webview tells.
-//   feedback_think_ux_first: controls first, prose last.
-//
-// ── OWNER DECISION 2026-09-13 (Wilson) — THE PILL IS A CHARACTER SYSTEM ──
-//   Verbatim: "I thought we were gonna develop it and then make more characters
-//   and make it more flexible ... there's a classic pill and there's a yappy
-//   pill and there's gonna be different pills with the different creatures that
-//   are coming."
-//   So "which pill ships in v1" was the WRONG QUESTION and is closed: BOTH ship,
-//   as the first two CHARACTERS of a pluggable system, and more creatures come
-//   later. The panel's cost objection was real and is answered STRUCTURALLY,
-//   not by picking one:
-//     * THE SHELL owns everything that is not the creature — the window, the
-//       dock, the geometry table, hover/hit-testing, motion, the phase state
-//       machine, a11y names. Dock positions are handled ONCE, in the shell.
-//     * A CHARACTER is a DATA-DRIVEN MODULE behind one interface: given a phase
-//       and a tone it returns a sprite/animation and copy. It knows nothing
-//       about docks, windows or license logic.
-//     * TESTS RUN A FIXTURE MATRIX OVER THE REGISTERED CHARACTERS instead of
-//       duplicating a code path per pill. Y5-C's "13 phases x 2 styles x 3 docks"
-//       becomes 13 phases x 3 docks in the shell, plus one data completeness
-//       sweep per registered character.
-//     * A NEW CREATURE IS A NEW MODULE + A FIXTURE ROW. No shell change.
-//   Y5-K builds that system and reinstates the living habitat (the killed Y5-H)
-//   as its habitat layer. The aesthetic lock below is unchanged and binding.
-//
-// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
-// EVERY item here owes the two-size screenshots (980x700 and 720x520) plus the
-// pill at three dock positions for each state it touches.
-
-ITEMS.push({
-  id: 'Y5-G', prompt: 'Y5', branch: 'loop/y5-g-split-app-tsx-into-views', gated: null,
-  title: 'Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all',
-  preflight: `
-    test 900 -ge "$(wc -l < desktop/src/App.tsx)"
-    test -d desktop/src/views
-    cd ${APP} && npm ci && npm run build && npm test
-  `,
-  spec: `
-    \`App.tsx\` is 4,660 lines holding seven views and eight settings sub-tabs
-    (PANEL 2026-09-12: the audit's 3,439 was measured against an older tree and
-    is 1,221 lines low — \`wc -l desktop/src/App.tsx\` at 4e8c9adf is 4,660, so
-    this is a ~3,760-line move, not a ~2,500-line one).
-    Every later UI item in this loop has to edit it, which makes them serially
-    conflicting and makes each one hard to review. This is the enabling refactor.
-
-    Do:
-      * \`desktop/src/views/{Home,Permissions,Meetings,Insights,Dictionary,Scratchpad,Settings}.tsx\`,
-        one per \`Nav\` value (App.tsx:55-61), and
-        \`desktop/src/views/settings/\` for the eight \`SettingsTab\`s
-        (App.tsx:66-85). App.tsx keeps the shell: nav, the license chip, the
-        toast host, the event listeners.
-      * PURE MECHANICAL MOVE. No behaviour change, no restyling, no renaming of
-        a state field. The gate is that \`npm test\` and \`npm run build\` pass and
-        Y0-E's structural smoke reports the same result before and after; a
-        mixed refactor-plus-redesign diff
-        is unreviewable and is how a regression ships.
-      * Shared state that currently lives in one component body has to be lifted
-        deliberately. Prefer props and a small number of explicit contexts over
-        a global store; do not add a state-management dependency.
-      * The event listeners (App.tsx:1190-1210 license, plus the take/status
-        listeners) stay in ONE place in the shell. Seven views each subscribing
-        to \`recording\` is seven listeners and a leak.
-
-    Tests: existing suites must pass unchanged, and add
-    \`desktop/src/views/views.test.tsx\` asserting each view module exports a
-    default component and that no view module registers a Tauri \`listen\` —
-    the sweep that keeps the listener discipline from eroding.
-
-    PANEL 2026-09-12 — ORDER REVERSED. This item now runs FIRST in this file.
-    Four seats converged: eleven items across both lanes edit App.tsx, this item
-    empties it, and the build agent's LAND step is told to SKIP a conflicting PR
-    rather than fix it. Doing the states first means Y5-B/Y5-F write markup into
-    the monolith and then this item moves it again, with the cross-lane items
-    (PERM-B, PERM-E, Y2-D, Y4-G, DB-D, Y10-E, Y7-D) all branched off the old
-    shape. So: pure mechanical move FIRST, on the smallest possible diff, then
-    every later UI item writes into desktop/src/views/<View>.tsx.
-    Because it moves first, the gate is the existing suites plus Y0-E's
-    structural windowed smoke (same assertions before and after) — NOT
-    "the screenshots are pixel-identical", which named a golden-image gate that
-    does not exist and that Y7-B explicitly forbids.
-    Split the landing if the diff is unreviewable: views first, then settings/*,
-    two PRs, identical gate on each.
-
-    What NOT to do:
-      - Do NOT restyle while moving.
-      - Do NOT add Redux/Zustand/Jotai.
-      - Do NOT leave a re-export shim that lets code keep importing views from
-        App.tsx.
-  `,
-  acceptance: `
-    test 900 -ge "$(wc -l < desktop/src/App.tsx)"                 # MEASURED baseline: 4660
-    # PANEL: views.test.tsx used to live in views/ and matched this glob, so the
-    # count was 8 and \`test 7 -eq\` could never pass however well the item was built.
-    test 7 -eq "$(ls desktop/src/views/*.tsx | wc -l | tr -d ' ')"
-    test 8 -eq "$(ls desktop/src/views/settings/*.tsx | wc -l | tr -d ' ')"
-    test -f desktop/src/views/__tests__/views.test.tsx
-    grep -q 'no_view_module_registers_a_listener' desktop/src/views/__tests__/views.test.tsx
-    # a PURE MOVE adds no behaviour: the moved lines land, they do not multiply
-    test 5200 -ge "$(cat desktop/src/App.tsx desktop/src/views/*.tsx desktop/src/views/settings/*.tsx | wc -l)"
-    test 0 -eq "$(grep -c 'settingsTab === ' desktop/src/App.tsx)"
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build ; test $? -eq 0
-    npm test      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-A', prompt: 'Y5', branch: 'loop/y5-a-design-tokens-and-one-visual-system', gated: null,
-  title: 'A token layer so the seven views stop each inventing their own colours, spacing and radii',
-  preflight: `
-    test -f desktop/src/tokens.css
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"
-    cd ${APP} && npm ci && npm run build
-  `,
-  spec: `
-    \`App.css\` is 2,789 lines with literal colours, spacings and radii repeated
-    throughout, which is mechanically why unrelated screens look like different
-    apps — the "looks broken, not smooth" report is largely inconsistency, not
-    any single broken screen.
-
-    Do:
-      * \`desktop/src/tokens.css\`: one \`:root\` block. Colour, elevation,
-        radius, spacing (a 4px-based scale), type scale, motion durations and
-        the two spring curves from the header. Name tokens by ROLE
-        (--surface-raised, --text-muted, --accent-urgent), never by value
-        (--gray-3). A role-named token survives a palette change; a
-        value-named one guarantees the next inconsistency.
-      * Migrate App.css and float.css to the tokens. Zero hex literals left in
-        either. The gate greps for that, so a partial migration fails.
-      * Keep the LOOK as it is in this item, to within a rounding error. This is
-        a refactor whose whole value is that it is invisible; changing the
-        palette at the same time makes every later visual diff unreadable.
-      * Palette: pin the retro/LCD palette the companion already uses so the
-        chrome and the character share one world instead of two
-        (feedback_companion_must_be_cute — chunky pixels, limited retro
-        palette). Read the palette off docs/prototypes/yappy-house.html and
-        src/home/YappyHouse.tsx rather than inventing one.
-      * Dark/light: whichever the app ships today is the one that must keep
-        working. Define both token sets if both exist; define one and say so if
-        only one does. Do not add a theme switcher in this item.
-
-    PR body owes a before/after screenshot of all seven views at both window
-    sizes, and the statement "no intentional visual change" with any unavoidable
-    diff called out by name.
-
-    What NOT to do:
-      - Do NOT add Tailwind or a CSS framework. The CSP is strict
-        (tauri.conf.json app.security.csp: style-src 'self' 'unsafe-inline',
-        no external hosts) and a framework here buys nothing.
-      - Do NOT restyle anything in this item. Y5-B..I do the visual work on top.
-  `,
-  acceptance: `
-    test -f desktop/src/tokens.css
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"     # 0 literals left
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/float.css)"
-    grep -q -- '--surface' desktop/src/tokens.css
-    grep -q -- 'cubic-bezier(0.05, *0.6, *0.4, *0.95)' desktop/src/tokens.css
-    grep -q 'tokens.css' desktop/src/main.tsx desktop/src/float-main.tsx
-    cd ${APP} && npm ci && npm run build ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-B', prompt: 'Y5', branch: 'loop/y5-b-every-view-has-empty-loading-and-error-states', gated: null,
-  title: 'The "looks broken" fix: all seven views get a real empty state, a real loading state and a real error state',
-  preflight: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
-    cd ${APP} && npm ci && npm test -- states
-  `,
-  spec: `
-    MEASURED: \`git grep -c "empty-state\\|EmptyState\\|skeleton" -- desktop/src\`
-    returns one match in App.tsx and one in App.css, for seven views
-    (App.tsx:55-61: home, permissions, meetings, insights, dictionary,
-    scratchpad, settings). A fresh install has no history, no meetings, no
-    dictionary entries, no scratchpad notes and no insights — which is to say
-    every view a new user opens is in its least-designed state. That is the
-    first impression and it is the complaint.
-
-    For EACH of the seven views ship three states:
-      * EMPTY: one sentence saying what lives here, and ONE primary action that
-        creates the first thing. Home's empty action is "hold fn and say
-        something"; Dictionary's is "add a word"; Scratchpad's is "new note".
-        Never a shrug, never a bare illustration with no action.
-      * LOADING: a determinate state where the count is knowable and a calm
-        indeterminate one where it is not. Not a full-page spinner. Not a
-        skeleton that pulses forever (a skeleton with no timeout is how the
-        Drivia audit found nineteen pages "still loading at 15s").
-      * ERROR: what failed, in the user's terms, and the one button that retries
-        or fixes it. A DB error is "Yap could not open its history file", not an
-        SQLite code.
-    Mark each with \`data-empty-state\` / \`data-loading-state\` /
-    \`data-error-state\` so the gate can count them and a future browser walk
-    can assert them.
-
-    Two specific measured cases that must be covered by name:
-      * Home before the model is downloaded. \`status.modelReady\` and
-        \`needsPerms\` already gate a banner (App.tsx:2227) — make the whole view
-        coherent in that state rather than a normal view with a warning strip.
-      * Insights with zero takes. \`nav === "insights" && insights &&\`
-        (App.tsx:2953) renders NOTHING when \`insights\` is falsy — a blank
-        screen with a heading. That is a literal blank page in the shipped app.
-
-    Copy rules: sentence case, no exclamation marks, name the action in the
-    button ("Add a word", not "OK"), say what happens next rather than what went
-    wrong (feedback_think_ux_first).
-
-    Tests: extract each view's state decision into a pure function
-    (\`viewState(data, loading, error)\`) in \`desktop/src/viewState.ts\` with
-    \`viewState.test.ts\` covering the 3x7 matrix, so the assertions do not
-    require rendering 3,439 lines of App.tsx.
-
-    What NOT to do:
-      - Do NOT ship an empty state without an action.
-      - Do NOT use the same generic illustration for all seven. Generic is the
-        thing being fixed (feedback_no_generic_ui).
-      - Do NOT satisfy the gate by adding the attribute to a div that renders
-        nothing. The gate counts attributes; the reviewer looks at the
-        screenshots, and a hollow marker is a failed item.
-    PANEL 2026-09-12 — three corrections.
-      * Enumerate each view's REAL state set instead of demanding all three
-        everywhere. A permissions screen with nothing in it is a bug, not an
-        empty state, and a settings screen has no empty state either: those two
-        get loading + error plus a settled "nothing to fix here" state. The list
-        views (History, Meetings, Dictionary, Insights, Scratchpad) get all
-        three. Lower the counts to match the enumeration — markers that exist
-        only to satisfy a count are the hollow markers this item's own "What NOT
-        to do" forbids, and build mode runs NO reviewer to catch them.
-      * The gate that decides is Y0-E's structural smoke (it already fails a
-        view that renders zero rows with no \`data-empty-state\`), not an
-        attribute count. The counts are a cheap pre-flight.
-      * Scratchpad's shape changes in DB-D (a real second window, versions), so
-        its states are provisional here — say so in the PR body and do not build
-        them twice.
-      * Write the markers into the view MODULES (Y5-G has already moved them);
-        never into the App.tsx shell.
-
-  `,
-  acceptance: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-loading-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-error-state' desktop/src --include=*.tsx | wc -l)"
-    test -f desktop/src/viewState.ts
-    test -f desktop/src/viewState.test.ts
-    grep -q 'insights' desktop/src/viewState.test.ts
-    cd ${APP} && npm ci
-    npm test -- viewState ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build         ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-C', prompt: 'Y5', branch: 'loop/y5-c-the-full-pill-state-machine', gated: null,
-  title: 'The pill gets every state the product has, including the transcribe/think gap Wilson named',
-  preflight: `
-    grep -q '"polishing"' desktop/src/pill/live.ts
-    grep -q '"pasting"' desktop/src/pill/live.ts
-    grep -q '"model_loading"' desktop/src/pill/live.ts
-    cd ${APP} && npm ci && npm test -- pill/live
-  `,
-  spec: `
-    \`LivePhase\` (live.ts:252) is \`idle | listening | thinking | done | sleepy\`.
-    PERM-C adds \`blocked\`, Y2-C adds \`gated\`, Y3-C adds \`transcribing\`. This
-    item completes the vocabulary against project_yap_pill_vision's list, which
-    is Wilson's own enumeration:
-
-      idle -> listening -> transcribing -> polishing -> pasting -> done
-      plus: error · blocked (permission) · gated (license) · model_loading ·
-            empty (nothing was said) · cancelled · sleepy
-
-    Add the missing ones — \`polishing\`, \`pasting\`, \`error\`, \`model_loading\`,
-    \`empty\`, \`cancelled\` — and make each REAL:
-      * \`polishing\` is distinct from \`transcribing\`. It is the LLM stage and it
-        has its own deadline (1200 ms, polish.rs:59), so its state has a
-        knowable duration and must not look like an indefinite wait.
-      * \`pasting\` exists because the paste is receipt-sequenced (YV39) and can
-        fail on its own — a failure there is an Accessibility problem, not a
-        transcription problem, and the pill must say the right one.
-      * \`empty\` is the YV16 no-speech / hallucination-gate outcome: Yap
-        correctly refuses to paste garbage, and today says nothing, so a user
-        experiences a dead hotkey. This state is the whole visible payoff of
-        that gate.
-      * \`model_loading\` covers YV80's lazy arm: the first dictation after
-        launch loads the engine while capture is already live (lib.rs:1156-1158).
-        The pill should say the engine is warming rather than appear stuck.
-      * \`error\` is the generic terminal state with a one-line reason from the
-        take's \`last_error\` (lib.rs:1147 sets it) — never a code.
-
-    Every phase needs: a duration policy (how long it holds), a next phase, and
-    a rendering that the SHELL places at ALL THREE dock positions — once, not
-    once per pill (OWNER DECISION 2026-09-13, top of this file). Both
-    ClassicPill and YappyPill ship; they are the first two characters, so what
-    each owes this item is PHASE COVERAGE AS DATA (a sprite/animation and copy
-    for every phase in every tone), never a second copy of the phase logic or of
-    the dock placement. Until Y5-K lands the registry, keep the per-character
-    data in the component that already holds it and DO NOT add a third branch
-    on \`pill_style\` anywhere outside those two components — Y5-K's first act
-    is to lift exactly that data out.
-    Put the policy in the pure state machine (live.ts) and only the rendering in
-    the components — the
-    file is already 310 lines of pure logic with 271 lines of tests precisely so
-    this is possible, and ci.yml calls out that vitest is a gate because a
-    regression here shipped once.
-
-    Also fix the state-gap problem directly: Wilson's words are "fill the dead
-    time after talking stops and before text appears". Assert in tests that
-    there is NO reachable sequence in which the pill sits in a single
-    undifferentiated phase across the whole post-hold pipeline. Concretely:
-    \`listening -> done\` with no intervening phase is illegal.
-
-    Tests, in \`desktop/src/pill/live.test.ts\`:
-      * a transition table test — every phase has a defined successor set, and
-        no phase is unreachable.
-      * \`no_path_from_listening_to_done_without_an_intermediate_phase\`
-      * \`every_phase_has_copy_in_every_tone\` — the tone presets are
-        rude|friendly|rose (live.ts:29) and \`companion_tone: "friendly"\` is the
-        default (lib.rs:412). A phase with no copy in one tone is a blank pill.
-      * \`every_phase_renders_within_the_side_dock_strip\`
-      * \`every_shipped_character_has_copy_and_art_for_every_phase\` — a table
-        test driven off the list of characters that ship (classic, yappy), so
-        adding a creature adds a row and not a test file. This is the fixture
-        matrix the character system formalises in Y5-K.
-      * precedence: blocked > gated > error > cancelled > the happy path.
-
-    Depends on PERM-C, Y2-C, Y3-C.
-
-    What NOT to do:
-      - Do NOT add a phase without copy in all three tones.
-      - Do NOT let a phase hold indefinitely with no timeout except \`idle\`,
-        \`listening\`, \`blocked\` and \`gated\` (the four that legitimately wait on
-        the user or the OS). Everything else has a deadline; say it in the table.
-    PANEL 2026-09-12 — PERM-C now lands the COMPLETE \`LivePhase\` union in one
-    commit (see PERM-C (b)), because six items across two unsynchronised lanes
-    were each adding a variant to the same 310-line pure module from their own
-    branch off main. So this item ADDS RENDERING AND COPY for phases that
-    already exist in the union; it does not edit the union. If a phase is
-    missing when this item starts, that is a signal PERM-C has not landed —
-    report it, add the rendering against the union as PERM-C specifies it, and
-    do not invent a differently-named variant.
-
-  `,
-  acceptance: `
-    grep -q '"polishing"' desktop/src/pill/live.ts
-    grep -q '"pasting"' desktop/src/pill/live.ts
-    grep -q '"model_loading"' desktop/src/pill/live.ts
-    grep -q '"empty"' desktop/src/pill/live.ts
-    grep -q '"cancelled"' desktop/src/pill/live.ts
-    grep -q '"error"' desktop/src/pill/live.ts
-    grep -q 'no_path_from_listening_to_done_without_an_intermediate_phase' desktop/src/pill/live.test.ts
-    grep -q 'every_phase_has_copy_in_every_tone' desktop/src/pill/live.test.ts
-    grep -q 'every_phase_renders_within_the_side_dock_strip' desktop/src/pill/live.test.ts
-    grep -q 'every_shipped_character_has_copy_and_art_for_every_phase' desktop/src/pill/live.test.ts
-    cd ${APP} && npm ci
-    npm test -- pill ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-D', prompt: 'Y5', branch: 'loop/y5-d-pill-physics-and-motion-from-the-parity-constants', gated: null,
-  title: 'Soft-body pill motion using Wispr\'s measured spring constants, with Reduce Motion respected',
-  preflight: `
-    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
-    cd ${APP} && npm ci && npm test -- motion
-  `,
-  spec: `
-    reference_wispr_parity_research P0 #2: "Soft-body pill physics (M · D).
-    Wispr uses \`motion\` springs \`stiffness:600 damping:35 restDelta:0.05\` for
-    snappy morphs and \`stiffness:300 damping:28\` for the slower one, plus
-    \`cubic-bezier(0.05,0.6,0.4,0.95)\` at 100 ms for state changes and
-    300-400 ms for expand/collapse. Yappy should go further: a squash-and-
-    stretch response on click/drag and a settle bounce on dock. Why: Wilson's
-    exact words — 'bounces when touched, feels soft not stiff'."
-
-    Do:
-      * \`desktop/src/pill/motion.ts\` — a hand-written critically-damped spring
-        integrator (about forty lines) exposing the two named springs and the
-        state-change easing, driven off the rAF loop the pill ALREADY runs
-        (ClassicPill.tsx:48-62, which smooths \`--level\` and parks itself at
-        rest). Do not add a motion library: the CSP blocks external hosts and
-        the parked-rAF discipline from the YV81 energy pass must survive.
-      * Squash-and-stretch on press and on drag release; a settle bounce on dock
-        (the drag machinery is \`pill/drag.ts\`, YV65).
-      * Every morph between the Y5-C phases uses the 100 ms state-change curve;
-        expand/collapse uses 300-400 ms. One table, in motion.ts, so no
-        component hardcodes a duration.
-      * REDUCE MOTION: \`ClassicPill.tsx:44-47\` already paints one calm static
-        frame under \`prefers-reduced-motion: reduce\`. All new motion must be
-        behind the same check, and the information (phase, numeral, progress)
-        must still be fully present in the static frame. Assert it.
-      * ENERGY: the loop must still park when at rest. YV81 removed busy timers
-        on purpose and YV24 idle-throttles canvases; a spring that never settles
-        is a 60 fps rAF forever. Assert the integrator reaches rest and stops
-        scheduling frames within a bounded number of ticks.
-
-    Tests \`desktop/src/pill/motion.test.ts\`, pure and deterministic (inject the
-    timestep, never use real time):
-      * \`spring_600_35_settles_within_the_expected_tick_budget\`
-      * \`spring_never_overshoots_past_the_soft_limit\`
-      * \`reduce_motion_returns_the_target_immediately\`
-      * \`integrator_reports_at_rest_and_stops\`
-      * \`no_duration_literal_outside_motion_ts\` — a source sweep over
-        desktop/src/pill.
-
-    Depends on Y5-A (the motion tokens), Y5-C (the phases to morph between).
-
-    PR body owes a screen recording of press, drag, dock and a phase morph, plus
-    the same four with Reduce Motion on.
-
-    What NOT to do:
-      - Do NOT add framer-motion, motion, or GSAP.
-      - Do NOT animate the trial numeral (Y2-B forbids it) or any other
-        informational text.
-      - Do NOT let the spring run while the pill is idle and off-screen.
-  `,
-  acceptance: `
-    test -f desktop/src/pill/motion.ts
-    test -f desktop/src/pill/motion.test.ts
-    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
-    grep -q 'damping: 35' desktop/src/pill/motion.ts
-    grep -q 'stiffness: 300' desktop/src/pill/motion.ts
-    grep -q 'reduce_motion_returns_the_target_immediately' desktop/src/pill/motion.test.ts
-    grep -q 'integrator_reports_at_rest_and_stops' desktop/src/pill/motion.test.ts
-    node -e "const d=require('./desktop/package.json').dependencies;process.exit(Object.keys(d).some(k=>/framer|^motion$|gsap|popmotion/.test(k))?1:0)"
-    cd ${APP} && npm ci
-    npm test -- pill/motion ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build           ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-E', prompt: 'Y5', branch: 'loop/y5-e-hover-hysteresis-and-alpha-hit-testing', gated: null,
-  title: 'The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about',
-  preflight: `
-    grep -q 'inset: -12px' desktop/src/float.css
-    cd ${APP} && npm ci && npm test -- hitbox
-  `,
-  spec: `
-    reference_wispr_parity_research P0 #3, and the reason it is ranked P0:
-    "an invisible \`inset: -12px\` alpha margin painted only in the expanded
-    state, and a ~0.004-alpha background so the panel is clickable while
-    invisible. Why: without it, an edge-docked pill oscillates expand/collapse
-    when the cursor dwells on the screen edge — Wispr shipped a comment
-    explaining they hit exactly this." §4.4 is titled "Hit-testing and hover
-    (the part that breaks naive implementations)" and scores Yap ❌ with the note
-    "Yap will hit this exact bug", plus 🟡 "NSPanel ignores margin clicks" on
-    alpha hit-testing.
-
-    Yap has half the machinery: \`ClassicPill.tsx:38-42\` publishes the capsule's
-    rect via \`watchPillHitbox\` (YV65) "so the panel only takes the cursor over
-    the pill itself; the transparent shadow margin stays click-through".
-
-    Do:
-      * The \`::before\` alpha margin at \`inset: -12px\`, painted ONLY while
-        expanded. Painted always, it makes a 12 px dead zone around an idle
-        pill; painted never, the boundary oscillates. The conditionality IS the
-        fix.
-      * \`rgba(0,0,0,0.004)\` background on the hot area so the box is clickable
-        while visually absent.
-      * Feed the expanded rect (capsule + margin) to \`watchPillHitbox\` so the
-        NSPanel's ignore-mouse-events region matches what CSS is painting. A
-        margin CSS believes in and the panel does not is worse than no margin.
-      * Hysteresis in the state machine, not only in CSS: expand on enter,
-        collapse only after the cursor has been outside the EXPANDED rect for a
-        debounce. Put the thresholds in motion.ts's table.
-
-    Tests \`desktop/src/pill/hitbox.test.ts\`, pure over a
-    \`hoverState(rect, cursorPath)\` reducer:
-      * \`dwell_at_the_dock_edge_produces_at_most_one_transition\` — the exact
-        acceptance the parity note specifies: "simulated pointer dwell at the
-        dock edge produces <=1 state transition". Drive a synthetic path that
-        crosses the collapsed boundary repeatedly by one pixel.
-      * \`collapsed_pill_has_no_margin_dead_zone\`
-      * \`published_hitbox_matches_the_painted_rect_in_both_states\`
-      * all three dock edges.
-
-    Depends on Y5-D.
-
-    What NOT to do:
-      - Do NOT paint the margin in the collapsed state.
-      - Do NOT fix oscillation with a long timeout. A 500 ms lag on expand makes
-        the pill feel dead; hysteresis is a geometry fix, not a delay.
-  `,
-  acceptance: `
-    grep -q 'inset: -12px' desktop/src/float.css
-    grep -qE 'rgba\\(0, *0, *0, *0?\\.004\\)' desktop/src/float.css
-    test -f desktop/src/pill/hitbox.test.ts
-    grep -q 'dwell_at_the_dock_edge_produces_at_most_one_transition' desktop/src/pill/hitbox.test.ts
-    grep -q 'collapsed_pill_has_no_margin_dead_zone' desktop/src/pill/hitbox.test.ts
-    grep -q 'published_hitbox_matches_the_painted_rect_in_both_states' desktop/src/pill/hitbox.test.ts
-    cd ${APP} && npm ci
-    npm test -- hitbox ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-F', prompt: 'Y5', branch: 'loop/y5-f-error-toasts-that-say-what-to-do', gated: null,
-  title: 'One error surface, one sentence per failure, one action — replacing raw strings and silent failures',
-  preflight: `
-    test -f desktop/src/toast.ts
-    grep -q 'errorAdvice' desktop/src/errors.ts
-    cd ${APP} && npm ci && npm test -- toast
-  `,
-  spec: `
-    \`errors.ts\` is the right foundation and only half the job. It converts a
-    rejection to a sentence (\`errorText\`, errors.ts:27-30) and falls back to
-    \`String(e)\` — which is a raw Rust error string in front of a user. Nearly
-    every Tauri command in Yap answers \`Result<_, String>\` (errors.ts:3-4 says
-    so), so \`String(e)\` is the common path, not the rare one.
-
-    Do:
-      * An error CATALOGUE: \`errorAdvice(code) -> { line, action }\` in
-        errors.ts, keyed on the structured codes the backend already returns
-        (\`license_required\` exists at errors.ts:38; Y1/Y3 add
-        \`mic_permission_required\`, \`silent_capture\`, \`cancelled\`). Every code
-        Yap can emit gets a line and, where there is one, a button. An unknown
-        code gets a generic line that still tells the user what to do (open the
-        support bundle sheet, which already exists:
-        src/support/SupportBundleSheet.tsx).
-      * Make the backend emit codes where it emits strings on the take path.
-        Do NOT boil the ocean: the take path, the paste path, the model path and
-        the permission path. List the ones you converted in the PR body and
-        leave the rest as strings with the generic advice.
-      * ONE toast implementation, \`desktop/src/toast.ts\`, replacing whatever
-        ad-hoc surfaces exist (audit them first and say in the PR body how many
-        you found — \`git grep -n "note\\|setNote\\|banner" desktop/src/App.tsx\`
-        is the starting point; Onboarding.tsx has its own \`note\` string).
-        Queue, dedupe by code, auto-dismiss with a duration proportional to
-        length, manual dismiss, and a cap so a storm cannot cover the app.
-      * Errors also reach the PILL as \`error\` phase (Y5-C). Both surfaces, one
-        catalogue: the pill shows the line, the main window adds the action.
-      * A FAILURE MUST NEVER BE SILENT. Add a test that sweeps the take path for
-        \`Err(...)\` returns that reach no emit and no toast. If a full sweep is
-        impractical, enumerate the take path's error returns explicitly in the
-        test and assert each is surfaced — an explicit list that must be updated
-        is better than a clever grep that proves nothing.
-
-    Tests: \`desktop/src/toast.test.ts\` (queue, dedupe, cap, duration) and
-    \`desktop/src/errors.test.ts\` extended (it exists, 1 case at errors.test.ts:6)
-    — every catalogued code has a non-empty line; no line contains a Rust type
-    name, \`Error(\`, \`unwrap\` or a file path.
-
-    What NOT to do:
-      - Do NOT show a raw error string. If you have nothing better, say "Yap
-        could not finish that take" and offer the support bundle.
-      - Do NOT add Sentry or PostHog. Local crash capture (crash.rs) is the
-        observability stack (feedback_queryguard).
-      - Do NOT stack more than the cap. Three visible toasts is a broken app.
-  `,
-  acceptance: `
-    test -f desktop/src/toast.ts
-    test -f desktop/src/toast.test.ts
-    grep -q 'errorAdvice' desktop/src/errors.ts
-    grep -q 'every_catalogued_code_has_a_human_line' desktop/src/errors.test.ts
-    grep -q 'no_line_leaks_a_rust_type_or_path' desktop/src/errors.test.ts
-    test 0 -eq "$(git grep -ci 'sentry\\|posthog' -- desktop | wc -l)"
-    cd ${APP} && npm ci
-    npm test -- toast  ; test $? -eq 0
-    npm test -- errors ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-J', prompt: 'Y5', branch: 'loop/y5-j-focus-names-announcements-and-contrast-floors', gated: null,
-  title: 'The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer',
-  preflight: `
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
-    cd ${APP} && npm ci && npm test -- a11y
-  `,
-  spec: `
-    PANEL 2026-09-12. This loop adds roughly thirteen pill phases and
-    twenty-one view states and not one item requires a focus ring, an
-    accessible name, an announcement or a contrast ratio. MEASURED at 4e8c9adf:
-      grep -rniE 'aria|screen ?reader|focus-visible|contrast|WCAG' over all item
-        files -> only prefers-reduced-motion hits
-      desktop/src/App.css — three focus-related selectors in 2,789 lines
-        (:957, :1408, :2397)
-      desktop/src/pill/ClassicPill.tsx:142-144 — one aria-label covering three
-        of the planned thirteen phases
-      only pill/MeetingBadge.tsx:53 has aria-live
-      desktop/src/App.tsx:2228 — a clickable <div className="banner warn">
-      desktop/src-tauri/src/float_pill.rs:355 \`.focused(false)\` + the
-        non-activating NSPanel: every pill affordance is mouse-only
-    Y5-A freezes the look while centralising every colour, so the one cheap
-    moment to fix contrast is the moment the plan forbids touching it. Hence a
-    separate item, after Y5-G's split and after the states exist.
-
-    Do:
-      * A contrast test over the token pairs in tokens.css: 4.5:1 for body text,
-        3:1 for large text and UI boundaries. A failing pair is a failed item,
-        not a TODO — adjust the token, and say which.
-      * Every state Y5-B added: its primary action is a real \`<button>\` and is
-        keyboard reachable; \`:focus-visible\` is styled once, globally.
-      * Every pill phase supplies an accessible name, and the pill root carries
-        \`aria-live="polite"\` so a state change is announced once, not on every
-        frame. Because the panel is non-activating, any affordance the pill
-        gains must ALSO be reachable from the main window or a binding — state
-        which, per affordance.
-      * Sweep the clickable divs (App.tsx:2228 and its siblings) into buttons.
-
-    What NOT to do:
-      - Do NOT add an accessibility library or a linter plugin to satisfy this.
-      - Do NOT put aria-live on the pill's frame-by-frame amplitude value.
-  `,
-  acceptance: `
-    test -f desktop/src/a11y/contrast.test.ts
-    grep -q 'every_token_pair_meets_its_contrast_floor' desktop/src/a11y/contrast.test.ts
-    grep -q 'every_phase_has_an_accessible_name' desktop/src/pill/live.test.ts
-    grep -rq 'aria-live' desktop/src/pill
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
-    test 0 -eq "$(grep -rn 'className="banner warn"' desktop/src --include=*.tsx | wc -l)"
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm test         ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-I', prompt: 'Y5', branch: 'loop/y5-i-vertical-dock-as-the-css-base', gated: null,
-  title: 'Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way',
-  preflight: `
-    grep -q 'data-bar-position' desktop/src/float.css
-    grep -q -- '--flow-bar-length' desktop/src/float.css
-    cd ${APP} && npm ci && npm test -- dock
-  `,
-  spec: `
-    THE MOST IMPORTANT ARCHITECTURAL NOTE IN THE PARITY RESEARCH, verbatim from
-    reference_wispr_parity_research (MUST-KNOW section, primary-sourced from the
-    extracted bundle): "Wispr's vertical bar is NOT a rotated horizontal capsule
-    — vertical/column layout is the CSS BASE and horizontal is the override,
-    with orientation-neutral tokens (\`$flow-bar-length\`/\`$flow-bar-thickness\`);
-    their first rotate-the-capsule attempt failed (their comment records the
-    '30x6-always-horizontal collapse bug'). Only the primary listening states
-    (ready/activePtt/activePopo) rotate into the strip — processing/error/
-    completion banners STAY horizontal even when side-docked (fixed-width labels
-    crush in a 30px column). Waveform inverts axis when docked (side dock = 2px
-    bars animating on X). Yap's current YV53/65 move-the-capsule approach is the
-    exact architecture Wispr abandoned — the design loop must rebuild with
-    vertical-as-base."
-
-    §4.2 gives the exact geometry table to build against, per state, with the
-    side-dock overrides. Use it as the golden table; it is [BUNDLE]-sourced:
-      resting 8x40 rgba(0,0,0,.5) 1px rgba(255,255,255,.5) border radius 6 ·
-      ready 30x50 solid radius 22.5 · activePtt 30x73 ·
-      activePopo 30x102.5 (+cancel/stop, row gap 8; padding 6px 0 on side docks) ·
-      processing 30x98 padding 12px 6px, STAYS HORIZONTAL in both docks ·
-      polishProcessing 136x30, on side docks column with label hidden and the
-      progress fill flipping bottom-up · polishCompleted 30x152, side dock
-      152x30 · error 30x91 stays horizontal · navigationActive 72x84 gap 4.
-
-    Do:
-      * Orientation-neutral tokens \`--flow-bar-length\` / \`--flow-bar-thickness\`
-        in tokens.css (Y5-A). Column layout is the BASE. \`[data-bar-position]\`
-        on the pill root supplies the bottom-dock horizontal override.
-      * Map every Y5-C phase onto the table: which rotate into the strip and
-        which stay horizontal. Yap has phases Wispr does not (blocked, gated,
-        transcribing); decide and DOCUMENT each one's orientation, with the
-        30 px-crush rule as the deciding test.
-      * The waveform inverts axis on a side dock (2 px bars animating on X).
-        ClassicPill.tsx drives 9 bars off a \`--level\` CSS var
-        (ClassicPill.tsx:20, :52) — that is already the right seam; make the
-        axis a token.
-      * A golden geometry test: for each of \`left|right|bottom\` x each phase,
-        assert the rendered bounding box matches the table, and that NO state
-        exceeds the 30 px strip on a side dock. This is verbatim the parity
-        note's own acceptance for P0 #1.
-
-    Tests \`desktop/src/pill/dock.test.ts\` with the table as a committed
-    fixture \`desktop/src/pill/dock-geometry.json\` so the numbers are reviewable
-    as data.
-
-    Depends on Y5-A, Y5-C, Y5-D, Y5-E. This item supersedes the YV53/65
-    move-the-capsule approach; delete that code path rather than leaving both.
-
-    What NOT to do:
-      - Do NOT rotate the horizontal capsule with a CSS transform. That is the
-        approach Wispr tried and abandoned, and their bug comment is the evidence.
-      - Do NOT force the banner states into the column. They crush; the research
-        says so explicitly and the golden table encodes it.
-      - Do NOT keep the old positioning code alongside the new base.
-    PANEL 2026-09-12, SUPERSEDED BY THE OWNER DECISION 2026-09-13 — THE
-    GEOMETRY TABLE BELONGS TO THE SHELL AND IS CHARACTER-INDEPENDENT. The panel
-    said "scope it to ClassicPill" because it read the two pills as two products
-    and expected one to be cut. Both ship (top of this file), so scoping the
-    table to one of them would have left the other with no dock contract at all.
-    The correct target is the PILL SHELL: the measured Wispr per-state box
-    (8x40 resting, 30x50 ready, 30x73, 30x102.5, 136x30 polishing ...) is the
-    size and orientation of the WINDOW CONTENT BOX for a phase, and every
-    character renders INSIDE that box. So:
-      * \`dock-geometry.json\` is the shell's table, keyed by phase x dock, with
-        NO style dimension in it. One table, forever, for every creature.
-      * A character declares only how it fills the box it is given — a pixel
-        character on an LCD pod scales or crops to the box, and a capsule paints
-        it. If a character cannot render a phase inside the box the table gives
-        it, that is a CHARACTER defect and the character's fallback covers it;
-        it is never a reason to fork the table.
-      * The golden test asserts the SHELL's boxes. The per-character sweep is
-        Y5-C's completeness table and Y5-K's registry contract test, not this one.
-      * Do not delete either renderer, and do not add a style dimension to the
-        fixture.
-
-  `,
-  acceptance: `
-    grep -q 'data-bar-position' desktop/src/float.css
-    grep -q -- '--flow-bar-length' desktop/src/tokens.css
-    grep -q -- '--flow-bar-thickness' desktop/src/tokens.css
-    test -f desktop/src/pill/dock-geometry.json
-    test 0 -eq "$(grep -c 'pill_style\\|pillStyle\\|classic\\|yappy' desktop/src/pill/dock-geometry.json)"
-    test -f desktop/src/pill/dock.test.ts
-    grep -q 'no_state_exceeds_the_thirty_pixel_strip_on_a_side_dock' desktop/src/pill/dock.test.ts
-    grep -q 'banner_states_stay_horizontal_in_every_dock' desktop/src/pill/dock.test.ts
-    grep -q 'waveform_axis_inverts_on_a_side_dock' desktop/src/pill/dock.test.ts
-    test 0 -eq "$(grep -c 'transform: rotate' desktop/src/float.css)"
-    cd ${APP} && npm ci
-    npm test -- dock ; test $? -eq 0
-    npm test         ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-K', prompt: 'Y5', branch: 'loop/y5-k-pill-character-system-and-habitat-layer', gated: null,
-  title: 'The pill becomes a pluggable character system, and the habitat comes back as its habitat layer',
-  preflight: `
-    test -f desktop/src/pill/characters/registry.ts
-    test -f desktop/src/pill/characters/characters.test.ts
-    test -d desktop/src/home/habitat
-    cd ${APP} && npm ci && npm test -- characters
-  `,
-  spec: `
-    OWNER DECISION 2026-09-13 (Wilson), and it REINSTATES \`Y5-H\`, which the
-    panel killed on a two-seat convergence. Wilson, verbatim: "I thought we were
-    gonna develop it and then make more characters and make it more flexible ...
-    there's a classic pill and there's a yappy pill and there's gonna be
-    different pills with the different creatures that are coming."
-
-    The panel's cost objection was CORRECT and is not waved away: a second pill
-    style doubles the render and test surface of every pill item, and Y5-C alone
-    was 13 phases x 2 styles x 3 docks. The remedy is structural. The shell
-    stops knowing about creatures and the creatures stop knowing about the
-    shell, so the matrix stops multiplying.
-
-    THIS ITEM RUNS LAST IN THIS FILE ON PURPOSE: shell first (Y5-A tokens, Y5-C
-    phases, Y5-D motion, Y5-E hit-testing, Y5-I dock geometry), then the
-    characters, then the habitat. Do not start it before Y5-I has landed — the
-    shell's box contract is the thing the character interface is defined
-    against.
-
-    (1) THE SHELL / CHARACTER SEAM.
-      * \`desktop/src/pill/characters/types.ts\` — ONE interface. A character is
-        \`{ id, label, render(frame) }\` where \`frame\` is what the shell already
-        computed: \`{ phase, tone, level, box: {w,h}, dock, reducedMotion }\`.
-        A character receives a BOX and paints inside it. It never reads
-        \`pill_style\`, never reads settings, never reads license state, never
-        positions a window, never knows a dock exists beyond the axis hint in
-        \`frame\`.
-      * \`registry.ts\` — \`registerCharacter()\` + \`characters()\`. The shell
-        resolves \`settings.pill_style\` to a registered id ONCE, at the mount
-        point, and falls back to \`classic\` for an unknown id rather than
-        rendering nothing. \`pill_style\` stays a free string in
-        \`AppSettings\` (lib.rs:234-235, default "classic", lib.rs:366/411) —
-        do NOT turn it into a Rust enum: a new creature must be shippable
-        without touching Rust.
-      * PORT, do not rewrite: \`ClassicPill.tsx\` and \`YappyPill.tsx\` become
-        \`characters/classic/\` and \`characters/yappy/\` with their phase art and
-        copy as DATA, and everything that is not the creature — the capsule
-        chrome, the waveform placement, dock geometry, hover hysteresis, the
-        license chip placement, aria names — moves UP into the shell. The two
-        characters must end up with NO duplicated shell logic between them; that
-        deduplication is the whole point and it is measurable (see acceptance).
-      * A NEW CREATURE IS A NEW MODULE PLUS A FIXTURE ROW, WITH NO SHELL CHANGE.
-        Prove it: the item ships a third, deliberately minimal character
-        (\`characters/example/\`) whose only purpose is to be the proof that the
-        seam holds, and the contract test registers it with zero shell edits.
-
-    (2) THE TEST MATRIX STOPS DUPLICATING.
-      * The shell owns phase x dock. That suite runs ONCE, character-agnostic,
-        against \`dock-geometry.json\` (Y5-I).
-      * Each registered character is swept by ONE data-completeness contract
-        test over the registry: every phase in the \`LivePhase\` union, in every
-        tone (rude|friendly|rose, live.ts:29), has art and copy; nothing exceeds
-        the box it was handed; \`imageSmoothingEnabled\` is false wherever a
-        character paints to a canvas.
-      * Registering an INCOMPLETE character must turn that contract test RED.
-        That is the test's reason to exist and it is the item's mutation proof.
-
-    (3) THE HABITAT LAYER — the reinstated \`Y5-H\`, with its design note
-        preserved in docs/loop/DEFERRED.md §1. \`desktop/src/home/YappyHouse.tsx\`
-        is 919 lines of working real-clock canvas scene with an ambient
-        director; this is a REFACTOR PLUS A LAYER, not a rewrite.
-      * \`desktop/src/home/habitat/\` — the habitat is the CHARACTER'S WORLD, and
-        it is selected by the same registered character id, so a new creature
-        brings its own pod. Split what exists into: the director (clock,
-        routines, intent pathing), the scene (pod interior, dithered depth,
-        parallax), and the character's own idle/reaction sprites, which come
-        from the SAME character module the pill uses — one creature, two
-        surfaces, one source of art.
-      * EVENT-DRIVEN REACTIONS, from the design note: a take starting, a paste
-        landing, a model finishing its download. The habitat subscribes to the
-        same events the pill does; it never polls.
-      * Routines on a real clock and intent pathing rather than a random walk.
-      * AESTHETIC LOCK, unchanged and binding (top of this file): pixel art,
-        chunky pixels, \`imageSmoothingEnabled = false\`, limited retro palette,
-        Tamagotchi / Bitzee. Hand-coded. NOT smooth vector. No angled "angry"
-        eyebrows. Paper/origami is REJECTED.
-      * Wilson's taste is the real gate on the ART and cannot be automated in a
-        build-first pass — which is why this item's acceptance gates the
-        STRUCTURE (the seam, the completeness sweep, the deduplication, the
-        no-shell-change proof) and the PR body carries the screenshots and a
-        recording of the habitat for him to judge. Say that in the PR body.
-
-    Depends on Y5-A, Y5-C, Y5-D, Y5-E, Y5-I. Consumes PERM-C's complete
-    \`LivePhase\` union.
-
-    What NOT to do:
-      - Do NOT delete either shipped character. Both ship.
-      - Do NOT let a character read settings, license state or dock position
-        directly. Everything it needs arrives in \`frame\`.
-      - Do NOT add a style dimension to \`dock-geometry.json\`.
-      - Do NOT turn \`pill_style\` into a Rust enum or a TypeScript union of two
-        literals — the whole point is that the next creature is additive.
-      - Do NOT rewrite YappyHouse from scratch, and do not lose its ambient
-        director.
-      - Do NOT smooth the pixels.
-  `,
-  acceptance: `
-    test -f desktop/src/pill/characters/types.ts
-    test -f desktop/src/pill/characters/registry.ts
-    test -d desktop/src/pill/characters/classic
-    test -d desktop/src/pill/characters/yappy
-    test -d desktop/src/pill/characters/example
-    test -f desktop/src/pill/characters/characters.test.ts
-    test -d desktop/src/home/habitat
-    test -f desktop/src/home/habitat/habitat.test.ts
-    grep -q 'registerCharacter' desktop/src/pill/characters/registry.ts
-    grep -q 'every_registered_character_covers_every_phase_in_every_tone' desktop/src/pill/characters/characters.test.ts
-    grep -q 'a_character_never_exceeds_the_box_the_shell_hands_it' desktop/src/pill/characters/characters.test.ts
-    grep -q 'a_new_creature_needs_no_shell_change' desktop/src/pill/characters/characters.test.ts
-    grep -q 'imageSmoothingEnabled' desktop/src/pill/characters/characters.test.ts
-    grep -q 'the_director_runs_on_the_real_clock_not_a_random_walk' desktop/src/home/habitat/habitat.test.ts
-    grep -q 'the_habitat_reacts_to_take_paste_and_model_events' desktop/src/home/habitat/habitat.test.ts
-    test 0 -eq "$(grep -rc 'pill_style\\|pillStyle' desktop/src/pill/characters | grep -v ':0$' | wc -l | tr -d ' ')"
-    test 0 -eq "$(grep -rl 'data-bar-position' desktop/src/pill/characters | wc -l | tr -d ' ')"
-    test 0 -eq "$(grep -c 'classic\\|yappy' desktop/src/pill/dock-geometry.json)"
-    cd ${APP} && npm ci
-    npm test -- characters ; test $? -eq 0
-    npm test -- habitat    ; test $? -eq 0
-    npm test               ; test $? -eq 0
-    npx tsc --noEmit       ; test $? -eq 0
-    npm run build          ; test $? -eq 0
-    printf '\\nregisterCharacter({ id: "mutant", label: "mutant", render: () => null });\\n' >> src/pill/characters/registry.ts
-    npm test -- characters ; test $? -ne 0
-    cd .. && git checkout -- desktop/src/pill/characters/registry.ts
-    git diff --exit-code -- desktop/src/pill/characters/registry.ts
-  `,
-})
-
-// ── 30-y6-end-to-end-wiring.mjs ───────────────────────────────────────────
-// Y6 — END TO END. Wilson: "we got to really think about this thing end to end."
-// The seams between the features, which is where a product that works in pieces
-// still feels broken.
-//
-// AUDIT at 4e8c9adf. SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-// Gate, from docs/loop/HARNESS.md "The gate", run from the worktree's app dir:
-//   npx tsc --noEmit · npm test · npm run build ·
-//   cargo build -p yap-polish --release + stage src-tauri/binaries/yap-polish-<triple> ·
-//   cargo test -p yap-polish --release ·
-//   cargo clippy --all-targets --features custom-protocol (in src-tauri) ·
-//   cargo test --features custom-protocol (in src-tauri).
-// cargo fmt is INFORMATIONAL and exits 1 on unmodified main — never reformat to silence it.
-//
-// NEVER touch the bundle identifier (com.wilsonguenther.wilson-voice) or the data
-// directory (WilsonVoice). Renaming the id resets every macOS TCC grant; renaming
-// the data dir orphans the SQLite history.
-
-ITEMS.push({
-  id: 'UPD-A', prompt: 'Y6', branch: 'loop/upd-a-updater-endpoint-that-can-actually-serve', gated: null,
-  title: 'The updater points at an endpoint that can serve a private repo — today it points at a dead URL',
-  preflight: `
-    test 0 -eq "$(grep -c 'releases/latest/download/latest.json' desktop/src-tauri/tauri.conf.json)"
-    test -f desktop/src-tauri/tests/updater_endpoint.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test updater_endpoint
-  `,
-  spec: `
-    MEASURED, desktop/src-tauri/tauri.conf.json plugins.updater.endpoints:
-      "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
-    and the repo's own history records why that cannot work: commit 2eabf33
-    "site: serve the DMG from Forge — repo went private, GitHub release assets
-    are no longer publicly downloadable", then 734aa8c "YV83 site + DMG served
-    from Vercel, past Forge's 25MB edge cap". The DMG moved twice and the
-    updater manifest URL did not move with it. docs/loop/HARNESS.md records the
-    repo as PUBLIC again as of 2026-09-12 — which means the URL may resolve
-    today and will silently die the next time the repo is flipped private
-    (project_github_actions_public_window is an explicit, recurring procedure).
-    An updater whose correctness depends on repo visibility is not an updater.
-
-    Do:
-      * Point \`plugins.updater.endpoints\` at the same host that serves the DMG,
-        so the manifest and the asset can never disagree about where the build
-        is. Read docs/DEPLOY-SITE.md and site/ for the current host before
-        choosing, and state in the PR body which host you chose and why.
-      * Keep the GitHub URL as a SECOND endpoint, after the primary. Tauri tries
-        endpoints in order, so a private-repo window degrades to the primary
-        instead of failing.
-      * The signing pubkey stays exactly as it is
-        (plugins.updater.pubkey, verified present at 4e8c9adf — a base64
-        minisign key, not a placeholder). Never regenerate it in this item: a
-        new keypair makes every installed copy unable to verify an update, and
-        project_yap_build_state records one keypair regeneration already (YV82).
-      * \`src/updater.ts\` is already correct in shape — check-only, no auto
-        install, DEBUG not ERROR when there is no manifest (its own doc says
-        so). Do not change its contract. Add ONE thing: when every endpoint
-        fails, the manual "Check for updates" button must say which endpoint was
-        tried, because a silent "you're up to date" on a dead endpoint is the
-        failure this item exists to prevent.
-      * \`tests/updater_endpoint.rs\`: the config parses; there are >= 2
-        endpoints; the primary is not a github.com release-asset URL; the pubkey
-        is non-empty and is not the string "PLACEHOLDER" or a bare newline; and
-        \`createUpdaterArtifacts\` is still true.
-
-    What NOT to do:
-      - Do NOT regenerate the updater keypair.
-      - Do NOT make the updater install on startup. User-triggered only
-        (src/updater.ts's own contract: "USER-TRIGGERED ONLY").
-      - Do NOT print any key material into a log, a test name or the PR body.
-  `,
-  acceptance: `
-    # PANEL: the old line anchored the URL to end-of-line, so it passed only
-    # while that endpoint happened to be last with no trailing comma. Parse it.
-    node -e "const e=require('./desktop/src-tauri/tauri.conf.json').plugins.updater.endpoints; process.exit(e.length>=2 && !/github\\.com\\/.*\\/releases\\//.test(e[0]) ? 0 : 1)"
-    node -e "const u=require('./desktop/src-tauri/tauri.conf.json').plugins.updater; process.exit(u.pubkey && u.pubkey.length>40 ? 0 : 1)"
-    test -f desktop/src-tauri/tests/updater_endpoint.rs
-    grep -q 'at_least_two_endpoints' desktop/src-tauri/tests/updater_endpoint.rs
-    grep -q 'primary_endpoint_is_not_a_github_release_asset' desktop/src-tauri/tests/updater_endpoint.rs
-    grep -q 'pubkey_is_present_and_not_a_placeholder' desktop/src-tauri/tests/updater_endpoint.rs
-    grep -q 'createUpdaterArtifacts' desktop/src-tauri/tests/updater_endpoint.rs
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-    cd src-tauri && cargo test --features custom-protocol --test updater_endpoint ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'UPD-B', prompt: 'Y6', branch: 'loop/upd-b-publish-the-updater-triple-and-keep-a-rollback', gated: null,
-  title: 'Publish latest.json + .app.tar.gz + .sig to the host the updater now points at, and keep the previous build',
-  preflight: `
-    test -x scripts/release-local.sh
-    grep -q 'latest.json' docs/DEPLOY-SITE.md
-    grep -q 'app.tar.gz' docs/DEPLOY-SITE.md
-  `,
-  spec: `
-    PANEL 2026-09-12, two seats independently. UPD-A repoints
-    plugins.updater.endpoints at "the same host that serves the DMG" — and
-    nothing publishes a manifest there. MEASURED at 4e8c9adf:
-      docs/DEPLOY-SITE.md:40-46  the staging block copies *.html *.css *.woff2 +
-        vercel.json and one \`gh release download --pattern '*.dmg'\`. No
-        latest.json, no .app.tar.gz, no .sig.
-      .github/workflows/release.yml:91-120  the ONLY producer of the updater
-        manifest and the minisign .sig — and Actions is disabled account-wide
-        (docs/loop/HARNESS.md, CI mode: the expected answer is \`local\`).
-      tauri.conf.json:42 createUpdaterArtifacts true; :66-69 the endpoint and
-        the pubkey.
-    macOS's updater consumes the .app.tar.gz plus its .sig, not the DMG, so
-    serving the DMG at that host is necessary and insufficient. Left as is,
-    every installed copy reports "up to date" forever — src/updater.ts logs
-    DEBUG, not ERROR, when there is no manifest — and a security fix reaches
-    nobody. There is also no rollback: no known-good DMG retained on the host.
-
-    Do:
-      * \`scripts/release-local.sh\`: build, sign with SEC-A's identity,
-        notarize, staple, emit Yap.app.tar.gz + .sig + latest.json with
-        TAURI_SIGNING_PRIVATE_KEY, and stage all four next to the DMG.
-      * Amend docs/DEPLOY-SITE.md's staging block to copy all four.
-      * Verify the LIVE endpoint at the end of a release: fetch latest.json over
-        the network and verify the .sig against the pubkey already in
-        tauri.conf.json. Offline, skip with a NAMED reason — never pass quietly.
-      * Keep the previous DMG + manifest on the host as the documented rollback,
-        and write the downgrade steps into docs/RELEASE.md.
-      * Until a manifest is actually published, the updater check ships DISABLED
-        rather than pointed at a 404. Say which state shipped in the PR body.
-
-    Runs immediately after UPD-A, whose config change is inert without it.
-  `,
-  acceptance: `
-    test -x scripts/release-local.sh
-    grep -q 'set -euo pipefail' scripts/release-local.sh
-    grep -q 'TAURI_SIGNING_PRIVATE_KEY' scripts/release-local.sh
-    grep -q 'app.tar.gz' scripts/release-local.sh
-    grep -q 'latest.json' docs/DEPLOY-SITE.md
-    grep -q 'app.tar.gz' docs/DEPLOY-SITE.md
-    grep -q 'rollback' docs/RELEASE.md
-    test 0 -eq "$(grep -c 'TAURI_SIGNING_PRIVATE_KEY=' scripts/release-local.sh)"
-    bash -n scripts/release-local.sh ; test $? -eq 0
-    ./scripts/release-local.sh --verify-endpoint-or-name-the-reason ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y6-A', prompt: 'Y6', branch: 'loop/y6-a-onboarding-that-ends-in-a-working-dictation', gated: null,
-  title: 'Onboarding ends with one successful pasted dictation, or it tells you exactly what is missing',
-  preflight: `
-    grep -q 'first_paste\\|firstPaste' desktop/src/Onboarding.tsx
-    cd ${APP} && npm ci && npm test
-  `,
-  spec: `
-    MEASURED: \`src/Onboarding.tsx:41\`
-    \`STEP_ORDER = ["welcome","permissions","calibration","done"]\`. Calibration
-    records a sample; nothing ever pastes. So a user finishes onboarding without
-    having seen Yap's one and only trick work, and the four things that can
-    break it — microphone TCC, Accessibility TCC, a missing ASR model, a missing
-    paste target — each fail later, separately, with no context.
-
-    Add a final step: TRY IT. The user clicks into a real text field inside the
-    Yap window, holds the hotkey, speaks, and watches the text arrive. Then:
-      * SUCCESS -> the done step, and mark \`onboarded: true\` (lib.rs:420) only
-        here. Today \`onboarded\` is set without any proof the app works.
-      * FAILURE -> name the stage that failed, using PERM-E's permission health
-        and Y5-F's error catalogue. Four distinct dead ends, four distinct
-        screens, each with the one button that fixes it:
-          no mic grant -> PERM-B's denied screen
-          no Accessibility grant -> the Accessibility deep link
-          no model -> the model download (ModelSetup.tsx)
-          paste refused -> explain the paste target and offer copy-to-clipboard
-            instead (the clipboard path exists; \`auto_paste\` is a setting,
-            lib.rs:405)
-      * A skip is allowed and must be honest: "Skip for now" leaves
-        \`onboarded\` true but raises the permission health row until it works.
-
-    Wispr ships 92 i18n keys for this one flow ("Try it yourself", \`tiy_*\`,
-    reference_wispr_parity_research §2.8 [BUNDLE], scored 🟡 for Yap as
-    "calibration step"). Yap does not need 92 strings; it needs the moment.
-
-    Also fix the ordering hazard already in the file: the model may still be
-    downloading when the user reaches calibration, and the step handles it by
-    WAITING with a ribbon (Onboarding.tsx:~340, YV54). Reuse that exact pattern
-    for the try-it step rather than inventing a second waiting affordance.
-
-    Tests: extract the step machine to \`desktop/src/onboarding.ts\`
-    (\`nextStep(step, outcome)\`) with \`onboarding.test.ts\` covering: the happy
-    path; each of the four failures routing to its own screen; skip; and
-    \`onboarded_is_only_set_after_a_success_or_an_explicit_skip\`.
-
-    Depends on PERM-B, PERM-E, Y5-F.
-
-    What NOT to do:
-      - Do NOT paste into another application during onboarding. The target is a
-        field inside Yap's own window; pasting into whatever was focused before
-        onboarding is a surprise and a paste-target violation (YV21).
-      - Do NOT set \`onboarded: true\` on mount.
-  `,
-  acceptance: `
-    test -f desktop/src/onboarding.ts
-    test -f desktop/src/onboarding.test.ts
-    grep -q 'onboarded_is_only_set_after_a_success_or_an_explicit_skip' desktop/src/onboarding.test.ts
-    grep -qE '"try-it"' desktop/src/onboarding.ts
-    test 4 -le "$(grep -c 'case ' desktop/src/onboarding.ts)"
-    cd ${APP} && npm ci
-    npm test         ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'PRIV-A', prompt: 'Y6', branch: 'loop/priv-a-crash-reporting-stays-local-and-says-so', gated: null,
-  title: 'Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever',
-  preflight: `
-    test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test no_outbound
-  `,
-  spec: `
-    \`src-tauri/src/crash.rs\` (777 lines, YV64) is local crash capture with a
-    committed fixture (tests/fixtures/crash/wilson-voice-crash.ips), and the
-    support bundle has redaction tests
-    (tests/support_bundle_redaction.rs, tests/support_bundle_contents.rs).
-    \`git grep -i "sentry|posthog" -- desktop\` returns nothing. This item keeps
-    it that way and turns the claim into a test, because it is a shipped
-    marketing claim and the sharpest one Yap has.
-
-    reference_wispr_parity_research §5.2 records the claim and the missing
-    proof, verbatim: "Audio never leaves the machine ... Assert it: a test that
-    fails if the dictation path opens any outbound connection (already queued as
-    P3.13)". And: "No telemetry — local-only crash capture (YV64). Wispr ships
-    PostHog + Sentry + Segment. Name it."
-
-    Do:
-      * \`tests/no_outbound_on_the_dictation_path.rs\`:
-        - a SOURCE sweep asserting no module on the take path (record, vad,
-          transcription, asr_engine, dictation, polish, polish_protocol, paste,
-          paste_tx, focus, snippets, db) references an HTTP client, a socket or
-          a URL literal. Pattern AND scope, both named in the test.
-        - a DEPENDENCY sweep: the modules above must not import the HTTP client
-          crate at all. Model-download code may; the take path may not. If the
-          crate graph makes that unprovable by grep, state so and assert the
-          narrower thing you CAN prove, naming the gap.
-        - an assertion that the ONLY network call sites in the whole crate are
-          the model download, the revocation list refresh and the updater
-          check — an explicit allowlist by file and function that a new call
-          site forces you to update.
-      * \`crash.rs\` completeness: a crash report must never contain transcript
-        text, a file path inside the user's home beyond the app's data dir, or a
-        license key. Extend the redaction tests with a report synthesized to
-        contain all three and assert all three are gone.
-      * Nothing in crash.rs may upload. The support bundle is produced for the
-        USER to send; assert there is no send path.
-      * Update PRIVACY.md to state the claim in the exact words the test proves,
-        and add the test's name to the doc so the claim is traceable. Do not
-        soften the claim and do not overstate it: the model download, the
-        revocation refresh and the updater DO talk to the network, and PRIVACY.md
-        must say which three and that none of them carry audio or text.
-
-    What NOT to do:
-      - Do NOT add Sentry, PostHog, Segment or any analytics SDK.
-      - Do NOT add an opt-in telemetry toggle. There is no telemetry to toggle.
-      - Do NOT claim in PRIVACY.md that Yap makes no network calls at all. Three
-        calls exist and naming them is what makes the rest credible.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    grep -q 'only_three_network_call_sites_exist' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    grep -q 'the_take_path_has_no_url_literal' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    grep -q 'no_send_path_in_crash_or_support' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    grep -q 'no_outbound_on_the_dictation_path' PRIVACY.md
-    test 0 -eq "$(git grep -ci 'sentry' -- desktop | wc -l)"
-    test 0 -eq "$(git grep -ci 'posthog' -- desktop | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test no_outbound_on_the_dictation_path ; test $? -eq 0
-    cargo test --features custom-protocol --test support_bundle_redaction          ; test $? -eq 0
-    cargo test --features custom-protocol --test support_bundle_contents           ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y6-B', prompt: 'Y6', branch: 'loop/y6-b-menu-bar-is-a-real-surface', gated: null,
-  title: 'The menu bar becomes a usable surface: state, the last transcript, hide-for-an-hour, quit',
-  preflight: `
-    grep -q 'hide_for_an_hour\\|hideForAnHour' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test tray_menu
-  `,
-  spec: `
-    Yap has a tray (YV26) and \`sync_tray\` (lib.rs:4468). Wispr's status menu,
-    from reference_wispr_parity_research §2.2 [BUNDLE] \`hub_status_menu_*\`:
-    "Formatting options · Languages · Microphone · Paste last transcript ·
-    Transcript history · Settings · Hide for 1 hour · Show all", against which
-    Yap scores 🟡 "tray menu (YV26)"; and §2.2 scores "Hide the bar" 🟡.
-
-    Ship the subset that is real today and skip the rest:
-      * State header (SEC-B / Y2-E already add the license line here — build on
-        it, do not duplicate).
-      * Paste last transcript. The command EXISTS — \`paste_last_transcript\`
-        (lib.rs:2714) with a global binding (shortcuts.rs:86) — and is not in
-        the menu. One line to expose, and it is the highest-value item on the
-        list.
-      * Copy last transcript. Missing entirely
-        (reference_wispr_parity_research §2.1 scores it ❌). Add the command and
-        the menu item; it is the clipboard sibling of the paste path and must
-        use the same receipt-sequenced discipline (YV39) so it cannot race
-        a paste.
-      * Transcript history -> focus the main window on the History view.
-      * Settings -> focus the main window on Settings.
-      * HIDE THE PILL FOR ONE HOUR, and "show it now". \`show_floating_pill\` is
-        a persistent boolean (lib.rs:406); a temporary hide is a different thing
-        and needs a deadline that survives nothing (not the setting, not a
-        restart — a restart shows the pill again, which is the correct and
-        forgiving behaviour). Say that in the doc comment.
-      * Quit, which must run the existing exit drain (there is one — the meeting
-        path has \`ABANDONED_FOR_EXIT\`, transcription.rs:84) rather than killing
-        the process mid-take.
-
-    \`sync_tray\` stays the ONLY place the tray is rebuilt. Keep
-    \`tests/tray_hotkey_no_collision.rs\` green.
-
-    Tests \`tests/tray_menu.rs\`: every menu item maps to a registered command;
-    no item is unreachable; hide-for-an-hour expires; a restart during the hide
-    window shows the pill; quit drains.
-
-    Depends on Y2-E.
-
-    What NOT to do:
-      - Do NOT add Languages or Formatting submenus. Multi-language is Y10 and
-        an empty submenu is worse than no submenu.
-      - Do NOT make hide-for-an-hour persist across a restart.
-  `,
-  acceptance: `
-    grep -q 'fn copy_last_transcript' desktop/src-tauri/src/lib.rs
-    grep -qE 'hide_for_an_hour' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/tray_menu.rs
-    grep -q 'every_menu_item_maps_to_a_registered_command' desktop/src-tauri/tests/tray_menu.rs
-    grep -q 'a_restart_during_the_hide_window_shows_the_pill' desktop/src-tauri/tests/tray_menu.rs
-    grep -q 'quit_runs_the_exit_drain' desktop/src-tauri/tests/tray_menu.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test tray_menu                ; test $? -eq 0
-    cargo test --features custom-protocol --test tray_hotkey_no_collision ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y6-C', prompt: 'Y6', branch: 'loop/y6-c-paste-target-and-secure-input-end-to-end', gated: null,
-  title: 'The paste lands in the app you dictated into, or it does not paste — including secure-input fields',
-  preflight: `
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test paste_target_e2e
-  `,
-  spec: `
-    This is the property Yap can claim and Wispr's docs never do
-    (reference_wispr_parity_research §5.2: "Paste goes only to the app you
-    dictated into ... This is a security property Wispr's docs never claim").
-    The machinery exists — \`focus.rs\` (342), \`paste.rs\` (557),
-    \`paste_tx.rs\` (641, receipt-sequenced, YV39),
-    \`secure_input.rs\` (395) — and yap8's M1 was an auto-paste-target fix. What
-    is missing is one end-to-end test that the whole chain holds under the cases
-    that actually happen.
-
-    Cover, each as a named test in \`tests/paste_target_e2e.rs\`:
-      * The focused app changes between the hold and the paste (the user
-        cmd-tabs while Yap is transcribing). The paste must NOT go to the new
-        app. It must be held, offered, or dropped with a message — pick one,
-        say which in the doc comment, and make the pill say it (Y5-C's \`pasting\`
-        phase and Y5-F's catalogue).
-      * The focused app QUITS between the hold and the paste.
-      * The target is a SECURE INPUT field (a password box).
-        \`secure_input.rs\` exists for this; assert Yap refuses to paste, says
-        why, and does not leave the text on the clipboard either — a password
-        field's dictation sitting in the clipboard is a worse outcome than a
-        refused paste.
-      * Accessibility is granted but the target refuses synthesized ⌘V (some
-        Electron and Java apps do). Fall back to the clipboard with an explicit
-        message, never silently.
-      * \`auto_paste: false\` (a real setting, lib.rs:405): the text goes to the
-        clipboard and the pill says so. Assert no keystroke is synthesized.
-      * A long take (Y3) whose paste arrives minutes after the hold: the target
-        check must be re-run at PASTE time, not cached from hold time.
-      * Two takes in quick succession cannot interleave their pastes. YV39's
-        receipts exist for exactly this; assert ordering.
-
-    Where a case cannot be driven headlessly, drive the decision function and
-    say in the PR body which cases were proven by test and which by a named
-    manual check with a screenshot. Do not claim a test that does not exist —
-    a false capability claim is a blocking finding.
-
-    Depends on Y5-C, Y5-F, Y3-B.
-
-    What NOT to do:
-      - Do NOT paste into a target that was not the hold target.
-      - Do NOT leave dictated text on the clipboard after a refused secure-input
-        paste.
-      - Do NOT cache the target from hold time for a long take.
-    PANEL 2026-09-12 — DECIDED, do not leave this to a doc comment. The first
-    draft said the orphaned text "must be held, offered, or dropped with a
-    message — pick one, say which in the doc comment". Those are three different
-    products and the most consequential of the three was not in the plan's open
-    decisions. It matters more after Y3-B, because the normal case becomes: the
-    user stops talking, switches app while the decode runs, and the take has
-    nowhere to go (paste.rs:99 \`is_same_paste_target\`, :186-192 samples the
-    CURRENT frontmost app immediately before the synthesized paste, :232 "paste
-    not confirmed").
-    THE ANSWER IS HELD AND OFFERED. The text parks in the pill with ONE key that
-    inserts it wherever the user is now, plus a History row. It is never
-    silently clipboard-only behind a two-second toast, and it is never dropped —
-    twelve minutes of talking is not a thing this app throws away. Name the
-    test \`a_long_take_whose_target_moved_is_held_and_insertable\`, and state the
-    same terminal state in Y3-B's and Y3-C's pill copy so the three agree.
-    Wilson can override the choice; a builder cannot.
-
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/paste_target_e2e.rs
-    grep -q 'focus_changed_between_hold_and_paste_does_not_paste_to_the_new_app' desktop/src-tauri/tests/paste_target_e2e.rs
-    grep -q 'secure_input_refuses_and_leaves_no_clipboard_residue' desktop/src-tauri/tests/paste_target_e2e.rs
-    grep -q 'target_is_rechecked_at_paste_time_for_a_long_take' desktop/src-tauri/tests/paste_target_e2e.rs
-    grep -q 'two_takes_cannot_interleave_their_pastes' desktop/src-tauri/tests/paste_target_e2e.rs
-    grep -q 'auto_paste_false_synthesizes_no_keystroke' desktop/src-tauri/tests/paste_target_e2e.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test paste_target_e2e ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'DB-C', prompt: 'Y6', branch: 'loop/db-c-history-search-and-export-hold-up', gated: null,
-  title: 'History, FTS search and export hold up at real volume, and Clear History still destroys the words',
-  preflight: `
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test history_at_volume
-  `,
-  spec: `
-    \`db.rs\` is 3,531 lines: SQLite WAL + FTS5, a dictionary, snippets, a
-    scratchpad table (db.rs:648), insights rollups, and YV78's secure delete
-    ("Clear history actually destroys the words — secure_delete, FTS rebuild,
-    VACUUM", commit 16e2f71). History is also the surface that must keep working
-    forever past the trial — \`KEEP_FOREVER_LINE\` in src/license/status.ts is a
-    promise the app makes in writing, and lib.rs:1104-1106 lists history,
-    search and export as things the license gate never touches.
-
-    Prove it at volume, in \`tests/history_at_volume.rs\`:
-      * Seed 10,000 takes with realistic text lengths (including one 4,000-word
-        long-form take from Y3). Assert: the History view's first page query is
-        bounded (a LIMIT, not a full scan); FTS search of a common word returns
-        in a bounded time; and the day-series insights query does not scan the
-        whole table.
-      * Pagination correctness: no duplicated and no skipped row across pages
-        with takes sharing a timestamp. An ORDER BY on a non-unique column is
-        the classic bug here; assert a tiebreaker exists.
-      * Export: full export of 10,000 rows streams rather than building one
-        string in memory, and the export contains no license key and no absolute
-        home path.
-      * YV78 regression: after Clear History, the FTS index holds no residue for
-        a word that was present, and the DB file has been VACUUMed. Assert the
-        WORD is gone from the index, not merely that the row count is zero.
-      * The scratchpad table (db.rs:648, :2667-2721) is covered too: it is
-        user-typed text (db.rs:1191 classifies it as such) and Clear History must
-        make a deliberate, documented choice about it. Say which and test it.
-      * Migration idempotence is already covered
-        (tests/db_migration_idempotent.rs) — keep it green and extend it to any
-        migration this item adds.
-
-    Depends on nothing in this file; can run early. Y3's long takes make the
-    4,000-word case real rather than synthetic, so order it after Y3-B if the
-    lane allows.
-
-    What NOT to do:
-      - Do NOT add an index without measuring. Say what each new index costs on
-        insert; the take path is latency-critical (latency.rs instruments it).
-      - Do NOT gate history, search or export behind the license under any
-        circumstance.
-      - Do NOT write transcript text into any log while testing.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/history_at_volume.rs
-    grep -q 'first_page_query_is_bounded' desktop/src-tauri/tests/history_at_volume.rs
-    grep -q 'pagination_has_a_tiebreaker_and_never_duplicates_a_row' desktop/src-tauri/tests/history_at_volume.rs
-    grep -q 'clear_history_leaves_no_fts_residue_for_a_known_word' desktop/src-tauri/tests/history_at_volume.rs
-    grep -q 'export_streams_and_leaks_no_key_or_home_path' desktop/src-tauri/tests/history_at_volume.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test history_at_volume      ; test $? -eq 0
-    cargo test --features custom-protocol --test db_migration_idempotent ; test $? -eq 0
-    cargo test --features custom-protocol --test license_gate            ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'PRIV-B', prompt: 'Y6', branch: 'loop/priv-b-clear-history-erases-the-audio-too', gated: null,
-  title: 'Clear History erases the audio and the partial words, not only the SQLite rows',
-  preflight: `
-    grep -q 'recovery_dir' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test erase_everything
-  `,
-  spec: `
-    PANEL 2026-09-12 — this is a privacy regression this LOOP creates, so it
-    ships inside the loop. MEASURED at 4e8c9adf:
-      lib.rs:2386-2388  clear_history() is one line: state.db.clear_transcripts()
-      lib.rs:565-570    recovery_dir() is "deliberately NOT the recordings dir:
-                        record::sweep_stale_wavs empties that at every startup",
-                        and is purged only after FAILED_TAKE_RETENTION_DAYS
-      db.rs:4005        clear_history_leaves_no_plaintext_on_disk scans only
-                        wilson_voice.db / -wal / -shm
-    Today a dictation clip is transient. Three items in this loop convert that
-    into days of retained raw audio and partial transcript text — Y3-A spills
-    the take to disk, Y3-D specifies that "a cancel NEVER deletes the clip, it
-    parks it in the recovery dir with the same 7-day purge lifecycle", DB-B
-    persists per-take chunk TEXT — while DB-C's erase work covers the .db only.
-    So after this loop a user who dictates something regrettable, cancels, and
-    clicks Clear History has their rows VACUUMed and the full audio plus the
-    partial words still on disk for a week, with nothing saying so.
-
-    Do:
-      * Erasure becomes one operation over the whole product: Clear History also
-        deletes recovery/ WAVs, spilled take WAVs, take_chunks rows and
-        orphaned meetings/ audio. Plus a separate, explicit
-        "Delete all recordings" control.
-      * Make the retention VISIBLE: Y3-D's and DB-B's parked clips render in
-        History as "N clips kept for 7 days — review or delete". Invisible
-        retained audio is the scare; visible retained audio is a feature.
-      * Test on the FILESYSTEM, not the query layer: plant a sentinel WAV in
-        recovery/ and a take_chunks row, run the command, assert both are gone
-        from disk. Under YAP_DATA_DIR (Y0-D), never the real data dir.
-      * Say in ARCHITECTURE.md what is kept, where, and for how long.
-
-    Runs after DB-B and DB-C, whose retention this item is the counterweight to.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/erase_everything.rs
-    grep -q 'a_sentinel_wav_in_recovery_is_gone_from_the_filesystem' desktop/src-tauri/tests/erase_everything.rs
-    grep -q 'take_chunks_rows_are_gone_not_just_unqueryable' desktop/src-tauri/tests/erase_everything.rs
-    grep -q 'orphaned_meeting_audio_is_swept' desktop/src-tauri/tests/erase_everything.rs
-    grep -q 'YAP_DATA_DIR' desktop/src-tauri/tests/erase_everything.rs
-    grep -rq 'kept for' desktop/src
-    grep -q 'retention' ARCHITECTURE.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test erase_everything ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y6-D', prompt: 'Y6', branch: 'loop/y6-d-launch-sleep-wake-and-single-instance', gated: null,
-  title: 'Cold launch, sleep/wake, display change and a second copy of Yap all behave',
-  preflight: `
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test lifecycle_e2e
-  `,
-  spec: `
-    The matrix tests cover these for MEETINGS and not for the app as a whole:
-    \`tests/matrix_row15_single_instance.rs\`, \`matrix_row16_sleep_wake.rs\`,
-    \`matrix_row14_output_device_change.rs\`, \`matrix_phase_offline.rs\`,
-    \`matrix_row12_macos_144_gate.rs\`. Every one of them is an event that also
-    breaks dictation, the pill and the hotkey.
-
-    Cover, in \`tests/lifecycle_e2e.rs\`:
-      * COLD LAUNCH with no model, no grants, no settings file: the app opens,
-        lands on onboarding, and the pill either does not appear or appears in a
-        state that explains itself (Y5-C's \`model_loading\` / PERM-C's
-        \`blocked\`). It must never appear as a normal ready pill it cannot honour.
-      * SLEEP/WAKE mid-take: the take is either completed or parked in recovery,
-        never half-written. \`power.rs\` observes this already — assert the
-        dictation path subscribes, not only the meeting path.
-      * DISPLAY CHANGE / a monitor unplugged while the pill is docked to it: the
-        pill must land on a visible screen, not at a negative coordinate
-        off-screen. This is the classic floating-HUD bug and there is no test
-        for it.
-      * FULLSCREEN: ROADMAP.md records that "a normal NSWindow cannot float above
-        FULLSCREEN apps" and names \`tauri-nspanel\` as the real fix. Yap sets
-        \`macOSPrivateApi: true\`. Measure the current behaviour over a fullscreen
-        app and write the ANSWER into the test as an assertion or into the doc
-        as a named limitation with the evidence. Do not claim it works without
-        measuring; do not silently leave it unknown.
-      * OUTPUT DEVICE CHANGE while muted-for-dictation: YV28 snapshots and
-        restores the exact prior mute state; assert a device swap mid-take does
-        not leave the Mac permanently muted. That is the worst-feeling bug in
-        this list.
-      * SECOND INSTANCE: launching Yap twice focuses the first and exits, and
-        does not open a second SQLite handle on the same WAL.
-      * The four TCC grants surviving a relaunch (PERM-E's watcher) with no
-        prompt storm on launch.
-
-    Depends on PERM-C, PERM-E, Y5-C, DB-B.
-
-    What NOT to do:
-      - Do NOT claim fullscreen works without a measurement.
-      - Do NOT leave the system output muted on any exit path.
-      - Do NOT add tauri-nspanel in this item. Measure first; the port is its
-        own item if the measurement says it is needed.
-    PANEL 2026-09-12 — two corrections; without them this item lands green
-    evidence for untested lifecycle behaviour, which is worse than an open gap.
-    (a) DELETE "power.rs observes this already — assert the dictation path
-        subscribes". It does not (power.rs:63-135 is IOPMAssertion only;
-        meeting_matrix.rs:398-408 records the absent call site). Y1-B writes the
-        observer and runs first; subscribe to IT.
-    (b) A \`cargo test\` process has no window-server session: it cannot sleep
-        the machine, unplug a monitor, launch a second copy of Yap or change a
-        TCC grant. So SPLIT the seven promises by what can actually be proven:
-          * State-machine level (cargo test, keep here): the sleep/wake handler's
-            decision table, the display-change placement function, the
-            device-swap unmute rule, the single-instance guard's logic.
-          * Observed level (Y0-E's windowed smoke, under YAP_DATA_DIR): cold
-            launch with nothing installed, the pill landing on a visible screen,
-            fullscreen float.
-          * MANUAL, and written down as a checklist in docs/RELEASE.md with a
-            date and a machine: actual sleep/wake mid-take, an actual monitor
-            unplug, TCC surviving a relaunch. A named manual row is honest; a
-            green unit test standing in for it is not.
-        Do not name a test after a behaviour the test cannot reach.
-
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/lifecycle_e2e.rs
-    grep -q 'cold_launch_with_nothing_installed_never_shows_a_ready_pill' desktop/src-tauri/tests/lifecycle_e2e.rs
-    grep -q 'display_change_lands_the_pill_on_a_visible_screen' desktop/src-tauri/tests/lifecycle_e2e.rs
-    grep -q 'device_swap_mid_take_never_leaves_the_mac_muted' desktop/src-tauri/tests/lifecycle_e2e.rs
-    grep -q 'second_instance_focuses_the_first_and_exits' desktop/src-tauri/tests/lifecycle_e2e.rs
-    grep -qE 'fullscreen' desktop/src-tauri/tests/lifecycle_e2e.rs ARCHITECTURE.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test lifecycle_e2e                ; test $? -eq 0
-    cargo test --features custom-protocol --test matrix_row15_single_instance ; test $? -eq 0
-    cargo test --features custom-protocol --test matrix_row16_sleep_wake      ; test $? -eq 0    grep -q 'LIFECYCLE MANUAL CHECKLIST' docs/RELEASE.md
-    grep -q 'subscribes to power::' desktop/src-tauri/tests/lifecycle_e2e.rs
-
-  `,
-})
-
-ITEMS.push({
-  id: 'Y6-E', prompt: 'Y6', branch: 'loop/y6-e-docs-match-the-app', gated: null,
-  title: 'README, ARCHITECTURE, ROADMAP and PRODUCT stop describing an app that no longer exists',
-  preflight: `
-    test 0 -eq "$(grep -c 'MLX Whisper' ROADMAP.md)"
-    test 0 -eq "$(grep -c 'Wilson Voice' README.md)"
-    grep -q 'Runtime Dependencies' ARCHITECTURE.md
-  `,
-  spec: `
-    MEASURED. \`ROADMAP.md\` opens "Progress as of 2026-07-17" and its "What
-    works today (v0.4.1)" table says: Hotkey = "Carbon ⌘⇧V hold", ASR =
-    "MLX Whisper large-v3-turbo", Mic = "In-process cpal (TCC identity = Wilson
-    Voice)". All three are wrong at 4e8c9adf: YV34 deleted the Python/MLX
-    sidecar and made the embedded GGUF engine "the app's ONLY transcriber"
-    (lib.rs:539, :1298), the default binding is \`fn⌃\` (lib.rs:404), the product
-    is named Yap, and \`tauri.conf.json\` says version 0.8.0. ROADMAP's "Next
-    build slices" lists as pending several things that shipped (warm daemon,
-    Developer ID notarization).
-
-    A stale ROADMAP is not cosmetic: every agent in this loop reads the repo
-    docs as a spec source (docs/loop/HARNESS.md names PRODUCT.md, ROADMAP.md,
-    ARCHITECTURE.md and docs/ as the spec sources), so a wrong table is a wrong
-    instruction that propagates.
-
-    Do:
-      * ROADMAP.md: replace the "what works today" table with the measured truth
-        at this commit, and move everything shipped into a "shipped" section
-        with its YV number. Keep the research notes — the permissions and
-        fullscreen notes are still accurate and load-bearing.
-      * README.md: the product is Yap. Keep the bundle identifier
-        \`com.wilsonguenther.wilson-voice\` and the data dir \`WilsonVoice\`
-        documented as DELIBERATELY unchanged, with the reason (TCC grants and
-        the SQLite history). That is the single most important sentence in the
-        file for anyone who might "tidy" them.
-      * ARCHITECTURE.md gains a RUNTIME DEPENDENCIES table: for each of the ASR
-        model, the polish model, the yap-polish sidecar, the yap-diarize sidecar
-        and the sherpa-onnx prebuilt archive — is it SHIPPED in the bundle, or
-        MANAGED (downloaded+verified by the app), and where does it land on
-        disk. Nothing may be listed as "assumed present on the machine". Note
-        the sherpa fetch-at-build-time behaviour that .github/workflows/ci.yml
-        documents at length, and the two escape hatches
-        (\`SHERPA_ONNX_ARCHIVE_DIR\`, \`SHERPA_ONNX_LIB_DIR\`).
-      * PRODUCT.md: one honest feature list at 0.8.0 including the notetaker and
-        the license model, and the three network calls PRIV-A names.
-      * A test that keeps them honest:
-        \`tests/docs_match_the_app.rs\` asserting the version in ARCHITECTURE.md
-        matches tauri.conf.json, the default binding named in README matches
-        \`AppSettings::default().ptt_binding\`, and no doc mentions a deleted
-        subsystem (MLX, the Python sidecar, \`⌘⇧V\` as the default).
-
-    What NOT to do:
-      - Do NOT rename the bundle identifier or the data directory. Document them.
-      - Do NOT delete ROADMAP's research notes.
-      - Do NOT write aspirational features into PRODUCT.md as shipped.
-    PANEL 2026-09-12 — the docs must also answer the question the plan never
-    asks: WHICH MAC IS THE WEAKEST ONE THIS MUST WORK ON. Declare it in
-    ARCHITECTURE.md (chip, macOS version, RAM, free disk) and make the config
-    honest about it: tauri.conf.json pins \`minimumSystemVersion: "12.0"\`,
-    which invites 8 GB Intel Macs, while
-    \`git grep -E 'x86_64-apple|universal-apple' -- .github desktop/package.json
-    desktop/src-tauri/tauri.conf.json\` returns NOTHING and the only staged
-    sidecar is aarch64-apple-darwin — so the shipped DMG cannot run on the
-    machines the Info.plist invites. Building universal is out of scope for this
-    loop; raising minimumSystemVersion to the arm64 reality is a one-line
-    change and is Wilson's call (docs/loop/PLAN.md §4). Whichever he picks,
-    ARCHITECTURE.md states the floor and Y3-G's budgets are asserted against it.
-
-  `,
-  acceptance: `
-    test 0 -eq "$(grep -c 'MLX Whisper' ROADMAP.md)"
-    test 0 -eq "$(grep -c 'v0.4.1' ROADMAP.md)"
-    grep -q 'Runtime Dependencies' ARCHITECTURE.md
-    grep -q 'SHERPA_ONNX_ARCHIVE_DIR' ARCHITECTURE.md
-    grep -q 'com.wilsonguenther.wilson-voice' README.md
-    grep -q 'WilsonVoice' README.md
-    test -f desktop/src-tauri/tests/docs_match_the_app.rs
-    grep -q 'version_in_docs_matches_tauri_conf' desktop/src-tauri/tests/docs_match_the_app.rs
-    grep -q 'no_doc_mentions_a_deleted_subsystem' desktop/src-tauri/tests/docs_match_the_app.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test docs_match_the_app ; test $? -eq 0
-  `,
-})
-
-// ── 35-y7-tests-and-smoke.mjs ─────────────────────────────────────────────
-// Y7 — TESTS + A REAL SMOKE. The gate in docs/loop/HARNESS.md is eight commands
-// and none of them launches the app. Yap has 128 Rust integration test files and
-// 25 vitest tests, and Wilson's report ("the app looks broken") was invisible to
-// all of them — a green build is not a working app
-// (feedback_loop_blind_to_visual_ux; feedback_real_browser_smoke_required).
-//
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y7-A', prompt: 'Y7', branch: 'loop/y7-a-headless-smoke-against-the-built-binary', gated: null,
-  title: 'A headless smoke that runs the real built binary end to end, not a unit test of its parts',
-  preflight: `
-    test -x scripts/smoke-headless.sh
-    ./scripts/smoke-headless.sh
-  `,
-  spec: `
-    Yap ALREADY has the hook this needs and nothing uses it as a gate:
-    \`src-tauri/src/cli.rs\` (161 lines) plus "YV32 headless mode
-    (\`--transcribe-file <wav>\`)" at lib.rs:3982, and a committed fixture
-    \`tests/fixtures/quick-brown-fox-16k.wav\`. So the built binary can be driven
-    with no window, no TCC and no microphone.
-
-    Create \`scripts/smoke-headless.sh\` (\`set -euo pipefail\`, exit codes read
-    bare), which:
-      1. Builds the release binary the way the gate already does (stage
-         \`src-tauri/binaries/yap-polish-<triple>\` first, then
-         \`cargo build --release --features custom-protocol\`).
-      2. Runs the weak-link check that already exists:
-         \`./scripts/assert-weak-linked-14_4-symbols.sh
-          desktop/target/release/wilson-voice\`. Its comment in ci.yml is the
-         reason this whole item matters: "the build is green, the tests are
-         green, and the binary is unlaunchable for a whole population of users."
-      3. \`--transcribe-file tests/fixtures/quick-brown-fox-16k.wav\` against a
-         TEMPORARY data dir (never the user's \`WilsonVoice\` dir) and asserts the
-         transcript contains the expected words. If the ASR model is absent it
-         must FAIL with "no model installed, run <the documented command>" —
-         never skip silently, which is how a smoke test becomes decoration.
-      4. Asserts the run wrote NOTHING into the real data dir.
-      5. Runs the same file through the cleanup pipeline at the SHIPPED default
-         level and prints the before/after, so Y4's "formatting is on" claim is
-         visible in the smoke output rather than only in a fixture.
-      6. Prints a single PASS/FAIL summary and the version from tauri.conf.json.
-
-    Add \`"smoke:headless"\` to desktop/package.json scripts. This is the
-    per-item smoke; Y7-B is the windowed one.
-
-    What NOT to do:
-      - Do NOT touch the user's data dir or their \`/Applications/Yap.app\`.
-      - Do NOT skip when the model is missing.
-      - Do NOT download a model inside the smoke script.
-  `,
-  acceptance: `
-    test -x scripts/smoke-headless.sh
-    grep -q 'set -euo pipefail' scripts/smoke-headless.sh
-    grep -q 'assert-weak-linked-14_4-symbols.sh' scripts/smoke-headless.sh
-    grep -q 'transcribe-file' scripts/smoke-headless.sh
-    test 0 -eq "$(grep -c 'WilsonVoice' scripts/smoke-headless.sh)"
-    node -e "process.exit(require('./desktop/package.json').scripts['smoke:headless']?0:1)"
-    ./scripts/smoke-headless.sh ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y7-B', prompt: 'Y7', branch: 'loop/y7-b-windowed-smoke-that-screenshots-every-view', gated: null,
-  title: 'A windowed smoke that launches Yap, walks all seven views and captures them at two sizes',
-  preflight: `
-    test -x scripts/smoke-windowed.sh
-    test -d docs/smoke-shots
-    ./scripts/smoke-windowed.sh --check-only
-  `,
-  spec: `
-    Wilson's report was visual and nothing in the gate looks at pixels. This is
-    the item that makes "looks broken" a detectable condition.
-
-    \`scripts/smoke-windowed.sh\`:
-      * Launches the built app against a TEMPORARY data dir, with a flag that
-        seeds a deterministic fixture state (some history, a dictionary entry, a
-        scratchpad note) and a SECOND run with an EMPTY state — the empty run is
-        the one that catches Y5-B's missing empty states, and it is the more
-        important of the two.
-      * Walks all seven \`Nav\` views and all eight \`SettingsTab\`s, capturing
-        each at 980x700 and at 720x520 (the configured default and the
-        \`minWidth\`/\`minHeight\` floor from tauri.conf.json), into
-        \`docs/smoke-shots/<run>/\`.
-      * Captures the FLOAT PILL for every \`LivePhase\` at all three
-        \`pill_position\` values, driven through a debug command that forces a
-        phase (add one behind \`#[cfg(feature = "custom-protocol")]\` plus an env
-        guard so it cannot be reached in a shipped build — and assert that).
-      * FAILS, not warns, on: a view that renders no text at all; a view with an
-        \`.animate\`/spinner element still present after 10 seconds; a horizontal
-        scrollbar on the window at either size; any element whose bounding box
-        extends past the window; and, in the empty run, a view with no
-        \`data-empty-state\`. These are mechanical proxies for "looks broken" and
-        each one corresponds to a defect this plan found.
-      * \`--check-only\` runs the assertions against the last captured run
-        without relaunching, so the preflight is cheap.
-
-    Use the Playwright/CDP route only if the Tauri webview exposes a debug port
-    in a \`custom-protocol\` build; if it does not, drive it with the OS
-    screenshot tools plus the app's own debug commands and say so in the script
-    header. Either way, do not add a browser automation dependency to
-    desktop/package.json's runtime deps.
-
-    Wire it in: \`npm run smoke:windowed\`, and make Y0-B's loop-smoke script
-    call it when a display is available and skip it with a named message when
-    there is none.
-
-    Depends on Y5-B, Y5-C, Y5-G, Y7-A.
-
-    What NOT to do:
-      - Do NOT commit the screenshots into git history on every run. Commit ONE
-        reference run and gitignore the rest, or the repo grows without bound.
-      - Do NOT leave the forced-phase debug command reachable in a release build.
-      - Do NOT assert pixel equality against a golden image. Assert the
-        STRUCTURAL properties above; pixel goldens on a two-theme, two-size,
-        animated UI are a permanent source of false red.
-    PANEL 2026-09-12 — THIS ITEM IS NOW THE SECOND HALF. Y0-E ships
-    scripts/smoke-windowed.sh with the five structural failure conditions BEFORE
-    the Y5 lane, because an instrument that arrives ten items after the work it
-    judges gates nothing, and build mode dispatches no reviewer. So the
-    dependency line "Depends on Y5-B, Y5-C, Y5-G, Y7-A" now means: EXTEND Y0-E's
-    script to the new pill phases and the dock positions those items added, and
-    re-baseline docs/loop/SMOKE-BASELINE.md against the post-Y5 tree with the
-    diff explained. It launches under \`YAP_DATA_DIR\` and \`--smoke\` (Y0-D) —
-    never against the real data dir, and never with a global hotkey registered.
-    \`--check-only\` remains a pre-flight convenience and is NOT acceptance:
-    with no captured run it exits non-zero by Y0-E's contract.
-    A display IS available on this run, so "no display" is a failure here, not
-    a named skip.
-
-  `,
-  acceptance: `
-    test -x scripts/smoke-windowed.sh
-    grep -q '720' scripts/smoke-windowed.sh
-    grep -q '980' scripts/smoke-windowed.sh
-    grep -q 'data-empty-state' scripts/smoke-windowed.sh
-    grep -q 'check-only' scripts/smoke-windowed.sh
-    test -d docs/smoke-shots
-    node -e "process.exit(require('./desktop/package.json').scripts['smoke:windowed']?0:1)"
-    grep -q 'smoke-windowed' scripts/loop-smoke.sh
-    # the forced-phase debug command cannot exist in a shipped build
-    grep -q 'custom-protocol' desktop/src-tauri/src/lib.rs
-    # PANEL: --check-only asserts against "the last captured run", so with no
-    # run it is a no-op that exits 0. Acceptance runs a FULL capture, counts the
-    # shots, and proves the detector can fail.
-    YAP_DATA_DIR="$(mktemp -d)" ./scripts/smoke-windowed.sh ; test $? -eq 0
-    test 28 -le "$(ls docs/smoke-shots/*/*.png | wc -l | tr -d ' ')"
-    ./scripts/smoke-windowed.sh --check-only --self-test-must-fail ; test $? -ne 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y7-C', prompt: 'Y7', branch: 'loop/y7-c-non-vacuous-mutation-proof-for-the-new-tests', gated: null,
-  title: 'Every test this loop added is proven non-vacuous by a mutation that makes it fail',
-  preflight: `
-    test -f docs/loop/MUTATIONS.md
-    test -x scripts/assert-tests-are-non-vacuous.sh
-    ./scripts/assert-tests-are-non-vacuous.sh
-  `,
-  spec: `
-    The repo already practises this: \`docs/pr-screenshots/YV105/…/non-vacuous-mutations.txt\`,
-    YV106, YV107, YV120, YV121 all carry one. Make it mechanical for the tests
-    this loop adds, because the failure mode is specific and this plan is full of
-    greps: a test that asserts a symbol exists, in a file that always contains
-    it, proves nothing; and a grep proving absence with the wrong pattern or the
-    wrong scope proves less than nothing (the "verification that verifies
-    nothing" rule).
-
-    Create \`scripts/assert-tests-are-non-vacuous.sh\` driven by a committed
-    table \`docs/loop/MUTATIONS.md\`: one row per test file added by this loop,
-    naming a SINGLE-LINE source mutation and the test that must then fail.
-    The script applies each mutation to a scratch copy, runs that one test,
-    asserts a NON-ZERO exit, and reverts. It fails if any mutation leaves the
-    suite green.
-
-    Seed the table with the mutations named in the earlier items, which are
-    already written as acceptance steps there and should move here so they run
-    together:
-      shipped_defaults      flip \`auto_paste: true\` -> false
-      formatting_fixtures   set \`cleanup_level\` back to "light"
-      mic_auth_status       return \`Authorized\` unconditionally from
-                            \`authorization_status()\`
-      mic_gate              delete the microphone check from \`start_recording\`
-      trial_state_machine   drop the max-seen-wall-clock floor
-      dictation_chunked     remove the seam dedupe
-      dictation_capture_memory  restore the unbounded \`raw\` append
-      polish_long_form      restore \`MAX_POLISH_WORDS = 400\`
-      paste_target_e2e      cache the paste target from hold time
-      updater_endpoint      reduce the endpoint list to one
-      no_outbound_on_the_dictation_path  add a URL literal to \`record.rs\`
-      history_at_volume     remove the pagination tiebreaker
-      lifecycle_e2e         skip the mute restore on one exit path
-
-    Also assert the SHAPE of every grep-based acceptance this loop uses: a
-    committed checker that scans the item files for \`grep\` invocations without
-    a path scope, and fails. A scopeless grep in an acceptance gate is the
-    single cheapest way to ship a false green.
-
-    Run it as part of Y0-B's loop-smoke script, gated behind a flag so the
-    per-item gate stays fast and the full mutation sweep runs once per part.
-
-    Depends on every test-bearing item; sequence it last in its file.
-
-    What NOT to do:
-      - Do NOT mutate the test file to make it fail. Mutate the SOURCE.
-      - Do NOT accept "the whole suite went red" as proof. The NAMED test must
-        be the one that fails.
-    PANEL 2026-09-12 — the item whose purpose is proving other tests non-vacuous
-    was itself satisfiable by typing a 13-row markdown table, and it is
-    sequenced last, so it can only audit tests that have already merged. Two
-    changes: (1) the per-item mutation requirement now lives in the SHARED
-    PREAMBLE and binds every item as it is built — this item COLLECTS the rows
-    and re-runs them, it does not excuse anyone; (2) the ledger is one row per
-    NEW TEST FILE, and scripts/assert-tests-are-non-vacuous.sh must EXECUTE each
-    mutation (mutate, re-run, require red, restore, \`git diff --exit-code\`) and
-    record the observed transition, not merely list it. A row whose mutation was
-    never executed is a failed row.
-
-  `,
-  acceptance: `
-    test -f docs/loop/MUTATIONS.md
-    test -x scripts/assert-tests-are-non-vacuous.sh
-    # PANEL: 13 rows is not a ledger for a loop that adds ~50 test files, and a
-    # markdown table is not a proof. One row per new test FILE, and the script
-    # must EXECUTE each mutation and record the observed red/green transition.
-    test "$(ls desktop/src-tauri/tests/*.rs | wc -l | tr -d ' ')" -le "$(grep -c '^| ' docs/loop/MUTATIONS.md)"
-    grep -q 'executed' docs/loop/MUTATIONS.md
-    grep -q 'git diff --exit-code' scripts/assert-tests-are-non-vacuous.sh
-    grep -q 'mic_auth_status' docs/loop/MUTATIONS.md
-    grep -q 'no_outbound_on_the_dictation_path' docs/loop/MUTATIONS.md
-    grep -q 'scopeless' scripts/assert-tests-are-non-vacuous.sh
-    ./scripts/assert-tests-are-non-vacuous.sh ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y7-D', prompt: 'Y7', branch: 'loop/y7-d-frontend-coverage-for-the-pure-modules', gated: null,
-  title: 'The pure frontend modules get real coverage, so the pill and the states are testable without a window',
-  preflight: `
-    test -f desktop/vitest.config.ts
-    cd ${APP} && npm ci && npm test
-  `,
-  spec: `
-    The frontend is 25 vitest tests across \`src/pill/live.test.ts\`,
-    \`src/errors.test.ts\`, \`src/license/status.test.ts\`,
-    \`src/meetings/*.test.ts\` and \`src/support/bundle.test.ts\`. The pattern is
-    right — pure module, pure test, no rendering — and ci.yml explains why it is
-    a gate: "a behavioural regression there shipped once because a type check was
-    the only frontend gate."
-
-    This loop adds a lot of pure modules (permission.ts, viewState.ts, toast.ts,
-    diff.ts, onboarding.ts, pill/license.ts, pill/motion.ts, pill/hitbox.ts,
-    pill/dock.ts, home/house.ts). Make the discipline enforceable:
-      * \`desktop/vitest.config.ts\` with coverage thresholds that apply ONLY to
-        the pure modules (an explicit include list — never a repo-wide number,
-        which would either be trivially met or permanently red because App.tsx
-        cannot be unit-tested).
-      * A test that fails when a new file is added under \`src/pill/\` or a new
-        \`*.ts\` pure module is added without a sibling \`*.test.ts\`. An explicit
-        include list plus that check is what keeps the number honest.
-      * Fix the reverse problem too: assert no pure module imports
-        \`@tauri-apps/api\` — a pure module that invokes is not testable without a
-        window, and that is how \`live.ts\` stays drivable. Components may import
-        it; \`*.ts\` modules on the include list may not.
-
-    Depends on Y5-*, Y6-A. Sequence after them.
-
-    What NOT to do:
-      - Do NOT set a global coverage threshold.
-      - Do NOT add a DOM testing library to chase a number. The value here is
-        the pure state machines, which need no DOM.
-  `,
-  acceptance: `
-    test -f desktop/vitest.config.ts
-    grep -q 'coverage' desktop/vitest.config.ts
-    grep -q 'pill/live.ts' desktop/vitest.config.ts
-    test -f desktop/src/purity.test.ts
-    grep -q 'no_pure_module_imports_the_tauri_api' desktop/src/purity.test.ts
-    grep -q 'every_pure_module_has_a_sibling_test' desktop/src/purity.test.ts
-    cd ${APP} && npm ci
-    npm test         ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y7-E', prompt: 'Y7', branch: 'loop/y7-e-release-dmg-smoke-on-a-clean-mac-path', gated: null,
-  title: 'The shipped DMG is smoke-tested the way a first-time user meets it',
-  preflight: `
-    test -x scripts/smoke-dmg.sh
-    grep -q 'smoke-dmg' docs/RELEASE.md
-  `,
-  spec: `
-    The release path is real: \`.github/workflows/release.yml\` with six repo
-    secrets set, a Developer ID certificate, notarization, and
-    \`reference_yap_dmg_notarization\` recording a notarized v0.5.5 DMG plus the
-    manual flow and the iCloud/keychain gotchas. v0.8.0 shipped with "the first
-    working auto-update" (project_yap_build_state). None of that is smoke-tested
-    from the user's side, and SEC-A + UPD-A both change things that only show up
-    there.
-
-    \`scripts/smoke-dmg.sh <path-to-dmg>\`, run manually and from docs/RELEASE.md:
-      * \`spctl --assess --type exec -vv\` on the .app inside the mounted DMG ->
-        accepted, source "Notarized Developer ID". An un-notarized build is a
-        Gatekeeper wall for every user and nothing else in the pipeline sees it.
-      * \`codesign -dv --verbose=4\` -> the signing identity is a Developer ID,
-        not ad-hoc, and the team id matches what docs/RELEASE.md documents.
-      * \`codesign -d --entitlements :-\` -> assert
-        \`com.apple.security.app-sandbox\` is present and FALSE (the VALUE, not
-        the key — SEC-A's rule), audio-input is true, and the two
-        dylib-injection entitlements are absent.
-      * The bundle identifier is \`com.wilsonguenther.wilson-voice\` — assert it
-        has NOT changed. A rename silently resets every user's TCC grants.
-      * Both sidecars are present inside the bundle's Resources and are
-        themselves signed.
-      * \`Info.plist\` carries all three usage strings (NSMicrophone,
-        NSAudioCapture, NSAppleEvents). A missing one is a TCC failure with no
-        dialog.
-      * The updater manifest URL from UPD-A resolves and its signature verifies
-        against the shipped pubkey — without installing anything.
-      * \`xattr\` shows no quarantine-blocking detritus, and the resource-fork
-        problem project_yap_build_state describes ("the tauri codesign flakes on
-        resource-fork detritus") is checked for by name.
-      * Prints nothing secret. No certificate serial, no key material, no
-        app-specific password. The script must be safe to paste into a PR.
-
-    Then wire it into docs/RELEASE.md as a required step before a release is
-    announced, with the exact command.
-
-    Depends on SEC-A, UPD-A.
-
-    What NOT to do:
-      - Do NOT run this in the per-item gate. It needs a built, signed,
-        notarized DMG, which is minutes plus Apple's servers; it belongs to the
-        release checklist and to \`mode: "review"\` with \`args: {dmg: true}\`.
-      - Do NOT print any secret or certificate detail.
-      - Do NOT install the DMG over the user's running /Applications/Yap.app.
-    PANEL 2026-09-12 — \`bash -n\` is a syntax check, not a smoke test: the
-    checklist this item writes (spctl assess, codesign verbose, entitlement
-    values, bundle id, sidecar signatures, Info.plist usage strings, the updater
-    manifest resolving) was never once executed. Run it for real against the
-    DMG the review pass builds (\`args: {dmg: true}\`), or skip with a NAMED
-    reason the PR body carries. And split the assertions into SEC-A's two
-    profiles: a RELEASE profile (Developer ID + notarized + stapled) and a LOCAL
-    profile (Apple Development, unnotarized, stable designated requirement) —
-    asserting "Notarized Developer ID" unconditionally makes a correctly signed
-    local DMG fail by construction. The updater assertions here are UPD-B's
-    published triple (latest.json + .app.tar.gz + .sig), not the DMG alone.
-
-  `,
-  acceptance: `
-    test -x scripts/smoke-dmg.sh
-    grep -q 'spctl --assess' scripts/smoke-dmg.sh
-    grep -q 'app-sandbox' scripts/smoke-dmg.sh
-    grep -q 'com.wilsonguenther.wilson-voice' scripts/smoke-dmg.sh
-    grep -q 'NSAudioCaptureUsageDescription' scripts/smoke-dmg.sh
-    grep -q 'smoke-dmg' docs/RELEASE.md
-    test 0 -eq "$(grep -c 'APPLE_PASSWORD' scripts/smoke-dmg.sh)"
-    # PANEL: \`bash -n\` is a syntax check, not a smoke test. Run it against a
-    # real artifact, or skip with a NAMED reason that the PR body carries.
-    bash -n scripts/smoke-dmg.sh ; test $? -eq 0
-    ./scripts/smoke-dmg.sh --require-artifact-or-name-the-reason ; test $? -eq 0
-    grep -q 'codesign -dv' scripts/smoke-dmg.sh
-    grep -q 'adhoc' scripts/smoke-dmg.sh
   `,
 })
 
@@ -6899,12 +5928,20 @@ log(
     `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
 )
 
+if (ONLY_PREFIXES) {
+  const kept = ITEMS.filter((it) => !onlySkip(it)).map((it) => it.id)
+  log(
+    `args.only = [${ONLY_PREFIXES.join(', ')}]: ${kept.length} item(s) run (${kept.join(', ') || 'none'}), ` +
+      `${ITEMS.length - kept.length} hard-skipped with no agent. args.now = ${RUN_NOW || 'not passed'}.`
+  )
+}
+
 /** ONE BUILDER LANE. It walks its own items and never awaits the other lane, ever. */
 async function buildLane(lane) {
   for (const item of laneItems[lane]) {
     if (halted) break
     const at = indexOfItem(item)
-    const skipped = panelSkip(item)
+    const skipped = onlySkip(item) || panelSkip(item)
     if (skipped) {
       slots[at] = skipped
       continue

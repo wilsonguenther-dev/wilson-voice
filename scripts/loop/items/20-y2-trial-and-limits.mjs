@@ -43,6 +43,7 @@
 
 ITEMS.push({
   id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key. Still blocked only on Wilson provisioning the dedicated Yap Supabase project.`,
   title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
     test -f supabase/functions/yap-license/index.ts
@@ -187,6 +188,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-A', prompt: 'Y2', branch: 'loop/y2-a-license-status-reaches-the-pill-window', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #185) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The float window subscribes to license status — the wiring that does not exist',
   preflight: `
     grep -q 'license' desktop/src-tauri/src/float_pill.rs
@@ -260,6 +262,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-B', prompt: 'Y2', branch: 'loop/y2-b-pill-trial-countdown-in-both-styles', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #186 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR. AMENDED 2026-09-26 (architecture audit): the display POLICY this item draws is superseded in part by yap24-PILL1 — the pill must show the trial from day 14, not only from day 7 (pill/license.ts:136-165 is silent above 7 days; Wilson 2026-09-26 "the pill does not indicate ... 14 days"). Build Y2-B to the current policy; PILL1 changes the policy on top of it.`,
   title: 'A quiet trial numeral on the pill in both pill styles, in the 30px side dock too',
   preflight: `
     grep -q 'pillLicense' desktop/src/pill/ClassicPill.tsx
@@ -324,6 +327,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-C', prompt: 'Y2', branch: 'loop/y2-c-trial-ended-pill-state-and-refused-press', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #187) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A refused hotkey press produces a pill state that explains itself, instead of a throttled notification',
   preflight: `
     grep -q '"gated"' desktop/src/pill/live.ts
@@ -391,6 +395,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-F', prompt: 'Y2', branch: 'loop/y2-f-a-stored-key-that-grants-nothing-is-not-a-lapsed-trial', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #189) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A paying customer whose key stops verifying is never shown a price',
   preflight: `
     grep -rq 'storedKeyProblem' desktop/src/pill
@@ -443,6 +448,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-D', prompt: 'Y2', branch: 'loop/y2-d-one-upgrade-path-from-the-pill', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #191 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'One click from the pill to purchase, reusing the existing Payment Link — no new money surface',
   preflight: `
     grep -q 'open_purchase_page\\|show_purchase' desktop/src-tauri/src/float_pill.rs
@@ -500,6 +506,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y2-E', prompt: 'Y2', branch: 'loop/y2-e-menu-bar-tray-carries-the-same-truth', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #194) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The menu-bar item says the same thing as the pill and the settings card, from one source',
   preflight: `
     grep -q 'pillLicense\\|license_tray_line' desktop/src-tauri/src/lib.rs
@@ -554,6 +561,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-A', prompt: 'Y2', branch: 'loop/db-a-usage-metering-and-limit-surface', gated: 'panel',
+  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
   title: 'Usage metering and a "limit reached" surface — the numbers are Wilson\'s call',
   preflight: `
     grep -q 'usage_window\\|words_this_week' desktop/src-tauri/src/db.rs
@@ -629,6 +637,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-B', prompt: 'Y2', branch: 'loop/sec-b-trial-state-machine-hardening', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #195 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'The trial state machine gets the adversarial tests its own doc comment promises',
   preflight: `
     test -f desktop/src-tauri/tests/trial_state_machine.rs

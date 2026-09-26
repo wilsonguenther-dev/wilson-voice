@@ -14,6 +14,7 @@
 
 ITEMS.push({
   id: 'Y9-A', prompt: 'Y9', branch: 'loop/y9-a-named-transform-library', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A named transform library over the existing sidecar, with an observable status enum',
   preflight: `
     test -f desktop/src-tauri/src/transforms.rs
@@ -88,6 +89,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-B', prompt: 'Y9', branch: 'loop/y9-b-writing-samples-local-style-profile', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Writing samples become a local style profile injected into the polish prompt',
   preflight: `
     grep -q 'writing_samples' desktop/src-tauri/src/db.rs
@@ -153,6 +155,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-C', prompt: 'Y9', branch: 'loop/y9-c-spoken-preference-rules', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Spoken preference rules: say a rule once, it applies where it matches — with an explicit Apply step',
   preflight: `
     grep -q 'voice_preferences' desktop/src-tauri/src/db.rs
@@ -228,6 +231,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-F', prompt: 'Y9', branch: 'loop/perm-f-deeper-ax-context-selection-and-after-caret', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Deeper accessibility context: the selection and the text after the caret, read in-process',
   preflight: `
     grep -q 'AXSelectedText' desktop/src-tauri/src/focus.rs
@@ -298,6 +302,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-G', prompt: 'Y9', branch: 'loop/perm-g-vibe-coding-identifier-bias', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'IDE context: the identifiers in the open file bias the transcription — the highest personal-ROI item',
   preflight: `
     grep -q 'ide_identifiers\\|vibe_context' desktop/src-tauri/src/vocab.rs
@@ -373,6 +378,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-D', prompt: 'Y9', branch: 'loop/y9-d-blocked-apps-and-focus-denylist', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A denylist where the hotkey is inert — the honest complement to reading your context',
   preflight: `
     grep -q 'denylist' desktop/src-tauri/src/focus.rs
@@ -437,6 +443,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y9-E', prompt: 'Y9', branch: 'loop/y9-e-dictionary-and-snippet-bulk-io', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'CSV round-trip for the dictionary and snippets, and the usage-frequency ranking that is only half there',
   preflight: `
     grep -q 'import_csv' desktop/src-tauri/src/db.rs

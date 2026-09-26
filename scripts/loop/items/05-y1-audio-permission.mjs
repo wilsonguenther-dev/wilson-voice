@@ -41,6 +41,7 @@
 
 ITEMS.push({
   id: 'PERM-A', prompt: 'Y1', branch: 'loop/perm-a-real-tcc-authorization-status', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #157) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Ask macOS the actual question: AVCaptureDevice authorizationStatus + requestAccess, replacing the device probe that cannot see a denial',
   preflight: `
     grep -q 'AVCaptureDevice' desktop/src-tauri/src/mic_auth.rs
@@ -170,6 +171,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-B', prompt: 'Y1', branch: 'loop/perm-b-denied-state-ui-and-settings-deeplink', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #158) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A denied microphone gets its own screen with a working System Settings deep link, not a green check',
   preflight: `
     grep -q 'micStatus\\|microphoneStatus' desktop/src/Onboarding.tsx
@@ -247,6 +249,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-C', prompt: 'Y1', branch: 'loop/perm-c-recheck-on-every-hotkey-and-pill-denied-state', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #161) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Every hotkey press re-checks the grant, and the pill shows a denied state instead of recording silence',
   preflight: `
     grep -q 'authorization_status' desktop/src-tauri/src/lib.rs
@@ -353,6 +356,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-A', prompt: 'Y1', branch: 'loop/y1-a-cgevent-tap-disabled-by-timeout-is-re-armed', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #162) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'A tap macOS disabled is re-armed and reported — the other half of "the hotkey is dead"',
   preflight: `
     grep -q 'kCGEventTapDisabledByTimeout\\|0xFFFFFFFE' desktop/src-tauri/src/ptt_macos.rs
@@ -410,6 +414,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-D', prompt: 'Y1', branch: 'loop/perm-d-first-run-preflight-before-any-take', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #164) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'First run refuses to reach calibration without a real grant, and a silent take is diagnosed instead of pasted as nothing',
   preflight: `
     grep -q 'silent_take\\|all_zero_samples' desktop/src-tauri/src/lib.rs
@@ -474,6 +479,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'SEC-A', prompt: 'Y1', branch: 'loop/sec-a-stable-signing-identity-so-grants-survive-rebuilds', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #165) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Stop ad-hoc signing local builds — the reason permissions "reset" on Wilson\'s own machine',
   preflight: `
     test 0 -eq "$(grep -c '"signingIdentity": "-"' desktop/src-tauri/tauri.conf.json)"
@@ -574,6 +580,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y1-B', prompt: 'Y1', branch: 'loop/y1-b-register-the-sleep-wake-observer-that-does-not-exist', gated: null,
+  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
   title: 'Register the sleep/wake observer two later items already claim exists',
   preflight: `
     grep -qE 'NSWorkspaceWillSleepNotification|IORegisterForSystemPower' desktop/src-tauri/src/power.rs
@@ -627,6 +634,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PERM-E', prompt: 'Y1', branch: 'loop/perm-e-permission-health-row-and-revocation-watch', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #167) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'One permission health surface, watched for revocation, covering mic + Accessibility + Input Monitoring + audio capture',
   preflight: `
     grep -q 'permission_changed' desktop/src-tauri/src/permissions.rs

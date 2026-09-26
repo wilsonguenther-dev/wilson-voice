@@ -17,6 +17,7 @@
 
 ITEMS.push({
   id: 'UPD-A', prompt: 'Y6', branch: 'loop/upd-a-updater-endpoint-that-can-actually-serve', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #197 OPEN and stale (main moved 30+ times under it), labelled needs-human. Rebase that PR onto main and finish it; do not open a second PR. AMENDED 2026-09-26: the premise "points at a dead URL" is FALSE while the repo is public — releases/latest/download/latest.json returns HTTP 200 and serves 0.8.0 (darwin-aarch64). The item is still required before the repo is privatized at app-completion (Wilson 2026-08-11); until then it is not urgent. Wilson's log also shows "update check failed: error sending request" on launches without network — honest, keep it quiet.`,
   title: 'The updater points at an endpoint that can serve a private repo — today it points at a dead URL',
   preflight: `
     test 0 -eq "$(grep -c 'releases/latest/download/latest.json' desktop/src-tauri/tauri.conf.json)"
@@ -85,6 +86,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'UPD-B', prompt: 'Y6', branch: 'loop/upd-b-publish-the-updater-triple-and-keep-a-rollback', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: lane A was in pre-flight at the 2026-09-15 stop and wrote nothing.`,
   title: 'Publish latest.json + .app.tar.gz + .sig to the host the updater now points at, and keep the previous build',
   preflight: `
     test -x scripts/release-local.sh
@@ -140,6 +142,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y6-A', prompt: 'Y6', branch: 'loop/y6-a-onboarding-that-ends-in-a-working-dictation', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Onboarding ends with one successful pasted dictation, or it tells you exactly what is missing',
   preflight: `
     grep -q 'first_paste\\|firstPaste' desktop/src/Onboarding.tsx
@@ -206,6 +209,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PRIV-A', prompt: 'Y6', branch: 'loop/priv-a-crash-reporting-stays-local-and-says-so', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever',
   preflight: `
     test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
@@ -275,6 +279,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y6-B', prompt: 'Y6', branch: 'loop/y6-b-menu-bar-is-a-real-surface', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The menu bar becomes a usable surface: state, the last transcript, hide-for-an-hour, quit',
   preflight: `
     grep -q 'hide_for_an_hour\\|hideForAnHour' desktop/src-tauri/src/lib.rs
@@ -339,6 +344,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y6-C', prompt: 'Y6', branch: 'loop/y6-c-paste-target-and-secure-input-end-to-end', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The paste lands in the app you dictated into, or it does not paste — including secure-input fields',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test paste_target_e2e
@@ -419,6 +425,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'DB-C', prompt: 'Y6', branch: 'loop/db-c-history-search-and-export-hold-up', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'History, FTS search and export hold up at real volume, and Clear History still destroys the words',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test history_at_volume
@@ -480,6 +487,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PRIV-B', prompt: 'Y6', branch: 'loop/priv-b-clear-history-erases-the-audio-too', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Clear History erases the audio and the partial words, not only the SQLite rows',
   preflight: `
     grep -q 'recovery_dir' desktop/src-tauri/src/lib.rs
@@ -533,6 +541,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y6-D', prompt: 'Y6', branch: 'loop/y6-d-launch-sleep-wake-and-single-instance', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Cold launch, sleep/wake, display change and a second copy of Yap all behave',
   preflight: `
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test lifecycle_e2e
@@ -618,6 +627,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y6-E', prompt: 'Y6', branch: 'loop/y6-e-docs-match-the-app', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: ARCHITECTURE.md:5 still says "OpenAI Whisper weights via MLX on-device" and its decision table says Whisper; the engine is transcribe-cpp (Parakeet default, src/catalog.json). docs/ARCHITECTURE-AUDIT-2026-09-26.md §8 lists the rest.`,
   title: 'README, ARCHITECTURE, ROADMAP and PRODUCT stop describing an app that no longer exists',
   preflight: `
     test 0 -eq "$(grep -c 'MLX Whisper' ROADMAP.md)"

@@ -8,6 +8,7 @@
 
 ITEMS.push({
   id: 'Y7-A', prompt: 'Y7', branch: 'loop/y7-a-headless-smoke-against-the-built-binary', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'A headless smoke that runs the real built binary end to end, not a unit test of its parts',
   preflight: `
     test -x scripts/smoke-headless.sh
@@ -62,6 +63,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y7-B', prompt: 'Y7', branch: 'loop/y7-b-windowed-smoke-that-screenshots-every-view', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: despite the title, scripts/smoke-windowed.mjs drives Chrome with --headless=new against vite preview — it never opens a visible window, so it complies with the headless-only rule.`,
   title: 'A windowed smoke that launches Yap, walks all seven views and captures them at two sizes',
   preflight: `
     test -x scripts/smoke-windowed.sh
@@ -151,6 +153,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y7-C', prompt: 'Y7', branch: 'loop/y7-c-non-vacuous-mutation-proof-for-the-new-tests', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Every test this loop added is proven non-vacuous by a mutation that makes it fail',
   preflight: `
     test -f docs/loop/MUTATIONS.md
@@ -235,6 +238,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y7-D', prompt: 'Y7', branch: 'loop/y7-d-frontend-coverage-for-the-pure-modules', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The pure frontend modules get real coverage, so the pill and the states are testable without a window',
   preflight: `
     test -f desktop/vitest.config.ts
@@ -285,6 +289,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y7-E', prompt: 'Y7', branch: 'loop/y7-e-release-dmg-smoke-on-a-clean-mac-path', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The shipped DMG is smoke-tested the way a first-time user meets it',
   preflight: `
     test -x scripts/smoke-dmg.sh

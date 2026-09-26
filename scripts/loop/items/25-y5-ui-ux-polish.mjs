@@ -76,6 +76,7 @@
 
 ITEMS.push({
   id: 'Y5-G', prompt: 'Y5', branch: 'loop/y5-g-split-app-tsx-into-views', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #188) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all',
   preflight: `
     test 900 -ge "$(wc -l < desktop/src/App.tsx)"
@@ -154,6 +155,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-A', prompt: 'Y5', branch: 'loop/y5-a-design-tokens-and-one-visual-system', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #190 OPEN and stale (main moved 30+ times under it), labelled needs-human. Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'A token layer so the seven views stop each inventing their own colours, spacing and radii',
   preflight: `
     test -f desktop/src/tokens.css
@@ -210,6 +212,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-B', prompt: 'Y5', branch: 'loop/y5-b-every-view-has-empty-loading-and-error-states', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #192 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'The "looks broken" fix: all seven views get a real empty state, a real loading state and a real error state',
   preflight: `
     test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
@@ -299,6 +302,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-C', prompt: 'Y5', branch: 'loop/y5-c-the-full-pill-state-machine', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #193) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
   title: 'The pill gets every state the product has, including the transcribe/think gap Wilson named',
   preflight: `
     grep -q '"polishing"' desktop/src/pill/live.ts
@@ -407,6 +411,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-D', prompt: 'Y5', branch: 'loop/y5-d-pill-physics-and-motion-from-the-parity-constants', gated: null,
+  notes: `STATUS 2026-09-26: BUILT, PR #196 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
   title: 'Soft-body pill motion using Wispr\'s measured spring constants, with Reduce Motion respected',
   preflight: `
     grep -q 'stiffness: 600' desktop/src/pill/motion.ts
@@ -480,6 +485,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-E', prompt: 'Y5', branch: 'loop/y5-e-hover-hysteresis-and-alpha-hit-testing', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: the lane-b worktree that held local commit 04e4a94 no longer exists (~/code/wilson-voice-loop is gone), so that partial work is lost — build from scratch.`,
   title: 'The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about',
   preflight: `
     grep -q 'inset: -12px' desktop/src/float.css
@@ -547,6 +553,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-F', prompt: 'Y5', branch: 'loop/y5-f-error-toasts-that-say-what-to-do', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'One error surface, one sentence per failure, one action — replacing raw strings and silent failures',
   preflight: `
     test -f desktop/src/toast.ts
@@ -616,6 +623,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-J', prompt: 'Y5', branch: 'loop/y5-j-focus-names-announcements-and-contrast-floors', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer',
   preflight: `
     test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
@@ -671,6 +679,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-I', prompt: 'Y5', branch: 'loop/y5-i-vertical-dock-as-the-css-base', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way',
   preflight: `
     grep -q 'data-bar-position' desktop/src/float.css
@@ -775,6 +784,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'Y5-K', prompt: 'Y5', branch: 'loop/y5-k-pill-character-system-and-habitat-layer', gated: null,
+  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'The pill becomes a pluggable character system, and the habitat comes back as its habitat layer',
   preflight: `
     test -f desktop/src/pill/characters/registry.ts
