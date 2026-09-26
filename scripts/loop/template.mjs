@@ -793,6 +793,11 @@ conflicting PRs and zero shipped work.
 
     gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --json number,headRefName,mergeable,statusCheckRollup
 
+${ONLY_PREFIXES ? `THIS PASS IS SCOPED to args.only = [${ONLY_PREFIXES.join(', ')}] (Panel revision 2026-09-26T17:35:00Z:
+added after a scoped notetaker pass would otherwise land an unrelated stale PR, e.g. a licensing
+item on a backend the product ledger has since moved off). From the list above, land ONLY a PR
+whose headRefName names an item id starting with one of those prefixes. SKIP every other PR,
+however green — name it "outside args.only \u2014 left for its own pass," never merge it here.` : ''}
 MERGE every PR in that list that clears the gate below, and NOTHING else. The gate depends on
 whether GitHub Actions can run at all in this run; Recon has already decided, and this is it:
 ${CI_GATE(dir, target)}

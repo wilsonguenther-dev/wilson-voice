@@ -38,6 +38,21 @@ ITEMS.push({
     EVIDENCE
       - pill/license.ts:136-165 display policy: "trial, more than 7 days -> nothing (ambient
         silence)". For half the trial the pill says nothing; Wilson's report is exactly this.
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, MEDIUM + HIGH, GROUNDED):
+      - Introduce a SEPARATE shared constant for the new "quiet" threshold (e.g.
+        PILL_QUIET_FROM_DAYS = 14) in BOTH license.rs and license.ts. Do NOT repurpose
+        PILL_SHOW_DAYS = 7 — it is documented as shared with the Rust tray's own purchase-offer
+        threshold (license.ts:52's comment, license.rs:680, tray_offers_purchase at :760) and an
+        existing test pins it to 7 (license.test.ts:98); changing it would silently move when the
+        tray offers to sell, not just when the pill goes quiet. Add a twin-constant equality test
+        and cargo test --lib license to this item's acceptance (today it runs vitest only).
+      - Do NOT let a working countdown promise a purchase that cannot happen: as of this panel,
+        the Stripe payment link is inactive and the license issuer (Forge) does not answer, so
+        this item's countdown/urgent copy must say plainly that purchasing is not open yet
+        instead of showing a Buy action that dead-ends — coordinate with LIC-A's Panel revision
+        in 20-y2-trial-and-limits.mjs, which is the item that actually restores a working
+        purchase path (via the Drivia Consulting app, per the product ledger).
       - The trial is 14 days (license.rs; memory project_yap_build_state YP2 "14-day full trial").
       - Y2-B (#186) draws the numeral but was built against the 7-day policy and was never
         visually QA'd (STATUS-yap.md row Y2-B).
@@ -122,6 +137,23 @@ ITEMS.push({
       - lib.rs:893-922 build_status already computes secure.blocked, the tap health message and
         accessibility. float-main.tsx:60-65 BackendStatus declares only recording, busy,
         engine_loading, last_error.
+
+    Panel revisions 2026-09-26T17:35:00Z (Senior Panel synthesis — applied, HIGH, GROUNDED):
+      - Do NOT move the Secure Input check to key-down + a backstop (see the REJECTED plan noted
+        in yap24-OS5's Panel revision) — the tap is blind under Secure Input and never sees that
+        key-down. Keep secure_input.rs's 2 s poll as the source for this pill state.
+      - Add a FOURTH blind-hotkey cause this item's original three (Secure Input, tap disabled,
+        Accessibility missing) do not cover: the hotkey tap was never created because Input
+        Monitoring was missing at launch (ptt_macos.rs logs this and returns without ever
+        retrying). Wire OS3's grant-flip detection to call ptt_macos::start again, and give this
+        pill state a distinct cause/copy ("hotkey not installed") with the Privacy_ListenEvent
+        deep link, not just "disabled."
+      - Add a dwell rule before showing "blind": ignore loginwindow as an owner of Secure Input
+        (Wilson's log shows it firing most often at the lock screen, when the pill is not visible
+        anyway) and require >=1 s of continuous Secure Input before the state appears, clearing
+        immediately once it is gone — otherwise a brief Chrome password-field focus flickers the
+        pill. Acceptance gains a no-flicker case (secure input for 500 ms -> no blind state) and
+        keeps the existing <=2.1 s appearance bound.
       - Wilson's logs: well over 100 WARN lines "Secure Input ENABLED by loginwindow / Google
         Chrome — the fn PTT event tap is blind" across yap.log, yap.log.1 and yap.log.2.
       - The live gate reducer (live.ts reduceGatePhase) handles mic permission, recording and
