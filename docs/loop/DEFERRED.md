@@ -195,15 +195,22 @@ measured against a stated threshold, in a pass scoped `only:['Y11-', 'yap24-NT5'
 in `scripts/loop/items/01-yap24-notetaker.mjs` (`yap24-NT5`), gated `panel`, left out of the
 pass-1 `panelApproved` array.
 
-## 11. `yap24-OS2`, `yap24-OS4`, `yap24-OS5`, `yap24-X2`, `yap24-X3` — expansions, not fixes
-(advisory-only from the 2026-09-26 panel; not auto-included in any yap24 pass by prefix)
+## 11. `yap24-OS2`, `yap24-X2`, `yap24-X3` — expansions, DEFERRED (advisory, ungrounded
+independently — sequencing only, 2026-09-26 panel)
 
-The Senior PM seat named `OS2` (SMAppService launch-at-login), `OS4` (entitlement diet, amended
-above with a real signing bed), `OS5` (idle-wakeup consolidation, amended above to keep the Secure
-Input poll), and `65-yap24-expansions.mjs`'s `X2`/`X3` (local MCP server, "ask your meeting") as
-expansions that serve none of the three day-1 stories (meeting notes, the day-8 trial, blind
-hotkeys) and should not compete for lane time with `yap24-NT`/`yap24-PILL`/`yap24-OS1`/`OS3` in an
-early pass. They are unchanged in the item files (still gated `panel`, still buildable on their
-own later pass) — this entry just records the sequencing recommendation: build NT1-4, NT6, NT7,
-NT9, NT10, PILL1-4, OS1, OS3, UI1-3, PKG1-2 and the retargeted LIC-A first; revisit OS2/OS4/OS5/
-X2/X3 after.
+The Senior PM seat named `OS2` (SMAppService launch-at-login) and `65-yap24-expansions.mjs`'s
+`X2`/`X3` (local MCP server, "ask your meeting") as expansions that serve none of the three day-1
+stories (meeting notes, the day-8 trial, blind hotkeys). These findings were ADVISORY grade and
+this panel did not independently ground a concrete fix for them (unlike `OS4`/`OS5` below, which
+DID receive grounded amendments and are therefore approved, not deferred). Per the panel's own
+rule — advisory findings that are not independently grounded can only be DEFER or REJECTED — these
+three stay out of `panelApproved` for now. They are unchanged in the item files (still gated
+`panel`, still buildable in their own later pass).
+
+**Note — `yap24-OS4` and `yap24-OS5` are NOT in this deferred bucket.** Both received grounded,
+applied Panel revisions (see their items in `scripts/loop/items/03-yap24-hotkeys-permissions-os.mjs`)
+and are APPROVED for pass 2 alongside `OS1`/`OS3`.
+
+**Destination / sequencing recommendation.** Build NT1-4, NT6, NT7, NT9, NT10, PILL1-4, OS1, OS3,
+OS4, OS5, UI1-3, PKG1-2 and the retargeted LIC-A first; revisit OS2/X2/X3 after, once Wilson has
+scoped what a local MCP surface or launch-at-login rework should actually do.
