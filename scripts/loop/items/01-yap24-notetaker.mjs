@@ -820,15 +820,145 @@ ITEMS.push({
 ITEMS.push({
   id: 'yap24-NT11', prompt: 'yap24-NT', branch: 'loop/yap24-nt11-speaker-bleed-mic-dedupe-with-route-detection', gated: 'panel',
   title: 'A call on built-in speakers is transcribed once: mic segments that re-hear the system track are dropped, and the dedupe is skipped on headphones',
-  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26 (THE USER seat, HIGH). NOT in pass 1 (gated panel, left out of the pass-1 panelApproved) — the destination is pass 2, see docs/loop/DEFERRED.md #12. It needs yap24-NT2 (the one-shot two-track merge) and yap24-NT3 (the output-device tracking) merged first.',
+  notes: 'NEW item added by the Senior Panel round-2 verify 2026-09-26 (THE USER seat, HIGH). NOT in pass 1 (gated panel, left out of the pass-1 panelApproved) — the destination is pass 2, see docs/loop/DEFERRED.md #12. It needs yap24-NT2 (the one-shot two-track merge) and yap24-NT3 (the output-device tracking) merged first. Panel round-3 audit 2026-09-26T23:42:00Z (synthesis of two independent seats — Senior macOS Audio/Rust Engineer and THE USER) revised the spec — see "Panel revisions" below. Still pass-2 only; put back into the pass-2 panelApproved array per Loop-Logs/YAP-RESUME-2026-09-26.md.',
   preflight: `
     test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
-    grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+    grep -q 'fn bleed_score' desktop/src-tauri/src/meeting_asr.rs
   `,
   spec: `
-    Panel: APPROVED for pass 2 only (round-2 verify 2026-09-26) — NOT pass 1.
+    Panel: audited 2026-09-26 — SOUND-WITH-CHANGES: approved for pass 2, revised (kill the
+    output-route on/off switch, add an offline acoustic cross-correlation gate + real track-epoch
+    persistence, redefine the dedupe unit as a residue rule, add per-span "Me" attribution) — see
+    "Panel revisions" below. Two independent seats converged on the same BLOCKING finding and the
+    same kill.
     DEPENDS: yap24-NT2 (the merge stage this dedupe lives in), yap24-NT3 (the whole-meeting output
     device tracking it reuses)
+
+    ### PANEL REVISIONS 2026-09-26T23:42:00Z (Senior Panel synthesis, round 3 — applied,
+    BLOCKING + 4x HIGH + 4x MEDIUM, GROUNDED; Senior macOS Audio/Rust Engineer seat and THE USER
+    seat converged independently on the BLOCKING clock finding and on killOne):
+
+      - BLOCKING — no shared clock zero exists between the two tracks, so the 500 ms overlap
+        window and "same epoch as the track anchors" below have nothing to measure against: each
+        track's host_ns is rebased to its OWN first callback (syscapture.rs's TapClock, and the
+        mic's cpal base in record.rs), the absolute mach time is never persisted, and
+        TrackEpochs::SHARED is, per meeting_asr.rs's own doc comment, "a lie the caller has to
+        tell out loud" — no production path ever fills in a real offset (a source grep for
+        TrackEpochs:: today finds only tests/two_track_merge_*.rs, nothing under src/). Add an
+        NT11 step 0, before the dedupe: at every stream open/reopen, persist the absolute
+        first-callback mach time (the tick TapClock already computes as its epoch, and the mic's
+        cpal base next to record.rs's mach_absolute_time call) into the per-meeting anchor
+        sidecar NT2 already keeps. Build TrackEpochs from those persisted values — never from
+        SHARED — inside NT11's own code path (this item, not NT2's). A source-scan test asserts
+        TrackEpochs::SHARED has no caller under src/. As a fallback when an epoch is missing
+        (e.g. an anchor file written before this landed), estimate it once per meeting from the
+        bleed_score correlation peak below, never from a guessed constant.
+
+      - HIGH — the dedupe unit is undefined ("segment" spans word-level or higher depending on
+        the ASR model), so text containment on WORD spans reduces to "drop any mic word that also
+        appears on the system track nearby" — a real "yeah", "right", or Wilson reading back
+        "Tuesday at three" gets deleted. On SEGMENT spans the >= 0.6 ratio cuts both ways: a
+        7-word real commitment sitting inside someone else's overlapping 25-word sentence is
+        0.78-contained and gets dropped whole (violating this item's own "no real mic word is
+        lost" test), while below the ratio the other side's full 25 words survive labelled "Me".
+        Replace the ratio rule: for TimedKind::Word, dedupe only a run of 3 or more CONSECUTIVE
+        folded mic words matched to a system run inside the measured lag window — an isolated
+        single-word match is always kept. For TimedKind::Segment (or higher), text containment
+        becomes a residue rule, not a drop/keep binary: remove the matched system run's text from
+        the mic span; if the residue has 0 or 1 non-stopword tokens, drop the span; otherwise KEEP
+        the residue (word-level spans) or keep the whole span flagged mixed=true (segment-level)
+        so NT4 never draws a "Me" action item from it. Text agreement is a NECESSARY condition for
+        a drop, never SUFFICIENT on its own — see the acoustic gate below.
+
+      - HIGH — the system WAV is the decisive evidence and this item as first written never uses
+        it. Add a pure fn bleed_score(mic: &[f32], sys: &[f32], lag_range) -> (peak_ncc, lag_ms)
+        in meeting_asr.rs (16 kHz, band-limited envelopes, windowed FFT cross-correlation — O(n),
+        well under 1% of ASR time for a 3-hour meeting) run offline over the two already-finalized
+        WAVs (WavWindows::open, never MemoryWindows — 690 MB for a 3-hour meeting). A candidate mic
+        run/segment is dropped only when peak_ncc clears a committed threshold AND the text rule
+        above agrees. This also satisfies the item's own "measured, not guessed": log the
+        per-meeting median measured lag and commit it, next to each device's queried
+        kAudioDevicePropertyLatency + safety offset, to docs/BUDGETS.md — "a few hundred ms ...
+        through the room" conflated acoustic travel time (~3 ms/m) with this unmeasured clock
+        offset; both numbers now get recorded honestly. Still never touches the capture path or
+        the WAV files — a re-transcribe still re-derives everything.
+
+      - HIGH — kill the output-route classifier as the dedupe on/off switch (killOne, both seats):
+        classifying from the system DEFAULT output device is the wrong device for a call app that
+        outputs elsewhere, misses Bluetooth/HDMI/AirPlay speakers under "unknown is treated as
+        speakers", and misreads Wilson's own machine today (system_profiler SPAudioDataType shows
+        "BH + Headphones: Transport: Unknown" and "BlackHole 2ch: Transport: Virtual"). Gate the
+        dedupe instead on MEASURED COUPLING: it runs only where the bleed_score + text evidence
+        above actually finds matched runs at a stable lag. On AirPods/headphones no runs match, so
+        nothing is dropped, with no device taxonomy required. fn output_route(...) stays in
+        syscapture.rs as a DIAGNOSTIC field only, logged next to the suppression count (see
+        below) — it never again decides on/off. Do not use the grep for fn output_route as a
+        stand-in for "the feature works" (dropped from preflight/acceptance above); the real gate
+        is bleed_score plus the matched-run test below.
+
+      - HIGH — per-span attribution: a route change or a tap rebuild leaves a stretch where the
+        far side's speech exists ONLY on the mic (dead air across a reopen, or AirPods
+        disconnecting back to speakers mid-call) — MicIsMe is decided once per MEETING today
+        (diarization_target from whether any system spans exist at all), so that whole stretch is
+        labelled "Me" and NT4 attributes their sentence to Wilson. Make the label per SPAN, not
+        per meeting: where the route is speakers/unknown and the system track delivered nothing
+        for that span (tap hole, reopen gap, or all-zero samples), label the mic speech "Speaker"
+        (unattributed) through the existing meetings::speaker_label path, not "Me", and exclude it
+        from "Me"-owned action items in NT4. Tests assert labels through speaker_label itself,
+        never through hardcoded "You"/"Me"/"Them" string literals in a fixture (the DO text below
+        says "You"; the shipped label is "Me").
+
+      - MEDIUM — a route change mid-meeting is exactly when cross-track host time is least
+        trustworthy: a reopened stream rebases host_ns to zero, and the segmented timeline cannot
+        recover the dead air across the reopen. Record route and reopen boundaries against each
+        track's finalized-sample position (the axis meeting.rs::finalized_positions already keeps
+        continuous across a reopen), never against raw host_ns. The "speakers -> AirPods" fixture
+        below must include a mic reopen at the boundary; assert nothing within +/-1 s of the seam
+        is dropped unless the acoustic gate actually fires.
+
+      - MEDIUM — VPIO / capture-time voice-processing echo cancellation is REJECTED as the layer
+        for this fix, stated explicitly rather than silently bypassed: it requires both the input
+        and output node in voice-processing mode, ducks the call's OWN playback on macOS 14+
+        (voiceProcessingOtherAudioDuckingConfiguration), is irreversible (a re-transcribe could
+        never recover the raw mic), and would replace the shared cpal mic path dictation also
+        uses. The offline system-track reference (bleed_score above) does the same job
+        non-destructively, entirely outside the capture path, and re-derives on every
+        re-transcribe. Add this sentence to the NOT clause verbatim: "VPIO rejected: it ducks the
+        call's own playback, is irreversible, and replaces the shared cpal mic path; the offline
+        system-track cross-correlation does the same job non-destructively."
+
+      - MEDIUM — the tests as first specified are text-only ("synthetic ChunkOutcome spans, no
+        model"), and meeting_asr.rs's own header warns RNNT/TDT emission times are unstable
+        across decodes and must never be used to match one decode's words against another's — yet
+        this item matches mic-decode words to system-decode words by time. Add a real paired
+        fixture to the NT0 corpus (5 minutes of a call on built-in speakers: mic.wav + sys.wav +
+        anchors, with a committed room impulse response at -18 dB / 40 ms delay and a declared
+        300 ms epoch offset) and gate on it with the real model via --transcribe-meeting headless:
+        remaining duplicated far-side runs <= 5%, mic-only word recall >= 0.98, nothing dropped on
+        the headphones fixture, and the "speakers -> AirPods" reopen fixture above all hold. Keep
+        the synthetic-span unit tests as Tier A (no model); the paired-WAV run is Tier B, gated
+        YAP_EVAL_REQUIRE=1 + YAP_MODEL_DIR like NT0/NT2. Commit both numbers to docs/BUDGETS.md.
+
+      - MEDIUM — suppressed spans must be auditable, not a silent delete-and-count: persist each
+        suppressed mic span as its own row flagged suppressed_as_echo=1 (excluded from render,
+        FTS, export and NT4 input) instead of the "one diagnostics field" this item first
+        specified, so a founder can see and recover a line he remembers saying without a
+        re-transcribe. Add this via the NEXT AVAILABLE versioned migration step (never an ad hoc
+        ALTER — NT4's revision already claims MIGRATION_6_MEETING_NOTES; this one takes the
+        following number when both land). Route spans, now that they are diagnostic-only, live in
+        the same per-meeting anchor/journal sidecar NT2 already keeps, cleaned up only through
+        NT1's purge/delete path — never independently. yap24-NT6 (its own item, not built here)
+        gets a one-line note: "N lines hidden as speaker echo · Show" revealing them inline — that
+        UI line is DEFERRED to NT6's own pass.
+
+    EVIDENCE (both seats, converged): syscapture.rs's TapClock rebases each stream's host_ns to
+    its own first mHostTime and never persists the absolute tick; meeting_asr.rs's doc comment
+    calls TrackEpochs::SHARED "a lie the caller has to tell out loud"; asr_engine.rs's TimedKind
+    is None/Segment/Word/Token and meeting_asr.rs's own fixtures already exercise TimedKind::Word;
+    meeting.rs::finalized_positions stays continuous across a reopen where host_ns does not;
+    system_profiler SPAudioDataType on Wilson's own machine shows "BH + Headphones: Transport:
+    Unknown" and "BlackHole 2ch: Transport: Virtual" — both misclassified by a device-taxonomy
+    route switch.
 
     WHY (THE USER seat): a founder's real call is a laptop on a desk with the far side playing out
     of the built-in speakers. The system track (process tap) carries the far side cleanly; the mic
@@ -837,50 +967,68 @@ ITEMS.push({
     once as You (mic) — and NT4's summary then attributes the other side's commitments to Wilson.
     On headphones/AirPods there is no bleed and nothing must be removed.
 
-    DO
-      1. Output route detection (syscapture.rs, beside NT3's per-meeting device tracking): at
-         meeting start and on every kAudioHardwarePropertyDefaultOutputDevice change, classify the
-         default output as speakers (built-in device whose kAudioDevicePropertyDataSource is
-         internal speakers, or an external non-headphone device) | headphones (built-in device on
-         its headphone data source, or a Bluetooth/USB headset transport) | unknown. Record the
-         route as time spans on the meeting (host time, same epoch as the track anchors) and
-         expose fn output_route(...) for tests. unknown is treated as speakers (dedupe on) — a
-         missed dedupe is a duplicated sentence, a wrong dedupe on headphones would be the bug
-         below.
-      2. The dedupe runs INSIDE NT2's one-shot merge stage (after both tracks' ASR finished, before
-         the single transactional write) and ONLY for mic segments whose host-time span falls in a
-         speakers/unknown route span and overlaps a system-track segment (allow up to 500 ms
-         acoustic + buffer lag, measured, not guessed — commit the number to docs/BUDGETS.md).
-         A mic segment is dropped only when its normalized word sequence is substantially contained
-         in the overlapping system text (e.g. >= 0.6 of its tokens, in order); double-talk —
-         the mic segment carries words the system span does not — keeps the mic segment. Never
-         trim words out of a kept segment in this item.
-      3. Audio is never touched — the dedupe acts on segments only, so a re-transcribe re-derives
-         it. The row records how many mic segments were suppressed (one diagnostics field), and one
-         log line per meeting says how many and on which route.
-      4. Headphones spans skip the dedupe entirely; kind in_person meetings (MicOnly per NT3) never
-         run it.
+    DO (original — SUPERSEDED where it conflicts with "Panel revisions" above; kept for context,
+    read the revisions first)
+      1. SUPERSEDED — output route detection is no longer the dedupe on/off switch (see the HIGH
+         kill finding above). Still add fn output_route(...) in syscapture.rs, beside NT3's
+         per-meeting device tracking, classifying the default output as speakers | headphones |
+         unknown on the same triggers as before, but it now feeds a DIAGNOSTIC log field only —
+         never a gate. The real gate is step 2 below.
+      2. SUPERSEDED — the dedupe still runs INSIDE NT2's one-shot merge stage (after both tracks'
+         ASR finished, before the single transactional write), but the drop decision is now: (a)
+         epochs come from the persisted per-track anchors (BLOCKING finding above), never SHARED;
+         (b) a candidate window is a text-matched run (3+ consecutive words, or the containment
+         residue rule for segment spans — HIGH finding above), gated on peak_ncc from
+         fn bleed_score clearing its committed threshold (HIGH finding above) — text agreement
+         alone is never sufficient; (c) never trim words out of a kept span/residue.
+      3. Audio is never touched — the dedupe and bleed_score both act read-only on the two
+         finalized WAVs/segments, so a re-transcribe re-derives everything. SUPERSEDED: suppressed
+         mic spans are now their own rows flagged suppressed_as_echo=1 (MEDIUM finding above), not
+         a single diagnostics counter; still log how many and on which route per meeting.
+      4. Headphones spans skip the dedupe entirely (no matched runs exist there in practice, so
+         this now falls out of the measured-coupling gate rather than being special-cased); kind
+         in_person meetings (MicOnly per NT3) never run it. NEW: where a speakers/unknown span has
+         no system audio to compare against at all (tap hole / reopen gap), label that mic speech
+         "Speaker" via meetings::speaker_label, not "Me" (HIGH per-span-attribution finding above).
 
-    NOT: no echo cancellation / DSP on the capture path, no new TCC permission, no change to
-    dictation, no second ASR pass.
+    NOT: no echo cancellation / DSP on the capture path (VPIO explicitly rejected — see the added
+    NOT sentence in the Panel revisions above), no new TCC permission, no change to dictation, no
+    second ASR pass. Route classification is a diagnostic field only, never the on/off switch.
 
-    Tests (tests/meeting_cross_track_bleed.rs, synthetic ChunkOutcome spans, no model):
-      - speakers route, mic re-hears a system sentence 250 ms late -> the mic copy is suppressed,
-        the system copy stays, the merged transcript has the sentence once;
-      - the same audio spans on a headphones route -> nothing suppressed;
-      - double-talk (mic speaks different words over a system sentence) -> both kept;
+    Tests (tests/meeting_cross_track_bleed.rs) — Tier A, synthetic ChunkOutcome spans, no model:
+      - speakers route, mic re-hears a system sentence 250 ms late, with a real persisted epoch
+        (not SHARED) -> the mic copy is suppressed via a matched run + bleed_score, the system
+        copy stays, the merged transcript has the sentence once;
+      - the same audio spans on a headphones route (no matched run found) -> nothing suppressed;
+      - double-talk: a 7-word mic commitment inside an overlapping 25-word system sentence ->
+        the residue (the mic's own 7 words) survives, in both directions of overlap ratio;
+      - an isolated single mic word ("yeah") that also appears in a nearby system utterance ->
+        kept (never dropped on a single-word match);
       - mic speech with no overlapping system segment -> kept;
-      - a route change mid-meeting (speakers -> AirPods) applies the dedupe to the first span only;
+      - mic speech on a speakers/unknown route where the system track is silent for that span
+        (tap hole) -> labelled "Speaker" via meetings::speaker_label, not "Me";
+      - a route change mid-meeting (speakers -> AirPods) with a mic reopen at the boundary ->
+        dedupe applies only where bleed_score/text evidence actually matches, and nothing within
+        +/-1s of the seam is dropped without that evidence;
+      - source scan: no caller of TrackEpochs::SHARED under src/;
       - no real mic word is lost: across the fixture, every word that exists only on the mic track
         survives (mirror meeting_eval's seam_dedupe_never_deletes_real_words posture).
+
+    Tests — Tier B, real model, gated YAP_EVAL_REQUIRE=1 + YAP_MODEL_DIR (MEDIUM finding above):
+      - a paired mic.wav/sys.wav fixture (room impulse response, -18 dB, 40 ms delay, declared
+        300 ms epoch offset) run through --transcribe-meeting headless: duplicated far-side runs
+        <= 5%, mic-only word recall >= 0.98, nothing dropped on the paired headphones fixture.
   `,
   acceptance: `
     test -f desktop/src-tauri/tests/meeting_cross_track_bleed.rs
     grep -q 'fn output_route' desktop/src-tauri/src/syscapture.rs
+    grep -q 'fn bleed_score' desktop/src-tauri/src/meeting_asr.rs
+    ! grep -rn 'TrackEpochs::SHARED' desktop/src-tauri/src
     cd desktop && npm ci && cd src-tauri
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_cross_track_bleed
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting
+    YAP_DATA_DIR="$(mktemp -d)/yap-state" YAP_EVAL_REQUIRE=1 YAP_EVAL_CORPUS="$HOME/yap-eval-corpus/meetings" YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" cargo test --features custom-protocol --test meeting_cross_track_bleed -- --ignored --nocapture --test-threads=1
     YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo clippy --all-targets --features custom-protocol
   `,
 })
