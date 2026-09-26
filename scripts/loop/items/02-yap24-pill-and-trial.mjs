@@ -29,7 +29,11 @@ ITEMS.push({
   `,
   spec: `
     Panel: pending (product copy/threshold — the panel may keep a quiet style, it may not keep silence)
-    DEPENDS: Y2-B (open PR #186 — the numeral in both pill styles and the 30px side dock)
+    DEPENDS: Y2-B (open PR #186 — the numeral in both pill styles and the 30px side dock).
+      Y2-B lives in 20-y2 on the SAME lane and runs AFTER this file, so do not wait for it: if #186
+      is still open when this item starts, carry its commits onto this branch (rebase onto main,
+      keep its tests), then close #186 with a "superseded by #<this PR>" comment naming the commits.
+      Do not redraw the numeral from scratch. Y2-B's own pre-flight then retires it.
 
     EVIDENCE
       - pill/license.ts:136-165 display policy: "trial, more than 7 days -> nothing (ambient
