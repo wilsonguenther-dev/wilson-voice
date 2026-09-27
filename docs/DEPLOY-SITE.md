@@ -20,15 +20,32 @@ the download lives there now.
 config is touched by this runbook. Which host becomes canonical — and which
 custom domain points at it — is Wilson's call, not the deploy script's.
 
-- Vercel scope/team: **`drivia`** (account `wilson-2398`, wilson@drivia.consulting)
-- Vercel project: **`yap`**
-- Production URL: **https://yap-lemon.vercel.app**
+- Vercel scope/team: **`wilson-guenthers-projects`** (account `wilsonguenther-9414`,
+  wilsonguenther@gmail.com). The project moved here from team `drivia`
+  (account `wilson-2398`) on 2026-09-27; nothing lives on `drivia` any more.
+- Vercel project: **`yap`**, id `prj_uA0NyOkmbV3ezocAqCnEGLfLBV8G` (unchanged by
+  the team move; also in `drivia-accounts.env` as `VERCEL_PROJECT_ID_YAP`)
+- Production URLs: **https://yapvoice.app** (custom domain, `www` 308s to the
+  apex) and **https://yap-lemon.vercel.app**
+- Domain: `yapvoice.app` is Vercel-registered and its DNS zone moved to team
+  `wilson-guenthers-projects` with the project (5 records, identical after the move)
 
-The management token lives in `~/.config/drivia/drivia-accounts.env` as
-`VERCEL_NEW_TOKEN`. Source that file, never echo it, never paste it into a repo.
-The CLI's *default* login on this machine is still the old, suspended
-`wilsonguenther-9414` account, so **every command below must pass `--scope drivia`
-and `--token`** — omit them and you deploy into a dead account.
+The token and team id live in `~/.config/drivia/drivia-accounts.env` as
+`VERCEL_TOKEN` and `VERCEL_TEAM_ID` (the old `VERCEL_NEW_TOKEN` /
+`VERCEL_NEW_TEAM_ID` names are gone; the abandoned team's values are kept only as
+`VERCEL_OLD_TEAM_DRIVIA_*` and must not be used for deploys). Source that file,
+never echo it, never paste it into a repo. The CLI's default login on this machine
+is now `wilsonguenther-9414`, but **every command below still passes
+`--scope wilson-guenthers-projects` and `--token`** so a stale login or a second
+team can never receive the deploy.
+
+**Git link: dropped by the team transfer.** The project used to be linked to
+`wilsonguenther-dev/wilson-voice` @ `main` (root `site/dist`, path-diff ignore
+step), and the transfer removed that link because the gmail Vercel account has
+no GitHub login connection yet. Until Wilson connects GitHub on that account and
+re-links the project (`~/.config/drivia/vercel-migration-2026-09-27/relink-git.sh`),
+**a push to `main` builds nothing on Vercel.** The CLI deploy below does not
+depend on the git link and keeps working.
 
 ## The staged deploy directory
 
@@ -70,9 +87,14 @@ Vercel's autodetect cannot decide this is an npm project and try to build it, an
 ```bash
 set -a; . ~/.config/drivia/drivia-accounts.env; set +a
 cd "$STAGE"
-vercel link --yes --project yap --scope drivia --token "$VERCEL_NEW_TOKEN"
-vercel deploy --prod --yes --archive=tgz --scope drivia --token "$VERCEL_NEW_TOKEN"
+vercel link --yes --project yap --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
+vercel deploy --prod --yes --archive=tgz --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
 ```
+
+`VERCEL_TOKEN` is, as of 2026-09-27, a CLI login token that expires
+2026-09-28T02:24Z. If `vercel deploy` answers 401/403, the durable replacement
+token has not been written into `drivia-accounts.env` yet; that is Wilson's
+dashboard step, not something to work around with the old team's token.
 
 `--archive=tgz` matters: without it the CLI uploads file-by-file and a 22 MB DMG
 is a slow, flaky single request. `vercel link` is idempotent — it creates the
@@ -84,7 +106,7 @@ Then bump the version everywhere it is written down: the three `href`s and the
 ## Verify (do not skip — a broken download is invisible from the dashboard)
 
 ```bash
-U=https://yap-lemon.vercel.app
+U=https://yapvoice.app        # then repeat with https://yap-lemon.vercel.app
 # Content identity, not reachability: every page must come back byte-for-byte
 # equal to the file in the tree you deployed. Empty diff = pass.
 for p in index.html terms.html privacy.html style.css; do
@@ -122,7 +144,10 @@ disk image macOS refuses to mount.
 ## What this runbook does not do
 
 - Touch Forge, its Caddy config, or any DNS record.
-- Buy or attach a custom domain. `yap-lemon.vercel.app` is the production URL
-  until Wilson picks one.
+- Buy, attach or move a custom domain. `yapvoice.app` is already attached to the
+  `yap` project on team `wilson-guenthers-projects`; domain and DNS changes are
+  Wilson's call.
+- Re-link the Vercel project to GitHub. That needs Wilson's GitHub login
+  connection on the gmail Vercel account (see above).
 - Publish the release. That is `docs/RELEASE.md`; this runbook assumes the
   notarized DMG is already a release asset and only ever *reads* it.
