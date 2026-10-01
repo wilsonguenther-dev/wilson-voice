@@ -13,6 +13,9 @@ import {
 } from "./live";
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
 import { usePillDrag, watchPillHitbox } from "./drag";
+import {
+  applyMotionVars, createSoftBody, DURATION, prefersReducedMotion, type SoftBody,
+} from "./motion";
 import MeetingBadge, { useMeetingStatus } from "./MeetingBadge";
 
 /**
@@ -85,8 +88,23 @@ export default function ClassicPill(
   // Set by the rAF effect; called by the audio_level listener to re-arm the
   // smoothing loop after it parks itself at rest (audit [0]).
   const wakeRef = useRef<() => void>(() => {});
+  // Y5-D — the soft body. One squash scalar, integrated by the rAF loop below,
+  // painted as the capsule's `scale`. Created ONCE per mount, and created
+  // already-inert when the OS asks for less motion, so there is no per-frame
+  // branch and no way for a reduced-motion pill to animate by accident.
+  const softRef = useRef<SoftBody | null>(null);
+  if (softRef.current === null) {
+    softRef.current = createSoftBody({ reduceMotion: prefersReducedMotion() });
+  }
   // YV65 — press-and-drag the capsule to re-dock the pill.
-  const drag = usePillDrag();
+  // Y5-D — ...and the same gesture drives the physics: press squashes, a plain
+  // release rebounds through the stretch, a release that DRAGGED lands a dock
+  // bounce on the slower spring.
+  const drag = usePillDrag({
+    press: () => { softRef.current?.press(); wakeRef.current(); },
+    release: () => { softRef.current?.release(); wakeRef.current(); },
+    dock: () => { softRef.current?.dock(); wakeRef.current(); },
+  });
   // YV95 — the pill is the always-visible recording indicator for a meeting.
   const meeting = useMeetingStatus();
 
@@ -98,25 +116,47 @@ export default function ClassicPill(
   }, []);
 
   useEffect(() => {
+    // Y5-D — the duration table owns the pill's CSS timings too (float.css
+    // spells them `var(--dur-expand) var(--ease-state)`), so publish it once.
+    applyMotionVars(document.documentElement);
     // prefers-reduced-motion: paint one calm static frame (level 0, waveform at
-    // rest) instead of the per-frame --level animation loop.
+    // rest, capsule at its OWN shape) instead of the per-frame animation loop.
+    // Y5-D: the information the pill carries — phase, numeral, progress — is
+    // markup and CSS, never motion, so the static frame is complete. The only
+    // thing skipped here is movement.
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       pillRef.current?.style.setProperty("--level", "0");
+      pillRef.current?.style.setProperty("--squash-x", "1");
+      pillRef.current?.style.setProperty("--squash-y", "1");
       return;
     }
     let raf = 0;
     let running = false;
-    const loop = () => {
+    let last = 0;
+    const loop = (now: number) => {
+      // Injected timestep — the same number motion.test.ts feeds the spring.
+      const dt = last === 0 ? 1 / 60 : (now - last) / 1000;
+      last = now;
       smoothRef.current += (levelRef.current - smoothRef.current) * 0.3;
       pillRef.current?.style.setProperty("--level", smoothRef.current.toFixed(3));
-      // Settle-and-park: once both the target level and the smoothed value are
-      // at rest, stop scheduling frames so the always-on pill doesn't burn a
-      // 60fps rAF forever while idle (audit [0]). The audio_level listener
-      // re-arms the loop via wakeRef when new audio arrives.
-      if (levelRef.current < 0.002 && smoothRef.current < 0.002) {
+      const soft = softRef.current;
+      const softRunning = soft ? soft.tick(dt) : false;
+      if (soft) {
+        const sc = soft.scale();
+        pillRef.current?.style.setProperty("--squash-x", sc.x.toFixed(4));
+        pillRef.current?.style.setProperty("--squash-y", sc.y.toFixed(4));
+      }
+      // Settle-and-park: once the level AND the soft body are both at rest,
+      // stop scheduling frames so the always-on pill doesn't burn a 60fps rAF
+      // forever while idle (audit [0], YV81). The audio_level listener and the
+      // gesture callbacks re-arm the loop via wakeRef. A spring that never
+      // settles would defeat this, which is why the integrator's rest contract
+      // is asserted in motion.test.ts rather than assumed.
+      if (!softRunning && levelRef.current < 0.002 && smoothRef.current < 0.002) {
         smoothRef.current = 0;
         pillRef.current?.style.setProperty("--level", "0");
         running = false;
+        last = 0;
         return;
       }
       raf = requestAnimationFrame(loop);
@@ -124,6 +164,7 @@ export default function ClassicPill(
     const wake = () => {
       if (running) return;
       running = true;
+      last = 0;
       raf = requestAnimationFrame(loop);
     };
     wakeRef.current = wake;
@@ -147,7 +188,7 @@ export default function ClassicPill(
       if (prevBusy.current && !s.busy && !s.recording) {
         setDone(true);
         if (doneTimer.current) clearTimeout(doneTimer.current);
-        doneTimer.current = window.setTimeout(() => setDone(false), 1100);
+        doneTimer.current = window.setTimeout(() => setDone(false), DURATION.doneFlash);
       }
       prevBusy.current = s.busy;
     };
