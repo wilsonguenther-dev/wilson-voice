@@ -4,15 +4,26 @@ import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type Meeti
 import TranscriptList from "../meetings/TranscriptList";
 import { formatMeetingDuration, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { ErrorState, LoadingState, RoomGlyph } from "../ViewStates";
 
 export default function Meetings() {
   const {
-    confirmDeleteMeeting, insights, loadMeetings, meetingBusy, meetingKind, meetingKinds,
+    booting, confirmDeleteMeeting, insights, loadMeetings, meetingBusy, meetingKind, meetingKinds,
+    meetingsError, meetingsLoading,
     meetingQuery, meetingStatus, meetings, openMeeting, openMeetingDetail, setConfirmDeleteMeeting,
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting, 
     toast,
   } = useAppCtx();
-  if (!insights) return null;
+  // Y5-B — a third `return null` blank page, and the worst of them: the read
+  // that feeds it (loadMeetings) swallowed its own rejection, so a failed
+  // meetings query rendered as "No meetings yet" — Yap telling a user their
+  // recordings were gone.
+  const state = viewState(
+    meetings,
+    booting || (meetingsLoading && meetings.length === 0),
+    meetingsError,
+  );
   async function exportMeeting(id: string) {
     setMeetingBusy(true);
     try {
@@ -72,6 +83,25 @@ export default function Meetings() {
       toast(errorText(e));
     }
   }
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="meetings"
+        view="meetings"
+        error={meetingsError}
+        actionLabel="Open meetings again"
+        onAction={() => void loadMeetings(meetingQuery)}
+      />
+    );
+  if (state === "loading" || !insights)
+    return (
+      <LoadingState
+        data-loading-state="meetings"
+        noun="meetings"
+        expected={insights?.meetings?.totalMeetings ?? null}
+        onRetry={() => void loadMeetings(meetingQuery)}
+      />
+    );
   return (
     <>
       {!openMeeting && (
@@ -166,7 +196,12 @@ export default function Meetings() {
               </div>
 
               {meetings.length === 0 ? (
-                <div className="empty">
+                <div className="empty" data-empty-state="meetings">
+                  {/* Y5-B — Meetings gets its OWN drawing. The item forbids one
+                      generic illustration reused across seven views. */}
+                  <div className="view-state-glyph">
+                    <RoomGlyph />
+                  </div>
                   <h3>
                     {meetingQuery ? "No meetings match that" : "No meetings yet"}
                   </h3>
@@ -337,14 +372,23 @@ export default function Meetings() {
               )}
 
               {openMeeting.segments.length === 0 ? (
-                <div className="empty">
+                <div className="empty" data-empty-state="meetings:segments">
                   <h3>No transcript yet</h3>
                   <p>
                     {openMeeting.meeting.state === "recording" ||
                     openMeeting.meeting.state === "transcribing"
-                      ? "Yap is still working through the audio."
-                      : "This meeting has no transcribed segments."}
+                      ? "Yap is still working through the audio. This page does not refresh itself."
+                      : "Nothing was transcribed from this recording. The audio is still on disk for 7 days."}
                   </p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void openMeetingDetail(openMeeting.meeting.id)}
+                    >
+                      Check again
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <TranscriptList

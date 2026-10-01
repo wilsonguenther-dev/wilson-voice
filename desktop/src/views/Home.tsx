@@ -3,10 +3,12 @@ import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
 import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
   const {
-    clearAll, clearing, copyText, diffId, 
+    bootError, booting, clearAll, clearing, copyText, diffId, openModelSettings, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, pasteText, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
@@ -14,7 +16,9 @@ export default function Home() {
     setNoteTitle, setQuery, setRetryId, settings, status, toast,
     toggleRecord,
   } = useAppCtx();
-  if (!insights) return null;
+  // Y5-B — was `if (!insights) return null`: a heading over a blank page on
+  // every fresh install, because insights is null until the first read lands.
+  const state = viewState(history, booting || !insights, bootError);
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
@@ -77,6 +81,35 @@ export default function Home() {
       toast(String(e));
     }
   }
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="home"
+        view="home"
+        error={bootError}
+        actionLabel="Reload history"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="home" noun="history" expected={insights?.totalSessions ?? null} onRetry={() => void refreshAll()} />;
+
+  // Y5-B — the first of the two cases the item names. `status.modelReady` used
+  // to gate a warning STRIP over an otherwise normal view: a record button that
+  // cannot record, a search box over a history that cannot grow. Before the
+  // model exists there is exactly one thing to do, so this is the whole view.
+  if (!status.modelReady)
+    return (
+      <EmptyState
+        data-empty-state="home:model"
+        glyph={<WaveGlyph />}
+        title="Yap needs a speech model before it can listen"
+        body="The model runs on this Mac and never leaves it. Pick one and the download starts; it is the last setup step."
+        actionLabel="Choose a speech model"
+        onAction={openModelSettings}
+      />
+    );
+
   return (
             <>
               <YappyHouse
@@ -190,13 +223,18 @@ export default function Home() {
               )}
 
               {history.length === 0 ? (
-                <div className="empty">
-                  <h3>No dictations yet</h3>
-                  <p>
-                    Click Dictate or hold <kbd>fn</kbd>. Text is stored locally
-                    and searchable forever.
-                  </p>
-                </div>
+                <EmptyState
+                  data-empty-state="home:history"
+                  glyph={<WaveGlyph />}
+                  title={query ? "Nothing matches that" : "No dictations yet"}
+                  body={
+                    query
+                      ? "Search reads every word you have ever dictated. Try a shorter phrase."
+                      : "Hold fn and say something. The text lands here, stored on this Mac and searchable forever."
+                  }
+                  actionLabel={query ? "Clear the search" : "Hold fn and say something"}
+                  onAction={query ? () => setQuery("") : toggleRecord}
+                />
               ) : (
                 <ul className="feed">
                   {history.map((e) => (
