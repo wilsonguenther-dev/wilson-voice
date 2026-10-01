@@ -64,6 +64,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
+        "https://yap-lemon.vercel.app/updates/latest.json",
         "https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE5QTkzMDdCMEMwOEYwMjAKUldRZzhBZ01lekNwR2RSbHI1YkgrYlRsUzhwY0JQN1pITGNvYTV6TFFBVDRSNEhTMVNoWVlhdUEK",
