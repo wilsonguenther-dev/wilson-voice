@@ -1,3 +1,5 @@
+@import "./tokens.css";
+
 /* Yap — floating Dictate island.
  * Solid "obsidian island" (Dynamic Island / superwhisper style). We do NOT use
  * backdrop-filter: it's a no-op on a transparent webview (can't blur the desktop
@@ -6,10 +8,10 @@
  */
 
 :root {
-  --accent-live: 351 95% 71%; /* rose  — listening      */
-  --accent-busy: 38 92% 55%;  /* amber — transcribing   */
-  --accent-done: 152 69% 52%; /* green — done           */
-  --level: 0;                 /* audio level 0..1, set from JS each frame */
+  /* --accent-live / --accent-busy / --accent-done now live in tokens.css with
+     the rest of the colour roles. --level stays here: it is per-frame runtime
+     state written by JS, not a design token. */
+  --level: 0; /* audio level 0..1, set from JS each frame */
 }
 
 * {
@@ -58,25 +60,25 @@ body,
   max-width: 260px;
   padding: 0 10px;
   border-radius: 22px; /* perfect capsule */
-  color: #f5f5f7;
+  color: var(--pill-text);
   isolation: isolate;
   cursor: pointer;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 34%),
-    linear-gradient(180deg, #17181c 0%, #0c0c0f 100%);
+    linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 -8px 14px rgba(0, 0, 0, 0.35),
     0 12px 34px rgba(0, 0, 0, 0.46),
     0 2px 6px rgba(0, 0, 0, 0.34);
-  animation: pill-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pill-in 0.3s var(--ease-glide) both;
   transition:
     box-shadow 0.28s ease,
     background 0.28s ease,
     transform 0.18s ease,
-    height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    min-width 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.34s var(--ease-glide),
+    min-width 0.34s var(--ease-glide),
     gap 0.3s ease,
     padding 0.3s ease;
 }
@@ -213,7 +215,7 @@ body,
   gap: 3px;
   height: 14px;
   min-width: 44px;
-  transition: height 0.3s cubic-bezier(0.22, 1, 0.36, 1), min-width 0.3s ease;
+  transition: height 0.3s var(--ease-glide), min-width 0.3s ease;
 }
 .pill.live .wave,
 .pill.busy .wave {
@@ -225,7 +227,7 @@ body,
   border-radius: 99px;
   background: rgba(255, 255, 255, 0.3);
   height: calc(3px + var(--level) * var(--peak, 1) * 16px);
-  transition: height 0.085s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s;
+  transition: height 0.085s var(--ease-standard), background 0.2s;
   will-change: height;
 }
 .wave i:nth-child(1),
@@ -296,15 +298,15 @@ body,
   display: grid;
   place-items: center;
   cursor: pointer;
-  color: #fff;
-  background: radial-gradient(120% 120% at 30% 25%, #3a3b40, #17181c);
+  color: var(--text-on-fill);
+  background: radial-gradient(120% 120% at 30% 25%, var(--pill-shell-highlight), var(--pill-shell-top));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 6px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   transition:
     transform 0.14s,
     box-shadow 0.2s,
     background 0.2s,
-    width 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.3s var(--ease-glide),
     opacity 0.24s ease,
     margin 0.3s ease;
 }
@@ -382,8 +384,8 @@ body,
 .kami-bubble {
   position: absolute;
   transform: translate(-50%, -100%) scale(0.9);
-  background: #20222e;
-  color: #f7f1e6;
+  background: var(--pill-bubble-surface);
+  color: var(--pill-bubble-text);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
   padding: 5px 10px;
@@ -395,7 +397,7 @@ body,
   max-width: 92%;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.25s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: opacity 0.25s, transform 0.3s var(--spring-pop);
   z-index: 3;
 }
 .kami-bubble.show {
@@ -426,10 +428,6 @@ body,
  * classic pill's rAF loop nor Yappy's canvas loop is involved, which is what
  * lets both stay parked for the length of a three-hour meeting.
  */
-:root {
-  --accent-meeting: 0 84% 62%; /* red — recording, the one universal signal */
-}
-
 .meeting-badge {
   display: flex;
   align-items: center;
@@ -472,7 +470,7 @@ body,
     Menlo,
     monospace;
   letter-spacing: 0.02em;
-  color: #f5f5f7;
+  color: var(--pill-text);
 }
 
 /* YV110 — the system-audio banner rows 1 and 2 require. Deliberately two words
@@ -485,7 +483,7 @@ body,
   text-transform: uppercase;
   padding: 3px 6px;
   border-radius: 5px;
-  color: #f5f5f7;
+  color: var(--pill-text);
   background: hsl(38 92% 50% / 0.22);
   border: 1px solid hsl(38 92% 50% / 0.45);
   white-space: nowrap;
@@ -501,7 +499,7 @@ body,
   border-radius: 6px;
   flex: none;
   cursor: pointer;
-  color: #fff;
+  color: var(--text-on-fill);
   background: hsl(var(--accent-meeting) / 0.34);
   box-shadow: inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.72);
   transition: background 0.16s ease;
@@ -552,7 +550,7 @@ body,
   transform: translateX(-50%);
   padding: 5px 8px;
   border-radius: 14px;
-  background: linear-gradient(180deg, #17181c 0%, #0c0c0f 100%);
+  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
   box-shadow:
     inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
     0 8px 20px rgba(0, 0, 0, 0.42);
@@ -631,7 +629,7 @@ body,
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.kami-blocked .slash { stroke: #f87171; }
+.kami-blocked .slash { stroke: var(--status-blocked); }
 /* Y2-C — Yappy's refused-press chip, same capsule as the mic refusal above. */
 .kami-blocked.gated {
   border-color: rgba(251, 191, 36, 0.28);
