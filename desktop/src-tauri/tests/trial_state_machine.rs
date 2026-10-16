@@ -14,7 +14,7 @@
 //! and a ratchet driven forward is a latch — the trial would read expired on day
 //! two for a user who never had one, and the earliest-wins rule that makes the
 //! two stores worth having would then defend the poison against every ordinary
-//! repair. `forward_clock_excursion_does_not_expire_the_trial` holds the clamp,
+//! repair. `forward_clock_excursion_does_not_latch_the_trial` holds the clamp,
 //! and `a_poisoned_floor_can_be_cleared_by_a_signed_grace_claim` holds the one
 //! non-DRM way out of the case no local clamp can catch.
 //!
@@ -382,7 +382,7 @@ fn earlier_of_the_two_stores_wins() {
 // ─── The forward direction: a latch, not a ratchet ───────────────────
 
 #[test]
-fn forward_clock_excursion_does_not_expire_the_trial() {
+fn forward_clock_excursion_does_not_latch_the_trial() {
     // Day two of an honest trial. The session's monotonic reading says day two;
     // the wall clock jumps five years (restored image, bad NTP, a user trying
     // something). ONE such excursion used to poison the floor for good.
@@ -390,11 +390,15 @@ fn forward_clock_excursion_does_not_expire_the_trial() {
     let monotonic = T0 + 2 * DAY_MS;
     let jumped = stores.at_with_monotonic(monotonic + 5 * 365 * DAY_MS, monotonic);
 
+    // While the wall clock is wrong the GATE fails closed, exactly as it always
+    // has: from inside the process a wall clock ahead of the monotonic reading
+    // is indistinguishable from a launch anchor that was rolled back, and
+    // trusting the anchor is the freeze `rolled_back_launch_anchor_cannot_freeze_the_trial`
+    // pins. What must NOT happen is that the excursion survives the correction.
     assert!(
-        !jumped.expired,
-        "a wall clock that ran away from this session's monotonic reading must not end the trial"
+        jumped.expired,
+        "the gate judges against max(wall, monotonic, floor) — never against the anchor alone"
     );
-    assert_eq!(jumped.days_left, 12);
     assert!(
         jumped.clock_excursion_ms > 0,
         "the excursion must be RECORDED, not silently absorbed"
@@ -421,6 +425,57 @@ fn forward_clock_excursion_does_not_expire_the_trial() {
     let skewed = stores.at_with_monotonic(monotonic + 60 * 60 * 1000, monotonic);
     assert_eq!(skewed.clock_excursion_ms, 0);
     assert_eq!(skewed.floor_ms, monotonic + 60 * 60 * 1000);
+}
+
+/// SEC-B review (BLOCKING, both reviewers): set the Mac's date back, launch
+/// Yap, put the real time back. The launch anchor is then the liar and the wall
+/// clock is honest — and the trial must still expire on the real calendar,
+/// every day of the session, exactly as `max(wall, monotonic, floor)` did.
+#[test]
+fn rolled_back_launch_anchor_cannot_freeze_the_trial() {
+    let mut stores = running_since_t0(T0 + 3 * DAY_MS);
+    let launch_real = T0 + 3 * DAY_MS;
+    let anchor = launch_real - 365 * DAY_MS;
+    for day in 0..=20 {
+        let wall = launch_real + day * DAY_MS;
+        let monotonic = anchor + day * DAY_MS;
+        let state = stores.at_with_monotonic(wall, monotonic);
+        let expected_left = (TRIAL_DAYS - 3 - day).max(0);
+        assert_eq!(
+            state.days_left,
+            expected_left,
+            "real day {}: the trial must advance with the restored wall clock",
+            3 + day
+        );
+        assert_eq!(state.expired, expected_left == 0, "real day {}", 3 + day);
+        // The anchor sits below the recorded floor, which PROVES the launch
+        // clock was rolled back: it is not an excursion, and the honest wall
+        // clock is what the floor records.
+        assert_eq!(state.clock_excursion_ms, 0, "real day {}", 3 + day);
+        assert_eq!(state.floor_ms, wall, "real day {}", 3 + day);
+        stores.persist(&state);
+    }
+}
+
+/// The subtler variant: the date is set back only as far as the recorded floor,
+/// so the anchor does NOT sit below it and cannot be proven wrong. The gate must
+/// still not judge against the anchor, or the trial only counts the hours Yap
+/// is running — set the clock back before each launch, use it an hour a day,
+/// and a fortnight lasts most of a year.
+#[test]
+fn launch_anchor_set_back_to_the_floor_cannot_stretch_the_trial() {
+    let stores = running_since_t0(T0 + 3 * DAY_MS);
+    let floor = T0 + 3 * DAY_MS;
+    // Real time is day twenty; the clock was set to the floor for the launch.
+    let state = stores.at_with_monotonic(T0 + 20 * DAY_MS, floor + 10_000);
+    assert!(
+        state.expired,
+        "day twenty of a fourteen-day trial is expired, whatever the launch clock said"
+    );
+    assert_eq!(state.days_left, 0);
+    // And an hour into that session, still expired.
+    let later = stores.at_with_monotonic(T0 + 20 * DAY_MS + 60 * 60 * 1000, floor + 60 * 60 * 1000);
+    assert!(later.expired);
 }
 
 #[test]

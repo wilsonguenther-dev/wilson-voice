@@ -124,7 +124,10 @@ pub const TRIAL_MS: i64 = TRIAL_DAYS * DAY_MS;
 /// So a wall clock that has run away from the monotonic reading taken at launch
 /// is ignored for the purpose of ADVANCING the floor, and the excursion is
 /// RECORDED (`TrialState::clock_excursion_ms`, mirrored into `license.json`)
-/// rather than silently absorbed.
+/// rather than silently absorbed. It is ONLY ignored for the floor: the expiry
+/// decision still judges against `max(wall, monotonic, floor)`, because a launch
+/// anchor taken from a rolled-back clock produces exactly the same excursion
+/// and must never be trusted over the wall (see `evaluate_trial`).
 ///
 /// What this does NOT catch, and nothing local can: a machine that was already
 /// wrong when Yap launched. Then the wall clock and the monotonic anchor agree
@@ -551,7 +554,8 @@ pub struct TrialState {
     pub floor_ms: i64,
     /// How far the wall clock ran ahead of this session's monotonic reading, in
     /// ms — 0 in every ordinary state. Non-zero means the wall clock was NOT
-    /// used, and the number is recorded rather than absorbed.
+    /// written into the floor (the expiry decision still saw it), and the
+    /// number is recorded rather than absorbed.
     pub clock_excursion_ms: i64,
 }
 
@@ -575,25 +579,46 @@ pub fn evaluate_trial(inputs: TrialInputs) -> TrialState {
         (None, None) => None,
     };
     // Rule 4 (SEC-B): a wall clock that has run away from the monotonic reading
-    // is not evidence. Taking `max(wall, monotonic)` unconditionally is what
-    // made a single forward jump permanent — it went straight into the floor,
-    // the floor went into both stores, and the earliest-wins rule then defended
+    // is not evidence FOR THE FLOOR. Writing `max(wall, monotonic)` into the
+    // floor unconditionally is what made a single forward jump permanent — it
+    // went straight into both stores, and the earliest-wins rule then defended
     // the poison against every ordinary repair.
-    let clock_excursion_ms = inputs
+    //
+    // It is NOT a reason to judge the trial against the anchor instead. A wall
+    // clock ahead of the monotonic reading means one of two things, and from
+    // inside the process they look identical: the wall clock jumped forward
+    // while Yap ran (honest anchor, bad wall), or the date was set BACK before
+    // launch and then restored (bad anchor, honest wall). Trusting the anchor
+    // in the second case froze the trial for a whole session in exchange for a
+    // few seconds of wrong date per launch (SEC-B review, both reviewers). So
+    // the EXPIRY decision stays `max(wall, monotonic, floor)`, exactly as
+    // before this rule existed: a wrong-forward clock reads expired while it
+    // is wrong, and recovers the moment it is corrected because the floor
+    // never moved. Only what gets WRITTEN is clamped.
+    let recorded = recorded_floor.unwrap_or(i64::MIN);
+    let effective_now = inputs
+        .wall_now_ms
+        .max(inputs.monotonic_now_ms)
+        .max(recorded);
+    let raw_excursion_ms = inputs
         .wall_now_ms
         .saturating_sub(inputs.monotonic_now_ms)
         .max(0);
-    let plausible_now = if clock_excursion_ms > CLOCK_EXCURSION_TOLERANCE_MS {
+    // A monotonic reading BELOW the recorded floor proves the launch clock was
+    // rolled back: the anchor is the liar, not the wall. That is not an
+    // excursion, and the honest wall clock is what the floor records.
+    let anchor_rolled_back = recorded_floor.is_some_and(|f| inputs.monotonic_now_ms < f);
+    let clamp = raw_excursion_ms > CLOCK_EXCURSION_TOLERANCE_MS && !anchor_rolled_back;
+    let plausible_now = if clamp {
         inputs.monotonic_now_ms
     } else {
         inputs.wall_now_ms.max(inputs.monotonic_now_ms)
     };
-    let clock_excursion_ms = if clock_excursion_ms > CLOCK_EXCURSION_TOLERANCE_MS {
-        clock_excursion_ms
-    } else {
-        0
-    };
-    let effective_now = plausible_now.max(recorded_floor.unwrap_or(i64::MIN));
+    let clock_excursion_ms = if clamp { raw_excursion_ms } else { 0 };
+    // What is written back. Never ahead of the plausible clock, so one forward
+    // excursion cannot latch; never below the recorded floor, so the rollback
+    // ratchet holds.
+    let floor_now = plausible_now.max(recorded);
 
     let stored_start = match (inputs.file_started_at_ms, inputs.db_started_at_ms) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -602,8 +627,9 @@ pub fn evaluate_trial(inputs: TrialInputs) -> TrialState {
         (None, None) => None,
     };
     // First run: the trial starts now. Any recorded start is clamped so a clock
-    // that ran fast once cannot buy extra days.
-    let started_at = stored_start.unwrap_or(effective_now).min(effective_now);
+    // that ran fast once cannot buy extra days. Both use the WRITTEN clock, so
+    // an excursed wall reading cannot push a start into the future either.
+    let started_at = stored_start.unwrap_or(floor_now).min(floor_now);
     let expires_at = started_at.saturating_add(TRIAL_MS);
     let remaining = expires_at - effective_now;
     TrialState {
@@ -617,10 +643,10 @@ pub fn evaluate_trial(inputs: TrialInputs) -> TrialState {
         } else {
             (remaining + DAY_MS - 1) / DAY_MS
         },
-        // The floor written back is `effective_now`, which by construction is
-        // the plausible clock or an already-recorded floor — never the excursed
-        // wall reading. That is the whole latch fix.
-        floor_ms: effective_now,
+        // The floor written back is the plausible clock or an already-recorded
+        // floor — never the excursed wall reading. That is the whole latch fix,
+        // and it leaves the expiry decision above untouched.
+        floor_ms: floor_now,
         clock_excursion_ms,
     }
 }
