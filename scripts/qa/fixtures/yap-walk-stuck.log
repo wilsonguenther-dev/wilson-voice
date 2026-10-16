@@ -1,0 +1,25 @@
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib::ptt_macos] PTT double-tap → hands-free ON
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib] hands-free ON
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib] esc cancel registered for this take
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib::record] mic device=MacBook Pro Microphone format=F32 rate=48000 ch=1 cached_config=false open_ms=79
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib::record] capture armed: press→capture_start=80ms (arm_wait=80ms)
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib] system output muted for dictation
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib] recording started
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib::asr_engine] loaded ASR model /Users/qa/Library/Application Support/WilsonVoice/models/parakeet-unified-en-0.6b-Q8_0.gguf (arch 'parakeet', bound backend 'MTL0')
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib::transcription] ASR model 'handy-computer/parakeet-unified-en-0.6b-gguf' loaded and warm
+[2026-10-16T16:13:51Z INFO  wilson_voice_lib] take arm: ASR engine ready (handy-computer/parakeet-unified-en-0.6b-gguf) in 254ms
+[2026-10-16T16:13:59Z WARN  wilson_voice_lib::ptt_macos] FN PTT: tap disabled by kCGEventTapDisabledByUserInput (a user-input flood took the tap out) — re-arm #2 issued
+[2026-10-16T16:14:00Z INFO  wilson_voice_lib] memory rss_mb=860.3 db_size_mb=3.9 logs_mb=6.8 recovery_files=5
+[2026-10-16T16:14:00Z INFO  wilson_voice_lib] energy polls=4 pill_shown=true polish_sidecar=unloaded
+[2026-10-16T16:14:04Z WARN  wilson_voice_lib::ptt_macos] FN PTT: tap disabled by kCGEventTapDisabledByUserInput (a user-input flood took the tap out) — re-arm #3 issued
+[2026-10-16T16:14:54Z INFO  wilson_voice_lib::float_pill] pill position → Bottom
+[2026-10-16T16:14:55Z WARN  wilson_voice_lib::ptt_macos] FN PTT: tap disabled by kCGEventTapDisabledByUserInput (a user-input flood took the tap out) — re-arm #4 issued
+[2026-10-16T16:15:02Z INFO  wilson_voice_lib] system output restored after dictation
+[2026-10-16T16:15:03Z INFO  wilson_voice_lib::record] YV36 silero: has_speech=true voiced=46.74s trimmed=true
+[2026-10-16T16:15:03Z INFO  wilson_voice_lib] samples ready: /Users/qa/Library/Application Support/WilsonVoice/recordings/00000000-0000-0000-0000-000000000000.wav speech=30.60s voiced=30.60s hold_wall=71.52s dsp_ms=521
+[2026-10-16T16:15:03Z INFO  wilson_voice_lib::record] wrote 1141440 samples → /Users/qa/Library/Application Support/WilsonVoice/recordings/00000000-0000-0000-0000-000000000000.wav
+[2026-10-16T16:15:04Z INFO  wilson_voice_lib] cleanup-pipeline: level=Medium mode=Plain dictation_setting=auto cleanup_level=medium
+[2026-10-16T16:15:04Z INFO  wilson_voice_lib] latency hold_clipboard_ms=1686 press_capture_ms=80 capture_ms=71517 samples_ready_ms=521 asr_load_ms=0 asr_decode_ms=1157 cleanup_ms=0 paste_ms=1 backend=native pasted=false
+[2026-10-16T16:15:04Z INFO  wilson_voice_lib::hygiene] memory rss_mb=1535.8 db_size_mb=3.9 logs_mb=6.8 recovery_files=3
+[2026-10-16T16:15:04Z INFO  wilson_voice_lib] transcript ok words=123 pasted=false pipeline_ms=1686
+[2026-10-16T16:15:04Z INFO  wilson_voice_lib] esc cancel released
