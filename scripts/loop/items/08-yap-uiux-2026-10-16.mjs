@@ -475,6 +475,153 @@ ITEMS.push({
   `,
 })
 
+// yap-meetings-fix — MEETINGS WORKS END TO END. Written 2026-10-16 by the yap-notetaker seat (Opus) from
+// Wilson's 20:30Z report: "the meeting thing is not working for shit. I don't know if you ever fix it …
+// we need to reverse engineer the Notetaker because ours is not working whatsoever." FIX, no panel
+// (unambiguous intent). ORDER: after yap-format-structure and BEFORE yap-uiux-2026-10-16-W0 (one file =
+// one lane, run in order), so W0 walks a Meetings view that can actually produce a transcript.
+// Parity doc: ~/Obsidian/Wilson-Brain/Projects/Yap/wispr-notetaker-parity-2026-10-16.md.
+// Review: Opus only (review-opus + review-opus2). No Codex, no Gemini, no third-party reviewer.
+// HAZARD (same as 07/08): no agent launches the GUI app, posts events into, signals or quits Wilson's
+// running /Applications/Yap.app, or writes TCC. scripts/qa/meeting-walk.sh drives the INSTALLED app
+// only with YAP_QA_DRIVE_RUNNING=1 (the walk seat's consent), exactly like hotkey-walk.sh.
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+//
+// DIAGNOSIS (observed on Wilson's Mac 2026-10-16 ~20:35Z, read-only; main d6cd36a):
+//   1. NO TRANSCRIPT, EVER. wilson_voice.db has 4 meetings (2026-08-16, 08-20, 10-10, 10-16 20:05Z), ALL
+//      state=transcribing, processed_through_seconds=0.0. meeting_control.rs ~:656 sets Transcribing with the
+//      comment "YV93's transcription pipeline moves it on to complete" — but Database::append_meeting_segments
+//      and set_meeting_progress have NO caller in src/ (only tests/). yap.log: "meeting 8f9b3c78… stopped after
+//      00:00:10 (user stopped) → transcribing" and nothing after. The wiring is yap24-NT2, gated: 'panel' —
+//      never built. Audio is NOT the blocker: parakeet-unified-en-0.6b-Q8_0.gguf, qwen2.5-1.5b (polishModel)
+//      and wespeaker CAM++ are all installed in ~/Library/Application Support/WilsonVoice/models.
+//   2. SILENCE = DENIAL, AND IT LOCKS. TCC kTCCServiceAudioCapture auth=2 at 20:04:52Z with the 0.9.0
+//      Developer ID csreq (valid). The meeting at 20:05:04Z ran 10.5 s; permission_verdict (syscapture.rs
+//      ~:2334) says LooksDenied after DENIAL_GRACE = 3 s (~:2243) with no non-zero sample — what a silent Mac
+//      output produces. meeting_control.rs ~:1094 wrote settings_kv meeting_system_audio_setup_ack_v1 =
+//      "looks_denied 20:05:15Z"; track_b_plan (~:2471) now returns MicOnly for every future meeting, so the
+//      tap never reopens and the verdict can never heal (only Settings' run_system_audio_setup rewrites it).
+//      The row's error tells Wilson "macOS has not granted System Audio Recording" — false. sys_wav_path NULL.
+//      This is yap24-NT3, gated: 'panel'.
+//   3. NOT SCREEN RECORDING. The capture is a CoreAudio process tap (syscapture.rs header): the grant is
+//      "System Audio Recording" (kTCCServiceAudioCapture), not Screen Recording. Do not add an SCK path.
+//   4. Side note for perm-truth: kTCCServiceListenEvent's csreq is still "Apple Development … U8BP8Z86T2"
+//      (dead for 0.9.0); Accessibility/FDA/Mic/AudioCapture are re-stamped to Developer ID.
+
+ITEMS.push({
+  id: 'yap-meetings-fix', prompt: 'yap-meetings-fix', branch: 'loop/yap-meetings-fix-transcript-and-system-audio-end-to-end', gated: null,
+  title: 'Meetings works end to end: Stop produces a transcript and a summary, a silent call is never called a denial, and the walk proves it on the installed build',
+  preflight: `
+    test -x scripts/qa/meeting-walk.sh
+    test -f desktop/src-tauri/tests/meeting_pipeline_wired.rs
+    test -f desktop/src-tauri/tests/system_audio_verdict_silence_is_not_denial.rs
+    grep -q "output_was_running" desktop/src-tauri/src/syscapture.rs
+    grep -rln "append_meeting_segments" desktop/src-tauri/src | grep -v "db.rs" | grep -q .
+  `,
+  spec: `
+    Panel: not required — FIX (Wilson 2026-10-16 20:30Z: "the meeting thing is not working for shit … ours
+    is not working whatsoever." His observation is ground truth; the DB proves it: 4 of 4 meetings stuck.)
+    DEPENDS: a green main; yap-perm-truth (#211, merged), yap-qa-harness (#210, merged). Runs ahead of
+    yap-uiux-2026-10-16-W0. ABSORBS the core of the panel-gated yap24-NT1, NT2 and NT3: read their specs in
+    scripts/loop/items/01-yap24-notetaker.mjs (~:107-425) as the detailed design, and make their PREFLIGHT
+    markers true so they retire when the panel ungates them. Do NOT pull in NT0's eval corpus gate: the WER
+    run (meeting_eval) is the thing that hit the 120 s cap earlier today and stays in NT0/NT2.
+
+    ROOT CAUSE FIRST (from the diagnosis block above — fix these before any UI):
+      A. Wire stop → transcribe. When MeetingController::stop lands a whole capture (state Transcribing), hand
+         the meeting id to ONE background job that runs the shipped MeetingAsr path (meeting_asr.rs
+         plan_windows / assemble / merge_two_tracks_by_host_time, asr_engine::transcribe_timed) over t0 (and t1
+         when present), calls db.append_meeting_segments per window with on_track, advances
+         set_meeting_progress monotonically, and sets Complete (or Failed with a plain-words error). One job
+         at a time; dictation keeps priority on the shared engine (the job yields between windows). Remove any
+         allow(dead_code) from meeting_asr.rs that this makes live.
+      B. Reconcile stranded rows on launch (reconcile_stranded_meetings): a row in transcribing/summarizing
+         whose WAV still exists is re-queued from processed_through_seconds; one whose WAV is gone becomes
+         Failed "the audio for this meeting was removed before it was transcribed". Retention never purges a
+         WAV whose meeting is not Complete (NT1). Wilson's 4 stuck rows are the real-world case: 2 have WAVs.
+      C. Silence is not a denial (NT3). The verdict reads "did the OUTPUT device run during the meeting"
+         (kAudioDevicePropertyDeviceIsRunningSomewhere on the default output, sampled by the pump; field
+         output_was_running). Zero samples + output never ran = Unknown (write nothing). Zero samples +
+         output ran >= DENIAL_GRACE = LooksDenied. And the verdict is never sticky: a Virtual/Unknown meeting
+         ALWAYS attempts the tap (a fresh tap costs ~200 ms) and lets this meeting's evidence overwrite the
+         row; LooksDenied only changes the BADGE, never skips the attempt. In-person meetings never attach.
+      D. After Complete, if a local summary model is installed (settings polishModel, today
+         qwen2.5-1.5b-instruct-q4_k_m), run summarize_meeting automatically; "no model" leaves the transcript
+         and shows "Add a summary model in Settings" — a state, not an error.
+
+    LIVE STATE (the user can see it is working): the pill shows recording + elapsed + two level meters
+    (You / Call audio) while recording; after Stop it shows "Transcribing 42%" then "Notes ready". The
+    Meetings view row shows the same state and progress (meeting:progress event), and a Failed row shows the
+    error and Retry. Keep the locked pixel-art pill and mascot; no new visual language.
+
+    PERMISSION TRUTH: extend the perm-truth banner (permission.ts / PermissionHealthRow.tsx) with System Audio
+    Recording, with the SAME truth rules as #211 (re-checked on activation and every 5 s while shown; names
+    the failing condition and the bundle path). Source of truth = this binary's own probe (a short tap open in
+    run_system_audio_setup with output running), never the settings_kv row alone. Copy names the real
+    System Settings path: Privacy & Security › Screen & System Audio Recording › System Audio Recording Only.
+
+    scripts/qa/meeting-walk.sh (new; same shape and refusal discipline as hotkey-walk.sh):
+      - Refuses unless Yap is running (exit 6) and YAP_QA_DRIVE_RUNNING=1 (exit 4); caller needs
+        Accessibility to post the shortcut (exit 3); usage / app / DB / log missing (exit 2).
+      - Makes its sample at run time with say -o "$TMP/sample.aiff" -f scripts/qa/fixtures/meeting-script.txt
+        (a ~120-word two-voice script, committed as text; no audio binary in git), plays it in a loop with
+        afplay for 30 s, and starts/stops the meeting with ⌃⌘M posted through a QA Swift helper built ad hoc
+        (pattern: fn-post.swift) — the documented keyboard path; no new socket.
+      - Reads the DB READ-ONLY (sqlite3 -readonly) and Yap's log: the newest meeting reaches complete within
+        90 s of Stop; segments on track 1 (call audio) total > 40 words; summary IS NOT NULL when a summary
+        model is installed (else prints "summary skipped: no model" and still requires the transcript).
+      - If the meeting's own verdict is LooksDenied while afplay was running (true denial), exit 5 with
+        "System Audio Recording is not granted for /Applications/Yap.app (designated requirement …) — allow it
+        in System Settings › Privacy & Security › Screen & System Audio Recording, then rerun". Never a pass.
+      - Bare exits: every "exit N" is the script's own; no pipeline masks a status. Exit 0 pass, 1 assertion.
+      - --self-test: refusal paths + the DB/log parsers against fixtures in scripts/qa/fixtures/meeting/;
+        posts no events, plays no audio.
+      - Cleanup: the walk deletes the meeting it created (through the app's own delete path) at the end —
+        no fixture residue.
+
+    RUNTIME DEPENDENCIES (README rule: ship it or manage its install — nothing found on the machine):
+      | parakeet-unified-en-0.6b-Q8_0 | downloaded by the app (ModelSetup), sha256-verified | exists |
+      | qwen2.5-1.5b-instruct (summary) | downloaded by the app on opt-in | exists |
+      | CoreAudio process tap | OS (macOS 14.4+), gated by os_version_gate | exists |
+      | say / afplay | macOS built-ins, QA only, never in the app | QA only |
+
+    TESTS: tests/meeting_pipeline_wired.rs (real SQLite file, a 6 s two-track WAV fixture, a stub decoder
+    behind the existing seam so it finishes in < 20 s: stop → segments on both tracks → Complete; a second
+    run resumes from processed_through); tests/system_audio_verdict_silence_is_not_denial.rs (silent output =
+    Unknown, output ran + zeros = LooksDenied, LooksDenied row still attempts the tap next meeting, in-person
+    never attaches); tests/meeting_retention_keeps_untranscribed_audio.rs (NT1); a vitest for the banner row.
+
+    WHAT NOT TO DO
+      - Do NOT add ScreenCaptureKit or ask for Screen Recording.
+      - Do NOT mark a meeting Complete without segments, and do NOT write a verdict from a silent output.
+      - Do NOT drive /Applications/Yap.app from a builder or gate; the walk seat runs meeting-walk.sh.
+      - Do NOT run meeting_eval here (the 120 s cap); it belongs to NT0/NT2.
+
+    Critiqued once (self-pass): the first draft only re-ran setup on launch, which still leaves a silent
+    first meeting locking every later one — replaced by "always attempt, badge only" (C). It also asserted on
+    track 0 words, which a mic in a quiet room can fail; the walk now asserts on track 1, the audio it plays.
+  `,
+  acceptance: `
+    test -x scripts/qa/meeting-walk.sh
+    test -f scripts/qa/fixtures/meeting-script.txt
+    bash scripts/qa/meeting-walk.sh --self-test ; test $? -eq 0
+    test -f desktop/src-tauri/tests/meeting_pipeline_wired.rs
+    test -f desktop/src-tauri/tests/system_audio_verdict_silence_is_not_denial.rs
+    test -f desktop/src-tauri/tests/meeting_retention_keeps_untranscribed_audio.rs
+    grep -q "output_was_running" desktop/src-tauri/src/syscapture.rs
+    grep -q "fn reconcile_stranded_meetings" desktop/src-tauri/src/meetings.rs desktop/src-tauri/src/lib.rs desktop/src-tauri/src/meeting_control.rs
+    grep -rln "append_meeting_segments" desktop/src-tauri/src | grep -v "db.rs" | grep -q .
+    ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
+    grep -rl "System Audio Recording" desktop/src --include=*.ts --include=*.tsx | grep -q .
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
+    cd src-tauri
+    cargo test --features custom-protocol --test meeting_pipeline_wired ; test $? -eq 0
+    cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_manual_start_stop ; test $? -eq 0
+  `,
+})
+
 // yap-uiux-2026-10-16 — THE UI/UX PASS. Written 2026-10-16 by the yap-prep seat.
 // Wilson, 2026-10-06: "All of the Yap stuff: the UI/UX ... There are many items you'll find and
 // improve on." Memory: feedback_ui_containment (every panel and shell ships contained),
@@ -768,5 +915,190 @@ ITEMS.push({
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
     cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
     YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+// yap-notetaker-* — WISPR FLOW NOTETAKER PARITY, YAP'S WAY (local, private). Written 2026-10-16 by the
+// yap-notetaker seat (Opus). Wilson 20:30Z: "Wispr Flow is open right now … check the website, they'll
+// literally tell you all of their features. You see how to set up Notetaker. I already like what our Yap
+// looks like, I like the mascot, but we need to reverse engineer the Notetaker." His screenshot: a
+// "Set up Notetaker" card — Take 2-min tour · Connect calendar · Import from Granola or Otter · Set up MCP.
+// Sources (cited in ~/Obsidian/Wilson-Brain/Projects/Yap/wispr-notetaker-parity-2026-10-16.md):
+// https://wisprflow.ai/notetaker, https://docs.wisprflow.ai/articles/1737760052 (calendar: Google +
+// Outlook, NOT iCloud; Cloud Sync required), https://docs.wisprflow.ai/articles/9551372685 (remote MCP,
+// read-only, no dictation history), https://docs.wisprflow.ai/articles/5166327995 (Granola/Otter kept as
+// second MCP connectors). ORDER: after yap-uiux-2026-10-16-Z in this file (same lane, sequential), all
+// three DEPEND on yap-meetings-fix. Not blockers for the uiux pass. They absorb the core of the
+// panel-gated yap24-NT4, NT5, NT8 and satisfy their preflight markers.
+// Yap stays local: nothing leaves the Mac unless the user picks a cloud model. We do NOT copy: Cloud Sync,
+// remote account-wide MCP, auto-start recording, web search in ask, hosted share links, persistent voiceprints.
+// Consent sentence (one, everywhere a recording is offered): "Recording is sacred: tell everyone on the call
+// that Yap is taking notes, and it stays on this Mac."
+// Review: Opus only (review-opus + review-opus2). SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-notetaker-onboard', prompt: 'yap-notetaker', branch: 'loop/yap-notetaker-onboard-set-up-card', gated: null,
+  title: 'A "Set up Notetaker" card: 2-minute tour, connect Apple Calendar, import from Granola or Otter, set up MCP — progress dots, dismissible, reopen from Help',
+  preflight: `
+    test -f desktop/src/meetings/NotetakerSetupCard.tsx
+    test -f desktop/src-tauri/src/meeting_import.rs
+    test -d desktop/yap-mcp
+  `,
+  spec: `
+    Panel: not required — Wilson named the four steps from Wispr's card (2026-10-16).
+    DEPENDS: yap-meetings-fix (a real transcript must exist for the tour, import and MCP to mean anything).
+
+    THE CARD: top of the Meetings view until done or dismissed; four rows, one progress dot each (empty /
+    done), a plain verb per row, contained panel (surface + border, pinned footer), mascot allowed, no new
+    visual language. Dismiss = X with "Reopen anytime from Help"; Help menu gains "Set up Notetaker".
+    State persists in settings_kv notetaker_setup_v1 (JSON: steps done + dismissed).
+      1. Take the 2-minute tour — a local scripted walkthrough on a bundled SAMPLE meeting (a read-only
+         fixture row, never recorded): start, live meters, stop, transcript, notes, export. Done = finished.
+      2. Connect calendar — v1 Apple Calendar via EventKit, READ-ONLY, on-device (EKEventStore
+         requestFullAccessToEvents on 14+, NSCalendarsFullAccessUsageDescription in Info.plist). This also
+         sees Google/Exchange accounts the user already added to macOS Calendar — say so in one line.
+         Google/Microsoft OAuth listed as "Coming". Done = access granted and >= 1 calendar readable.
+      3. Import from Granola or Otter — pick a file or folder. Otter: .txt / .docx / .srt exports (formats
+         per a third-party guide — UNVERIFIED against Otter's own docs: the builder must confirm with real
+         sample exports and record what it confirmed in the PR). Granola: export format UNVERIFIED — research
+         first (Granola help pages; its Markdown/Notion export); if no stable file format is documented,
+         ship Otter only and show Granola as "Coming" with the reason. Imports become meetings with
+         source = 'imported:otter' | 'imported:granola', segments + any summary, searchable via FTS.
+         Never call their cloud APIs; files only.
+      4. Set up MCP — Yap has NO MCP server today (grep: zero MCP code). Build desktop/yap-mcp: a local
+         stdio MCP server (official Rust SDK rmcp — pin a released version after reading its docs), shipped
+         inside the bundle (Contents/MacOS/yap-mcp, signed with the app), opening wilson_voice.db READ-ONLY.
+         Resources/tools: list_meetings, get_transcript, get_summary, list_action_items, search_meetings.
+         Permission table (settings_kv mcp_permissions_v1), each OFF until the user turns it on: meetings
+         list · transcripts · summaries · action items. Dictation history is NEVER exposed (Wispr's line
+         too). The row shows a "Copy config" button with the claude_desktop_config / Cursor JSON snippet
+         pointing at the bundled binary. Done = config copied and a self-test call answered.
+
+    RUNTIME DEPENDENCIES: | EventKit | OS | | yap-mcp | built + signed in our bundle | | rmcp crate | vendored
+    at build time, pinned | — nothing found on the machine.
+
+    TESTS: vitest NotetakerSetupCard (4 rows, dots, dismiss persists, Help reopens); cargo test
+    meeting_import (Otter txt/srt fixtures → segments; malformed file → a plain error, no partial row);
+    cargo test -p yap-mcp (permission OFF → resource refused; read-only: an INSERT through the connection
+    fails); tests/calendar_permission_readonly.rs (no EKEventStore save/remove call anywhere: grep gate).
+
+    WHAT NOT TO DO: no OAuth, no network in import or MCP, no write access over MCP, no new mascot.
+    Critiqued once (self-pass): the draft exposed MCP by default; Wispr's "account-wide, no per-meeting
+    consent" is exactly what we are not copying, so every class now starts OFF.
+  `,
+  acceptance: `
+    test -f desktop/src/meetings/NotetakerSetupCard.tsx
+    test -f desktop/src-tauri/src/meeting_import.rs
+    test -d desktop/yap-mcp
+    grep -q "NSCalendarsFullAccessUsageDescription" desktop/src-tauri/Info.plist
+    ! grep -rn "saveEvent\|removeEvent\|save(event\|remove(event" desktop/src-tauri/src
+    grep -q "Set up Notetaker" desktop/src/meetings/NotetakerSetupCard.tsx
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
+    cargo test -p yap-mcp ; test $? -eq 0
+    cd src-tauri
+    cargo test --features custom-protocol meeting_import ; test $? -eq 0
+    cargo test --features custom-protocol --test calendar_permission_readonly ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-notetaker-detect', prompt: 'yap-notetaker', branch: 'loop/yap-notetaker-detect-offer-to-record', gated: null,
+  title: 'Yap notices a meeting — a calendar event with a call link in the next 2 minutes, or Zoom/Meet/Teams/FaceTime with live audio — and the pill offers "Record this meeting?" with the consent line; it never auto-records',
+  preflight: `
+    test -f desktop/src-tauri/src/meeting_detect.rs
+    test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
+  `,
+  spec: `
+    Panel: not required — Wilson asked for Wispr parity (2026-10-16); Wispr: "Notetaker will detect that you
+    are in a call and ask if you want to start taking notes" (wisprflow.ai/notetaker).
+    DEPENDS: yap-meetings-fix, yap-notetaker-onboard (EventKit access lives there).
+
+    SIGNALS (any one raises the offer; meeting_detect.rs, a pure policy fn + thin OS adapters):
+      a. Calendar: an EventKit event starting within 2 minutes (or in progress < 5 min) whose URL, location
+         or notes contain a conferencing link (zoom.us/j, meet.google.com, teams.microsoft.com,
+         facetime.apple.com, whereby, webex). Read-only.
+      b. App: a running zoom.us / Microsoft Teams / FaceTime process AND that app's audio is live
+         (CoreAudio process object kAudioProcessPropertyIsRunningInput or IsRunningOutput, macOS 14.4+; below
+         14.4 the app signal is off and only the calendar signal runs). Meet in a browser: a browser window
+         title matching "Meet - " / "meet.google.com" via Accessibility (already granted for paste) AND the
+         browser's audio live.
+    OFFER: the pill (locked pixel-art mascot) expands with "Record this meeting?" + the meeting title when
+    known + the consent sentence + [Record] [Not now]. Record starts kind = Virtual. Not now snoozes that
+    event / app session (no repeat for the same calendar event or the same app run). Never starts recording
+    on its own; there is no auto-start setting. Settings › Meetings: "Offer to record detected meetings"
+    (default ON) and "Use my calendar" (default follows step 2 of the setup card). Polling: event-driven
+    (NSWorkspace launch/terminate + an EventKit change notification + a single 30 s timer) — never faster.
+
+    TESTS: tests/calendar_prompt_policy.rs (table: link+2 min → offer; no link → none; snoozed → none; in
+    progress 4 min → offer, 6 min → none); meeting_detect unit tests for the app table (audio live required;
+    Zoom open but silent → none); vitest for the pill offer (consent sentence present; Not now emits snooze).
+
+    RUNTIME DEPENDENCIES: | EventKit, NSWorkspace, CoreAudio process objects | OS |.
+    WHAT NOT TO DO: no auto-record, no network, no reading meeting content to decide, no polling < 30 s.
+    Critiqued once (self-pass): "Zoom is running" alone would prompt all day for people who leave Zoom open;
+    the app signal now requires live audio from that app.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/src/meeting_detect.rs
+    test -f desktop/src-tauri/tests/calendar_prompt_policy.rs
+    grep -q "Recording is sacred" desktop/src/pill/*.tsx desktop/src/meetings/*.tsx
+    ! grep -rn "auto_record\|autoRecord" desktop/src desktop/src-tauri/src
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
+    cd src-tauri
+    cargo test --features custom-protocol --test calendar_prompt_policy ; test $? -eq 0
+    cargo test --features custom-protocol meeting_detect ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-notetaker-notes', prompt: 'yap-notetaker', branch: 'loop/yap-notetaker-notes-speakers-summary-actions', gated: null,
+  title: 'Notes worth reading: transcript in speaker turns, a summary with decisions and action items from the user’s chosen model, searchable, Markdown export, MCP-readable — nothing leaves the Mac unless the user picks a cloud model',
+  preflight: `
+    grep -q "CREATE TABLE IF NOT EXISTS meeting_actions" desktop/src-tauri/src/db.rs
+    test -f desktop/src-tauri/tests/meeting_notes_auto_summary.rs
+    test -f desktop/src-tauri/tests/meeting_notes_stay_local.rs
+  `,
+  spec: `
+    Panel: not required — Wilson 2026-10-16 (Wispr parity). Wispr: live transcript "separates you from other
+    speakers"; summary pulls out "timelines, decisions, and next steps"; labels "not voiceprints".
+    DEPENDS: yap-meetings-fix (segments exist), yap-notetaker-onboard (yap-mcp exists).
+
+      1. Speaker turns: two-track meetings label track 0 "You" and track 1 "Call" (TrackSpeakers); in-person
+         and track 1 with >1 voice run the SHIPPED diarize sidecar (diarize.rs; diarize::pool() gets its first
+         caller) after transcription: "Speaker 1/2/…", renamable once and applied across the meeting (Wispr
+         parity). Calendar attendees (when step 2 is done) are offered as rename choices. Embeddings are per
+         meeting and discarded — no cross-meeting voiceprints.
+      2. Live transcript (light): while recording, a rolling decode every ~10 s on each track shows the last
+         lines under You / Call in the Meetings view. The final transcript replaces it after Stop.
+      3. Summary + action items: automatic after Complete via the user's chosen model — local default
+         (polishModel; qwen2.5-1.5b today) or a BYO-key cloud model ONLY if the user picked one in Settings.
+         Sections: Summary · Decisions · Action items (owner, text, cited segment) · Open questions.
+         Action items are rows in meeting_actions (meeting_id, owner, text, segment_id, done). No model =
+         "Add a summary model in Settings", never an error.
+      4. Search: FTS over segments + summaries + action items, from the Meetings search box.
+      5. Export: Markdown with speakers, timestamps, summary, action items as "- [ ]" (export_meeting_markdown).
+      6. MCP: yap-mcp resources return the same transcript/summary/action items, under the permission table.
+    PRIVACY TEST: tests/meeting_notes_stay_local.rs — with a local model, the summarize path makes zero
+    network calls (a deny-all HTTP client seam that panics on use).
+
+    RUNTIME DEPENDENCIES: | wespeaker CAM++ / diarize sidecar | downloaded by the app (already in models/) |
+    | summary model | downloaded by the app on opt-in | | cloud model | only with the user's own key |.
+    TESTS: tests/meeting_notes_auto_summary.rs (Complete → summary + >= 1 action item row on the fixture
+    transcript with a stub model; no model → state message); diarize wiring test on a 2-voice fixture;
+    vitest for the Meetings detail (speaker turns, rename applies to all, action item checkbox persists).
+    WHAT NOT TO DO: no upload of audio or transcript by default; no persistent voiceprints; no web search.
+    Critiqued once (self-pass): live transcript on a 3B-param budget would starve dictation; it is capped to
+    a light rolling decode that yields to any dictation take.
+  `,
+  acceptance: `
+    grep -q "CREATE TABLE IF NOT EXISTS meeting_actions" desktop/src-tauri/src/db.rs
+    test -f desktop/src-tauri/tests/meeting_notes_auto_summary.rs
+    test -f desktop/src-tauri/tests/meeting_notes_stay_local.rs
+    grep -rln "diarize::pool()" desktop/src-tauri/src | grep -v "diarize.rs" | grep -q .
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
+    cargo test -p yap-mcp ; test $? -eq 0
+    cd src-tauri
+    cargo test --features custom-protocol --test meeting_notes_auto_summary ; test $? -eq 0
+    cargo test --features custom-protocol --test meeting_notes_stay_local ; test $? -eq 0
   `,
 })
