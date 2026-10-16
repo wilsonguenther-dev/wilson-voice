@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState, PageGlyph } from "../ViewStates";
 export default function Scratchpad() {
   const {
     activeNoteId, bootError, booting, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
-    setActiveNoteId, setNoteBody, setNoteTitle, setScratch, toast,
+    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, toast,
   } = useAppCtx();
   async function saveNote() {
     try {
@@ -24,11 +24,15 @@ export default function Scratchpad() {
     }
   }
   function openNote(n: ScratchNote) {
+    setScratchComposing(true);
     setActiveNoteId(n.id);
     setNoteTitle(n.title);
     setNoteBody(n.body);
   }
   async function newNote() {
+    // Y5-B review fix — without this flag the state below is exactly the
+    // empty-state condition, so "New note" re-rendered the empty state.
+    setScratchComposing(true);
     setActiveNoteId(null);
     setNoteTitle("New note");
     setNoteBody("");
@@ -83,7 +87,7 @@ export default function Scratchpad() {
                   </button>
                 ))}
               </div>
-              {scratch.length === 0 && !noteBody && !activeNoteId ? (
+              {scratch.length === 0 && !scratchComposing && !noteBody && !activeNoteId ? (
                 <div className="scratch-editor">
                   <EmptyState
                     data-empty-state="scratchpad"

@@ -8,12 +8,12 @@ import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
   const {
-    bootError, booting, clearAll, clearing, copyText, diffId, openModelSettings, refreshAll,
+    bootError, booting, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, pasteText, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
-    setNoteTitle, setQuery, setRetryId, settings, status, toast,
+    setNoteTitle, setQuery, setRetryId, setScratchComposing, settings, status, toast,
     toggleRecord,
   } = useAppCtx();
   // Y5-B — was `if (!insights) return null`: a heading over a blank page on
@@ -94,22 +94,11 @@ export default function Home() {
   if (state === "loading")
     return <LoadingState data-loading-state="home" noun="history" expected={insights?.totalSessions ?? null} onRetry={() => void refreshAll()} />;
 
-  // Y5-B — the first of the two cases the item names. `status.modelReady` used
-  // to gate a warning STRIP over an otherwise normal view: a record button that
-  // cannot record, a search box over a history that cannot grow. Before the
-  // model exists there is exactly one thing to do, so this is the whole view.
-  if (!status.modelReady)
-    return (
-      <EmptyState
-        data-empty-state="home:model"
-        glyph={<WaveGlyph />}
-        title="Yap needs a speech model before it can listen"
-        body="The model runs on this Mac and never leaves it. Pick one and the download starts; it is the last setup step."
-        actionLabel="Choose a speech model"
-        onAction={openModelSettings}
-      />
-    );
-
+  // Y5-B review fix — no model gate here. YV54 (#68): the recommended model
+  // downloads on its own once onboarding finishes and the slim <ModelRibbon>
+  // in App.tsx is the only surface; replacing Home would contradict that copy
+  // and hide history, search and failed-take recovery from any install whose
+  // selected model file is missing.
   return (
             <>
               <YappyHouse
@@ -333,6 +322,7 @@ export default function Home() {
                               className="ghost"
                               onClick={() => {
                                 setNav("scratchpad");
+                                setScratchComposing(true);
                                 setNoteTitle(`From ${formatTime(e.createdAt)}`);
                                 setNoteBody(e.text);
                                 setActiveNoteId(null);

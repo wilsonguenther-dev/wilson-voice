@@ -12,8 +12,13 @@ export default function Insights() {
   // Y5-B — the second case the item names by hand. App.tsx rendered
   // `nav === "insights" && insights && <Insights/>` and this module opened with
   // `if (!insights) return null`, so zero takes was a heading over nothing.
+  // Y5-B review fix — totalSessions counts dictations only (db.rs: COUNT(*)
+  // FROM transcripts), so an install with meetings but no dictations is NOT
+  // empty: the Meetings strip below has real data to show.
   const state = viewState(
-    insights === null ? null : insights.totalSessions,
+    insights === null
+      ? null
+      : insights.totalSessions + (insights.meetings?.totalMeetings ?? 0),
     booting,
     bootError,
   );

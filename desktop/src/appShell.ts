@@ -189,6 +189,12 @@ export function useAppShell() {
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  // Y5-B review fix — "the user has asked for an editor". Scratchpad shows its
+  // empty state only while no note is saved AND this is false; newNote() and
+  // Home's send-to-scratchpad set it, so neither "New note" button can leave
+  // the user staring at the empty state, and clearing a draft's body never
+  // unmounts the editor mid-edit.
+  const [scratchComposing, setScratchComposing] = useState(false);
   // YV15 — key-capture for the push-to-talk shortcut. `capturing` arms a global
   // keydown listener; `captureHint` shows the live result / validation message.
   const [capturing, setCapturing] = useState(false);
@@ -1214,7 +1220,7 @@ export function useAppShell() {
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
     refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
-    saveSettings, scratch, sendSupportBundle, setActiveNoteId, setBootError, setBuyPrompt,
+    saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBootError, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCopyAgainId, setCrashes, setDailySeries, setDictionary, setDiffId,
     setEditExpansion, setEditPreferred, setEditTerm, setEditTrigger, setEditingSnippetId, setEditingTermId,
@@ -1223,7 +1229,7 @@ export function useAppShell() {
     setMeetingKind, setMeetingKinds, setMeetingQuery, setMeetingStatus, setMeetings, setMonthlySeries,
     setNav, setNewExpansion, setNewPreferred, setNewTerm, setNewTrigger, setNoteBody,
     setNoteTitle, setOpenMeeting, setPerms, setQuery, setRetryId, setRetrying,
-    setScratch, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
+    setScratch, setScratchComposing, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
     setSupportBusy, setSupportOpen, setSupportPreview, setSysAudio, setSysAudioBusy, setSysAudioGate,
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,
     snippets, status, supportBusy, supportOpen, supportPreview, sysAudio,
