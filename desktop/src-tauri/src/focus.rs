@@ -303,6 +303,24 @@ pub fn text_before_cursor() -> Option<String> {
     }
 }
 
+/// yap-format-structure — the frontmost app's bundle id (`notion.id`,
+/// `com.apple.mail`, …): the key `structure::structure_format_for` and the
+/// per-app Structure overrides are written against. Read from NSWorkspace, so
+/// it needs no Accessibility grant. `None` off macOS or with no frontmost app.
+pub fn frontmost_bundle_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = workspace.frontmostApplication()?;
+        let id = app.bundleIdentifier()?;
+        Some(id.to_string()).filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Best-effort focused app name for transcript hygiene. None if AX denied.
 pub fn frontmost_app_name() -> Option<String> {
     #[cfg(target_os = "macos")]

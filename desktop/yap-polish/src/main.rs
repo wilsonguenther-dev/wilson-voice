@@ -37,6 +37,16 @@
 #[path = "../../src-tauri/src/polish_protocol.rs"]
 mod polish_protocol;
 
+// yap-format-structure: the rules stage that turns spoken lists into written
+// ones. Compiled here (std-only, same #[path] pattern) so its tests run in this
+// crate too and so a rewrite that flattens a list the rules built is refused
+// here, at the source, instead of reaching the paste.
+// Only `restore_if_flattened` runs in the sidecar binary; the rest of the
+// module is the app crate's and is exercised here by its own tests.
+#[path = "../../src-tauri/src/structure.rs"]
+#[cfg_attr(not(test), allow(dead_code))]
+mod structure;
+
 use std::io::{BufRead, Write};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -72,7 +82,8 @@ RULES
 5. Fix grammar, punctuation, capitalization and run-on sentences. Do not change word
    choice, tone or meaning beyond that.
 6. Preserve the input's language and any existing line breaks and list numbering.
-7. If the input is already clean, return it unchanged.";
+7. If the input is already clean, return it unchanged.
+8. Preserve every bullet and numbered line exactly.";
 
 /// Per-mode overlay, appended to [`SYSTEM_BASE`] (spec §2.4). `code` is absent
 /// on purpose — code mode never reaches the model, and a request naming it is
@@ -571,6 +582,14 @@ fn handle(
     if text.is_empty() {
         return PolishResponse::err(req.id, "empty_output");
     }
+    // yap-format-structure: a polish rewrite that lost list lines the rules
+    // text had is a flattened list. Re-apply the structure by keeping the
+    // rules text — the list is rules-owned (Y4-D), never the model's to undo.
+    let text = if req.kind == KIND_POLISH {
+        structure::restore_if_flattened(&req.text, &text).to_string()
+    } else {
+        text
+    };
     let ms = started.elapsed().as_millis() as u64;
     if truncated {
         PolishResponse::ok_truncated(req.id, text, out_tokens, ms)
@@ -625,6 +644,8 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.starts_with(SYSTEM_BASE));
         assert!(a.contains("Format as an email body."));
+        // yap-format-structure: the model is told to keep the rules' lists.
+        assert!(SYSTEM_BASE.contains("Preserve every bullet and numbered line exactly."));
         assert!(system_prompt("email", "formal")
             .expect("formal is a style")
             .ends_with("Full capitalization and terminal punctuation."));

@@ -51,7 +51,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-const APP_SETTINGS_FIELD_COUNT: usize = 31;
+const APP_SETTINGS_FIELD_COUNT: usize = 33;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -102,6 +102,12 @@ fn fully_populated() -> AppSettings {
         check_updates: false,
         skipped_update_version: Some("9.9.9".into()),
         legacy_json_migrated: true,
+        // yap-format-structure — both non-default: the switch OFF, one override.
+        structure_enabled: false,
+        structure_app_overrides: BTreeMap::from([(
+            "com.apple.mail".to_string(),
+            "markdown".to_string(),
+        )]),
     }
 }
 
@@ -304,4 +310,45 @@ fn old_blob_migrates_without_resetting_carried_fields() {
     assert_eq!(again.language, "fr", "a relaunch changes nothing");
     assert_eq!(again.cleanup_level, "medium");
     assert_eq!(again.schema_version, loaded.schema_version);
+}
+
+/// yap-format-structure — the Structure switch and one per-app override
+/// survive a relaunch through the REAL store, and an old store that never had
+/// them loads with the switch ON and no overrides.
+#[test]
+fn structure_settings_persist() {
+    let dir = temp_dir("structure");
+    let path = dir.join("settings.json");
+    let mut written = AppSettings::default();
+    assert!(written.structure_enabled, "the switch ships ON");
+    assert!(written.structure_app_overrides.is_empty());
+    written.structure_enabled = false;
+    written
+        .structure_app_overrides
+        .insert("notion.id".to_string(), "plain".to_string());
+    write_settings_file(&path, &written).expect("settings written");
+    let raw = std::fs::read_to_string(&path).expect("settings.json on disk");
+    assert!(raw.contains("structureEnabled"), "{raw}");
+    assert!(raw.contains("structureAppOverrides"), "{raw}");
+
+    let read_back = load_settings(&path);
+    assert!(
+        !read_back.structure_enabled,
+        "the switch survives a relaunch"
+    );
+    assert_eq!(
+        read_back
+            .structure_app_overrides
+            .get("notion.id")
+            .map(String::as_str),
+        Some("plain"),
+        "the per-app override survives a relaunch"
+    );
+
+    // A store written before the fields existed: switch ON, no overrides.
+    let old = dir.join("old.json");
+    std::fs::write(&old, r#"{"schemaVersion": 2, "language": "en"}"#).expect("old blob");
+    let loaded = load_settings(&old);
+    assert!(loaded.structure_enabled);
+    assert!(loaded.structure_app_overrides.is_empty());
 }

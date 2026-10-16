@@ -805,6 +805,8 @@ pub const STAGE_DICTIONARY: &str = "dictionary";
 pub const STAGE_BACKTRACK: &str = "backtrack";
 pub const STAGE_RULES: &str = "rules";
 pub const STAGE_POLISH: &str = "polish";
+/// yap-format-structure: spoken lists became written lists.
+pub const STAGE_STRUCTURE: &str = "structure";
 
 /// Which cleanup stages ran for one take, and why the LLM stage produced
 /// nothing when it was enabled.
@@ -872,6 +874,59 @@ where
     .0
 }
 
+/// yap-format-structure — the [`StructureFormat`](crate::structure::StructureFormat)
+/// for one take. `enabled` is the Settings switch ("Turn spoken lists into
+/// bullets"); `overrides` is the per-app list keyed by bundle id (matched
+/// case-insensitively, in the map's own sorted order, so the pick is
+/// deterministic). `DictationMode::Code` is ALWAYS off — no override can turn
+/// list syntax on inside code.
+pub fn structure_format_for_take(
+    enabled: bool,
+    overrides: &std::collections::BTreeMap<String, String>,
+    bundle_id: &str,
+    mode: DictationMode,
+) -> crate::structure::StructureFormat {
+    if !enabled || mode == DictationMode::Code {
+        return crate::structure::StructureFormat::Off;
+    }
+    let setting = overrides
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(bundle_id.trim()))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("auto");
+    crate::structure::structure_format_for(bundle_id, setting)
+}
+
+/// [`run_cleanup_traced`] with the structure format the CALLER resolved from
+/// the paste target (the live take does; see `lib.rs`). The other entry points
+/// use the unknown-target default: plain bullets, off in `Code`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cleanup_structured_traced<D, P>(
+    raw: &str,
+    level: CleanupLevel,
+    mode: DictationMode,
+    structure_format: crate::structure::StructureFormat,
+    style: Style,
+    pauses: &[PauseSpan],
+    apply_dictionary: D,
+    polish: P,
+) -> (String, FormattingTrace)
+where
+    D: Fn(&str) -> String,
+    P: Fn(&str) -> Result<String, &'static str>,
+{
+    cleanup_pipeline(
+        raw,
+        level,
+        mode,
+        structure_format,
+        style,
+        pauses,
+        apply_dictionary,
+        polish,
+    )
+}
+
 /// [`run_cleanup`], plus the [`FormattingTrace`] of what it did (Y4-G).
 ///
 /// Identical pipeline — this IS the implementation, and `run_cleanup` is a
@@ -883,6 +938,36 @@ pub fn run_cleanup_traced<D, P>(
     raw: &str,
     level: CleanupLevel,
     mode: DictationMode,
+    style: Style,
+    pauses: &[PauseSpan],
+    apply_dictionary: D,
+    polish: P,
+) -> (String, FormattingTrace)
+where
+    D: Fn(&str) -> String,
+    P: Fn(&str) -> Result<String, &'static str>,
+{
+    let structure_format =
+        structure_format_for_take(true, &std::collections::BTreeMap::new(), "", mode);
+    cleanup_pipeline(
+        raw,
+        level,
+        mode,
+        structure_format,
+        style,
+        pauses,
+        apply_dictionary,
+        polish,
+    )
+}
+
+/// The one pipeline behind every `run_cleanup*` entry point.
+#[allow(clippy::too_many_arguments)]
+fn cleanup_pipeline<D, P>(
+    raw: &str,
+    level: CleanupLevel,
+    mode: DictationMode,
+    structure_format: crate::structure::StructureFormat,
     style: Style,
     pauses: &[PauseSpan],
     apply_dictionary: D,
@@ -945,14 +1030,36 @@ where
                 text = out;
             }
         }
+        // yap-format-structure — spoken lists become written lists, in the
+        // syntax the paste target renders. Rules only (Y4-D: never the model),
+        // and it runs with no polish model installed. AFTER `format_dictation`,
+        // the spoken marks and the email shape — all three can leave line
+        // breaks, and structure is inert on a text that already has one — and
+        // BEFORE paragraphing, which it replaces for a take it structured so a
+        // pause can never cut a paragraph through a list it produced.
+        let spans: Vec<crate::structure::StructurePause> = pauses
+            .iter()
+            .map(|p| crate::structure::StructurePause {
+                seconds: p.seconds,
+                at_fraction: p.at_voiced_fraction,
+            })
+            .collect();
+        let structured = crate::structure::structure_text(&text, &spans, structure_format);
+        let did_structure = structured != text && !structured.trim().is_empty();
+        if did_structure {
+            text = structured;
+            trace.stages.push(STAGE_STRUCTURE);
+        }
         // R12 (Y4-C) — paragraphing, from the pauses the speaker actually left.
         // AFTER the email shape on purpose: `format_email_shape` is inert on a
         // text that already carries line breaks, so cutting paragraphs first
         // would silently disable the greeting/sign-off rule. Inert in `Chat`
         // (a newline sends the message), `Code`, `Plain` and `List`.
-        let out = insert_paragraphs(&text, pauses, mode, style);
-        if !out.trim().is_empty() {
-            text = out;
+        if !did_structure {
+            let out = insert_paragraphs(&text, pauses, mode, style);
+            if !out.trim().is_empty() {
+                text = out;
+            }
         }
         // R3/R14 (YV62) — the tone-dialled trailing period, last of the rules:
         // it decides about the FINAL character, so everything that can add one
@@ -2682,6 +2789,127 @@ pub fn insert_paragraphs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── yap-format-structure: the stage, wired into the real pipeline ──────
+
+    const STRUCTURE_FIX_03: &str = "Before the demo tomorrow there are a few things. Make sure the projector works. Make sure the slides are on the laptop. Make sure everyone has a printed agenda.";
+
+    #[test]
+    fn structure_pause_threshold_is_the_paragraph_threshold() {
+        assert_eq!(
+            crate::structure::BLOCK_PAUSE_SECONDS,
+            PARAGRAPH_PAUSE_SECONDS,
+            "one notion of 'he finished that thought' across both stages"
+        );
+    }
+
+    #[test]
+    fn structure_runs_at_medium_with_no_polish_model() {
+        // The shipped level, the unknown-target default mode (Plain via auto),
+        // and a polish closure that has no model: the list still forms.
+        let out = run_cleanup(
+            STRUCTURE_FIX_03,
+            CleanupLevel::Medium,
+            DEFAULT_MODE,
+            Style::Default,
+            &[],
+            |t| t.to_string(),
+            |_t| None,
+        );
+        assert_eq!(
+            out,
+            "Before the demo tomorrow there are a few things:\n\u{2022} Make sure the projector works.\n\u{2022} Make sure the slides are on the laptop.\n\u{2022} Make sure everyone has a printed agenda."
+        );
+    }
+
+    #[test]
+    fn structure_target_format_and_trace_reach_the_pipeline() {
+        let (out, trace) = run_cleanup_structured_traced(
+            STRUCTURE_FIX_03,
+            CleanupLevel::Medium,
+            DictationMode::Notes,
+            crate::structure::StructureFormat::Markdown,
+            Style::Default,
+            &[],
+            |t| t.to_string(),
+            |_t| Err("no_model"),
+        );
+        assert!(
+            out.contains("\n- Make sure the slides are on the laptop."),
+            "{out}"
+        );
+        assert!(
+            !out.contains("\n\n"),
+            "no paragraph break inside the list: {out}"
+        );
+        assert!(
+            trace.stages.contains(&STAGE_STRUCTURE),
+            "{:?}",
+            trace.stages
+        );
+        // Off leaves the rules text alone, and the trace says nothing ran.
+        let (off, trace) = run_cleanup_structured_traced(
+            STRUCTURE_FIX_03,
+            CleanupLevel::Medium,
+            DictationMode::Notes,
+            crate::structure::StructureFormat::Off,
+            Style::Default,
+            &[],
+            |t| t.to_string(),
+            |_t| Err("no_model"),
+        );
+        assert!(!off.contains('\n'), "{off}");
+        assert!(!trace.stages.contains(&STAGE_STRUCTURE));
+    }
+
+    #[test]
+    fn structure_code_mode_and_the_switch_are_always_off() {
+        use crate::structure::StructureFormat;
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("com.microsoft.VSCode".to_string(), "markdown".to_string());
+        overrides.insert("com.apple.mail".to_string(), "markdown".to_string());
+        assert_eq!(
+            structure_format_for_take(
+                true,
+                &overrides,
+                "com.microsoft.VSCode",
+                DictationMode::Code
+            ),
+            StructureFormat::Off
+        );
+        // An override is a "mode is set" for a code editor in a prose mode.
+        assert_eq!(
+            structure_format_for_take(
+                true,
+                &overrides,
+                "com.microsoft.VSCode",
+                DictationMode::Notes
+            ),
+            StructureFormat::Markdown
+        );
+        assert_eq!(
+            structure_format_for_take(true, &overrides, "COM.APPLE.MAIL", DictationMode::Email),
+            StructureFormat::Markdown
+        );
+        assert_eq!(
+            structure_format_for_take(false, &overrides, "com.apple.mail", DictationMode::Email),
+            StructureFormat::Off
+        );
+        assert_eq!(
+            structure_format_for_take(true, &overrides, "notion.id", DictationMode::Notes),
+            StructureFormat::Markdown
+        );
+        let code = run_cleanup(
+            STRUCTURE_FIX_03,
+            CleanupLevel::Medium,
+            DictationMode::Code,
+            Style::Default,
+            &[],
+            |t| t.to_string(),
+            |_t| None,
+        );
+        assert!(!code.contains('\n'), "{code}");
+    }
 
     // --- No-speech + hallucination guards (YV16) --------------------------
 

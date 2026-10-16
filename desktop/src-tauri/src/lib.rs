@@ -164,6 +164,9 @@ pub mod shortcuts;
 /// directly — the signature block is the one stage that copies bytes verbatim
 /// after polish, so undo has to be asserted against the real function.
 pub mod snippets;
+// yap-format-structure: spoken lists -> written lists. Pure, std-only; also
+// compiled into the yap-polish sidecar via #[path].
+pub mod structure;
 // YV97 — the meeting summarizer: token-based chunking, MAP-stage extraction
 // under a per-chunk grammar, and the ported V1-V7 gate. Public because all five
 // of its acceptance criteria are integration tests over these pure functions.
@@ -405,6 +408,18 @@ pub struct AppSettings {
     /// clear it and re-arm the migration.
     #[serde(default)]
     pub legacy_json_migrated: bool,
+    /// yap-format-structure — "Turn spoken lists into bullets". On by default:
+    /// enumerations become lists, "topic, verdict" lines become `Topic: verdict`
+    /// bullets, formatted for the app the take is pasted into. Rules only —
+    /// never routed through the polish model.
+    #[serde(default = "default_true")]
+    pub structure_enabled: bool,
+    /// Per-app override of that format, keyed by bundle id
+    /// (`com.apple.mail` -> `markdown` | `plain` | `off`). Empty by default: the
+    /// built-in table in `structure::structure_format_for` decides. A BTreeMap
+    /// so the store is written in a stable order.
+    #[serde(default)]
+    pub structure_app_overrides: std::collections::BTreeMap<String, String>,
 }
 
 /// Current settings-schema version (YV41). Bump this ONLY together with a new
@@ -489,6 +504,8 @@ impl Default for AppSettings {
             check_updates: true,
             skipped_update_version: None,
             legacy_json_migrated: false,
+            structure_enabled: true,
+            structure_app_overrides: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -2099,6 +2116,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let state2 = state.clone();
     // Capture focused app *before* we steal focus with notifications / main window.
     let source_app = focus::frontmost_app_name();
+    // yap-format-structure: the paste target's bundle id picks the list syntax
+    // (Markdown / plain bullets / off). Captured with `source_app`, before Yap
+    // can take focus.
+    let source_bundle_id = focus::frontmost_bundle_id();
     // YV50 context awareness — read the text just before the caret while the
     // user's app is still the focused one, for the same reason as `source_app`.
     // Bounded to `focus::CONTEXT_CHAR_LIMIT` chars; `None` on AX denial or a
@@ -2440,10 +2461,20 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // rules text byte for byte.
             let polish_config = polish::PolishConfig::from_settings(&settings, dictation_mode);
             let t_cleanup = std::time::Instant::now();
-            let (text, formatting_trace) = dictation::run_cleanup_traced(
+            // yap-format-structure: list syntax for THIS paste target, from the
+            // Structure switch and the per-app override list. A user-picked
+            // Plain mode means "exactly what I said" — no structure either.
+            let structure_format = dictation::structure_format_for_take(
+                settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+                &settings.structure_app_overrides,
+                source_bundle_id.as_deref().unwrap_or_default(),
+                dictation_mode,
+            );
+            let (text, formatting_trace) = dictation::run_cleanup_structured_traced(
                 &raw_text,
                 cleanup_level,
                 dictation_mode,
+                structure_format,
                 // YV62: the same tone dial the model's overlay gets, so R3's
                 // trailing-period rule holds with the polish stage off.
                 polish_config.style,
@@ -3581,10 +3612,19 @@ fn retry_failed_dictation(
         row.source_app.as_deref().unwrap_or_default(),
     );
     let polish_config = polish::PolishConfig::from_settings(&settings, mode);
-    let text = dictation::run_cleanup(
+    // A retry has no live paste target (the row stores the app's title, not
+    // its bundle id), so it gets the conservative unknown-target format.
+    let structure_format = dictation::structure_format_for_take(
+        settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+        &settings.structure_app_overrides,
+        "",
+        mode,
+    );
+    let (text, _) = dictation::run_cleanup_structured_traced(
         &raw_text,
         dictation::CleanupLevel::from_setting(&settings.cleanup_level),
         mode,
+        structure_format,
         polish_config.style,
         &[],
         |t| {
@@ -3593,7 +3633,7 @@ fn retry_failed_dictation(
                 .apply_dictionary(t)
                 .unwrap_or_else(|_| t.to_string())
         },
-        |t| polish::polish_llm(t, mode, &polish_config),
+        |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
     );
     let entry = state.db.convert_failed_dictation(
         &id,
