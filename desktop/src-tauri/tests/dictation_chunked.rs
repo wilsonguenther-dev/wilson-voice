@@ -12,7 +12,7 @@
 //!    gate corpus shifts under us),
 //! 2. a long take's seams neither duplicate nor drop a word,
 //! 3. a failed window in the MIDDLE costs that window, not the take, and
-//! 4. the timeout is spent PER WINDOW, so a twelve-window take is not subject
+//! 4. the timeout is spent PER WINDOW, so a many-window take is not subject
 //!    to a 120 s total.
 //!
 //! Plus the structural one the item asks for by name: there is exactly ONE
@@ -303,35 +303,52 @@ fn a_failed_middle_chunk_keeps_the_earlier_chunks() {
 
 #[test]
 fn per_chunk_deadline_not_per_take() {
-    // The deadline is spent per WINDOW. Twelve windows at 200 ms each is 2.4 s
-    // of decoding against a 300 ms budget: under the old per-take wall this
-    // take was dead, and under the new one every window is comfortably inside
-    // its own budget.
-    let per_chunk = Duration::from_millis(300);
-    let delay = Duration::from_millis(200);
+    // The deadline is spent per WINDOW. Twenty-four windows at 50 ms each is
+    // 1.2 s of decoding against a 1 s budget: under the old per-take wall this
+    // take was dead, and under the new one every window is inside its own
+    // budget with 950 ms (19x the decode) of headroom.
+    //
+    // yap-flakes-2026-10-16: this was twelve windows x 200 ms against 300 ms,
+    // i.e. 100 ms of headroom per window, and it went red on loaded boxes (CI,
+    // two loop lanes compiling) while the code was right: one late thread wake
+    // inside one window tripped that window's `recv_timeout`. The per-window
+    // budget is a REAL `mpsc::recv_timeout` on the worker thread (it is the
+    // hard bound on a wedged native decode), so there is no clock to inject
+    // without changing what it guards; the fix is headroom, sized in
+    // docs/loop/FLAKES-2026-10-16.md. The property is unchanged: the take's
+    // total decode time exceeds the budget while no single window does.
+    const WINDOWS: usize = 24;
+    let per_chunk = Duration::from_secs(1);
+    let delay = Duration::from_millis(50);
+    // Non-vacuous by construction, before anything runs: the take as a whole
+    // could never fit the budget, and each window easily does.
+    assert!(delay * WINDOWS as u32 > per_chunk);
+    assert!(delay * 10 < per_chunk);
+    // The same 5 s window geometry as every other case here, over twice the
+    // audio: 120 s of ramp is twenty-four windows.
     let plan = twelve_window_plan();
     let rig = rig(true, per_chunk, None, delay);
 
     let started = Instant::now();
     let take = rig
         .manager
-        .transcribe_take_with(ramp_take(60.0), None, None, &plan)
-        .expect("a 12-window take must not be subject to a per-take wall");
+        .transcribe_take_with(ramp_take(120.0), None, None, &plan)
+        .expect("a 24-window take must not be subject to a per-take wall");
     let elapsed = started.elapsed();
 
-    assert_eq!(take.chunks_total, 12);
+    assert_eq!(take.chunks_total, WINDOWS);
     assert_eq!(take.chunks_failed, 0, "reason: {:?}", take.degraded_reason);
     assert!(!take.degraded);
-    assert_eq!(rig.decodes.load(Ordering::Acquire), 12);
+    assert_eq!(rig.decodes.load(Ordering::Acquire), WINDOWS);
     assert!(
         elapsed > per_chunk,
         "the take ran {elapsed:?}, which is not longer than the per-chunk budget \
          {per_chunk:?} — this test is not proving anything"
     );
     assert!(
-        elapsed >= delay * 12,
+        elapsed >= delay * WINDOWS as u32,
         "every window must actually have decoded ({elapsed:?} < {:?})",
-        delay * 12
+        delay * WINDOWS as u32
     );
 }
 
