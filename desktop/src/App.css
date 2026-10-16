@@ -2736,9 +2736,24 @@ button.primary.big {
   line-height: 1.45;
 }
 
-.perm-health-line {
+.perm-health-text {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.perm-health-line {
+  min-width: 0;
+}
+
+/* yap-perm-truth — the bundle path, the failing OS call, a stale grant, a
+   duplicate Yap. Quieter than the line it explains; paths wrap anywhere. */
+.perm-health-note {
+  font-size: 12px;
+  opacity: 0.82;
+  overflow-wrap: anywhere;
 }
 
 .perm-health-action {

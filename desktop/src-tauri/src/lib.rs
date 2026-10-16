@@ -107,6 +107,7 @@ pub mod models;
 pub mod os_version_gate;
 mod paste;
 mod paste_tx;
+pub mod perm_truth;
 pub mod permissions;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
 // the golden formatting corpus runs the real stage from an integration test.
@@ -5742,6 +5743,17 @@ pub fn run() {
                     _ => {}
                 });
             }
+
+            // yap-perm-truth — the ONE app-activation observer, registered
+            // beside the Focus poke above. Cmd-Tabbing back from System
+            // Settings activates Yap whether or not the main window takes key,
+            // and that is the moment a toggled grant is worth re-reading.
+            permissions::observe_app_activation(|| {
+                permissions::poke(permissions::WatchReason::Activate);
+            });
+            // The running binary's signature and the duplicate-bundle scan,
+            // computed once, off the main thread, before the banner needs them.
+            perm_truth::prime();
 
             // PERM-E — the ONE permission watcher. It re-reads all four grants
             // on launch, on window focus, on wake (Y1-B's publisher calls

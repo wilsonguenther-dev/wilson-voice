@@ -234,7 +234,7 @@ export default function App() {
         {/* PERM-E — the single permission surface. Renders NOTHING while all
             four grants are fine, which is why it sits unconditionally here
             rather than behind a nav check: it is its own visibility rule. */}
-        <PermissionHealthRow grants={perms?.grants} />
+        <PermissionHealthRow report={perms} />
 
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>

@@ -11,7 +11,7 @@
 #![cfg(target_os = "macos")]
 
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -372,6 +372,12 @@ unsafe extern "C" fn tap_callback(
     }
     let state = &*(user_info as *const TapState);
 
+    // yap-perm-truth: a real key / flags edge is the ONLY delivery evidence
+    // `permissions::input_monitoring_state` accepts.
+    if event_type == KCG_EVENT_FLAGS_CHANGED || event_type == KCG_EVENT_KEY_DOWN {
+        note_tap_edge();
+    }
+
     let flags = ffi::CGEventGetFlags(event);
     let keycode = ffi::CGEventGetIntegerValueField(event, ffi::KEYBOARD_EVENT_KEYCODE);
     let hid_flags = ffi::CGEventSourceFlagsState(KCG_EVENT_SOURCE_STATE_HID);
@@ -633,23 +639,51 @@ pub struct TapHealth {
     pub re_arms: u32,
     pub by_timeout: u32,
     pub by_user_input: u32,
+    /// yap-perm-truth — key / flags edges `tap_callback` received since the
+    /// last re-arm (or since the tap was created). THE delivery evidence: a
+    /// re-arm count says nothing about whether events arrive.
+    pub edges_since_re_arm: u64,
 }
 
 impl TapHealth {
     /// PURE counter step — the global below is just one instance of this.
+    /// A re-arm resets the delivery evidence: what the old tap delivered says
+    /// nothing about the re-armed one.
     pub fn record(&mut self, kind: TapDisable) {
         self.re_arms = self.re_arms.saturating_add(1);
+        self.edges_since_re_arm = 0;
         match kind {
             TapDisable::Timeout => self.by_timeout = self.by_timeout.saturating_add(1),
             TapDisable::UserInput => self.by_user_input = self.by_user_input.saturating_add(1),
         }
     }
+
+    /// PURE — one key or flags edge reached the callback.
+    pub fn note_edge(&mut self) {
+        self.edges_since_re_arm = self.edges_since_re_arm.saturating_add(1);
+    }
+
+    /// Is the tap observably delivering? Only an edge since the last re-arm says so.
+    pub fn delivering(&self) -> bool {
+        self.edges_since_re_arm > 0
+    }
+}
+
+/// The live edge counter, bumped from `tap_callback` without taking a lock
+/// (the callback runs on every key event and must stay well inside the window
+/// server's timeout). Reset to zero on every re-arm by [`note_tap_disabled`].
+static EDGES_SINCE_RE_ARM: AtomicU64 = AtomicU64::new(0);
+
+/// Count one key or flags edge. Called from `tap_callback` only.
+pub fn note_tap_edge() {
+    EDGES_SINCE_RE_ARM.fetch_add(1, Ordering::Relaxed);
 }
 
 static TAP_HEALTH: Mutex<TapHealth> = Mutex::new(TapHealth {
     re_arms: 0,
     by_timeout: 0,
     by_user_input: 0,
+    edges_since_re_arm: 0,
 });
 
 /// The live CFMachPort for the tap, so the callback can re-enable the SAME tap
@@ -659,13 +693,16 @@ static TAP_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut
 
 /// Snapshot of the session's tap health. Cheap; safe from any thread.
 pub fn tap_health() -> TapHealth {
-    *TAP_HEALTH.lock()
+    let mut h = *TAP_HEALTH.lock();
+    h.edges_since_re_arm = EDGES_SINCE_RE_ARM.load(Ordering::Relaxed);
+    h
 }
 
 /// Count one disable + re-arm and hand back the new snapshot.
 pub fn note_tap_disabled(kind: TapDisable) -> TapHealth {
     let mut g = TAP_HEALTH.lock();
     g.record(kind);
+    EDGES_SINCE_RE_ARM.store(0, Ordering::Relaxed);
     *g
 }
 
