@@ -247,6 +247,8 @@ jq -n --arg v "0.7.1" --arg sig "$(cat src-tauri/target/release/bundle/macos/Yap
 
 ## Verify before publishing
 
+First, the permission-identity check in [RELEASING.md](RELEASING.md): `scripts/qa/perm-probe.sh --compare` against the installed build; `dr_change=yes` goes into the release notes.
+
 ```bash
 # 1. The manifest is reachable and well-formed once published.
 curl -sfL https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json | jq .

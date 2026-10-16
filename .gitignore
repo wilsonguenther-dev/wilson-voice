@@ -45,3 +45,6 @@ desktop/src-tauri/binaries/
 # not source; --check-only deliberately fails on a fresh checkout because there
 # is nothing captured yet.
 docs/smoke-shots/
+
+# yap-qa-harness: hotkey-walk.sh self-test fixtures are hand-checked synthetic logs, never captured user logs
+!scripts/qa/fixtures/*.log

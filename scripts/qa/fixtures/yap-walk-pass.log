@@ -1,0 +1,19 @@
+[2026-10-16T18:08:54Z INFO  wilson_voice_lib::ptt_macos] FN PTT hybrid tap running (fn⌃ hold / double-tap hands-free)
+[2026-10-16T18:08:55Z INFO  wilson_voice_lib::ptt_macos] PTT hold armed → Start
+[2026-10-16T18:08:55Z INFO  wilson_voice_lib] esc cancel registered for this take
+[2026-10-16T18:08:55Z INFO  wilson_voice_lib::record] capture armed: press→capture_start=0ms (arm_wait=0ms)
+[2026-10-16T18:08:55Z INFO  wilson_voice_lib] system output muted for dictation
+[2026-10-16T18:08:55Z INFO  wilson_voice_lib] recording started
+[2026-10-16T18:08:56Z INFO  wilson_voice_lib::ptt_macos] PTT hold release → Stop (1.502318s)
+[2026-10-16T18:08:56Z INFO  wilson_voice_lib] system output restored after dictation
+[2026-10-16T18:08:57Z INFO  wilson_voice_lib] no-speech gate: voiced=0.02s speech_present=false below threshold — skipping ASR
+[2026-10-16T18:08:57Z INFO  wilson_voice_lib] esc cancel released
+[2026-10-16T18:09:00Z INFO  wilson_voice_lib::ptt_macos] PTT double-tap → hands-free ON
+[2026-10-16T18:09:00Z INFO  wilson_voice_lib] hands-free ON
+[2026-10-16T18:09:00Z INFO  wilson_voice_lib] esc cancel registered for this take
+[2026-10-16T18:09:00Z INFO  wilson_voice_lib] recording started
+[2026-10-16T18:09:03Z INFO  wilson_voice_lib::ptt_macos] fn⌃ tap ends hands-free
+[2026-10-16T18:09:03Z INFO  wilson_voice_lib] hands-free OFF
+[2026-10-16T18:09:03Z INFO  wilson_voice_lib] system output restored after dictation
+[2026-10-16T18:09:04Z INFO  wilson_voice_lib] transcript ok words=3 pasted=false pipeline_ms=812
+[2026-10-16T18:09:04Z INFO  wilson_voice_lib] esc cancel released
