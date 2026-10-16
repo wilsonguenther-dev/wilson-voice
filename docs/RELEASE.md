@@ -147,6 +147,19 @@ signs anything they are expected to accept.
    `https://github.com/wilsonguenther-dev/wilson-voice/releases/latest/download/latest.json`
    resolve — the `latest` alias only ever points at a *published, non-prerelease*
    release, so a release left as a draft leaves every client on 404.
+6. Stage the same release on the site host, the **primary** updater endpoint
+   (UPD-A), in the same sitting as publishing it:
+
+   ```bash
+   scripts/stage-updater-manifest.sh v0.7.1 "$STAGE"
+   ```
+
+   then deploy `$STAGE` per `docs/DEPLOY-SITE.md`. The script stages the
+   tarball, its `.sig` and a `latest.json` whose `url` points at the site host,
+   so an update offered through the primary also *installs* through it while the
+   repo is private. The app takes the newest version across both endpoints, so a
+   late re-stage only delays private-window updates; it never hides a GitHub
+   release from anyone.
 
 ## Manual release (local, when CI can't sign)
 
@@ -253,7 +266,10 @@ release job proves only that files were uploaded.
 
 ## Endpoint
 
-`plugins.updater.endpoints` stays on the public GitHub releases URL. The repo is
-public, so the asset needs no auth. When paid distribution lands, the endpoint
+`plugins.updater.endpoints` lists the site host first
+(`https://yap-lemon.vercel.app/updates/latest.json`, staged by step 6) and the
+GitHub releases URL second. Every check asks both and offers the newest version
+either one announces, so neither endpoint can shadow the other. The GitHub URL
+needs no auth only while the repo is public. When paid distribution lands, the endpoint
 moves to a licence-checking server that returns the same `latest.json` shape —
 the manifest contract above does not change, only who serves it.

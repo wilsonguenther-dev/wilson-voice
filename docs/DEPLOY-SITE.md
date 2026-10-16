@@ -100,6 +100,61 @@ dashboard step, not something to work around with the old team's token.
 is a slow, flaky single request. `vercel link` is idempotent — it creates the
 project the first time and re-links after that.
 
+## The updater manifest ships with the DMG (UPD-A)
+
+`plugins.updater.endpoints` in `desktop/src-tauri/tauri.conf.json` now reads,
+in order:
+
+1. `https://yap-lemon.vercel.app/updates/latest.json` — **primary**, the same
+   host that serves the DMG.
+2. the GitHub `releases/latest/download/latest.json` URL — **fallback**. It
+   stops resolving the instant this repo is flipped private, and flipping it is
+   a routine, recurring procedure (`docs/loop/HARNESS.md`).
+
+The app asks **both** endpoints on every check and offers the **newest**
+version either one announces (`check_every_endpoint` in `src-tauri/src/lib.rs`).
+It does not stop at the first manifest that parses, which is what the plugin's
+own endpoint loop does. So a primary left on an older release can never hide a
+newer release on GitHub, and a primary that answers junk (an SPA catch-all
+returning 200 text/html, a 5xx) can never switch off the fallback. "Install now"
+uses that same check, so the tarball it downloads is the one named by the
+manifest that won.
+
+`latest.json` is **not** produced by `npm run desktop:build`. It comes from
+tauri-action's `includeUpdaterJson: true` in `release.yml` (or is written by
+hand, see `docs/RELEASE.md`), and its `url` names a **GitHub release asset**.
+Copied here unchanged, it would move the lookup and leave the download behind:
+in a private-repo window the check would succeed through Vercel, and "Install
+now" would then 404 on GitHub. So the staging step above has a third part,
+the manifest **and** the bytes it points at, through one script:
+
+```bash
+scripts/stage-updater-manifest.sh v0.9.0 "$STAGE"   # the tag you are shipping
+```
+
+It downloads `latest.json`, `Yap.app.tar.gz` and `Yap.app.tar.gz.sig` from that
+release (`gh` is authenticated, so this works while the repo is private) into
+`$STAGE/updates/` and rewrites every `platforms.*.url` to
+`https://yap-lemon.vercel.app/updates/<tarball>`. It refuses to finish if the
+manifest's version is not the tag, if any referenced file is missing or over
+Vercel's 100 MB static limit, or if any manifest signature differs from its
+`.sig`. The signature covers the tarball's bytes, not its url, so the rewrite
+does not invalidate it, and the app still verifies against
+`plugins.updater.pubkey`. Verify after the deploy, twice:
+
+```bash
+curl -s https://yap-lemon.vercel.app/updates/latest.json | python3 -m json.tool
+curl -sI "$(curl -s https://yap-lemon.vercel.app/updates/latest.json \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["platforms"]["darwin-aarch64"]["url"])')" | head -1
+```
+
+Run this for **every** release (`docs/RELEASE.md` step 6). Newest-wins means a
+skipped re-stage costs nothing while the repo is public, but in a private window
+the primary is the only endpoint that answers.
+
+`plugins.updater.pubkey` is **never** regenerated as part of a deploy. A new
+keypair makes every installed copy unable to verify any update.
+
 Then bump the version everywhere it is written down: the three `href`s and the
 `v0.7.0` label in `site/dist/index.html`, and the `--pattern` above.
 
