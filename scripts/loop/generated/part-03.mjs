@@ -172,7 +172,7 @@ const PART = 'part-03'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"yap24-PKG1":0,"yap24-PKG2":0,"yap24-X1":1,"yap24-X2":1,"yap24-X3":1}
+const LANE_BY_ID = {"yap24-PKG1":1,"yap24-PKG2":1,"yap24-X1":0,"yap24-X2":0,"yap24-X3":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.

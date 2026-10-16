@@ -63,7 +63,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 60 })
 } else {
   phase("part-01")
-  log("START part-01 — 60 item(s), Y0-A..Y4-H — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (432427 bytes)")
+  log("START part-01 — 60 item(s), Y0-A..Y4-H — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (432460 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (60 item(s))")

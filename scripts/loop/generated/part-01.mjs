@@ -227,7 +227,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-uiux-2026-10-16-W0":1,"yap-uiux-2026-10-16-HOME":1,"yap-uiux-2026-10-16-DICT":1,"yap-uiux-2026-10-16-INSIGHTS":1,"yap-uiux-2026-10-16-MEETINGS":1,"yap-uiux-2026-10-16-SCRATCH":1,"yap-uiux-2026-10-16-SETTINGS":1,"yap-uiux-2026-10-16-ONBOARD":1,"yap-uiux-2026-10-16-Z":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -4499,13 +4499,14 @@ ITEMS.push({
   `,
 })
 
-// ── 08-yap-perm-hotkey-2026-10-16.mjs ─────────────────────────────────────
+// ── 08-yap-uiux-2026-10-16.mjs ────────────────────────────────────────────
 // yap-perm-hotkey-2026-10-16 — THE BANNER WAS RIGHT, SETTINGS LIED; THE HOTKEY STARTED A TAKE IT
 // COULD NOT STOP. Written 2026-10-16 by the yap-perm-audit seat from Wilson's 0.9.0 report (16:14Z):
 // System Settings shows Yap ON in Accessibility while Yap's home says "Accessibility and Input
 // Monitoring are off"; and a hotkey take that 15 fn presses would not end. He asked for tools that
-// test it for real. FIX, no panel (unambiguous intent). This file sorts BEFORE 08-yap-uiux, so all
-// three items run ahead of yap-uiux-2026-10-16-W0. Order inside the file: the harness first (it is
+// test it for real. FIX, no panel (unambiguous intent). These three items sit at the TOP of
+// 08-yap-uiux-2026-10-16.mjs: one file = one lane, run in order, so all three run ahead of
+// yap-uiux-2026-10-16-W0 (two adjacent files would land on opposite lanes and run concurrently). Order inside the file: the harness first (it is
 // the acceptance tool of yap-hotkey-stop), then perm-truth, then hotkey-stop.
 // Review: Opus only (review-opus + review-opus2). No Codex, no Gemini, no third-party reviewer.
 // HAZARD (same as 07): no agent launches the GUI app, posts events into, signals or quits Wilson's
@@ -4755,7 +4756,6 @@ ITEMS.push({
   `,
 })
 
-// ── 08-yap-uiux-2026-10-16.mjs ────────────────────────────────────────────
 // yap-uiux-2026-10-16 — THE UI/UX PASS. Written 2026-10-16 by the yap-prep seat.
 // Wilson, 2026-10-06: "All of the Yap stuff: the UI/UX ... There are many items you'll find and
 // improve on." Memory: feedback_ui_containment (every panel and shell ships contained),
@@ -4782,7 +4782,7 @@ ITEMS.push({
   spec: `
     Panel: not required — a walk that writes a ledger and changes no view
     DEPENDS: yap-flakes-2026-10-16 (a green main); Y0-E's smoke (scripts/smoke-windowed.sh, on main)
-      QA TOOLS (yap-qa-harness, which sorts ahead of this file): also run bash scripts/qa/perm-probe.sh and
+      QA TOOLS (yap-qa-harness, earlier in this same file, so the same lane, already merged): also run bash scripts/qa/perm-probe.sh and
       bash scripts/qa/hotkey-walk.sh --self-test and paste both outputs into the ledger header and the PR
       body. The full hotkey-walk (it posts fn into the installed Yap) is Wilson's walk step, never an agent's.
 
@@ -5030,7 +5030,7 @@ ITEMS.push({
     Panel: not required — verification of the pass
     DEPENDS: every yap-uiux-2026-10-16 child above merged (HOME, DICT, INSIGHTS, MEETINGS, SCRATCH,
       SETTINGS, ONBOARD)
-      QA TOOLS (yap-qa-harness, which sorts ahead of this file): also run bash scripts/qa/perm-probe.sh and
+      QA TOOLS (yap-qa-harness, earlier in this same file, so the same lane, already merged): also run bash scripts/qa/perm-probe.sh and
       bash scripts/qa/hotkey-walk.sh --self-test and paste both outputs into the ledger header and the PR
       body. The full hotkey-walk (it posts fn into the installed Yap) is Wilson's walk step, never an agent's.
     DO: re-run the FULL walk (no YAP_SMOKE_VIEWS) for both fixture sets, PNGs to
