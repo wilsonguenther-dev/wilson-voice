@@ -65,9 +65,12 @@ ITEMS.push({
     grep -q 'elapsed_seconds' desktop/src-tauri/tests/meeting_manual_start_stop.rs
     ! grep -qF '#[ignore]' desktop/src-tauri/tests/dictation_chunked.rs
     ! grep -qF '#[ignore]' desktop/src-tauri/tests/meeting_manual_start_stop.rs
-    cd desktop && npm ci
-    stage_sidecars
-    cd .. && bash scripts/flake-soak.sh dictation_chunked per_chunk_deadline_not_per_take 30
+    (cd desktop && npm ci)
+    (cd desktop && npm run build)
+    (cd desktop && cargo build -p yap-polish --release)
+    (cd desktop && cargo build -p yap-diarize --release)
+    T="$CARGO_TARGET_DIR"; test -n "$T" || T="$PWD/desktop/target"; mkdir -p desktop/src-tauri/binaries && cp "$T/release/yap-polish" "desktop/src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')" && cp "$T/release/yap-diarize" "desktop/src-tauri/binaries/yap-diarize-$(rustc -vV | awk '/^host:/ {print $2}')"
+    bash scripts/flake-soak.sh dictation_chunked per_chunk_deadline_not_per_take 30
     bash scripts/flake-soak.sh meeting_manual_start_stop '' 30
   `,
 })
