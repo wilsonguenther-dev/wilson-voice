@@ -1,5 +1,17 @@
 # Yap Changelog
 
+## v0.9.0
+
+- **Meetings.** Yap can now record a meeting as two tracks, your microphone and the Mac's system audio, through a CoreAudio process tap (macOS 14.4 and later), and turn it into one time-ordered transcript. Meetings get their own screen, full-text search, a Markdown export and a delete that removes everything a meeting owns. Start and stop from the tray, from the pill, or with ⌃⌘M. Capture keeps a fixed memory ceiling, survives an AirPods swap or a device change mid-meeting, and is transcribed in timed chunks that dictation can interrupt and that resume after a crash.
+- **Who said what.** A local diarization sidecar segments the meeting and groups the speakers, and Yap no longer labels the microphone "Me" when it cannot back that up. A summary pass extracts what was decided, and next actions link back to the moment in the transcript they came from. Nothing leaves the Mac.
+- **Long dictation works.** Long takes decode in windows instead of one capped call, a long take spills to disk instead of growing in memory, the pill shows real progress, Cancel works while it is still decoding without losing the audio, and there is a declared maximum session length with a warning before it, not a silent cliff.
+- **Formatting is on, and you can see what it did.** A fresh install now reaches the formatting stage. Long speech becomes paragraphs, the six app-aware modes change the output per app with auto mode picking correctly, the polish pass handles takes past 400 words, the formatting settings use plain words and all persist, and one key undoes what formatting changed.
+- **Permissions tell the truth.** Yap asks macOS the real microphone question instead of probing the device, a denied microphone gets its own screen with a working link to System Settings, first run will not reach calibration without a real grant, every hotkey press re-checks the grant, a hotkey tap macOS disabled is re-armed and reported, and one health surface watches microphone, Accessibility, Input Monitoring and audio capture for revocation.
+- **Your grants survive updates.** Local builds are no longer ad-hoc signed, which is what made permissions appear to reset after a rebuild.
+- **The pill says what is happening.** Every state the product has, including the gap between transcribing and thinking, a refused hotkey press that explains itself, and a menu-bar item that reads from the same source as the pill and the settings card.
+- **Licensing fixes.** A paying customer whose key stops verifying is never shown a price, and the floating window follows license status.
+- **Crash reports you control.** A crash-report button bundles and redacts a report for you to send yourself; Yap still makes no network call on its own.
+
 ## v0.8.0
 
 - **Yap is a paid app now, and the trial is a real one.** Every install gets 14 days of the whole app, no card and no account. A $29 one-time license (a $19 founding price runs against the same purchase) turns it on for good, on up to three of your Macs.
