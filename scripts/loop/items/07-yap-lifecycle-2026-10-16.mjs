@@ -68,11 +68,14 @@ ITEMS.push({
     grep -q 'RunEvent::Reopen' desktop/src-tauri/src/lib.rs
     test -f desktop/src-tauri/tests/lifecycle.rs
     test -x scripts/lifecycle-soak.sh
-    cd desktop && npm ci
-    stage_sidecars
-    cd src-tauri && cargo test --features custom-protocol --test lifecycle
-    test "$(cargo test --features custom-protocol --test lifecycle -- --list 2>/dev/null | grep -c ': test$')" -ge 4
-    cargo build --release --features custom-protocol
-    cd ../.. && bash scripts/lifecycle-soak.sh 40
+    (cd desktop && npm ci)
+    (cd desktop && npm run build)
+    (cd desktop && cargo build -p yap-polish --release)
+    (cd desktop && cargo build -p yap-diarize --release)
+    T="$CARGO_TARGET_DIR"; test -n "$T" || T="$PWD/desktop/target"; mkdir -p desktop/src-tauri/binaries && cp "$T/release/yap-polish" "desktop/src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')" && cp "$T/release/yap-diarize" "desktop/src-tauri/binaries/yap-diarize-$(rustc -vV | awk '/^host:/ {print $2}')"
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test lifecycle)
+    test "$(cd desktop/src-tauri && cargo test --features custom-protocol --test lifecycle -- --list 2>/dev/null | grep -c ': test$')" -ge 4
+    (cd desktop/src-tauri && cargo build --release --features custom-protocol)
+    bash scripts/lifecycle-soak.sh 40
   `,
 })

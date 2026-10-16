@@ -1525,12 +1525,14 @@ src-tauri statically links transcribe-cpp's ggml and yap-polish vendors llama-cp
 build of this workspace is MINUTES. The target dirs live OUTSIDE the worktrees on purpose, so this
 cache survives every item, every part and both passes. For EACH lane, with that lane's target dir:
     cd ${WORKDIR}/${APP} && export CARGO_TARGET_DIR=${CARGO_TARGET_A}
+    npm run build ; echo "distA=$?"
     cargo build -p yap-polish --release ; echo "sidecarA=$?"
-    TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${CARGO_TARGET_A}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" ; echo "stageA=$?"
+    cargo build -p yap-diarize --release ; echo "diarizeA=$?"
+    TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')" ; mkdir -p src-tauri/binaries && cp ${CARGO_TARGET_A}/release/yap-polish "src-tauri/binaries/yap-polish-$TRIPLE" && cp ${CARGO_TARGET_A}/release/yap-diarize "src-tauri/binaries/yap-diarize-$TRIPLE" ; echo "stageA=$?"
     cd ${WORKDIR}/${APP}/src-tauri && cargo build --release --features custom-protocol ; echo "appA=$?"
 and the same for lane B with ${WORKDIR_B} and ${CARGO_TARGET_B}.
-STAGING THE SIDECAR IS NOT OPTIONAL: bundle.externalBin makes that binary a precondition of EVERY
-cargo build of the app, so a missing one fails the build for ENVIRONMENT reasons and a later agent
+STAGING BOTH SIDECARS IS NOT OPTIONAL: bundle.externalBin names yap-polish AND yap-diarize, a precondition of
+EVERY cargo build of the app (and desktop/dist must exist or tauri::generate_context! panics), so a missing one fails the build for ENVIRONMENT reasons and a later agent
 will waste an hour reading it as a code defect.
 
 # 4 — BASELINE GATE, ONCE, IN LANE A ONLY (both lanes sit on the same origin/main sha)
@@ -1604,8 +1606,9 @@ Confirm and paste, for EACH: git log --oneline -1 && git status --porcelain
 # 2 — INSTALL AND WARM, ONCE PER CHAIN, THROUGH THE SHARED NPM CACHE
     cd ${REVIEW_DIRS[0]}/${APP} && npm ci --cache ${NPM_CACHE}
     cd ${REVIEW_DIRS[1]}/${APP} && npm ci --cache ${NPM_CACHE}
-Then, per chain, with that chain's CARGO_TARGET_DIR exported: build and STAGE the sidecar
-(cargo build -p yap-polish --release, then copy it to ${APP}/src-tauri/binaries/yap-polish-<triple>)
+Then, per chain, with that chain's CARGO_TARGET_DIR exported: npm run build (desktop/dist must exist or
+tauri::generate_context! panics), then build and STAGE BOTH sidecars (cargo build -p yap-polish --release and
+cargo build -p yap-diarize --release, then copy each to ${APP}/src-tauri/binaries/<name>-<triple>)
 and build the app once (cd ${APP}/src-tauri && cargo build --release --features custom-protocol).
 If a chain's node_modules and target dir already exist and are healthy, SKIP and say so. Do not
 create a third worktree or a clone: disk hygiene is a hard rule here.

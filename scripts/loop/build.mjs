@@ -319,6 +319,16 @@ for (const [i, item] of ITEMS.entries()) {
       fail(`duplicate branch ${item.branch} — ${seenBranches.get(item.branch)} and ${item.id}. Two items on one branch cannot both merge.`)
     } else seenBranches.set(item.branch, item.id)
   }
+  // stage_sidecars exists only as documentation in 00-y0-harness-and-gates.mjs; no command-runner seat's
+  // shell defines it, so a bare call exits 127 and the item goes failed-acceptance for an environment
+  // reason (yap-flakes-2026-10-16, PR #206). Executed command lists must spell the staging out.
+  for (const field of ['preflight', 'acceptance']) {
+    if (typeof item[field] === 'string' && /^\s*stage_sidecars\b/m.test(item[field])) {
+      fail(`${where} (${item.id}): \`${field}\` calls stage_sidecars, a helper no seat's shell defines (exit 127). ` +
+        `Spell it out: (cd desktop && npm run build), cargo build -p yap-polish --release, cargo build -p yap-diarize --release, ` +
+        `then copy both into desktop/src-tauri/binaries/<name>-<triple>.`)
+    }
+  }
 }
 if (problems.length) die()
 

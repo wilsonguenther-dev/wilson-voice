@@ -15,6 +15,10 @@
 //   # `bundle.externalBin` in tauri.conf.json names binaries/yap-polish and
 //   # binaries/yap-diarize, so src-tauri will not build until both are staged.
 //   # This is the first command of every gate, not an optional step.
+//   # stage_sidecars below is DOCUMENTATION ONLY: no seat's shell defines it, so a bare
+//   # `stage_sidecars` line in an item's preflight/acceptance exits 127 (the 2026-10-16
+//   # yap-flakes false red). Spell the commands out, `npm run build` first (tauri::generate_context!
+//   # panics without desktop/dist), and build.mjs refuses the bare helper.
 //   stage_sidecars() {
 //     cargo build -p yap-polish -p yap-diarize --release
 //     TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
