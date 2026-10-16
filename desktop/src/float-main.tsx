@@ -290,6 +290,12 @@ function Float() {
     document.documentElement.dataset.phase = PHASE_ID[phase];
     document.documentElement.dataset.tone = chatTone;
   }, [phase, chatTone]);
+  useEffect(() => {
+    // yap-hotkey-stop DO 4 — `.phase-strip` is opacity 0 in `listening`, the
+    // only phase a still-recording prompt can occur in; this attribute is the
+    // CSS hook that shows it (float.css `html[data-still-recording="true"]`).
+    document.documentElement.dataset.stillRecording = stillRecording ? "true" : "false";
+  }, [stillRecording]);
   const pill = style === "yappy"
     ? <YappyPill gate={phase} progress={progress} license={lic} />
     : <ClassicPill gate={phase} progress={progress} license={lic} />;

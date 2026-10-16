@@ -761,6 +761,11 @@ html[data-phase="thinking"] .phase-strip,
 html[data-phase="empty"] .phase-strip,
 html[data-phase="cancelled"] .phase-strip,
 html[data-phase="error"] .phase-strip { opacity: 1; }
+/* yap-hotkey-stop DO 4 — the still-recording prompt is only ever set during a
+   live take, i.e. in the `listening` phase, which the list above deliberately
+   keeps silent. Without this rule the prompt is written into an invisible
+   element. float-main sets `<html data-still-recording>` beside `data-phase`. */
+html[data-still-recording="true"] .phase-strip { opacity: 1; }
 /* A failure reads as one. Everything else stays the quiet working voice. */
 html[data-phase="error"] .phase-strip { color: rgba(252, 165, 165, 0.92); }
 html[data-phase="empty"] .phase-strip { color: rgba(255, 255, 255, 0.58); }

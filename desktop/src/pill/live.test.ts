@@ -7,7 +7,14 @@
  * never said anything at all.
  */
 import { describe, expect, it } from "vitest";
-import { STILL_RECORDING_LINE, stripLine } from "./live";
+import { STILL_RECORDING_LINE, stripLine, stripTextWidthPx } from "./live";
+// The shell's CSS and TSX are read as TEXT from disk: Vitest blanks every
+// `.css` import (even `?raw`) unless `test.css` opts it in, and this test only
+// needs to assert that the rule exists. No @types/node in this project.
+// @ts-expect-error -- node builtin, untyped here; the test runs under Node.
+import { readFileSync } from "node:fs";
+const readSibling = (rel: string): string =>
+  readFileSync(new URL(rel, import.meta.url), "utf8") as string;
 import {
   acceptProgress, advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
@@ -867,6 +874,24 @@ describe("yap-hotkey-stop — still recording", () => {
     expect(stripLine("Listening…", true)).toBe(STILL_RECORDING_LINE);
     expect(stripLine("Listening…", false)).toBe("Listening…");
     expect(STILL_RECORDING_LINE).toContain("Still recording");
-    expect(STILL_RECORDING_LINE).toContain("press fn");
+    expect(STILL_RECORDING_LINE).toContain("fn");
+    expect(STILL_RECORDING_LINE).toContain("stop");
+  });
+
+  it("the still-recording prompt fits the strip's one line (no ellipsis eats 'stop')", () => {
+    expect(
+      fitsSideDockStrip(STILL_RECORDING_LINE),
+      `${STILL_RECORDING_LINE} is ${stripTextWidthPx(STILL_RECORDING_LINE)} px > ${SIDE_DOCK_TEXT_PX}`,
+    ).toBe(true);
+  });
+
+  it("float.css shows the strip while still recording, though `listening` keeps it hidden", () => {
+    const css = readSibling("../float.css");
+    // The prompt can only occur during a live take, whose phase is `listening`.
+    expect(css).not.toMatch(/html\[data-phase="listening"\] \.phase-strip[^{]*\{[^}]*opacity:\s*1/);
+    // So the shell needs its own hook, and it must set opacity 1.
+    expect(css).toMatch(/html\[data-still-recording="true"\] \.phase-strip\s*\{[^}]*opacity:\s*1/);
+    const shell = readSibling("../float-main.tsx");
+    expect(shell).toContain('dataset.stillRecording = stillRecording ? "true" : "false"');
   });
 });
