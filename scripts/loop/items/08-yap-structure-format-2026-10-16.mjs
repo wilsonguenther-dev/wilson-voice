@@ -106,22 +106,72 @@ ITEMS.push({
       08 fixture 03's text with target com.microsoft.VSCode (Off). A single-item "list" must not
       become a list (Y4-D single_item rule). Invented, bland text for 02-08; never real dictation.
 
-      FIXTURE 01 — Wilson's review, ABRIDGED exactly as quoted from Wispr's output on 2026-10-16. The
-      intro and middle prose paragraphs were not available to the item writer and are left out rather
-      than invented. input.txt (flat, as Yap's ASR hands it to the rules stage):
-        the security, the data pulling, the telemetry, the health, constant-time health checks.
-        First run permissions, make sure … Mic test, all of those. Account and licence, perfect.
+      FIXTURE 01 \u{2014} Wilson's review, the FULL Wispr Flow output from 2026-10-16 (ground truth, saved at
+      Wilson-Brain/Projects/Loop-Logs/yap-fixture-01-wispr-2026-10-16.md). expected.md is exactly the text
+      below, byte-for-byte after stripping the 8-space indent of this spec. input.txt is the SAME words as
+      flat speech: no list markers, no line breaks, no colon after a topic (use a comma or a period as ASR
+      would), so the structure stage must recreate the lists, the "Topic: verdict" bullets and the paragraphs.
       target.txt: notion.id
       expected.md:
+        Okay, I really, really liked the slideshow. It was very good, very great, very intuitive, and easily understood. I love everything.
+        One thing I'm mainly concerned about is to make sure all of the components are properly structured and straight, and to polish every one of them. Make sure there's no spillage or bubbles that are not properly confined and contained. Every page is good. We think about scrolling, pads, error states, handling, and stuff like that.
+        Also, one of my biggest concerns is external devices. Make sure it's properly built:
         - the security
         - the data pulling
         - the telemetry
         - the health
-        - constant-time health checks
-
-        - First run permissions: make sure …
+        - constant-time health checks to make sure devices are connected and healthy and not trying to put viruses or inject something into the programme, etc.
+        Make sure the whole app actually has proper security handling. Please think about the user experience.
+        Is AP okay? The MCP's security, telemetry, deep metadata, and editing capabilities for all AI agents and stuff like that: I don't know if there should be an API system. I don't know. That's up to you.
+        Everything is good:
+        - First run permissions: make sure that's really verifiable and it's always good.
         - Mic test, all of those.
-        - Account and licence: perfect.
+        - Make sure all of the devices, all the external devices, are properly health-checked, working smoothly, with alerts for the user, data reporting, and all of that.
+        - Make sure people can send reports back to me, back to Drivia.
+        - Account and licence: perfect. Make sure, just like we did it for Yap with the Stripe and all of that, people can go on it on any device, any account. All they have to do is just copy and paste that licence, so if they have it saved, type it out. I think that's what you mean, but all of that to make sure it's all smooth.
+        - Confirmation number, all of that.
+        - Guided tour: it looks good. I love all of the tour. It looks very nice and polished.
+        - Check the components and make sure everything is smooth.
+        - Remember screen record and UI screenshot: you can make that.
+        - Library: make sure it looks smooth.
+        - Storage: make sure that's properly built out.
+        - User experience: users can see a timed live health check update, so they can see lazy loading in the background, skeletons, all of that.
+        - Programme: all of that.
+        - Prior to server-side SQL Lite: make sure all of that schema is properly built out. Think about every role of security and data isolation, and make sure nobody can hack them, but still fast.
+        - New session: make sure that's smooth. All the health check and proper stuff are handled before they get into it. That's good.
+        - Solo with gas consent shows the status here. Perfect.
+        - Crash report data is properly this telemetry and metadata, so all of that can be used to upgrade for AI agents like Codex or Claude, mostly Claude, because Claude is better.
+        - Record pre-roll perfectly. Make sure it's thought out.
+        - Record live, perfect.
+        - Live check: always okay.
+        - Metadata: deep, extensive telemetry, metadata on this, on all levels, from visual, audio, transcript, all of that, because all of that needs to be used for building and everything.
+        - Timer: I love that.
+        - Guess web page: perfect.
+        - Time dial: make sure there's a dark component too, plus stop.
+        - Okay, looks good.
+        - Hold after stop.
+        - Transcribe each check.
+        - Make sure to constantly know what's going on and where the system is at. That's perfect.
+        - Editor: ooh, perfect. Looks good.
+        - Talk: make sure everything is tight, smooth, glossy, polished, and make sure the programme overlays Wilson. Okay, all of that.
+        - Struck Ember AI suggestion.
+        - Cut word.
+        - Except make sure all those tool suites are properly defining whatever coding language that needs to be.
+        - Everything looks smooth here. Good job.
+        - This looks very intuitive.
+        - The clips: perfectly.
+        - The long, split, fix, landscape: you got to check the hard.
+        - I'll have to connect the hard drive so you can see how we did.
+        - They did those videos because all of the script is pretty much what I want those clips and the editing for those videos to be.
+        - Top 5 short categories and genre: you can check the session for the social media reel.
+        - Honestly, that'd be better.
+        - What we did: audio tools, perfect.
+        - Improve. Make sure they're good.
+        - Programme is good. It's properly structured.
+        - People: make sure you think that's well thought out.
+        - Security and deletion are good.
+        - Not fucking up the computer.
+        - Everything is a health check.
 
     TESTS (all in structure.rs, all named structure_*)
       structure_fixture_01_two_lists_and_topic_verdict_bullets — at least 2 lists, the "Topic: verdict"
