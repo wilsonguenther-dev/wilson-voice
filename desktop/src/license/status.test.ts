@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import trialDaysFixture from "../../src-tauri/tests/fixtures/trial_days.json";
 import {
   activationError,
+  activationOutcome,
   chipFor,
   daysLeft,
   shouldWarnTrial,
@@ -269,5 +270,30 @@ describe("trial_days.json — Rust and TypeScript count the same fortnight", () 
     expect(lastRunning.days_left).toBe(1);
     expect(firstExpired?.elapsed_days).toBe(trialDays.trial_days);
     expect(firstExpired?.label).toBe("Last day");
+  });
+});
+
+// SEC-B review: the license box also accepts a support GRACE key, which
+// restores the trial. The success toast must come from the returned status,
+// or a locked-out user who pastes a grace key is told Yap is licensed.
+describe("activationOutcome", () => {
+  it("says licensed only when the backend returned a license", () => {
+    expect(activationOutcome(licensed())).toEqual({
+      toast: "Yap is licensed on this Mac",
+      closeBuyPrompt: true,
+    });
+  });
+
+  it("says the trial is back, never 'licensed', for a grace key", () => {
+    const out = activationOutcome(trial(14));
+    expect(out.toast).toBe("Your trial is back on this Mac: 14 days left");
+    expect(out.toast).not.toMatch(/licensed/i);
+    expect(out.closeBuyPrompt).toBe(true);
+  });
+
+  it("keeps the buy prompt when the result still needs a license", () => {
+    const out = activationOutcome(ended());
+    expect(out.toast).not.toMatch(/is licensed/i);
+    expect(out.closeBuyPrompt).toBe(false);
   });
 });

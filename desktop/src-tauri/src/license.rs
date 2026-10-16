@@ -178,6 +178,9 @@ pub const LICENSE_FILE: &str = "license.json";
 /// DB keys for the corroborating rows (see `LicenseStore`).
 pub const DB_KEY_TRIAL_STARTED: &str = "license.trial_started_at_ms";
 pub const DB_KEY_CLOCK_FLOOR: &str = "license.max_seen_wall_ms";
+/// Spent grace-claim ids, mirrored into the corroborating store (a JSON array
+/// of strings) so deleting `license.json` does not reset the single-use guard.
+pub const DB_KEY_GRACE_KIDS: &str = "license.grace_kids";
 
 // ─── Base64url ───────────────────────────────────────────────────────
 
@@ -231,6 +234,12 @@ pub struct Claims {
     /// back. Absent means `GRACE_DEFAULT_DAYS`.
     #[serde(default)]
     pub grace_days: Option<i64>,
+    /// REQUIRED on a `GRACE_PLAN` claim: the wall-clock instant (ms since the
+    /// epoch) after which the claim can no longer be spent. A grace claim with
+    /// no expiry is refused, so a key that leaks is a bounded window and never
+    /// a standing offer.
+    #[serde(default)]
+    pub grace_expires_at_ms: Option<i64>,
 }
 
 /// Why a license blob was refused. Every variant is a *stable string* the UI can
@@ -255,6 +264,11 @@ pub enum VerifyError {
     /// a trial once per claim id; replaying one is how a support lever would
     /// quietly become an unlimited trial.
     GraceAlreadyUsed,
+    /// A signed grace claim whose `kid` is on the revocation list. Support's
+    /// way to kill a grace key that leaked.
+    GraceRevoked,
+    /// A signed grace claim past its `grace_expires_at_ms`.
+    GraceExpired,
 }
 
 impl VerifyError {
@@ -267,6 +281,8 @@ impl VerifyError {
             VerifyError::WrongSigningKey => "wrong_signing_key",
             VerifyError::WrongPlan => "wrong_plan",
             VerifyError::GraceAlreadyUsed => "grace_already_used",
+            VerifyError::GraceRevoked => "grace_revoked",
+            VerifyError::GraceExpired => "grace_expired",
         }
     }
 
@@ -290,6 +306,12 @@ impl VerifyError {
             }
             VerifyError::GraceAlreadyUsed => {
                 "This Mac has already used that grace key. Reply to the same email and we will issue another one."
+            }
+            VerifyError::GraceRevoked => {
+                "That grace key has been withdrawn. Reply to the email it came in and we will sort it out."
+            }
+            VerifyError::GraceExpired => {
+                "That grace key has expired. Reply to the email it came in and we will issue a fresh one."
             }
         }
     }
@@ -509,7 +531,8 @@ pub struct TrialInputs {
     pub db_floor_ms: Option<i64>,
     /// What the OS says the time is right now.
     pub wall_now_ms: i64,
-    /// Wall clock at process start + monotonic elapsed since. Immune to a clock
+    /// Wall clock at process start + elapsed time since on a clock that counts
+    /// sleep (see `SLEEP_COUNTING_CLOCK`). Immune to a clock
     /// change made *while Yap is running*.
     pub monotonic_now_ms: i64,
 }
@@ -610,6 +633,8 @@ pub struct GraceClaim {
     /// The claim id — also the replay guard: one claim, one restore.
     pub kid: String,
     pub days: i64,
+    /// After this wall-clock instant the claim cannot be spent.
+    pub expires_at_ms: i64,
 }
 
 /// Read a grace claim out of already-VERIFIED claims. `None` for anything that
@@ -622,6 +647,9 @@ pub fn grace_from_claims(claims: &Claims) -> Option<GraceClaim> {
     if claims.kid.trim().is_empty() {
         return None;
     }
+    // No expiry, no grace: an open-ended claim is exactly what a leaked key
+    // should never be.
+    let expires_at_ms = claims.grace_expires_at_ms?;
     let days = claims
         .grace_days
         .unwrap_or(GRACE_DEFAULT_DAYS)
@@ -629,6 +657,7 @@ pub fn grace_from_claims(claims: &Claims) -> Option<GraceClaim> {
     Some(GraceClaim {
         kid: claims.kid.trim().to_string(),
         days,
+        expires_at_ms,
     })
 }
 
@@ -920,7 +949,10 @@ pub struct LicenseManager {
     file: Mutex<LicenseFile>,
     /// Wall clock at construction + a monotonic anchor; see `TrialInputs`.
     anchor_wall_ms: i64,
-    anchor: Instant,
+    /// `continuous_clock_ms()` at construction. `None` only where no
+    /// sleep-counting clock exists; then the session reading falls back to the
+    /// wall clock (the persisted floor still holds the rollback ratchet).
+    anchor_continuous_ms: Option<i64>,
     now: NowFn,
     /// Always `verify_license` in the app. Injected only so tests can exercise
     /// the storage / revocation / gate paths with a throwaway signing key —
@@ -953,6 +985,56 @@ fn wall_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The clock id that keeps counting while the machine is ASLEEP.
+///
+/// `std::time::Instant` on macOS is `CLOCK_UPTIME_RAW`, which stops while the
+/// Mac sleeps. Yap is a menu-bar app that stays up for weeks, so an
+/// `Instant`-based reading falls behind the wall clock by every night of sleep,
+/// and after one long sleep the excursion clamp would read an honest wall clock
+/// as a runaway one and pause the trial. Darwin's `CLOCK_MONOTONIC`
+/// (mach_continuous_time) and Linux's `CLOCK_BOOTTIME` both include sleep.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const SLEEP_COUNTING_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const SLEEP_COUNTING_CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
+
+/// Milliseconds on `SLEEP_COUNTING_CLOCK`, or `None` where it is unavailable.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android"
+))]
+// `time_t` / `c_long` are i64 on the 64-bit Macs Yap ships for, but not on
+// every target this cfg names, so the casts stay.
+#[allow(clippy::unnecessary_cast)]
+fn continuous_clock_ms() -> Option<i64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
+    let rc = unsafe { libc::clock_gettime(SLEEP_COUNTING_CLOCK, &mut ts) };
+    if rc != 0 {
+        return None;
+    }
+    Some(
+        (ts.tv_sec as i64)
+            .saturating_mul(1000)
+            .saturating_add(ts.tv_nsec as i64 / 1_000_000),
+    )
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android"
+)))]
+fn continuous_clock_ms() -> Option<i64> {
+    None
+}
+
 fn parse_ms(raw: Option<String>) -> Option<i64> {
     raw.and_then(|s| s.trim().parse::<i64>().ok())
 }
@@ -977,11 +1059,17 @@ impl LicenseManager {
             store,
             file: Mutex::new(file),
             anchor_wall_ms,
-            anchor: Instant::now(),
+            anchor_continuous_ms: continuous_clock_ms(),
             now,
             verify,
             last_notice: Mutex::new(None),
         };
+        // Repair the spent-grace guard from whichever store survived, exactly
+        // as the trial start is repaired — before the first status read.
+        {
+            let mut file = mgr.file.lock();
+            mgr.sync_grace_kids(&mut file);
+        }
         // Starting the trial is a side effect of the first read, so a fresh
         // install is a running trial the moment the app is up — never a
         // "license required" screen before the user has said a word.
@@ -989,9 +1077,42 @@ impl LicenseManager {
         mgr
     }
 
+    /// Wall clock at launch + elapsed time on a clock that counts SLEEP. An
+    /// `Instant` would not (see `SLEEP_COUNTING_CLOCK`), and every night of
+    /// sleep would then look like a forward clock excursion.
     fn monotonic_now_ms(&self) -> i64 {
-        self.anchor_wall_ms
-            .saturating_add(self.anchor.elapsed().as_millis() as i64)
+        match (self.anchor_continuous_ms, continuous_clock_ms()) {
+            (Some(anchor), Some(now)) => self
+                .anchor_wall_ms
+                .saturating_add(now.saturating_sub(anchor).max(0)),
+            _ => (self.now)(),
+        }
+    }
+
+    /// The union of spent grace ids in BOTH stores, written back to whichever
+    /// store is missing any. Returns the union.
+    fn sync_grace_kids(&self, file: &mut LicenseFile) -> Vec<String> {
+        let db_kids: Vec<String> = self
+            .store
+            .get(DB_KEY_GRACE_KIDS)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default();
+        let mut union: Vec<String> = Vec::new();
+        for k in file.grace_kids.iter().chain(db_kids.iter()) {
+            if !union.iter().any(|u| u == k) {
+                union.push(k.clone());
+            }
+        }
+        if file.grace_kids != union {
+            file.grace_kids = union.clone();
+            write_license_file(&self.path, file);
+        }
+        if db_kids != union {
+            if let Ok(json) = serde_json::to_string(&union) {
+                self.store.set(DB_KEY_GRACE_KIDS, &json);
+            }
+        }
+        union
     }
 
     /// Recompute everything from disk state. Cheap (one Ed25519 verify) and
@@ -1125,7 +1246,7 @@ impl LicenseManager {
         // A grace claim arrives through the same box the license does — support
         // emails a key, the customer pastes it where keys go. No second command,
         // no second screen, no capability to add.
-        if grace_from_claims(&claims).is_some() {
+        if claims.plan == GRACE_PLAN {
             return self.apply_grace(license_key);
         }
         if claims.plan != SOLD_PLAN {
@@ -1151,19 +1272,39 @@ impl LicenseManager {
     /// and single-use per `kid`, so it is a support lever and not a trial tap.
     pub fn apply_grace(&self, license_key: &str) -> Result<LicenseStatus, VerifyError> {
         let claims = (self.verify)(license_key)?;
-        let grace = grace_from_claims(&claims).ok_or(VerifyError::WrongPlan)?;
-        let reset = apply_grace_to_trial(&grace, (self.now)());
+        if claims.plan != GRACE_PLAN {
+            return Err(VerifyError::WrongPlan);
+        }
+        // Signed and plan=grace, but no kid or no expiry: refused, never
+        // treated as open-ended.
+        let grace = grace_from_claims(&claims).ok_or(VerifyError::MalformedClaims)?;
+        let now = (self.now)();
+        if now > grace.expires_at_ms {
+            return Err(VerifyError::GraceExpired);
+        }
+        let reset = apply_grace_to_trial(&grace, now);
         {
             let mut file = self.file.lock();
-            if file.grace_kids.iter().any(|k| k == &grace.kid) {
+            // Revocation reaches grace keys too: a leaked one can be killed.
+            if file.revoked_kids.iter().any(|k| k == &grace.kid) {
+                return Err(VerifyError::GraceRevoked);
+            }
+            // The single-use guard lives in BOTH stores, like the trial start,
+            // so deleting license.json does not reset it.
+            let mut spent = self.sync_grace_kids(&mut file);
+            if spent.iter().any(|k| k == &grace.kid) {
                 return Err(VerifyError::GraceAlreadyUsed);
             }
+            spent.push(grace.kid.clone());
+            if let Ok(json) = serde_json::to_string(&spent) {
+                self.store.set(DB_KEY_GRACE_KIDS, &json);
+            }
+            file.grace_kids = spent;
             file.trial_started_at_ms = Some(reset.started_at_ms);
             if reset.clear_floor {
                 file.max_seen_wall_ms = None;
                 file.clock_excursion_ms = None;
             }
-            file.grace_kids.push(grace.kid.clone());
             write_license_file(&self.path, &file);
         }
         self.store
@@ -2042,6 +2183,7 @@ mod tests {
                 "v": 1,
                 "plan": GRACE_PLAN,
                 "grace_days": TRIAL_DAYS,
+                "grace_expires_at_ms": 1_000_000_i64 + 30 * DAY_MS,
                 "kid": "grace-0001",
                 "skid": skid_of_spki(&test_spki_b64(&test_key())).unwrap(),
             }),
@@ -2069,6 +2211,122 @@ mod tests {
 
         // Single use: replaying the same claim is refused.
         assert_eq!(mgr.activate(&claim), Err(VerifyError::GraceAlreadyUsed));
+    }
+
+    fn grace_key(kid: &str, expires_at_ms: Option<i64>) -> String {
+        let mut claims = serde_json::json!({
+            "v": 1,
+            "plan": GRACE_PLAN,
+            "grace_days": TRIAL_DAYS,
+            "kid": kid,
+            "skid": skid_of_spki(&test_spki_b64(&test_key())).unwrap(),
+        });
+        if let Some(exp) = expires_at_ms {
+            claims["grace_expires_at_ms"] = serde_json::json!(exp);
+        }
+        sign_with(&test_key(), claims)
+    }
+
+    /// SEC-B review: the single-use guard must survive `rm license.json`,
+    /// because the two-store design exists precisely so one deleted file buys
+    /// nothing.
+    #[test]
+    fn license_grace_replay_after_deleting_license_json_is_refused() {
+        let (dir, store) = temp_env("grace-replay");
+        let now = 1_000_000;
+        let key = grace_key("grace-replay-0001", Some(now + 30 * DAY_MS));
+        let mgr = test_manager(dir.path(), store.clone(), now);
+        mgr.activate(&key).expect("first spend is accepted");
+        assert_eq!(mgr.activate(&key), Err(VerifyError::GraceAlreadyUsed));
+        drop(mgr);
+
+        std::fs::remove_file(dir.path().join(LICENSE_FILE)).expect("license.json existed");
+        let relaunched = test_manager(dir.path(), store.clone(), now + DAY_MS);
+        assert_eq!(
+            relaunched.activate(&key),
+            Err(VerifyError::GraceAlreadyUsed),
+            "deleting license.json must not reset the spent-grace guard"
+        );
+        assert!(
+            relaunched
+                .file_snapshot()
+                .grace_kids
+                .iter()
+                .any(|k| k == "grace-replay-0001"),
+            "the file's guard is repaired from the DB on launch"
+        );
+
+        // And the other direction: the DB row lost, the file survives.
+        store.set(DB_KEY_GRACE_KIDS, "");
+        drop(relaunched);
+        let again = test_manager(dir.path(), store.clone(), now + 2 * DAY_MS);
+        assert_eq!(again.activate(&key), Err(VerifyError::GraceAlreadyUsed));
+        assert!(store
+            .get(DB_KEY_GRACE_KIDS)
+            .is_some_and(|raw| raw.contains("grace-replay-0001")));
+    }
+
+    #[test]
+    fn license_revoked_grace_kid_is_refused() {
+        let (dir, store) = temp_env("grace-revoked");
+        let now = 1_000_000;
+        let mgr = test_manager(dir.path(), store, now);
+        mgr.apply_revocations(vec!["grace-revoked-0002".to_string()], now);
+        let key = grace_key("grace-revoked-0002", Some(now + 30 * DAY_MS));
+        assert_eq!(mgr.activate(&key), Err(VerifyError::GraceRevoked));
+        assert!(mgr.file_snapshot().grace_kids.is_empty(), "nothing spent");
+    }
+
+    #[test]
+    fn license_grace_claim_must_carry_an_unexpired_expiry() {
+        let (dir, store) = temp_env("grace-expiry");
+        let now = 1_000_000 + 40 * DAY_MS;
+        let mgr = test_manager(dir.path(), store, now);
+        assert_eq!(
+            mgr.activate(&grace_key("grace-noexp-0003", None)),
+            Err(VerifyError::MalformedClaims),
+            "a grace claim with no expiry is never open-ended"
+        );
+        assert_eq!(
+            mgr.activate(&grace_key("grace-old-0004", Some(now - 1))),
+            Err(VerifyError::GraceExpired)
+        );
+        assert!(mgr.file_snapshot().grace_kids.is_empty(), "nothing spent");
+    }
+
+    /// SEC-B review: the session's "monotonic" reading must count SLEEP, or a
+    /// Mac that slept more than `CLOCK_EXCURSION_TOLERANCE_MS` with Yap running
+    /// trips the excursion clamp and the trial clock pauses. `Instant` is
+    /// `CLOCK_UPTIME_RAW` on macOS and fails this on any Mac that has slept
+    /// more than a few minutes since boot.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn trial_session_clock_counts_sleep() {
+        let mut tv = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        let mut len = std::mem::size_of::<libc::timeval>();
+        let name = std::ffi::CString::new("kern.boottime").unwrap();
+        // SAFETY: `tv`/`len` are valid for writes and describe each other.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                &mut tv as *mut libc::timeval as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "kern.boottime");
+        let boot_wall_ms = tv.tv_sec * 1000 + i64::from(tv.tv_usec) / 1000;
+        let wall_since_boot = wall_now_ms() - boot_wall_ms;
+        let session_since_boot = continuous_clock_ms().expect("sleep-counting clock");
+        let lag = (wall_since_boot - session_since_boot).abs();
+        assert!(
+            lag < 5 * 60 * 1000,
+            "the session clock lags the wall clock by {lag} ms since boot: it is not counting sleep"
+        );
     }
 
     #[test]

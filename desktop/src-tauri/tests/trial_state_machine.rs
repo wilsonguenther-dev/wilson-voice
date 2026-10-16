@@ -142,6 +142,7 @@ fn grace_claims(kid: &str, days: i64) -> serde_json::Value {
         "v": 1,
         "plan": GRACE_PLAN,
         "grace_days": days,
+        "grace_expires_at_ms": T0 + 365 * DAY_MS,
         "email_hash": "",
         "issued_at": "2026-09-12T00:00:00Z",
         "kid": kid,
