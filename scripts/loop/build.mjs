@@ -31,6 +31,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { stampSeatModels } from './seat-models.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 /**
@@ -90,7 +91,12 @@ if (!fs.existsSync(TEMPLATE)) {
   fail(`template not found: ${TEMPLATE}`)
   die()
 }
-const template = fs.readFileSync(TEMPLATE, 'utf8')
+let template = fs.readFileSync(TEMPLATE, 'utf8')
+// ── 1b. STAMP THE SEAT MODEL MAP (loop/model-tiering): mechanical seats may run on a smaller model; build fails if a
+// builder, fixer, lander, reviewer or verdict seat is mapped down, or if the escalate model is not opus.
+const SEAT_STAMP = stampSeatModels(template, path.join(ROOT, 'scripts/loop/seat-models.json'))
+for (const p of SEAT_STAMP.problems) fail(p)
+template = SEAT_STAMP.template
 for (const marker of [META_MARKER, ITEMS_MARKER, KEEP_MARKER, LANES_MARKER]) {
   const n = template.split(marker).length - 1
   if (n !== 1) fail(`template must contain the marker ${marker} exactly once (found ${n})`)
@@ -1025,6 +1031,6 @@ console.log(
     `  ·  B: ${ITEMS.filter((i) => laneById.get(i.id) === 1).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 1).length} file(s)`
 )
 console.log(
-  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats, phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (three arg shapes, incl. args.only) against stubbed globals`
+  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats (tiering: ${SEAT_STAMP.summary}), phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (three arg shapes, incl. args.only) against stubbed globals`
 )
 console.log(`  NOTE       ${rel(PARENT_OUT)} and ${rel(GEN_DIR)}/ are generated — do not hand-edit them; re-run \`npm run loop:build\`.`)

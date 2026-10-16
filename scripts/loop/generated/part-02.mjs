@@ -645,14 +645,86 @@ const saysAlreadyDone = (v) => /"status"\s*:\s*"already-done"/i.test(asText(v))
  * Reflect. The part returns { halted: true, at, reason } and the parent stops launching parts.
  * Resume after the reset with resumeFromRunId; the worktrees are deliberately left standing.
  */
-async function agentR(prompt, opts) {
+async function agentRRetry(prompt, opts, maxAttempts = 3) {
   let r = null
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     r = await agent(prompt, opts)
     if (r !== null) return r
-    log(`${(opts && opts.label) || 'agent'}: attempt ${attempt}/3 returned null (API failure) — ${attempt < 3 ? 'retrying' : 'giving up; halt follows'}`)
+    log(`${(opts && opts.label) || 'agent'}: attempt ${attempt}/${maxAttempts} returned null (API failure) — ${attempt < maxAttempts ? 'retrying' : 'giving up; halt follows'}`)
   }
   return r
+}
+
+// ── SEAT TIERING (loop/model-tiering, 2026-10-16) ─────────────────────────────────────────────
+// Builders, fixers, landers, reviewers and every verdict seat stay on opus (build.mjs refuses a map
+// that moves one). A MECHANICAL seat — one that runs a fixed command list and copies its output into
+// a fixed RETURN shape — may run on a smaller model from scripts/loop/seat-models.json, stamped here.
+// QUALITY FLOOR: the small seat gets SMALL_SEAT_CONTRACT; if it returns NEEDS_OPUS, returns a result
+// missing a required field, or returns null twice, agentR re-runs the SAME prompt on the escalate
+// model (opus) — so the worst case is the old cost plus one cheap attempt, never a guessed result.
+// Kill switch: seat-models.json "enabled": false, or launch with args {seatModels: false}.
+const SEAT_MODELS = {"enabled":true,"escalate":{"model":"opus","effort":"high"},"seats":{"record-failure":{"model":"haiku","effort":"low","require":["boardWritten"]},"preflight":{"model":"sonnet","effort":"medium","require":["exits","allZero"]},"acceptance":{"model":"sonnet","effort":"medium","require":["exits","allZero"]},"acceptance-rerun":{"model":"sonnet","effort":"medium","require":["exits","allZero"]},"recon":{"model":"sonnet","effort":"high","require":["ciMode"]},"reflect":{"model":"sonnet","effort":"medium"}}} // stamped by build.mjs from scripts/loop/seat-models.json
+const TIER_OFF = typeof args !== 'undefined' && args && args.seatModels === false
+const NEEDS_OPUS = 'NEEDS_OPUS'
+const ESCALATE_MODEL = 'opus' // build.mjs refuses any other escalate model
+const seatKeyOf = (label) => String(label || '').split(':')[0]
+function seatTier(label) {
+  if (TIER_OFF || !SEAT_MODELS || SEAT_MODELS.enabled !== true || !SEAT_MODELS.seats) return null
+  const t = SEAT_MODELS.seats[seatKeyOf(label)]
+  return t && typeof t.model === 'string' && t.model !== 'opus' ? t : null
+}
+/** Why a small seat's result cannot be used (null = usable). Never reads a verdict — only shape. */
+function tierProblem(r, tier) {
+  if (r === null || r === undefined) return 'null result'
+  let text = ''
+  try { text = typeof r === 'string' ? r : JSON.stringify(r) } catch { text = String(r) }
+  if (text.includes(NEEDS_OPUS)) return 'returned NEEDS_OPUS'
+  const obj = r && typeof r === 'object' ? r : null
+  for (const k of (tier && tier.require) || []) {
+    if (!obj || obj[k] === undefined || obj[k] === null) return `result is missing "${k}"`
+  }
+  return null
+}
+const SMALL_SEAT_CONTRACT = (seat, model) => `
+
+# MECHANICAL SEAT CONTRACT (${seat} on ${model} — loop/model-tiering)
+You are running a MECHANICAL seat: the commands and the RETURN shape above are the whole job.
+1. Run the commands above exactly as written, in order. Do not add, skip, reorder, combine or "improve" one.
+2. Read every exit code bare:  <command> ; echo "exit=$?"  — never through a pipe. A command that printed
+   reassuring text and exited non-zero FAILED; a command that printed nothing and exited 0 PASSED.
+3. Copy numbers, ids, SHAs, labels and JSON from command output VERBATIM. Never estimate, round, summarise,
+   or fill a field from memory or from this prompt.
+4. You make NO judgment call on code, product, security, a review verdict, a merge or a conflict. You never
+   edit a source file, resolve a conflict, merge, close, rebase or force-push unless a command above says so
+   verbatim.
+5. STOP AND ESCALATE. If anything is ambiguous — an instruction you cannot follow exactly, a command that is
+   missing or fails in a way the instructions above do not cover, a dirty or unexpected working tree the
+   instructions do not tell you how to handle, output whose shape does not match what RETURN expects, or a
+   choice between two readings — stop at once, run nothing further, and return the literal token NEEDS_OPUS
+   followed by one sentence of reason in the first string field of the RETURN shape (if it has none, return
+   {"needsOpus": "NEEDS_OPUS: <reason>"}). The loop then re-runs this step on Opus. Escalating costs a little;
+   guessing ships a false green.
+6. A command that exits non-zero is NOT ambiguous when the instructions say how to report it (an acceptance
+   run that goes red, a status write that fails): report it exactly as instructed — do not escalate it.
+`
+/** agentR: tiered seats try the small model (twice on a null, once otherwise), then the opus path. */
+async function agentR(prompt, opts) {
+  const label = (opts && opts.label) || 'agent'
+  const tier = seatTier(label)
+  if (!tier) return agentRRetry(prompt, opts)
+  const seat = seatKeyOf(label)
+  const small = { ...opts, model: tier.model, effort: tier.effort || (opts && opts.effort) }
+  let why = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const r = await agentRRetry(prompt + SMALL_SEAT_CONTRACT(seat, tier.model), small, 1)
+    if (typeof isStalled === 'function' && isStalled(r)) return r
+    why = tierProblem(r, tier)
+    if (!why) return r
+    log(`[tier] ${label}: ${tier.model} attempt ${attempt}/2 ${why}${why === 'null result' && attempt < 2 ? ' — retrying on ' + tier.model : ' — escalating to opus'}`)
+    if (why !== 'null result') break
+  }
+  const esc = (SEAT_MODELS && SEAT_MODELS.escalate) || {}
+  return agentRRetry(prompt, { ...opts, model: ESCALATE_MODEL, effort: esc.effort || (opts && opts.effort) || 'high' })
 }
 
 const HALT_PATTERNS = [/session limit/i, /usage limit/i, /rate limit.*resets/i]
@@ -6814,6 +6886,11 @@ ${CI_MODE === 'local'
   many ended failed-acceptance. If every acceptance passed first time on every item, say so and
   treat it as suspicious rather than as success — that is the shape a runner seat that softened an
   exit code would produce.
+- SEAT TIERING (loop/model-tiering). Count the run log lines that start "[tier]": each one is a mechanical
+  seat (preflight, acceptance, acceptance-rerun, record-failure, recon, reflect) whose smaller model
+  returned NEEDS_OPUS, a result missing a required field, or null, so the step was re-run on opus.
+  Report the count and list each line verbatim. If the run log is not visible to you, write "the
+  [tier] log lines are not visible to this seat" instead of a number; never report zero from absence.
 - Which harness guards actually FIRED versus passed vacuously. Name them individually: the
   EXECUTED pre-flight short-circuit, the EXECUTED acceptance + its one fix round, the
   reachability gate (generate_handler! / entry import /
