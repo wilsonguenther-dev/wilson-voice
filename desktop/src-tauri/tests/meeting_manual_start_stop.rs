@@ -226,12 +226,23 @@ fn the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval() 
     /// clock to fall outside [`LAG_CEILING`] and short enough to keep the file's
     /// exclusive lock brief.
     const WATCH_SECONDS: u64 = 3;
-    /// How far the payload may lag real time: one second of `floor` truncation
-    /// plus a second of scheduling slack. A ticker starved for a full second
-    /// between emits still passes; a clock counting at half rate passes 2 s of
-    /// lag just after the third second and cannot — which is what fixes
-    /// [`WATCH_SECONDS`] at three.
-    const LAG_CEILING: f64 = 1.0 + 1.0;
+    /// How far the payload may lag real time: one second of `floor`
+    /// truncation plus one tick. This is measured from [`after_start`] — an
+    /// `Instant` taken once `start()` has RETURNED, so never earlier than the
+    /// controller's own start — and the payload is `floor` of the controller's
+    /// monotonic `Instant`, computed on the ticker thread immediately before
+    /// the sink stamps it. A ticker that wakes late computes a later elapsed
+    /// too, so scheduler delay does not widen the lag; only the few lines
+    /// between `started.elapsed()` and the sink push can, and one tick bounds
+    /// that. A clock counting at half rate lags by ~1.5 s at the third second
+    /// and fails; so does one that stalls.
+    ///
+    /// yap-flakes-2026-10-16: this was `1 s + 1 s` measured from BEFORE
+    /// `start()`, which folded `start()`'s own cost (SQLite rows, the fake
+    /// engine, the preflight diagnostics) into the lag. Measuring from the far
+    /// side of `start()` takes that load-sensitive term out entirely, which is
+    /// what lets the bound tighten instead of widen.
+    const LAG_CEILING: Duration = Duration::from_secs(1).saturating_add(TEST_TICK);
 
     let _guard = support::exclusive();
     support::install_fake_engine();
@@ -246,6 +257,10 @@ fn the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval() 
     // unfalsifiable by scheduling.
     let before_start = Instant::now();
     c.start(&dir, Some("Ticker".into())).expect("start");
+    // Taken AFTER `start` returns, so it is never EARLIER than the controller's
+    // own reference — which is what makes the lag ceiling a lower bound on the
+    // real lag, i.e. unfalsifiable by a slow `start()`.
+    let after_start = Instant::now();
     support::wait_until(
         &format!("the elapsed payload to reach {WATCH_SECONDS} s"),
         TICK_DEADLINE,
@@ -261,7 +276,11 @@ fn the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval() 
     );
 
     for (i, e) in emits.iter().enumerate() {
+        // Upper estimate of real time at receipt (from before `start`).
         let observed = e.at.duration_since(before_start).as_secs_f64();
+        // Lower estimate of real time at receipt (from after `start`). Zero for
+        // the synchronous status `start()` delivers before it returns.
+        let since_started = e.at.saturating_duration_since(after_start);
         let payload = e.status.elapsed_seconds as f64;
 
         assert!(
@@ -270,9 +289,10 @@ fn the_elapsed_clock_advances_one_second_per_second_and_emits_on_the_interval() 
              that runs FAST is a rendered timer, not the meeting's elapsed time"
         );
         assert!(
-            observed - payload <= LAG_CEILING,
-            "the clock reported {payload}s at {observed:.3}s of real time — it is \
-             stalled or counting slow (lag ceiling {LAG_CEILING}s)"
+            since_started <= Duration::from_secs(e.status.elapsed_seconds) + LAG_CEILING,
+            "the clock reported {payload}s at {:.3}s after start() returned — it is \
+             stalled or counting slow (lag ceiling {LAG_CEILING:?})",
+            since_started.as_secs_f64()
         );
         assert_eq!(
             e.status.elapsed_label,
