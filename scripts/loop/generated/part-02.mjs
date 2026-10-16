@@ -86,9 +86,18 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 66 items (Y3-A..Y11-F), 2 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 62 items (Y4-A..Y9-E), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
+    { title: "Y4-A", detail: "Formatting is on for a fresh install: the shipped default reaches the formatting stage" },
+    { title: "Y4-I", detail: "Measure the polish stage against the real weights before anything is built on its envelope" },
+    { title: "SEC-C", detail: "The polish model gets an install path, so the LLM stage can exist on a real machine" },
+    { title: "Y4-C", detail: "Paragraphing: long speech becomes paragraphs by rule, not one wall of text" },
+    { title: "Y4-D", detail: "Lists, nesting and spoken punctuation proven at the level the product ships, with the gaps filled" },
+    { title: "Y4-E", detail: "Long-form gets polished: the 400-word cliff becomes a chunked pass that keeps the deadline" },
+    { title: "Y4-F", detail: "App-aware formatting: the six modes change the output, proven per app, and auto mode picks correctly" },
+    { title: "Y4-G", detail: "The user can see what formatting did and undo it in one key — the trust mechanism" },
+    { title: "Y4-H", detail: "The formatting settings stop being engineer words, and every one of them persists" },
     { title: "Y3-A", detail: "Capture stops growing two unbounded Vecs — a long take spills to disk with a measured memory ceiling" },
     { title: "Y3-B", detail: "Long takes decode in windows with seam dedupe, reusing the meeting chunker instead of one 120s-capped call" },
     { title: "Y3-C", detail: "The pill reports real progress on a long take instead of an honest-looking lie" },
@@ -142,19 +151,6 @@ export const meta = {
     { title: "PERM-G", detail: "IDE context: the identifiers in the open file bias the transcription — the highest personal-ROI item" },
     { title: "Y9-D", detail: "A denylist where the hotkey is inert — the honest complement to reading your context" },
     { title: "Y9-E", detail: "CSV round-trip for the dictionary and snippets, and the usage-frequency ranking that is only half there" },
-    { title: "Y10-A", detail: "Multi-language: expose what the engine can already do, with the picker in the bar" },
-    { title: "PERM-H", detail: "A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings" },
-    { title: "Y10-B", detail: "Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste" },
-    { title: "Y10-D", detail: "A non-primary mouse button as push-to-talk" },
-    { title: "Y10-E", detail: "Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy's dialogue" },
-    { title: "Y10-F", detail: "Measure and publish Yap's idle RAM and CPU — the free marketing line the research asked for" },
-    { title: "Y11-A", detail: "Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was" },
-    { title: "Y11-B", detail: "Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it" },
-    { title: "DB-E", detail: "Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest" },
-    { title: "Y11-C", detail: "Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path" },
-    { title: "Y11-D", detail: "Issue #153: split_partition's farthest-pair seeding does not separate speakers when an outlier is the far point" },
-    { title: "Y11-E", detail: "Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist" },
-    { title: "Y11-F", detail: "A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -233,7 +229,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0}
+const LANE_BY_ID = {"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -1559,6 +1555,780 @@ async function runBuildSafe(item, lane) {
 // PREVIEW_PORT, PREVIEW_PORT_B, LOG, TELEMETRY, NPM_CACHE, STATUS_BOARD — and nothing else
 // (build.mjs fails the build on any other ${IDENT} in an item file).
 const ITEMS = []
+// ── 10-y4-formatting.mjs ──────────────────────────────────────────────────
+// Y4 — FORMATTING. Wilson, 2026-09-12, verbatim: "formatting does not work
+// whatsoever."
+//
+// He is exactly right, and the reason is not a broken algorithm. It is TWO
+// DEFAULTS. The formatting pipeline is well built, heavily tested, and
+// UNREACHABLE in the shipping configuration:
+//
+//   src-tauri/src/lib.rs:417    cleanup_level: "light".into()        <- shipped default
+//   src-tauri/src/dictation.rs:636
+//       fn runs_format(self) -> bool {
+//           matches!(self, CleanupLevel::Medium | CleanupLevel::High) }
+//   src-tauri/src/dictation.rs:644
+//       fn runs_llm(self) -> bool { self == CleanupLevel::High }
+//   src-tauri/src/lib.rs:418    polish_model: String::new()          <- "" = OFF
+//   src-tauri/src/lib.rs:264-267 doc: with no id "`polish::polish_llm` never
+//                                spawns the sidecar and the cleanup pipeline is
+//                                exactly what it is today."
+//
+// CleanupLevel::Light (dictation.rs:607-616) runs the dictionary and backtrack
+// ONLY. So on every fresh install: no list detection, no spoken punctuation
+// marks (`apply_spoken_marks`), no email shape (`format_email_shape`, R13), no
+// trailing-period tone rule (R3/R14), no LLM polish. Saying "new line" types the
+// words "new line". That is "does not work whatsoever", literally.
+//
+// AND THE TESTS ALL PASS, because every fixture pins its own level:
+//   tests/fixtures/formatting/group-a-sentence-shape.jsonl line 4:
+//     {"id":"a04-r1-quotation-pair", ... "level":"medium", ...}
+// The corpus proves a configuration the product does not ship. This is the
+// canonical case from the "verification that verifies nothing" rule and it
+// is why Y0-C (a shipped-defaults test) is a prerequisite.
+//
+// SECOND, INDEPENDENT DEFECT — long-form gets no polish even at High:
+//   src-tauri/src/polish.rs:73   const MAX_POLISH_WORDS: usize = 400;
+//   its doc, :71-72: "Long-form is rules-only: chunking is a later item".
+//   Y3-B builds that chunking; Y4-E consumes it.
+//
+// THIRD — the polish model is never installed. Onboarding's STEP_ORDER
+// (src/Onboarding.tsx:41) is welcome | permissions | calibration | done; it
+// downloads an ASR model and never mentions a polish model, so `polish_model`
+// stays "" forever even if the level is raised. SEC-C fixes the install path.
+//
+// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
+// Depends on Y0-C.
+
+ITEMS.push({
+  id: 'Y4-A', prompt: 'Y4', branch: 'loop/y4-a-formatting-on-by-default', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #168) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Formatting is on for a fresh install: the shipped default reaches the formatting stage',
+  preflight: `
+    grep -qE 'cleanup_level: "(medium|high)"' desktop/src-tauri/src/lib.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test shipped_defaults
+    cargo test --features custom-protocol --test formatting_fixtures
+  `,
+  spec: `
+    THE ONE-LINE FIX AND ITS FULL COST. Change lib.rs:417
+    \`cleanup_level: "light"\` to \`"medium"\` so \`runs_format()\`
+    (dictation.rs:636) is true out of the box, and then earn it:
+
+      1. Run the WHOLE formatting corpus at the new default level and fix what
+         breaks. The corpus is
+         tests/fixtures/formatting/{group-a-sentence-shape,group-b-lists,group-c-llm-shape}.jsonl
+         driven by tests/formatting_fixtures.rs. Rows pinning "medium" already
+         pass; the work is rows that assumed "light".
+      2. Add a fixture row at the SHIPPED level for every rule the formatting
+         stage owns, because Y0-C's
+         \`formatting_fixtures_declare_the_shipped_level\` now requires at least
+         one and one is not enough. Cover, each with its own row: list
+         detection; \`apply_spoken_marks\` punctuation-by-name ("period",
+         "comma", "question mark", "quotation mark" pairing —
+         dictation.rs:1203, :2845, :2892 show the table and its tests); the
+         line/paragraph commands ("new line", "new paragraph"); email shape
+         (R13, \`format_email_shape\`); the tone-dialled trailing period (R3/R14).
+      3. \`polish_model\` STAYS "" in this item. LLM polish is SEC-C/C. This item
+         is the RULES stage only, and separating them is what makes a regression
+         attributable.
+      4. Update Y0-C's \`shipped_defaults.rs\` table to the new value and remove
+         any \`#[ignore]\` on \`defaults_reach_every_cleanup_stage\`.
+      5. MIGRATE, UNCONDITIONALLY. PANEL 2026-09-12 overrides the first draft
+         of this step, which said "migrate ONLY a value that is absent or was
+         never explicitly set ... if you cannot, do not migrate". That condition
+         is UNIMPLEMENTABLE and therefore resolves to "do nothing":
+         \`save_settings\` persists the WHOLE \`AppSettings\` struct
+         (lib.rs:2281-2298) under a container-level \`#[serde(default)]\`, so
+         \`cleanupLevel\` is present in every store the moment onboarding saves
+         and carries no "the user chose this" bit anywhere. And
+         \`apply_settings_migrations\` returns early for any store at the current
+         version (lib.rs:2253-2256, \`CURRENT_SETTINGS_SCHEMA_VERSION = 1\`).
+         MEASURED on this machine: ~/Library/Application Support/WilsonVoice/
+         settings.json holds \`"cleanupLevel": "light"\` with
+         \`"schemaVersion": 1\` — i.e. the reporter's own install. A fix that
+         only reaches fresh installs does not fix Wilson's complaint.
+         So: bump \`CURRENT_SETTINGS_SCHEMA_VERSION\` to 2, add a v1 -> v2 arm
+         that rewrites \`cleanup_level\` "light" -> "medium" with no condition
+         (the old value was a default nobody chose), show the user ONE quiet
+         line saying formatting is now on and where to turn it off, and start
+         recording provenance from here on (\`cleanup_level_set_by_user: bool\`,
+         set only by the settings command that writes the picker) so the NEXT
+         default change can be honest. A v2 store with
+         \`cleanupLevelSetByUser: true\` is never rewritten.
+
+    Also fix the Settings copy. The picker offers none|light|medium|high with no
+    explanation of what any of them do; the level names are engineer words. Give
+    each option a one-line description in the user's terms, generated from the
+    same \`runs_*\` predicates so the copy cannot drift from the behaviour.
+
+    What NOT to do:
+      - Do NOT gate the migration on a provenance bit that does not exist yet.
+      - Do NOT set the default to "high". High runs the LLM, which needs a model
+        that is not installed (SEC-C), and a default that silently no-ops is the
+        exact class of bug being deleted.
+      - Do NOT make formatting unconditional and delete CleanupLevel. "none" is
+        a real user need (verbatim mode) and a real test axis.
+      - Do NOT edit fixture EXPECTATIONS to make a failing row pass. If the
+        formatter is wrong, fix the formatter.
+  `,
+  acceptance: `
+    grep -qE 'cleanup_level: "medium"' desktop/src-tauri/src/lib.rs      # was "light"
+    grep -qE 'polish_model: String::new\\(\\)' desktop/src-tauri/src/lib.rs  # unchanged in this item
+    # PANEL: the two lines that used to sit here (>0 medium rows; a 'new paragraph'
+    # substring) are GREEN ON UNMODIFIED MAIN — 36 medium rows and one matching
+    # row already exist. They proved nothing. The real bar is Y0-C's per-rule
+    # coverage test plus the migration proof below.
+    grep -q 'every_rule_has_a_fixture_row_at_the_shipped_level' desktop/src-tauri/tests/shipped_defaults.rs
+    grep -q 'a_v1_store_with_light_loads_as_medium' desktop/src-tauri/tests/settings_migration.rs
+    grep -q 'an_explicit_user_choice_is_never_rewritten' desktop/src-tauri/tests/settings_migration.rs
+    grep -qE 'CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2' desktop/src-tauri/src/lib.rs
+    test 0 -eq "$(grep -rn '#\\[ignore\\]' desktop/src-tauri/tests/shipped_defaults.rs | wc -l)"
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test shipped_defaults     ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures  ; test $? -eq 0
+    cargo test --features custom-protocol --test settings_kv          ; test $? -eq 0    cargo test --features custom-protocol --test settings_migration   ; test $? -eq 0
+
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-I', prompt: 'Y4', branch: 'loop/y4-i-measure-the-polish-sidecar-against-the-real-weights', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #169) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Measure the polish stage against the real weights before anything is built on its envelope',
+  preflight: `
+    test -f docs/BUDGETS.md
+    grep -q 'polish_latency' docs/BUDGETS.md
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test polish_envelope
+  `,
+  spec: `
+    PANEL 2026-09-12. Every number the Y4 LLM lane is built on is a derived
+    guess and nothing in the repo can falsify one: \`cargo test -p yap-polish
+    --release\` passes 11 tests, all prompt- and protocol-level, and NOT ONE
+    loads a model. MEASURED in the panel session on an M4 Pro, warm sidecar,
+    deadline 600 s (i.e. pure model cost):
+      qwen2.5-1.5B q4_k_m: 30w/423ms ok · 60w/527ms ok · 100w/864ms ok ·
+        150w/1186ms ok · 200w/2880ms ERR=max_out · 300w/1526ms ok ·
+        400w/5671ms ERR=max_out ; cold ready 7,323 ms
+      qwen2.5-0.5B q4_k_m: 30w ok · 60w ok · then ERR=max_out at 100, 150, 200,
+        300 and 400 words
+    Constants for contrast: polish.rs:59 DEFAULT_POLISH_DEADLINE_MS = 1200,
+    :63-64 bounds 100..5000, :73 MAX_POLISH_WORDS = 400, and
+    yap-polish/src/main.rs:544-550 turns a max_out overrun into a HARD ERROR
+    that discards the whole rewrite for KIND_POLISH. So the stage's real working
+    envelope at the shipped deadline is roughly a paragraph, the 0.5B "fast
+    tier" is worse than no model, and MAX_POLISH_DEADLINE_MS (5000) is below the
+    measured 400-word cost.
+
+    Do:
+      * \`desktop/src-tauri/tests/polish_envelope.rs\`: drive the REAL sidecar
+        against the REAL GGUF and record p50/p95 ms against input words, plus
+        cold-ready ms. SKIP with a NAMED reason when the weights are absent
+        (the Y11-F pattern) — never silently pass.
+      * Write the curve into docs/BUDGETS.md under a \`polish_latency\` heading,
+        with the machine it was measured on named.
+      * Derive the per-chunk word budget for Y4-E FROM THE CURVE, not from 400,
+        and state the derived number in BUDGETS.md so Y4-E can cite it.
+      * Add the ceiling this loop was missing: peak resident bytes with the ASR
+        engine and the polish child both loaded (Y3-G asserts it).
+
+    Runs immediately after Y4-A and BEFORE SEC-C and Y4-E, both of which are
+    currently specced against numbers nobody took.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/polish_envelope.rs
+    grep -q 'p95' desktop/src-tauri/tests/polish_envelope.rs
+    grep -q 'skipped_with_a_named_reason_when_the_weights_are_absent' desktop/src-tauri/tests/polish_envelope.rs
+    grep -q 'polish_latency' docs/BUDGETS.md
+    grep -qE '[0-9]+ ?ms' docs/BUDGETS.md
+    grep -q 'per_chunk_word_budget' docs/BUDGETS.md
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test polish_envelope ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'SEC-C', prompt: 'Y4', branch: 'loop/sec-c-polish-model-is-actually-installable', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #171 then #184) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'The polish model gets an install path, so the LLM stage can exist on a real machine',
+  preflight: `
+    grep -q 'polish' desktop/src/ModelSetup.tsx
+    grep -q 'polish' desktop/src/Onboarding.tsx
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test polish_model_install
+  `,
+  spec: `
+    \`models::polish_models()\` and a catalog exist (src-tauri/src/catalog.json,
+    models.rs 762 lines, referenced by lib.rs:264). The sidecar exists and is
+    bundled (\`bundle.externalBin: ["binaries/yap-polish", ...]\`,
+    tauri.conf.json). \`SidecarPool\` handles the warm child, the readiness
+    handshake and a restart budget (polish.rs:26-33, YV75 — and its doc records
+    that a missing handshake made a cold child "indistinguishable from a wedged
+    one", so this path has already been debugged once).
+
+    What does not exist is any way for a user to get the WEIGHTS. Onboarding
+    never mentions polish (STEP_ORDER, Onboarding.tsx:41) and
+    \`polish_model: ""\` is the permanent default. So the entire LLM formatting
+    stage is dead code on every installed copy.
+
+    RUNTIME-DEPENDENCY RULE (the Yap rule, and the reason this is its own item):
+    nothing may be "found on the machine". The model is either SHIPPED in the
+    bundle or its install is MANAGED by the app. A GGUF is too large to ship, so
+    it is managed:
+      * Surface the polish model in \`ModelSetup.tsx\` next to the ASR model, with
+        its size, what it changes, and that it is optional. Reuse the existing
+        download machinery (\`models.rs\` already downloads, verifies and reports
+        \`native_ready\`; the catalog already pins digests — check
+        catalog.json for the polish entries and add them if absent, with a
+        digest, never a bare URL).
+      * A resumable, cancellable download with a digest check on completion. A
+        half-downloaded GGUF that loads and produces garbage is worse than no
+        model, and \`validate_polish\` (polish.rs) would then be the only thing
+        between garbage and the user's document.
+      * On success, set \`polish_model\` to the catalog id. That is the ONLY way
+        it should ever become non-empty — never a hardcoded default.
+      * If the model is absent, the stage no-ops exactly as it does today
+        (lib.rs:264-267 documents this and \`polish_stage\`'s off-gate is already
+        tested with zero model bytes). Assert that the no-op is unchanged.
+      * Make the SIDECAR's absence diagnosable too: if the staged binary is
+        missing (a broken build), say so once in the log with the expected path,
+        rather than timing out every take against a deadline that can never be met.
+
+    Tests \`tests/polish_model_install.rs\`, all with zero model bytes:
+      * \`catalog_polish_entries_carry_a_digest\`
+      * \`interrupted_download_is_not_marked_ready\`
+      * \`digest_mismatch_is_rejected_and_deleted\`
+      * \`absent_model_leaves_the_pipeline_byte_identical\` — the regression that
+        matters most; compare against the rules-only output on the fixture corpus.
+      * \`missing_sidecar_binary_is_reported_once_not_per_take\`
+
+    What NOT to do:
+      - Do NOT download a model during onboarding by default. It is optional and
+        large; offering it is right, forcing it is not.
+      - Do NOT set \`polish_model\` to a catalog id that is not verified present
+        on disk. That is how a default becomes a silent 1200 ms timeout on
+        every take.
+      - Do NOT add a network call anywhere on the dictation path.
+    PANEL 2026-09-12 — this item is aimed at the wrong half of the gap, and its
+    headline acceptance passes on unmodified main.
+      * The catalog is ALREADY done: src/catalog.json polish_models holds
+        qwen2.5-1.5b-instruct-q4_k_m (1,117,320,736 B, sha256 pinned,
+        recommended_rank 1) and qwen2.5-0.5b-instruct-q4_k_m (491,400,032 B,
+        rank 2). \`grep -qE 'polish' catalog.json\` is green today. Drop the
+        "add them if absent" instruction.
+      * The REAL gap is narrower and unasserted: \`download_polish_model_with\`
+        exists (models.rs:209) and there is NO Tauri command and ZERO frontend
+        references to polishModel anywhere in desktop/src
+        (\`grep -rn 'polishModel\\|polish_model' desktop/src/*.tsx\` -> 0;
+        \`grep -c polish ModelSetup.tsx\` -> 0). The weights can be fetched by
+        Rust and never by a user. Build: a registered command in the invoke
+        handler, a ModelSetup row, and a test that \`polish_model\` becomes
+        non-empty ONLY after a digest-verified file exists on disk.
+      * ADD A FREE-SPACE PRECONDITION and a named refusal. A 1.12 GB download
+        with no disk check and no low-RAM behaviour is how "optional polish"
+        becomes "polish silently does nothing" on exactly the machines least
+        able to tell.
+      * DO NOT offer the 0.5B as a tier yet. MEASURED (see Y4-I): it returns
+        err=max_out at 100, 150, 200, 300 and 400 words, i.e. it is worse than
+        no model. Ship the 1.5B only; the fast tier is deferred until the
+        measured curve says otherwise.
+      * The readiness budget is DERIVED, not measured: polish.rs
+        SIDECAR_READY_BUDGET = 10 s, and cold ready for the 1.5B measured 7,323
+        ms on an M4 Pro. A base M-series Air paging in the same 1.12 GB will
+        cross 10 s and be declared "stuck" while it is merely loading. Take the
+        number from Y4-I's measurement, or make "model loading" a real pill
+        state (Y5-C) so lateness is reported instead of guessed.
+
+  `,
+  acceptance: `
+    grep -q 'polish' desktop/src/ModelSetup.tsx
+    grep -qE 'polish' desktop/src-tauri/src/catalog.json
+    test -f desktop/src-tauri/tests/polish_model_install.rs
+    grep -q 'absent_model_leaves_the_pipeline_byte_identical' desktop/src-tauri/tests/polish_model_install.rs
+    grep -q 'digest_mismatch_is_rejected_and_deleted' desktop/src-tauri/tests/polish_model_install.rs
+    grep -q 'missing_sidecar_binary_is_reported_once_not_per_take' desktop/src-tauri/tests/polish_model_install.rs
+    grep -qE 'polish_model: String::new\\(\\)' desktop/src-tauri/src/lib.rs   # still never defaulted on
+    cd ${APP} && npm ci && npm run build ; test $? -eq 0
+    cd src-tauri
+    cargo test --features custom-protocol --test polish_model_install ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures  ; test $? -eq 0    grep -rq 'polish_model' desktop/src-tauri/src/lib.rs
+    grep -rq 'polish' desktop/src/ModelSetup.tsx
+    grep -q 'refuses_when_there_is_not_enough_free_space' desktop/src-tauri/tests/polish_model_install.rs
+    grep -q 'polish_model_is_set_only_after_a_digest_verified_file_exists' desktop/src-tauri/tests/polish_model_install.rs
+
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-C', prompt: 'Y4', branch: 'loop/y4-c-paragraphing-the-rule-that-does-not-exist', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #173) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Paragraphing: long speech becomes paragraphs by rule, not one wall of text',
+  preflight: `
+    grep -q 'fn paragraph_breaks\\|fn insert_paragraphs' desktop/src-tauri/src/dictation.rs
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test paragraphing
+  `,
+  spec: `
+    Wilson named paragraphing specifically. The rules stage does list detection
+    and spoken marks (dictation.rs's \`format_dictation\` +
+    \`apply_spoken_marks\`); it has no paragraph rule at all —
+    \`git grep -n "paragraph" desktop/src-tauri/src/dictation.rs\` finds the
+    spoken COMMAND ("new paragraph") and no automatic rule. A five-minute
+    dictation therefore arrives as one unbroken block, which is the single most
+    visible way formatting "does not work".
+
+    Build it as a PURE rule with real inputs, not a guess:
+      * \`insert_paragraphs(text, &[PauseSpan], mode, style) -> String\`.
+      * The strongest signal available is SILENCE, and Yap already measures it:
+        \`vad.rs\` (803 lines, Silero VAD) and the RMS series at record.rs:881.
+        The ASR path also carries timestamps (\`max_timestamp_kind\`,
+        asr_engine.rs:382). Thread the pause spans from capture through to the
+        rules stage — today they are computed and thrown away. A pause over a
+        threshold at a sentence boundary is a paragraph break; a pause mid-clause
+        is not.
+      * Secondary, when timing is unavailable (a recovered or imported take):
+        sentence count and discourse markers ("so", "anyway", "okay so",
+        "moving on"). These must be a FALLBACK with its own test, not the
+        primary mechanism — a marker-only rule breaks paragraphs on speech
+        habits and is the reason so many dictation apps feel arbitrary.
+      * Mode-aware, via the existing \`DictationMode\` (6 modes, \`mode_for_app\`):
+        Email gets paragraphs and a blank line between them; chat modes get
+        NONE — a paragraph break in Slack sends the message. That is a
+        correctness bug, not a taste call. Assert it.
+      * Idempotent: running the rule twice must produce the same string, and it
+        must never touch text the user already broke with "new paragraph".
+
+    Tests \`tests/paragraphing.rs\` plus new fixture rows in
+    group-a-sentence-shape.jsonl at the shipped level:
+      * \`pause_at_a_sentence_boundary_breaks\`
+      * \`pause_mid_clause_does_not_break\`
+      * \`chat_mode_never_inserts_a_break\`
+      * \`explicit_new_paragraph_is_preserved_and_not_doubled\`
+      * \`idempotent_on_second_application\`
+      * \`marker_fallback_only_fires_without_timing\`
+      * \`a_short_take_is_unchanged\` — the no-regression floor.
+
+    Depends on Y4-A (the stage must actually run).
+
+    What NOT to do:
+      - Do NOT paragraph on a fixed word count. "Every 60 words" is the
+        arbitrary behaviour users notice and hate.
+      - Do NOT put this in the LLM stage. It must work with no model installed.
+      - Do NOT break paragraphs inside a detected list.
+  `,
+  acceptance: `
+    grep -q 'fn insert_paragraphs' desktop/src-tauri/src/dictation.rs
+    test -f desktop/src-tauri/tests/paragraphing.rs
+    grep -q 'chat_mode_never_inserts_a_break' desktop/src-tauri/tests/paragraphing.rs
+    grep -q 'pause_mid_clause_does_not_break' desktop/src-tauri/tests/paragraphing.rs
+    grep -q 'idempotent_on_second_application' desktop/src-tauri/tests/paragraphing.rs
+    grep -q 'marker_fallback_only_fires_without_timing' desktop/src-tauri/tests/paragraphing.rs
+    grep -q 'paragraph' desktop/src-tauri/tests/fixtures/formatting/group-a-sentence-shape.jsonl
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test paragraphing        ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-D', prompt: 'Y4', branch: 'loop/y4-d-lists-and-punctuation-at-the-shipped-level', gated: null,
+  notes: `STATUS 2026-09-26: ALREADY-DONE — the executed pre-flight passed on main in run wf_f6cd9dfa-860; no PR.`,
+  title: 'Lists, nesting and spoken punctuation proven at the level the product ships, with the gaps filled',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test formatting_fixtures
+    test 0 -lt "$(grep -h '"level":"medium"' tests/fixtures/formatting/group-b-lists.jsonl | wc -l)"
+  `,
+  spec: `
+    \`group-b-lists.jsonl\` exists and the list detector exists
+    (\`runs_format\` -> \`format_dictation\` "(list detection)",
+    dictation.rs:636/:652). What is unproven is behaviour at the shipped level
+    and the cases a real dictation hits.
+
+    Audit the fixture file first and write down, in the PR body, which of these
+    is already covered and which is new. Then cover every gap:
+      * "one, two, three" as PROSE vs "number one ... number two" as a LIST.
+        Over-eager list detection is the failure users report as "it keeps
+        making bullets out of my sentences".
+      * Ordered vs unordered; a list that starts mid-paragraph; a list of ONE
+        item (must not become a list).
+      * Nesting one level ("sub-bullet" / "indent"), and the explicit decision
+        NOT to support deeper nesting if that is the call — write the decision
+        into the doc comment either way.
+      * Spoken marks in a list item without terminating the item.
+      * The full spoken-punctuation table: period, comma, question mark,
+        exclamation point, colon, semicolon, dash, quotation mark (which
+        ALTERNATES open/close — group-a line 4 already pins this pairing
+        behaviour, extend it to three pairs in one utterance), apostrophe,
+        parentheses, at symbol, percent, degree. \`formatting_fixtures.rs:217\`
+        lists the mark vocabulary the corpus knows; make sure the fixture rows
+        exercise it rather than the constant merely naming it.
+      * The literal-escape case: how does a user type the WORD "period"? There
+        must be an answer and it must be tested. If the answer is "say 'literal
+        period'", implement it; if it is "we accept the ambiguity", write that
+        in the doc comment so the next engineer does not re-litigate it.
+      * Capitalization after a spoken period; no capitalization after an
+        abbreviation ("e.g.", "Dr.").
+      * R5 lead casing from caret context must still win. polish.rs:35-41
+        explains at length that \`dictation::join_with_context\` runs AFTER
+        \`run_cleanup\` so the context's casing decision lands last, asserted by
+        \`polish_never_overrides_the_r5_lead_case\`. Keep that test green and add
+        the rules-stage equivalent.
+
+    Every new case is a FIXTURE ROW at \`"level":"medium"\`, not a bespoke unit
+    test, so the corpus stays the single source of truth
+    (tests/fixtures/README.md documents the corpus conventions — follow them).
+
+    Depends on Y4-A.
+
+    What NOT to do:
+      - Do NOT add a case by relaxing an existing expectation.
+      - Do NOT make list detection LLM-dependent. It is a rules-stage feature
+        and must work with no model.
+  `,
+  acceptance: `
+    # PANEL: a medium-row COUNT is already 36 on main — vacuous. The bar is
+    # per-rule coverage at the shipped level, enumerated from the rule table.
+    grep -q 'every_rule_has_a_fixture_row_at_the_shipped_level' desktop/src-tauri/tests/shipped_defaults.rs
+    grep -q 'every_rule_id_is_covered_and_names_the_missing_ones' desktop/src-tauri/tests/formatting_fixtures.rs
+    grep -q 'literal' desktop/src-tauri/tests/fixtures/formatting/group-a-sentence-shape.jsonl
+    grep -q 'sub-bullet\\|indent' desktop/src-tauri/tests/fixtures/formatting/group-b-lists.jsonl
+    grep -q 'single_item' desktop/src-tauri/tests/fixtures/formatting/group-b-lists.jsonl
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test formatting_fixtures ; test $? -eq 0
+    cargo test --features custom-protocol polish_never_overrides_the_r5_lead_case ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-E', prompt: 'Y4', branch: 'loop/y4-e-polish-long-form-by-chunking', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #175) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'Long-form gets polished: the 400-word cliff becomes a chunked pass that keeps the deadline',
+  preflight: `
+    test 0 -eq "$(grep -c 'MAX_POLISH_WORDS: usize = 400' desktop/src-tauri/src/polish.rs)"
+    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test polish_long_form
+  `,
+  spec: `
+    MEASURED: \`polish.rs:73\` \`const MAX_POLISH_WORDS: usize = 400;\` with the
+    doc at :71-72: "Long-form is rules-only: chunking is a later item, and a
+    single pass over 400+ words cannot hold the deadline (§2.3)." So the longest
+    and most valuable dictations — the ones Wilson actually does — get the least
+    formatting. The deadline is \`DEFAULT_POLISH_DEADLINE_MS = 1200\`
+    (polish.rs:59), bounded 100..5000 (:64-65).
+
+    Do:
+      * Chunk the polish pass at PARAGRAPH boundaries (Y4-C now produces them)
+        with a small overlap of context, each chunk under the per-chunk word
+        budget, each with its own slice of the deadline. The whole-take deadline
+        scales with chunk count; do NOT give one long take 1200 ms total.
+      * \`validate_polish\` (polish.rs, V1-V7) runs PER CHUNK. A rejected chunk
+        keeps that chunk's rules text and the rest still benefits. Today a
+        rejection loses the whole rewrite; per-chunk rejection is strictly
+        better and preserves the never-lose-text property, which is the module's
+        stated reason to exist (polish.rs:4-8).
+      * The content-word retention floor (\`RETENTION_FLOOR = 0.80\`) and the
+        length band (\`MAX_LENGTH_RATIO 2.5\` / \`MIN_LENGTH_RATIO 0.45\`) are
+        computed per chunk AND across the whole take. A chunk-wise pass that
+        each time stays inside the band can still drift the document; assert
+        the aggregate.
+      * Seam hygiene: a chunk boundary must not duplicate a sentence, must not
+        capitalize mid-sentence, and must not drop the join whitespace. This is
+        the same class of bug Y3-B's ASR seams have; write the test, do not
+        assume.
+      * \`SidecarPool\`'s restart budget (YV75) must not be exhausted by a
+        12-chunk take. Assert the budget is per-take-scaled or per-chunk-reset,
+        and say which.
+      * Keep the off/too-short gates exactly as they are: under
+        \`MIN_POLISH_WORDS = 4\` still costs no round trip.
+
+    Tests \`tests/polish_long_form.rs\`, driven through the injectable
+    \`PolishClient\` seam (polish.rs:31-33 — the tests already inject a client
+    that sleeps past the deadline, one that panics, one that returns garbage;
+    reuse all three at length):
+      * \`a_two_thousand_word_take_is_polished_not_skipped\`
+      * \`one_rejected_chunk_keeps_only_that_chunk_raw\`
+      * \`aggregate_retention_floor_holds_across_chunks\`
+      * \`seam_does_not_duplicate_or_drop_a_sentence\`
+      * \`deadline_scales_with_chunk_count\`
+      * \`a_panicking_client_on_chunk_seven_still_returns_the_whole_document\`
+      * \`short_take_path_is_byte_identical\`
+
+    Depends on SEC-C (a model to run), Y4-C (paragraph boundaries), Y3-B
+    (chunking precedent to follow — reuse its geometry helpers where they fit).
+
+    What NOT to do:
+      - Do NOT raise the deadline instead of chunking.
+      - Do NOT abandon per-chunk validation to save time. The validator is the
+        only thing standing between an untrusted local model and the user's
+        document; polish.rs:3-5 is explicit that sidecar output is UNTRUSTED.
+      - Do NOT re-apply R5 lead casing inside polish. polish.rs:35-41 explains
+        why that is deliberately absent.
+    ── PANEL 2026-09-12, BINDING: build this against MEASURED numbers ──────
+    One seat measured the stage this item chunks. On an M4 Pro with an
+    effectively unlimited deadline, the 1.5B returns a usable rewrite only up to
+    ~150 words and hard-errors (err=max_out, which for KIND_POLISH DISCARDS the
+    whole rewrite — yap-polish/src/main.rs:544-550) at 200 and 400 words; the
+    0.5B errors at every length from 100 words up. At the shipped
+    DEFAULT_POLISH_DEADLINE_MS = 1200 every input over ~150 words fails, and
+    MAX_POLISH_DEADLINE_MS = 5000 is itself BELOW the measured 400-word cost
+    (5,671 ms). So this item's seven tests — all of which drive the injectable
+    PolishClient seam with fakes, including \`deadline_scales_with_chunk_count\`
+    — can be green while the real model never once meets the deadline.
+      * Y4-I runs FIRST and writes the curve into docs/BUDGETS.md. Take the
+        per-chunk word budget FROM THAT CURVE, not from MAX_POLISH_WORDS = 400,
+        and cite the number in a comment.
+      * Raise MAX_POLISH_DEADLINE_MS above the measured per-chunk cost, or the
+        deadline discipline is decorative. (This is not "raise the deadline
+        instead of chunking" — it is making the ceiling bigger than the floor.)
+      * A max_out overrun stops being a discard: keep the RULES text for that
+        chunk, keep the successful chunks, and record the reason. A 2,000-word
+        take chunked to a 150-word envelope is 13-14 sequential round trips
+        (~17 s after the hold ends on the fastest Apple laptop silicon), so the
+        per-chunk fallback is the difference between late and lost.
+      * At least ONE test must drive the real sidecar, skipping with a NAMED
+        reason when the weights are absent. Fakes cannot see this failure.
+
+  `,
+  acceptance: `
+    test 0 -eq "$(grep -c 'MAX_POLISH_WORDS: usize = 400' desktop/src-tauri/src/polish.rs)"   # 0 (was 1)
+    grep -q 'POLISH_CHUNK' desktop/src-tauri/src/polish.rs
+    test -f desktop/src-tauri/tests/polish_long_form.rs
+    grep -q 'a_two_thousand_word_take_is_polished_not_skipped' desktop/src-tauri/tests/polish_long_form.rs
+    grep -q 'one_rejected_chunk_keeps_only_that_chunk_raw' desktop/src-tauri/tests/polish_long_form.rs
+    grep -q 'aggregate_retention_floor_holds_across_chunks' desktop/src-tauri/tests/polish_long_form.rs
+    grep -q 'a_panicking_client_on_chunk_seven_still_returns_the_whole_document' desktop/src-tauri/tests/polish_long_form.rs
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test polish_long_form    ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures ; test $? -eq 0    grep -q 'per_chunk_word_budget' docs/BUDGETS.md
+    grep -q 'a_max_out_chunk_keeps_its_rules_text_and_says_so' desktop/src-tauri/tests/polish_long_form.rs
+    grep -q 'skipped_with_a_named_reason_when_the_weights_are_absent' desktop/src-tauri/tests/polish_long_form.rs
+
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-F', prompt: 'Y4', branch: 'loop/y4-f-app-aware-formatting-that-is-actually-applied', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #177) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'App-aware formatting: the six modes change the output, proven per app, and auto mode picks correctly',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test app_aware_formatting
+  `,
+  spec: `
+    \`mode_for_app\` and 6 \`DictationMode\`s exist, the shipped default is
+    \`dictation_mode: "auto"\` (lib.rs:415), \`focus.rs\` (342 lines) resolves the
+    frontmost app, and \`polish_styles\` is a per-mode tone map (lib.rs:279).
+    reference_wispr_parity_research §2.4 scores Yap ✅ on app-category detection.
+    What is NOT proven is that the mode changes the OUTPUT at the shipped
+    configuration, and Wilson's complaint says it does not.
+
+    Do:
+      * A table test over the six modes with ONE input utterance, asserting the
+        outputs are pairwise DIFFERENT where the rules say they should be and
+        IDENTICAL where they should not. That single assertion is what catches
+        "mode is detected, threaded, and then ignored" — which is the shape of
+        a defect nothing currently tests for.
+      * Email: greeting/sign-off shape (R13, \`format_email_shape\`), paragraphs,
+        full punctuation, trailing period per the tone dial.
+      * Chat / work chat: no paragraph breaks (a newline sends), no sign-off,
+        trailing period per R3/R14's casual setting, emoji left alone.
+      * Code / terminal context: NO spoken-mark expansion of characters that are
+        syntax, no auto-capitalization, no trailing period. If there is no such
+        mode today, this item adds it — Wilson lives in Claude Code and Cursor
+        (reference_wispr_parity_research P1 #12 calls IDE context "the highest
+        personal-ROI item on the list"), and a dictation that capitalizes his
+        identifiers is worse than no dictation.
+      * Document / notes: paragraphs, lists, full punctuation.
+      * \`auto\` resolution: a fixture table of real bundle identifiers
+        (com.apple.mail, com.tinyspeck.slackmacgap, com.google.Chrome,
+        com.microsoft.VSCode, com.apple.Terminal, com.apple.TextEdit) mapping to
+        modes, with an explicit DEFAULT for an unknown bundle id, and a test
+        that the default is the CONSERVATIVE mode — an unknown app must not get
+        the most aggressive formatting.
+      * Browser ambiguity is real (Gmail in Chrome is email; Google Docs in
+        Chrome is a document). \`AXSelectedText\`/URL resolution is P1 #11 in the
+        parity backlog and is OUT of scope here. State the limitation in the doc
+        comment and make the browser's default mode the conservative one so the
+        wrong guess is cheap.
+
+    Tests \`tests/app_aware_formatting.rs\` + fixture rows carrying a \`mode\`
+    field (the corpus already has \`"mode":"document"\` — group-a line 4 — so the
+    axis exists; populate it).
+
+    Depends on Y4-A, Y4-C.
+
+    What NOT to do:
+      - Do NOT read the browser URL in this item.
+      - Do NOT make an unknown app default to Email. A sign-off appearing in a
+        random text field is the kind of thing a user uninstalls over.
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/app_aware_formatting.rs
+    grep -q 'unknown_bundle_id_gets_the_conservative_mode' desktop/src-tauri/tests/app_aware_formatting.rs
+    grep -q 'chat_mode_output_differs_from_email_mode_output' desktop/src-tauri/tests/app_aware_formatting.rs
+    grep -q 'com.microsoft.VSCode' desktop/src-tauri/tests/app_aware_formatting.rs
+    grep -q '"mode":"chat"' desktop/src-tauri/tests/fixtures/formatting/group-a-sentence-shape.jsonl
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test app_aware_formatting ; test $? -eq 0
+    cargo test --features custom-protocol --test formatting_fixtures  ; test $? -eq 0
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-G', prompt: 'Y4', branch: 'loop/y4-g-formatting-is-visible-and-reversible', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #179) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'The user can see what formatting did and undo it in one key — the trust mechanism',
+  preflight: `
+    grep -rq 'DiffView\\|formatting_diff' desktop/src
+    cd ${APP} && npm ci && npm test -- diff
+  `,
+  spec: `
+    Formatting that silently rewrites what you said is only acceptable if you
+    can see it and revert it. Yap stores \`raw_text\` already (YV10/51) and has
+    \`undo_ai_edit_text\` plus a \`UNDO_AI_EDIT\` global binding
+    (shortcuts.rs:98). There is no diff UI:
+    \`git grep -n "DiffView\\|diff" desktop/src\` -> nothing.
+    reference_wispr_parity_research §2.6 lists "Diff/'see what changed' viewer +
+    undo + feedback" as ✅ Wispr / 🟡 Yap, and P1 #8 says it is "mostly UI"
+    because raw_text is already stored — and that Wispr "found this necessary
+    for trust".
+
+    Do:
+      * A pure diff module \`desktop/src/diff.ts\` (word-level, no dependency —
+        a small Myers or LCS implementation; do NOT add a library for this, the
+        CSP forbids CDN loads and the bundle should not grow for a 60-line
+        algorithm) returning a token list of {equal|added|removed}.
+      * A "see what changed" panel in History and in the post-take surface,
+        showing raw -> formatted, with the stages that ran named (dictionary /
+        backtrack / rules / polish) so a surprising change is attributable to a
+        stage. The stage list is already knowable from \`CleanupLevel\` and the
+        polish outcome; thread it through as metadata on the take.
+      * Undo restores BYTE-IDENTICAL raw text through the clipboard path. The
+        parity backlog's acceptance for this is exactly that
+        ("undo restores byte-identical raw text through the clipboard path") and
+        it must be asserted, not assumed — the paste path is receipt-sequenced
+        (YV39) and a naive re-paste can interleave.
+      * Local-only thumbs up/down per take, stored in SQLite, used for nothing
+        yet. It costs nothing now and is the only way a future rules change can
+        be evaluated against real dissatisfaction. Never transmitted.
+
+    Tests: \`desktop/src/diff.test.ts\` (pure, incl. identical strings -> all
+    equal, and a pathological case that must not be quadratic-blow-up slow on a
+    2,000-word take), and \`tests/undo_restores_raw.rs\` asserting byte-identical
+    restoration including trailing whitespace and the signature block, which
+    \`snippets::append_signature\` copies BYTE FOR BYTE after polish (lib.rs:283)
+    and which undo must therefore also handle exactly.
+
+    Depends on Y4-A.
+
+    What NOT to do:
+      - Do NOT add a diff library.
+      - Do NOT send feedback anywhere. Local, forever. No Sentry, no PostHog.
+      - Do NOT make undo re-run the pipeline. It replays a stored string.
+    PANEL 2026-09-12 — two additions, and one word deleted.
+    (a) THE SILENT-SKIP SIGNAL. Both polish failure modes are invisible by
+        construction: a missed deadline returns err="deadline" and the parent
+        falls back to rules text (polish.rs:299-300), and a max_out overrun
+        discards the rewrite outright. As measured (Y4-I) those are the NORMAL
+        outcomes for any take over ~150 words. So a user who installs a 1.12 GB
+        model and sets High gets rules-only output on every real dictation with
+        no indication the model was consulted — which is exactly how the current
+        defect stayed invisible for a release cycle. Every take therefore
+        records WHICH stages ran, and when the LLM stage was enabled but
+        produced nothing, the REASON (deadline / max_out / no model / no
+        sidecar). Show it in this item's diff view and once, quietly, on the
+        pill. One counter per reason in the local log.
+    (b) "the post-take surface" is deleted from the spec: THERE IS NO SUCH
+        SURFACE. After \`done\` the pill is a small non-activating NSPanel with
+        no text region (float_pill.rs:343-371) and no window appears. This item
+        is scoped to History plus the existing ⌃⌘Z undo. An in-the-moment diff
+        panel needs real geometry (size per dock, dismiss rules, how it avoids
+        stealing focus from a non-activating panel, what happens if the user
+        keeps typing) and is DEFERRED to docs/loop/DEFERRED.md rather than left
+        as prose a builder has to invent.
+
+  `,
+  acceptance: `
+    test -f desktop/src/diff.ts
+    test -f desktop/src/diff.test.ts
+    grep -rq 'formatting_diff\\|DiffView' desktop/src
+    test -f desktop/src-tauri/tests/undo_restores_raw.rs
+    grep -q 'undo_restores_byte_identical_raw_including_signature' desktop/src-tauri/tests/undo_restores_raw.rs
+    # no new frontend dependency was added for the diff
+    node -e "const d=require('./desktop/package.json').dependencies;process.exit(Object.keys(d).some(k=>/diff|jsdiff|myers/.test(k))?1:0)"
+    cd ${APP} && npm ci
+    npm test -- diff ; test $? -eq 0
+    npx tsc --noEmit ; test $? -eq 0
+    npm run build    ; test $? -eq 0
+    cd src-tauri && cargo test --features custom-protocol --test undo_restores_raw ; test $? -eq 0    grep -q 'a_skipped_llm_stage_records_its_reason' desktop/src-tauri/tests/formatting_diff.rs
+    grep -rq 'stages_that_ran' desktop/src-tauri/src
+
+  `,
+})
+
+ITEMS.push({
+  id: 'Y4-H', prompt: 'Y4', branch: 'loop/y4-h-formatting-settings-a-person-can-use', gated: null,
+  notes: `STATUS 2026-09-26: MERGED (PR #182) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
+  title: 'The formatting settings stop being engineer words, and every one of them persists',
+  preflight: `
+    cd ${APP} && npm ci && cd src-tauri
+    cargo test --features custom-protocol --test settings_kv
+    cargo test --features custom-protocol --test formatting_settings_persist
+  `,
+  spec: `
+    Two problems, one screen.
+
+    (1) THE NAMES. The formatting controls are \`cleanup_level\`
+    (none|light|medium|high), \`polish_model\`, \`polish_deadline_ms\`,
+    \`polish_styles\` (a per-mode map of very casual|casual|default|formal),
+    \`snippet_scope\`, \`signature_mode\` (off|cue|auto). Every one of them is
+    named for its implementation. A user cannot tell what "high" does, that
+    "high" needs a downloaded model, or that \`polish_deadline_ms\` exists at all.
+    Restructure the screen around what the user wants — how much should Yap
+    clean up? should it use the local model? how should it sound per app? —
+    with each option's one-line description derived from the same \`runs_*\`
+    predicates Y4-A exposed, so copy cannot drift from behaviour. Controls
+    first, prose last (feedback_think_ux_first).
+
+    (2) PERSISTENCE. The 2026-07-24 senior audit's top user-facing bug was
+    "half of Settings never persist (incl. PTT remap)" (project_yap_open_bugs),
+    addressed as M6 in yap8. \`tests/settings_kv.rs\` exists. What does NOT exist
+    is a test that every field of \`AppSettings\` round-trips. Write the
+    exhaustive one: for each field, set a non-default value, restart the store,
+    read it back, assert equality — and make it FAIL when a new field is added
+    without being included, by asserting the field count against a constant
+    that a new field forces you to update. A serde-driven round-trip over a
+    fully-populated struct is the cheapest form of this; take that shape.
+      * Include \`polish_styles\` (a BTreeMap — maps are the classic
+        never-persisted field) and \`calibration_sample\` (an Option).
+      * Assert \`schema_version\` migration: an old settings blob missing the new
+        fields loads with the documented defaults and does not reset the fields
+        it does carry.
+
+    Tests \`tests/formatting_settings_persist.rs\` + keep settings_kv.rs green.
+
+    Depends on Y4-A, SEC-C.
+
+    What NOT to do:
+      - Do NOT expose \`polish_deadline_ms\` as a raw millisecond number field. If
+        it stays user-visible it is a named choice (Fast / Balanced / Careful)
+        mapped to the existing bounded range (100..5000, polish.rs:64-65).
+      - Do NOT drop any setting while renaming its label. Rename the LABEL, keep
+        the KEY, or migrate it with the schema version.
+      - Do NOT overinvest in the settings surface beyond making it correct and
+        legible (feedback_dont_overinvest_settings).
+  `,
+  acceptance: `
+    test -f desktop/src-tauri/tests/formatting_settings_persist.rs
+    grep -q 'every_app_settings_field_round_trips' desktop/src-tauri/tests/formatting_settings_persist.rs
+    grep -q 'polish_styles' desktop/src-tauri/tests/formatting_settings_persist.rs
+    grep -q 'field_count_forces_this_test_to_be_updated' desktop/src-tauri/tests/formatting_settings_persist.rs
+    grep -q 'old_blob_migrates_without_resetting_carried_fields' desktop/src-tauri/tests/formatting_settings_persist.rs
+    cd ${APP} && npm ci && npm run build ; test $? -eq 0
+    cd src-tauri
+    cargo test --features custom-protocol --test formatting_settings_persist ; test $? -eq 0
+    cargo test --features custom-protocol --test settings_kv                 ; test $? -eq 0
+  `,
+})
+
 // ── 15-y3-long-dictations.mjs ─────────────────────────────────────────────
 // Y3 — LONG DICTATIONS. Wilson, 2026-09-12, verbatim: "no handling for long
 // dictations."
@@ -5784,847 +6554,6 @@ ITEMS.push({
     cd ${APP} && npm ci && cd src-tauri
     cargo test --features custom-protocol --test bulk_io  ; test $? -eq 0
     cargo test --features custom-protocol --test ide_bias ; test $? -eq 0
-  `,
-})
-
-// ── 50-y10-parity-p2-surface.mjs ──────────────────────────────────────────
-// Y10 — THE P2 PARITY QUEUE: "surface & polish". Source of record:
-// ~/Obsidian/Wilson-Brain/Notes/Wispr-Full-Parity-Research-2026-08-09.md §3 P2
-// items 15-23, quoted per item. Two of the nine already left this file: #17
-// earcons and #20 coaching nudges went into 40-y8 because they are the cheapest
-// answers to "the app looks broken". #18 rich-text snippets is here. #21 Focus
-// Mode shipped its plumbing in Y9-D.
-//
-// Separate file from Y9 so the two run on opposite lanes.
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y10-A', prompt: 'Y10', branch: 'loop/y10-a-multi-language-and-the-in-bar-picker', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Multi-language: expose what the engine can already do, with the picker in the bar',
-  preflight: `
-    grep -q 'language_set' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test languages
-  `,
-  spec: `
-    P2 #15, VERBATIM: "Multi-language + in-bar language picker. (M · L) Whisper
-    is already multilingual; expose a language set + auto-detect and put the
-    picker in the bar."
-
-    MEASURED: \`language: "en"\` is the shipped default (lib.rs:400) and the
-    teardown's §2.1 row scores Yap "❌ English-only path" against Wispr's
-    "99-language auto-detect, or pick a language subset; language picker lives
-    in the Flow Bar". The capability exists in the engine —
-    \`asr_engine.rs:394\` carries \`supports_language_detect\` and
-    \`supports_streaming\` in the probed capabilities, and
-    \`tests/asr_capabilities_probe.rs\` already reads them.
-
-    Do:
-      * A language SET, not a single language: the user picks the languages they
-        actually speak, and auto-detect chooses among that set. A 99-language
-        auto-detect is worse than a 2-language one — it mis-detects.
-      * Drive it off the probed capability, not a hardcoded list: if
-        \`supports_language_detect\` is false for the installed model, the UI must
-        say so and fall back to the single selected language. A picker that
-        silently does nothing is the defect pattern this whole plan is about.
-      * The picker is a Y8-B slot in the bar, and also a Settings control.
-      * The formatting pipeline is English-shaped in places (spoken punctuation
-        names, \`format_email_shape\`). Do NOT pretend otherwise: state per
-        cleanup stage whether it is language-agnostic, and for a non-English
-        take skip the stages that are not, rather than applying English rules to
-        German. Assert that in a test.
-      * The meeting path is English-only by design and has a test for it
-        (\`tests/meeting_english_only_gate.rs\`). Keep it green; this item is
-        dictation only.
-
-    Tests \`tests/languages.rs\`: a model without detect support falls back and
-    says so; auto-detect only chooses within the set; English-shaped cleanup
-    stages are skipped for a non-English take; the default remains English for
-    an existing install.
-
-    What NOT to do:
-      - Do NOT expose 99 languages.
-      - Do NOT run the English spoken-punctuation table over a non-English take.
-      - Do NOT touch the meeting English-only gate.
-  `,
-  acceptance: `
-    grep -q 'language_set' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/languages.rs
-    grep -q 'a_model_without_detect_support_falls_back_and_says_so' desktop/src-tauri/tests/languages.rs
-    grep -q 'english_shaped_stages_are_skipped_for_a_non_english_take' desktop/src-tauri/tests/languages.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test languages                 ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_english_only_gate ; test $? -eq 0
-    cargo test --features custom-protocol --test asr_capabilities_probe    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'PERM-H', prompt: 'Y10', branch: 'loop/perm-h-microphone-ranking-and-device-intelligence', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'A ranked microphone preference list, forget-device, and the AirPods and clamshell warnings',
-  preflight: `
-    grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test mic_devices
-  `,
-  spec: `
-    P2 #16, VERBATIM: "Mic ranking + device intelligence. (S · L) Ordered
-    preference list, 'forget device', AirPods/clamshell/lid warnings. Yap
-    already has cpal device enumeration (YV35)."
-    The teardown's §2.1 row details what Wispr ships [BUNDLE]: "Ranked
-    preference list, drag to reorder, 'forget device', AirPods warning,
-    clamshell/lid-closed detection, Jabra wear-detection auto-switch, separate
-    Notetaker mic", Yap "🟡 single device pick".
-
-    Do:
-      * An ordered preference list persisted in settings; the highest-ranked
-        PRESENT device wins at take start. Drag to reorder. "Forget device"
-        removes a row so an old headset stops winning.
-      * AirPods warning: Bluetooth input is low-bandwidth and noticeably worse
-        for ASR. Say so once, when an AirPods-class device is selected, and
-        offer the built-in mic. This is the single most common cause of a bad
-        transcript that looks like a model problem.
-      * Clamshell / lid-closed: the built-in mic is unavailable or muffled.
-        Detect and warn. The teardown names Wispr's
-        \`settings_microphone_airpods_warning\` and
-        \`NoClamshellBuiltInMic\` notification as the [BUNDLE]/[LOCAL] evidence
-        that both cases are real enough to ship copy for.
-      * A DEVICE CHANGE MID-TAKE must not lose the take.
-        \`tests/matrix_row14_output_device_change.rs\` covers OUTPUT; input is
-        untested. Assert the take either continues on the new device or is
-        parked in recovery (Y3/DB-B), never silently truncated.
-      * Interaction with PERM-A: a device being present is a HARDWARE question
-        (\`input_device_present\`) and authorization is a TCC question
-        (\`authorization_status\`). This item must not re-merge them; PERM-A split
-        them deliberately.
-      * No Jabra wear-detection. Vendor-specific and out of scope; say so.
-
-    Tests \`tests/mic_devices.rs\`: the highest-ranked present device wins;
-    forget removes it from selection; the AirPods warning fires once per
-    selection; a mid-take input change does not silently truncate; ranking
-    persists across a restart (in Y4-H's round-trip).
-
-    Depends on PERM-A, DB-B, Y4-H.
-
-    What NOT to do:
-      - Do NOT conflate device presence with permission.
-      - Do NOT switch devices mid-take without telling the user.
-      - Do NOT add vendor-specific wear detection.
-  `,
-  acceptance: `
-    grep -q 'mic_ranking' desktop/src-tauri/src/lib.rs
-    test -f desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'the_highest_ranked_present_device_wins' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'the_airpods_warning_fires_once_per_selection' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'a_mid_take_input_change_does_not_silently_truncate' desktop/src-tauri/tests/mic_devices.rs
-    grep -q 'presence_and_authorization_stay_separate' desktop/src-tauri/tests/mic_devices.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test mic_devices     ; test $? -eq 0
-    cargo test --features custom-protocol --test mic_auth_status ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-B', prompt: 'Y10', branch: 'loop/y10-b-rich-text-snippets-on-the-pasteboard', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Rich-text snippets: RTF and HTML flavours on the pasteboard without racing the receipt-sequenced paste',
-  preflight: `
-    grep -q 'rtf\\|public.rtf' desktop/src-tauri/src/paste.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test rich_snippets
-  `,
-  spec: `
-    P2 #18, VERBATIM: "Rich-text snippets. (M · L) RTF/HTML flavours on
-    \`NSPasteboard\`; interacts with the YV39 receipt-sequenced paste — needs its
-    own slice."
-    The teardown's §2.5 rows: Wispr's snippets are "rich text
-    (bold/italic/links/lists)" against Yap's "✅ plain-text (YV48)", and
-    "Replacement rules incl. HTML replacement" against Yap's "🟡 plain text".
-
-    The hazard named in the spec is the whole item. \`paste_tx.rs\` (641 lines,
-    YV39) sequences pastes by receipt precisely so two takes cannot interleave;
-    writing MULTIPLE pasteboard flavours is several writes where there was one,
-    and a half-written pasteboard is a paste of the wrong thing.
-
-    Do:
-      * Write all flavours for one paste as a single atomic pasteboard
-        declaration — declare the types, then set each — inside the existing
-        receipt transaction. Never a second transaction, never a write outside it.
-      * Flavours: \`public.utf8-plain-text\` always (so every target works), plus
-        \`public.rtf\` and/or \`public.html\` when the snippet carries markup. A
-        target that cannot take rich text must still get the plain text.
-      * Snippet storage gains a content-type. A plain snippet stays byte-for-byte
-        what it is today; assert that, because YV48's existing snippet tests are
-        the regression floor.
-      * The signature block is copied BYTE FOR BYTE after polish
-        (\`snippets::append_signature\`, lib.rs:283) — if a signature can now be
-        rich, it must stay byte-identical in the plain flavour and the rich
-        flavour must be derived, never re-authored by a model. Assert it.
-      * Y6-C's paste_target_e2e must be extended, not duplicated: two takes in
-        quick succession with rich flavours cannot interleave.
-
-    Tests \`tests/rich_snippets.rs\`: all flavours land in one transaction; a
-    plain snippet is byte-identical to today; a rich snippet degrades to plain
-    on a plain-only target; a signature stays byte-identical; no interleaving.
-
-    Depends on Y6-C.
-
-    What NOT to do:
-      - Do NOT write the pasteboard outside the receipt transaction.
-      - Do NOT drop the plain-text flavour.
-      - Do NOT let a model author the rich version of a signature.
-  `,
-  acceptance: `
-    grep -qE 'public.rtf|public.html' desktop/src-tauri/src/paste.rs
-    test -f desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'all_flavours_land_in_one_receipt_transaction' desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'a_plain_snippet_is_byte_identical_to_today' desktop/src-tauri/tests/rich_snippets.rs
-    grep -q 'a_signature_stays_byte_identical' desktop/src-tauri/tests/rich_snippets.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test rich_snippets    ; test $? -eq 0
-    cargo test --features custom-protocol --test paste_target_e2e ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-D', prompt: 'Y10', branch: 'loop/y10-d-mouse-button-push-to-talk', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'A non-primary mouse button as push-to-talk',
-  preflight: `
-    grep -q 'mouse_ptt\\|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test mouse_ptt
-  `,
-  spec: `
-    P2 #22, VERBATIM: "Mouse-button PTT. (M · L) Non-primary mouse button as
-    the hotkey."
-    The teardown's §2.1 row on Wispr's version ([BUNDLE]
-    \`settings_hotkey_dialog_mx_master_*\`, [OFFICIAL] whats-new 2026-03-31):
-    "Bind a non-primary mouse button as PTT; dedicated MX Master setup flow;
-    also an Enter rebind so a mouse button sends the message", Yap ❌.
-
-    \`ptt_macos.rs\` (590 lines) already owns the CGEvent tap for the
-    modifier-only fn / fn⌃ hold, which is the hard part — a mouse button is
-    another event type on the same tap.
-
-    Do:
-      * Bind button 3+ (never the primary or secondary button — stealing a
-        right-click is unacceptable and must be impossible, not merely
-        discouraged). Enforce it in the binding validator (Y8-A).
-      * The tap must not swallow the event for other apps. A PTT mouse button
-        that also fires in the game or the design tool the user is in is worse
-        than no feature; a PTT button that is swallowed everywhere is also wrong.
-        Decide, state the decision, and test the pass-through behaviour.
-      * Input Monitoring is required for a raw button tap the same way it is for
-        the modifier-only hold — PERM-E added Input Monitoring to the permission
-        report; this item consumes it. Without the grant, the feature must be
-        visibly unavailable rather than silently dead.
-      * No MX-Master-specific setup flow. Generic, any mouse.
-
-    Tests \`tests/mouse_ptt.rs\`: primary and secondary buttons are rejected by
-    the validator; a bound button starts and stops a take; pass-through is as
-    decided; without Input Monitoring the feature reports unavailable.
-
-    Depends on Y8-A, PERM-E.
-
-    What NOT to do:
-      - Do NOT allow binding the primary or secondary button.
-      - Do NOT ship it silently dead without Input Monitoring.
-      - Do NOT add a vendor-specific setup flow.
-  `,
-  acceptance: `
-    grep -qE 'mouse_ptt|MouseBinding' desktop/src-tauri/src/ptt_macos.rs
-    test -f desktop/src-tauri/tests/mouse_ptt.rs
-    grep -q 'primary_and_secondary_buttons_are_rejected' desktop/src-tauri/tests/mouse_ptt.rs
-    grep -q 'without_input_monitoring_the_feature_reports_unavailable' desktop/src-tauri/tests/mouse_ptt.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test mouse_ptt           ; test $? -eq 0
-    cargo test --features custom-protocol --test shortcut_validation ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-E', prompt: 'Y10', branch: 'loop/y10-e-local-insights-v2-and-the-yappy-profile', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Insights v2: the numbers Wispr computes in the cloud, computed in SQLite, feeding Yappy\'s dialogue',
-  preflight: `
-    grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test insights_v2
-  `,
-  spec: `
-    P2 #23, VERBATIM: "Local Insights v2 / Yappy profile. (M · D) 'most
-    corrected word', 'peak hour', 'catch phrase' — Wispr computes these in the
-    cloud; Yap can do it in SQLite. Feeds Yappy's dialogue."
-    The teardown's §2.5 row on Wispr's gamified Voice Profile [LOCAL]/[BUNDLE]:
-    \`superpower_title\`, \`catch_phrase\`, \`persona\`, \`most_used_word\`,
-    \`most_removed_word\`, \`peak_time_top_app\`, \`word_count_milestone\`, with the
-    note "Yappy is the better version of this idea".
-
-    Yap has the raw material and is not using it: the dictionary learns from
-    corrections (YV47), \`raw_text\` and the formatted text are both stored
-    (YV10/51), \`get_insights\` and a day-series exist (lib.rs:2420-2432), and
-    DB-A's usage rollup lands the per-day words and voiced seconds.
-
-    Do:
-      * Computed in SQL over the existing tables, no new capture: most-used
-        word (stopword-filtered), most-CORRECTED word (from the raw-vs-final
-        diff Y4-G's diff module already computes — reuse it, do not write a
-        second differ), peak hour, peak app, longest take, current streak,
-        word-count milestones.
-      * Bounded cost: these run on demand when the Insights view opens, not on
-        every take, and DB-C's volume test must still pass with them
-        (10,000 takes, no full scans on the take path).
-      * FEEDS YAPPY. Y5-H's habitat reacts to real state; these are the richest
-        real state Yap has. Wire at least three of them into the habitat's
-        reaction table and into the pill's commentary via \`pill/tone.ts\`, so
-        the numbers become personality rather than a dashboard
-        (feedback_no_generic_ui: reject AI-dashboard aesthetics).
-      * Nothing is transmitted and nothing is a leaderboard. The teardown's
-        "explicitly not wanted" list includes teams and leaderboards.
-      * Insights must render honestly at ZERO takes — Y5-B's empty state for
-        this view exists because today the view renders blank (App.tsx:2953
-        renders nothing when \`insights\` is falsy).
-
-    Tests \`tests/insights_v2.rs\`: each metric on a seeded corpus with a known
-    answer; stopwords excluded from most-used; most-corrected uses the stored
-    raw-vs-final pair; zero takes yields a defined empty result, never a panic
-    and never a divide-by-zero; no query added to the take path.
-
-    Depends on DB-A, DB-C, Y4-G, Y5-H.
-
-    What NOT to do:
-      - Do NOT compute these on every take.
-      - Do NOT write a second diff implementation.
-      - Do NOT transmit any of it, and do not build a leaderboard.
-  `,
-  acceptance: `
-    grep -q 'most_corrected_word' desktop/src-tauri/src/db.rs
-    test -f desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'stopwords_are_excluded_from_most_used' desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'zero_takes_yields_a_defined_empty_result' desktop/src-tauri/tests/insights_v2.rs
-    grep -q 'no_query_was_added_to_the_take_path' desktop/src-tauri/tests/insights_v2.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test insights_v2       ; test $? -eq 0
-    cargo test --features custom-protocol --test history_at_volume ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y10-F', prompt: 'Y10', branch: 'loop/y10-f-publish-the-idle-cost-number', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26 evidence: yap23 install measured idle RSS ~135-138 MB (pid 87890); wakeups were never measured — yap24-OS5 depends on this item.`,
-  title: 'Measure and publish Yap\'s idle RAM and CPU — the free marketing line the research asked for',
-  preflight: `
-    test -f desktop/src-tauri/tests/idle_cost.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test idle_cost
-  `,
-  spec: `
-    From the teardown §2.11, verbatim: "Idle cost measured by users at ~800 MB
-    RAM / ~8% CPU; 8-10 s cold start ... **Yap's position:** a Rust/Tauri binary
-    with a warm GGUF engine and idle-throttled canvases (YV24) should beat that
-    by an order of magnitude. **Measure it and publish the number — it is free
-    marketing.**"
-
-    Yap's own recorded numbers: "138MB idle" for the build carrying the diarize
-    sidecar (project_yap_build_state, 2026-08-16), and an explicit energy pass
-    (YV80 lazy model load, YV81 no busy timers / idle animations park / the
-    polish sidecar unloads when unused).
-
-    Do:
-      * \`tests/idle_cost.rs\`: launch the built binary headless, let it settle,
-        and assert resident memory and CPU are under named ceilings — with the
-        machine and date in a comment, and the ceilings set with enough headroom
-        that they fail on a REGRESSION and not on a different Mac. Express CPU
-        as a ceiling over a sampling window, never an instantaneous read.
-      * Assert the specific things the energy pass bought, so they cannot erode:
-        no ASR model resident before the first take (YV80 — and
-        \`tests/meeting_no_model_resident.rs\` is the existing sibling
-        assertion, follow its shape), the polish sidecar not running when unused
-        (YV81), and no timer firing faster than the documented floor while idle.
-      * Cold start: measure and assert a ceiling.
-      * Publish the numbers in README.md and on the site copy, next to the
-        claim, with the measurement method in one sentence. A published number
-        with no method is a number nobody believes.
-
-    Depends on Y3-G (which establishes the long-take budget harness — reuse its
-    measurement helpers rather than writing a second sampler).
-
-    What NOT to do:
-      - Do NOT publish a number you did not measure on a build from this repo.
-      - Do NOT name the competitor's number in Yap's own marketing copy
-        (no competitor jabs). Publish Yap's number and let it stand alone.
-      - Do NOT set a ceiling so tight it goes red on a different Mac.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'no_asr_model_is_resident_before_the_first_take' desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'the_polish_sidecar_is_not_running_when_unused' desktop/src-tauri/tests/idle_cost.rs
-    grep -q 'no_timer_fires_faster_than_the_documented_floor_while_idle' desktop/src-tauri/tests/idle_cost.rs
-    grep -qE 'idle' README.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test idle_cost                ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_no_model_resident ; test $? -eq 0
-  `,
-})
-
-// ── 55-y11-diarization-carryforward.mjs ───────────────────────────────────
-// Y11 — THE PARKED DIARIZATION QUEUE. The yap23 loop was stopped mid-finisher on
-// a fast-track order; six items were PARKED with real blocking defects, each with
-// a tracking issue on the repo carrying the `audit-carryforward` label, and six
-// PRs left open. Verified live on 2026-09-12 with
-// `gh issue list --repo wilsonguenther-dev/wilson-voice --state open` (6 open,
-// #150-#155) and the refs `origin/feat/yv127`…`origin/feat/yv134`.
-// docs/loop/HARNESS.md records the same six PRs and says Drain settles them.
-//
-// The resume note is explicit that PARKED = the FIRST work of the next Yap
-// session, and that ALL SIX also need a rebase picking up `min_embed`.
-//
-// Also carried forward, and the reason Y11-G exists: the eval numbers standing
-// in the repo are REGRESSION FLOORS measured on a `say`-generated synthetic
-// corpus (DER 0.34-0.45, EER 0.272 — the embedder hears the synthesizer), and a
-// real-voice corpus is a known, named next need.
-//
-// This file runs LAST. Diarization is the notetaker's accuracy layer; nothing in
-// Wilson's 2026-09-12 list depends on it, and it must not delay the dictation
-// work. It is in the plan because leaving six blocking defects untracked in a
-// shipped subsystem is how they become folklore.
-//
-// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
-
-ITEMS.push({
-  id: 'Y11-A', prompt: 'Y11', branch: 'loop/y11-a-rebase-the-six-parked-branches-on-min-embed', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. AMENDED 2026-09-26: the pre-flight used to require ZERO open PRs in the whole repo, which can never pass while loop-build PRs are open; it now counts only the six parked feat/yv PRs (#142-#146, #149, still open 2026-09-26).`,
-  title: 'Rebase the six parked branches onto main so each is evaluated against the shipped min_embed, not against what main was',
-  preflight: `
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv1*' | wc -l)"
-    gh pr list --repo wilsonguenther-dev/wilson-voice --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("feat/yv"))] | length' | grep -qx 0
-  `,
-  spec: `
-    MEASURED on 2026-09-12:
-      git for-each-ref  ->  origin/feat/yv127 (d6667ac), yv128 (6e386e1),
-                            yv129 (3d78900), yv130 (77a0c95), yv131 (5353261),
-                            yv134 (de0c4d6), all dated 2026-08-15/16.
-      origin/main       ->  4e8c9adf (YV126).
-      gh issue list     ->  #150-#155, all labelled audit-carryforward.
-
-    The resume note's instruction, which is the whole of this item: all six
-    "need a rebase picking up min_embed". Until they do, every review of them is
-    a review of a tree that no longer exists — and the sibling lesson here is
-    exact: main moves under long loops, so rebase before evaluating checks.
-
-    Do, per branch, in issue order (#150 first):
-      1. Rebase onto current main. Rerun the full gate
-         (docs/loop/HARNESS.md "The gate", all eight commands, exit codes read
-         bare).
-      2. Re-read its tracking issue and decide ONE of three outcomes, recorded
-         in the PR:
-            - the defect is fixed by the rebase (main moved past it) -> close the
-              issue with the evidence and merge or close the PR accordingly;
-            - the defect survives -> the PR stays open, the issue stays open, and
-              the specific item below (Y11-B..F) owns the fix;
-            - the branch is superseded -> close the PR naming the commit that
-              supersedes it, and keep the issue if the defect is still live.
-      3. Never merge a rebased branch whose tracking issue is still open and
-         unaddressed. That is the exact mistake that created six carry-forwards.
-      * Also settle the one open watch item: docs/loop/HARNESS.md and the resume
-        note both flag a transient red main run on c3fd5d89 (cargo test exit
-        101, logs expired, two green runs since). Run
-        \`cargo test --features custom-protocol\` ten times in a row on current
-        main and record the pass count in the PR body. If it recurs, capture the
-        log immediately — "CI is flaky" must not be allowed to take root.
-
-    What NOT to do:
-      - Do NOT merge a parked branch to clear the queue. Six open PRs is not the
-        problem; six unaddressed defects is.
-      - Do NOT close a tracking issue without the evidence in the comment.
-      - Do NOT squash the six into one branch. Each has its own defect and its
-        own issue.
-  `,
-  acceptance: `
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv12*' | wc -l)"
-    test 0 -eq "$(git branch -r --list 'origin/feat/yv13*' | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol ; test $? -eq 0
-    cargo clippy --all-targets --features custom-protocol ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-B', prompt: 'Y11', branch: 'loop/y11-b-overlap-honesty-in-the-shipped-string', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #150: the impossibility framing survives in transcript.ts where the guard cannot see it',
-  preflight: `
-    gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #150, title verbatim: "YV127 overlap honesty (#142): the
-    impossibility framing survives in transcript.ts and the guard cannot see it".
-    Labelled \`audit-carryforward\` = "Verified finding carried forward from a
-    reflection/cleanup pass".
-
-    Read #150 and PR #142 in full before writing code. The shape of the defect,
-    which is the shape this whole plan keeps finding: a guard was added, a
-    string it was supposed to police lives in a file the guard's scope does not
-    cover, and the guard therefore passes while the wrong sentence ships. A grep
-    proving absence with the wrong SCOPE proves nothing.
-
-    Do:
-      * Fix the surviving string in \`desktop/src/meetings/transcript.ts\` so the
-        user-facing framing is accurate.
-      * WIDEN THE GUARD so it could not have missed it: the guard must cover
-        every file that can produce user-facing transcript copy — the TS
-        rendering modules and the Rust export path both — and the test must name
-        its scope explicitly rather than relying on a default search root.
-      * Prove it non-vacuously: reintroduce the offending sentence in a scratch
-        copy and assert the guard now fails. Record that in the PR body (the
-        repo's own convention, docs/pr-screenshots/YV105/…/non-vacuous-mutations.txt),
-        and add the row to Y7-C's docs/loop/MUTATIONS.md table.
-      * Keep \`tests/meeting_transcript_render_two_track.rs\`,
-        \`meeting_transcript_render_single_track_unchanged.rs\` and the vitest
-        \`src/meetings/transcript.test.ts\` green.
-      * Close #150 with the evidence.
-
-    Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT widen the guard by searching the whole repo without a scope. A
-        repo-wide grep that matches a doc or a test fixture is a guard that will
-        be disabled the first time it is inconvenient.
-      - Do NOT fix the string without fixing the guard. The guard is the defect.
-  `,
-  acceptance: `
-    gh issue view 150 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'transcript.ts' docs/loop/MUTATIONS.md
-    cd ${APP} && npm ci
-    npm test ; test $? -eq 0
-    cd src-tauri
-    cargo test --features custom-protocol --test meeting_transcript_render_two_track ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_transcript_render_single_track_unchanged ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'DB-E', prompt: 'Y11', branch: 'loop/db-e-speaker-profiles-store-the-weights-digest', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #151: speaker_profiles stores a catalog id where it must store the pinned weights digest',
-  preflight: `
-    gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #151, verbatim: "YV128 speaker_profiles (#143): the model
-    skip stores a catalog id, not the pinned weights digest".
-
-    Why it is blocking and not cosmetic: a speaker embedding is only comparable
-    to another embedding produced by the SAME WEIGHTS. A catalog id is a
-    mutable label — the same id can point at re-quantized or updated weights —
-    so a profile enrolled under one set of weights will be silently scored
-    against another, and the failure looks like a bad match rather than a
-    schema bug. The repo already pins digests elsewhere: YV123 vendored the
-    models via a mirror and \`tests/supply_chain.rs\` asserts the sidecar pins
-    sherpa-onnx exactly. This is that same discipline, one layer up.
-
-    Do:
-      * A migration adding the weights DIGEST to \`speaker_profiles\` (and to the
-        skip record the issue names), idempotent
-        (tests/db_migration_idempotent.rs must stay green).
-      * Enrollment records the digest of the weights that produced the
-        embedding. Scoring REFUSES to compare across digests — refuses, not
-        silently re-embeds and not silently scores anyway. A refusal is a
-        visible state the UI can explain; a cross-weights score is a wrong
-        answer.
-      * A re-enrollment path so a user whose model changed can re-enroll rather
-        than lose their roster.
-      * There are no users of this feature to migrate (it shipped days before
-        the loop stopped), so prefer the correct schema over a compatibility
-        shim — but do not destroy existing rows: mark them as
-        unknown-digest and refuse to score them until re-enrolled.
-
-    Tests \`tests/speaker_profile_digest.rs\`: enrollment stores the digest;
-    scoring across digests refuses; an unknown-digest row is not scored and not
-    deleted; the migration is idempotent; re-enrollment clears the refusal.
-
-    Close #151 with the evidence. Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT store the catalog id as a proxy for the digest.
-      - Do NOT silently re-embed on a digest mismatch.
-      - Do NOT delete existing profile rows.
-  `,
-  acceptance: `
-    gh issue view 151 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -qE 'weights_digest|weights_sha' desktop/src-tauri/src/db.rs
-    test -f desktop/src-tauri/tests/speaker_profile_digest.rs
-    grep -q 'scoring_across_digests_refuses' desktop/src-tauri/tests/speaker_profile_digest.rs
-    grep -q 'an_unknown_digest_row_is_not_scored_and_not_deleted' desktop/src-tauri/tests/speaker_profile_digest.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test speaker_profile_digest  ; test $? -eq 0
-    cargo test --features custom-protocol --test db_migration_idempotent ; test $? -eq 0
-    cargo test --features custom-protocol --test supply_chain            ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-C', prompt: 'Y11', branch: 'loop/y11-c-enrollment-bands-retuned-on-the-scored-population', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #152: bands tuned on utterance pairs, applied to roster-max centroid scoring — FAR 1.000 on the shipped path',
-  preflight: `
-    gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #152, verbatim: "YV129 enrollment matching (#144): bands
-    tuned on utterance pairs, applied to roster-max centroid scoring
-    (FAR 1.000)". The resume note flags it with an exclamation mark for a
-    reason: "FAR 0.034 tuned vs 1.000 shipped path".
-
-    This is the single most serious defect in the parked queue. A false-accept
-    rate of 1.000 on the shipped scoring path means the matcher accepts
-    EVERY candidate — the feature reports confident speaker identities that are
-    not identities at all. And the tuned number that was recorded, 0.034, was
-    measured on a DIFFERENT scoring population (utterance-to-utterance pairs)
-    than the one that ships (max over a roster of centroids). A threshold tuned
-    on one population and applied to another is not a threshold.
-
-    Do:
-      * Retune the bands on the POPULATION THAT SHIPS: roster-max over
-        centroids, at the roster sizes the product actually produces. Report FAR
-        and FRR at the chosen operating point, and report them per roster size —
-        roster-max FAR grows with roster size and a single number hides that.
-      * Where the honest answer is "this mechanism cannot reach a usable FAR at
-        roster size N", SAY SO and gate the feature at N rather than shipping a
-        threshold that cannot hold. A refused identification is a product state;
-        a wrong one is a defect. YV126's own resolution was "a floor instead of
-        a reject", so the precedent for an honest floor already exists in this
-        subsystem.
-      * Every number written into the repo must name the population, the corpus,
-        the roster size and the date. The standing failure mode here is a
-        measurement outliving the thing that produced it, and ci.yml already
-        carries a guard built for exactly that
-        (\`meeting_eval_anti_alias_eer_measurement_stays_backed_by_a_real_backend\`)
-        — keep it green and follow its example.
-      * The corpus caveat is not optional: the numbers standing in the repo are
-        floors on a \`say\`-generated synthetic corpus where the embedder hears
-        the synthesizer. Any number produced here inherits that caveat until
-        Y11-G lands a real-voice corpus, and the PR body must say so in one
-        sentence.
-
-    Tests: extend \`tests/diarization_metrics.rs\` and \`tests/meeting_eval.rs\`
-    with the roster-max arm, and add
-    \`bands_are_tuned_on_the_population_that_ships\` asserting the tuning
-    harness and the shipped scorer call the SAME function.
-
-    Close #152 with the numbers. Depends on Y11-A, DB-E.
-
-    What NOT to do:
-      - Do NOT re-report the 0.034 figure. It describes a path that does not ship.
-      - Do NOT ship a threshold you could not measure.
-      - Do NOT present a synthetic-corpus number as a real-voice number.
-  `,
-  acceptance: `
-    gh issue view 152 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'bands_are_tuned_on_the_population_that_ships' desktop/src-tauri/tests/diarization_metrics.rs
-    grep -qE 'roster' desktop/src-tauri/tests/meeting_eval.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_cluster_attribution ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-D', prompt: 'Y11', branch: 'loop/y11-d-split-partition-seeding-and-the-outlier', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issue #153: split_partition\'s farthest-pair seeding does not separate speakers when an outlier is the far point',
-  preflight: `
-    gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Tracking issue #153, verbatim: "YV130 correction UX (#145):
-    split_partition's farthest-pair seeding does not separate speakers when an
-    outlier is the far point".
-
-    A farthest-pair seed is the textbook 2-means initialisation and it has a
-    textbook failure: if the two most distant embeddings are one real speaker
-    and one outlier (a cough, a door, a clipped segment), the split separates
-    the outlier from everything else and the two speakers stay merged. The
-    user-visible symptom is a correction action that appears to do nothing,
-    which is worse than an absent feature — this lives under "correction UX"
-    for that reason.
-
-    Do:
-      * Replace or guard the seeding. Options, in the order worth trying:
-        k-means++ style probabilistic seeding; a trimmed farthest pair that
-        excludes points beyond a robust distance quantile; or a seed pair chosen
-        to maximise the resulting partition's separation rather than the pair
-        distance. Implement ONE, measured against the others on the eval corpus,
-        and say in the PR body which you tried and what each scored.
-      * The outlier itself must go somewhere defensible: assign it to its
-        nearest cluster or to a named noise bucket, and NEVER let one outlier
-        become a "speaker" in the roster. A phantom speaker in the transcript is
-        the worst outcome of this bug.
-      * Reuse \`tests/diarize_cluster_distance_threshold.rs\` and
-        \`diarize_cluster_rank_and_floor.rs\` — YV126 established the distance
-        threshold and the floor, and this fix must not move either.
-      * Regression case, committed: a synthetic partition with one extreme
-        outlier and two genuinely distinct speakers, where the old seeding
-        provably fails and the new one provably separates. That fixture IS the
-        proof; without it this is an unverifiable refactor.
-
-    Tests \`tests/diarize_split_seeding.rs\`: the outlier fixture separates the
-    two speakers; one outlier never becomes a roster speaker; the seeding is
-    deterministic for a given input (no unseeded randomness — the loop's
-    generated scripts forbid nondeterminism and an eval that changes per run is
-    not an eval); the YV126 threshold and floor are unchanged.
-
-    Close #153 with the numbers. Depends on Y11-A, Y11-C.
-
-    What NOT to do:
-      - Do NOT introduce unseeded randomness. If the seeding is probabilistic,
-        the seed is an explicit parameter.
-      - Do NOT let an outlier become a speaker.
-      - Do NOT change the YV126 distance threshold in this item.
-  `,
-  acceptance: `
-    gh issue view 153 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    test -f desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'the_outlier_fixture_separates_the_two_speakers' desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'one_outlier_never_becomes_a_roster_speaker' desktop/src-tauri/tests/diarize_split_seeding.rs
-    grep -q 'seeding_is_deterministic_for_a_given_input' desktop/src-tauri/tests/diarize_split_seeding.rs
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test diarize_split_seeding              ; test $? -eq 0
-    cargo test --features custom-protocol --test diarize_cluster_distance_threshold ; test $? -eq 0
-    cargo test --features custom-protocol --test diarize_cluster_rank_and_floor     ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-E', prompt: 'Y11', branch: 'loop/y11-e-false-mechanism-sentence-in-the-shipped-asset', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Issues #154 and #155: a false mechanism claim in a shipped asset, and a comment naming call sites that do not exist',
-  preflight: `
-    gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    gh issue view 155 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-  `,
-  spec: `
-    Two issues, one class of defect, so one item.
-
-    #154, verbatim: "YV131 cross-device drift (#146): the false-mechanism
-    sentence survives in the shipped cohort asset and its generator".
-    #155, verbatim: "YV134 phase-closing E2E (#149): the 0.35 comment claims
-    shipped call sites that do not exist".
-
-    Both are FALSE CAPABILITY CLAIMS in the tree: prose asserting a mechanism or
-    a call site that is not there. That class is a BLOCKING finding by the
-    reviewer contract, and it is corrosive beyond its size — the next engineer
-    reads the comment, believes the mechanism, and builds on it. The repo has
-    already been bitten: ci.yml carries a long note about an earlier revision of
-    that very file claiming a precondition it never reached
-    ("It was not, and could not be ... The arm returns on its first line here").
-
-    Do:
-      * #154: fix the sentence in the shipped cohort asset AND in its GENERATOR,
-        which is the part that matters — fixing only the asset means the next
-        regeneration restores the false claim. Then add the guard that would
-        have caught it, scoped to include generated assets, and prove it
-        non-vacuously.
-      * #155: delete or correct the 0.35 comment, and — the real fix — add the
-        assertion that a comment naming a call site must name one that exists.
-        The repo has the precedent:
-        \`meeting_eval_anti_alias_eer_ci_does_not_declare_what_it_never_reaches\`
-        is exactly this kind of guard. Follow it, and keep
-        \`tests/matrix_coverage.rs\` green.
-      * Both rows go into Y7-C's docs/loop/MUTATIONS.md.
-      * Then sweep once for the same class across the diarization modules: any
-        doc comment naming a constant, a call site or a mechanism must name one
-        that exists. Report the count found in the PR body, fix them, and say
-        plainly if the sweep is not exhaustive and why — an honest partial sweep
-        beats a claimed complete one.
-
-    Close #154 and #155 with the evidence. Depends on Y11-A.
-
-    What NOT to do:
-      - Do NOT fix the asset without fixing the generator.
-      - Do NOT delete a comment to pass a guard. Either the mechanism exists and
-        the comment is right, or the comment goes and the guard proves it went.
-      - Do NOT claim an exhaustive sweep you did not run.
-  `,
-  acceptance: `
-    gh issue view 154 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    gh issue view 155 --repo wilsonguenther-dev/wilson-voice --json state --jq .state | grep -qx CLOSED
-    grep -q 'cohort' docs/loop/MUTATIONS.md
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test matrix_coverage ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_eval    ; test $? -eq 0
-    cargo test --features custom-protocol ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y11-F', prompt: 'Y11', branch: 'loop/y11-f-real-voice-eval-corpus', gated: 'panel',
-  notes: `STATUS 2026-09-26: GATED (owner decision pending) — unchanged.`,
-  title: 'A real-voice eval corpus to replace the synthetic one — the numbers are only floors until it exists',
-  preflight: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test meeting_eval
-  `,
-  spec: `
-    GATED: 'panel'. The mechanism is clear; what a corpus of real human voices
-    may contain and where it may live are Wilson's calls, not an agent's.
-
-    THE PROBLEM, from the yap23 close-out verbatim: "Eval numbers so far are
-    REGRESSION FLOORS on a synthetic say-voice corpus (DER 0.34-0.45,
-    EER 0.272 — CAM++ hears the synthesizer; real-voice corpus is a known next
-    need)." A speaker embedder scored on text-to-speech output is being asked to
-    tell apart one synthesizer from itself; the numbers bound regressions and
-    say nothing about accuracy on people. Every number Y11-C produces inherits
-    that ceiling.
-
-    WHAT THE PANEL AND WILSON MUST DECIDE before this item is built:
-      1. WHOSE VOICES. A public research corpus under a licence that permits
-         this use, voices recorded with explicit consent, or both. Each has a
-         different consent and licence posture.
-      2. WHERE IT LIVES. It cannot be committed to a public repo. The existing
-         scan corpus precedent is an external drive plus a manifest with
-         checksums in the repo — the eval already works this way
-         (tests/fixtures/meeting_eval_manifest.json plus its .sha256, and
-         meeting_eval.rs opening on a corpus path no runner has).
-      3. CONSENT AND RETENTION. Recorded voices are biometric data. How long is
-         it kept, who can access it, and what does a contributor's withdrawal
-         require? Yap's whole position is local-only privacy; an eval corpus of
-         real voices sitting on a build box is the one place that promise could
-         be undone by its own tooling.
-      4. WHETHER CI EVER SEES IT. The answer is almost certainly no, and the
-         existing pattern already handles that honestly: the corpus arm returns
-         on its first line in CI, and a separate guard asserts the measurement
-         stays backed by a real backend. Confirm rather than assume.
-
-    BUILD REGARDLESS, because it is useful the moment a corpus exists:
-      * A manifest schema + checksum file for a real-voice corpus, mirroring the
-        existing meeting_eval manifest exactly, with an EMPTY manifest committed.
-      * The eval arm that consumes it, skipping with a NAMED reason when the
-        corpus is absent — never a silent skip, which is how an unmeasured
-        number gets reported as measured.
-      * A report that prints DER/EER per corpus and refuses to print a single
-        blended number across a synthetic and a real corpus. Blending them is
-        how the synthetic ceiling would disappear from the record.
-      * Every published number carries its corpus name. Update the existing
-        recorded numbers to say "synthetic" explicitly, which is a one-line
-        honesty fix that does not need the panel.
-
-    Depends on Y11-C.
-
-    What NOT to do:
-      - Do NOT commit voice audio to the repo.
-      - Do NOT record anyone without explicit consent.
-      - Do NOT report a blended number.
-      - Do NOT skip the arm silently.
-  `,
-  acceptance: `
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.json
-    test -f desktop/src-tauri/tests/fixtures/real_voice_manifest.sha256
-    grep -q 'synthetic' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'refuses_to_blend_corpora_into_one_number' desktop/src-tauri/tests/meeting_eval.rs
-    grep -q 'absent_corpus_skips_with_a_named_reason' desktop/src-tauri/tests/meeting_eval.rs
-    test 0 -eq "$(find desktop/src-tauri/tests/fixtures -name '*.wav' -newer desktop/src-tauri/tests/fixtures/README.md | wc -l)"
-    cd ${APP} && npm ci && cd src-tauri
-    cargo test --features custom-protocol --test meeting_eval        ; test $? -eq 0
-    cargo test --features custom-protocol --test diarization_metrics ; test $? -eq 0
   `,
 })
 
