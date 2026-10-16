@@ -253,10 +253,16 @@ stage_weak_link() {
   ./scripts/assert-weak-linked-14_4-symbols.sh "$bin"
 }
 
+# The structural windowed smoke (Y0-E, #160) is a UI JUDGE, not a build-from-nothing check, and it
+# is DESIGNED to be red on today's tree (docs/loop/SMOKE-BASELINE.md: no view carries
+# data-empty-state yet). Running it as a blocking stage ahead of the cargo gate made every later
+# stage unreachable, so this script could never answer its own question. It is therefore GATED
+# BEHIND A FLAG, as Y7's item text specifies ("Run it as part of Y0-B's loop-smoke script, gated
+# behind a flag"), and it runs LAST, after the build-from-nothing verdict is already in:
+#     YAP_SMOKE_WINDOWED=1 ./scripts/loop-smoke.sh
+# With the flag set it is blocking (exit non-zero on any finding) and "no display" is a FAILURE,
+# never a named skip. Without the flag it is reported as NOT RUN — never as a pass.
 stage_windowed_smoke() {
-  # Y0-E (#160) shipped the structural windowed smoke ahead of the UI items it judges; its stub of
-  # this file said "keep the smoke-windowed call". A display is NOT optional on the loop Mac:
-  # no display is a FAILURE here, never a named skip.
   case "$(uname -s)" in
     Darwin) command -v system_profiler >/dev/null 2>&1 || { echo "loop-smoke: no display" >&2; return 2; } ;;
     *) [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || { echo "loop-smoke: no display" >&2; return 2; } ;;
@@ -272,7 +278,6 @@ stage "runtime-asset provenance (sherpa mode, no models)" stage_provenance
 stage "npm ci (desktop)"                                  stage_npm_ci
 stage "npm run build (tsc + vite)"                        stage_npm_build
 stage "npm test (vitest)"                                 stage_npm_test
-stage "structural windowed smoke (Y0-E)"               stage_windowed_smoke
 stage "build + stage BOTH sidecars for $(rustc -vV | awk '/^host:/ {print $2}')" stage_sidecars
 stage "cargo test -p yap-polish --release"                stage_test_polish
 stage "cargo test -p yap-diarize --release"               stage_test_diarize
@@ -282,8 +287,16 @@ stage "cargo test --features custom-protocol"             stage_cargo_test
 stage "cargo build --release --features custom-protocol"  stage_cargo_release
 stage "assert weak-linked 14.4 CoreAudio symbols"         stage_weak_link
 
+if [ "${YAP_SMOKE_WINDOWED:-0}" = "1" ]; then
+  WINDOWED_MODE="RUN (YAP_SMOKE_WINDOWED=1) — passed"
+  stage "structural windowed smoke (Y0-E, YAP_SMOKE_WINDOWED=1)" stage_windowed_smoke
+else
+  WINDOWED_MODE="NOT RUN — set YAP_SMOKE_WINDOWED=1 (expected red on today's tree; see docs/loop/SMOKE-BASELINE.md)"
+fi
+
 printf '\n════════════════════════════════════════════════════════════\n'
 printf 'loop-smoke: PASS — %d/%d stages green.\n' "$STAGE_NO" "$STAGE_NO"
 printf 'sherpa-onnx mode used: %s\n' "$SHERPA_MODE"
 printf 'model weights: none downloaded by this script; state root mode: %s\n' "$STATE_MODE"
+printf 'structural windowed smoke (Y0-E): %s\n' "$WINDOWED_MODE"
 printf '════════════════════════════════════════════════════════════\n'
