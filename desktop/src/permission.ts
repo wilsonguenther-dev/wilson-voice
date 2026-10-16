@@ -193,6 +193,73 @@ export type PermissionHealthAction =
   | { kind: "settings"; label: string; pane: string }
   | { kind: "none" };
 
+// ── yap-perm-truth — the banner names THIS binary ──────────────────────────
+//
+// 0.9.0: the banner said Accessibility was off, System Settings showed Yap's
+// toggle ON, and Wilson trusted the toggle. The banner was right (the grant was
+// pinned to the old signing certificate) but never said which Yap it had asked
+// about or why a visible toggle can be dead. These fields, all built in
+// `perm_truth.rs`, are what it now says.
+
+/** One OS call that answered no. `text` is the canonical one-liner. */
+export interface FailingCondition {
+  grant: string;
+  label: string;
+  /** e.g. `AXIsProcessTrusted`, `IOHIDCheckAccess listen`. */
+  api: string;
+  /** e.g. `false`, `denied`. */
+  observed: string;
+  /** e.g. "Accessibility false (AXIsProcessTrusted)". */
+  text: string;
+}
+
+/** A grant that worked for a differently signed Yap. `message` is final copy. */
+export interface StaleGrant {
+  grant: string;
+  label: string;
+  previousVersion: string;
+  message: string;
+}
+
+/** The truth fields of `PermissionReport`. All optional: older payloads lack them. */
+export interface PermissionTruth {
+  /** `NSBundle.mainBundle.bundlePath` of the process that asked macOS. */
+  checkedBundlePath?: string | null;
+  signingAuthority?: string | null;
+  failingConditions?: FailingCondition[] | null;
+  staleGrants?: StaleGrant[] | null;
+  duplicateBundles?: string[] | null;
+}
+
+/** "Accessibility is off for /Applications/Yap.app (AXIsProcessTrusted = false)." */
+export function failingConditionSentence(
+  condition: FailingCondition,
+  checkedBundlePath?: string | null,
+): string {
+  if (!checkedBundlePath) return `${condition.text}.`;
+  return `${condition.label} is off for ${checkedBundlePath} (${condition.api} = ${condition.observed}).`;
+}
+
+/** "Another copy of Yap at <path> may hold the permission." */
+export function duplicateBundleSentence(path: string): string {
+  return `Another copy of Yap at ${path} may hold the permission.`;
+}
+
+/**
+ * The extra lines the banner shows under its main line, in reading order: what
+ * failed and for which bundle path, then any stale grant, then any other copy
+ * of Yap on disk. Pure.
+ */
+export function permissionTruthNotes(truth: PermissionTruth | null | undefined): string[] {
+  if (!truth) return [];
+  const path = truth.checkedBundlePath;
+  return [
+    ...(truth.failingConditions ?? []).map((c) => failingConditionSentence(c, path)),
+    ...(truth.staleGrants ?? []).map((g) => g.message),
+    ...(truth.duplicateBundles ?? []).map(duplicateBundleSentence),
+  ];
+}
+
 export interface PermissionHealth {
   /**
    * FALSE whenever nothing is denied — which includes the all-authorized case
@@ -202,12 +269,19 @@ export interface PermissionHealth {
   visible: boolean;
   /** One calm line. Empty when `visible` is false. */
   line: string;
+  /**
+   * yap-perm-truth — which binary was checked, the exact failing OS call, a
+   * stale grant, another copy of Yap. Empty when `visible` is false: the truth
+   * lines only ever explain a banner, they never raise one.
+   */
+  notes: string[];
   action: PermissionHealthAction;
 }
 
 const INVISIBLE: PermissionHealth = {
   visible: false,
   line: "",
+  notes: [],
   action: { kind: "none" },
 };
 
@@ -232,9 +306,9 @@ export function grantNags(status: GrantStatus): boolean {
  * first, because four persistent cards is the dashboard this item exists to not
  * build.
  */
-export function permissionHealth(report: {
+export function permissionHealth(report: ({
   grants?: PermissionGrantRow[] | null;
-} | null | undefined): PermissionHealth {
+} & PermissionTruth) | null | undefined): PermissionHealth {
   const grants = report?.grants ?? [];
   const denied = grants.filter((g) => grantNags(g.status));
   if (denied.length === 0) return INVISIBLE;
@@ -248,6 +322,7 @@ export function permissionHealth(report: {
   return {
     visible: true,
     line,
+    notes: permissionTruthNotes(report),
     action: {
       kind: "settings",
       label: `Open ${first.label} settings`,

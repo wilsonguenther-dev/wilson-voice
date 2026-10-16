@@ -145,8 +145,11 @@ fn the_watcher_parks_entirely_when_nothing_is_denied() {
 }
 
 #[test]
-fn no_interval_in_the_watcher_is_under_thirty_seconds() {
-    assert_eq!(WATCH_MIN_INTERVAL, Duration::from_secs(30));
+fn the_watcher_polls_every_five_seconds_only_while_something_is_denied() {
+    // yap-perm-truth: 45 s → 5 s while the banner is up (parked otherwise; see
+    // `an_unknown_grant_never_starts_a_timer`-style cases above).
+    assert_eq!(WATCH_MIN_INTERVAL, Duration::from_secs(5));
+    assert_eq!(WATCH_INTERVAL, Duration::from_secs(5));
     let denied = snap(
         GrantState::Denied,
         GrantState::Authorized,
@@ -157,7 +160,7 @@ fn no_interval_in_the_watcher_is_under_thirty_seconds() {
     assert_eq!(wait, WATCH_INTERVAL);
     assert!(
         wait >= WATCH_MIN_INTERVAL,
-        "{wait:?} is under the 30s floor this module promises"
+        "{wait:?} is under the 5s floor this module promises"
     );
 }
 

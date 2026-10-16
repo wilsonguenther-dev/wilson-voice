@@ -103,6 +103,18 @@ pub struct PermissionReport {
     /// Human summary for UI
     pub summary: String,
     pub all_critical_ok: bool,
+    /// yap-perm-truth — `NSBundle.mainBundle.bundlePath` of the process that
+    /// asked. The banner names it, because "Accessibility is off" without
+    /// "for WHICH Yap" is how a user ends up trusting a stale toggle instead.
+    pub checked_bundle_path: String,
+    /// Leaf certificate summary from `SecCodeCopySigningInformation` on self.
+    pub signing_authority: String,
+    /// Each OS call that answered no, e.g. "Accessibility false (AXIsProcessTrusted)".
+    pub failing_conditions: Vec<crate::perm_truth::FailingCondition>,
+    /// Grants last seen working under a different signature than this one.
+    pub stale_grants: Vec<crate::perm_truth::StaleGrant>,
+    /// Other bundles on disk with our bundle id, any of which may hold the grant.
+    pub duplicate_bundles: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -199,18 +211,29 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     let accessibility = macos::accessibility_trusted(prompt_accessibility);
     let status = crate::mic_auth::authorization_status();
     let (asr_ok, asr_detail) = asr_probe(native_ready);
-    build_report_with_grants(
+    let hid_raw = hid::listen_event_access();
+    let input_monitoring = input_monitoring_state(hid_raw, accessibility, tap_is_delivering());
+    let mut report = build_report_with_grants(
         accessibility,
         status,
-        input_monitoring_state(
-            hid::listen_event_access(),
-            accessibility,
-            tap_is_delivering(),
-        ),
+        input_monitoring,
         audio_capture_state(),
         asr_ok,
         asr_detail,
-    )
+    );
+    // yap-perm-truth: WHICH binary was asked, and what exactly it was told.
+    let me = crate::perm_truth::running_identity();
+    report.checked_bundle_path = me.bundle_path.clone();
+    report.signing_authority = me.signature.authority.clone();
+    report.failing_conditions =
+        crate::perm_truth::failing_conditions(accessibility, input_monitoring);
+    report.stale_grants = crate::perm_truth::observe(
+        accessibility,
+        hid_raw == GrantState::Authorized,
+        input_monitoring,
+    );
+    report.duplicate_bundles = crate::perm_truth::duplicate_bundles().to_vec();
+    report
 }
 
 /// The report, as a pure function of its four original inputs.
@@ -337,6 +360,13 @@ pub fn build_report_with_grants(
         asr_detail,
         summary,
         all_critical_ok,
+        // Filled by `report()` from the live process; a pure report has no
+        // process to describe, so it carries none.
+        checked_bundle_path: String::new(),
+        signing_authority: String::new(),
+        failing_conditions: Vec::new(),
+        stale_grants: Vec::new(),
+        duplicate_bundles: Vec::new(),
     }
 }
 
@@ -402,12 +432,16 @@ mod hid {
 /// This is OBSERVED behaviour, not a permission read, and it outranks
 /// `IOHIDCheckAccess`: a listen-only `CGEventTap` runs perfectly well under an
 /// Accessibility grant alone, so a tap that is working must never be reported
-/// blocked (PANEL 2). `re_arms == 0` means macOS has never had to switch the
-/// tap back on this session.
+/// blocked (PANEL 2).
+///
+/// yap-perm-truth: the evidence is DELIVERY — a key or flags edge reached
+/// `tap_callback` since the last re-arm — never `re_arms == 0`. A re-arm count
+/// is not delivery: on 0.9.0 the tap was re-armed 7 times and delivered nothing,
+/// and a tap that was never re-armed may equally never have delivered a thing.
 fn tap_is_delivering() -> bool {
     #[cfg(target_os = "macos")]
     {
-        crate::ptt_macos::tap_health().re_arms == 0
+        crate::ptt_macos::tap_health().delivering()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -533,13 +567,16 @@ pub const PERMISSION_CHANGED_EVENT: &str = "permission_changed";
 /// The floor on any re-read interval in this module. YV81 deleted Yap's busy
 /// timers on purpose; a permission that changes needs to be noticed in seconds
 /// of wall clock, not milliseconds of CPU.
-pub const WATCH_MIN_INTERVAL: Duration = Duration::from_secs(30);
+pub const WATCH_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
-/// The interval used while something is actually denied and therefore fixable
-/// by the user walking to System Settings. macOS publishes no notification for
-/// a TCC grant, so this poll is the only reading there is — and it exists only
-/// while there is something to read.
-pub const WATCH_INTERVAL: Duration = Duration::from_secs(45);
+/// The interval used ONLY while the banner is shown — i.e. something is denied
+/// and therefore fixable by the user walking to System Settings. macOS
+/// publishes no notification for a TCC grant, so this poll is the only reading
+/// there is while Settings is in front; yap-perm-truth cut it from 45 s to 5 s
+/// because a fix that takes 45 s to show up reads as "Yap is wrong". The cost is
+/// three cheap reads (AX, IOHID, AVFoundation) every 5 s, and only while a
+/// banner is up. Parked otherwise, exactly as before.
+pub const WATCH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The four grants, as one comparable value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -641,7 +678,41 @@ pub enum WatchReason {
     Wake,
     /// A hotkey or a paste was refused for want of a grant.
     Refusal,
+    /// `NSApplicationDidBecomeActiveNotification` — Yap became the active app
+    /// (Cmd-Tab back from System Settings, a Dock click, the menu bar). Window
+    /// focus alone misses the case where the app activates without its main
+    /// window taking key.
+    Activate,
 }
+
+/// Register the ONE `NSApplicationDidBecomeActiveNotification` observer and
+/// call `on_activate` each time it fires. Main thread only (AppKit); the
+/// observer lives for the life of the process.
+#[cfg(target_os = "macos")]
+pub fn observe_app_activation<F: Fn() + 'static>(on_activate: F) {
+    use block2::RcBlock;
+    use objc2_app_kit::NSApplicationDidBecomeActiveNotification;
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    use std::ptr::NonNull;
+
+    let block = RcBlock::new(move |_note: NonNull<NSNotification>| on_activate());
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: a framework constant name, no sender filter, delivered on the
+    // posting (main) thread; the centre copies the block.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidBecomeActiveNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    // Never removed: one observer for the life of the process.
+    std::mem::forget(token);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn observe_app_activation<F: Fn() + 'static>(_on_activate: F) {}
 
 struct WatchInner {
     /// Bumped by every poke; the condvar predicate.

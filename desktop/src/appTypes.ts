@@ -1,6 +1,11 @@
 // Y5-G — types and pure helpers lifted verbatim out of App.tsx so the shell
 // and the seven view modules can share them without importing from App.tsx.
-import type { GrantStatus, PermissionGrantRow } from "./permission";
+import type {
+  FailingCondition,
+  GrantStatus,
+  PermissionGrantRow,
+  StaleGrant,
+} from "./permission";
 export type Nav =
   | "home"
   | "permissions"
@@ -269,6 +274,16 @@ export interface PermissionReport {
   asrDetail: string;
   summary: string;
   allCriticalOk: boolean;
+  /** yap-perm-truth — the bundle path of the process that asked macOS. */
+  checkedBundlePath?: string;
+  /** Leaf certificate summary of the running binary's signature. */
+  signingAuthority?: string;
+  /** Each OS call that answered no. */
+  failingConditions?: FailingCondition[];
+  /** Grants last seen working under a different signature. */
+  staleGrants?: StaleGrant[];
+  /** Other bundles on disk with Yap's bundle id. */
+  duplicateBundles?: string[];
 }
 
 export interface TranscriptEntry {

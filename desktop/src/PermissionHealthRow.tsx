@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { permissionHealth, type PermissionGrantRow } from "./permission";
+import {
+  permissionHealth,
+  type PermissionGrantRow,
+  type PermissionTruth,
+} from "./permission";
 
 /**
  * PERM-E — the one permission surface in the main window.
@@ -13,16 +17,25 @@ import { permissionHealth, type PermissionGrantRow } from "./permission";
  * onboarding checklist — so the two surfaces cannot drift apart.
  */
 export function PermissionHealthRow({
-  grants,
+  report,
 }: {
-  grants?: PermissionGrantRow[] | null;
+  report?: ({ grants?: PermissionGrantRow[] | null } & PermissionTruth) | null;
 }) {
-  const health = permissionHealth({ grants });
+  const health = permissionHealth(report);
   if (!health.visible) return null;
 
   return (
     <div className="perm-health" role="status">
-      <span className="perm-health-line">{health.line}</span>
+      <div className="perm-health-text">
+        <span className="perm-health-line">{health.line}</span>
+        {/* yap-perm-truth: which binary macOS was asked about, and why a
+            toggle that looks ON in System Settings can still be off for it. */}
+        {health.notes.map((note) => (
+          <span key={note} className="perm-health-note">
+            {note}
+          </span>
+        ))}
+      </div>
       {health.action.kind === "settings" && (
         <button
           type="button"
