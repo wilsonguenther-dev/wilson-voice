@@ -24,6 +24,9 @@ ITEMS.push({
   spec: `
     Panel: not required — a walk that writes a ledger and changes no view
     DEPENDS: yap-flakes-2026-10-16 (a green main); Y0-E's smoke (scripts/smoke-windowed.sh, on main)
+      QA TOOLS (yap-qa-harness, which sorts ahead of this file): also run bash scripts/qa/perm-probe.sh and
+      bash scripts/qa/hotkey-walk.sh --self-test and paste both outputs into the ledger header and the PR
+      body. The full hotkey-walk (it posts fn into the installed Yap) is Wilson's walk step, never an agent's.
 
     EVIDENCE
       - scripts/smoke-windowed.sh + scripts/smoke-windowed.mjs walk the seven Nav views at 980x700
@@ -269,6 +272,9 @@ ITEMS.push({
     Panel: not required — verification of the pass
     DEPENDS: every yap-uiux-2026-10-16 child above merged (HOME, DICT, INSIGHTS, MEETINGS, SCRATCH,
       SETTINGS, ONBOARD)
+      QA TOOLS (yap-qa-harness, which sorts ahead of this file): also run bash scripts/qa/perm-probe.sh and
+      bash scripts/qa/hotkey-walk.sh --self-test and paste both outputs into the ledger header and the PR
+      body. The full hotkey-walk (it posts fn into the installed Yap) is Wilson's walk step, never an agent's.
     DO: re-run the FULL walk (no YAP_SMOKE_VIEWS) for both fixture sets, PNGs to
       ~/Obsidian/Wilson-Brain/Projects/Loop-Logs/yap-uiux-2026-10-16/rewalk-first-run/ and
       .../rewalk-daily/. Write docs/loop/UIUX-REWALK-2026-10-16.md: per screen, the before and
@@ -278,6 +284,8 @@ ITEMS.push({
       the acceptance of the whole UI/UX pass.
   `,
   acceptance: `
+    bash scripts/qa/perm-probe.sh --self-test
+    bash scripts/qa/hotkey-walk.sh --self-test
     test -f docs/loop/UIUX-REWALK-2026-10-16.md
     ! grep -q '| open |' docs/loop/UIUX-WALK-2026-10-16.md
     cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
