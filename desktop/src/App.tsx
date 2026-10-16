@@ -306,7 +306,8 @@ export default function App() {
 
           {nav === "scratchpad" && <Scratchpad />}
 
-          {nav === "settings" && settings && <Settings />}
+          {/* Y5-B fix round (#192): no `settings &&` gate - Settings renders its own LoadingState while settings is null. */}
+          {nav === "settings" && <Settings />}
         </div>
       </section>
 

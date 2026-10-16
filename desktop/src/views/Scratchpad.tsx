@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState, PageGlyph } from "../ViewStates";
 export default function Scratchpad() {
   const {
     activeNoteId, bootError, booting, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
-    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, toast,
+    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, settings, toast,
   } = useAppCtx();
   async function saveNote() {
     try {
@@ -50,7 +50,15 @@ export default function Scratchpad() {
   // window and versions, which will change what "empty" and "loading" mean
   // here. These three states are deliberately thin so DB-D replaces them
   // rather than fighting them.
-  const state = viewState(scratch, booting, bootError);
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  // This list starts as [] so it cannot say "never loaded"; settings lands in
+  // the same refreshAll batch (all setters run together), so null settings is
+  // that signal.
+  const state = viewState(scratch, booting, settings == null ? bootError : null);
   if (state === "error")
     return (
       <ErrorState

@@ -5,6 +5,22 @@ import StatusDot from "../StatusDot";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { ErrorState, LoadingState } from "../ViewStates";
+import type { PermissionReport } from "../appTypes";
+
+/**
+ * Y5-B fix round (#192 BLOCKING) - the exact string permissions.rs emits when
+ * `all_critical_ok && parts.is_empty()`. `allCriticalOk` alone is mic + mic
+ * auth + ASR; it leaves out Accessibility, Input Monitoring and audio capture,
+ * so it cannot license "Nothing to fix here" by itself.
+ */
+export const PERMS_ALL_CLEAR_SUMMARY = "All critical permissions look good for Yap.";
+
+/** The all-clear copy shows only when the Rust report itself says nothing nags. */
+export function permsAllClear(
+  perms: Pick<PermissionReport, "allCriticalOk" | "accessibility" | "summary">,
+): boolean {
+  return perms.allCriticalOk && perms.accessibility && perms.summary === PERMS_ALL_CLEAR_SUMMARY;
+}
 
 export default function Permissions() {
   const {
@@ -41,7 +57,7 @@ export default function Permissions() {
                   one row is the only thing you ever enable.
                 </p>
                 <p className="muted" data-settled-state="permissions">
-                  {perms.allCriticalOk
+                  {permsAllClear(perms)
                     ? "Everything Yap needs is granted. Nothing to fix here."
                     : perms.summary}
                 </p>

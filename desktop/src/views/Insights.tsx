@@ -20,7 +20,8 @@ export default function Insights() {
       ? null
       : insights.totalSessions + (insights.meetings?.totalMeetings ?? 0),
     booting,
-    bootError,
+    // Y5-B fix round (#192): only when insights never landed - see Home.tsx.
+    insights == null ? bootError : null,
   );
   if (state === "error")
     return (

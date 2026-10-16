@@ -18,7 +18,12 @@ export default function Home() {
   } = useAppCtx();
   // Y5-B — was `if (!insights) return null`: a heading over a blank page on
   // every fresh install, because insights is null until the first read lands.
-  const state = viewState(history, booting || !insights, bootError);
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  const state = viewState(history, booting || !insights, insights == null ? bootError : null);
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });

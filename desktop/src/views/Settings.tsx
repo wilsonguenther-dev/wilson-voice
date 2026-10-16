@@ -16,7 +16,12 @@ export default function Settings() {
     useAppCtx();
   // PANEL 2026-09-12 — Settings has no empty state either: there is nothing it
   // could be empty OF. Loading + error, and its settled state is the panels.
-  const state = viewState(settings, booting, bootError);
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  const state = viewState(settings, booting, settings == null ? bootError : null);
   if (state === "error")
     return (
       <ErrorState
