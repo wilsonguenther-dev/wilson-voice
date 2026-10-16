@@ -5002,6 +5002,107 @@ fn describe_update_failure(err: &str, endpoints: &[String]) -> String {
     format!("{err} — tried {}", endpoints.join(", "))
 }
 
+/// UPD-A: pick the NEWEST offer across every endpoint, never the first one that
+/// answered. The plugin's own endpoint loop stops at the first 2xx manifest that
+/// parses and never compares versions across endpoints, so a hand-staged primary
+/// left on an older release would hide a newer release the fallback already
+/// serves — every install would read "already on the latest Yap" until someone
+/// re-staged the primary. Pure and generic so the rule is testable without a
+/// network: `offers` is `(announced version, payload)`. An unparseable version
+/// never beats a parseable one; ties keep the earlier (higher-priority) endpoint.
+fn pick_newest_offer<T>(offers: Vec<(String, T)>) -> Option<T> {
+    let mut best: Option<(Option<semver::Version>, T)> = None;
+    for (version, payload) in offers {
+        let parsed = semver::Version::parse(version.trim_start_matches('v')).ok();
+        let better = match &best {
+            None => true,
+            Some((Some(b), _)) => parsed.as_ref().is_some_and(|p| p > b),
+            Some((None, _)) => parsed.is_some(),
+        };
+        if better {
+            best = Some((parsed, payload));
+        }
+    }
+    best.map(|(_, payload)| payload)
+}
+
+/// Fold every endpoint's answer into the one the user sees (UPD-A). Any offer
+/// wins (newest across endpoints, see `pick_newest_offer`); otherwise an
+/// endpoint that answered "you are current" wins over one that failed, so a
+/// primary that serves junk (an SPA catch-all answering 200 text/html, a 5xx)
+/// can never switch off the fallback the way the plugin's `res.json()?` early
+/// return would. Only when NO endpoint gave a usable answer and at least one
+/// failed for a reason other than "no manifest" is it an error, and the error
+/// names each endpoint with its own failure.
+fn fold_endpoint_answers<T>(
+    answers: Vec<(String, EndpointAnswer<T>)>,
+) -> Result<Option<T>, String> {
+    let mut offers = Vec::new();
+    let mut up_to_date = false;
+    let mut failures = Vec::new();
+    for (endpoint, answer) in answers {
+        match answer {
+            EndpointAnswer::Offer(version, payload) => offers.push((version, payload)),
+            EndpointAnswer::UpToDate => up_to_date = true,
+            EndpointAnswer::NoManifest => {}
+            EndpointAnswer::Failed(e) => failures.push(format!("{endpoint}: {e}")),
+        }
+    }
+    if let Some(best) = pick_newest_offer(offers) {
+        return Ok(Some(best));
+    }
+    if up_to_date || failures.is_empty() {
+        return Ok(None);
+    }
+    Err(failures.join("; "))
+}
+
+/// What ONE endpoint said, on its own (UPD-A). Generic over the offer payload
+/// so the fold is pure and testable without constructing a plugin `Update`.
+enum EndpointAnswer<T> {
+    Offer(String, T),
+    UpToDate,
+    NoManifest,
+    Failed(String),
+}
+
+/// Ask EVERY configured endpoint on its own and return the newest release any
+/// of them offers (UPD-A). Both `check_for_update` and `install_update` go
+/// through here, so the bytes installed always come from the manifest that won
+/// the check — never from a different endpoint's manifest.
+async fn check_every_endpoint(
+    app: &AppHandle,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    let endpoints = updater_endpoints(app);
+    if endpoints.is_empty() {
+        return Err(describe_update_failure("updater unavailable", &endpoints));
+    }
+    let mut answers = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let answer = match tauri::Url::parse(&endpoint) {
+            Err(e) => EndpointAnswer::Failed(format!("not a URL ({e})")),
+            Ok(url) => match app
+                .updater_builder()
+                .endpoints(vec![url])
+                .and_then(|b| b.build())
+            {
+                Err(e) => EndpointAnswer::Failed(e.to_string()),
+                Ok(updater) => match updater.check().await {
+                    Ok(Some(update)) => EndpointAnswer::Offer(update.version.clone(), update),
+                    Ok(None) => EndpointAnswer::UpToDate,
+                    Err(tauri_plugin_updater::Error::ReleaseNotFound) => EndpointAnswer::NoManifest,
+                    Err(e) => EndpointAnswer::Failed(e.to_string()),
+                },
+            },
+        };
+        if let EndpointAnswer::Failed(e) = &answer {
+            log::debug!("update endpoint {endpoint} failed: {e}");
+        }
+        answers.push((endpoint, answer));
+    }
+    fold_endpoint_answers(answers)
+}
+
 /// Ask the release endpoint whether a newer Yap exists — and ONLY ask (YV44).
 /// Nothing downloads, nothing installs, nothing relaunches here; the answer is
 /// handed to the UI, which prompts. Returns `None` when updates are turned off,
@@ -5025,14 +5126,11 @@ async fn check_for_update(
         log::debug!("update check off (checkUpdates=false) — not contacting the endpoint");
         return Ok(None);
     }
-    let updater = match app.updater() {
-        Ok(u) => u,
-        Err(e) => {
-            log::debug!("updater unavailable in this build ({e})");
-            return Ok(None);
-        }
-    };
-    match updater.check().await {
+    if app.updater().is_err() {
+        log::debug!("updater unavailable in this build");
+        return Ok(None);
+    }
+    match check_every_endpoint(&app).await {
         Ok(Some(update)) => {
             if update_is_skipped(&update.version, skipped.as_deref()) {
                 log::debug!(
@@ -5053,15 +5151,11 @@ async fn check_for_update(
             }))
         }
         Ok(None) => {
-            log::debug!("update check: already on the latest Yap");
-            Ok(None)
-        }
-        Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
-            log::debug!("update check: no release manifest published yet — nothing to update to");
+            log::debug!("update check: already on the latest Yap (or no manifest published yet)");
             Ok(None)
         }
         Err(e) => {
-            let detail = describe_update_failure(&e.to_string(), &updater_endpoints(&app));
+            let detail = describe_update_failure(&e, &updater_endpoints(&app));
             log::warn!("update check failed: {detail}");
             Err(detail)
         }
@@ -5077,11 +5171,11 @@ async fn check_for_update(
 /// app out from under a dictation.
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<String, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
+    app.updater().map_err(|e| e.to_string())?;
+    // UPD-A: the same every-endpoint, newest-wins check the prompt came from,
+    // so the tarball downloaded is the one named by the manifest that won.
+    let update = check_every_endpoint(&app)
+        .await?
         .ok_or_else(|| "No update available anymore — you're on the latest Yap.".to_string())?;
     let version = update.version.clone();
     log::info!("installing Yap {version} (user-approved)");
@@ -6218,6 +6312,63 @@ mod tests {
             msg.find("yap-lemon").unwrap() < msg.find("github.com").unwrap(),
             "{msg}"
         );
+    }
+
+    /// UPD-A — a stale primary must not shadow a newer fallback. The plugin's
+    /// own loop would return the FIRST parseable manifest (0.9.0 here).
+    #[test]
+    fn newest_offer_wins_over_endpoint_order() {
+        let offers = vec![
+            ("0.9.0".to_string(), "vercel"),
+            ("0.10.0".to_string(), "github"),
+        ];
+        assert_eq!(super::pick_newest_offer(offers), Some("github"));
+        let tie = vec![
+            ("0.9.0".to_string(), "vercel"),
+            ("0.9.0".to_string(), "github"),
+        ];
+        assert_eq!(super::pick_newest_offer(tie), Some("vercel"));
+        let junk = vec![
+            ("not-a-version".to_string(), "a"),
+            ("0.1.0".to_string(), "b"),
+        ];
+        assert_eq!(super::pick_newest_offer(junk), Some("b"));
+    }
+
+    /// UPD-A — a primary that FAILS (non-JSON 200 from an SPA catch-all, a
+    /// 5xx) must never switch off the fallback: the plugin's `res.json()?`
+    /// would return that error without ever asking the next endpoint.
+    #[test]
+    fn a_failing_primary_never_hides_the_fallback() {
+        use super::EndpointAnswer as A;
+        let got = super::fold_endpoint_answers(vec![
+            (
+                "p".to_string(),
+                A::Failed("error decoding response body".into()),
+            ),
+            ("g".to_string(), A::Offer("0.10.0".to_string(), "github")),
+        ]);
+        assert_eq!(got, Ok(Some("github")));
+        let got = super::fold_endpoint_answers::<&str>(vec![
+            (
+                "p".to_string(),
+                A::Failed("error decoding response body".into()),
+            ),
+            ("g".to_string(), A::UpToDate),
+        ]);
+        assert_eq!(got, Ok(None));
+        // Nothing published anywhere is the normal pre-release state, not an error.
+        let got = super::fold_endpoint_answers::<&str>(vec![
+            ("p".to_string(), A::NoManifest),
+            ("g".to_string(), A::NoManifest),
+        ]);
+        assert_eq!(got, Ok(None));
+        // Only when nothing usable came back is it an error, naming each failure.
+        let got = super::fold_endpoint_answers::<&str>(vec![
+            ("p".to_string(), A::NoManifest),
+            ("g".to_string(), A::Failed("offline".into())),
+        ]);
+        assert_eq!(got, Err("g: offline".to_string()));
     }
 
     #[test]

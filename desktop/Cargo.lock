@@ -6428,6 +6428,7 @@ dependencies = [
  "parking_lot",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
