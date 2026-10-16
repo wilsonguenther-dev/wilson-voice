@@ -1,7 +1,7 @@
 export const meta = {
   name: "yap-overhaul-all",
   description:
-    "Every item of the Yap (wilson-voice) overhaul, run as 2 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 117 items in all, 31 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
+    "Every item of the Yap (wilson-voice) overhaul, run as 2 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 128 items in all, 31 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
   phases: [
     { title: "part-01", detail: "Y0-A..Y3-G" },
     { title: "part-02", detail: "LIC-A..yap24-X3" },
@@ -56,17 +56,17 @@ let halted = null
 
 if (halted) {
   log("part-01 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-01", status: 'skipped: run halted', items: 53 })
-} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","Y4-A","Y4-I","SEC-C","Y4-C","Y4-D","Y4-E","Y4-F","Y4-G","Y4-H","Y3-A","Y3-B","Y3-C","Y3-D","DB-B","Y3-F","Y3-G"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
+  results.push({ part: "part-01", status: 'skipped: run halted', items: 64 })
+} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","yap-flakes-2026-10-16","yap-lifecycle-2026-10-16","yap-uiux-2026-10-16-W0","yap-uiux-2026-10-16-HOME","yap-uiux-2026-10-16-DICT","yap-uiux-2026-10-16-INSIGHTS","yap-uiux-2026-10-16-MEETINGS","yap-uiux-2026-10-16-SCRATCH","yap-uiux-2026-10-16-SETTINGS","yap-uiux-2026-10-16-ONBOARD","yap-uiux-2026-10-16-Z","Y4-A","Y4-I","SEC-C","Y4-C","Y4-D","Y4-E","Y4-F","Y4-G","Y4-H","Y3-A","Y3-B","Y3-C","Y3-D","DB-B","Y3-F","Y3-G"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
   log("part-01 — SKIPPED: no item in this part matches args.only [" + ONLY_PREFIXES.join(', ') + ']. Recon, Drain and Reflect of this part do not run; its worktrees (if any) stay standing for the next run.')
-  results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 53 })
+  results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 64 })
 } else {
   phase("part-01")
-  log("START part-01 — 53 item(s), Y0-A..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (407330 bytes)")
+  log("START part-01 — 64 item(s), Y0-A..Y3-G — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (439553 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
-    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (53 item(s))")
-    results.push({ part: "part-01", status: 'ok', items: 53, result })
+    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (64 item(s))")
+    results.push({ part: "part-01", status: 'ok', items: 64, result })
     if (result && result.halted) {
       halted = { part: "part-01", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-01 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -75,11 +75,11 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-01", at: null, reason: message }
-      results.push({ part: "part-01", status: 'halted', items: 53, error: message })
+      results.push({ part: "part-01", status: 'halted', items: 64, error: message })
       log("HALT: part-01 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-01 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-01", status: 'errored', items: 53, error: message })
+      results.push({ part: "part-01", status: 'errored', items: 64, error: message })
     }
   }
 }
