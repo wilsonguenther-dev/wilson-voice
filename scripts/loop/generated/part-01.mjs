@@ -86,7 +86,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 53 items (Y0-A..Y3-G), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 64 items (Y0-A..Y3-G), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -126,6 +126,17 @@ export const meta = {
     { title: "SEC-A", detail: "Stop ad-hoc signing local builds — the reason permissions \"reset\" on Wilson's own machine" },
     { title: "Y1-B", detail: "Register the sleep/wake observer two later items already claim exists" },
     { title: "PERM-E", detail: "One permission health surface, watched for revocation, covering mic + Accessibility + Input Monitoring + audio capture" },
+    { title: "yap-flakes-2026-10-16", detail: "Main goes green: per_chunk_deadline_not_per_take and meeting_manual_start_stop stop asserting on the scheduler" },
+    { title: "yap-lifecycle-2026-10-16", detail: "Quit means quit, reopen means a window: RunEvent::Reopen, one clear Quit, the pill gone at quit, bounded teardown, RSS flat under load" },
+    { title: "yap-uiux-2026-10-16-W0", detail: "Walk the main build as a first-run user and a daily user, headless, and write down every screen that reads generic, uncontained, confusing or slow" },
+    { title: "yap-uiux-2026-10-16-HOME", detail: "Home reads contained and obvious for both personas: every walk row on Home fixed" },
+    { title: "yap-uiux-2026-10-16-DICT", detail: "Dictionary reads contained and obvious for both personas: every walk row on Dictionary fixed" },
+    { title: "yap-uiux-2026-10-16-INSIGHTS", detail: "Insights reads contained and obvious for both personas: every walk row on Insights fixed" },
+    { title: "yap-uiux-2026-10-16-MEETINGS", detail: "Meetings reads contained and obvious for both personas: every walk row on Meetings fixed" },
+    { title: "yap-uiux-2026-10-16-SCRATCH", detail: "Scratchpad reads contained and obvious for both personas: every walk row on Scratchpad fixed" },
+    { title: "yap-uiux-2026-10-16-SETTINGS", detail: "Settings is contained: bordered surfaces, a pinned footer, every walk row on Settings and its eight panes fixed" },
+    { title: "yap-uiux-2026-10-16-ONBOARD", detail: "First run is obvious: Onboarding, ModelSetup and Permissions say what to grant and why, one step at a time; every walk row fixed" },
+    { title: "yap-uiux-2026-10-16-Z", detail: "Re-walk after the flush: both personas, every screen, zero open rows, the full smoke green — the acceptance of the UI/UX pass" },
     { title: "Y4-A", detail: "Formatting is on for a fresh install: the shipped default reaches the formatting stage" },
     { title: "Y4-I", detail: "Measure the polish stage against the real weights before anything is built on its envelope" },
     { title: "SEC-C", detail: "The polish model gets an install path, so the LLM stage can exist on a real machine" },
@@ -220,7 +231,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -4252,6 +4263,450 @@ ITEMS.push({
     grep -q 'an_unknown_grant_is_invisible_and_never_nags' desktop/src-tauri/tests/permission_health.rs
     grep -q 'audio_capture_is_unknown_by_construction_never_probed' desktop/src-tauri/tests/permission_health.rs
 
+  `,
+})
+
+// ── 06-yap-flakes-2026-10-16.mjs ──────────────────────────────────────────
+// yap-flakes-2026-10-16 — MAIN GOES GREEN. Written 2026-10-16 by the yap-prep seat.
+// Sources: RESUME §11.7 ("fix it, assert payload elapsed_seconds, it has cost three investigations"),
+// 10-06 context Fact 11 + open item 16. Main CI (workflow "CI", job "Tauri build (Rust + frontend)",
+// step "cargo test") failed on the last three main runs: 36256562076 (63452bb), 36270319107
+// (90d7861), 36343744919 (6f40697). Their failed-step logs were no longer retrievable on 2026-10-16
+// (gh run view --log-failed returned nothing), so WHICH test failed on each run is UNVERIFIED; the
+// two named tests are the recorded suspects. FIX, no panel (unambiguous intent).
+// Runs before every other 2026-10-16 item: every later gate inherits a red main otherwise.
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-flakes-2026-10-16', prompt: 'yap-flakes', branch: 'loop/yap-flakes-2026-10-16-main-green', gated: null,
+  title: 'Main goes green: per_chunk_deadline_not_per_take and meeting_manual_start_stop stop asserting on the scheduler',
+  preflight: `
+    test -f docs/loop/FLAKES-2026-10-16.md
+    test -f scripts/flake-soak.sh
+    grep -q 'per_chunk_deadline_not_per_take' docs/loop/FLAKES-2026-10-16.md
+    grep -q 'meeting_manual_start_stop' docs/loop/FLAKES-2026-10-16.md
+  `,
+  spec: `
+    Panel: not required — FIX (unambiguous intent: main must be green before the loop lands anything)
+    DEPENDS: none
+
+    EVIDENCE
+      - desktop/src-tauri/tests/dictation_chunked.rs:305 per_chunk_deadline_not_per_take: a 300 ms
+        per-chunk budget against a fake decode that sleeps 200 ms per window, twelve windows. Each
+        window has 100 ms of wall-clock headroom. A loaded box (CI, or two loop lanes compiling)
+        that delays one sleep or one thread wake by more than 100 ms trips the per-chunk deadline,
+        chunks_failed becomes 1, and the test fails while the code under test is right. Recorded
+        red on main at 90d7861 (Obsidian Projects/Yap.md, 2026-09-27).
+      - desktop/src-tauri/tests/meeting_manual_start_stop.rs: the YV111 tick-count window was
+        already replaced by support::wait_until on the ticker's own output (around line 145), but
+        RESUME §11.7 still names this test as the wall-clock flake, and asks for the assertion to
+        sit on the PAYLOAD: every recording status's elapsed_seconds checked against the sink's
+        receipt Instant (struct Emit, around line 39), not on how many emits a window caught.
+      - Three consecutive red main runs on step "cargo test" (ids in the header).
+
+    DO
+      1. REPRODUCE FIRST, before any edit. Write scripts/flake-soak.sh <test-target> <filter> <runs>:
+         it starts one busy loop per CPU (sysctl -n hw.ncpu; yes > /dev/null), records their PIDs,
+         traps EXIT to kill exactly those PIDs, runs "cargo test --features custom-protocol --test
+         <test-target> <filter>" <runs> times from desktop/src-tauri, reads every exit code bare,
+         prints "<passes>/<runs>", and exits non-zero on any failure. Run it 30x for each test on
+         unmodified main and write the counts to docs/loop/FLAKES-2026-10-16.md. If a test passes
+         30/30 under load, write that down and harden only what the evidence supports.
+      2. per_chunk_deadline_not_per_take: keep what it proves (the deadline is spent per WINDOW, not
+         per take: the take's total decode time exceeds the budget while no single window does) and
+         remove the scheduler dependence. Preferred: drive the deadline from an injectable clock
+         (a test-only seam, no behaviour change) so elapsed time is simulated. Fallback: about 10x
+         per-window headroom with more windows (for example 24 windows x 50 ms against a 1 s budget:
+         1.2 s total exceeds the budget, each window keeps 950 ms of headroom).
+      3. meeting_manual_start_stop: assert on the payload. For every recording status the sink
+         received, elapsed_seconds never decreases, and it stays within 1 s plus one tick of
+         (receipt Instant minus the start Instant). support::wait_until stays the only wait,
+         TICK_DEADLINE stays the death detector, and no sleep-then-count shape exists in the file.
+      4. Sweep desktop/src-tauri/tests/ for the same shape (a sleep followed by a count, or a
+         wall-clock upper bound under 1 s) and list every hit in the doc. Fix only the two named
+         tests here; file the rest as new numbered entries in docs/loop/DEFERRED.md.
+      5. Never add #[ignore], never add a retry loop, never widen a bound past what the doc's
+         numbers justify. The PR body carries the before and after soak counts.
+  `,
+  acceptance: `
+    test -f docs/loop/FLAKES-2026-10-16.md
+    test -x scripts/flake-soak.sh
+    grep -q 'elapsed_seconds' desktop/src-tauri/tests/meeting_manual_start_stop.rs
+    ! grep -qF '#[ignore]' desktop/src-tauri/tests/dictation_chunked.rs
+    ! grep -qF '#[ignore]' desktop/src-tauri/tests/meeting_manual_start_stop.rs
+    cd desktop && npm ci
+    stage_sidecars
+    cd .. && bash scripts/flake-soak.sh dictation_chunked per_chunk_deadline_not_per_take 30
+    bash scripts/flake-soak.sh meeting_manual_start_stop '' 30
+  `,
+})
+
+// ── 07-yap-lifecycle-2026-10-16.mjs ───────────────────────────────────────
+// yap-lifecycle-2026-10-16 — QUIT MEANS QUIT, REOPEN MEANS A WINDOW. Written 2026-10-16 by the
+// yap-prep seat from the 10-06 prompt D6 and the 10-06 context Facts 12-14 / open item 1.
+// Wilson, 2026-10-06: "the way it shuts down is wrong — I can't open the app but I can still see
+// the sideways pill." FIX, no panel (unambiguous intent). Item #1 of the 10-06 new items.
+// Headless only: no agent launches the GUI app (see HAZARD below). SHARED PREAMBLE + STANDARD
+// GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-lifecycle-2026-10-16', prompt: 'yap-lifecycle', branch: 'loop/yap-lifecycle-2026-10-16-quit-reopen-teardown', gated: null,
+  title: 'Quit means quit, reopen means a window: RunEvent::Reopen, one clear Quit, the pill gone at quit, bounded teardown, RSS flat under load',
+  preflight: `
+    grep -q 'RunEvent::Reopen' desktop/src-tauri/src/lib.rs
+    test -f desktop/src-tauri/tests/lifecycle.rs
+    test -f scripts/lifecycle-soak.sh
+  `,
+  spec: `
+    Panel: not required — FIX (10-06 prompt D6: this is item #1 of the new items)
+    DEPENDS: yap-flakes-2026-10-16 (a green main). Independent of yap24-NT and yap24-PILL.
+
+    EVIDENCE (10-06 context Facts 12-14; line numbers re-checked on main 6f40697, 2026-10-16)
+      - lib.rs ~5605: the main window's CloseRequested handler calls prevent_close() and hide():
+        the red X hides the window and never quits. The activation policy is Regular (~5586), so
+        the Dock icon stays.
+      - lib.rs ~6149: the .run() closure matches only RunEvent::Exit. Nothing in src/ handles
+        RunEvent::Reopen, so a Dock click or a Finder double-click on a Yap whose window is hidden
+        shows nothing. That is "I can't open the app".
+      - lib.rs ~5342: the single-instance callback calls focus_main_window (~4535), yet yap.log shows
+        "second instance launched" once (2026-09-12) in the whole log.
+      - The pill is an NSPanel in the same process (float_pill.rs), so a visible pill means the
+        process is alive. Tray Quit (~5837) stops any meeting, checkpoints the WAL, then app.exit(0).
+      - Memory: Wilson's running Yap was 2.2 GB RSS after 2.5 days on 10-06 (pid 23686) and 1.4 GB
+        after 2d15h on 2026-10-16 (pid 1640), against a ~928 MB lazy-load start. A leak is
+        suspected and UNMEASURED.
+
+    DO
+      1. RunEvent::Reopen (has_visible_windows false) shows, unminimizes and focuses the main window
+         through ONE function shared with the single-instance callback and the tray "Open Yap".
+         Put the decision in a pure function (event, window state) -> action with unit tests; the
+         run-loop arm only dispatches.
+      2. ONE unambiguous Quit. Cmd-Q (app menu), tray "Quit Yap" and the Dock's Quit all reach the
+         same quit path. The red X keeps hiding (Yap is a menu-bar utility), and the FIRST time it
+         hides, the window's own surface says once where Yap went and how to quit. No modal.
+      3. The pill is ordered out as the FIRST step of quit, before the meeting stop and the WAL
+         checkpoint, so a slow teardown never leaves a pill on screen.
+      4. Bounded teardown. Every quit step has a deadline, the whole quit finishes within 3 s, and a
+         step that misses its deadline is logged and skipped before the process exits. Log one
+         "exit teardown <ms>" line with per-step timings.
+      5. Stale instance. If the single-instance handoff to a running instance gets no answer
+         within 2 s, log it and say so instead of exiting silently.
+      6. RSS flat under load. scripts/lifecycle-soak.sh <runs> runs the BUILT binary headless
+         (YAP_DATA_DIR="$(mktemp -d)/yap-state", --transcribe-file
+         tests/fixtures/quick-brown-fox-16k.wav, or a --smoke soak mode if the builder adds one) in
+         a loop, samples RSS with ps every iteration, prints the series, and exits non-zero when
+         RSS after the warm-up iterations grows more than 10 percent. Find and fix what it shows
+         (idle model unload; tie to yap24-OS5 "idle means idle"). Record the numbers in the PR.
+      7. HAZARD: a GUI launch of a second copy reaches the single-instance plugin and would FOCUS
+         WILSON'S RUNNING YAP. No agent launches the GUI app. Every automated proof is a cargo test
+         or the headless CLI path (cli::handle_args exits before the Tauri builder). Never kill or
+         signal any /Applications/Yap.app process.
+      8. Keep Tauri; app-sandbox stays false; never rename the bundle id or the data dir.
+
+    WILSON'S WALK (after merge, on his installed build; NOT an agent step, the PR body lists it):
+      scripts/rebuild_app.sh; close the window, click the Dock icon: the window shows; Cmd-Q: the
+      process is gone AND the pill is gone; relaunch: the window shows; open -a Yap a second time:
+      the first instance focuses.
+  `,
+  acceptance: `
+    grep -q 'RunEvent::Reopen' desktop/src-tauri/src/lib.rs
+    test -f desktop/src-tauri/tests/lifecycle.rs
+    test -x scripts/lifecycle-soak.sh
+    cd desktop && npm ci
+    stage_sidecars
+    cd src-tauri && cargo test --features custom-protocol --test lifecycle
+    test "$(cargo test --features custom-protocol --test lifecycle -- --list 2>/dev/null | grep -c ': test$')" -ge 4
+    cargo build --release --features custom-protocol
+    cd ../.. && bash scripts/lifecycle-soak.sh 40
+  `,
+})
+
+// ── 08-yap-uiux-2026-10-16.mjs ────────────────────────────────────────────
+// yap-uiux-2026-10-16 — THE UI/UX PASS. Written 2026-10-16 by the yap-prep seat.
+// Wilson, 2026-10-06: "All of the Yap stuff: the UI/UX ... There are many items you'll find and
+// improve on." Memory: feedback_ui_containment (every panel and shell ships contained),
+// feedback_builder_e2e_product_walk ("working" = the full flow as the persona).
+// Shape: W0 walks main's build as two personas and writes the ledger; one child per screen fixes
+// that screen's rows; Z re-walks after the flush and IS the acceptance of the pass.
+// Locked: the pixel-art pill stays (no vector mascot, no origami); NO NEW FEATURES; controls
+// first, prose last; contained panels (surface + border, pinned action footer, no infinite scroll,
+// no page-level horizontal scroll). Headless only: scripts/smoke-windowed.sh drives headless
+// Chrome (--headless=new) against desktop/dist; it never launches the app and never opens a
+// visible window. Lane port: export YAP_SMOKE_PORT to your lane's vite port (A 5273, B 5274).
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-W0', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-w0-first-run-and-daily-walk', gated: null,
+  title: 'Walk the main build as a first-run user and a daily user, headless, and write down every screen that reads generic, uncontained, confusing or slow',
+  preflight: `
+    test -f docs/loop/UIUX-WALK-2026-10-16.md
+    test -f scripts/smoke-fixtures-first-run.json
+    test -f scripts/smoke-fixtures-daily.json
+    grep -q 'YAP_SMOKE_FIXTURES' scripts/smoke-windowed.mjs
+    grep -q 'YAP_SMOKE_VIEWS' scripts/smoke-windowed.mjs
+  `,
+  spec: `
+    Panel: not required — a walk that writes a ledger and changes no view
+    DEPENDS: yap-flakes-2026-10-16 (a green main); Y0-E's smoke (scripts/smoke-windowed.sh, on main)
+
+    EVIDENCE
+      - scripts/smoke-windowed.sh + scripts/smoke-windowed.mjs walk the seven Nav views at 980x700
+        and 720x520 in headless Chrome against desktop/dist with a shimmed __TAURI_INTERNALS__,
+        and read every answer from ONE file, scripts/smoke-fixtures.json (smoke-windowed.mjs:74).
+        One fixture set cannot show both the empty first run and a lived-in day.
+      - The 2026-09-15 builders logged "NOT visually QA'd" on Y2-B, Y5-B, Y5-C and Y5-D.
+      - Screens: desktop/src/views/Home.tsx (+ src/home/), Dictionary.tsx, Insights.tsx,
+        Meetings.tsx (+ src/meetings/), Permissions.tsx, Scratchpad.tsx, Settings.tsx +
+        views/settings/{Advanced,Audio,Companion,Dictation,License,Privacy,Shortcut,Snippets}.tsx,
+        src/Onboarding.tsx, src/ModelSetup.tsx, src/PermissionHealthRow.tsx.
+
+    DO
+      1. smoke-windowed.mjs reads YAP_SMOKE_FIXTURES (a path; default scripts/smoke-fixtures.json,
+         so behaviour is unchanged when it is unset) and YAP_SMOKE_VIEWS (a comma list of Nav
+         labels, case-insensitive; unset = all views). It also captures the first-run overlay
+         (Onboarding / ModelSetup) as the pseudo-view "Onboarding" when the fixture set shows it.
+      2. Two fixture sets, only shapes already certain (the _README rule in smoke-fixtures.json):
+         scripts/smoke-fixtures-first-run.json (no history, no meetings, permissions not granted,
+         no model installed, trial day 14) and scripts/smoke-fixtures-daily.json (40 dictations,
+         3 meetings with one still transcribing, every permission granted, trial day 5). Every
+         string is invented and bland: never real dictation text (RESUME §11.10).
+      3. Walk both personas with YAP_SMOKE_SHOTS pointing at
+         ~/Obsidian/Wilson-Brain/Projects/Loop-Logs/yap-uiux-2026-10-16/first-run/ and .../daily/.
+         PNGs stay out of git.
+      4. Write docs/loop/UIUX-WALK-2026-10-16.md: a header, then one table row per finding, each
+         row starting with "| <Screen> |" where Screen is one of Home, Dictionary, Insights,
+         Meetings, Scratchpad, Settings, Onboarding:
+         | Screen | view file | persona | verdict | evidence (PNG path + what it shows) | fix | child id | status |
+         verdict is one or more of generic / uncontained / confusing / slow; fix is named and
+         scoped to the view file; status is open, fixed or none (a screen with no finding gets
+         one "none" row). Judge by: controls first, prose last; every panel contained; empty
+         states say what to do next; nothing spins past 10 s; the pill is out of scope here (it
+         stays pixel-art; yap24-PILL owns its states). A finding that needs a new capability goes
+         to an "Out of scope (new feature)" list at the bottom, never into a row.
+      5. This item changes no view. It ships the env vars, the fixture sets, the ledger and the
+         baseline structural findings for both personas.
+  `,
+  acceptance: `
+    test -f docs/loop/UIUX-WALK-2026-10-16.md
+    test -f scripts/smoke-fixtures-first-run.json
+    test -f scripts/smoke-fixtures-daily.json
+    node -e "for (const f of ['scripts/smoke-fixtures-first-run.json','scripts/smoke-fixtures-daily.json']) JSON.parse(require('fs').readFileSync(f,'utf8'))"
+    grep -q 'YAP_SMOKE_FIXTURES' scripts/smoke-windowed.mjs
+    grep -q 'YAP_SMOKE_VIEWS' scripts/smoke-windowed.mjs
+    for s in Home Dictionary Insights Meetings Scratchpad Settings Onboarding; do grep -q "^| $s |" docs/loop/UIUX-WALK-2026-10-16.md || exit 1; done
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-HOME', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-home', gated: null,
+  title: 'Home reads contained and obvious for both personas: every walk row on Home fixed',
+  preflight: `
+    grep -q '^| Home |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Home |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features
+    DEPENDS: yap-uiux-2026-10-16-W0
+    FILES: desktop/src/views/Home.tsx, desktop/src/home/ (YappyHouse stays pixel-art)
+    DO: read every "| Home |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the named
+      file only. Controls first, prose last; contained surfaces; the empty state says what to do
+      next. Never show a real transcript list in any capture. Re-walk Home for both fixture sets,
+      put the after PNGs in the Obsidian walk dir under after/home/, attach one before/after pair
+      to the PR, and flip the rows to fixed with the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Home |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Home YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-DICT', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-dictionary', gated: null,
+  title: 'Dictionary reads contained and obvious for both personas: every walk row on Dictionary fixed',
+  preflight: `
+    grep -q '^| Dictionary |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Dictionary |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features
+    DEPENDS: yap-uiux-2026-10-16-W0
+    FILES: desktop/src/views/Dictionary.tsx
+    DO: read every "| Dictionary |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the
+      named file only. Controls first (add word, search), prose last; a contained list with a
+      pinned action footer, no infinite scroll. Re-walk Dictionary for both fixture sets, after
+      PNGs to the Obsidian walk dir under after/dictionary/, one before/after pair on the PR, rows
+      flipped to fixed with the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Dictionary |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Dictionary YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Dictionary YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-INSIGHTS', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-insights', gated: null,
+  title: 'Insights reads contained and obvious for both personas: every walk row on Insights fixed',
+  preflight: `
+    grep -q '^| Insights |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Insights |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features
+    DEPENDS: yap-uiux-2026-10-16-W0
+    FILES: desktop/src/views/Insights.tsx
+    DO: read every "| Insights |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the
+      named file only. The first-run persona has no data: the empty state says what produces
+      insights instead of a zero-filled chart. Re-walk Insights for both fixture sets, after PNGs
+      to the Obsidian walk dir under after/insights/, one before/after pair on the PR, rows flipped
+      to fixed with the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Insights |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Insights YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Insights YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-MEETINGS', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-meetings', gated: null,
+  title: 'Meetings reads contained and obvious for both personas: every walk row on Meetings fixed',
+  preflight: `
+    grep -q '^| Meetings |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Meetings |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features
+    DEPENDS: yap-uiux-2026-10-16-W0; coordinate with yap24-NT3/NT4 if they are open (same files):
+      rebase onto whichever merged first and keep both
+    FILES: desktop/src/views/Meetings.tsx, desktop/src/meetings/
+    DO: read every "| Meetings |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the
+      named files only. Record/stop is the first control; a transcribing meeting shows progress,
+      never a bare spinner past 10 s; a needs-model state offers the one-click install, never an
+      error. Re-walk Meetings for both fixture sets, after PNGs to the Obsidian walk dir under
+      after/meetings/, one before/after pair on the PR, rows flipped to fixed with the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Meetings |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Meetings YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Meetings YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-SCRATCH', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-scratchpad', gated: null,
+  title: 'Scratchpad reads contained and obvious for both personas: every walk row on Scratchpad fixed',
+  preflight: `
+    grep -q '^| Scratchpad |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Scratchpad |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features
+    DEPENDS: yap-uiux-2026-10-16-W0
+    FILES: desktop/src/views/Scratchpad.tsx
+    DO: read every "| Scratchpad |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the
+      named file only. Controls first, prose last; the editor surface is contained and its actions
+      sit in a pinned footer. Re-walk Scratchpad for both fixture sets, after PNGs to the Obsidian
+      walk dir under after/scratchpad/, one before/after pair on the PR, rows flipped to fixed with
+      the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Scratchpad |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Scratchpad YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Scratchpad YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-SETTINGS', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-settings', gated: null,
+  title: 'Settings is contained: bordered surfaces, a pinned footer, every walk row on Settings and its eight panes fixed',
+  preflight: `
+    grep -q '^| Settings |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Settings |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features (10-06 new item "settings
+      containment (borders/surfaces/pinned footer)")
+    DEPENDS: yap-uiux-2026-10-16-W0; follow the Y5-A token layer if #190 has merged, otherwise use
+      the existing App.css variables and add none
+    FILES: desktop/src/views/Settings.tsx, desktop/src/views/settings/*.tsx
+    DO: read every "| Settings |" row in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the
+      named files only. Each pane is one contained surface; the toggle or picker comes first and
+      its explanation follows in one line; save/reset actions sit in a pinned footer; nothing
+      overflows at 720x520. Re-walk Settings for both fixture sets, after PNGs to the Obsidian walk
+      dir under after/settings/, one before/after pair on the PR, rows flipped to fixed with the
+      PR number.
+  `,
+  acceptance: `
+    ! grep '^| Settings |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Settings YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Settings YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-ONBOARD', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-onboarding-and-permissions', gated: null,
+  title: 'First run is obvious: Onboarding, ModelSetup and Permissions say what to grant and why, one step at a time; every walk row fixed',
+  preflight: `
+    grep -q '^| Onboarding |' docs/loop/UIUX-WALK-2026-10-16.md
+    ! grep '^| Onboarding |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+  `,
+  spec: `
+    Panel: not required — fixes the W0 ledger names, no new features (10-06 new item "first-run /
+      permissions flow (mic, accessibility, input monitoring) with real screenshots"; the real
+      screenshots are the headless walk's PNGs, never a visible app window)
+    DEPENDS: yap-uiux-2026-10-16-W0; the Y1 permission items if open (same files)
+    FILES: desktop/src/Onboarding.tsx, desktop/src/ModelSetup.tsx, desktop/src/views/Permissions.tsx,
+      desktop/src/PermissionHealthRow.tsx
+    DO: read every "| Onboarding |" row (and any "| Permissions |"-file finding W0 filed under
+      Onboarding) in docs/loop/UIUX-WALK-2026-10-16.md and fix each in the named files only. One
+      permission per step, the grant button first, one line of why after it; the model download
+      shows size and progress; a denied grant says exactly where to fix it in System Settings.
+      Never touch the bundle id (TCC grants). Re-walk with the first-run set (YAP_SMOKE_VIEWS
+      Onboarding,Permissions), after PNGs to the Obsidian walk dir under after/onboarding/, one
+      before/after pair on the PR, rows flipped to fixed with the PR number.
+  `,
+  acceptance: `
+    ! grep '^| Onboarding |' docs/loop/UIUX-WALK-2026-10-16.md | grep -q '| open |'
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Onboarding,Permissions YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_VIEWS=Permissions YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-uiux-2026-10-16-Z', prompt: 'yap-uiux', branch: 'loop/yap-uiux-2026-10-16-z-rewalk-after-flush', gated: null,
+  title: 'Re-walk after the flush: both personas, every screen, zero open rows, the full smoke green — the acceptance of the UI/UX pass',
+  preflight: `
+    test -f docs/loop/UIUX-REWALK-2026-10-16.md
+    ! grep -q '| open |' docs/loop/UIUX-WALK-2026-10-16.md
+  `,
+  spec: `
+    Panel: not required — verification of the pass
+    DEPENDS: every yap-uiux-2026-10-16 child above merged (HOME, DICT, INSIGHTS, MEETINGS, SCRATCH,
+      SETTINGS, ONBOARD)
+    DO: re-run the FULL walk (no YAP_SMOKE_VIEWS) for both fixture sets, PNGs to
+      ~/Obsidian/Wilson-Brain/Projects/Loop-Logs/yap-uiux-2026-10-16/rewalk-first-run/ and
+      .../rewalk-daily/. Write docs/loop/UIUX-REWALK-2026-10-16.md: per screen, the before and
+      after verdict, the PR that fixed it, and the PNG paths. A NEW finding on the re-walk becomes a
+      ledger row and is fixed here when it stays inside one view file; anything wider becomes a
+      numbered entry in docs/loop/DEFERRED.md. The full smoke exiting 0 for both fixture sets is
+      the acceptance of the whole UI/UX pass.
+  `,
+  acceptance: `
+    test -f docs/loop/UIUX-REWALK-2026-10-16.md
+    ! grep -q '| open |' docs/loop/UIUX-WALK-2026-10-16.md
+    cd desktop && npm ci && npx tsc --noEmit && npm test && npm run build
+    cd .. && YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
+    YAP_SMOKE_SKIP_BUILD=1 YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-daily.json YAP_SMOKE_SHOTS="$(mktemp -d)" bash scripts/smoke-windowed.sh
   `,
 })
 
