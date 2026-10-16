@@ -146,6 +146,10 @@ pub use record::{
 /// `record` itself stays crate-private; these two are what
 /// `tests/dictation_capture_memory.rs` drives.
 pub use record::{capture_probe, MAX_RESIDENT_CAPTURE_BYTES};
+/// DB-B — the launch sweep of `recordings/` and the recovery read-back, so
+/// `tests/long_take_kill_mid_decode.rs` replays the real startup order after a
+/// real abort.
+pub use record::{read_wav_16k_mono, sweep_stale_wavs};
 // YV92 — rate conversion and the anti-alias filter that now sits in front of
 // it. Public for the same reason `input_format` is: the ≥20 dB-at-10 kHz claim
 // belongs in a test that can measure it (`tests/biquad_lowpass_response.rs`),
@@ -2159,6 +2163,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             // YV52: hand the clip guard to the failure arm (see `pending`). The
             // wav still exists only for the life of this take on every path that
             // is not an outright failure.
+            // DB-B — the take's id, read before the clip moves: the decode
+            // persists its prefix under it, and the in-flight recovery link the
+            // clip writer made carries the same stem.
+            let take_id = rec.clip.take_id();
             pending = Some((rec.clip, rec.speech_seconds, source_app.clone()));
             // Y3-D checkpoint — the capture→decode boundary, placed immediately
             // after `pending` takes the clip so the cancel arm inherits YV52's
@@ -2268,6 +2276,14 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             if take_is_cancelled(&state2) {
                 return Ok(TakeOutcome::Cancelled);
             }
+            // DB-B — the decode's prefix goes to `take_chunks` as it grows, so a
+            // kill mid-decode leaves both the audio (the clip's in-flight link)
+            // and the words already decoded. Dropping `persist` — explicitly
+            // below, or on any early return — clears that chunk text: an
+            // orderly end of the decode leaves nothing resumable, and only a
+            // death skips the drop.
+            let db_ref: &Database = &db;
+            let mut persist = PersistTakeChunks::new(&mut progress, db_ref, take_id.as_deref());
             let asr = match transcribe_native(
                 &state2.transcription,
                 &model_id,
@@ -2275,7 +2291,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 rec.samples,
                 &settings.language,
                 bias_prompt,
-                &mut progress,
+                &mut persist,
             ) {
                 Ok(asr) => asr,
                 // Y3-D — the engine stopped because the user asked, which is
@@ -2286,6 +2302,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 }
                 Err(e) => return Err(e),
             };
+            drop(persist);
             // Y3-D checkpoint — post-decode. A decode with no cancel hook runs
             // to completion however loudly it is asked to stop; this is what
             // stops its text reaching the clipboard anyway.
@@ -2924,6 +2941,73 @@ fn recover_crashed_takes(db: &Database, dir: &Path) -> usize {
 /// being DECODED when the app went away, so some of its words already exist.
 const UNFINISHED_TAKE_ERROR: &str = "recovered mid-transcription — not finished";
 
+/// DB-B — the producer `take_chunks` was missing: a [`TakeObserver`] that
+/// forwards every progress call to the pill's observer unchanged and, as each
+/// window extends the take's unbroken decoded prefix, upserts that prefix (its
+/// seam-merged text and the sample its content ends at) as chunk 0 of the take.
+///
+/// One row per take, overwritten — not one row per window — because the
+/// windows OVERLAP: concatenating per-window text would print every seam
+/// phrase twice, and the merge that removes the overlap needs all the windows
+/// at once. The stored prefix is already merged, so `take_partial_text` and
+/// `take_resume_sample` read it back verbatim.
+///
+/// A DB error is logged and swallowed: it costs the resume (the take is still
+/// offered as audio), never the decode in progress.
+///
+/// [`TakeObserver`]: transcribe_progress::TakeObserver
+pub struct PersistTakeChunks<'a> {
+    inner: &'a mut dyn transcribe_progress::TakeObserver,
+    db: &'a Database,
+    take_id: Option<&'a str>,
+}
+
+impl<'a> PersistTakeChunks<'a> {
+    pub fn new(
+        inner: &'a mut dyn transcribe_progress::TakeObserver,
+        db: &'a Database,
+        take_id: Option<&'a str>,
+    ) -> Self {
+        Self { inner, db, take_id }
+    }
+}
+
+/// The decode is over by an orderly route (done, failed, cancelled): the take
+/// is no longer resumable, so its chunk text goes. A kill, a crash or
+/// `app.exit` never runs this, which is exactly what leaves the prefix behind.
+impl Drop for PersistTakeChunks<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.take_id {
+            if let Err(e) = self.db.clear_take_chunks(id) {
+                log::warn!(
+                    "DB-B: chunk text for a finished take not cleared ({e}) — the retention sweep will"
+                );
+            }
+        }
+    }
+}
+
+impl transcribe_progress::TakeObserver for PersistTakeChunks<'_> {
+    fn planned(&mut self, windows: usize) {
+        self.inner.planned(windows);
+    }
+    fn chunk_done(&mut self, text: &str) {
+        self.inner.chunk_done(text);
+    }
+    fn wants_prefix(&self) -> bool {
+        self.take_id.is_some()
+    }
+    fn prefix_done(&mut self, window_index: usize, end_sample: usize, text: &str) {
+        let Some(take_id) = self.take_id else {
+            return;
+        };
+        let end = i64::try_from(end_sample).unwrap_or(i64::MAX);
+        if let Err(e) = self.db.record_take_chunk(take_id, 0, text, end) {
+            log::warn!("DB-B: prefix through window {window_index} not persisted ({e})");
+        }
+    }
+}
+
 /// Turn recovered audio into the failed-dictation rows History offers, carrying
 /// each take's id so its persisted chunk text comes back with it.
 ///
@@ -2970,12 +3054,14 @@ fn adopt_recovered_takes(
 
 /// DB-B — the launch sweep for a LONG take the app died in the middle of.
 ///
-/// The pieces all existed and none of them were connected. A long dictation
-/// spills its audio to `recovery/<id>.capture.wav` as it is captured (Y3-A) and
-/// persists each chunk's text to `take_chunks` as it decodes (the DB side of
-/// Y3-B). If the app is killed between those two and the transcript insert,
-/// BOTH artefacts sat on disk and nothing ever read them back: the audio waited
-/// for the 7-day sweep to delete it, and the words waited with it.
+/// While a take decodes, its finished clip is hard-linked into the recovery
+/// dir as `<id>.decoding.wav` (`record::ClipWav::spawn`), and the decode's
+/// unbroken prefix is upserted to `take_chunks` window by window
+/// (`PersistTakeChunks`). Every orderly end of the take removes both; a kill
+/// -9, a crash or `app.exit(0)` runs no `Drop`, so they survive — in a dir that
+/// `record::sweep_stale_wavs` (which empties `recordings/` first) never
+/// touches. Y3-A's `<id>.capture.wav`, moved here by an in-process capture
+/// abort, is read back the same way.
 ///
 /// This is what reads them back. In order, and the order matters:
 ///
@@ -2984,10 +3070,9 @@ fn adopt_recovered_takes(
 ///      the user ever opens History, and a take recovered today always gets a
 ///      full window rather than inheriting a nearly-expired one.
 ///   2. **Journal orphans**, exactly as YV63 already did them.
-///   3. **Spill orphans** — the takes that were being decoded. A take the
-///      journal path already rebuilt is skipped inside
-///      `record::recover_orphaned_spills`, so one take can never become two
-///      rows.
+///   3. **Spill / in-flight orphans** — the takes that were being decoded
+///      (and Y3-A capture spills). Each becomes `<id>.wav` via a temp file and
+///      a rename, and the orphan is deleted only once that wav is complete.
 ///
 /// What it deliberately does NOT do:
 ///

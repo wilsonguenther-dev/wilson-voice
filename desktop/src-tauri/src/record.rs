@@ -242,6 +242,9 @@ impl StopSignal {
 pub struct ActiveRecording {
     stop: Arc<StopSignal>,
     wav_path: PathBuf,
+    /// DB-B — the recovery dir (the journal dir), where the finished clip is
+    /// also linked while it decodes; see [`ClipWav::spawn`].
+    recovery_dir: PathBuf,
     started: Instant,
     pub level: LevelHandle,
     /// The user's denoise setting, captured at arm time and applied in
@@ -439,6 +442,7 @@ pub fn start_recording(
     Ok(ActiveRecording {
         stop: Arc::new(StopSignal::default()),
         wav_path,
+        recovery_dir: journal_dir.to_path_buf(),
         started,
         level: capture_level().clone(),
         denoise,
@@ -549,7 +553,13 @@ pub fn stop_recording(
     // History/recovery wav — spawned AFTER the ASR buffer is final, so the write
     // runs alongside transcription + paste instead of sitting between key-release
     // and ASR (YV37). The guard unlinks it when the take is done.
-    let clip = ClipWav::spawn(active.wav_path, samples.clone());
+    //
+    // DB-B: the same writer also links the finished wav into the recovery dir
+    // as `<id>.decoding.wav` for as long as the take is in flight. That link is
+    // what a SIGKILL, a crash or the tray's `app.exit(0)` mid-decode leaves
+    // behind (none of them run `Drop`), in a directory `sweep_stale_wavs` never
+    // touches, so the next launch's `recover_dictation` adopts it.
+    let clip = ClipWav::spawn(active.wav_path, samples.clone(), Some(&active.recovery_dir));
     // YV63 normal completion: the take survived capture and its wav is being
     // written, so the spill is no longer the only copy of these words — the
     // in-progress marker goes with it, and startup finds no orphan to recover.
@@ -613,16 +623,66 @@ pub struct ClipWav {
     /// Set by `keep_for_recovery` — the file has been moved out from under this
     /// guard, so `Drop` must not try to unlink it.
     kept: bool,
+    /// DB-B — `<recovery>/<id>.decoding.wav`, a hard link to the finished clip
+    /// that exists exactly while the take is in flight. Every ORDERLY end of
+    /// the take removes it (`Drop`, `keep_for_recovery`); only a death that
+    /// skips both — kill -9, a crash, `app.exit` — leaves it for the next
+    /// launch to adopt. `None` for a guard with no recovery dir.
+    in_flight: Option<PathBuf>,
+}
+
+/// DB-B — the suffix of an in-flight clip's recovery link. Read back by
+/// [`recover_orphaned_spills`] alongside Y3-A's `.capture.wav`.
+const IN_FLIGHT_SUFFIX: &str = ".decoding.wav";
+
+/// Link `target` into `link` without ever leaving a partial file under the
+/// final name: a hard link is atomic; the copy fallback (another volume) goes
+/// through a temp name and a rename.
+fn link_in_flight(target: &Path, link: &Path) -> Result<(), String> {
+    if let Some(dir) = link.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let _ = std::fs::remove_file(link);
+    if std::fs::hard_link(target, link).is_ok() {
+        return Ok(());
+    }
+    let tmp = link.with_extension("wav.partial");
+    let copied = std::fs::copy(target, &tmp)
+        .map_err(|e| e.to_string())
+        .and_then(|_| std::fs::rename(&tmp, link).map_err(|e| e.to_string()));
+    if copied.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    copied
 }
 
 impl ClipWav {
-    fn spawn(path: PathBuf, samples: Vec<f32>) -> Self {
+    /// Start writing the take's clip in the background. With `recovery`, the
+    /// finished wav is also linked there as `<id>.decoding.wav` (DB-B) so a
+    /// take that dies mid-decode leaves its audio somewhere the next launch
+    /// looks. Public so `tests/long_take_recovery.rs` can drive the SAME
+    /// writer a real take uses, then kill its own process for real.
+    pub fn spawn(path: PathBuf, samples: Vec<f32>, recovery: Option<&Path>) -> Self {
+        let in_flight = recovery.and_then(|dir| {
+            let stem = path.file_stem()?.to_string_lossy().to_string();
+            Some(dir.join(format!("{stem}{IN_FLIGHT_SUFFIX}")))
+        });
         let target = path.clone();
+        let link = in_flight.clone();
         let writer = thread::Builder::new()
             .name("wv-clip-wav".into())
             .spawn(
                 move || match write_wav_i16(&target, TARGET_RATE, &samples) {
-                    Ok(()) => log::info!("wrote {} samples → {}", samples.len(), target.display()),
+                    Ok(()) => {
+                        log::info!("wrote {} samples → {}", samples.len(), target.display());
+                        if let Some(link) = link {
+                            if let Err(e) = link_in_flight(&target, &link) {
+                                // Degrades to the pre-DB-B behaviour: a kill
+                                // mid-decode loses this take; nothing else does.
+                                log::warn!("DB-B in-flight recovery link failed: {e}");
+                            }
+                        }
+                    }
                     // Non-fatal by design: the transcript comes from memory now, so a
                     // failed history write can never cost the user their words.
                     Err(e) => log::warn!("history wav write failed (transcript unaffected): {e}"),
@@ -633,11 +693,29 @@ impl ClipWav {
             path,
             writer,
             kept: false,
+            in_flight,
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// DB-B — the take's id: the clip's file stem, which is also the stem of
+    /// its in-flight recovery link, so the `take_chunks` a decode persists under
+    /// it come back with the audio after a crash.
+    pub fn take_id(&self) -> Option<String> {
+        self.path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+    }
+
+    /// Block until the background write (and its in-flight link) is done.
+    /// Tests use this to reach the state a real take is in mid-decode.
+    pub fn wait_written(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
     }
 
     /// A guard over a wav that is ALREADY on disk, so the recovery path
@@ -657,6 +735,7 @@ impl ClipWav {
             path,
             writer: None,
             kept: false,
+            in_flight: None,
         }
     }
 
@@ -679,6 +758,11 @@ impl ClipWav {
         let target = dir.join(name);
         std::fs::rename(&self.path, &target).map_err(|e| e.to_string())?;
         self.kept = true;
+        // DB-B — the take now has its own row; retire the in-flight link AFTER
+        // the move, so there is no instant at which neither copy exists.
+        if let Some(link) = self.in_flight.take() {
+            let _ = std::fs::remove_file(link);
+        }
         Ok(target)
     }
 }
@@ -687,6 +771,10 @@ impl Drop for ClipWav {
     fn drop(&mut self) {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
+        }
+        // DB-B — an orderly end of the take: it is no longer in flight.
+        if let Some(link) = self.in_flight.take() {
+            let _ = std::fs::remove_file(link);
         }
         if self.kept {
             return;
@@ -1153,8 +1241,11 @@ pub fn recover_orphaned_spills(dir: &Path) -> Vec<RecoveredTake> {
 /// Pure predicate (mirrors [`is_journal_marker`]): the take id inside
 /// `<id>.capture.wav`, or `None` for anything else in the directory.
 fn spill_take_id(name: &str) -> Option<&str> {
-    let suffix = const_spill_suffix();
-    let id = name.strip_suffix(suffix)?;
+    // Y3-A's capture spill, or DB-B's in-flight decode link — both are a
+    // complete 16 kHz wav named by its take id.
+    let id = name
+        .strip_suffix(const_spill_suffix())
+        .or_else(|| name.strip_suffix(IN_FLIGHT_SUFFIX))?;
     (!id.is_empty()).then_some(id)
 }
 
@@ -1165,22 +1256,31 @@ fn const_spill_suffix() -> &'static str {
 }
 
 /// Turn ONE orphaned spill into `<id>.wav`. `Ok(None)` means there was nothing
-/// worth recovering (a stray tap under the same floor the journal path uses, or
-/// a take the journal path already rebuilt); `Err` leaves the spill in place.
+/// worth recovering (a stray tap under the same floor the journal path uses);
+/// `Err` leaves the spill in place for the next launch.
+///
+/// The spill is deleted ONLY after a complete `<id>.wav` exists: the new wav is
+/// written under a temp name and renamed into place, so a full disk or a crash
+/// mid-write can never leave a truncated `<id>.wav` that a later launch takes
+/// for the real thing. (An existing `<id>.wav` is NOT treated as proof the take
+/// was already rebuilt — the journal and the spill never share an id, and a
+/// partial wav from an interrupted write would have cost the only good copy.)
 fn finalize_orphaned_spill(spill: &Path, id: &str) -> Result<Option<RecoveredTake>, String> {
     let wav_path = spill.with_file_name(format!("{id}.wav"));
-    if wav_path.exists() {
-        // The journal path already rebuilt this take. One take, one row — drop
-        // the duplicate audio rather than offering the same words twice.
-        let _ = std::fs::remove_file(spill);
-        return Ok(None);
-    }
     let samples = read_wav_16k_mono(spill)?;
     if samples.len() < MIN_CLIP_SAMPLES {
         let _ = std::fs::remove_file(spill);
         return Ok(None);
     }
-    write_wav_i16(&wav_path, TARGET_RATE, &samples)?;
+    let tmp = spill.with_file_name(format!("{id}.wav.partial"));
+    if let Err(e) = write_wav_i16(&tmp, TARGET_RATE, &samples) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &wav_path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     let _ = std::fs::remove_file(spill);
     Ok(Some(RecoveredTake {
         wav_path,

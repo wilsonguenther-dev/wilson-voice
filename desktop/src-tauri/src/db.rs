@@ -2187,15 +2187,12 @@ impl Database {
     /// `(take_id, chunk_index)`: a re-decode of the same chunk replaces it
     /// rather than doubling the words.
     ///
-    /// **Its producer is Y3-B's chunked dictation decode**, which is not on
-    /// `main` yet — the dictation path still decodes a take in one shot, so
-    /// there is nothing here to call this once per chunk. It is written now,
-    /// with the read half (`take_partial_text`, `take_resume_sample`,
-    /// `crate::recover_dictation`) live and wired into startup, because the
-    /// recovery contract is the thing that has to exist BEFORE the producer
-    /// does: a chunk loop that has nowhere durable to put its output is a chunk
-    /// loop that loses the take all over again. `tests/long_take_recovery.rs`
-    /// drives exactly the call shape that loop will use.
+    /// **Its producer is `crate::PersistTakeChunks`**, the observer the live
+    /// dictation path hands to Y3-B's window loop: as each window extends the
+    /// take's unbroken decoded prefix it upserts that prefix — already
+    /// seam-merged — as chunk 0, with the sample its content ends at.
+    /// `tests/long_take_recovery.rs` drives that real loop and then aborts the
+    /// process mid-decode.
     pub fn record_take_chunk(
         &self,
         take_id: &str,

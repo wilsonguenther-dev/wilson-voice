@@ -106,7 +106,10 @@ fn all_zero_buffer_is_classified_silent_not_quiet() {
 fn silent_capture_never_reaches_the_paste_path() {
     let gate = line_of("classify_take_audio");
     let no_speech = line_of("has_enough_speech(rec.voiced_seconds)");
-    let asr = line_of("let asr = transcribe_native(");
+    // The LIVE take's decode. (This needle used to be `let asr =
+    // transcribe_native(`, which only ever matched the RETRY path's call; DB-B
+    // reshaped that call around its resume, so it now names the line it means.)
+    let asr = line_of("let asr = match transcribe_native(");
     let insert = line_of("db.insert_transcript_at(");
 
     assert!(
