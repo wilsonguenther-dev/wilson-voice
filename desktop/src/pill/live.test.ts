@@ -7,6 +7,7 @@
  * never said anything at all.
  */
 import { describe, expect, it } from "vitest";
+import { STILL_RECORDING_LINE, stripLine } from "./live";
 import {
   acceptProgress, advanceLive, createLiveState, frameIntervalMs, framePlan, liveTierForWords,
   phaseVisual, progressFraction, progressNumeral, reduceGatePhase, resetLive,
@@ -858,5 +859,14 @@ describe("Y5-C — the phase vocabulary", () => {
     expect(new Set(ids).size, "two phases share an id").toBe(ids.length);
     for (const id of ids) expect(id, id).toMatch(/^[a-z][a-z_]*$/);
     expect(PHASE_ID["model-loading"]).toBe("model_loading");
+  });
+});
+
+describe("yap-hotkey-stop — still recording", () => {
+  it("the still-recording prompt replaces the phase line only while it is live", () => {
+    expect(stripLine("Listening…", true)).toBe(STILL_RECORDING_LINE);
+    expect(stripLine("Listening…", false)).toBe("Listening…");
+    expect(STILL_RECORDING_LINE).toContain("Still recording");
+    expect(STILL_RECORDING_LINE).toContain("press fn");
   });
 });

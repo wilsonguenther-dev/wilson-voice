@@ -1196,3 +1196,17 @@ export function reduceTakePhase(prev: LivePhase, ev: TakeEvent): LivePhase {
     }
   }
 }
+
+/**
+ * yap-hotkey-stop DO 4 — the pill line for a take that is STILL RECORDING: a
+ * hold with no key-up for 90 s, or any take during which macOS switched the fn
+ * tap off. It outranks the phase copy because it is the one line that tells the
+ * user how to end a take the hotkey may have lost track of. Mirrors
+ * `ptt_macos::STILL_RECORDING_MESSAGE` (tests/hotkey_stop.rs holds them equal).
+ */
+export const STILL_RECORDING_LINE = "Still recording — press fn or click stop";
+
+/** The phase-strip line, with the still-recording prompt winning while live. */
+export function stripLine(line: string, stillRecording: boolean): string {
+  return stillRecording ? STILL_RECORDING_LINE : line;
+}
