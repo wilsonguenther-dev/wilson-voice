@@ -268,3 +268,44 @@ supersede or rebase them first.
 **Destination.** Harness PR: honour `args.only` in review mode (filter the PR queue by branch prefix
 derived from the matching items' `branch` fields), plus a dry-run shape `{mode:'review', only:[...]}`
 in `build.mjs`.
+
+## 15. Test flake — `capture_journal_recovery.rs:119` sleeps 400 ms for a 250 ms flush (yap-flakes-2026-10-16 sweep)
+
+**The shape.** `thread::sleep(400 ms)` to let the journal writer's 250 ms flush timer fire, then
+`assert_eq!(recovered.len(), 1)`. 150 ms of headroom on a wall-clock race: a loaded runner that
+delays the writer thread past the sleep loses the index record and the count is 0.
+**Destination.** Wait on the flushed state (`support::wait_until` on the journal's index file /
+a flush counter) with a hang deadline, or expose a test-only `flush_now()`. See
+`docs/loop/FLAKES-2026-10-16.md` §3.
+
+## 16. Test flake — `two_track_journal_round_trip.rs:346` sleeps 400 ms for a 250 ms flush (same sweep)
+
+**The shape.** Identical to #15 on the two-track journal: sleep 400 ms, then
+`recovered.len() == 1`. **Destination.** Same fix as #15; do both in one PR.
+
+## 17. Test shape — `matrix_row6_orphan_recovery.rs:166` sleep-then-count (same sweep; verify)
+
+**The shape.** `thread::sleep(300 ms)` then `entries(&dir, "meeting.in_progress.json").len() == 1`.
+The marker is probably written synchronously by `MeetingJournal::start`, in which case the count
+does not depend on the sleep and this is benign. **Destination.** Confirm, then either drop the
+sleep or replace it with a wait on the condition it stands in for.
+
+## 18. Test flake risk — `diarize_sidecar_pool.rs:250` asserts `elapsed() < 200 ms` (same sweep)
+
+**The shape.** A wall-clock UPPER bound under 1 s on "a sticky-unavailable pool answers without
+blocking". **Destination.** Assert the structural fact instead (no launch, `launches == 2`, which
+the next line already does), or raise the bound well clear of scheduler noise while still far
+below the restart/backoff time it guards against — sized from that number, not by feel.
+
+## 19. Test flake risk — `matrix_new_asr_chunk_timeout.rs` 300 ms `TIMEOUT` + 900 ms `HANG` (same sweep)
+
+**The shape.** Healthy chunks must decode inside a 300 ms per-chunk `recv_timeout`, and the
+relaunch must finish under a 900 ms wall bound. Same family as `per_chunk_deadline_not_per_take`
+(fixed in FLAKES-2026-10-16 §1). **Destination.** Size the headroom from the stub's real decode
+cost (target ~10x), keep the wedged chunk's hang clearly longer than the timeout.
+
+## 20. Test flake risk — `matrix_row5_journal_backpressure.rs:50` `NEVER_BLOCKS` = 500 ms (same sweep)
+
+**The shape.** A sub-second wall-clock upper bound on "the writer never blocks the producer".
+**Destination.** Assert on a non-blocking primitive (a `try_send` result / an overflow counter)
+rather than wall time, or size the bound from the blocking case it must distinguish.
