@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import FLOAT_CSS from "../float.css?raw";
 import {
   createSpring, createSoftBody, DURATION, EASE_STATE_CHANGE, morphTransition,
-  SOFT_LIMIT, SOFT_REST_DELTA, softened, SPRING_SETTLE, SPRING_SNAP, SQUASH_SCALE,
+  SOFT_LIMIT, SOFT_REST_DELTA, softened, SPRING_SETTLE, SPRING_SNAP, SQUASH_PRESS, SQUASH_SCALE,
 } from "./motion";
 
 /**
@@ -30,6 +30,33 @@ const PILL_SOURCES = import.meta.glob("./*.{ts,tsx}", {
 
 /** One 60fps frame, in seconds — the timestep the pill's rAF loop really sees. */
 const FRAME = 1 / 60;
+
+/**
+ * The smallest stretch, in CSS px of capsule WIDTH, that counts as a bounce a
+ * human can see. One device pixel at 1x; two at 2x.
+ */
+const MIN_VISIBLE_PX = 1;
+
+/** The seed capsule's min-width, read from the first `.pill {` rule in float.css. */
+function seedWidthPx(): number {
+  const block = /\n\.pill\s*\{([^}]*)\}/.exec(FLOAT_CSS);
+  const m = block && /min-width:\s*(\d+(?:\.\d+)?)px/.exec(block[1]);
+  if (!m) throw new Error("float.css: no .pill min-width found");
+  return Number(m[1]);
+}
+
+/** Drive a soft body to rest, recording its stretch trough and the swing after it. */
+function drive(body: ReturnType<typeof createSoftBody>, dt: number, cap = 2000) {
+  let n = 0;
+  let trough = 0;
+  let reboundPeak = 0;
+  while (n < cap && body.tick(dt)) {
+    n += 1;
+    if (body.squash < trough) trough = body.squash;
+    if (trough < 0 && body.squash > reboundPeak) reboundPeak = body.squash;
+  }
+  return { trough, reboundPeak, ms: (n * dt) * 1000 };
+}
 
 /** Drive a spring to rest, returning how many frames it took (capped). */
 function run(spring: ReturnType<typeof createSpring>, cap = 1000) {
@@ -185,20 +212,78 @@ describe("spring integrator", () => {
     expect(body.squash).toBe(0);
   });
 
+  /**
+   * Y5-D review fix — the stretch must be big enough for a HUMAN to see, not
+   * merely negative. The original test checked only the sign and passed on a
+   * 0.07px rebound. This one measures the stretch in CSS pixels on the seed
+   * capsule, whose width is read from float.css itself so the two cannot drift.
+   * Both a held press and a short tap, at 60Hz and 120Hz.
+   */
+  it("release_stretch_is_visible_in_pixels_on_the_seed_capsule", () => {
+    const seed = seedWidthPx();
+    for (const hz of [60, 120]) {
+      const dt = 1 / hz;
+      for (const holdFrames of [Infinity, Math.round((6 * hz) / 60)]) {
+        const body = createSoftBody();
+        body.press();
+        if (holdFrames === Infinity) while (body.tick(dt)) { /* hold to rest */ }
+        else for (let i = 0; i < holdFrames; i++) body.tick(dt);
+        body.release();
+        const r = drive(body, dt);
+        const narrowerPx = -r.trough * SQUASH_SCALE * seed;
+        expect(narrowerPx, `hz=${hz} hold=${holdFrames}`).toBeGreaterThanOrEqual(MIN_VISIBLE_PX);
+        // Soft, never rubbery: never stretches further than the press squashed,
+        // the swing back past neutral is tiny, and it parks quickly.
+        expect(r.trough).toBeGreaterThanOrEqual(-SQUASH_PRESS);
+        expect(r.reboundPeak).toBeLessThanOrEqual(SOFT_LIMIT * -r.trough);
+        expect(r.ms).toBeLessThanOrEqual(600);
+        expect(body.atRest).toBe(true);
+        expect(body.squash).toBe(0);
+      }
+    }
+  });
+
   it("dock_lands_squashed_and_bounces_back_out", () => {
     const body = createSoftBody();
+    // A dock always follows a press: the drag starts on pointerdown.
+    body.press();
+    while (body.tick(FRAME)) { /* the pill is held squashed during the drag */ }
+    const held = body.squash;
+    expect(held).toBe(SQUASH_PRESS);
     body.dock();
-    expect(body.squash).toBeGreaterThan(0); // landed compressed
-    const landed = body.squash;
+    // No teleport: dock() must not change the shape on the frame it fires.
+    expect(body.squash).toBe(held);
     let n = 0;
     let bounced = false;
     while (body.tick(FRAME) && n < 300) {
       n += 1;
       if (body.squash < 0) bounced = true;
     }
-    expect(landed).toBeGreaterThan(0);
     expect(bounced).toBe(true);
     expect(body.atRest).toBe(true);
+  });
+
+  /**
+   * Y5-D review fix — the dock bounce is continuous (no one-frame pop out of the
+   * squash) and big enough to see, at 60Hz and 120Hz.
+   */
+  it("dock_keeps_shape_and_lands_a_visible_bounce", () => {
+    const seed = seedWidthPx();
+    for (const hz of [60, 120]) {
+      const dt = 1 / hz;
+      const body = createSoftBody();
+      body.press();
+      while (body.tick(dt)) { /* held during the drag */ }
+      const before = body.squash;
+      body.dock();
+      expect(body.squash, `hz=${hz} dock must not teleport`).toBe(before);
+      const r = drive(body, dt);
+      expect(-r.trough * SQUASH_SCALE * seed, `hz=${hz}`).toBeGreaterThanOrEqual(MIN_VISIBLE_PX);
+      expect(r.trough).toBeGreaterThanOrEqual(-SQUASH_PRESS);
+      expect(r.reboundPeak).toBeLessThanOrEqual(SOFT_LIMIT * -r.trough);
+      expect(r.ms).toBeLessThanOrEqual(700);
+      expect(body.atRest).toBe(true);
+    }
   });
 });
 

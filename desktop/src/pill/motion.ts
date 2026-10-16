@@ -32,8 +32,11 @@
  * at Wispr's raw config and records a peak of 0.987, never past 1.0.
  *
  * So Yap keeps Wispr's stiffness and damping verbatim (the SPEED is right) and
- * tightens ONLY the rest threshold for the soft body, to `SOFT_REST_DELTA`.
- * Same physics, finer stopping rule, and the 4% bounce survives to the screen.
+ * tightens the rest threshold for the soft body, to `SOFT_REST_DELTA`. That
+ * alone is NOT enough to be seen: on this integrator the free overshoot is
+ * ~2.1% of the squash, a sub-pixel stretch. The visible bounce comes from the
+ * release/dock velocity impulses (`RELEASE_KICK`, `DOCK_KICK`), and
+ * `motion.test.ts` asserts it in pixels against float.css's seed capsule.
  *
  * WHAT "CRITICALLY DAMPED" MEANS HERE, PRECISELY. With mass 1, critical damping
  * is `2*sqrt(stiffness)`: 48.99 for k=600, 34.64 for k=300. Both named springs
@@ -149,6 +152,13 @@ export interface Spring {
   /** Teleport: value and target both, velocity zeroed. Used by Reduce Motion. */
   jumpTo(next: number): void;
   /**
+   * Add `dv` (value-units per second) to the CURRENT velocity, keeping the
+   * value, and wake the spring. This is how a gesture puts energy into the body
+   * without teleporting it: the value stays continuous, so nothing pops.
+   * Under Reduce Motion it does nothing at all.
+   */
+  kick(dv: number): void;
+  /**
    * Swap which named spring the integrator obeys, KEEPING the current value and
    * velocity. `SoftBody` needs this: a drag that ends while the press spring is
    * still moving hands its momentum to the settle spring, and re-creating the
@@ -218,6 +228,11 @@ export function createSpring(
     setConfig(next: SpringConfig) {
       cfg = next;
     },
+    kick(dv: number) {
+      if (reduce || dv === 0) return;
+      velocity += dv;
+      rest = false;
+    },
     tick(dtSec: number): boolean {
       if (reduce) { settle(); return false; }
       if (rest) return false;
@@ -248,17 +263,48 @@ export function createSpring(
  * `+1` is fully squashed (wider, shorter — pressed), `-1` fully stretched
  * (narrower, taller — the rebound), `0` is the capsule's own shape. The bounce
  * is not scripted: `press()` drives the spring to +1 and `release()` aims it
- * back at 0 on the SNAP spring, whose 4% undershoot past zero is the stretch,
- * and the decay of that oscillation is the settle. Nothing here keyframes.
+ * back at 0 on the SNAP spring with a velocity impulse sized to the stored
+ * squash (RELEASE_KICK), so it swings past zero into a visible stretch, and
+ * the decay of that oscillation is the settle. Nothing here keyframes.
  *
  * `dock()` uses the SETTLE spring instead, because a capsule dropped into a
  * corner should land heavier and slower than a capsule you tapped.
  */
 export const SQUASH_PRESS = 1;
-/** How much of the squash a landing dock kicks up. Lighter than a press. */
+/**
+ * The least landing energy a dock carries, as a squash-equivalent. A dock
+ * normally follows a press (the drag starts on pointerdown), so the body is
+ * already near +1; this floor only matters if a dock ever arrives on a body at
+ * rest, so the landing still bounces instead of doing nothing.
+ */
 export const SQUASH_DOCK = 0.55;
 /** Scale change at full squash: 6% wider, 6% shorter. Soft, never cartoonish. */
 export const SQUASH_SCALE = 0.06;
+
+/**
+ * Y5-D review fix — WHY THE REBOUND NEEDS A KICK. The snap spring's free
+ * overshoot past 0, measured on this integrator, is ~2.1% of the squash (the
+ * 4.04% analytic figure is for the continuous spring; semi-implicit Euler at
+ * 1/120s damps more). Times SQUASH_SCALE that is a 0.13% scale change: 0.07px
+ * on the 56px seed capsule. Nobody can see that, so a plain release looked
+ * rigid.
+ *
+ * A real soft body that is let go releases the energy it stored in the squash:
+ * it does not merely relax, it springs back PAST its shape. That is modelled as
+ * a velocity impulse proportional to the stored squash, applied on release, on
+ * top of the same snap spring. The value never jumps (no teleport), the damping
+ * is untouched (so it still settles in a few hundred ms with no wobble), and the
+ * trough becomes a stretch a human can see — `motion.test.ts` asserts it in
+ * PIXELS against the seed capsule, not as a sign.
+ *
+ * Units: value-units per second, per unit of stored squash.
+ */
+export const RELEASE_KICK = 70;
+/**
+ * The landing impulse when a drag drops the pill into a dock, on the slower
+ * SETTLE spring: a heavier, longer bounce than a tap's rebound.
+ */
+export const DOCK_KICK = 60;
 
 export interface SoftBody {
   /** The squash scalar, -1..+1 (bounded in practice by SOFT_LIMIT overshoot). */
@@ -289,13 +335,23 @@ export function createSoftBody(opts: { reduceMotion?: boolean } = {}): SoftBody 
     get squash() { return spring.value; },
     get atRest() { return spring.atRest; },
     press() { use(SPRING_SNAP); spring.setTarget(SQUASH_PRESS); },
-    release() { use(SPRING_SNAP); spring.setTarget(0); },
-    dock() {
-      use(SPRING_SETTLE);
-      // Land squashed, then let the settle spring carry it back out: one call,
-      // and the overshoot past 0 is the bounce Wilson asked for.
-      spring.jumpTo(SQUASH_DOCK);
+    release() {
+      use(SPRING_SNAP);
+      // Release the energy stored in the squash (see RELEASE_KICK): the value
+      // stays where it is, only the velocity changes.
+      const stored = Math.max(spring.value, 0);
       spring.setTarget(0);
+      spring.kick(-RELEASE_KICK * stored);
+    },
+    dock() {
+      // KEEP value and velocity — the body is squashed from the press that
+      // started the drag, and teleporting it would pop the capsule's shape in a
+      // single frame. Swap to the slower spring and kick it: it rebounds out of
+      // the squash into a visible stretch, then settles.
+      use(SPRING_SETTLE);
+      const stored = Math.max(spring.value, SQUASH_DOCK);
+      spring.setTarget(0);
+      spring.kick(-DOCK_KICK * stored);
     },
     tick(dtSec: number): boolean {
       return spring.tick(dtSec);
