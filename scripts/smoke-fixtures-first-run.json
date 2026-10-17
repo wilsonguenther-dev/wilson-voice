@@ -1,0 +1,177 @@
+{
+  "_README": [
+    "Persona fixture set 'first-run' for scripts/smoke-windowed.mjs, selected with",
+    "YAP_SMOKE_FIXTURES=scripts/smoke-fixtures-first-run.json. Same rule as smoke-fixtures.json's",
+    "_README: only commands whose SHAPE is certain (copied from the TypeScript interfaces in",
+    "desktop/src/appTypes.ts, permission.ts, pill/meeting.ts, license/status.ts, ModelSetup.tsx);",
+    "anything absent REJECTS and leaves the component on its own initial state.",
+    "Every string is invented and bland. Never put real dictation or meeting text here (RESUME 11.10).",
+    "'trial day N' in the item spec is read as trial_days_left = N (TRIAL_DAYS = 14 in src-tauri/src/license.rs).",
+    "Persona: brand-new install. No history, no meetings, permissions not granted, no model",
+    "installed, trial day 14. settings.onboarded=false so App.tsx shows the onboarding overlay,",
+    "which the driver captures as the pseudo-view Onboarding and then leaves via Skip.",
+    "save_settings resolves null (its Rust return is unit) so Skip can complete."
+  ],
+  "get_insights": {
+    "avgAsrSeconds": 0,
+    "avgWpm": 0,
+    "longestStreak": 0,
+    "meetings": {
+      "audioRetentionDays": 0,
+      "completeMeetings": 0,
+      "daysToFirstMeeting": 0,
+      "failedMeetings": 0,
+      "firstMeetingAt": "",
+      "lastMeetingAt": "",
+      "meetingsLast7": 0,
+      "meetingsWithAudio": 0,
+      "partialMeetings": 0,
+      "segmentsIndexed": 0,
+      "totalMeetings": 0,
+      "totalSeconds": 0
+    },
+    "p50PipelineMs": 0,
+    "p95PipelineMs": 0,
+    "sessionsToday": 0,
+    "speechSecondsTotal": 0,
+    "streakDays": 0,
+    "topApps": [],
+    "totalSessions": 0,
+    "totalWords": 0,
+    "wordsLast7": [],
+    "wordsToday": 0,
+    "wpmSampleSessions": 0
+  },
+  "get_permissions": {
+    "accessibility": false,
+    "microphone": false,
+    "microphoneStatus": "not_determined",
+    "inputMonitoring": "unknown",
+    "audioCapture": "unknown",
+    "grants": [
+      {
+        "key": "microphone",
+        "label": "Microphone",
+        "status": "unknown",
+        "pane": "Privacy_Microphone",
+        "detail": ""
+      },
+      {
+        "key": "accessibility",
+        "label": "Accessibility",
+        "status": "unknown",
+        "pane": "Privacy_Accessibility",
+        "detail": ""
+      },
+      {
+        "key": "inputMonitoring",
+        "label": "Input Monitoring",
+        "status": "unknown",
+        "pane": "Privacy_ListenEvent",
+        "detail": ""
+      },
+      {
+        "key": "audioCapture",
+        "label": "System Audio Recording",
+        "status": "unknown",
+        "pane": "Privacy_AudioCapture",
+        "detail": ""
+      }
+    ],
+    "asrOk": false,
+    "asrDetail": "No speech model installed.",
+    "summary": "Yap needs Microphone and Accessibility.",
+    "allCriticalOk": false
+  },
+  "get_settings": {
+    "autoPaste": false,
+    "autostart": false,
+    "calibrationSample": null,
+    "checkUpdates": false,
+    "cleanupLevel": "",
+    "commandBinding": "",
+    "companionTone": "",
+    "denoise": false,
+    "dictationMode": "",
+    "hotkeyLabel": "",
+    "keepCmdShiftV": false,
+    "language": "",
+    "muteWhileDictating": false,
+    "onboarded": false,
+    "pillPosition": "",
+    "pillStyle": "",
+    "polishStyles": {},
+    "preloadModel": false,
+    "pttBinding": "",
+    "schemaVersion": 0,
+    "showFloatingPill": false,
+    "signature": "",
+    "signatureMode": "",
+    "skippedUpdateVersion": null,
+    "snippetScope": ""
+  },
+  "get_status": {
+    "accessibility": false,
+    "busy": false,
+    "engineLoading": false,
+    "hotkeyRegistered": false,
+    "lastError": "",
+    "message": "",
+    "modelReady": false,
+    "recording": false,
+    "secureInputBlocked": false,
+    "secureInputDetail": ""
+  },
+  "microphone_status": "not_determined",
+  "user_display_name": "Smoke",
+  "license_status": {
+    "state": "trial",
+    "days_left": 14,
+    "expires_at_ms": 1793379600000,
+    "license_problem": null,
+    "license_problem_message": null,
+    "has_stored_license": false,
+    "trial_days_left": 14,
+    "trial_expires_at_ms": 1793379600000,
+    "revocation_checked_at_ms": null,
+    "revoked_count": 0
+  },
+  "list_models": [
+    {
+      "id": "smoke-model-small",
+      "name": "Smoke Small",
+      "description": "Invented catalog entry for the smoke.",
+      "architecture": "whisper",
+      "filename": "smoke-small.bin",
+      "quant": "q5",
+      "sizeBytes": 190000000,
+      "downloaded": false,
+      "selected": false,
+      "recommended": true,
+      "recommendedRank": 1
+    },
+    {
+      "id": "smoke-model-large",
+      "name": "Smoke Large",
+      "description": "Invented catalog entry for the smoke.",
+      "architecture": "whisper",
+      "filename": "smoke-large.bin",
+      "quant": "q5",
+      "sizeBytes": 1100000000,
+      "downloaded": false,
+      "selected": false,
+      "recommended": false,
+      "recommendedRank": null
+    }
+  ],
+  "meeting_status": {
+    "recording": false,
+    "id": null,
+    "title": null,
+    "elapsedSeconds": 0,
+    "elapsedLabel": "00:00:00",
+    "captureAvailable": true,
+    "unavailableReason": null
+  },
+  "save_settings": null
+}
