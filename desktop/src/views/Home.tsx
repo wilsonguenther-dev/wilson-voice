@@ -226,7 +226,7 @@ export default function Home() {
                               onClick={() => {
                                 if (
                                   confirm(
-                                    "Save the words transcribed so far and delete this take's audio? The parts that didn't transcribe can't be recovered after this.",
+                                    "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this.",
                                   )
                                 )
                                   void retryFailed(f.id, true);

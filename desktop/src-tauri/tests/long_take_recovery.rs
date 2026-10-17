@@ -269,13 +269,16 @@ fn finishing_a_recovered_take_runs_the_same_gates_as_a_live_take() {
     // the dictionary, and the cleanup/polish pipeline — over the COMBINED text.
     let body = fn_body("retry_failed_dictation");
 
-    // 1. The hallucination gate, by the same symbol the live path calls.
+    // 1. The hallucination gate, by the same symbol the live path calls. It
+    //    lives in `retry_gate` (PR #216: it must run BEFORE the keep-or-convert
+    //    invariant), which the decode helper and the Keep path both call.
+    let gate = fn_body("retry_gate");
     assert!(
-        body.contains("dictation::degenerate_cutoff"),
+        gate.contains("dictation::degenerate_cutoff"),
         "the finish path must run the same degenerate-tail gate as a live take"
     );
     assert!(
-        body.contains("dictation::DEGEN_MIN_KEEP_TOKENS"),
+        gate.contains("dictation::DEGEN_MIN_KEEP_TOKENS"),
         "…including the same keep threshold, not a second opinion about it"
     );
     // 2. The cleanup pipeline, dictionary and polish included.
@@ -293,12 +296,21 @@ fn finishing_a_recovered_take_runs_the_same_gates_as_a_live_take() {
     );
     // 3. The recovered words are part of what those gates see — the partial
     //    text is folded into `raw_text` BEFORE the gate, not appended after it.
-    let gate_at = body
-        .find("dictation::degenerate_cutoff")
-        .expect("the gate is in the body");
-    let fold_at = body
-        .find("partial_text")
-        .expect("the finish path reads the take's partial text");
+    let decode = fn_body("decode_failed_take");
+    assert!(
+        body.contains("decode_failed_take("),
+        "the finish path decodes through the helper"
+    );
+    let gate_at = decode
+        .find("retry_gate(")
+        .expect("the gate is in the decode helper");
+    assert!(
+        decode[gate_at..].contains("retry_outcome("),
+        "the gate runs BEFORE the keep-or-convert invariant judges the text"
+    );
+    let fold_at = decode
+        .find("finish_recovered_decode(partial_text")
+        .expect("the finish path folds the take's partial text in");
     assert!(
         fold_at < gate_at,
         "the recovered words must be folded in BEFORE the gate runs — text that \

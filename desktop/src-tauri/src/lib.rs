@@ -3895,9 +3895,15 @@ fn word_count(t: Option<&str>) -> usize {
 /// Anything else keeps the row and the clip; only the user's confirmed "Keep
 /// what was transcribed" or "Discard" deletes them.
 ///
-/// The saved words follow [`next_attempt_text`]: a decode with zero failed
-/// windows that transcribed the remainder is authoritative and replaces them,
-/// even when shorter; any other decode may only extend them, never shrink them.
+/// `decoded` is ALWAYS gated text: [`decode_failed_take`] runs the
+/// hallucination gate ([`retry_gate`]) before this, so (b) counts the words
+/// that would really be converted, never a looping tail the gate then cuts.
+///
+/// The saved words follow [`next_attempt_text`]: a zero-failure decode that
+/// is SHORTER than the saved words replaces them only when the saved text is
+/// itself degenerate (`dictation::degenerate_cutoff`, a repetition loop);
+/// otherwise, and for any decode with a failed window, they may only be
+/// extended, never shrunk.
 fn retry_outcome(
     row: &db::FailedDictation,
     decoded: Result<(String, transcription::AsrOutput), String>,
@@ -3920,10 +3926,15 @@ fn retry_outcome(
     if !failed && !shorter {
         return RetryOutcome::Convert(text, asr);
     }
-    // Authoritative only when the engine really transcribed the remainder: a
-    // blank remainder (`recovered_only_output`, e.g. after a model switch) is
-    // no evidence against words an earlier attempt got.
-    let authoritative = !failed && !asr.text.trim().is_empty();
+    // A clean, shorter decode may replace the saved words ONLY when they are a
+    // repetition loop. Fewer words after a model switch, or a blank remainder
+    // (`recovered_only_output`), is no evidence against words an earlier
+    // attempt got: those stay, and so does the clip.
+    let saved_is_degenerate = row
+        .attempt_text
+        .as_deref()
+        .is_some_and(|t| dictation::degenerate_cutoff(t).is_some());
+    let authoritative = !failed && !asr.text.trim().is_empty() && saved_is_degenerate;
     let error = if failed {
         format!(
             "Part of this take didn't transcribe ({} of {} sections failed). The audio is kept — try again, or keep what was transcribed.",
@@ -3948,9 +3959,10 @@ fn retry_outcome(
 }
 
 /// The row's saved words after an attempt that did not convert: an
-/// authoritative (zero-failure) decode replaces them; any other attempt only
-/// EXTENDS them — its words must start with the saved words and add more —
-/// and otherwise leaves them exactly as they were.
+/// authoritative decode (zero failures, replacing a degenerate saved text)
+/// replaces them; any other attempt only EXTENDS them — its words must start
+/// with the saved words and add more, compared ignoring case and surrounding
+/// punctuation ("World," = "world") — and otherwise leaves them as they were.
 fn next_attempt_text(
     saved: Option<&str>,
     candidate: Option<&str>,
@@ -3962,14 +3974,58 @@ fn next_attempt_text(
     let Some(saved) = saved.filter(|s| !s.trim().is_empty()) else {
         return Some(candidate.to_string());
     };
-    let (old, new): (Vec<&str>, Vec<&str>) = (
-        saved.split_whitespace().collect(),
-        candidate.split_whitespace().collect(),
-    );
+    let norm = |t: &str| -> Vec<String> {
+        t.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let (old, new) = (norm(saved), norm(candidate));
     if authoritative || (new.len() > old.len() && new.starts_with(&old)) {
         Some(candidate.to_string())
     } else {
         Some(saved.to_string())
+    }
+}
+
+/// YV66 — the retry path's hallucination gate, the same one the live path
+/// runs. It matters MORE here: a successful retry unlinks the recovery wav, so
+/// a degenerate tail that slips through is unrecoverable — there is no audio
+/// left to try again with — and a good prefix thrown away is gone for the same
+/// reason. Runs on the COMBINED text (recovered words + decoded remainder)
+/// before [`retry_outcome`], and on the kept words of "Keep what was
+/// transcribed".
+fn retry_gate(raw_text: &mut String) -> Result<(), String> {
+    match dictation::degenerate_cutoff(raw_text) {
+        Some(cutoff)
+            if raw_text[..cutoff].split_whitespace().count()
+                >= dictation::DEGEN_MIN_KEEP_TOKENS =>
+        {
+            // YV20/M2: count only, never log the transcript body.
+            let before = raw_text.chars().count();
+            raw_text.truncate(cutoff);
+            let kept = raw_text.chars().count();
+            log::info!(
+                "retry hallucination gate: truncated degenerate tail (kept {} chars, dropped {} chars)",
+                kept,
+                before - kept
+            );
+            Ok(())
+        }
+        Some(_) => {
+            // Degenerate from the first token — nothing to keep, so the row and
+            // its wav stay put for another attempt.
+            // YV20/M2: count only, never log the transcript body.
+            log::info!(
+                "retry hallucination gate: rejected degenerate output ({} chars)",
+                raw_text.chars().count()
+            );
+            Err("Yap couldn't make sense of that clip — try dictating it again".into())
+        }
+        None => Ok(()),
     }
 }
 
@@ -3986,7 +4042,11 @@ fn decode_failed_take(
     samples: &[f32],
     decode: impl FnOnce(Vec<f32>) -> Result<transcription::AsrOutput, String>,
 ) -> Result<(String, transcription::AsrOutput), String> {
-    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, decode);
+    // The gate runs FIRST, so the invariant judges the text that would really
+    // be converted (rr1 re-review of 9784adf: "not shorter" passed on 76 words
+    // that the gate then cut to 16, and the clip was deleted).
+    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, decode)
+        .and_then(|(mut text, asr)| retry_gate(&mut text).map(|()| (text, asr)));
     match retry_outcome(row, decoded) {
         RetryOutcome::Convert(text, asr) => Ok((text, asr)),
         RetryOutcome::Keep {
@@ -4060,13 +4120,14 @@ fn retry_failed_dictation(
             return Err("The audio for this take is no longer on disk".into());
         }
         let settings = state.settings.lock().clone();
-        let (mut raw_text, asr) = if keep_partial {
-            let kept = row
+        let (raw_text, asr) = if keep_partial {
+            let mut kept = row
                 .attempt_text
                 .clone()
                 .or_else(|| row.partial_text.clone())
                 .filter(|t| !t.trim().is_empty())
                 .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
+            retry_gate(&mut kept)?;
             (kept, recovered_only_output())
         } else {
             let samples = record::read_wav_16k_mono(&wav)?;
@@ -4124,37 +4185,6 @@ fn retry_failed_dictation(
         };
         if raw_text.trim().is_empty() {
             return Err("There is nothing left to transcribe in this take".into());
-        }
-        // The same non-destructive gate as the live path (YV66). It matters MORE
-        // here: a successful retry unlinks the recovery wav, so a degenerate tail
-        // that slips through is unrecoverable — there is no audio left to try
-        // again with — and a good prefix thrown away is gone for the same reason.
-        match dictation::degenerate_cutoff(&raw_text) {
-            Some(cutoff)
-                if raw_text[..cutoff].split_whitespace().count()
-                    >= dictation::DEGEN_MIN_KEEP_TOKENS =>
-            {
-                // YV20/M2: count only, never log the transcript body.
-                let before = raw_text.chars().count();
-                raw_text.truncate(cutoff);
-                let kept = raw_text.chars().count();
-                log::info!(
-                "retry hallucination gate: truncated degenerate tail (kept {} chars, dropped {} chars)",
-                kept,
-                before - kept
-            );
-            }
-            Some(_) => {
-                // Degenerate from the first token — nothing to keep, so the row and
-                // its wav stay put for another attempt.
-                // YV20/M2: count only, never log the transcript body.
-                log::info!(
-                    "retry hallucination gate: rejected degenerate output ({} chars)",
-                    raw_text.chars().count()
-                );
-                return Err("Yap couldn't make sense of that clip — try dictating it again".into());
-            }
-            None => {}
         }
         // Same cleanup pipeline as a live take, minus the caret context: the retry
         // happens in Yap, so there is no cursor to join onto.
@@ -8618,7 +8648,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        /// What window `i` of one attempt decodes to.
+        /// What window `i` of one attempt decodes to (`n` = windows planned).
         #[derive(Clone, Copy, PartialEq, Debug)]
         enum Script {
             /// Every window decodes: w3, w4, w5, …
@@ -8627,24 +8657,48 @@ mod tests {
             Blank,
             /// Window 0 → "w3"; every later window fails.
             Partial,
+            /// Window 0 → "W3," and window 1 → "w4"; the rest fail.
+            PartialPunct,
+            /// Every window but the last decodes (w3 …); the last fails.
+            MostlyOk,
             /// Window 1 → "w4"; every other window fails.
             OtherWindow,
-            /// Window 0 loops ("w3" × 60, more words than a clean decode); every
-            /// later window fails.
+            /// Window 0 loops ("w3" × 60); every later window fails.
             Loop,
+            /// Clean, but window 0 is 14 real words then "the" × 60 and the
+            /// rest are blank: 76 words raw, 16 after the gate.
+            CleanLoop,
+            /// Clean, but only window 0 → "w3"; the rest blank (model switch).
+            CleanFew,
+            /// Clean, window 0 → "x3", the rest blank: same count as Partial,
+            /// different words.
+            CleanOther,
+            /// Not a decode: an earlier build saved a repetition loop on the row.
+            SeedLoop,
         }
-        fn window(script: Script, i: usize) -> Result<String, String> {
+        fn window(script: Script, i: usize, n: usize) -> Result<String, String> {
             let fail = || Err(format!("window {i} timed out"));
             match (script, i) {
                 (Script::Clean, i) => Ok(format!("w{}", i + 3)),
+                (Script::MostlyOk, i) if i + 1 < n => Ok(format!("w{}", i + 3)),
                 (Script::Blank, _) => Ok(String::new()),
                 (Script::Partial, 0) => Ok("w3".into()),
+                (Script::PartialPunct, 0) => Ok("W3,".into()),
+                (Script::PartialPunct, 1) => Ok("w4".into()),
                 (Script::OtherWindow, 1) => Ok("w4".into()),
                 (Script::Loop, 0) => Ok(vec!["w3"; 60].join(" ")),
+                (Script::CleanLoop, 0) => {
+                    let real: Vec<String> = (1..=14).map(|k| format!("r{k}")).collect();
+                    Ok(format!("{} {}", real.join(" "), vec!["the"; 60].join(" ")))
+                }
+                (Script::CleanFew, 0) => Ok("w3".into()),
+                (Script::CleanOther, 0) => Ok("x3".into()),
+                (Script::CleanLoop | Script::CleanFew | Script::CleanOther, _) => Ok(String::new()),
                 _ => fail(),
             }
         }
-        struct Scripted(Arc<AtomicUsize>, Arc<Mutex<Script>>);
+        let windows = Arc::new(AtomicUsize::new(usize::MAX));
+        struct Scripted(Arc<AtomicUsize>, Arc<Mutex<Script>>, Arc<AtomicUsize>);
         impl Transcriber for Scripted {
             fn transcribe(
                 &mut self,
@@ -8653,16 +8707,19 @@ mod tests {
                 _b: Option<&str>,
             ) -> Result<String, String> {
                 let i = self.0.fetch_add(1, Ordering::SeqCst);
-                window(*self.1.lock().unwrap(), i)
+                window(*self.1.lock().unwrap(), i, self.2.load(Ordering::SeqCst))
             }
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let script = Arc::new(Mutex::new(Script::Clean));
         let manager = {
-            let (calls, script) = (calls.clone(), script.clone());
+            let (calls, script, windows) = (calls.clone(), script.clone(), windows.clone());
             TranscriptionManager::with_loader(
                 Arc::new(move |_p: &std::path::Path| {
-                    Ok(Box::new(Scripted(calls.clone(), script.clone())) as Box<dyn Transcriber>)
+                    Ok(
+                        Box::new(Scripted(calls.clone(), script.clone(), windows.clone()))
+                            as Box<dyn Transcriber>,
+                    )
                 }),
                 Duration::from_secs(3600),
                 Duration::from_secs(3600),
@@ -8731,7 +8788,15 @@ mod tests {
         );
         let clean_tail: Vec<String> = (0..n).map(|i| format!("w{}", i + 3)).collect();
         let clean_tail = clean_tail.join(" ");
+        windows.store(n, Ordering::SeqCst);
         let looped = vec!["w3"; 60].join(" ");
+        let seq = |to: usize| -> String {
+            (3..=to)
+                .map(|k| format!("w{k}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mostly = seq(n + 1);
 
         // Expected state after an attempt: None = converted (row gone, wav
         // deleted); Some(saved words) = row and wav kept with these words.
@@ -8745,6 +8810,8 @@ mod tests {
                     t.to_string()
                 }
             };
+            // Resume rows keep their recovered words when nothing else is saved.
+            let recovered: Want = Some(resume_row.then(|| "w1 w2".to_string()));
             let histories: Vec<(&str, Vec<(Script, Want)>)> = vec![
                 ("clean full decode", vec![(Script::Clean, None)]),
                 (
@@ -8766,23 +8833,60 @@ mod tests {
                     vec![(Script::Partial, kept(&p("w3")))],
                 ),
                 (
-                    "shorter clean after a looping attempt",
+                    // The gate runs on a failed attempt too: a loop is never
+                    // saved as "transcribed so far".
+                    "looping attempt is gated, not saved",
+                    vec![(Script::Loop, recovered.clone())],
+                ),
+                (
+                    // rr1 on 9784adf: 76 raw words pass "not shorter" against 22
+                    // saved, the gate cuts them to 16 — the invariant must see 16.
+                    "looping clean decode the gate trims below saved",
                     vec![
-                        (Script::Loop, kept(&p(&looped))),
-                        // Authoritative: replaces the loop even though shorter,
-                        // but (b) still keeps the clip this once…
-                        (Script::Clean, kept(&p(&clean_tail))),
-                        // …and the next clean decode is no longer shorter.
+                        (Script::MostlyOk, kept(&p(&mostly))),
+                        (Script::CleanLoop, kept(&p(&mostly))),
+                    ],
+                ),
+                (
+                    // rr2 on 9784adf: fewer clean words (a model switch) never
+                    // replace non-degenerate saved words, so no later press can
+                    // convert on the shorter text.
+                    "clean shorter decode, non-degenerate saved text",
+                    vec![
+                        (Script::MostlyOk, kept(&p(&mostly))),
+                        (Script::CleanFew, kept(&p(&mostly))),
+                        (Script::CleanFew, kept(&p(&mostly))),
                         (Script::Clean, None),
                     ],
                 ),
                 (
-                    "two attempts decoding different windows",
+                    // The one case a shorter clean decode replaces saved words:
+                    // the saved words are a repetition loop.
+                    "shorter clean after a saved loop",
+                    vec![
+                        (Script::SeedLoop, kept(&p(&looped))),
+                        (Script::Clean, kept(&p(&clean_tail))),
+                        (Script::Clean, None),
+                    ],
+                ),
+                (
+                    // As designed, documented: an attempt with failed windows
+                    // whose words do not EXTEND the saved ones leaves them as
+                    // they were; a CLEAN decode with the same word count passes
+                    // (b) and converts on its own words.
+                    "same count, different words",
                     vec![
                         (Script::Partial, kept(&p("w3"))),
-                        // "w4" does not extend "w3": the saved words stay.
                         (Script::OtherWindow, kept(&p("w3"))),
-                        (Script::Clean, None),
+                        (Script::CleanOther, None),
+                    ],
+                ),
+                (
+                    // Extending ignores case and punctuation: "W3," extends "w3".
+                    "punctuation does not block an extension",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        (Script::PartialPunct, kept(&p("W3, w4"))),
                     ],
                 ),
             ];
@@ -8806,7 +8910,13 @@ mod tests {
                     .unwrap();
                 for (k, (s, want)) in steps.into_iter().enumerate() {
                     let ctx = format!("{case}, attempt {} ({s:?})", k + 1);
-                    let r = attempt(&row.id, s);
+                    let r = if s == Script::SeedLoop {
+                        let t = p(&looped);
+                        db.note_failed_retry(&row.id, "earlier", Some(&t)).unwrap();
+                        Err("earlier".to_string())
+                    } else {
+                        attempt(&row.id, s)
+                    };
                     let now = db.get_failed_dictation(&row.id).unwrap();
                     match want {
                         None => {
@@ -8845,12 +8955,20 @@ mod tests {
             .split_once("/// YV52 — throw a failed take away")
             .expect("the retry command must end where the next command begins")
             .0;
+        let gate = LIB
+            .split_once("fn retry_gate(")
+            .expect("the retry gate must exist")
+            .1
+            .split_once("\n}\n")
+            .unwrap()
+            .0;
+        assert!(body.contains("retry_gate(&mut kept)"), "Keep is gated too");
         assert!(
-            body.contains("dictation::degenerate_cutoff("),
+            gate.contains("dictation::degenerate_cutoff("),
             "the retry path must gate on the cutoff, not on a whole-take verdict"
         );
         assert!(
-            !body.contains("is_hallucinated_repetition"),
+            !gate.contains("is_hallucinated_repetition"),
             "the whole-take verdict is false for a degenerate TAIL — it would ship the loop"
         );
 
@@ -8872,6 +8990,9 @@ mod tests {
             "the gate must truncate this take, not reject it whole"
         );
         assert_eq!(text[..cutoff].trim_end(), prose);
+        let mut gated = text.clone();
+        super::retry_gate(&mut gated).expect("truncated, not rejected");
+        assert_eq!(gated.trim_end(), prose);
     }
 
     /// YV66 × YV67 — the two features meet inside ONE `match` arm, so this is
