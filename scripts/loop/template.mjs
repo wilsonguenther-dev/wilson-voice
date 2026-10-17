@@ -244,7 +244,7 @@ mktemp, then post the record:
   Re-read headRefOid, review the new head, and post on THAT. Never post on a sha you did not read.
 That comment IS the merge input. The land gate counts only a ${seat} record whose head equals the PR's head at
 merge time; a verdict that lives only in your return value or in a loop log does not exist for it. Post ONE
-record per review and never edit it (an edited record is void — post a new one instead).
+record per review and never edit it (an edited PASS is void and an edited BLOCK still blocks — post a new one).
 If you could not review the PR at all, post NO record: a PASS nobody earned is the exact defect this gate exists
 to stop, and with no record the PR simply stays review-pending.
 Add recordHead: "<HEAD>" and recordPosted: true|false to your return.

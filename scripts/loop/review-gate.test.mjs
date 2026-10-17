@@ -8,7 +8,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   cli, parseRecord, recordBody, securityClassOf, promptUnits, promptGateProblems,
-  EXIT_REVIEW, EXIT_USAGE, DEFAULT_REPO, RECORD_MARKER,
+  EXIT_REVIEW, EXIT_USAGE, EXIT_BAD_FLAG, DEFAULT_REPO, RECORD_MARKER,
 } from './review-gate.mjs'
 
 const HERE = path.dirname(new URL(import.meta.url).pathname)
@@ -99,7 +99,7 @@ test('(f) newest review-opus2 record on the head is BLOCK -> 6 (even with an old
   assert.match(r.out, /BLOCK on aaaaaaaaa by review-opus2/)
 })
 
-test('(g) an edited record -> 6', () => {
+test('(g) an edited PASS is void -> 6', () => {
   const r = gate(fixture({ comments: [rec({ edited: true })] }))
   assert.equal(r.code, EXIT_REVIEW, r.out)
 })
@@ -120,6 +120,78 @@ test('gate: --head that is not the current head (pushed after the PASS) -> 6, fa
   const broken = cli({ argv: ['gate', '--pr', '7'], gh: () => { throw new Error('HTTP 502') }, env: {} })
   assert.equal(broken.code, EXIT_REVIEW)
   assert.match(broken.out, /fails closed/)
+})
+
+const SEC = { files: ['desktop/src-tauri/capabilities/default.json'] }
+const LATER = '2026-10-17T10:30:00Z'
+
+test('B1: an edited BLOCK fails closed — both PASSes + a newer edited review-opus2 BLOCK -> 6 (security and standard)', () => {
+  const comments = () => [rec(), rec({ seat: 'review-opus2' }), rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, at: LATER, edited: true })]
+  const sec = gate(fixture({ ...SEC, comments: comments() }))
+  assert.equal(sec.code, EXIT_REVIEW, sec.out)
+  assert.match(sec.out, /BLOCK on aaaaaaaaa by review-opus2 \(edited — fails closed\)/)
+  const std = gate(fixture({ comments: comments() }))
+  assert.equal(std.code, EXIT_REVIEW, std.out)
+  assert.match(std.out, /BLOCK/)
+})
+
+test('B1: an edited BLOCK is superseded only by a fresh unedited record from the same seat on the same head', () => {
+  const r = gate(fixture({ comments: [rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, edited: true }), rec({ seat: 'review-opus2', at: LATER })] }))
+  assert.equal(r.code, 0, r.out)
+  // an edited PASS after it is void and supersedes nothing
+  const v = gate(fixture({ comments: [rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1 }), rec({ seat: 'review-opus2', at: LATER, edited: true }), rec()] }))
+  assert.equal(v.code, EXIT_REVIEW, v.out)
+})
+
+test('B2: a BLOCK under any seat name counts — review-opus PASS + newer review-opus-h1 BLOCK -> 6; both PASSes + h1 BLOCK (security) -> 6', () => {
+  const std = gate(fixture({ comments: [rec(), rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 2, at: LATER })] }))
+  assert.equal(std.code, EXIT_REVIEW, std.out)
+  assert.match(std.out, /BLOCK on aaaaaaaaa by review-opus-h1/)
+  const sec = gate(fixture({ ...SEC, comments: [rec(), rec({ seat: 'review-opus2' }), rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 1, at: LATER })] }))
+  assert.equal(sec.code, EXIT_REVIEW, sec.out)
+  // a fixer-seat BLOCK blocks too; an unlisted-seat PASS still never passes and never supersedes
+  assert.equal(gate(fixture({ comments: [rec(), rec({ seat: 'fix-land', verdict: 'BLOCK', blocking: 1, at: LATER })] })).code, EXIT_REVIEW)
+  assert.equal(gate(fixture({ comments: [rec({ seat: 'review-opus-h1' })] })).code, EXIT_REVIEW)
+  assert.equal(gate(fixture({ comments: [rec(), rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 1 }), rec({ seat: 'review-opus-h1', at: LATER })] })).code, EXIT_REVIEW)
+})
+
+test('B2: a malformed BLOCK fails closed — no blocking=, blocking=0, junk, no seat line, short head, no head', () => {
+  const mk = (edit) => { const c = rec({ verdict: 'BLOCK', blocking: 1, at: LATER }); c.body = edit(c.body); return [rec({ seat: 'review-opus2' }), c] }
+  const cases = {
+    'no blocking=': (b) => b.replace('verdict: BLOCK blocking=1', 'verdict: BLOCK'),
+    'blocking=0': (b) => b.replace('blocking=1', 'blocking=0'),
+    'junk blocking': (b) => b.replace('blocking=1', 'blocking=two'),
+    'lowercase': (b) => b.replace('verdict: BLOCK blocking=1', 'verdict: block'),
+    'two verdicts': (b) => b.replace('verdict: BLOCK blocking=1', 'verdict: PASS blocking=0\nverdict: BLOCK blocking=1'),
+    'no seat line': (b) => b.replace('seat: review-opus\n', ''),
+    'short head': (b) => b.replace(`head: ${HEAD}`, 'head: aaaaaaa'),
+    'no head line': (b) => b.replace(`head: ${HEAD}\n`, ''),
+  }
+  for (const [name, edit] of Object.entries(cases)) {
+    const r = gate(fixture({ comments: mk(edit) }))
+    assert.equal(r.code, EXIT_REVIEW, `${name}: ${r.out}`)
+    assert.match(r.out, /BLOCK/, name)
+  }
+  assert.equal(parseRecord(mk(cases['no blocking='])[1].body).blocking, 1)
+  // a short head binds only to the head it prefixes: a BLOCK on bbbbbbb does not block aaaa...
+  assert.equal(gate(fixture({ comments: mk((b) => b.replace(`head: ${HEAD}`, 'head: bbbbbbb')) })).code, 0)
+})
+
+test('advisory: --head with no value -> 2 (never the current head); a repo not owned by the pinned owner is refused', () => {
+  const fx = fixture({ comments: [rec()] })
+  for (const argv of [['gate', '--pr', '7', '--head'], ['gate', '--pr', '7', '--head', '--repo', DEFAULT_REPO], ['gate', '--pr', '7', '--head', '']]) {
+    const r = cli({ argv, gh: stubGh(fx).gh, env: {} })
+    assert.equal(r.code, EXIT_BAD_FLAG, `${argv.join(' ')}: ${r.out}`)
+  }
+  assert.equal(EXIT_BAD_FLAG, 2)
+  const foreign = { login: 'mallory', type: 'User' }
+  const fx2 = fixture({ comments: [{ ...rec(), user: foreign }] })
+  const viaFlag = cli({ argv: ['gate', '--pr', '7', '--head', HEAD, '--repo', 'mallory/wilson-voice'], gh: stubGh(fx2).gh, env: {} })
+  assert.equal(viaFlag.code, EXIT_REVIEW, viaFlag.out)
+  assert.match(viaFlag.out, /not owned by wilsonguenther-dev/)
+  const viaEnv = cli({ argv: ['gate', '--pr', '7', '--head', HEAD], gh: stubGh(fx2).gh, env: { LOOP_REPO: 'mallory/wilson-voice' } })
+  assert.equal(viaEnv.code, EXIT_REVIEW, viaEnv.out)
+  assert.equal(cli({ argv: ['klass', '--pr', '7', '--repo', 'mallory/x'], gh: stubGh(fx2).gh, env: {} }).code, EXIT_USAGE)
 })
 
 test('(h) record --head with a sha that is not the current head -> 64, nothing posted', () => {
