@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type ScratchNote, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { EmptyState, ErrorState, LoadingState, PageGlyph } from "../ViewStates";
 
 export default function Scratchpad() {
   const {
-    activeNoteId, copyText, noteBody, noteTitle, pasteText, scratch,
-    setActiveNoteId, setNoteBody, setNoteTitle, setScratch, toast,
+    activeNoteId, bootError, booting, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
+    scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, settings, toast,
   } = useAppCtx();
   async function saveNote() {
     try {
@@ -22,11 +24,15 @@ export default function Scratchpad() {
     }
   }
   function openNote(n: ScratchNote) {
+    setScratchComposing(true);
     setActiveNoteId(n.id);
     setNoteTitle(n.title);
     setNoteBody(n.body);
   }
   async function newNote() {
+    // Y5-B review fix — without this flag the state below is exactly the
+    // empty-state condition, so "New note" re-rendered the empty state.
+    setScratchComposing(true);
     setActiveNoteId(null);
     setNoteTitle("New note");
     setNoteBody("");
@@ -40,12 +46,42 @@ export default function Scratchpad() {
       toast(String(e));
     }
   }
+  // Y5-B — Scratchpad's SHAPE is provisional: DB-D gives it a real second
+  // window and versions, which will change what "empty" and "loading" mean
+  // here. These three states are deliberately thin so DB-D replaces them
+  // rather than fighting them.
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  // This list starts as [] so it cannot say "never loaded"; settings lands in
+  // the same refreshAll batch (all setters run together), so null settings is
+  // that signal.
+  const state = viewState(scratch, booting, settings == null ? bootError : null);
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="scratchpad"
+        view="scratchpad"
+        error={bootError}
+        actionLabel="Open your notes again"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="scratchpad" noun="notes" expected={scratch.length || null} onRetry={() => void refreshAll()} />;
   return (
             <div className="scratch">
               <div className="scratch-list">
                 <button className="primary" onClick={newNote}>
                   New note
                 </button>
+                {scratch.length === 0 && (
+                  <p className="tiny muted">
+                    Saved notes list here.
+                  </p>
+                )}
                 {scratch.map((n) => (
                   <button
                     key={n.id}
@@ -59,6 +95,18 @@ export default function Scratchpad() {
                   </button>
                 ))}
               </div>
+              {scratch.length === 0 && !scratchComposing && !noteBody && !activeNoteId ? (
+                <div className="scratch-editor">
+                  <EmptyState
+                    data-empty-state="scratchpad"
+                    glyph={<PageGlyph />}
+                    title="Nothing parked here yet"
+                    body="Somewhere to hold text between apps: a draft prompt, a paragraph you are not ready to send, a transcript you want to edit before it goes anywhere."
+                    actionLabel="New note"
+                    onAction={newNote}
+                  />
+                </div>
+              ) : (
               <div className="scratch-editor">
                 <input
                   className="note-title"
@@ -96,6 +144,7 @@ export default function Scratchpad() {
                   )}
                 </div>
               </div>
+              )}
             </div>
   );
 }

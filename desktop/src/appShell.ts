@@ -172,11 +172,29 @@ export function useAppShell() {
   const [query, setQuery] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  // Y5-B — per-view load state. Before this, `null` data meant both "still
+  // loading" and "failed", and the views rendered both as nothing.
+  // `booting` is true until the first refreshAll settles, either way.
+  const [booting, setBooting] = useState(true);
+  // Y5-B — loadMeetings used to swallow its rejection into console.error, so a
+  // failed read rendered as "no meetings yet": the app telling the user their
+  // records were gone. Now it has somewhere to put the failure.
+  const [meetingsError, setMeetingsError] = useState<string | null>(null);
+  const [meetingsLoading, setMeetingsLoading] = useState(true);
+  // Y5-B — same swallow in refreshPerms: `perms` stayed null and the whole
+  // Permissions view rendered a blank summary line with no way to know why.
+  const [permsError, setPermsError] = useState<string | null>(null);
   const [newTerm, setNewTerm] = useState("");
   const [newPreferred, setNewPreferred] = useState("");
   const [noteTitle, setNoteTitle] = useState("Scratchpad");
   const [noteBody, setNoteBody] = useState("");
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  // Y5-B review fix — "the user has asked for an editor". Scratchpad shows its
+  // empty state only while no note is saved AND this is false; newNote() and
+  // Home's send-to-scratchpad set it, so neither "New note" button can leave
+  // the user staring at the empty state, and clearing a draft's body never
+  // unmounts the editor mid-edit.
+  const [scratchComposing, setScratchComposing] = useState(false);
   // YV15 — key-capture for the push-to-talk shortcut. `capturing` arms a global
   // keydown listener; `captureHint` shows the live result / validation message.
   const [capturing, setCapturing] = useState(false);
@@ -292,8 +310,14 @@ export function useAppShell() {
       setMeetings(
         await invoke<Meeting[]>("list_meetings", { query: q || null }),
       );
+      setMeetingsError(null);
     } catch (e) {
+      // Y5-B — was `console.error(e)` and nothing else. A user never opens the
+      // web inspector, so the only thing they saw was an empty list.
       console.error(e);
+      setMeetingsError(errorText(e));
+    } finally {
+      setMeetingsLoading(false);
     }
   }, []);
 
@@ -309,8 +333,10 @@ export function useAppShell() {
   const refreshPerms = useCallback(async () => {
     try {
       setPerms(await invoke<PermissionReport>("get_permissions"));
+      setPermsError(null);
     } catch (e) {
       console.error(e);
+      setPermsError(errorText(e));
     }
   }, []);
 
@@ -362,6 +388,11 @@ export function useAppShell() {
         message: `Bridge error: ${e}`,
         lastError: String(e),
       }));
+    } finally {
+      // Y5-B — the first pass has settled, success or failure. Until this
+      // flips, every view renders its loading state instead of its empty one:
+      // "you have nothing" is a claim you may only make after you looked.
+      setBooting(false);
     }
   }, [loadHistory, refreshPerms]);
 
@@ -1173,7 +1204,7 @@ export function useAppShell() {
   const needsPerms = perms && !perms.allCriticalOk;
 
   return {
-    activeNoteId, applyBinding, bootError, buyPrompt, buyYap, candidates,
+    activeNoteId, applyBinding, booting, bootError, buyPrompt, buyYap, candidates,
     captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
     consent, consentOpen, consentRef, copyAgainId, copyText, crashToastShown,
     crashes, daily30, dailySeries, dictionary, diffId, editExpansion,
@@ -1182,13 +1213,14 @@ export function useAppShell() {
     formatting, hasActivity, heat, heatSummary, history, insights,
     installUpdateNow, installedVersion, installing, license, licenseChip, loadFailed,
     loadHistory, loadMeetings, maxApp, maxDaily30, maxWeek, meetingBusy,
+    meetingsError, meetingsLoading, permsError, setMeetingsError, setMeetingsLoading, setPermsError,
     meetingKind, meetingKinds, meetingQuery, meetingStatus, meetings, modelIsReady,
     modelSetup, monthlySeries, monthlyView, nav, needsPerms, newExpansion,
     newPreferred, newTerm, newTrigger, noteBody, noteTitle, openLicenseTab,
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
     refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
-    saveSettings, scratch, sendSupportBundle, setActiveNoteId, setBootError, setBuyPrompt,
+    saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBootError, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCopyAgainId, setCrashes, setDailySeries, setDictionary, setDiffId,
     setEditExpansion, setEditPreferred, setEditTerm, setEditTrigger, setEditingSnippetId, setEditingTermId,
@@ -1197,7 +1229,7 @@ export function useAppShell() {
     setMeetingKind, setMeetingKinds, setMeetingQuery, setMeetingStatus, setMeetings, setMonthlySeries,
     setNav, setNewExpansion, setNewPreferred, setNewTerm, setNewTrigger, setNoteBody,
     setNoteTitle, setOpenMeeting, setPerms, setQuery, setRetryId, setRetrying,
-    setScratch, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
+    setScratch, setScratchComposing, setSettings, setSettingsTab, setSignatureDraft, setSnippets, setStatus,
     setSupportBusy, setSupportOpen, setSupportPreview, setSysAudio, setSysAudioBusy, setSysAudioGate,
     setUpdate, setUserName, settings, settingsTab, signatureDraft, skipUpdateVersion,
     snippets, status, supportBusy, supportOpen, supportPreview, sysAudio,

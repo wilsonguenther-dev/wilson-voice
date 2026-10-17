@@ -3,18 +3,27 @@ import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
 import { type TranscriptEntry, undoAiEditText, type DictCandidate, formatTime } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
   const {
-    clearAll, clearing, copyText, diffId, 
+    bootError, booting, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, pasteText, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
-    setNoteTitle, setQuery, setRetryId, settings, status, toast,
+    setNoteTitle, setQuery, setRetryId, setScratchComposing, settings, status, toast,
     toggleRecord,
   } = useAppCtx();
-  if (!insights) return null;
+  // Y5-B — was `if (!insights) return null`: a heading over a blank page on
+  // every fresh install, because insights is null until the first read lands.
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  const state = viewState(history, booting || !insights, insights == null ? bootError : null);
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
@@ -77,6 +86,24 @@ export default function Home() {
       toast(String(e));
     }
   }
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="home"
+        view="home"
+        error={bootError}
+        actionLabel="Reload history"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="home" noun="history" expected={insights?.totalSessions ?? null} onRetry={() => void refreshAll()} />;
+
+  // Y5-B review fix — no model gate here. YV54 (#68): the recommended model
+  // downloads on its own once onboarding finishes and the slim <ModelRibbon>
+  // in App.tsx is the only surface; replacing Home would contradict that copy
+  // and hide history, search and failed-take recovery from any install whose
+  // selected model file is missing.
   return (
             <>
               <YappyHouse
@@ -201,13 +228,18 @@ export default function Home() {
               )}
 
               {history.length === 0 ? (
-                <div className="empty">
-                  <h3>No dictations yet</h3>
-                  <p>
-                    Click Dictate or hold <kbd>fn</kbd>. Text is stored locally
-                    and searchable forever.
-                  </p>
-                </div>
+                <EmptyState
+                  data-empty-state="home:history"
+                  glyph={<WaveGlyph />}
+                  title={query ? "Nothing matches that" : "No dictations yet"}
+                  body={
+                    query
+                      ? "Search reads every word you have ever dictated. Try a shorter phrase."
+                      : "Hold fn and say something. The text lands here, stored on this Mac and searchable forever."
+                  }
+                  actionLabel={query ? "Clear the search" : "Hold fn and say something"}
+                  onAction={query ? () => setQuery("") : toggleRecord}
+                />
               ) : (
                 <ul className="feed">
                   {history.map((e) => (
@@ -306,6 +338,7 @@ export default function Home() {
                               className="ghost"
                               onClick={() => {
                                 setNav("scratchpad");
+                                setScratchComposing(true);
                                 setNoteTitle(`From ${formatTime(e.createdAt)}`);
                                 setNoteBody(e.text);
                                 setActiveNoteId(null);

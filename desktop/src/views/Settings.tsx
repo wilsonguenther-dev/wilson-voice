@@ -8,9 +8,32 @@ import Privacy from "./settings/Privacy";
 import License from "./settings/License";
 import { SETTINGS_TABS } from "../appTypes";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { ErrorState, LoadingState } from "../ViewStates";
 
 export default function Settings() {
-  const { settingsTab, setSettingsTab } = useAppCtx();
+  const { bootError, booting, refreshAll, settings, settingsTab, setSettingsTab } =
+    useAppCtx();
+  // PANEL 2026-09-12 — Settings has no empty state either: there is nothing it
+  // could be empty OF. Loading + error, and its settled state is the panels.
+  // Y5-B fix round (#192 BLOCKING) - bootError is shared by refreshAll's 11
+  // calls plus loadHistory, so it only replaces THIS view when this view's own
+  // data never landed. A later refresh that fails (model-ready edge,
+  // silent_capture) keeps already-loaded data on screen; the bridge message
+  // is in status, the same as on main.
+  const state = viewState(settings, booting, settings == null ? bootError : null);
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="settings"
+        view="settings"
+        error={bootError}
+        actionLabel="Read settings again"
+        onAction={() => void refreshAll()}
+      />
+    );
+  if (state === "loading")
+    return <LoadingState data-loading-state="settings" noun="settings" rows={5} onRetry={() => void refreshAll()} />;
   return (
             <div className="settings">
               {/* YV27 — segmented sub-nav: one panel at a time, no infinite scroll. */}

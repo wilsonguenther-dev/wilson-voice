@@ -3,13 +3,49 @@ import { awaitMicDecision } from "../micStatus";
 import { setupState, SYSTEM_AUDIO_PANE, SYSTEM_AUDIO_SETUP } from "../meetings/systemAudio";
 import StatusDot from "../StatusDot";
 import { useAppCtx } from "../appShell";
+import { viewState } from "../viewState";
+import { ErrorState, LoadingState } from "../ViewStates";
+import type { PermissionReport } from "../appTypes";
+
+/**
+ * Y5-B fix round (#192 BLOCKING) - the exact string permissions.rs emits when
+ * `all_critical_ok && parts.is_empty()`. `allCriticalOk` alone is mic + mic
+ * auth + ASR; it leaves out Accessibility, Input Monitoring and audio capture,
+ * so it cannot license "Nothing to fix here" by itself.
+ */
+export const PERMS_ALL_CLEAR_SUMMARY = "All critical permissions look good for Yap.";
+
+/** The all-clear copy shows only when the Rust report itself says nothing nags. */
+export function permsAllClear(
+  perms: Pick<PermissionReport, "allCriticalOk" | "accessibility" | "summary">,
+): boolean {
+  return perms.allCriticalOk && perms.accessibility && perms.summary === PERMS_ALL_CLEAR_SUMMARY;
+}
 
 export default function Permissions() {
   const {
-    modelSetup, openModelSettings, perms, refreshPerms,
+    booting, modelSetup, openModelSettings, permsError, perms, refreshPerms,
     runSystemAudioSetup, status, sysAudio, sysAudioBusy, sysAudioGate,
     toast,
   } = useAppCtx();
+  // PANEL 2026-09-12 — Permissions has NO empty state. There are always seven
+  // rows to show; a report with nothing in it is a failed read, which is the
+  // error state below, not "you have no permissions". So this view enumerates
+  // loading + error + a settled state, and the settled state's good news
+  // ("nothing to fix here") is carried by the rows themselves.
+  const state = viewState(perms, booting, permsError);
+  if (state === "error")
+    return (
+      <ErrorState
+        data-error-state="permissions"
+        view="permissions"
+        error={permsError}
+        actionLabel="Re-check permissions"
+        onAction={() => void refreshPerms()}
+      />
+    );
+  if (state === "loading" || !perms)
+    return <LoadingState data-loading-state="permissions" noun="permissions" rows={4} onRetry={() => void refreshPerms()} />;
   return (
             <div className="perms">
               <div className="panel intro">
@@ -20,7 +56,11 @@ export default function Permissions() {
                   Privacy &amp; Security. Yap runs no helper process, so that
                   one row is the only thing you ever enable.
                 </p>
-                <p className="muted">{perms?.summary}</p>
+                <p className="muted" data-settled-state="permissions">
+                  {permsAllClear(perms)
+                    ? "Everything Yap needs is granted. Nothing to fix here."
+                    : perms.summary}
+                </p>
                 <div className="actions">
                   <button className="primary" onClick={refreshPerms}>
                     Re-check permissions
