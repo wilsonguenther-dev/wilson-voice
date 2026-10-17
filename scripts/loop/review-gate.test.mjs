@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  cli, parseRecord, recordBody, securityClassOf, promptUnits, promptGateProblems,
+  cli, parseRecord, recordBody, headAt, securityClassOf, promptUnits, promptGateProblems,
   EXIT_REVIEW, EXIT_USAGE, EXIT_BAD_FLAG, DEFAULT_REPO, RECORD_MARKER,
 } from './review-gate.mjs'
 
@@ -18,8 +18,8 @@ const T0 = '2026-10-17T10:00:00Z'
 let nextId = 1
 
 /** A fixture PR. files default to a standard (non-security) frontend file. */
-const fixture = ({ head = HEAD, files = ['desktop/src/App.tsx'], labels = [], title = 'yap-x: standard change', comments = [] } = {}) =>
-  ({ head, files, labels, title, comments, ci: 'success', mergeable: 'MERGEABLE' })
+const fixture = ({ head = HEAD, files = ['desktop/src/App.tsx'], labels = [], title = 'yap-x: standard change', comments = [], commits = [{ oid: head, committedDate: '2026-10-17T09:00:00Z' }] } = {}) =>
+  ({ head, files, labels, title, comments, commits, ci: 'success', mergeable: 'MERGEABLE' })
 
 /** The record a seat posts, as GitHub returns it in issues/N/comments. */
 const rec = ({ seat = 'review-opus', head = HEAD, verdict = 'PASS', blocking = 0, at = T0, edited = false, login = 'wilsonguenther-dev', type = 'User' } = {}) => ({
@@ -36,7 +36,7 @@ function stubGh(fx) {
   const gh = (args) => {
     calls.push(args)
     const a = args.join(' ')
-    if (/^pr view \d+ -R \S+ --json labels,headRefOid,title$/.test(a)) return JSON.stringify({ labels: fx.labels.map((name) => ({ name })), headRefOid: fx.head, title: fx.title })
+    if (/^pr view \d+ -R \S+ --json labels,headRefOid,title,commits$/.test(a)) return JSON.stringify({ labels: fx.labels.map((name) => ({ name })), headRefOid: fx.head, title: fx.title, commits: fx.commits })
     if (/^pr view \d+ -R \S+ --json headRefOid$/.test(a)) return JSON.stringify({ headRefOid: fx.head })
     if (/^api repos\/\S+\/pulls\/\d+\/files\?per_page=100 --paginate --jq \.\[\]\.filename$/.test(a)) return fx.files.join('\n') + '\n'
     if (/^api repos\/\S+\/issues\/\d+\/comments\?per_page=100&page=1$/.test(a)) return JSON.stringify(fx.comments)
@@ -110,7 +110,7 @@ test('(g2) not a record: a bot author, a foreign author, PASS with blocking>0, a
   assert.equal(gate(fixture({ comments: [rec({ blocking: 1 })] })).code, EXIT_REVIEW)
   const short = rec(); short.body = short.body.replace(`head: ${HEAD}`, 'head: aaaaaaa')
   assert.equal(gate(fixture({ comments: [short] })).code, EXIT_REVIEW)
-  assert.deepEqual(parseRecord(short.body).malformed !== undefined, true)
+  assert.equal(parseRecord(short.body).kind, 'unparsable')
 })
 
 test('gate: --head that is not the current head (pushed after the PASS) -> 6, fails closed on a gh error', () => {
@@ -129,24 +129,36 @@ test('B1: an edited BLOCK fails closed — both PASSes + a newer edited review-o
   const comments = () => [rec(), rec({ seat: 'review-opus2' }), rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, at: LATER, edited: true })]
   const sec = gate(fixture({ ...SEC, comments: comments() }))
   assert.equal(sec.code, EXIT_REVIEW, sec.out)
-  assert.match(sec.out, /BLOCK on aaaaaaaaa by review-opus2 \(edited — fails closed\)/)
+  assert.match(sec.out, /BLOCK on aaaaaaaaa by review-opus2 \(comment \d+; edited\)/)
   const std = gate(fixture({ comments: comments() }))
   assert.equal(std.code, EXIT_REVIEW, std.out)
   assert.match(std.out, /BLOCK/)
 })
 
-test('B1: an edited BLOCK is superseded only by a fresh unedited record from the same seat on the same head', () => {
-  const r = gate(fixture({ comments: [rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, edited: true }), rec({ seat: 'review-opus2', at: LATER })] }))
-  assert.equal(r.code, 0, r.out)
-  // an edited PASS after it is void and supersedes nothing
-  const v = gate(fixture({ comments: [rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1 }), rec({ seat: 'review-opus2', at: LATER, edited: true }), rec()] }))
-  assert.equal(v.code, EXIT_REVIEW, v.out)
+test('CLEARING: a BLOCK is FINAL for its head — a later PASS from the same seat (fresh, unedited) or any seat never clears it', () => {
+  const same = gate(fixture({ comments: [rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, edited: true }), rec({ seat: 'review-opus2', at: LATER })] }))
+  assert.equal(same.code, EXIT_REVIEW, same.out)
+  assert.match(same.out, /final for this head/)
+  const unedited = gate(fixture({ ...SEC, comments: [rec({ seat: 'review-opus', verdict: 'BLOCK', blocking: 1 }), rec({ at: LATER }), rec({ seat: 'review-opus2', at: LATER })] }))
+  assert.equal(unedited.code, EXIT_REVIEW, unedited.out)
+  // an edited PASS reads as a BLOCK on its head
+  const ep = gate(fixture({ comments: [rec({ edited: true }), rec({ seat: 'review-opus2', at: LATER })] }))
+  assert.equal(ep.code, EXIT_REVIEW, ep.out)
+  assert.match(ep.out, /edited PASS/)
+})
+
+test('CLEARING: a new push + a complete fresh round on the new head lands past an old-head BLOCK', () => {
+  const commits = [{ oid: OLD, committedDate: '2026-10-17T09:00:00Z' }, { oid: HEAD, committedDate: '2026-10-17T11:00:00Z' }]
+  const round = [rec({ seat: 'review-opus2', head: OLD, verdict: 'BLOCK', blocking: 2 }), rec({ at: '2026-10-17T12:00:00Z' }), rec({ seat: 'review-opus2', at: '2026-10-17T12:01:00Z' })]
+  assert.equal(gate(fixture({ ...SEC, commits, comments: round })).code, 0)
+  // a half round (security PR, one seat) does not
+  assert.equal(gate(fixture({ ...SEC, commits, comments: round.slice(0, 2) })).code, EXIT_REVIEW)
 })
 
 test('B2: a BLOCK under any seat name counts — review-opus PASS + newer review-opus-h1 BLOCK -> 6; both PASSes + h1 BLOCK (security) -> 6', () => {
   const std = gate(fixture({ comments: [rec(), rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 2, at: LATER })] }))
   assert.equal(std.code, EXIT_REVIEW, std.out)
-  assert.match(std.out, /BLOCK on aaaaaaaaa by review-opus-h1/)
+  assert.match(std.out, /^review: needs-human — BLOCK on aaaaaaaaa from outside seat\(s\) review-opus-h1 \(comment \d+\)/)
   const sec = gate(fixture({ ...SEC, comments: [rec(), rec({ seat: 'review-opus2' }), rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 1, at: LATER })] }))
   assert.equal(sec.code, EXIT_REVIEW, sec.out)
   // a fixer-seat BLOCK blocks too; an unlisted-seat PASS still never passes and never supersedes
@@ -175,6 +187,79 @@ test('B2: a malformed BLOCK fails closed — no blocking=, blocking=0, junk, no 
   assert.equal(parseRecord(mk(cases['no blocking='])[1].body).blocking, 1)
   // a short head binds only to the head it prefixes: a BLOCK on bbbbbbb does not block aaaa...
   assert.equal(gate(fixture({ comments: mk((b) => b.replace(`head: ${HEAD}`, 'head: bbbbbbb')) })).code, 0)
+})
+
+const body = (b) => ({ ...rec({ at: LATER }), body: b })
+const PASS2 = () => rec({ seat: 'review-opus2' })
+
+test('RECOGNITION: bold / spaced / fenced / blank-line / notes / FAIL / unparsable all read as BLOCK', () => {
+  const shapes = {
+    bold: `**loop-review (Opus)**\n**seat:** review-opus\n**head:** ${HEAD}\n**verdict:** BLOCK blocking=1`,
+    spaced: `loop-review (Opus)\nseat: review-opus\nhead: ${HEAD}\nVerdict : BLOCK`,
+    fenced: `independent review\n\`\`\`\nloop-review (Opus)\nseat: review-opus\nhead: ${HEAD}\nverdict: BLOCK blocking=2\n\`\`\``,
+    blankLine: `loop-review (Opus)\nseat: review-opus\n\nhead: ${HEAD}\n\nverdict: BLOCK blocking=1`,
+    inNotes: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: PASS blocking=0\n\nsecond look — verdict: BLOCK, the updater path`,
+    fail: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: FAIL blocking=1`,
+    nonPassWord: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: REJECT`,
+    unparsable: 'we ran loop-review on this and it is not ready',
+  }
+  for (const [name, b] of Object.entries(shapes)) {
+    const r = gate(fixture({ comments: [PASS2(), body(b)] }))
+    assert.equal(r.code, EXIT_REVIEW, `${name}: ${r.out}`)
+    assert.match(r.out, /BLOCK on aaaaaaaaa/, name)
+  }
+  assert.equal(parseRecord(shapes.fail).kind, 'unparsable')
+  assert.equal(parseRecord(shapes.fenced).kind, 'block')
+  assert.match(gate(fixture({ comments: [PASS2(), body(shapes.unparsable)] })).out, /unparsable record/)
+  assert.equal(parseRecord('ordinary comment, no marker'), null)
+  // a foreign author's BLOCK is still not a record
+  assert.equal(gate(fixture({ comments: [PASS2(), { ...body(shapes.bold), user: { login: 'someone-else', type: 'User' } }] })).code, 0)
+  // the record subcommand refuses a PASS whose notes would read as a BLOCK
+  assert.throws(() => recordBody({ seat: 'review-opus', lens: 'x', head: HEAD, verdict: 'PASS', blocking: 0, notes: 'verdict: BLOCK earlier' }), /verdict:/)
+})
+
+test('SCOPE: a headless BLOCK applies to the head current at its created_at, never to a later head', () => {
+  const commits = [{ oid: OLD, committedDate: '2026-10-17T09:00:00Z' }, { oid: HEAD, committedDate: '2026-10-17T11:00:00Z' }]
+  const headless = (at) => ({ ...rec({ at }), body: `loop-review (Opus)\nseat: review-opus\nverdict: BLOCK blocking=1` })
+  assert.equal(headAt(commits, '2026-10-17T10:00:00Z'), OLD)
+  assert.equal(headAt(commits, '2026-10-17T08:00:00Z'), null)
+  // posted at 10:00 → on OLD; head is now HEAD with a full round → lands
+  const fullRound = [rec({ at: '2026-10-17T12:00:00Z' }), rec({ seat: 'review-opus2', at: '2026-10-17T12:01:00Z' })]
+  assert.equal(gate(fixture({ ...SEC, commits, comments: [headless('2026-10-17T10:00:00Z'), ...fullRound] })).code, 0)
+  // posted at 11:30 → on HEAD → refused, and the same seat's later PASS does not clear it
+  const now = gate(fixture({ ...SEC, commits, comments: [headless('2026-10-17T11:30:00Z'), ...fullRound] }))
+  assert.equal(now.code, EXIT_REVIEW, now.out)
+  // while OLD was still the head, the headless BLOCK refused it
+  assert.equal(gate(fixture({ head: OLD, commits: commits.slice(0, 1), comments: [headless('2026-10-17T10:00:00Z'), rec({ head: OLD, at: LATER })] })).code, EXIT_REVIEW)
+  // an unreadable commit list fails closed
+  const fx = fixture({ comments: [rec()] }); fx.commits = null
+  assert.equal(gate(fx).code, EXIT_REVIEW)
+})
+
+test('ROUTING: an outside-seat BLOCK prints needs-human with the comment id; a reviewer-seat BLOCK does not', () => {
+  const h1 = rec({ seat: 'review-opus-h1', verdict: 'BLOCK', blocking: 1, at: LATER })
+  const r = gate(fixture({ comments: [rec(), h1] }))
+  assert.equal(r.code, EXIT_REVIEW)
+  assert.ok(r.out.startsWith('review: needs-human'), r.out)
+  assert.ok(r.out.includes(`comment ${h1.id}`), r.out)
+  const inside = gate(fixture({ comments: [rec(), rec({ seat: 'review-opus2', verdict: 'BLOCK', blocking: 1, at: LATER })] }))
+  assert.ok(inside.out.startsWith('review: BLOCK'), inside.out)
+  const tpl = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  assert.ok(tpl.includes('exit 6 and the last line starts "review: needs-human"'))
+  assert.ok(tpl.includes('--add-label needs-human') && tpl.includes('needs-human: outside-seat BLOCK, comment id(s)'))
+})
+
+test('TRIAGE: needs-human PRs are skipped (prompt, schema and the JS filter) and listed as held', () => {
+  const tpl = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  assert.ok(tpl.includes('SKIP every PR labelled needs-human'))
+  assert.match(tpl, /held: \{\s*type: 'array'/)
+  assert.ok(tpl.includes("REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))"))
+  assert.ok(tpl.includes('list them as HELD'))
+  // the filter itself, lifted out of the template and run
+  const src = tpl.match(/const isHeld = (\(q\) => [^\n]+)/)[1]
+  const isHeld = new Function(`return ${src}`)()
+  const queue = [{ pr: 1, labels: ['loop-build'] }, { pr: 2, labels: ['needs-human'] }, { pr: 3, labels: [{ name: 'needs-human' }] }, { pr: 4 }]
+  assert.deepEqual(queue.filter((q) => !isHeld(q)).map((q) => q.pr), [1, 4])
 })
 
 test('advisory: --head with no value -> 2 (never the current head); a repo not owned by the pinned owner is refused', () => {

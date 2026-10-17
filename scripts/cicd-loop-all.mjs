@@ -63,7 +63,7 @@ if (halted) {
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 39 })
 } else {
   phase("part-01")
-  log("START part-01 — 39 item(s), Y0-A..yap-lifecycle-2026-10-16 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (354377 bytes)")
+  log("START part-01 — 39 item(s), Y0-A..yap-lifecycle-2026-10-16 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (356961 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (39 item(s))")
@@ -96,7 +96,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 46 })
 } else {
   phase("part-02")
-  log("START part-02 — 46 item(s), yap-qa-harness..SEC-B — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (398406 bytes)")
+  log("START part-02 — 46 item(s), yap-qa-harness..SEC-B — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (400990 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (46 item(s))")
@@ -129,7 +129,7 @@ if (halted) {
   results.push({ part: "part-03", status: 'skipped: review mode runs part-01 only', items: 55 })
 } else {
   phase("part-03")
-  log("START part-03 — 55 item(s), Y5-G..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (385319 bytes)")
+  log("START part-03 — 55 item(s), Y5-G..yap24-X3 — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs (387903 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-03.mjs" }, args)
     log("END part-03 — " + (result && result.halted ? 'halted' : 'finished') + " (55 item(s))")

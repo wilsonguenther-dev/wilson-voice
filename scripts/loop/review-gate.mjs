@@ -24,30 +24,37 @@
  *     lens: <free text>
  *     head: <the 40-hex head sha the seat read>
  *     verdict: PASS blocking=0 | BLOCK blocking=<n>
- * Free-text notes follow the first blank line and are never read as fields.
+ * Free-text notes follow the first blank line and are never read as header fields.
  * Not a record, ever: an author outside REVIEW_AUTHORS (the account the seats post as); a bot author.
- * A BLOCK FAILS CLOSED (review-opus-h1 B1/B2 on PR #222, the same rule as Learn's H-GATE-1). From an allowed
- * author, ANY comment whose header carries a `verdict: BLOCK...` line is a blocking record:
- *   - under ANY seat name (review-opus-h1, a fixer, no seat line at all): seat names only matter for PASSes;
- *   - EDITED (updated_at != created_at): still blocking, until a fresh unedited record from the same seat on the
- *     same head supersedes it;
- *   - malformed: a missing or unparsable `blocking=` (or blocking=0) is blocking=1; a duplicate field is ignored in
- *     favour of blocking; a 7..39-hex head binds to the head it prefixes; a missing or unreadable head binds to
- *     EVERY head (it blocks until the same seat posts a newer record on the current head, or a human deletes it).
- * A PASS counts only when it is well formed, unedited (an edited PASS is VOID — re-post, never rebind), from a
- * seat in REVIEW_SEATS (a fixer, drain, sweeper, land or any unlisted seat never passes a PR), with blocking=0
- * and a full 40-hex head. A PASS that does not count also never supersedes an earlier BLOCK.
  *
- * THE DECISION — reviewDecision(), pure, against the PR's CURRENT head only (a push makes a new head, so ANY push —
- * a rebase, a conflict resolution, a fix — invalidates every record and needs a fresh PASS):
+ * RECOGNITION (review-opus B3) — liberal for BLOCK, strict for PASS. From an allowed author:
+ *   - ANY comment containing "loop-review" anywhere (``` / ~~~ fence lines stripped first) is a record;
+ *   - any line matching BLOCK_LINE_RE /verdict\s*:.*\bBLOCK\b/i — bold, "Verdict :", a blank line between header
+ *     lines, in the notes, inside a fence — makes it a BLOCK (blocking= missing or unparsable → 1);
+ *   - it is a PASS ONLY when it is a CLEAN header: first non-empty line the marker, each field once, seat in
+ *     REVIEW_SEATS, a 40-hex head, `verdict: PASS blocking=0`, and the comment is unedited;
+ *   - anything else carrying the marker (`verdict: FAIL`, a non-PASS word, an edited PASS, a PASS from a fixer or an
+ *     unlisted seat, a short head, no verdict at all) is an "unparsable record", treated as BLOCK (fails closed).
+ * SCOPE (review-opus2 a): a BLOCK applies to the head(s) it names on `head:` lines (40 hex exact, 7..39 hex as a
+ *   prefix). A BLOCK naming no readable head applies to the PR head that was current when the comment was created:
+ *   the newest PR commit whose committedDate <= the comment's created_at (`gh pr view --json commits`). It never
+ *   applies to a later head. LIMIT: committer dates are not push times; a commit dated after the comment is read
+ *   as a later head.
+ * CLEARING (review-opus advisory, review-opus2 b): a BLOCK on head H is FINAL for H. No later PASS from any seat
+ *   on H clears it, the same seat's included. The only way past is a NEW push (a new head) followed by a complete
+ *   fresh round: an unedited PASS from every required seat on the new head and no BLOCK scoped to it. Deleting the
+ *   comment removes it from the gate's input — that is outside the gate's control, and a human act.
+ * ROUTING (review-opus2): a refusal caused by a BLOCK from a seat outside REVIEW_SEATS (a hand-posted independent
+ *   review, or no readable seat) prints `review: needs-human — ...` with the blocking comment id(s); the merge
+ *   paths label that PR needs-human (not review-pending) and triage skips needs-human PRs.
+ *
+ * THE DECISION — reviewDecision(), pure, against the PR's CURRENT head only:
  *   SECURITY class (securityClassOf: an item id in SECURITY_IDS, a security label, a file under SECURITY_PATHS, or
  *   a file list longer than one page): a PASS from review-opus AND a PASS from review-opus2 on the head — two
  *   DIFFERENT seats; two PASSes from one seat are one review.
  *   STANDARD: one PASS from either seat on the head.
  *   NO record on the head refuses. There is no unreviewed exception in Yap (Learn's "build-mode LAND" pass-through
- *   is deliberately NOT ported).
- *   Any seat whose newest record ON THE HEAD is BLOCK refuses. Records on older heads are history: never PASS,
- *   never BLOCK (an unbound BLOCK — no readable head — is the one exception: it applies to every head).
+ *   is deliberately NOT ported). ANY BLOCK scoped to the head refuses, whatever was posted after it.
  *
  *   node scripts/loop/review-gate.mjs gate --pr N [--head SHA] [--repo o/r]
  *        last stdout line `review: ...`; exit 0 may land · 6 refused (missing, blocked, head moved, unreadable,
@@ -104,8 +111,12 @@ export const SECURITY_PATHS = [
 /** template.mjs SECURITY_IDS ('SEC-|UPD-|PRIV-|DB-|PERM-'): an item id at the start of the PR title. */
 export const SECURITY_ID_RE = /^\s*(?:SEC-|UPD-|PRIV-|DB-|PERM-)/i
 const SHA_RE = /^[0-9a-f]{40}$/
-const SHA_PREFIX_RE = /^[0-9a-f]{7,40}$/
-const BLOCK_RE = /^BLOCK/i
+/** A BLOCK verdict, anywhere in a record (bold, spaced, fenced, in notes). */
+export const BLOCK_LINE_RE = /verdict\s*:.*\bBLOCK\b/i
+const MARKER_RE = /loop-review/i
+const FENCE_RE = /^(?:```|~~~)/
+const HEAD_LINE_RE = /\bhead\W*:\W*([0-9a-f]{7,40})(?![0-9a-f])/gi
+const SEAT_LINE_RE = /^\W*seat\W*:\W*([\w.-]+)/i
 const sha9 = (s) => String(s || '').slice(0, 9) || '(none)'
 const isBot = (u) => Boolean(u) && (u.type === 'Bot' || /\[bot\]$/i.test(String(u.login || '')))
 
@@ -119,24 +130,14 @@ export function securityClassOf({ files = [], filesTruncated = false, labels = [
   return hit ? { security: true, why: `touches ${hit}` } : { security: false, why: '' }
 }
 
-/**
- * One comment body → {seat, lens, head, verdict, blocking, defect?} | {malformed: why} | null (not a record at all).
- * Any header verdict line starting BLOCK makes it a BLOCK record that is never `malformed` (fails closed): its
- * defects are listed in `defect`, blocking is at least 1, and head is a full sha, a 7..39-hex prefix, or null
- * (unbound — applies to every head).
- */
-export function parseRecord(body) {
-  const lines = String(body || '').split('\n').map((l) => l.trim())
-  const first = lines.find(Boolean)
-  if (first !== RECORD_MARKER) return null
-  // Fields are read from the HEADER only: the marker line through the first blank line after it. Free-text notes
-  // follow that blank line (recordBody writes them there) and may quote "verdict:" or "lens:" lines.
+/** The strict PASS parse: {kind: 'pass', seat, lens, head, verdict, blocking} | {malformed: why}. */
+function cleanPass(lines) {
+  if (lines.find(Boolean) !== RECORD_MARKER) return { malformed: 'the first non-empty line is not the marker' }
+  // Fields are read from the HEADER only: the marker line through the first blank line after it.
   const start = lines.indexOf(RECORD_MARKER) + 1
   const blank = lines.indexOf('', start)
   const header = lines.slice(start, blank === -1 ? lines.length : blank)
   const field = (k) => header.filter((l) => l.toLowerCase().startsWith(`${k}:`)).map((l) => l.slice(k.length + 1).trim())
-  const verdicts = field('verdict')
-  if (verdicts.some((v) => BLOCK_RE.test(v))) return blockRecord(field, verdicts)
   const one = {}
   for (const k of ['seat', 'lens', 'head', 'verdict']) {
     const v = field(k)
@@ -145,52 +146,62 @@ export function parseRecord(body) {
   }
   const head = one.head.toLowerCase()
   if (!SHA_RE.test(head)) return { malformed: `head "${one.head.slice(0, 50)}" is not a full 40-hex sha` }
-  const m = one.verdict.match(/^(PASS|BLOCK)\s+blocking=(\d+)$/)
-  if (!m) return { malformed: `verdict "${one.verdict.slice(0, 50)}" is not "PASS blocking=0" / "BLOCK blocking=<n>"` }
-  const blocking = Number(m[2])
-  if (m[1] === 'PASS' && blocking !== 0) return { malformed: `PASS with blocking=${blocking}` }
-  return { seat: one.seat, lens: one.lens, head, verdict: m[1], blocking }
+  if (!/^PASS\s+blocking=0$/.test(one.verdict)) return { malformed: `verdict "${one.verdict.slice(0, 50)}" is not "PASS blocking=0"` }
+  if (!REVIEW_SEATS.includes(one.seat)) return { malformed: `seat ${one.seat} is not a reviewer seat (${REVIEW_SEATS.join(', ')})` }
+  return { kind: 'pass', seat: one.seat, lens: one.lens, head, verdict: 'PASS', blocking: 0 }
 }
 
-/** A header with a BLOCK verdict line → a BLOCK record, whatever else is wrong with it (B2: malformed = blocking). */
-function blockRecord(field, verdicts) {
-  const defects = []
-  const seats = field('seat')
-  const seat = seats.length === 1 && seats[0] ? seats[0] : UNNAMED_SEAT
-  if (seat === UNNAMED_SEAT) defects.push(`${seats.length} seat: lines`)
-  const heads = field('head').map((h) => h.toLowerCase())
-  let head = null
-  if (heads.length === 1 && SHA_PREFIX_RE.test(heads[0])) {
-    head = heads[0]
-    if (head.length < 40) defects.push(`short head ${head}`)
-  } else defects.push(`${heads.length === 1 ? `head "${heads[0].slice(0, 50)}"` : `${heads.length} head: lines`} unreadable — binds to every head`)
-  if (verdicts.length !== 1) defects.push(`${verdicts.length} verdict: lines`)
-  const m = verdicts.length === 1 ? verdicts[0].match(/^BLOCK\s+blocking=(\d+)$/) : null
-  let blocking = m ? Number(m[1]) : 1
-  if (!m) defects.push('blocking= missing or unparsable — treated as blocking=1')
-  else if (blocking < 1) { blocking = 1; defects.push('BLOCK with blocking=0 — treated as blocking=1') }
-  const lens = field('lens')
-  return { seat, lens: lens.length === 1 ? lens[0] : '', head, verdict: 'BLOCK', blocking, ...(defects.length ? { defect: defects.join('; ') } : {}) }
+/**
+ * One comment body → null (no marker: not a record) | a clean PASS {kind: 'pass', seat, lens, head, ...} |
+ * a BLOCK {kind: 'block' | 'unparsable', seat, heads: [hex] | null, verdict: 'BLOCK', blocking >= 1, why}.
+ * Every marker comment that is not a clean PASS is a BLOCK (fails closed).
+ */
+export function parseRecord(body) {
+  const lines = String(body || '').split('\n').map((l) => l.trim())
+  const text = lines.filter((l) => !FENCE_RE.test(l))
+  if (!text.some((l) => MARKER_RE.test(l))) return null
+  const explicit = text.some((l) => BLOCK_LINE_RE.test(l))
+  const clean = explicit ? null : cleanPass(lines)
+  if (clean && clean.kind === 'pass') return clean
+  const seats = [...new Set(text.map((l) => l.match(SEAT_LINE_RE)).filter(Boolean).map((m) => m[1]))]
+  const heads = [...new Set([...text.join('\n').matchAll(HEAD_LINE_RE)].map((m) => m[1].toLowerCase()))]
+  const bm = explicit ? text.filter((l) => BLOCK_LINE_RE.test(l)).map((l) => l.match(/blocking\W*=\W*(\d+)/i)).find(Boolean) : null
+  const blocking = Math.max(1, bm ? Number(bm[1]) : 1)
+  const why = explicit ? (bm && Number(bm[1]) >= 1 ? '' : 'blocking= missing, unparsable or 0 — treated as blocking=1') : `unparsable record (${clean.malformed}) — treated as BLOCK`
+  return { kind: explicit ? 'block' : 'unparsable', seat: seats.length === 1 ? seats[0] : UNNAMED_SEAT, heads: heads.length ? heads : null, verdict: 'BLOCK', blocking, why }
 }
 
-/** Issue comments [{user, body, created_at, updated_at, id}] → {records: [...], ignored: [why]} (oldest first). */
-export function recordsFrom(comments, { authors = REVIEW_AUTHORS } = {}) {
+/** The PR head current at `at`: the newest commit with committedDate <= at → its oid, or null (every commit is later). */
+export function headAt(commits, at) {
+  const t = Date.parse(at)
+  let best = null
+  for (const c of commits || []) {
+    const d = Date.parse(c && c.committedDate)
+    if (Number.isFinite(d) && Number.isFinite(t) && d <= t && (!best || d >= best.d)) best = { d, oid: String(c.oid || '').toLowerCase() }
+  }
+  return best ? best.oid : null
+}
+
+/**
+ * Issue comments [{user, body, created_at, updated_at, id}] + the PR's commits [{oid, committedDate}] →
+ * {records: [...], ignored: [why]} (oldest first). A headless BLOCK gets postedHead = headAt(commits, created_at);
+ * without a commit list (a library caller) it is '*' — every head (fails closed).
+ */
+export function recordsFrom(comments, { authors = REVIEW_AUTHORS, commits } = {}) {
   const records = []
   const ignored = []
   const allowed = new Set((authors || []).map((a) => String(a || '').trim().toLowerCase()).filter(Boolean))
   for (const c of comments || []) {
-    const r = parseRecord(c && c.body)
+    let r = parseRecord(c && c.body)
     if (r === null) continue
     if (isBot(c.user)) { ignored.push(`comment ${c.id}: bot author`); continue }
     if (!allowed.has(String((c.user && c.user.login) || '').toLowerCase())) { ignored.push(`comment ${c.id}: author ${(c.user && c.user.login) || '(none)'} is not a review seat account`); continue }
+    const at = String(c.created_at || '')
     const edited = Boolean(c.updated_at && c.created_at && c.updated_at !== c.created_at)
-    // B1 + B2: a BLOCK from an allowed author is blocking under any seat name, edited or malformed (fails closed).
-    if (r.verdict === 'BLOCK') { records.push({ ...r, edited, at: String(c.created_at || ''), id: c.id }); continue }
-    if (r.malformed) { ignored.push(`comment ${c.id}: malformed (${r.malformed})`); continue }
-    if (edited) { ignored.push(`comment ${c.id}: edited PASS is void (re-post, never rebind)`); continue }
-    if (FIXER_SEAT_RE.test(r.seat)) { ignored.push(`comment ${c.id}: fixer seat ${r.seat} never passes a PR`); continue }
-    if (!REVIEW_SEATS.includes(r.seat)) { ignored.push(`comment ${c.id}: seat ${r.seat} is not a reviewer seat — its PASS does not count`); continue }
-    records.push({ ...r, edited: false, at: String(c.created_at || ''), id: c.id })
+    if (r.kind === 'pass' && edited) r = { kind: 'unparsable', seat: r.seat, heads: [r.head], verdict: 'BLOCK', blocking: 1, why: 'unparsable record (edited PASS — re-post, never rebind) — treated as BLOCK' }
+    if (r.kind === 'pass') { records.push({ ...r, edited: false, at, id: c.id }); continue }
+    const postedHead = r.heads ? null : Array.isArray(commits) ? headAt(commits, at) : '*'
+    records.push({ ...r, edited, postedHead, at, id: c.id })
   }
   records.sort((a, b) => a.at.localeCompare(b.at))
   return { records, ignored }
@@ -198,27 +209,33 @@ export function recordsFrom(comments, { authors = REVIEW_AUTHORS } = {}) {
 
 /**
  * THE DECISION. Pure. head: the PR's current head. security: securityClassOf(...).security. records: recordsFrom().records.
- * → {state: 'pass'|'missing'|'blocked', block, passedBy, missing: [why], blockedBy: [seat], line}
- * No record on the head refuses: Yap has no unreviewed exception.
+ * → {state: 'pass'|'missing'|'blocked'|'needs-human', block, passedBy, missing: [why], blockedBy: [desc], needsHuman: [comment id], line}
+ * A BLOCK scoped to the head is FINAL for it; no record on the head refuses (no unreviewed exception).
  */
 export function reviewDecision({ head, security = false, records = [] }) {
   const h = String(head || '').toLowerCase()
   const klass = security ? 'security' : 'standard'
-  if (!SHA_RE.test(h)) return { state: 'missing', block: true, passedBy: [], missing: ['no full head sha to bind a review to'], blockedBy: [], line: `review: refused — no full head sha (${klass})` }
-  // A record applies to h when its head is h, a short prefix of h (a malformed BLOCK), or null (an unbound BLOCK).
-  const applies = (r) => r.head === null || r.head === h || (r.head.length < 40 && h.startsWith(r.head))
-  const newest = new Map()
-  for (const r of records) if (applies(r)) newest.set(r.seat, r) // records are oldest first: the last one per seat wins
-  const why = (r) => [r.edited ? 'edited — fails closed' : '', r.defect || ''].filter(Boolean).join('; ')
-  const blockedBy = [...newest.values()].filter((r) => r.verdict === 'BLOCK').map((r) => (why(r) ? `${r.seat} (${why(r)})` : r.seat))
-  const passedBy = [...newest.values()].filter((r) => r.verdict === 'PASS' && REVIEW_SEATS.includes(r.seat) && !r.edited).map((r) => r.seat)
-  const older = [...new Set(records.filter((r) => !applies(r)).map((r) => sha9(r.head)))]
+  const none = { passedBy: [], missing: [], blockedBy: [], needsHuman: [] }
+  if (!SHA_RE.test(h)) return { ...none, state: 'missing', block: true, missing: ['no full head sha to bind a review to'], line: `review: refused — no full head sha (${klass})` }
+  const scoped = (r) => r.kind === 'pass' ? r.head === h
+    : r.heads ? r.heads.some((x) => x === h || (x.length < 40 && h.startsWith(x)))
+    : r.postedHead === '*' || r.postedHead === h
+  const blocks = records.filter((r) => r.kind !== 'pass' && scoped(r))
+  const passedBy = [...new Set(records.filter((r) => r.kind === 'pass' && scoped(r)).map((r) => r.seat))]
+  const desc = (r) => `${r.seat} (comment ${r.id}${r.edited ? '; edited' : ''}${r.why ? `; ${r.why}` : ''})`
+  if (blocks.length) {
+    const outside = blocks.filter((r) => !REVIEW_SEATS.includes(r.seat))
+    const blockedBy = blocks.map(desc)
+    const final = 'a BLOCK is final for this head: push a fix, then a complete fresh round on the new head'
+    if (outside.length) return { ...none, state: 'needs-human', block: true, passedBy, blockedBy, needsHuman: outside.map((r) => r.id), line: `review: needs-human — BLOCK on ${sha9(h)} from outside seat(s) ${outside.map(desc).join(', ')} (${klass}) — refused; ${final}` }
+    return { ...none, state: 'blocked', block: true, passedBy, blockedBy, line: `review: BLOCK on ${sha9(h)} by ${blockedBy.join(', ')} (${klass}) — refused; ${final}` }
+  }
+  const older = [...new Set(records.filter((r) => r.kind === 'pass' && r.head !== h).map((r) => sha9(r.head)))]
   const hist = older.length ? `; records only on older head(s) ${older.join(', ')} — a push since the review needs a re-review` : ''
-  if (blockedBy.length) return { state: 'blocked', block: true, passedBy, missing: [], blockedBy, line: `review: BLOCK on ${sha9(h)} by ${blockedBy.join(', ')} (${klass}) — refused` }
   const need = security ? REVIEW_SEATS.filter((s) => !passedBy.includes(s)) : passedBy.length ? [] : ['one Opus PASS']
-  if (!need.length) return { state: 'pass', block: false, passedBy, missing: [], blockedBy: [], line: `review: PASS on ${sha9(h)} by ${passedBy.join(' + ')} (${klass})` }
+  if (!need.length) return { ...none, state: 'pass', block: false, passedBy, line: `review: PASS on ${sha9(h)} by ${passedBy.join(' + ')} (${klass})` }
   const missing = need.map((s) => (s === 'one Opus PASS' ? `no review-opus or review-opus2 PASS bound to ${sha9(h)}` : `no ${s} PASS bound to ${sha9(h)}`))
-  return { state: 'missing', block: true, passedBy, missing, blockedBy: [], line: `review: missing on ${sha9(h)} (${klass}): ${missing.join('; ')}${passedBy.length ? ` (passed: ${passedBy.join(', ')})` : ''}${hist} — refused` }
+  return { ...none, state: 'missing', block: true, passedBy, missing, line: `review: missing on ${sha9(h)} (${klass}): ${missing.join('; ')}${passedBy.length ? ` (passed: ${passedBy.join(', ')})` : ''}${hist} — refused` }
 }
 
 export const ghCli = (args) => {
@@ -239,11 +256,13 @@ export function fetchComments({ gh, repo, pr }) {
   throw new Error(`more than ${PAGE_CAP} pages of comments`)
 }
 
-/** The PR's class: its title, labels and files. */
+/** The PR's class (title, labels, files), its head and its commits [{oid, committedDate}] (a headless BLOCK's scope). */
 export function fetchClass({ gh, repo, pr }) {
-  const v = JSON.parse(gh(['pr', 'view', String(pr), '-R', repo, '--json', 'labels,headRefOid,title']))
+  const v = JSON.parse(gh(['pr', 'view', String(pr), '-R', repo, '--json', 'labels,headRefOid,title,commits']))
+  if (!Array.isArray(v.commits)) throw new Error('the PR commit list is unreadable')
   const files = String(gh(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--jq', '.[].filename'])).split('\n').map((s) => s.trim()).filter(Boolean)
-  return { headRefOid: String(v.headRefOid || ''), cls: securityClassOf({ files, labels: v.labels || [], title: v.title || '' }) }
+  const commits = v.commits.map((c) => ({ oid: String((c && c.oid) || ''), committedDate: String((c && c.committedDate) || '') }))
+  return { headRefOid: String(v.headRefOid || ''), commits, cls: securityClassOf({ files, labels: v.labels || [], title: v.title || '' }) }
 }
 
 /**
@@ -264,7 +283,7 @@ export function reviewGate({ gh = ghCli, repo = DEFAULT_REPO, pr, head }) {
   const current = String(c.headRefOid || '').toLowerCase()
   const h = head === undefined ? current : String(head).toLowerCase()
   if (current !== h) return { block: true, state: 'head', security: c.cls.security, line: `review: head moved ${sha9(h)}->${sha9(current)} — refused` }
-  const { records } = recordsFrom(comments, { authors: REVIEW_AUTHORS })
+  const { records } = recordsFrom(comments, { authors: REVIEW_AUTHORS, commits: c.commits })
   const d = reviewDecision({ head: h, security: c.cls.security, records })
   return { ...d, security: c.cls.security, line: c.cls.security ? `${d.line} [security: ${c.cls.why}]` : d.line }
 }
@@ -275,11 +294,16 @@ export function recordBody({ seat, lens, head, verdict, blocking, notes = '' }) 
   if (!/^\d+$/.test(n)) throw new Error(`--blocking must be a non-negative integer, got "${n.slice(0, 20)}"`)
   if (verdict === 'BLOCK' && Number(n) === 0) throw new Error('BLOCK with blocking=0 — a BLOCK must name at least one blocking finding')
   const body = `${RECORD_MARKER}\nseat: ${seat}\nlens: ${String(lens || '').replace(/\s+/g, ' ').trim()}\nhead: ${String(head || '').toLowerCase()}\nverdict: ${verdict} blocking=${n}\n`
-  const r = parseRecord(body)
-  if (!r || r.malformed || r.defect) throw new Error(`malformed record: ${r ? r.malformed || r.defect : 'no marker'}`)
-  if (!REVIEW_SEATS.includes(r.seat)) throw new Error(`seat must be one of ${REVIEW_SEATS.join(', ')}`)
-  if (!r.lens) throw new Error('--lens is required')
-  return notes ? `${body}\n${String(notes).replace(/^loop-review \(Opus\)$/gm, '(quoted record marker)')}\n` : body
+  if (!REVIEW_SEATS.includes(seat)) throw new Error(`seat must be one of ${REVIEW_SEATS.join(', ')}`)
+  if (!String(lens || '').trim()) throw new Error('--lens is required')
+  const full = notes ? `${body}\n${String(notes).replace(/^loop-review \(Opus\)$/gm, '(quoted record marker)')}\n` : body
+  // The posted body must read back as exactly what was asked for: a PASS whose notes carry a "verdict: ... BLOCK"
+  // line would be read as a BLOCK (liberal recognition), so it is refused here instead of posted.
+  const r = parseRecord(full)
+  const ok = r && (verdict === 'PASS' ? r.kind === 'pass' && r.head === String(head || '').toLowerCase()
+    : r.kind === 'block' && !r.why && r.seat === seat && r.heads && r.heads.length === 1 && r.heads[0] === String(head || '').toLowerCase())
+  if (!ok) throw new Error(`malformed record: it would read back as ${r ? `${r.kind}${r.why ? ` (${r.why})` : ''}` : 'no record'}${verdict === 'PASS' ? ' — keep "verdict:" lines out of PASS notes' : ''}`)
+  return full
 }
 
 function flags(argv) {

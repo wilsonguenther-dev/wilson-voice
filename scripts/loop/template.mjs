@@ -216,8 +216,16 @@ unreviewed exception: a PR no reviewer seat has passed on this exact head is ref
         gh pr merge -R ${REPO} <n> --squash --delete-branch --admin --match-head-commit <the same headRefOid>
     If GitHub refuses because the head moved, the PR changed under you: do not retry on the new head without
     running the review gate again on it.
-  - exit 6 -> DO NOT MERGE. The gate's last line names what is missing — the seat with no PASS on this head, a seat
-    whose newest record on it is BLOCK, or "head moved". Label it and say so on the PR:
+  - exit 6 and the last line starts "review: needs-human" -> DO NOT MERGE. A seat OUTSIDE review-opus/review-opus2
+    (a hand-posted independent review) BLOCKed this head; no loop seat may overrule it. Park it for Wilson:
+        gh label create needs-human -R ${REPO} --color D93F0B --description "a human decides" 2>/dev/null ; true
+        gh pr edit -R ${REPO} <n> --add-label needs-human
+        gh pr comment -R ${REPO} <n> --body "needs-human: outside-seat BLOCK, comment id(s) <every comment id the gate's line names> — <the gate's last line, verbatim>"
+    status "needs-human", reason = that line. Triage skips needs-human PRs from then on: no reviewer or LAND seat
+    is spent on them until a human removes the label.
+  - exit 6 (any other line) -> DO NOT MERGE. The gate's last line names what is missing — the seat with no PASS on
+    this head, a BLOCK scoped to this head (FINAL for it: only a new push plus a complete fresh round gets past
+    it), or "head moved". Label it and say so on the PR:
         gh label create review-pending -R ${REPO} --color FBCA04 --description "no Opus PASS bound to the head" 2>/dev/null ; true
         gh pr edit -R ${REPO} <n> --add-label review-pending
         gh pr comment -R ${REPO} <n> --body "review-pending: <the gate's last line, verbatim>"
@@ -244,7 +252,9 @@ mktemp, then post the record:
   Re-read headRefOid, review the new head, and post on THAT. Never post on a sha you did not read.
 That comment IS the merge input. The land gate counts only a ${seat} record whose head equals the PR's head at
 merge time; a verdict that lives only in your return value or in a loop log does not exist for it. Post ONE
-record per review and never edit it (an edited PASS is void and an edited BLOCK still blocks — post a new one).
+record per review and never edit it (an edited PASS reads as a BLOCK and an edited BLOCK still blocks). A BLOCK
+is FINAL for the head it names: a later PASS on the same head never clears it, yours included — only a new push
+and a complete fresh round do. Keep any "verdict:" line out of PASS notes (the record subcommand refuses one).
 If you could not review the PR at all, post NO record: a PASS nobody earned is the exact defect this gate exists
 to stop, and with no record the PR simply stays review-pending.
 Add recordHead: "<HEAD>" and recordPosted: true|false to your return.
@@ -1515,7 +1525,8 @@ gh pr comment -R ${REPO} ${pr} --body "Fix round ${fixRound} — fixer dispositi
 
 <each blocking finding, its disposition fixed|refuted, and the hunk or evidence>"
 Never title that comment as a review, never start it with the reviewer record marker, and never use
-gh pr review. Advisory findings stay where the reviewer posted them — never a new PR.
+gh pr review. Never write the word loop-review anywhere in a comment: the gate reads every comment carrying it
+as a record, and one that is not a reviewer's clean PASS is a BLOCK on that head. Advisory findings stay where the reviewer posted them — never a new PR.
 
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"needs-human"|"needs-rebase"|"closed-superseded",
          head: "<the new headRefOid after your push>", rebased: true|false, conflictsResolved: [...],
@@ -1913,6 +1924,7 @@ const TRIAGE_SCHEMA = {
           mergeable: { type: 'string' },
           files: { type: 'number' },
           additions: { type: 'number' },
+          labels: { type: 'array', items: { type: 'string' } },
         },
         required: ['pr', 'item', 'klass', 'ci', 'mergeable', 'files'],
       },
@@ -1922,6 +1934,14 @@ const TRIAGE_SCHEMA = {
       items: {
         type: 'object',
         properties: { pr: { type: 'number' }, survivor: { type: 'number' }, why: { type: 'string' } },
+        required: ['pr', 'why'],
+      },
+    },
+    held: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { pr: { type: 'number' }, comment: { type: 'string' }, why: { type: 'string' } },
         required: ['pr', 'why'],
       },
     },
@@ -1937,7 +1957,10 @@ queue, and close the ones that should never be reviewed at all. You review nothi
 merge nothing — two review chains do that immediately after you, driven by what you return.
 
 # 1 — ENUMERATE
-    gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --limit 200 --json number,title,headRefName,headRefOid,mergeable,createdAt,files
+    gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --limit 200 --json number,title,headRefName,headRefOid,mergeable,createdAt,files,labels
+SKIP every PR labelled needs-human: it is HELD for a human (an outside-seat BLOCK, or a BLOCK after the last fix
+round). Do not queue it, do not review it, do not land it — no seat is spent on it. List each one in held[]
+with the comment id its needs-human comment names, and put it in the queue doc's held table.
     gh pr list -R ${REPO} --state merged --limit 200 --json number,title,headRefName,mergeCommit
 ALSO list the open PRs WITHOUT the ${LOOP_LABEL} label and report them separately, untouched: the
 feat/yv1xx PRs predate this loop. They are Drain's problem, not this queue's.
@@ -1987,15 +2010,20 @@ main under it and the most rebase debt — settle it before it rots further.
 Do NOT include a PR you closed. Do NOT include a PR that gh reports as already MERGED. Do NOT
 include a PR that lacks the ${LOOP_LABEL} label.
 
-RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions}],
-                 closed: [{pr, survivor, why}], counts: {open, queued, closed, security, standard, unlabelled}}
+RETURN exactly: {queue: [{pr, item, title, headRefName, klass, ci, mergeable, files, additions, labels}],
+                 closed: [{pr, survivor, why}], held: [{pr, comment, why}],
+                 counts: {open, queued, closed, held, security, standard, unlabelled}}
 ${LOGLINE('review triage', '_review', 'harness:recon', '--open <the open loop-build PR count you just observed>')}
 ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Recon', label: 'review-triage', schema: TRIAGE_SCHEMA }
   )
 
-  REVIEW_QUEUE = extractArray(triage, 'queue')
+  // needs-human is HELD: never queued, even when triage forgot to skip it (no reviewer or LAND seat is spent on it).
+  const isHeld = (q) => Boolean(q) && Array.isArray(q.labels) && q.labels.some((l) => String((l && l.name) || l) === 'needs-human')
+  const heldByTriage = [...extractArray(triage, 'held'), ...extractArray(triage, 'queue').filter(isHeld).map((q) => ({ pr: q.pr, why: 'labelled needs-human' }))]
+  REVIEW_QUEUE = extractArray(triage, 'queue').filter((q) => !isHeld(q))
   const closedByTriage = extractArray(triage, 'closed')
+  if (heldByTriage.length) log(`held (needs-human, skipped — no seat spent): ${heldByTriage.map((h) => `#${h.pr}${h.comment ? ` (comment ${h.comment})` : ''}`).join(', ')}`)
   if (REVIEW_QUEUE.length === 0) {
     log(
       'review triage returned NO parseable queue[]. The chains have nothing to consume, so this pass ' +
@@ -2108,7 +2136,7 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
     { model: 'opus', effort: 'high', phase: 'Drain', label: 'main-verify' }
   )
 
-  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, sweep, mainVerify }
+  return { triage, queued: REVIEW_QUEUE.length, closedByTriage, held: heldByTriage, sweep, mainVerify }
 }
 
 let census = null
@@ -2176,7 +2204,8 @@ ${
      gh pr list -R ${REPO} --state merged --limit 200 --json number,title,mergedAt
      gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --limit 200 --json number,title,labels
    Report: open BEFORE this pass, open AFTER, merged in this pass, and the counts of PRs now
-   labelled needs-human, ci-red, needs-rebase, plus the ones triage closed as superseded/duplicate.
+   labelled needs-human (list them as HELD — triage skipped them, no seat was spent), ci-red, needs-rebase,
+   plus the ones triage closed as superseded/duplicate.
    A count you derived from branch names instead of gh is a wrong count.
 `
     : ''
