@@ -183,6 +183,16 @@ export interface AppSettings {
    */
   signatureMode?: string;
   /**
+   * yap-format-structure (backend `structure_enabled`): "Turn spoken lists
+   * into bullets". Default on.
+   */
+  structureEnabled?: boolean;
+  /**
+   * Per-app list format (backend `structure_app_overrides`), keyed by the
+   * app's id (e.g. "com.apple.mail"): "markdown" | "plain" | "off".
+   */
+  structureAppOverrides?: Record<string, string>;
+  /**
    * Denoise the captured clip with RNNoise before transcription (backend
    * `denoise`, YV12). Suppresses steady background noise (fans, hum, keyboard)
    * before the 16 kHz downsample. Default on.

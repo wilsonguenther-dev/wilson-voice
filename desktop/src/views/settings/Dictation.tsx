@@ -1,10 +1,22 @@
 import { levelNeedsPolishModel, selectedSpeed } from "../../formatting";
 import { useAppCtx } from "../../appShell";
+import { useState } from "react";
+import {
+  STRUCTURE_CHOICES,
+  type StructureChoice,
+  structureEnabled,
+  structureOverrideRows,
+  withStructureOverride,
+} from "../../structureSettings";
 
 export default function Dictation() {
   const {
     formatting, polishSetup, saveSettings, setSignatureDraft, settings, signatureDraft,
   } = useAppCtx();
+  // yap-format-structure: the app id being typed into the "add an app" row.
+  const [newStructureApp, setNewStructureApp] = useState("");
+  const [newStructureChoice, setNewStructureChoice] =
+    useState<StructureChoice>("plain");
   if (!settings) return null;
   return (
                 <section className="settings-panel">
@@ -274,6 +286,110 @@ export default function Dictation() {
                         }}
                       />
                     </label>
+                  </div>
+                  <div className="panel">
+                    <h3>Lists</h3>
+                    <p>
+                      When you list things out loud, Yap writes them as a list
+                      in the app you’re typing into. Your words stay exactly as
+                      you said them.
+                    </p>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        aria-label="Turn spoken lists into bullets"
+                        checked={structureEnabled(settings)}
+                        onChange={(e) =>
+                          saveSettings({
+                            ...settings,
+                            structureEnabled: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>Turn spoken lists into bullets</span>
+                    </label>
+                    {structureOverrideRows(settings.structureAppOverrides).map(
+                      ([appId, choice]) => (
+                        <div className="field" key={appId}>
+                          <span>{appId}</span>
+                          <select
+                            aria-label={`List style in ${appId}`}
+                            value={choice}
+                            onChange={(e) =>
+                              saveSettings({
+                                ...settings,
+                                structureAppOverrides: withStructureOverride(
+                                  settings.structureAppOverrides,
+                                  appId,
+                                  e.target.value as StructureChoice,
+                                ),
+                              })
+                            }
+                          >
+                            {STRUCTURE_CHOICES.map(([id, label]) => (
+                              <option key={id} value={id}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              saveSettings({
+                                ...settings,
+                                structureAppOverrides: withStructureOverride(
+                                  settings.structureAppOverrides,
+                                  appId,
+                                  null,
+                                ),
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ),
+                    )}
+                    <div className="field">
+                      <span>A different list style for one app</span>
+                      <input
+                        type="text"
+                        placeholder="App ID, e.g. com.apple.mail"
+                        aria-label="App ID"
+                        value={newStructureApp}
+                        onChange={(e) => setNewStructureApp(e.target.value)}
+                      />
+                      <select
+                        aria-label="List style for that app"
+                        value={newStructureChoice}
+                        onChange={(e) =>
+                          setNewStructureChoice(e.target.value as StructureChoice)
+                        }
+                      >
+                        {STRUCTURE_CHOICES.map(([id, label]) => (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={!newStructureApp.trim()}
+                        onClick={() => {
+                          saveSettings({
+                            ...settings,
+                            structureAppOverrides: withStructureOverride(
+                              settings.structureAppOverrides,
+                              newStructureApp,
+                              newStructureChoice,
+                            ),
+                          });
+                          setNewStructureApp("");
+                        }}
+                      >
+                        Add
+                      </button>
+                    </div>
                   </div>
                   <label className="toggle">
                     <input
