@@ -77,6 +77,8 @@
  *              dispatched. Each lane owns a worktree, a cargo target dir and a preview port and
  *              walks ITS OWN items: LAND, PRE-FLIGHT, BUILD, open the PR, next item. It never
  *              awaits the other lane and it never waits for CI.
+ *              args.lanes (build mode only; default 2) — `lanes: 1` runs ONE builder lane: lane A
+ *              walks EVERY item in source order and lane B gets none (see "args.lanes" below).
  *   'review' — the SAME script run again afterwards with args {mode:'review'}, and ONLY part-01
  *              runs it: the pass is PR-DRIVEN. One TRIAGE agent turns the open loop-build PRs into
  *              an ordered queue (closing duplicates and superseded work first), then TWO REVIEW
@@ -812,6 +814,16 @@ const ONLY_PREFIXES =
   MODE === 'build' && typeof args !== 'undefined' && args && Array.isArray(args.only) && args.only.length
     ? args.only.map(String)
     : null
+// ── args.lanes — how many builder lanes (build mode) ──
+// Added 2026-10-17 (Wilson: "run the Yap loop with ONE builder agent, batching items"). Default 2: the
+// round-robin LANE_BY_ID split above, two builders side by side, exactly as before. `lanes: 1` (number
+// or "1") runs ONE builder lane: lane A (WORKDIR, CARGO_TARGET_A, PREVIEW_PORT) walks EVERY item in
+// source order, sequentially — a batch, not a race — and lane B is handed no items, so it dispatches no
+// agent and logs "finished its 0 item(s)". Combine with args.only to batch a named group, e.g.
+//   Workflow {scriptPath: ..., args: {mode: 'build', lanes: 1, only: ['yap-p0-']}}
+// Any other value means 2. Review mode ignores it (the review chains and their 3-agent cap are untouched).
+const BUILD_LANES =
+  MODE === 'build' && typeof args !== 'undefined' && args && (args.lanes === 1 || args.lanes === '1') ? 1 : 2
 function onlySkip(item) {
   if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
   return { itemId: item.id, status: 'skipped: not in args.only', only: true }
@@ -963,6 +975,17 @@ async function runBuild(item, lane) {
   if (pre === null) {
     noteHalt(`${item.id} lane ${LANE_TAGS[lane]} preflight`, 'pre-flight runner returned null — API failure or session/usage limit; no capacity')
     return { itemId: item.id, status: 'halted', lane: LANE_TAGS[lane], error: 'agent returned null (limit)' }
+  }
+  // DEPENDENCY HOLD (2026-10-17, yap-p0 fix round). An item whose work needs an earlier item's code
+  // writes its preflight as ONE subshell that exits 0 and prints the marker DEPENDENCY-NOT-ON-MAIN
+  // when that code is absent from origin/main. Build mode cannot land an unreviewed PR, so building on
+  // top of a missing dependency only produces a conflicting PR. Such an item is SKIPPED with its own
+  // status, never recorded as already-done; the next build pass (after a review pass lands the
+  // dependency) builds it. Item files assemble the marker at run time, e.g. "DEPENDENCY-NOT-ON-$(printf
+  // MAIN)", so a seat echoing the command text cannot trip this.
+  if (runPassed(pre) && /DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))) {
+    log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
+    return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
   }
   if (runPassed(pre)) {
     log(`${p} (lane ${tag}): already-done — EXECUTED pre-flight passed on unmodified origin/main; no builder dispatched, no branch, no PR`)
@@ -1961,10 +1984,14 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
 const errored = []
 const slots = new Array(ITEMS.length).fill(null)
 let halted = null
-const laneItems = [ITEMS.filter((it) => laneOf(it) === 0), ITEMS.filter((it) => laneOf(it) === 1)]
+const laneItems =
+  BUILD_LANES === 1
+    ? [ITEMS.slice(), []]
+    : [ITEMS.filter((it) => laneOf(it) === 0), ITEMS.filter((it) => laneOf(it) === 1)]
 const indexOfItem = (item) => ITEMS.indexOf(item)
 
 log(
+  `args.lanes = ${BUILD_LANES}${BUILD_LANES === 1 ? ' (ONE builder: lane A runs every item in order, lane B idle)' : ''} || ` +
   `lane A (${WORKDIR}, port ${PREVIEW_PORT}): ${laneItems[0].map((it) => it.id).join(', ') || '(none)'} || ` +
     `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
 )
@@ -2479,6 +2506,7 @@ return {
     alreadyDone: results.filter((r) => r && r.status === 'already-done').length,
     failedAcceptance: results.filter((r) => r && r.status === 'failed-acceptance').length,
     awaitingPanel: results.filter((r) => r && r.status === 'skipped: awaiting Senior Panel').length,
+    awaitingDependency: results.filter((r) => r && r.status === 'skipped: dependency not on main').length,
     errored: errored.length,
     merged: results.filter((r) => r && r.status === 'merged').length,
     ciPending: results.filter((r) => r && r.status === 'ci-pending').length,
