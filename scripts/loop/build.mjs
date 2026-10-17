@@ -994,9 +994,9 @@ function dryRun(label, src, argsIn) {
   for (const [label, src] of targets) {
     // 2026-09-26: a THIRD shape exercises the args.only path (part skip in the parent, item skip in a
     // part) plus args.now and a panelApproved list, which is exactly how the yap24 passes launch.
-    for (const argsIn of [{}, { mode: 'review' }, { mode: 'build', now: '2026-09-26T00:00:00Z', only: ['yap24-NT'], panelApproved: ['yap24-NT1'] }]) await dryRun(label, src, argsIn)
+    for (const argsIn of [{}, { mode: 'review' }, { mode: 'build', now: '2026-09-26T00:00:00Z', only: ['yap24-NT'], panelApproved: ['yap24-NT1'] }, { mode: 'build', lanes: 1, only: ['yap-p0-'] }]) await dryRun(label, src, argsIn)
   }
-  if (!problems.length) DRY_RUN_REPORT = `${targets.length} script(s) × 3 arg shapes ({}, {mode:'review'} and an args.only yap24 pass) executed end-to-end with stubbed agent/parallel/pipeline/phase/log/workflow`
+  if (!problems.length) DRY_RUN_REPORT = `${targets.length} script(s) × 4 arg shapes ({}, {mode:'review'}, an args.only yap24 pass and a lanes:1 single-builder pass) executed end-to-end with stubbed agent/parallel/pipeline/phase/log/workflow`
 }
 
 if (problems.length) die()
@@ -1070,6 +1070,6 @@ console.log(
     `  ·  B: ${ITEMS.filter((i) => laneById.get(i.id) === 1).length} item(s) from ${itemFiles.filter((f, idx) => idx % 2 === 1).length} file(s)`
 )
 console.log(
-  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats (tiering: ${SEAT_STAMP.summary}), phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (three arg shapes, incl. args.only) against stubbed globals`
+  `  validated  meta-first-statement, pure-literal meta, wrapped-parse, banned-strings, wrong-repo/wrong-npm-script drift, opus-only seats (tiering: ${SEAT_STAMP.summary}), phase()⊆meta.phases, unique ids, unique branches (${BRANCH_PREFIX}*), item interpolation whitelist, CONTRACT fields, size≤${num(WORKFLOW_MAX_BYTES)}, no nested workflow(), parent-phases=parts, args passed through, item union == all items in order, no phase() in the NO-PHASE region, parallel() only at the review barrier, every agent() declares a phase, Promise.all wraps exactly the builder lanes + the review chains, MAX_AGENTS=3 with every review dispatch inside a withAgents() lease, CI_MODE defaults to local with both gate branches present, GATE_CMDS is the single source of the gate, and a DRY RUN that executes every emitted script (four arg shapes, incl. args.only and args.lanes=1) against stubbed globals`
 )
 console.log(`  NOTE       ${rel(PARENT_OUT)} and ${rel(GEN_DIR)}/ are generated — do not hand-edit them; re-run \`npm run loop:build\`.`)

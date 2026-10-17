@@ -77,6 +77,8 @@
  *              dispatched. Each lane owns a worktree, a cargo target dir and a preview port and
  *              walks ITS OWN items: LAND, PRE-FLIGHT, BUILD, open the PR, next item. It never
  *              awaits the other lane and it never waits for CI.
+ *              args.lanes (build mode only; default 2) — `lanes: 1` runs ONE builder lane: lane A
+ *              walks EVERY item in source order and lane B gets none (see "args.lanes" below).
  *   'review' — the SAME script run again afterwards with args {mode:'review'}, and ONLY part-01
  *              runs it: the pass is PR-DRIVEN. One TRIAGE agent turns the open loop-build PRs into
  *              an ordered queue (closing duplicates and superseded work first), then TWO REVIEW
@@ -812,6 +814,16 @@ const ONLY_PREFIXES =
   MODE === 'build' && typeof args !== 'undefined' && args && Array.isArray(args.only) && args.only.length
     ? args.only.map(String)
     : null
+// ── args.lanes — how many builder lanes (build mode) ──
+// Added 2026-10-17 (Wilson: "run the Yap loop with ONE builder agent, batching items"). Default 2: the
+// round-robin LANE_BY_ID split above, two builders side by side, exactly as before. `lanes: 1` (number
+// or "1") runs ONE builder lane: lane A (WORKDIR, CARGO_TARGET_A, PREVIEW_PORT) walks EVERY item in
+// source order, sequentially — a batch, not a race — and lane B is handed no items, so it dispatches no
+// agent and logs "finished its 0 item(s)". Combine with args.only to batch a named group, e.g.
+//   Workflow {scriptPath: ..., args: {mode: 'build', lanes: 1, only: ['yap-p0-']}}
+// Any other value means 2. Review mode ignores it (the review chains and their 3-agent cap are untouched).
+const BUILD_LANES =
+  MODE === 'build' && typeof args !== 'undefined' && args && (args.lanes === 1 || args.lanes === '1') ? 1 : 2
 function onlySkip(item) {
   if (!ONLY_PREFIXES || ONLY_PREFIXES.some((prefix) => item.id.startsWith(prefix))) return null
   return { itemId: item.id, status: 'skipped: not in args.only', only: true }
@@ -1961,10 +1973,14 @@ const recon = await agentR(MODE === 'review' ? REVIEW_RECON : BUILD_RECON, {
 const errored = []
 const slots = new Array(ITEMS.length).fill(null)
 let halted = null
-const laneItems = [ITEMS.filter((it) => laneOf(it) === 0), ITEMS.filter((it) => laneOf(it) === 1)]
+const laneItems =
+  BUILD_LANES === 1
+    ? [ITEMS.slice(), []]
+    : [ITEMS.filter((it) => laneOf(it) === 0), ITEMS.filter((it) => laneOf(it) === 1)]
 const indexOfItem = (item) => ITEMS.indexOf(item)
 
 log(
+  `args.lanes = ${BUILD_LANES}${BUILD_LANES === 1 ? ' (ONE builder: lane A runs every item in order, lane B idle)' : ''} || ` +
   `lane A (${WORKDIR}, port ${PREVIEW_PORT}): ${laneItems[0].map((it) => it.id).join(', ') || '(none)'} || ` +
     `lane B (${WORKDIR_B}, port ${PREVIEW_PORT_B}): ${laneItems[1].map((it) => it.id).join(', ') || '(none)'}`
 )
