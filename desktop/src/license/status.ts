@@ -99,6 +99,33 @@ export function trialCountdown(days: number): string {
 }
 
 /**
+ * What the toast says after the license box ACCEPTS a key.
+ *
+ * The box takes two kinds of signed key: a lifetime license, and a support
+ * grace key that hands the trial back (SEC-B). Only the first one licenses
+ * anything, so the success message has to come from the status the backend
+ * returned, never from the fact that the call succeeded.
+ */
+export function activationOutcome(status: LicenseStatus): {
+  toast: string;
+  closeBuyPrompt: boolean;
+} {
+  if (status.state === "licensed") {
+    return { toast: "Yap is licensed on this Mac", closeBuyPrompt: true };
+  }
+  if (status.state === "trial") {
+    return {
+      toast: `Your trial is back on this Mac: ${trialCountdown(daysLeft(status))}`,
+      closeBuyPrompt: true,
+    };
+  }
+  return {
+    toast: "That key was accepted, but Yap still needs a license on this Mac",
+    closeBuyPrompt: false,
+  };
+}
+
+/**
  * Should the trial warning fire for this status, given what was already shown?
  *
  * `lastWarnedFor` is the `trial_expires_at_ms` the warning last fired against —
