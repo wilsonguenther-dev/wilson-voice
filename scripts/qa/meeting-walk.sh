@@ -132,13 +132,13 @@ self_test() {
     sqlite3 "$tmp/$f.db" < "$HERE/fixtures/meeting/$f.sql"
   done
   check "newest meeting parser" "m-pass" "$(newest_meeting "$tmp/pass.db")"
-  assess "$tmp/pass.db" "$HERE/fixtures/meeting/no-summary-line.log" m-pass >/dev/null; rc=$?; check "pass fixture" 0 "$rc"
-  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-model.log" m-few >/dev/null; rc=$?; check "track 1 under 40 words fails (track 0 words do not count)" 1 "$rc"
-  assess "$tmp/denied.db" "$HERE/fixtures/meeting/no-model.log" m-denied >/dev/null; rc=$?; check "true denial" 5 "$rc"
+  assess "$tmp/pass.db" "$HERE/fixtures/meeting/no-summary-line.txt" m-pass >/dev/null; rc=$?; check "pass fixture" 0 "$rc"
+  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-model.txt" m-few >/dev/null; rc=$?; check "track 1 under 40 words fails (track 0 words do not count)" 1 "$rc"
+  assess "$tmp/denied.db" "$HERE/fixtures/meeting/no-model.txt" m-denied >/dev/null; rc=$?; check "true denial" 5 "$rc"
   sqlite3 "$tmp/few-words.db" "INSERT INTO meeting_segments VALUES ('s9','m-few',10,20,'$(printf 'word%.0s ' $(seq 1 45))',1);"
-  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-model.log" m-few > "$tmp/out.txt"; rc=$?; check "no model: transcript still required, summary skipped" 0 "$rc"
+  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-model.txt" m-few > "$tmp/out.txt"; rc=$?; check "no model: transcript still required, summary skipped" 0 "$rc"
   grep -q "summary skipped: no model" "$tmp/out.txt"; rc=$?; check "prints summary skipped" 0 "$rc"
-  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-summary-line.log" m-few >/dev/null; rc=$?; check "NULL summary without the no-model line fails" 1 "$rc"
+  assess "$tmp/few-words.db" "$HERE/fixtures/meeting/no-summary-line.txt" m-few >/dev/null; rc=$?; check "NULL summary without the no-model line fails" 1 "$rc"
   rm -rf "$tmp"
   if [ "$failed" -ne 0 ]; then exit 1; fi
   printf 'self-test: all checks passed\n'
