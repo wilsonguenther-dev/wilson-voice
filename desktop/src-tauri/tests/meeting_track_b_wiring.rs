@@ -135,6 +135,13 @@ fn external() -> Arc<dyn CaptureStream> {
     Arc::new(ExternalStream)
 }
 
+/// The machine these sessions run on: never the laptop running `cargo test`.
+/// `start_capture_session` takes its host explicitly; production passes
+/// `SystemEnv::this_mac`, and a wiring test has no business reading `pmset`.
+fn hermetic() -> Arc<dyn wilson_voice_lib::meeting::CaptureEnv> {
+    Arc::new(wilson_voice_lib::meeting::HermeticEnv::default())
+}
+
 /// **The headline.** macOS is new enough and the setup step has run, so a
 /// meeting started from any entry point comes up with TWO tracks and the tap's
 /// audio really lands on track 1 — no extra user step anywhere in the path.
@@ -166,6 +173,7 @@ fn meeting_on_supported_granted_attaches_track_b() {
         Some(Arc::clone(&fake.tap)),
         Some(Arc::clone(&db)),
         external(),
+        hermetic(),
         KIND,
     )
     .expect("the two-track session starts");
@@ -224,8 +232,18 @@ fn meeting_without_grant_stays_mic_only_with_badge() {
     );
     assert_eq!(plan.tracks(), 1);
 
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
-        .expect("a mic-only meeting starts on any machine");
+    let capture = start_capture_session(
+        &dir,
+        RATE,
+        1,
+        plan,
+        None,
+        None,
+        external(),
+        hermetic(),
+        KIND,
+    )
+    .expect("a mic-only meeting starts on any machine");
     let badge = capture
         .system_audio_probe()
         .and_then(|probe| probe())
@@ -276,8 +294,18 @@ fn meeting_pre_14_4_stays_mic_only() {
     )
     .attaches());
 
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
-        .expect("22-A recording runs all the way down to the macOS 12 floor");
+    let capture = start_capture_session(
+        &dir,
+        RATE,
+        1,
+        plan,
+        None,
+        None,
+        external(),
+        hermetic(),
+        KIND,
+    )
+    .expect("22-A recording runs all the way down to the macOS 12 floor");
     assert_eq!(
         capture.system_audio_probe().and_then(|probe| probe()),
         Some(wilson_voice_lib::os_version_gate::SYSTEM_AUDIO_REQUIREMENT.to_string())
@@ -306,6 +334,7 @@ fn finish_tears_down_tap_via_watchdog_path() {
         Some(Arc::clone(&fake.tap)),
         None,
         external(),
+        hermetic(),
         KIND,
     )
     .expect("the two-track session starts");
@@ -381,7 +410,7 @@ fn an_attached_tap_supplies_the_watchdog_its_liveness() {
     let _turnstile = meeting::session_turnstile();
     let fake = fake_tap();
     let ring = Arc::clone(fake.tap.ring());
-    let env = syscapture::TappedEnv::new(std::path::PathBuf::from("."), Arc::clone(&fake.tap));
+    let env = syscapture::TappedEnv::new(hermetic(), Arc::clone(&fake.tap));
 
     // Nothing delivered yet: a STARTING tap, which is not a silent one.
     let (live, _, host_ns) = meeting::CaptureEnv::tap_liveness(&env).expect("a tap is attached");
@@ -441,8 +470,18 @@ fn a_tap_that_cannot_open_still_records_the_mic() {
     let plan = TrackBPlan::MicOnly {
         badge: syscapture::SETUP_FAILED_MESSAGE,
     };
-    let capture = start_capture_session(&dir, RATE, 1, plan, None, None, external(), KIND)
-        .expect("the meeting starts anyway");
+    let capture = start_capture_session(
+        &dir,
+        RATE,
+        1,
+        plan,
+        None,
+        None,
+        external(),
+        hermetic(),
+        KIND,
+    )
+    .expect("the meeting starts anyway");
     feed_mic(10);
     let outcome = capture.stop().expect("the meeting finalizes");
     assert!(outcome.wav_path.is_some());
@@ -495,6 +534,7 @@ fn track_b_is_retuned_to_the_taps_own_format() {
         Some(Arc::clone(&meeting_tap)),
         None,
         external(),
+        hermetic(),
         KIND,
     )
     .expect("starts");
