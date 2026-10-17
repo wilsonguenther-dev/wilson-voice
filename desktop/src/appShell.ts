@@ -926,19 +926,26 @@ export function useAppShell() {
   // YV52 — re-run ASR on a failed take's saved clip. On success the row leaves
   // the recovery list and becomes a normal history entry (the backend does the
   // conversion), with the recovered text on the clipboard.
-  async function retryFailed(id: string) {
+  // `keepPartial` — "Keep what was transcribed": convert on the words a failed
+  // attempt already got, without decoding again (the backend deletes the clip).
+  async function retryFailed(id: string, keepPartial = false) {
     if (retrying) return;
     setRetrying(id);
     try {
       const entry = await invoke<TranscriptEntry>("retry_failed_dictation", {
         id,
+        keepPartial,
       });
       setFailed((f) => f.filter((x) => x.id !== id));
       setRetryId((cur) => (cur === id ? null : cur));
       setHistory((h) =>
         [entry, ...h.filter((x) => x.id !== entry.id)].slice(0, HISTORY_LIMIT),
       );
-      toast(`Recovered ${entry.wordCount} words — copied to clipboard`);
+      toast(
+        keepPartial
+          ? `Saved ${entry.wordCount} words — copied to clipboard`
+          : `Recovered ${entry.wordCount} words — copied to clipboard`,
+      );
       await refreshInsights();
     } catch (e) {
       toast(String(e));

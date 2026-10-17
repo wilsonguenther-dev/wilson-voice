@@ -2015,6 +2015,27 @@ const DICT_CANDIDATE_LIMIT: i64 = 12;
 /// real engine failure without matching a string literal in two places.
 const EMPTY_TRANSCRIPT: &str = "Empty transcript";
 
+/// The error for a decode that produced no text. `EMPTY_TRANSCRIPT` means the
+/// audio was SILENCE, and DB-B's resume (`finish_recovered_decode`) acts on
+/// that: it keeps the recovered words as the whole take and the retry then
+/// deletes the clip. A windowed decode that came back blank because windows
+/// FAILED (engine error, per-chunk timeout, the take deadline) is not silence —
+/// the failed window may hold the rest of what he said — so it gets its own
+/// error, which every caller treats as a real failure that keeps the clip.
+fn blank_take_error(take: &transcription::DictationTake) -> String {
+    if take.chunks_failed == 0 {
+        return EMPTY_TRANSCRIPT.into();
+    }
+    let reason = take
+        .degraded_reason
+        .as_deref()
+        .unwrap_or("transcription failed");
+    format!(
+        "{} of {} window(s) failed and nothing else was voiced ({reason})",
+        take.chunks_failed, take.chunks_total
+    )
+}
+
 fn transcribe_native(
     manager: &transcription::TranscriptionManager,
     model_id: &str,
@@ -2058,7 +2079,7 @@ fn transcribe_native(
         );
     }
     if take.text.trim().is_empty() {
-        return Err(EMPTY_TRANSCRIPT.into());
+        return Err(blank_take_error(&take));
     }
     Ok(transcription::AsrOutput {
         text: take.text,
@@ -3847,82 +3868,184 @@ fn recovered_only_output() -> transcription::AsrOutput {
     }
 }
 
-/// YV52 — re-run ASR on a failed take's preserved clip. The common cause of the
-/// original failure is transient (no model downloaded yet, an engine that has
-/// since reloaded), so this is a real second chance rather than a replay.
-///
-/// On success the row CONVERTS: the transcript lands in history under the
-/// moment it was spoken, the recovery wav is unlinked, and the text is put on
-/// the clipboard — it is never auto-pasted, because the user is in Yap now, not
-/// in the app they dictated into.
-#[tauri::command]
-fn retry_failed_dictation(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-    id: String,
-) -> Result<TranscriptEntry, String> {
-    let row = state
-        .db
-        .get_failed_dictation(&id)?
-        .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
-    let wav = PathBuf::from(&row.wav_path);
-    if !wav.exists() {
-        // The audio is gone (purged, or cleaned up outside the app) — drop the
-        // row rather than leaving a Retry button that can only ever fail.
-        let _ = state.db.delete_failed_dictation(&id);
-        return Err("The audio for this take is no longer on disk".into());
+/// What one retry decode means for a failed row. Decided in ONE place,
+/// [`retry_outcome`]; every retry path goes through it.
+enum RetryOutcome {
+    /// The take is complete: the caller converts the row and deletes the clip.
+    Convert(String, transcription::AsrOutput),
+    /// The row and the clip stay. `error` becomes the row's reason and
+    /// `attempt_text` its saved words ("Transcribed so far").
+    Keep {
+        error: String,
+        attempt_text: Option<String>,
+    },
+}
+
+fn word_count(t: Option<&str>) -> usize {
+    t.map_or(0, |t| t.split_whitespace().count())
+}
+
+/// Words compared ignoring case and surrounding punctuation ("World," = "world").
+fn norm_words(t: &str) -> Vec<String> {
+    t.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// True when `new` EXTENDS `old`: it starts with all of `old`'s words and adds more.
+fn extends(new: &str, old: &str) -> bool {
+    let (new, old) = (norm_words(new), norm_words(old));
+    new.len() > old.len() && new.starts_with(&old)
+}
+
+/// Saved text as the retry sees it: cut at a repetition loop
+/// (`dictation::degenerate_cutoff`), whatever is left before it. The words
+/// recovered from the live decode were never gated, and a loop in them must
+/// neither inflate the "not shorter" baseline nor be converted or kept.
+fn gated_words(t: &str) -> String {
+    match dictation::degenerate_cutoff(t) {
+        Some(cutoff) => t[..cutoff].trim().to_string(),
+        None => t.trim().to_string(),
     }
-    let samples = record::read_wav_16k_mono(&wav)?;
-    // DB-B — "Finish transcribing" is a RESUME, not a replay. A take recovered
-    // mid-decode already has words in `take_chunks` and an `end_sample` saying
-    // how far into its audio they go, so decode the REMAINDER and keep what
-    // exists. Re-decoding from zero would burn the whole clip's GPU time to
-    // reproduce text that is already on disk — and would throw away the
-    // recovered words if this second decode happened to come out worse.
-    let (partial_text, resume_sample) = match row.take_id.as_deref() {
-        Some(take_id) => (
-            row.partial_text.clone(),
-            state.db.take_resume_sample(take_id),
-        ),
-        None => (None, Ok(0)),
-    };
-    let settings = state.settings.lock().clone();
-    let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
-        return Err("No speech model installed — open Settings → Models and download one.".into());
-    };
-    let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
-        Ok(terms) => asr_engine::build_bias_prompt(&terms),
-        Err(e) => {
-            log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
-            None
+}
+
+/// THE ROW'S SAVED WORDS, as the invariant, the extend-only rule and "Keep
+/// what was transcribed" all see them: the GATED saved attempt text and the
+/// GATED recovered words (`partial_text`, on every row that has them — also
+/// when a retry fell back to decoding the whole clip), whichever extends the
+/// other, else the longer. Keep therefore never saves less than the recovered
+/// words.
+fn saved_words(row: &db::FailedDictation) -> Option<String> {
+    let gate = |t: &Option<String>| t.as_deref().map(gated_words).filter(|t| !t.is_empty());
+    match (gate(&row.attempt_text), gate(&row.partial_text)) {
+        (Some(attempt), Some(recovered)) => {
+            if extends(&recovered, &attempt)
+                || (!extends(&attempt, &recovered)
+                    && word_count(Some(&recovered)) > word_count(Some(&attempt)))
+            {
+                Some(recovered)
+            } else {
+                Some(attempt)
+            }
+        }
+        (attempt, recovered) => attempt.or(recovered),
+    }
+}
+
+/// THE RETRY INVARIANT (PR #216). A retry deletes the recovery clip on its own
+/// only when ALL hold:
+///   (a) this decode had ZERO failed windows (engine error, per-window timeout,
+///       the take deadline, or an error before any window decoded),
+///   (b) the hallucination gate cut NOTHING (`gate_cut` is false): not in the
+///       recovered words, not in the remainder, not across the seam. A cut
+///       means audio whose words are not in the text — the retry resumes after
+///       the last recovered chunk, so speech under a looped chunk is never
+///       re-decoded — and that counts exactly like a failed window, and
+///   (c) its text is NOT SHORTER, in words, than the row's saved words
+///       ([`saved_words`]: the gated attempt text or gated recovered words).
+/// Anything else keeps the row and the clip; only the user's confirmed "Keep
+/// what was transcribed" or "Discard" deletes them.
+///
+/// `decoded` is ALWAYS gated text: [`decode_failed_take`] gates the recovered
+/// words and the decoded remainder SEPARATELY, then the joined text, so (b)
+/// counts the words that would really be converted and a loop in the recovered
+/// words cannot throw away a clean remainder; whether any of those gates cut
+/// anything arrives as `gate_cut`.
+///
+/// The saved words follow [`next_attempt_text`]: a zero-failure decode that
+/// is SHORTER than the saved words replaces them only when the stored attempt
+/// text is itself degenerate (`dictation::degenerate_cutoff`, a repetition
+/// loop); otherwise, and for any decode with a failed window, they may only be
+/// extended, never shrunk.
+fn retry_outcome(
+    row: &db::FailedDictation,
+    decoded: Result<(String, transcription::AsrOutput), String>,
+    gate_cut: bool,
+) -> RetryOutcome {
+    let saved = saved_words(row);
+    let saved_count = word_count(saved.as_deref());
+    let (text, asr) = match decoded {
+        Ok(done) => done,
+        // Nothing new decoded; the saved words (at least the gated recovered
+        // words) are the words so far.
+        Err(error) => {
+            return RetryOutcome::Keep {
+                attempt_text: saved,
+                error,
+            }
         }
     };
-    // The recovered words and the freshly decoded remainder are ONE transcript
-    // from here down. Everything after this line — the hallucination gate, the
-    // dictionary, the cleanup pipeline, the polish pass — sees exactly what it
-    // would have seen had the take never been interrupted.
-    let (mut raw_text, asr) =
-        finish_recovered_decode(partial_text, resume_sample, &samples, |remaining| {
-            transcribe_native(
-                &state.transcription,
-                &model_id,
-                &model_path,
-                remaining,
-                &settings.language,
-                bias_prompt,
-                // A retry or recovery from History has no live pill to fill: the
-                // user is looking at the history row, not at a recording indicator.
-                &mut transcribe_progress::NoObserver,
-            )
-        })?;
-    if raw_text.trim().is_empty() {
-        return Err("There is nothing left to transcribe in this take".into());
+    let failed = asr.chunks_failed > 0 || gate_cut;
+    let count = word_count(Some(&text));
+    if !failed && count >= saved_count {
+        return RetryOutcome::Convert(text, asr);
     }
-    // The same non-destructive gate as the live path (YV66). It matters MORE
-    // here: a successful retry unlinks the recovery wav, so a degenerate tail
-    // that slips through is unrecoverable — there is no audio left to try
-    // again with — and a good prefix thrown away is gone for the same reason.
-    match dictation::degenerate_cutoff(&raw_text) {
+    // A clean, shorter decode may replace the saved words ONLY when they are a
+    // repetition loop. Fewer words after a model switch, or a blank remainder
+    // (`recovered_only_output`), is no evidence against words an earlier
+    // attempt got: those stay, and so does the clip.
+    let saved_is_degenerate = row
+        .attempt_text
+        .as_deref()
+        .is_some_and(|t| dictation::degenerate_cutoff(t).is_some());
+    let authoritative = !failed && !asr.text.trim().is_empty() && saved_is_degenerate;
+    let error = if gate_cut {
+        "Part of this take repeated itself and could not be transcribed. Nothing was deleted — keep what was transcribed, or discard the take.".to_string()
+    } else if failed {
+        format!(
+            "Part of this take didn't transcribe ({} of {} sections failed). The audio is kept — try again, or keep what was transcribed.",
+            asr.chunks_failed,
+            asr.chunks.max(asr.chunks_failed)
+        )
+    } else {
+        format!(
+            "This try got fewer words than before ({count} vs {saved_count}). Nothing was deleted — keep what was transcribed, or discard the take."
+        )
+    };
+    RetryOutcome::Keep {
+        attempt_text: next_attempt_text(saved.as_deref(), Some(text.trim()), authoritative),
+        error,
+    }
+}
+
+/// The row's saved words after an attempt that did not convert: an
+/// authoritative decode (zero failures, replacing a degenerate saved text)
+/// replaces them; any other attempt only EXTENDS them ([`extends`]: case and
+/// punctuation ignored) and otherwise leaves them as they were.
+fn next_attempt_text(
+    saved: Option<&str>,
+    candidate: Option<&str>,
+    authoritative: bool,
+) -> Option<String> {
+    let Some(candidate) = candidate.filter(|c| !c.trim().is_empty()) else {
+        return saved.map(str::to_string);
+    };
+    let Some(saved) = saved.filter(|s| !s.trim().is_empty()) else {
+        return Some(candidate.to_string());
+    };
+    if authoritative || extends(candidate, saved) {
+        Some(candidate.to_string())
+    } else {
+        Some(saved.to_string())
+    }
+}
+
+/// YV66 — the retry path's hallucination gate, the same one the live path
+/// runs. It matters MORE here: a successful retry unlinks the recovery wav, so
+/// a degenerate tail that slips through is unrecoverable — there is no audio
+/// left to try again with — and a good prefix thrown away is gone for the same
+/// reason. Runs on the COMBINED text (recovered words + decoded remainder)
+/// before [`retry_outcome`], and on the kept words of "Keep what was
+/// transcribed".
+///
+/// `Ok(true)`: a degenerate tail was cut; `Ok(false)`: nothing to cut; `Err`:
+/// degenerate from the first token, nothing to keep.
+fn retry_gate(raw_text: &mut String) -> Result<bool, String> {
+    match dictation::degenerate_cutoff(raw_text) {
         Some(cutoff)
             if raw_text[..cutoff].split_whitespace().count()
                 >= dictation::DEGEN_MIN_KEEP_TOKENS =>
@@ -3936,6 +4059,7 @@ fn retry_failed_dictation(
                 kept,
                 before - kept
             );
+            Ok(true)
         }
         Some(_) => {
             // Degenerate from the first token — nothing to keep, so the row and
@@ -3945,63 +4069,242 @@ fn retry_failed_dictation(
                 "retry hallucination gate: rejected degenerate output ({} chars)",
                 raw_text.chars().count()
             );
-            return Err("Yap couldn't make sense of that clip — try dictating it again".into());
+            Err("Yap couldn't make sense of that clip — try dictating it again".into())
         }
-        None => {}
+        None => Ok(false),
     }
-    // Same cleanup pipeline as a live take, minus the caret context: the retry
-    // happens in Yap, so there is no cursor to join onto.
-    let mode = dictation::resolve_mode(
-        &settings.dictation_mode,
-        row.source_app.as_deref().unwrap_or_default(),
-    );
-    let polish_config = polish::PolishConfig::from_settings(&settings, mode);
-    // A retry has no live paste target (the row stores the app's title, not
-    // its bundle id), so it gets the conservative unknown-target format.
-    let structure_format = dictation::structure_format_for_take(
-        settings.structure_enabled && settings.dictation_mode.trim() != "plain",
-        &settings.structure_app_overrides,
-        "",
-        mode,
-    );
-    let (text, _) = dictation::run_cleanup_structured_traced(
-        &raw_text,
-        dictation::CleanupLevel::from_setting(&settings.cleanup_level),
-        mode,
-        structure_format,
-        polish_config.style,
-        &[],
-        |t| {
-            state
-                .db
-                .apply_dictionary(t)
-                .unwrap_or_else(|_| t.to_string())
-        },
-        |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
-    );
-    let entry = state.db.convert_failed_dictation(
-        &id,
-        text.clone(),
-        asr.backend,
-        asr.seconds,
-        Some(raw_text),
-    )?;
+}
+
+/// DB-B / YV52 — the decode half of a retry, lifted out of the command so a
+/// test can drive it with a real windowed decode and a real database. `Ok`
+/// only when [`retry_outcome`] says the take is complete; the caller then
+/// converts the row and deletes the clip ([`convert_and_drop_clip`]). On `Err`
+/// the row and the clip stay, with the row's reason and saved words updated.
+fn decode_failed_take(
+    db: &db::Database,
+    row: &db::FailedDictation,
+    partial_text: Option<String>,
+    resume_sample: Result<i64, String>,
+    samples: &[f32],
+    decode: impl FnOnce(Vec<f32>) -> Result<transcription::AsrOutput, String>,
+) -> Result<(String, transcription::AsrOutput), String> {
+    // The recovered words and the remainder are gated SEPARATELY, then joined
+    // (rr1 re-review of 2b09b0d: one gate over the joined text cut at a loop
+    // inside the recovered words and threw the whole clean remainder away).
+    // The joined text is gated once more for a loop across the seam. All of
+    // it runs BEFORE the invariant judges the text, and ANY cut — or a gate
+    // rejecting a part outright — is reported as `gate_cut` (rr1 re-review of
+    // 8bf5225: the resume starts after the looped recovered chunk, so the
+    // speech under the loop is in no text, and converting deleted it).
+    let gate_cut = std::cell::Cell::new(false);
+    let gate = |text: &mut String| match retry_gate(text) {
+        Ok(cut) => gate_cut.set(gate_cut.get() || cut),
+        Err(_) => {
+            text.clear();
+            gate_cut.set(true);
+        }
+    };
+    let partial_text = partial_text.map(|t| {
+        let gated = gated_words(&t);
+        if gated != t.trim() {
+            gate_cut.set(true);
+        }
+        gated
+    });
+    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, |rest| {
+        decode(rest).map(|mut asr| {
+            gate(&mut asr.text);
+            asr
+        })
+    })
+    .map(|(mut text, asr)| {
+        gate(&mut text);
+        (text, asr)
+    });
+    match retry_outcome(row, decoded, gate_cut.get()) {
+        RetryOutcome::Convert(text, asr) => Ok((text, asr)),
+        RetryOutcome::Keep {
+            error,
+            attempt_text,
+        } => {
+            log::warn!("retry kept the clip and the row: {error}");
+            let _ = db.note_failed_retry(&row.id, &error, attempt_text.as_deref());
+            Err(error)
+        }
+    }
+}
+
+/// YV52 — the success half of a retry: the row converts into a history entry,
+/// then the clip and the take's chunk text go. The ONLY place a retry deletes
+/// a recovery wav, so a test can prove a failed decode never reaches it.
+fn convert_and_drop_clip(
+    db: &db::Database,
+    row: &db::FailedDictation,
+    wav: &Path,
+    text: String,
+    asr: transcription::AsrOutput,
+    raw_text: Option<String>,
+) -> Result<TranscriptEntry, String> {
+    let entry = db.convert_failed_dictation(&row.id, text, asr.backend, asr.seconds, raw_text)?;
     // The take's audio now follows the normal lifecycle: it is gone. Its
     // partial text goes with it — the words live in `transcripts` now, and a
     // `take_chunks` row nothing points at is transcript text that would sit in
     // the DB until the retention sweep found it.
     if let Some(take_id) = row.take_id.as_deref() {
-        let _ = state.db.clear_take_chunks(take_id);
+        let _ = db.clear_take_chunks(take_id);
     }
-    let _ = std::fs::remove_file(&wav);
-    let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
-    log::info!(
-        "YV52 recovery: retry succeeded words={} ({})",
-        entry.word_count,
-        outcome.message
-    );
-    let _ = app.emit("transcript", &entry);
+    let _ = std::fs::remove_file(wav);
     Ok(entry)
+}
+
+/// YV52 — re-run ASR on a failed take's preserved clip. The common cause of the
+/// original failure is transient (no model downloaded yet, an engine that has
+/// since reloaded), so this is a real second chance rather than a replay.
+///
+/// On success the row CONVERTS: the transcript lands in history under the
+/// moment it was spoken, the recovery wav is unlinked, and the text is put on
+/// the clipboard — it is never auto-pasted, because the user is in Yap now, not
+/// in the app they dictated into.
+///
+/// `keep_partial` (PR #216 re-review, "Keep what was transcribed"): the user
+/// chose to accept the words a failed attempt DID get (`attempt_text`) instead
+/// of trying again. No decode runs; the row converts on those words and the
+/// clip is deleted — the UI confirms that loss first. Without it, a window that
+/// fails the same way on every try would leave only Discard.
+#[tauri::command]
+fn retry_failed_dictation(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    keep_partial: Option<bool>,
+) -> Result<TranscriptEntry, String> {
+    let keep_partial = keep_partial.unwrap_or(false);
+    // One closure, so every early `return Err` below lands in the label update.
+    let result = (|| -> Result<TranscriptEntry, String> {
+        let row = state
+            .db
+            .get_failed_dictation(&id)?
+            .ok_or_else(|| "That recovery clip is no longer in the list".to_string())?;
+        let wav = PathBuf::from(&row.wav_path);
+        if !wav.exists() && !keep_partial {
+            // The audio is gone (purged, or cleaned up outside the app) — drop the
+            // row rather than leaving a Retry button that can only ever fail.
+            // ("Keep what was transcribed" needs no audio, so it still converts.)
+            let _ = state.db.delete_failed_dictation(&id);
+            return Err("The audio for this take is no longer on disk".into());
+        }
+        let settings = state.settings.lock().clone();
+        let (raw_text, asr) = if keep_partial {
+            // The same saved words the invariant judged: gated, and never less
+            // than the gated recovered words.
+            let mut kept = saved_words(&row)
+                .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
+            retry_gate(&mut kept)?;
+            (kept, recovered_only_output())
+        } else {
+            let samples = record::read_wav_16k_mono(&wav)?;
+            // DB-B — "Finish transcribing" is a RESUME, not a replay. A take
+            // recovered mid-decode already has words in `take_chunks` and an
+            // `end_sample` saying how far into its audio they go, so decode the
+            // REMAINDER and keep what exists (`finish_recovered_decode`, called by
+            // `decode_failed_take`).
+            let Some((model_id, model_path)) = native_model_ready(&settings.native_model) else {
+                return Err(
+                    "No speech model installed — open Settings → Models and download one.".into(),
+                );
+            };
+            let bias_prompt = match state.db.bias_terms(BIAS_TERM_LIMIT) {
+                Ok(terms) => asr_engine::build_bias_prompt(&terms),
+                Err(e) => {
+                    log::warn!("dictionary bias unavailable ({e}) — retry decoding unbiased");
+                    None
+                }
+            };
+            // The recovered words and the freshly decoded remainder are ONE
+            // transcript from here down. Everything after this line — the
+            // hallucination gate, the dictionary, the cleanup pipeline, the polish
+            // pass — sees exactly what it would have seen had the take never been
+            // interrupted. A decode with ANY failed window comes back `Err` here,
+            // so the row and the clip are never converted or deleted for it.
+            let (partial_text, resume_sample) = match row.take_id.as_deref() {
+                Some(take_id) => (
+                    row.partial_text.clone(),
+                    state.db.take_resume_sample(take_id),
+                ),
+                None => (None, Ok(0)),
+            };
+            decode_failed_take(
+                &state.db,
+                &row,
+                partial_text,
+                resume_sample,
+                &samples,
+                |remaining| {
+                    transcribe_native(
+                        &state.transcription,
+                        &model_id,
+                        &model_path,
+                        remaining,
+                        &settings.language,
+                        bias_prompt,
+                        // A retry or recovery from History has no live pill to fill:
+                        // the user is looking at the history row, not at a recording
+                        // indicator.
+                        &mut transcribe_progress::NoObserver,
+                    )
+                },
+            )?
+        };
+        if raw_text.trim().is_empty() {
+            return Err("There is nothing left to transcribe in this take".into());
+        }
+        // Same cleanup pipeline as a live take, minus the caret context: the retry
+        // happens in Yap, so there is no cursor to join onto.
+        let mode = dictation::resolve_mode(
+            &settings.dictation_mode,
+            row.source_app.as_deref().unwrap_or_default(),
+        );
+        let polish_config = polish::PolishConfig::from_settings(&settings, mode);
+        // A retry has no live paste target (the row stores the app's title, not
+        // its bundle id), so it gets the conservative unknown-target format.
+        let structure_format = dictation::structure_format_for_take(
+            settings.structure_enabled && settings.dictation_mode.trim() != "plain",
+            &settings.structure_app_overrides,
+            "",
+            mode,
+        );
+        let (text, _) = dictation::run_cleanup_structured_traced(
+            &raw_text,
+            dictation::CleanupLevel::from_setting(&settings.cleanup_level),
+            mode,
+            structure_format,
+            polish_config.style,
+            &[],
+            |t| {
+                state
+                    .db
+                    .apply_dictionary(t)
+                    .unwrap_or_else(|_| t.to_string())
+            },
+            |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
+        );
+        let entry =
+            convert_and_drop_clip(&state.db, &row, &wav, text.clone(), asr, Some(raw_text))?;
+        let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
+        log::info!(
+            "YV52 recovery: retry succeeded words={} ({})",
+            entry.word_count,
+            outcome.message
+        );
+        let _ = app.emit("transcript", &entry);
+        Ok(entry)
+    })();
+    if let Err(e) = &result {
+        // The row's reason is the CURRENT failure, not the original one (a no-op
+        // when the row was converted or dropped).
+        let _ = state.db.note_failed_retry(&id, e, None);
+    }
+    result
 }
 
 /// YV52 — throw a failed take away: the row and its audio both go.
@@ -8347,11 +8650,19 @@ mod tests {
             .split_once("/// YV52 — throw a failed take away")
             .unwrap()
             .0;
-        assert!(body.contains("finish_recovered_decode("));
-        assert!(
-            !body.contains(".unwrap_or(0)"),
-            "no fabricated resume point"
-        );
+        assert!(body.contains("decode_failed_take("));
+        let helper = LIB
+            .split_once("fn decode_failed_take(")
+            .unwrap()
+            .1
+            .split_once("\n}\n")
+            .unwrap()
+            .0;
+        assert!(helper.contains("finish_recovered_decode("));
+        assert!(helper.contains("retry_outcome(row, decoded, gate_cut.get())"));
+        for b in [body, helper] {
+            assert!(!b.contains(".unwrap_or(0)"), "no fabricated resume point");
+        }
         let native = LIB
             .split_once("fn transcribe_native(")
             .unwrap()
@@ -8359,7 +8670,460 @@ mod tests {
             .split_once("\n}\n")
             .unwrap()
             .0;
-        assert!(native.contains("return Err(EMPTY_TRANSCRIPT.into());"));
+        assert!(native.contains("return Err(blank_take_error(&take));"));
+    }
+
+    /// PR #178 re-review: a remainder whose windows partly FAILED and partly
+    /// decoded to silence comes back blank, but it is not a silent tail. It
+    /// must not be reported as `EMPTY_TRANSCRIPT`, or the resume converts the
+    /// row on the recovered words alone and the retry deletes the only copy of
+    /// the failed window's audio.
+    #[test]
+    fn db_b_blank_decode_with_failed_windows_is_not_a_silent_tail() {
+        let take = |chunks_failed: usize| crate::transcription::DictationTake {
+            text: String::new(),
+            degraded: chunks_failed > 0,
+            windowed: true,
+            chunks_total: 3,
+            chunks_failed,
+            degraded_reason: (chunks_failed > 0).then(|| "chunk decode timed out".to_string()),
+        };
+        // Pure silence is still the silent tail the resume may finish on.
+        assert_eq!(super::blank_take_error(&take(0)), super::EMPTY_TRANSCRIPT);
+        let err = super::blank_take_error(&take(1));
+        assert_ne!(err, super::EMPTY_TRANSCRIPT);
+        // And the resume fails closed on it: the row and the wav stay.
+        let clip = db_b_clip(2, 30);
+        let r = super::finish_recovered_decode(
+            Some("w1 w2".into()),
+            Ok((2 * BLOCK) as i64),
+            &clip,
+            |_| Err(err.clone()),
+        );
+        assert_eq!(r.err(), Some(err));
+    }
+
+    /// PR #216 — the retry invariant (`retry_outcome`) over attempt HISTORIES,
+    /// each on a resume row (recovered "w1 w2" + remainder) and a whole-clip
+    /// row, through the REAL windowed decode (`transcribe_native` →
+    /// `transcribe_take_with_observed`, a stub engine scripted per window), a
+    /// real database, and the same convert-and-delete tail the command runs.
+    /// After every attempt: row kept or converted, wav kept or deleted, and the
+    /// saved words.
+    #[test]
+    fn db_b_retry_invariant_over_attempt_histories() {
+        use crate::transcription::{
+            Transcriber, TranscriptionManager, DICTATION_CHUNK_SAMPLE_RATE,
+            DICTATION_CHUNK_THRESHOLD_SECONDS,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        /// What window `i` of one attempt decodes to (`n` = windows planned).
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Script {
+            /// Every window decodes: w3, w4, w5, …
+            Clean,
+            /// Every window decodes to nothing (a model switch, or silence).
+            Blank,
+            /// Window 0 → "w3"; every later window fails.
+            Partial,
+            /// Window 0 → "W3," and window 1 → "w4"; the rest fail.
+            PartialPunct,
+            /// Every window but the last decodes (w3 …); the last fails.
+            MostlyOk,
+            /// Window 1 → "w4"; every other window fails.
+            OtherWindow,
+            /// Window 0 loops ("w3" × 60); every later window fails.
+            Loop,
+            /// Clean, but window 0 is 14 real words then "the" × 60 and the
+            /// rest are blank: 76 words raw, 16 after the gate.
+            CleanLoop,
+            /// Clean, but only window 0 → "w3"; the rest blank (model switch).
+            CleanFew,
+            /// Clean, window 0 → "x3", the rest blank: same count as Partial,
+            /// different words.
+            CleanOther,
+            /// Window 0 is 14 real words then "the" × 60; the rest decode
+            /// cleanly (w4 …). The gate cuts the remainder part-way.
+            MidLoop,
+            /// Window 0 is "the" × 60; the rest decode cleanly (w4 …).
+            LoopFirst,
+            /// Not a decode: an earlier build saved a repetition loop on the row.
+            SeedLoop,
+        }
+        fn window(script: Script, i: usize, n: usize) -> Result<String, String> {
+            let fail = || Err(format!("window {i} timed out"));
+            match (script, i) {
+                (Script::Clean, i) => Ok(format!("w{}", i + 3)),
+                (Script::MostlyOk, i) if i + 1 < n => Ok(format!("w{}", i + 3)),
+                (Script::Blank, _) => Ok(String::new()),
+                (Script::Partial, 0) => Ok("w3".into()),
+                (Script::PartialPunct, 0) => Ok("W3,".into()),
+                (Script::PartialPunct, 1) => Ok("w4".into()),
+                (Script::OtherWindow, 1) => Ok("w4".into()),
+                (Script::Loop, 0) => Ok(vec!["w3"; 60].join(" ")),
+                (Script::CleanLoop, 0) => {
+                    let real: Vec<String> = (1..=14).map(|k| format!("r{k}")).collect();
+                    Ok(format!("{} {}", real.join(" "), vec!["the"; 60].join(" ")))
+                }
+                (Script::CleanFew, 0) => Ok("w3".into()),
+                (Script::CleanOther, 0) => Ok("x3".into()),
+                (Script::MidLoop, 0) => {
+                    let real: Vec<String> = (1..=14).map(|k| format!("r{k}")).collect();
+                    Ok(format!("{} {}", real.join(" "), vec!["the"; 60].join(" ")))
+                }
+                (Script::LoopFirst, 0) => Ok(vec!["the"; 60].join(" ")),
+                (Script::MidLoop | Script::LoopFirst, i) => Ok(format!("w{}", i + 3)),
+                (Script::CleanLoop | Script::CleanFew | Script::CleanOther, _) => Ok(String::new()),
+                _ => fail(),
+            }
+        }
+        let windows = Arc::new(AtomicUsize::new(usize::MAX));
+        struct Scripted(Arc<AtomicUsize>, Arc<Mutex<Script>>, Arc<AtomicUsize>);
+        impl Transcriber for Scripted {
+            fn transcribe(
+                &mut self,
+                _s: &[f32],
+                _l: Option<&str>,
+                _b: Option<&str>,
+            ) -> Result<String, String> {
+                let i = self.0.fetch_add(1, Ordering::SeqCst);
+                window(*self.1.lock().unwrap(), i, self.2.load(Ordering::SeqCst))
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let script = Arc::new(Mutex::new(Script::Clean));
+        let manager = {
+            let (calls, script, windows) = (calls.clone(), script.clone(), windows.clone());
+            TranscriptionManager::with_loader(
+                Arc::new(move |_p: &std::path::Path| {
+                    Ok(
+                        Box::new(Scripted(calls.clone(), script.clone(), windows.clone()))
+                            as Box<dyn Transcriber>,
+                    )
+                }),
+                Duration::from_secs(3600),
+                Duration::from_secs(3600),
+                Duration::from_secs(30),
+            )
+        };
+        let dir = std::env::temp_dir().join(format!("db-b-inv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("stub.bin");
+        std::fs::write(&model, b"stub").unwrap();
+        let rate = DICTATION_CHUNK_SAMPLE_RATE as usize;
+        let resume = 10 * rate;
+        let remainder = vec![0.1f32; (DICTATION_CHUNK_THRESHOLD_SECONDS as usize + 40) * rate];
+        let resume_clip: Vec<f32> = std::iter::repeat_n(0.1f32, resume)
+            .chain(remainder.iter().copied())
+            .collect();
+        let db = crate::db::Database::open_in_memory().unwrap();
+
+        // One "Finish transcribing" exactly as the command runs it.
+        let attempt = |id: &str, s: Script| {
+            calls.store(0, Ordering::SeqCst);
+            *script.lock().unwrap() = s;
+            let row = db.get_failed_dictation(id).unwrap().expect("row");
+            let resume_sample = match row.take_id.as_deref() {
+                Some(t) => db.take_resume_sample(t),
+                None => Ok(0),
+            };
+            let clip = if row.take_id.is_some() {
+                &resume_clip
+            } else {
+                &remainder
+            };
+            let wav = std::path::PathBuf::from(&row.wav_path);
+            super::decode_failed_take(
+                &db,
+                &row,
+                row.partial_text.clone(),
+                resume_sample,
+                clip,
+                |rest| {
+                    super::transcribe_native(
+                        &manager,
+                        "stub",
+                        &model,
+                        rest,
+                        "",
+                        None,
+                        &mut crate::transcribe_progress::NoObserver,
+                    )
+                },
+            )
+            .and_then(|(raw, asr)| {
+                super::convert_and_drop_clip(&db, &row, &wav, raw.clone(), asr, Some(raw))
+            })
+        };
+
+        // How many windows the remainder plans into (the same for both rows).
+        let probe = db
+            .record_failed_dictation_for_take(&dir.join("probe.wav"), 1.0, "x", None, None)
+            .unwrap();
+        let _ = attempt(&probe.id, Script::Blank);
+        let n = calls.load(Ordering::SeqCst);
+        assert!(
+            (2..40).contains(&n),
+            "the remainder must window (got {n} windows)"
+        );
+        let clean_tail: Vec<String> = (0..n).map(|i| format!("w{}", i + 3)).collect();
+        let clean_tail = clean_tail.join(" ");
+        windows.store(n, Ordering::SeqCst);
+        let looped = vec!["w3"; 60].join(" ");
+        let seq = |to: usize| -> String {
+            (3..=to)
+                .map(|k| format!("w{k}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mostly = seq(n + 1);
+        let r14 = (1..=14)
+            .map(|k| format!("r{k}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Expected state after an attempt: None = converted (row gone, wav
+        // deleted); Some(saved words) = row and wav kept with these words.
+        type Want = Option<Option<String>>;
+        let kept = |t: &str| -> Want { Some(Some(t.to_string())) };
+        for resume_row in [true, false] {
+            let p = |t: &str| {
+                if resume_row {
+                    format!("w1 w2 {t}")
+                } else {
+                    t.to_string()
+                }
+            };
+            // Resume rows keep their recovered words when nothing else is saved.
+            let recovered: Want = Some(resume_row.then(|| "w1 w2".to_string()));
+            let histories: Vec<(&str, Vec<(Script, Want)>)> = vec![
+                ("clean full decode", vec![(Script::Clean, None)]),
+                (
+                    "blank, 0 failures, nothing saved",
+                    // Resume: the remainder was silence, the recovered words are
+                    // the whole take. Whole clip: nothing to convert, kept.
+                    vec![(Script::Blank, if resume_row { None } else { Some(None) })],
+                ),
+                (
+                    "blank, 0 failures, longer text saved",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        (Script::Blank, kept(&p("w3"))),
+                        (Script::Blank, kept(&p("w3"))),
+                    ],
+                ),
+                (
+                    "partial with failures",
+                    vec![(Script::Partial, kept(&p("w3")))],
+                ),
+                (
+                    // The gate runs on a failed attempt too: a loop is never
+                    // saved as "transcribed so far".
+                    "looping attempt is gated, not saved",
+                    vec![(Script::Loop, recovered.clone())],
+                ),
+                (
+                    // rr1 on 9784adf: 76 raw words pass "not shorter" against 22
+                    // saved, the gate cuts them to 16 — the invariant must see 16.
+                    "looping clean decode the gate trims below saved",
+                    vec![
+                        (Script::MostlyOk, kept(&p(&mostly))),
+                        (Script::CleanLoop, kept(&p(&mostly))),
+                    ],
+                ),
+                (
+                    // rr2 on 9784adf: fewer clean words (a model switch) never
+                    // replace non-degenerate saved words, so no later press can
+                    // convert on the shorter text.
+                    "clean shorter decode, non-degenerate saved text",
+                    vec![
+                        (Script::MostlyOk, kept(&p(&mostly))),
+                        (Script::CleanFew, kept(&p(&mostly))),
+                        (Script::CleanFew, kept(&p(&mostly))),
+                        (Script::Clean, None),
+                    ],
+                ),
+                (
+                    // A loop saved by an earlier build is gated before it is
+                    // counted, so it cannot hold a clean decode back.
+                    "clean after a saved loop converts",
+                    vec![(Script::SeedLoop, kept(&p(&looped))), (Script::Clean, None)],
+                ),
+                (
+                    // As designed, documented: an attempt with failed windows
+                    // whose words do not EXTEND the saved ones leaves them as
+                    // they were; a CLEAN decode with the same word count passes
+                    // (b) and converts on its own words.
+                    "same count, different words",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        (Script::OtherWindow, kept(&p("w3"))),
+                        (Script::CleanOther, None),
+                    ],
+                ),
+                (
+                    // rr1 advisory on 8bf5225: a remainder that STARTS with a
+                    // loop is rejected by the gate; that is a cut, never silence.
+                    "remainder begins with a loop",
+                    vec![(Script::LoopFirst, recovered.clone())],
+                ),
+                (
+                    // A gate cut part-way through the remainder: the clean words
+                    // after the loop are in no text, so nothing auto-deletes.
+                    "remainder loops part-way",
+                    vec![(Script::MidLoop, kept(&p(&r14)))],
+                ),
+                (
+                    // Extending ignores case and punctuation: "W3," extends "w3".
+                    "punctuation does not block an extension",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        (Script::PartialPunct, kept(&p("W3, w4"))),
+                    ],
+                ),
+            ];
+            for (name, steps) in histories {
+                let case = format!(
+                    "{name} / {}",
+                    if resume_row {
+                        "resume row"
+                    } else {
+                        "whole-clip row"
+                    }
+                );
+                let take_id = resume_row.then(|| format!("take-{}", name.replace(' ', "-")));
+                if let Some(t) = &take_id {
+                    db.record_take_chunk(t, 0, "w1 w2", resume as i64).unwrap();
+                }
+                let wav = dir.join(format!("{}-{resume_row}.wav", name.replace(' ', "-")));
+                std::fs::write(&wav, b"RIFF stand-in").unwrap();
+                let row = db
+                    .record_failed_dictation_for_take(&wav, 120.0, "Yap quit", None, take_id)
+                    .unwrap();
+                for (k, (s, want)) in steps.into_iter().enumerate() {
+                    let ctx = format!("{case}, attempt {} ({s:?})", k + 1);
+                    let r = if s == Script::SeedLoop {
+                        let t = p(&looped);
+                        db.note_failed_retry(&row.id, "earlier", Some(&t)).unwrap();
+                        Err("earlier".to_string())
+                    } else {
+                        attempt(&row.id, s)
+                    };
+                    let now = db.get_failed_dictation(&row.id).unwrap();
+                    match want {
+                        None => {
+                            assert!(r.is_ok(), "{ctx}: should convert, got {:?}", r.err());
+                            assert!(now.is_none(), "{ctx}: row converted");
+                            assert!(!wav.exists(), "{ctx}: clip deleted");
+                        }
+                        Some(saved) => {
+                            let err = r.expect_err(&ctx);
+                            let now = now.unwrap_or_else(|| panic!("{ctx}: row kept"));
+                            assert!(wav.exists(), "{ctx}: clip kept");
+                            assert_eq!(now.attempt_text, saved, "{ctx}: saved words");
+                            assert_eq!(now.error, err, "{ctx}: the row shows this error");
+                            assert_eq!(now.partial_text, row.partial_text, "{ctx}: resume state");
+                        }
+                    }
+                }
+            }
+        }
+        // rr1 on 2b09b0d — recovered words (`partial_text`) come from the live
+        // decode and were never gated. (recovered words, their end sample —
+        // 0 = the resume point is unusable and the retry decodes the whole
+        // clip —, script, converted raw text, or the saved words Keep saves.)
+        let real14 = (1..=14)
+            .map(|k| format!("r{k}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let looped_recovered = format!("{real14} {}", vec!["the"; 60].join(" "));
+        /// (name, recovered words, their end sample, script, converts to, Keep saves)
+        type Special<'a> = (
+            &'a str,
+            &'a str,
+            usize,
+            Script,
+            Option<String>,
+            Option<String>,
+        );
+        let special: Vec<Special> = vec![
+            (
+                // rr1 on 8bf5225: the resume starts AFTER the looped chunk, so
+                // the speech under the loop is never re-decoded — a gate cut,
+                // so the row and clip stay; Keep saves gated 14 + remainder.
+                "loop in recovered words + clean remainder",
+                &looped_recovered,
+                resume,
+                Script::Clean,
+                None,
+                Some(format!("{real14} {clean_tail}")),
+            ),
+            (
+                "loop in recovered words + blank remainder",
+                &looped_recovered,
+                resume,
+                Script::Blank,
+                None,
+                Some(real14.clone()),
+            ),
+            (
+                "loop in recovered words + failed remainder",
+                &looped_recovered,
+                resume,
+                Script::Partial,
+                None,
+                Some(format!("{real14} w3")),
+            ),
+            (
+                "whole-clip fallback, short clean decode",
+                &real14,
+                0,
+                Script::CleanFew,
+                None,
+                Some(real14.clone()),
+            ),
+        ];
+        for (name, recovered, end, s, converts_to, keeps) in special {
+            let t = format!("special-{}", name.replace(' ', "-"));
+            db.record_take_chunk(&t, 0, recovered, end as i64).unwrap();
+            let wav = dir.join(format!("{t}.wav"));
+            std::fs::write(&wav, b"RIFF stand-in").unwrap();
+            let row = db
+                .record_failed_dictation_for_take(&wav, 120.0, "Yap quit", None, Some(t))
+                .unwrap();
+            let r = attempt(&row.id, s);
+            let now = db.get_failed_dictation(&row.id).unwrap();
+            match converts_to {
+                Some(raw) => {
+                    let entry = r.expect(name);
+                    assert_eq!(entry.raw_text.as_deref(), Some(raw.as_str()), "{name}");
+                    assert!(now.is_none(), "{name}: row converted");
+                    assert!(!wav.exists(), "{name}: clip deleted");
+                }
+                None => {
+                    assert!(r.is_err(), "{name}: must keep the row");
+                    let now = now.unwrap_or_else(|| panic!("{name}: row kept"));
+                    assert!(wav.exists(), "{name}: clip kept");
+                    assert_eq!(now.attempt_text, keeps, "{name}: saved words");
+                    assert_eq!(super::saved_words(&now), keeps, "{name}: what Keep saves");
+                    // A row a previous build left with a SHORTER attempt text
+                    // that does not extend them: Keep saves the gated
+                    // recovered words, never the shorter attempt.
+                    db.note_failed_retry(&row.id, "older build", Some("w3"))
+                        .unwrap();
+                    let older = db.get_failed_dictation(&row.id).unwrap().unwrap();
+                    assert_eq!(
+                        super::saved_words(&older).as_deref(),
+                        Some(real14.as_str()),
+                        "{name}: Keep vs a short attempt"
+                    );
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// YV66 — the retry path runs the SAME gate as the live path. It is the one
@@ -8378,12 +9142,20 @@ mod tests {
             .split_once("/// YV52 — throw a failed take away")
             .expect("the retry command must end where the next command begins")
             .0;
+        let gate = LIB
+            .split_once("fn retry_gate(")
+            .expect("the retry gate must exist")
+            .1
+            .split_once("\n}\n")
+            .unwrap()
+            .0;
+        assert!(body.contains("retry_gate(&mut kept)"), "Keep is gated too");
         assert!(
-            body.contains("dictation::degenerate_cutoff("),
+            gate.contains("dictation::degenerate_cutoff("),
             "the retry path must gate on the cutoff, not on a whole-take verdict"
         );
         assert!(
-            !body.contains("is_hallucinated_repetition"),
+            !gate.contains("is_hallucinated_repetition"),
             "the whole-take verdict is false for a degenerate TAIL — it would ship the loop"
         );
 
@@ -8405,6 +9177,9 @@ mod tests {
             "the gate must truncate this take, not reject it whole"
         );
         assert_eq!(text[..cutoff].trim_end(), prose);
+        let mut gated = text.clone();
+        super::retry_gate(&mut gated).expect("truncated, not rejected");
+        assert_eq!(gated.trim_end(), prose);
     }
 
     /// YV66 × YV67 — the two features meet inside ONE `match` arm, so this is

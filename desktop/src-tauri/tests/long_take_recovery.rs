@@ -269,13 +269,16 @@ fn finishing_a_recovered_take_runs_the_same_gates_as_a_live_take() {
     // the dictionary, and the cleanup/polish pipeline — over the COMBINED text.
     let body = fn_body("retry_failed_dictation");
 
-    // 1. The hallucination gate, by the same symbol the live path calls.
+    // 1. The hallucination gate, by the same symbol the live path calls. It
+    //    lives in `retry_gate` (PR #216: it must run BEFORE the keep-or-convert
+    //    invariant), which the decode helper and the Keep path both call.
+    let gate = fn_body("retry_gate");
     assert!(
-        body.contains("dictation::degenerate_cutoff"),
+        gate.contains("dictation::degenerate_cutoff"),
         "the finish path must run the same degenerate-tail gate as a live take"
     );
     assert!(
-        body.contains("dictation::DEGEN_MIN_KEEP_TOKENS"),
+        gate.contains("dictation::DEGEN_MIN_KEEP_TOKENS"),
         "…including the same keep threshold, not a second opinion about it"
     );
     // 2. The cleanup pipeline, dictionary and polish included.
@@ -293,16 +296,28 @@ fn finishing_a_recovered_take_runs_the_same_gates_as_a_live_take() {
     );
     // 3. The recovered words are part of what those gates see — the partial
     //    text is folded into `raw_text` BEFORE the gate, not appended after it.
-    let gate_at = body
-        .find("dictation::degenerate_cutoff")
-        .expect("the gate is in the body");
-    let fold_at = body
-        .find("partial_text")
-        .expect("the finish path reads the take's partial text");
+    let decode = fn_body("decode_failed_take");
     assert!(
-        fold_at < gate_at,
-        "the recovered words must be folded in BEFORE the gate runs — text that \
-         skips the gate is text the live path would never have produced"
+        body.contains("decode_failed_take("),
+        "the finish path decodes through the helper"
+    );
+    assert!(
+        decode.contains("retry_gate("),
+        "the decode helper gates with the same retry gate"
+    );
+    let fold_at = decode
+        .find("finish_recovered_decode(partial_text")
+        .expect("the finish path folds the take's partial text in");
+    // The COMBINED text (recovered words + remainder) is gated after the fold
+    // — `gate(&mut text)` on `finish_recovered_decode`'s output — and only
+    // then does the keep-or-convert invariant judge it.
+    let joined_gate_at = decode[fold_at..]
+        .find("gate(&mut text)")
+        .map(|i| fold_at + i)
+        .expect("the recovered words must be folded in BEFORE the gate runs");
+    assert!(
+        decode[joined_gate_at..].contains("retry_outcome("),
+        "the gate runs BEFORE the keep-or-convert invariant judges the text"
     );
     // 4. It is a RESUME, not a replay: the decode starts at the persisted end.
     assert!(

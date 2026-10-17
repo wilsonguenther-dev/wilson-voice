@@ -200,6 +200,11 @@ export default function Home() {
                             Already transcribed: “{f.partialText}”
                           </p>
                         ) : null}
+                        {f.attemptText && f.attemptText !== f.partialText ? (
+                          <p className="failed-partial" title={f.attemptText}>
+                            Transcribed so far: “{f.attemptText}”
+                          </p>
+                        ) : null}
                         <div className="actions">
                           <button
                             className="primary"
@@ -214,6 +219,24 @@ export default function Home() {
                                 ? "Finish transcribing"
                                 : "Retry"}
                           </button>
+                          {f.attemptText ? (
+                            <button
+                              className="ghost"
+                              disabled={retrying === f.id}
+                              onClick={() => {
+                                if (
+                                  confirm(
+                                    f.partialText
+                                      ? "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this."
+                                      : "Save the words shown for this take and delete its audio? Parts that didn't transcribe can't be recovered after this.",
+                                  )
+                                )
+                                  void retryFailed(f.id, true);
+                              }}
+                            >
+                              Keep what was transcribed
+                            </button>
+                          ) : null}
                           <button
                             className="ghost danger"
                             onClick={() => discardFailed(f.id)}
