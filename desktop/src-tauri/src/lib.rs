@@ -3937,10 +3937,15 @@ fn saved_words(row: &db::FailedDictation) -> Option<String> {
 }
 
 /// THE RETRY INVARIANT (PR #216). A retry deletes the recovery clip on its own
-/// only when BOTH hold:
+/// only when ALL hold:
 ///   (a) this decode had ZERO failed windows (engine error, per-window timeout,
-///       the take deadline, or an error before any window decoded), and
-///   (b) its text is NOT SHORTER, in words, than the row's saved words
+///       the take deadline, or an error before any window decoded),
+///   (b) the hallucination gate cut NOTHING (`gate_cut` is false): not in the
+///       recovered words, not in the remainder, not across the seam. A cut
+///       means audio whose words are not in the text — the retry resumes after
+///       the last recovered chunk, so speech under a looped chunk is never
+///       re-decoded — and that counts exactly like a failed window, and
+///   (c) its text is NOT SHORTER, in words, than the row's saved words
 ///       ([`saved_words`]: the gated attempt text or gated recovered words).
 /// Anything else keeps the row and the clip; only the user's confirmed "Keep
 /// what was transcribed" or "Discard" deletes them.
@@ -3948,7 +3953,8 @@ fn saved_words(row: &db::FailedDictation) -> Option<String> {
 /// `decoded` is ALWAYS gated text: [`decode_failed_take`] gates the recovered
 /// words and the decoded remainder SEPARATELY, then the joined text, so (b)
 /// counts the words that would really be converted and a loop in the recovered
-/// words cannot throw away a clean remainder.
+/// words cannot throw away a clean remainder; whether any of those gates cut
+/// anything arrives as `gate_cut`.
 ///
 /// The saved words follow [`next_attempt_text`]: a zero-failure decode that
 /// is SHORTER than the saved words replaces them only when the stored attempt
@@ -3958,6 +3964,7 @@ fn saved_words(row: &db::FailedDictation) -> Option<String> {
 fn retry_outcome(
     row: &db::FailedDictation,
     decoded: Result<(String, transcription::AsrOutput), String>,
+    gate_cut: bool,
 ) -> RetryOutcome {
     let saved = saved_words(row);
     let saved_count = word_count(saved.as_deref());
@@ -3972,7 +3979,7 @@ fn retry_outcome(
             }
         }
     };
-    let failed = asr.chunks_failed > 0;
+    let failed = asr.chunks_failed > 0 || gate_cut;
     let count = word_count(Some(&text));
     if !failed && count >= saved_count {
         return RetryOutcome::Convert(text, asr);
@@ -3986,7 +3993,9 @@ fn retry_outcome(
         .as_deref()
         .is_some_and(|t| dictation::degenerate_cutoff(t).is_some());
     let authoritative = !failed && !asr.text.trim().is_empty() && saved_is_degenerate;
-    let error = if failed {
+    let error = if gate_cut {
+        "Part of this take repeated itself and could not be transcribed. Nothing was deleted — keep what was transcribed, or discard the take.".to_string()
+    } else if failed {
         format!(
             "Part of this take didn't transcribe ({} of {} sections failed). The audio is kept — try again, or keep what was transcribed.",
             asr.chunks_failed,
@@ -4032,7 +4041,10 @@ fn next_attempt_text(
 /// reason. Runs on the COMBINED text (recovered words + decoded remainder)
 /// before [`retry_outcome`], and on the kept words of "Keep what was
 /// transcribed".
-fn retry_gate(raw_text: &mut String) -> Result<(), String> {
+///
+/// `Ok(true)`: a degenerate tail was cut; `Ok(false)`: nothing to cut; `Err`:
+/// degenerate from the first token, nothing to keep.
+fn retry_gate(raw_text: &mut String) -> Result<bool, String> {
     match dictation::degenerate_cutoff(raw_text) {
         Some(cutoff)
             if raw_text[..cutoff].split_whitespace().count()
@@ -4047,7 +4059,7 @@ fn retry_gate(raw_text: &mut String) -> Result<(), String> {
                 kept,
                 before - kept
             );
-            Ok(())
+            Ok(true)
         }
         Some(_) => {
             // Degenerate from the first token — nothing to keep, so the row and
@@ -4059,7 +4071,7 @@ fn retry_gate(raw_text: &mut String) -> Result<(), String> {
             );
             Err("Yap couldn't make sense of that clip — try dictating it again".into())
         }
-        None => Ok(()),
+        None => Ok(false),
     }
 }
 
@@ -4080,13 +4092,36 @@ fn decode_failed_take(
     // (rr1 re-review of 2b09b0d: one gate over the joined text cut at a loop
     // inside the recovered words and threw the whole clean remainder away).
     // The joined text is gated once more for a loop across the seam. All of
-    // it runs BEFORE the invariant judges the text.
-    let partial_text = partial_text.map(|t| gated_words(&t));
+    // it runs BEFORE the invariant judges the text, and ANY cut — or a gate
+    // rejecting a part outright — is reported as `gate_cut` (rr1 re-review of
+    // 8bf5225: the resume starts after the looped recovered chunk, so the
+    // speech under the loop is in no text, and converting deleted it).
+    let gate_cut = std::cell::Cell::new(false);
+    let gate = |text: &mut String| match retry_gate(text) {
+        Ok(cut) => gate_cut.set(gate_cut.get() || cut),
+        Err(_) => {
+            text.clear();
+            gate_cut.set(true);
+        }
+    };
+    let partial_text = partial_text.map(|t| {
+        let gated = gated_words(&t);
+        if gated != t.trim() {
+            gate_cut.set(true);
+        }
+        gated
+    });
     let decoded = finish_recovered_decode(partial_text, resume_sample, samples, |rest| {
-        decode(rest).and_then(|mut asr| retry_gate(&mut asr.text).map(|()| asr))
+        decode(rest).map(|mut asr| {
+            gate(&mut asr.text);
+            asr
+        })
     })
-    .and_then(|(mut text, asr)| retry_gate(&mut text).map(|()| (text, asr)));
-    match retry_outcome(row, decoded) {
+    .map(|(mut text, asr)| {
+        gate(&mut text);
+        (text, asr)
+    });
+    match retry_outcome(row, decoded, gate_cut.get()) {
         RetryOutcome::Convert(text, asr) => Ok((text, asr)),
         RetryOutcome::Keep {
             error,
@@ -8624,7 +8659,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(helper.contains("finish_recovered_decode("));
-        assert!(helper.contains("retry_outcome(row, decoded)"));
+        assert!(helper.contains("retry_outcome(row, decoded, gate_cut.get())"));
         for b in [body, helper] {
             assert!(!b.contains(".unwrap_or(0)"), "no fabricated resume point");
         }
@@ -8710,6 +8745,11 @@ mod tests {
             /// Clean, window 0 → "x3", the rest blank: same count as Partial,
             /// different words.
             CleanOther,
+            /// Window 0 is 14 real words then "the" × 60; the rest decode
+            /// cleanly (w4 …). The gate cuts the remainder part-way.
+            MidLoop,
+            /// Window 0 is "the" × 60; the rest decode cleanly (w4 …).
+            LoopFirst,
             /// Not a decode: an earlier build saved a repetition loop on the row.
             SeedLoop,
         }
@@ -8730,6 +8770,12 @@ mod tests {
                 }
                 (Script::CleanFew, 0) => Ok("w3".into()),
                 (Script::CleanOther, 0) => Ok("x3".into()),
+                (Script::MidLoop, 0) => {
+                    let real: Vec<String> = (1..=14).map(|k| format!("r{k}")).collect();
+                    Ok(format!("{} {}", real.join(" "), vec!["the"; 60].join(" ")))
+                }
+                (Script::LoopFirst, 0) => Ok(vec!["the"; 60].join(" ")),
+                (Script::MidLoop | Script::LoopFirst, i) => Ok(format!("w{}", i + 3)),
                 (Script::CleanLoop | Script::CleanFew | Script::CleanOther, _) => Ok(String::new()),
                 _ => fail(),
             }
@@ -8834,6 +8880,10 @@ mod tests {
                 .join(" ")
         };
         let mostly = seq(n + 1);
+        let r14 = (1..=14)
+            .map(|k| format!("r{k}"))
+            .collect::<Vec<_>>()
+            .join(" ");
 
         // Expected state after an attempt: None = converted (row gone, wav
         // deleted); Some(saved words) = row and wav kept with these words.
@@ -8915,6 +8965,18 @@ mod tests {
                     ],
                 ),
                 (
+                    // rr1 advisory on 8bf5225: a remainder that STARTS with a
+                    // loop is rejected by the gate; that is a cut, never silence.
+                    "remainder begins with a loop",
+                    vec![(Script::LoopFirst, recovered.clone())],
+                ),
+                (
+                    // A gate cut part-way through the remainder: the clean words
+                    // after the loop are in no text, so nothing auto-deletes.
+                    "remainder loops part-way",
+                    vec![(Script::MidLoop, kept(&p(&r14)))],
+                ),
+                (
                     // Extending ignores case and punctuation: "W3," extends "w3".
                     "punctuation does not block an extension",
                     vec![
@@ -8989,12 +9051,23 @@ mod tests {
         );
         let special: Vec<Special> = vec![
             (
+                // rr1 on 8bf5225: the resume starts AFTER the looped chunk, so
+                // the speech under the loop is never re-decoded — a gate cut,
+                // so the row and clip stay; Keep saves gated 14 + remainder.
                 "loop in recovered words + clean remainder",
                 &looped_recovered,
                 resume,
                 Script::Clean,
-                Some(format!("{real14} {clean_tail}")),
                 None,
+                Some(format!("{real14} {clean_tail}")),
+            ),
+            (
+                "loop in recovered words + blank remainder",
+                &looped_recovered,
+                resume,
+                Script::Blank,
+                None,
+                Some(real14.clone()),
             ),
             (
                 "loop in recovered words + failed remainder",
