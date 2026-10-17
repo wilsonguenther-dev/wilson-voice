@@ -96,7 +96,7 @@ if (halted) {
   results.push({ part: "part-02", status: 'skipped: review mode runs part-01 only', items: 56 })
 } else {
   phase("part-02")
-  log("START part-02 — 56 item(s), yap-qa-harness..Y5-K — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (438332 bytes)")
+  log("START part-02 — 56 item(s), yap-qa-harness..Y5-K — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs (440727 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-02.mjs" }, args)
     log("END part-02 — " + (result && result.halted ? 'halted' : 'finished') + " (56 item(s))")
