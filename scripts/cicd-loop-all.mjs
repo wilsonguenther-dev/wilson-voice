@@ -1,9 +1,9 @@
 export const meta = {
   name: "yap-overhaul-all",
   description:
-    "Every item of the Yap (wilson-voice) overhaul, run as 3 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 136 items in all, 31 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
+    "Every item of the Yap (wilson-voice) overhaul, run as 3 parts because the Workflow tool caps a script at 524288 bytes. BUILD FIRST: each part runs two builder lanes that land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, and open a labelled unreviewed PR. The adversarial review, the independent second-Opus gate and the merge bar are a SEPARATE pass, run afterwards with args {mode:'review'}. 138 items in all, 31 awaiting the Senior Panel. The parts share two worktrees and two warm cargo caches; the last part tears them down. A failed part is logged and the run continues.",
   phases: [
-    { title: "part-01", detail: "Y0-A..yap-notetaker-notes" },
+    { title: "part-01", detail: "Y0-A..yap-recovery-followups" },
     { title: "part-02", detail: "Y4-A..Y9-E" },
     { title: "part-03", detail: "Y10-A..yap24-X3" },
   ],
@@ -57,17 +57,17 @@ let halted = null
 
 if (halted) {
   log("part-01 — SKIPPED, the run halted earlier: " + halted.reason)
-  results.push({ part: "part-01", status: 'skipped: run halted', items: 56 })
-} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","yap-flakes-2026-10-16","yap-lifecycle-2026-10-16","yap-qa-harness","yap-perm-truth","yap-hotkey-stop","yap-format-structure","yap-meetings-fix","yap-uiux-2026-10-16-W0","yap-uiux-2026-10-16-HOME","yap-uiux-2026-10-16-DICT","yap-uiux-2026-10-16-INSIGHTS","yap-uiux-2026-10-16-MEETINGS","yap-uiux-2026-10-16-SCRATCH","yap-uiux-2026-10-16-SETTINGS","yap-uiux-2026-10-16-ONBOARD","yap-uiux-2026-10-16-Z","yap-notetaker-onboard","yap-notetaker-detect","yap-notetaker-notes"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
+  results.push({ part: "part-01", status: 'skipped: run halted', items: 58 })
+} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","yap-flakes-2026-10-16","yap-lifecycle-2026-10-16","yap-qa-harness","yap-perm-truth","yap-hotkey-stop","yap-format-structure","yap-meetings-fix","yap-uiux-2026-10-16-W0","yap-uiux-2026-10-16-HOME","yap-uiux-2026-10-16-DICT","yap-uiux-2026-10-16-INSIGHTS","yap-uiux-2026-10-16-MEETINGS","yap-uiux-2026-10-16-SCRATCH","yap-uiux-2026-10-16-SETTINGS","yap-uiux-2026-10-16-ONBOARD","yap-uiux-2026-10-16-Z","yap-notetaker-onboard","yap-notetaker-detect","yap-notetaker-notes","yap-structure-followups","yap-recovery-followups"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
   log("part-01 — SKIPPED: no item in this part matches args.only [" + ONLY_PREFIXES.join(', ') + ']. Recon, Drain and Reflect of this part do not run; its worktrees (if any) stay standing for the next run.')
-  results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 56 })
+  results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 58 })
 } else {
   phase("part-01")
-  log("START part-01 — 56 item(s), Y0-A..yap-notetaker-notes — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (430265 bytes)")
+  log("START part-01 — 58 item(s), Y0-A..yap-recovery-followups — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (439307 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
-    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (56 item(s))")
-    results.push({ part: "part-01", status: 'ok', items: 56, result })
+    log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (58 item(s))")
+    results.push({ part: "part-01", status: 'ok', items: 58, result })
     if (result && result.halted) {
       halted = { part: "part-01", at: result.at || null, reason: result.reason || 'halted' }
       log("HALT: part-01 stopped at " + String(halted.at) + ': ' + halted.reason + ". No further part will be launched; resume with resumeFromRunId after the reset. The shared worktree is left standing.")
@@ -76,11 +76,11 @@ if (halted) {
     const message = err && err.message ? err.message : String(err)
     if (isHaltError(message)) {
       halted = { part: "part-01", at: null, reason: message }
-      results.push({ part: "part-01", status: 'halted', items: 56, error: message })
+      results.push({ part: "part-01", status: 'halted', items: 58, error: message })
       log("HALT: part-01 threw " + message + " at even the part level — stopping the run; resume with resumeFromRunId after the reset.")
     } else {
       log("part-01 FAILED — " + message + ". Continuing to the next part; the drain of a later part triages what this one left open.")
-      results.push({ part: "part-01", status: 'errored', items: 56, error: message })
+      results.push({ part: "part-01", status: 'errored', items: 58, error: message })
     }
   }
 }

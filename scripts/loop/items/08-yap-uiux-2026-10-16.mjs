@@ -1101,3 +1101,114 @@ ITEMS.push({
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_stay_local ; test $? -eq 0
   `,
 })
+
+// yap-rereview-followups-2026-10-16 — the advisories the #216/#217 re-reviews raised and did not block on.
+// Written 2026-10-16 by the items-followups seat. Review: Opus only (review-opus + review-opus2).
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-structure-followups', prompt: 'yap-format-structure', branch: 'loop/yap-structure-followups-keep-every-word-finish-every-list', gated: null,
+  title: 'The structure stage keeps every word and finishes every list: narration "Then"/"Finally" survive, four-step lists stay one list, product names keep their casing',
+  // Pre-flight asserts COMPLETION (the six regression inputs live in structure.rs's tests and the
+  // module's tests pass), never a dependency: a passing pre-flight retires the item as already-done.
+  preflight: `
+    grep -qF 'Then the meeting ran long.' desktop/src-tauri/src/structure.rs
+    grep -qF "Finally I'm home." desktop/src-tauri/src/structure.rs
+    grep -qF 'Then we test it. Then we ship it.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Then you tap General. Finally, tap Reset.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Finally at checkout' desktop/src-tauri/src/structure.rs
+    grep -qF 'eBay' desktop/src-tauri/src/structure.rs
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib structure ; test $? -eq 0
+  `,
+  spec: `
+    Panel: not required — FIX (re-review advisories on PR #217, merged cf7c8c2).
+    Wilson's words (2026-10-16): "You see how Wispr Flow does the formatting? That's what Yap needs to be able to do. It knew I was doing a list of things."
+    DEPENDS: none (PR #217 merged cf7c8c2).
+
+    WHY: the structure stage (desktop/src-tauri/src/structure.rs) turns spoken enumerations into lists. The re-review
+    found cases where it still drops a word, stops a list early, or forces prose. Each advisory below becomes ONE unit
+    test in structure.rs with the exact input and expected output; write the test first, watch it fail, then fix.
+
+    TESTS (exact input -> expected output):
+      1. Narration after a list keeps "Then". Input: a list followed by "Then my wife called…" and, separately,
+         "Then the meeting ran long." Expected: the sentence stays as prose with "Then" intact. The narration check
+         knows only pronouns today; extend it so a sentence-initial "Then" followed by a noun phrase (a determiner or a
+         possessive: my, the, our, his, her, their, a) is narration, not a list cue.
+      2. "Finally I'm home." keeps "Finally" (a "Finally" followed by a pronoun + contraction or a pronoun is narration).
+      3. "First, we design it. Then we build it. Then we test it. Then we ship it." -> ONE list of FOUR items
+         (today it stops at three and drops the last step to prose). Find why the run ends at three and let a list
+         continue while each following sentence opens with a cue.
+      4. "First, open Settings. Then you tap General. Finally, tap Reset." -> a list of THREE items (regressed to prose
+         because "you" read as narration). An imperative-with-"you" step inside an established list is a step.
+      5. "Finally at checkout, pay…" keeps every word and is not forced to prose only because of "at".
+      6. Product names keep their dictated casing when list items are capitalised: iPhone, eBay, macOS stay exactly
+         as dictated (assert "iPhone", "eBay", "macOS" appear verbatim in the output; only a lowercase ordinary first
+         letter is capitalised). Use a small never-recase list or the rule "first letter is lowercase and the second
+         letter is uppercase -> leave alone".
+
+    GOLDENS: desktop/yap-polish/fixtures/structure/* stay unchanged. If one must change, name that fixture and the reason
+    in the PR body.
+    NOTHING DROPPED: the existing every-input-word-appears-in-the-output check runs over all six new inputs.
+    RUNTIME DEPENDENCIES: none new.
+    WHAT NOT TO DO: no model calls, no new crate, no rewording of the user's words.
+    Critiqued once (self-pass): widening "Then" as narration could break genuine "First ... Then ..." lists; test 3 and 4
+    guard that, and the narration rule only applies when a determiner or possessive follows.
+  `,
+  acceptance: `
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib structure ; test $? -eq 0
+    cd ${APP} && npx tsc --noEmit
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-recovery-followups', prompt: 'yap-hotkey-stop', branch: 'loop/yap-recovery-followups-no-duplicates-no-race-backend-confirm', gated: null,
+  title: 'Recovered long takes: no duplicate history entries, no race, confirmation enforced in the backend',
+  // Pre-flight asserts COMPLETION (the four named tests exist), never a dependency: a passing
+  // pre-flight retires the item as already-done, a failing one dispatches the builder. The #216
+  // dependency is enforced as the FIRST acceptance command instead, so a build cut before #216 lands
+  // can never go green or open a mergeable PR.
+  preflight: `
+    git grep -q 'fn db_b_two_concurrent_saves_yield_one_row' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_without_confirm_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_while_retry_in_flight_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_retry_and_keep_after_live_partial_leave_one_row' -- desktop/src-tauri
+  `,
+  spec: `
+    Panel: not required — FIX (re-review advisories on PR #216).
+    Wilson's words (2026-10-16): "A crash or quit mid-long-take loses nothing."
+    DEPENDS: PR #216 merged (long-take recovery). If #216 is still open at build time the FIRST acceptance command fails
+    with that reason: stop, push nothing, report BLOCKED on #216. Do not re-implement #216's work here.
+
+    ADVISORIES, each with a test:
+      (a) Two concurrent saves can add the same take twice. Add a backend idempotency key per take (the take id, a
+          UNIQUE column or an in-memory claim taken under the same lock as the insert) so the second save is a no-op
+          that returns the first entry. Test: two concurrent saves of one take yield exactly one history row.
+      (b) The "Keep what was transcribed" confirmation exists only in the UI. The backend command must require an
+          explicit confirm flag (confirm: true; absent or false returns a typed refusal) and must refuse while a
+          retry for that take is in flight. Tests: no flag -> refused, nothing written; flag while retry in flight ->
+          refused; flag otherwise -> saved.
+      (c) Retry or Keep on a live take that partly failed creates a second history entry beside the one saved live.
+          Merge into the existing entry (update its text and status) instead of inserting. Test: after a live partial
+          save, Retry and Keep each leave exactly one history row for the take.
+      (d) The toast after a failed Finish reads like engineer output. Rewrite it in plain words naming what the user
+          can do: Retry, Keep what was transcribed, or Discard. No error codes, no ids, no stack text. Vitest asserts
+          the exact copy and that it names all three actions.
+
+    TESTS: backend tests in the db tests module, named EXACTLY (the pre-flight greps for them):
+    db_b_two_concurrent_saves_yield_one_row (a), db_b_keep_without_confirm_is_refused and
+    db_b_keep_while_retry_in_flight_is_refused (b), db_b_retry_and_keep_after_live_partial_leave_one_row (c);
+    desktop/src-tauri/tests/long_take_recovery.rs
+    extended for the same three; a vitest next to the toast component for (d).
+    RUNTIME DEPENDENCIES: none new.
+    WHAT NOT TO DO: no schema change that needs a destructive migration; no UI-only enforcement; do not weaken the
+    UI confirmation, the backend check is in addition.
+    Critiqued once (self-pass): an in-memory-only idempotency claim would not survive a restart, so the key is also
+    persisted with the row; the confirm flag defaults to refusing so an old caller cannot bypass it.
+  `,
+  acceptance: `
+    gh pr view 216 -R wilsonguenther-dev/wilson-voice --json state -q .state | grep -qx MERGED || { echo "BLOCKED: PR #216 (long-take recovery) is not merged yet; this item builds on it"; exit 1; }
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib db_b_ ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test long_take_recovery ; test $? -eq 0
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
+  `,
+})

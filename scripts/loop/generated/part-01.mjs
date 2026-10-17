@@ -86,7 +86,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 56 items (Y0-A..yap-notetaker-notes), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 58 items (Y0-A..yap-recovery-followups), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -145,6 +145,8 @@ export const meta = {
     { title: "yap-notetaker-onboard", detail: "A \"Set up Notetaker\" card: 2-minute tour, connect Apple Calendar, import from Granola or Otter, set up MCP — progress dots, dismissible, reopen from Help" },
     { title: "yap-notetaker-detect", detail: "Yap notices a meeting — a calendar event with a call link in the next 2 minutes, or Zoom/Meet/Teams/FaceTime with live audio — and the pill offers \"Record this meeting?\" with the consent line; it never auto-records" },
     { title: "yap-notetaker-notes", detail: "Notes worth reading: transcript in speaker turns, a summary with decisions and action items from the user’s chosen model, searchable, Markdown export, MCP-readable — nothing leaves the Mac unless the user picks a cloud model" },
+    { title: "yap-structure-followups", detail: "The structure stage keeps every word and finishes every list: narration \"Then\"/\"Finally\" survive, four-step lists stay one list, product names keep their casing" },
+    { title: "yap-recovery-followups", detail: "Recovered long takes: no duplicate history entries, no race, confirmation enforced in the backend" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -223,7 +225,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -5597,6 +5599,117 @@ ITEMS.push({
     cd ${APP} && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test -p yap-mcp ; test $? -eq 0
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_auto_summary ; test $? -eq 0
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_stay_local ; test $? -eq 0
+  `,
+})
+
+// yap-rereview-followups-2026-10-16 — the advisories the #216/#217 re-reviews raised and did not block on.
+// Written 2026-10-16 by the items-followups seat. Review: Opus only (review-opus + review-opus2).
+// SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+
+ITEMS.push({
+  id: 'yap-structure-followups', prompt: 'yap-format-structure', branch: 'loop/yap-structure-followups-keep-every-word-finish-every-list', gated: null,
+  title: 'The structure stage keeps every word and finishes every list: narration "Then"/"Finally" survive, four-step lists stay one list, product names keep their casing',
+  // Pre-flight asserts COMPLETION (the six regression inputs live in structure.rs's tests and the
+  // module's tests pass), never a dependency: a passing pre-flight retires the item as already-done.
+  preflight: `
+    grep -qF 'Then the meeting ran long.' desktop/src-tauri/src/structure.rs
+    grep -qF "Finally I'm home." desktop/src-tauri/src/structure.rs
+    grep -qF 'Then we test it. Then we ship it.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Then you tap General. Finally, tap Reset.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Finally at checkout' desktop/src-tauri/src/structure.rs
+    grep -qF 'eBay' desktop/src-tauri/src/structure.rs
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib structure ; test $? -eq 0
+  `,
+  spec: `
+    Panel: not required — FIX (re-review advisories on PR #217, merged cf7c8c2).
+    Wilson's words (2026-10-16): "You see how Wispr Flow does the formatting? That's what Yap needs to be able to do. It knew I was doing a list of things."
+    DEPENDS: none (PR #217 merged cf7c8c2).
+
+    WHY: the structure stage (desktop/src-tauri/src/structure.rs) turns spoken enumerations into lists. The re-review
+    found cases where it still drops a word, stops a list early, or forces prose. Each advisory below becomes ONE unit
+    test in structure.rs with the exact input and expected output; write the test first, watch it fail, then fix.
+
+    TESTS (exact input -> expected output):
+      1. Narration after a list keeps "Then". Input: a list followed by "Then my wife called…" and, separately,
+         "Then the meeting ran long." Expected: the sentence stays as prose with "Then" intact. The narration check
+         knows only pronouns today; extend it so a sentence-initial "Then" followed by a noun phrase (a determiner or a
+         possessive: my, the, our, his, her, their, a) is narration, not a list cue.
+      2. "Finally I'm home." keeps "Finally" (a "Finally" followed by a pronoun + contraction or a pronoun is narration).
+      3. "First, we design it. Then we build it. Then we test it. Then we ship it." -> ONE list of FOUR items
+         (today it stops at three and drops the last step to prose). Find why the run ends at three and let a list
+         continue while each following sentence opens with a cue.
+      4. "First, open Settings. Then you tap General. Finally, tap Reset." -> a list of THREE items (regressed to prose
+         because "you" read as narration). An imperative-with-"you" step inside an established list is a step.
+      5. "Finally at checkout, pay…" keeps every word and is not forced to prose only because of "at".
+      6. Product names keep their dictated casing when list items are capitalised: iPhone, eBay, macOS stay exactly
+         as dictated (assert "iPhone", "eBay", "macOS" appear verbatim in the output; only a lowercase ordinary first
+         letter is capitalised). Use a small never-recase list or the rule "first letter is lowercase and the second
+         letter is uppercase -> leave alone".
+
+    GOLDENS: desktop/yap-polish/fixtures/structure/* stay unchanged. If one must change, name that fixture and the reason
+    in the PR body.
+    NOTHING DROPPED: the existing every-input-word-appears-in-the-output check runs over all six new inputs.
+    RUNTIME DEPENDENCIES: none new.
+    WHAT NOT TO DO: no model calls, no new crate, no rewording of the user's words.
+    Critiqued once (self-pass): widening "Then" as narration could break genuine "First ... Then ..." lists; test 3 and 4
+    guard that, and the narration rule only applies when a determiner or possessive follows.
+  `,
+  acceptance: `
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib structure ; test $? -eq 0
+    cd ${APP} && npx tsc --noEmit
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-recovery-followups', prompt: 'yap-hotkey-stop', branch: 'loop/yap-recovery-followups-no-duplicates-no-race-backend-confirm', gated: null,
+  title: 'Recovered long takes: no duplicate history entries, no race, confirmation enforced in the backend',
+  // Pre-flight asserts COMPLETION (the four named tests exist), never a dependency: a passing
+  // pre-flight retires the item as already-done, a failing one dispatches the builder. The #216
+  // dependency is enforced as the FIRST acceptance command instead, so a build cut before #216 lands
+  // can never go green or open a mergeable PR.
+  preflight: `
+    git grep -q 'fn db_b_two_concurrent_saves_yield_one_row' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_without_confirm_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_while_retry_in_flight_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_retry_and_keep_after_live_partial_leave_one_row' -- desktop/src-tauri
+  `,
+  spec: `
+    Panel: not required — FIX (re-review advisories on PR #216).
+    Wilson's words (2026-10-16): "A crash or quit mid-long-take loses nothing."
+    DEPENDS: PR #216 merged (long-take recovery). If #216 is still open at build time the FIRST acceptance command fails
+    with that reason: stop, push nothing, report BLOCKED on #216. Do not re-implement #216's work here.
+
+    ADVISORIES, each with a test:
+      (a) Two concurrent saves can add the same take twice. Add a backend idempotency key per take (the take id, a
+          UNIQUE column or an in-memory claim taken under the same lock as the insert) so the second save is a no-op
+          that returns the first entry. Test: two concurrent saves of one take yield exactly one history row.
+      (b) The "Keep what was transcribed" confirmation exists only in the UI. The backend command must require an
+          explicit confirm flag (confirm: true; absent or false returns a typed refusal) and must refuse while a
+          retry for that take is in flight. Tests: no flag -> refused, nothing written; flag while retry in flight ->
+          refused; flag otherwise -> saved.
+      (c) Retry or Keep on a live take that partly failed creates a second history entry beside the one saved live.
+          Merge into the existing entry (update its text and status) instead of inserting. Test: after a live partial
+          save, Retry and Keep each leave exactly one history row for the take.
+      (d) The toast after a failed Finish reads like engineer output. Rewrite it in plain words naming what the user
+          can do: Retry, Keep what was transcribed, or Discard. No error codes, no ids, no stack text. Vitest asserts
+          the exact copy and that it names all three actions.
+
+    TESTS: backend tests in the db tests module, named EXACTLY (the pre-flight greps for them):
+    db_b_two_concurrent_saves_yield_one_row (a), db_b_keep_without_confirm_is_refused and
+    db_b_keep_while_retry_in_flight_is_refused (b), db_b_retry_and_keep_after_live_partial_leave_one_row (c);
+    desktop/src-tauri/tests/long_take_recovery.rs
+    extended for the same three; a vitest next to the toast component for (d).
+    RUNTIME DEPENDENCIES: none new.
+    WHAT NOT TO DO: no schema change that needs a destructive migration; no UI-only enforcement; do not weaken the
+    UI confirmation, the backend check is in addition.
+    Critiqued once (self-pass): an in-memory-only idempotency claim would not survive a restart, so the key is also
+    persisted with the row; the confirm flag defaults to refusing so an old caller cannot bypass it.
+  `,
+  acceptance: `
+    gh pr view 216 -R wilsonguenther-dev/wilson-voice --json state -q .state | grep -qx MERGED || { echo "BLOCKED: PR #216 (long-take recovery) is not merged yet; this item builds on it"; exit 1; }
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib db_b_ ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test long_take_recovery ; test $? -eq 0
+    cd ${APP} && npm ci && npx tsc --noEmit && npm test
   `,
 })
 
