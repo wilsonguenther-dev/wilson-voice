@@ -228,8 +228,8 @@ export default function App() {
         )}
 
         {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
-            not delivering, so the line names why and the chord that still
-            works with zero permissions. */}
+            not delivering and/or the dictate chord did not register, so the
+            line names why — and offers the chord only when it registered. */}
         {status.hotkeyDegraded && !status.secureInputBlocked && (
           <div className="banner blocked" role="status">
             <strong>{status.hotkeyDegraded}</strong>

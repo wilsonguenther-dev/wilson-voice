@@ -999,12 +999,14 @@ fn build_status(state: &AppState) -> AppStatus {
     let (_, dictate_toggle_label) = hotkeys::active_dictate();
     let probe = OsPermissionProbe;
     let hotkey_degraded = hotkeys::degraded_line(
+        &hotkeys_now.carbon,
         &hotkeys_now.fn_tap,
         hotkeys::PermissionProbe::tap_plausible(&probe),
         &dictate_toggle_label,
     );
-    // Idle and otherwise "Ready": the pill/home line names the degraded mode
-    // instead of advertising a fn hold that cannot fire.
+    // Idle and otherwise "Ready": the main window's header status chip names
+    // the degraded mode instead of advertising a fn hold that cannot fire (the
+    // floating pill does not render `message`).
     let message = match (&hotkey_degraded, recording || busy || last_error.is_some()) {
         (Some(line), false) if ready => line.clone(),
         _ => message,
@@ -3611,11 +3613,14 @@ fn save_settings(
             hotkeys::chord_from_setting(c)?;
         }
     }
+    // Register the new chord BEFORE persisting: a chord another app holds is
+    // an Err the Settings capture toasts, the old chord stays live, and the
+    // refused setting is never written.
+    if dictate_changed && smoke::global_hotkeys_allowed() {
+        rebind_dictate_toggle(&app, &next)?;
+    }
     *state.settings.lock() = next.clone();
     persist_settings(&next)?;
-    if dictate_changed && smoke::global_hotkeys_allowed() {
-        rebind_dictate_toggle(&app, &next);
-    }
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
@@ -5370,20 +5375,24 @@ fn start_from_hotkey(app: &AppHandle, state: &Arc<AppState>, source: HotkeySourc
     start_recording(app, state);
 }
 
-/// Swap the registered dictate chord for the Settings rebind, live. The new
-/// register result is the Carbon status — a chord another app holds reads
-/// Failed, never Registered.
-fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) {
-    let (old, _) = hotkeys::active_dictate();
-    if app.global_shortcut().is_registered(old) {
-        if let Err(e) = app.global_shortcut().unregister(old) {
-            log::warn!("dictate toggle unregister failed: {e}");
-        }
-    }
+/// Swap the registered dictate chord for the Settings rebind, live, through
+/// `hotkeys::rebind`: the new chord is registered FIRST and the old one is
+/// dropped only after that succeeded. A chord another app holds returns Err
+/// (shown by the Settings capture) and leaves the old chord registered and
+/// active.
+fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+    let (old, old_label) = hotkeys::active_dictate();
     let (chord, label) = dictate_toggle_chord(settings);
+    hotkeys::rebind(
+        &mut TauriCarbonRegistrar { app },
+        old,
+        &old_label,
+        chord,
+        &label,
+        &mut AppHotkeySink,
+    )?;
     hotkeys::set_active_dictate(chord, label);
-    let r = hotkeys::CarbonRegistrar::register(&mut TauriCarbonRegistrar { app }, chord);
-    hotkeys::set_carbon_status(hotkeys::CarbonStatus::from_result(&r));
+    Ok(())
 }
 
 /// The registered dictate chord: the Settings rebind when it is valid, else
@@ -5420,6 +5429,12 @@ impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
             Err(e) => log::warn!("{} dictate-toggle register failed: {e}", hotkeys::active_dictate().1),
         }
         r.map_err(|e| e.to_string())
+    }
+    fn unregister(&mut self, chord: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+        self.app.global_shortcut().unregister(chord).map_err(|e| e.to_string())
+    }
+    fn is_registered(&self, chord: tauri_plugin_global_shortcut::Shortcut) -> bool {
+        self.app.global_shortcut().is_registered(chord)
     }
 }
 

@@ -273,7 +273,10 @@ export interface AppStatus {
   accessibility: boolean;
   /** The Carbon dictate chord's register result and the fn tap's delivery. */
   hotkeys?: HotkeysStatus;
-  /** "fn is off — <reason>. Use ⌃⌥⌘Space (works without permissions)." */
+  /** Main window only (header status chip + home banner; the floating pill
+   *  does not render it). "fn is off — <reason>. Use ⌃⌥⌘Space (works without
+   *  permissions)." only while the chord's register call returned Ok; a failed
+   *  or not-yet-attempted chord is named as not working instead. */
   hotkeyDegraded?: string | null;
   /** Label of the registered dictate chord (default ⌃⌥⌘Space). */
   dictateToggleLabel?: string;

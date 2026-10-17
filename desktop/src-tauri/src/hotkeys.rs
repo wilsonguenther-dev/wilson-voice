@@ -290,6 +290,42 @@ pub fn status() -> HotkeysStatus {
 /// which is `RegisterEventHotKey` on macOS).
 pub trait CarbonRegistrar {
     fn register(&mut self, chord: Shortcut) -> Result<(), String>;
+    fn unregister(&mut self, chord: Shortcut) -> Result<(), String>;
+    fn is_registered(&self, chord: Shortcut) -> bool;
+}
+
+/// Swap the dictate chord for a Settings rebind. The NEW chord is registered
+/// FIRST and the old one is dropped only after that succeeded, so a chord
+/// another app holds leaves the old chord live (and its status untouched) and
+/// comes back as an `Err` for the Settings capture — never a moment, let alone
+/// a saved setting, with no dictate chord at all.
+pub fn rebind(
+    registrar: &mut dyn CarbonRegistrar,
+    old: Shortcut,
+    old_label: &str,
+    new: Shortcut,
+    new_label: &str,
+    sink: &mut dyn StatusSink,
+) -> Result<(), String> {
+    let old_live = registrar.is_registered(old);
+    if new == old && old_live {
+        sink.carbon(CarbonStatus::Registered);
+        return Ok(());
+    }
+    if let Err(e) = registrar.register(new) {
+        return Err(if old_live && old != new {
+            format!("{new_label} could not be registered ({e}) — kept {old_label}")
+        } else {
+            format!("{new_label} could not be registered ({e})")
+        });
+    }
+    if old_live && old != new {
+        if let Err(e) = registrar.unregister(old) {
+            log::warn!("dictate toggle: unregister of {old_label} failed after rebind: {e}");
+        }
+    }
+    sink.carbon(CarbonStatus::Registered);
+    Ok(())
 }
 
 /// The TCC probe. INFORMATIONAL for arming: it never decides whether the tap is
@@ -383,23 +419,46 @@ pub fn effective_fn_tap(
     stored.clone()
 }
 
-/// The degraded-mode line for the pill and home screen, or `None` when fn
-/// works. `probe_granted` only softens the pre-first-keystroke state: an
-/// installed tap with grants present has simply not seen a key yet.
-pub fn degraded_line(fn_tap: &FnTapStatus, probe_granted: bool, toggle_label: &str) -> Option<String> {
-    let reason = match fn_tap {
-        FnTapStatus::Delivering => return None,
-        FnTapStatus::ArmedNoDelivery if probe_granted => return None,
+/// The degraded-mode line for the main window (the header status chip's idle
+/// message and the home banner), or `None` when both fn and the dictate chord
+/// work. The floating pill does not render it. `probe_granted` only softens the
+/// pre-first-keystroke state: an installed tap with grants present has simply
+/// not seen a key yet.
+///
+/// The chord is advertised as the way out ONLY when its register call returned
+/// Ok: a chord that failed (another app holds it) or was never attempted (pre
+/// arm, `--smoke`) is named as not working, never offered as the fallback.
+pub fn degraded_line(
+    carbon: &CarbonStatus,
+    fn_tap: &FnTapStatus,
+    probe_granted: bool,
+    toggle_label: &str,
+) -> Option<String> {
+    let fn_reason = match fn_tap {
+        FnTapStatus::Delivering => None,
+        FnTapStatus::ArmedNoDelivery if probe_granted => None,
         FnTapStatus::ArmedNoDelivery => {
-            "macOS is not delivering key events to Yap (Input Monitoring is off)".to_string()
+            Some("macOS is not delivering key events to Yap (Input Monitoring is off)".to_string())
         }
-        FnTapStatus::NotAttempted => "the fn listener has not started".to_string(),
-        FnTapStatus::Blocked(r) => r.clone(),
-        FnTapStatus::SecureInput(holder) => format!("{holder} has Secure Keyboard Entry on"),
+        FnTapStatus::NotAttempted => Some("the fn listener has not started".to_string()),
+        FnTapStatus::Blocked(r) => Some(r.clone()),
+        FnTapStatus::SecureInput(holder) => Some(format!("{holder} has Secure Keyboard Entry on")),
     };
-    Some(format!(
-        "fn is off — {reason}. Use {toggle_label} (works without permissions)."
-    ))
+    match (fn_reason, carbon) {
+        (None, CarbonStatus::Failed(e)) => Some(format!(
+            "{toggle_label} did not register ({e}). fn still works — pick another chord in Settings → Shortcut."
+        )),
+        (None, _) => None,
+        (Some(r), CarbonStatus::Registered) => Some(format!(
+            "fn is off — {r}. Use {toggle_label} (works without permissions)."
+        )),
+        (Some(r), CarbonStatus::Failed(e)) => Some(format!(
+            "fn is off — {r}, and {toggle_label} did not register ({e}). No hotkey can start a take — pick another chord in Settings → Shortcut."
+        )),
+        (Some(r), CarbonStatus::NotAttempted) => Some(format!(
+            "fn is off — {r}, and {toggle_label} is not registered. No hotkey can start a take right now."
+        )),
+    }
 }
 
 // ── the rebindable chord ────────────────────────────────────────────────────
@@ -459,8 +518,12 @@ pub fn chord_label(ctrl: bool, alt: bool, shift: bool, cmd: bool, code: Code) ->
 }
 
 /// Validate a rebind and turn it into the chord + its label. Refuses a chord
-/// with no ⌃/⌥/⌘ (it would swallow a bare key system-wide) and a modifier-only
-/// one (Carbon cannot register it).
+/// with no ⌃/⌥/⌘ (it would swallow a bare key system-wide), a modifier-only
+/// one (Carbon cannot register it), and any chord another Yap binding in
+/// [`shortcuts::ALL`] owns — the dictate branch runs first in the plugin
+/// handler, so such a rebind would silently hijack Paste Last, Undo AI edit,
+/// Meeting or ⌘⇧V, and its register call at the next launch would make theirs
+/// fail.
 pub fn chord_from_setting(c: &ChordSetting) -> Result<(Shortcut, String), String> {
     let code = Code::from_str(&c.code).map_err(|_| format!("unknown key code {:?}", c.code))?;
     if MODIFIER_CODES.contains(&code) || matches!(code, Code::Unidentified) {
@@ -468,6 +531,15 @@ pub fn chord_from_setting(c: &ChordSetting) -> Result<(Shortcut, String), String
     }
     if !(c.ctrl || c.alt || c.cmd) {
         return Err("the chord needs ⌃, ⌥ or ⌘".into());
+    }
+    if let Some(b) = shortcuts::ALL
+        .iter()
+        .find(|b| b.id != shortcuts::DICTATE_TOGGLE.id && b.chord() == (c.ctrl, c.cmd, c.shift, c.alt, code))
+    {
+        return Err(format!(
+            "{} is already a Yap shortcut ({}) — pick another chord",
+            b.label, b.id
+        ));
     }
     let mut m = Modifiers::empty();
     if c.ctrl {
@@ -529,5 +601,29 @@ mod tests {
         let default = ChordSetting { code: "Space".into(), ctrl: true, alt: true, cmd: true, shift: false };
         assert_eq!(chord_from_setting(&default).unwrap().0, shortcuts::DICTATE_TOGGLE.shortcut());
         assert_eq!(chord_from_setting(&default).unwrap().1, shortcuts::DICTATE_TOGGLE.label);
+    }
+
+    #[test]
+    fn rebind_refuses_every_other_yap_chord() {
+        let mut refused = 0;
+        for b in shortcuts::ALL.iter().filter(|b| b.id != shortcuts::DICTATE_TOGGLE.id) {
+            let c = ChordSetting {
+                code: format!("{:?}", b.code),
+                ctrl: b.ctrl,
+                alt: b.alt,
+                cmd: b.cmd,
+                shift: b.shift,
+            };
+            let r = chord_from_setting(&c);
+            if b.ctrl || b.alt || b.cmd {
+                let e = r.expect_err(b.id);
+                assert!(e.contains(b.id), "{e}");
+                refused += 1;
+            } else {
+                assert!(r.is_err(), "{} has no ⌃/⌥/⌘ and must be refused anyway", b.id);
+            }
+        }
+        // ⌃⌘V, ⌃⌘Z, ⌘⇧V, ⌃⌘M (Escape is refused for having no ⌃/⌥/⌘).
+        assert_eq!(refused, 4);
     }
 }
