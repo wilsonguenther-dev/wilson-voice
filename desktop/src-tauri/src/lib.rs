@@ -127,6 +127,17 @@ pub mod polish_protocol;
 // the kind that must be testable without a window server.
 #[cfg(target_os = "macos")]
 pub mod ptt_macos;
+#[cfg(target_os = "macos")]
+use ptt_macos::StopOrigin;
+/// Off macOS there is no fn tap; the origins still name the stop's caller.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum StopOrigin {
+    Hotkey,
+    OnScreen,
+    MenuBar,
+}
 mod record;
 /// Y3-D — the clip guard, re-exported so `tests/cancel_long_take.rs` can drive
 /// the REAL keep-the-audio path (`keep_cancelled_take` takes a `&mut ClipWav`)
@@ -534,6 +545,11 @@ pub struct AppStatus {
     /// the second one, when a tap that keeps dying is a fault worth surfacing.
     #[serde(default)]
     pub tap_health_message: Option<String>,
+    /// yap-hotkey-stop — the live take is in its "Still recording" state (a
+    /// hold with no key-up for 90 s, or the tap was switched off mid-take). The
+    /// pill swaps its phase line for `ptt_macos::STILL_RECORDING_MESSAGE`.
+    #[serde(default)]
+    pub still_recording: bool,
 }
 
 struct AppState {
@@ -913,6 +929,10 @@ fn build_status(state: &AppState) -> AppStatus {
     let tap_health_message = ptt_macos::tap_health_message(ptt_macos::tap_health());
     #[cfg(not(target_os = "macos"))]
     let tap_health_message: Option<String> = None;
+    #[cfg(target_os = "macos")]
+    let still_recording = recording && ptt_macos::still_recording_prompted();
+    #[cfg(not(target_os = "macos"))]
+    let still_recording = false;
     let message = status_message(
         recording,
         hands_free,
@@ -925,6 +945,12 @@ fn build_status(state: &AppState) -> AppStatus {
         &ptt,
         *state.session_cap_warned.lock(),
     );
+    #[cfg(target_os = "macos")]
+    let message = if still_recording {
+        ptt_macos::STILL_RECORDING_MESSAGE.to_string()
+    } else {
+        message
+    };
     AppStatus {
         recording,
         busy,
@@ -938,6 +964,7 @@ fn build_status(state: &AppState) -> AppStatus {
         secure_input_detail: secure.blocked.then(|| secure.detail()),
         engine_loading,
         tap_health_message,
+        still_recording,
     }
 }
 
@@ -4844,12 +4871,27 @@ fn manual_toggle_inner(app: AppHandle, state: State<'_, Arc<AppState>>) {
         // clear BOTH latches: the app-side flag (or stop_and_transcribe's guard
         // makes every on-screen Stop a no-op while locked) AND the PTT tap-side
         // latch (or the next fn gesture is swallowed resetting it).
-        *state.hands_free.lock() = false;
-        #[cfg(target_os = "macos")]
-        ptt_macos::end_hands_free();
-        stop_and_transcribe(app, state.inner().clone());
+        stop_take(&app, state.inner(), StopOrigin::OnScreen);
     } else {
         start_recording(&app, state.inner());
+    }
+}
+
+/// yap-hotkey-stop DO 5 — THE stop for a live dictation. The hotkey (fn
+/// key-up / fn tap), the pill's stop control (`manual_toggle`) and the menu
+/// bar's Stop + Hands-free items all end the take HERE, so all of them clear
+/// both latches: the app-side `hands_free` (or `stop_and_transcribe`'s guard
+/// turns the stop into a no-op) and the PTT machine's own latch via
+/// `ptt_macos::end_hands_free` (or the next fn press is swallowed resetting it).
+/// tests/hotkey_stop.rs holds every call site to this function.
+fn stop_take(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin) {
+    *state.hands_free.lock() = false;
+    #[cfg(target_os = "macos")]
+    ptt_macos::stop_take_with(origin, || stop_and_transcribe(app.clone(), state.clone()));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = origin;
+        stop_and_transcribe(app.clone(), state.clone());
     }
 }
 
@@ -6360,10 +6402,7 @@ pub fn run() {
                                 // the physical "tap-to-end-hands-free" path — clear
                                 // both the app-side and PTT tap-side latches, then
                                 // transcribe what was captured.
-                                *state.hands_free.lock() = false;
-                                #[cfg(target_os = "macos")]
-                                ptt_macos::end_hands_free();
-                                stop_and_transcribe(app.clone(), state.clone());
+                                stop_take(app, &state, StopOrigin::MenuBar);
                             } else {
                                 // Turning hands-free ON: ensure a take is running,
                                 // then latch it so key-release / stop won't finalize.
@@ -6380,10 +6419,7 @@ pub fn run() {
                             if *state.recording.lock() {
                                 // Tray Stop also exits hands-free (see manual_toggle) —
                                 // clear both the app-side and PTT tap-side latches.
-                                *state.hands_free.lock() = false;
-                                #[cfg(target_os = "macos")]
-                                ptt_macos::end_hands_free();
-                                stop_and_transcribe(app.clone(), state.clone());
+                                stop_take(app, &state, StopOrigin::MenuBar);
                             } else {
                                 start_recording(app, &state);
                             }
@@ -6475,8 +6511,16 @@ pub fn run() {
                                 }
                             }
                             ptt_macos::PttEvent::Stop => {
-                                *st.hands_free.lock() = false;
-                                stop_and_transcribe(h.clone(), st.clone());
+                                stop_take(&h, &st, StopOrigin::Hotkey);
+                            }
+                            ptt_macos::PttEvent::StillRecording => {
+                                // yap-hotkey-stop DO 4: the status event carries
+                                // `still_recording`; the pill swaps its line.
+                                emit_status(&h, &st);
+                                float_pill::show_for_recording(&h);
+                                log::warn!(
+                                    "take still recording — pill asks for fn or stop"
+                                );
                             }
                             ptt_macos::PttEvent::Interrupted => {
                                 *st.hands_free.lock() = false;

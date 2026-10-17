@@ -22,6 +22,7 @@ import {
   phaseVisual,
   reduceGatePhase,
   reduceTakePhase,
+  stripLine,
   toChatTone,
   winningPhase,
   CANCELLED_SETTLE_MS,
@@ -63,6 +64,8 @@ interface BackendStatus {
   busy?: boolean;
   engine_loading?: boolean;
   last_error?: string | null;
+  /** yap-hotkey-stop — the live take is in its "Still recording" state. */
+  stillRecording?: boolean;
 }
 
 /** The `transcript` event, for its word count only (lib.rs:2509). */
@@ -92,6 +95,8 @@ function Float() {
   // The sentence `error` shows. Straight off the backend's own `last_error`
   // (lib.rs:1460 / 2497) — never a code, and never invented here.
   const [lastError, setLastError] = useState<string | null>(null);
+  // yap-hotkey-stop — the take the hotkey may have lost track of says so.
+  const [stillRecording, setStillRecording] = useState(false);
   const [tone, setTone] = useState<string>("friendly");
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
@@ -205,6 +210,7 @@ function Float() {
     const onStatus = (st?: BackendStatus) => {
       if (!st) return;
       setLastError(st.last_error ?? null);
+      setStillRecording(!!st.recording && !!st.stillRecording);
       const status: TakeStatus = {
         recording: !!st.recording,
         busy: !!st.busy,
@@ -284,6 +290,12 @@ function Float() {
     document.documentElement.dataset.phase = PHASE_ID[phase];
     document.documentElement.dataset.tone = chatTone;
   }, [phase, chatTone]);
+  useEffect(() => {
+    // yap-hotkey-stop DO 4 — `.phase-strip` is opacity 0 in `listening`, the
+    // only phase a still-recording prompt can occur in; this attribute is the
+    // CSS hook that shows it (float.css `html[data-still-recording="true"]`).
+    document.documentElement.dataset.stillRecording = stillRecording ? "true" : "false";
+  }, [stillRecording]);
   const pill = style === "yappy"
     ? <YappyPill gate={phase} progress={progress} license={lic} />
     : <ClassicPill gate={phase} progress={progress} license={lic} />;
@@ -308,7 +320,7 @@ function Float() {
         aria-live="polite"
         aria-label={phaseVisual(phase).label}
       >
-        {line}
+        {stripLine(line, stillRecording)}
       </div>
     </>
   );
