@@ -305,7 +305,7 @@ pub fn build_report_with_grants(
         },
         GrantRow {
             key: GRANT_AUDIO_CAPTURE,
-            label: "System audio recording",
+            label: "System Audio Recording",
             status: audio_capture,
             pane: SYSTEM_AUDIO_PANE,
             detail: audio_capture_detail(audio_capture),

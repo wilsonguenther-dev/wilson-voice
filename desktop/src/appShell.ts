@@ -4,6 +4,7 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { MEETING_PROGRESS_EVENT, foldProgress, type MeetingProgressEvent } from "./meetings/progress";
 import { useModelSetup, usePolishModel } from "./ModelSetup";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./updater";
 import { errorText, isLicenseRequired } from "./errors";
@@ -1203,7 +1204,37 @@ export function useAppShell() {
 
   const needsPerms = perms && !perms.allCriticalOk;
 
+  // yap-meetings-fix — live transcription progress per meeting, from the
+  // pipeline's `meeting:progress` event. Listeners live in the shell, never in
+  // a view module.
+  const [meetingProgress, setMeetingProgress] = useState<Record<string, MeetingProgressEvent>>({});
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let alive = true;
+    listen<MeetingProgressEvent>(MEETING_PROGRESS_EVENT, (e) => {
+      setMeetingProgress((m) => foldProgress(m, e.payload));
+      if (e.payload.state !== "transcribing") void loadMeetings(meetingQuery);
+    })
+      .then((u) => {
+        if (alive) off = u;
+        else u();
+      })
+      .catch((e) => console.error(e));
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [loadMeetings, meetingQuery]);
+  const retryMeeting = useCallback(
+    async (id: string) => {
+      await invoke("retry_meeting", { id });
+      await loadMeetings(meetingQuery);
+    },
+    [loadMeetings, meetingQuery],
+  );
+
   return {
+    meetingProgress, retryMeeting,
     activeNoteId, applyBinding, booting, bootError, buyPrompt, buyYap, candidates,
     captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
     consent, consentOpen, consentRef, copyAgainId, copyText, crashToastShown,

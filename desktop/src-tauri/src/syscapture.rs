@@ -2409,20 +2409,28 @@ pub enum TrackBPlan {
     /// Two tracks: the OS gate passed and YV102's setup row says macOS has been
     /// asked about system audio.
     Attach,
+    /// yap-meetings-fix (NT3) — two tracks, attempted, with a badge saying what
+    /// earlier meetings suggested. A `looks_denied` row changes the BADGE and
+    /// never skips the attempt: a fresh tap costs ~200 ms, and this meeting's
+    /// own evidence overwrites the row either way.
+    AttachWithBadge { badge: &'static str },
     /// One track, and the honest badge the matrix rows 1/12 require.
     MicOnly { badge: &'static str },
+    /// An in-person meeting: the room is on the microphone, there is no call
+    /// to tap, and there is nothing to apologise for — no badge, no error.
+    RoomOnly,
 }
 
 impl TrackBPlan {
     pub fn attaches(self) -> bool {
-        matches!(self, TrackBPlan::Attach)
+        matches!(self, TrackBPlan::Attach | TrackBPlan::AttachWithBadge { .. })
     }
 
     /// The sentence to show, or `None` when both tracks are recording.
     pub fn badge(self) -> Option<&'static str> {
         match self {
-            TrackBPlan::Attach => None,
-            TrackBPlan::MicOnly { badge } => Some(badge),
+            TrackBPlan::Attach | TrackBPlan::RoomOnly => None,
+            TrackBPlan::AttachWithBadge { badge } | TrackBPlan::MicOnly { badge } => Some(badge),
         }
     }
 
@@ -2467,12 +2475,12 @@ pub fn track_b_plan(gate: SystemAudioGate, setup: &SystemAudioSetup) -> TrackBPl
         };
     }
     match setup.verdict {
-        SetupVerdict::Granted | SetupVerdict::Ran => TrackBPlan::Attach,
-        SetupVerdict::LooksDenied => TrackBPlan::MicOnly {
+        // yap-meetings-fix: a failed open last time is retried this time — a
+        // fresh tap is cheap, and a failure here is re-badged by the start path.
+        SetupVerdict::Granted | SetupVerdict::Ran | SetupVerdict::Failed => TrackBPlan::Attach,
+        // Never sticky: attempt, and let this meeting's evidence decide.
+        SetupVerdict::LooksDenied => TrackBPlan::AttachWithBadge {
             badge: LOOKS_DENIED_MESSAGE,
-        },
-        SetupVerdict::Failed => TrackBPlan::MicOnly {
-            badge: SETUP_FAILED_MESSAGE,
         },
         // `Unavailable` was written by a run on an OS below 14.4. The gate above
         // is the live answer to that question — a user who upgraded macOS must
@@ -2480,6 +2488,116 @@ pub fn track_b_plan(gate: SystemAudioGate, setup: &SystemAudioSetup) -> TrackBPl
         SetupVerdict::NotRun | SetupVerdict::Unavailable => TrackBPlan::MicOnly {
             badge: SETUP_REQUIRED_MESSAGE,
         },
+    }
+}
+
+/// [`track_b_plan`], with the meeting's kind: an in-person meeting never
+/// attaches a tap and never carries a system-audio badge (NT3 DO 1).
+pub fn track_b_plan_for_kind(
+    gate: SystemAudioGate,
+    setup: &SystemAudioSetup,
+    kind: crate::meetings::MeetingKind,
+) -> TrackBPlan {
+    if kind == crate::meetings::MeetingKind::InPerson {
+        return TrackBPlan::RoomOnly;
+    }
+    track_b_plan(gate, setup)
+}
+
+// ── yap-meetings-fix (NT3) · silence is not a denial ───────────────────────
+//
+// The old stop-path verdict was `permission_verdict(delivery, ran_for)`: a tap
+// that heard nothing for 3 s "looked denied". A quiet Mac produces exactly
+// that, so 3 of Wilson's 4 meetings — one of them in person — carried the
+// denial sentence. The verdict now reads whether the DEFAULT OUTPUT DEVICE ran
+// during the meeting (`kAudioDevicePropertyDeviceIsRunningSomewhere`, sampled
+// by the pump), and only a long run of output with a silent tap counts as
+// evidence. Even then one meeting is never enough: a muted call or an
+// output-device switch runs the output with a silent tap, so it takes two
+// consecutive meetings to write `looks_denied`.
+
+/// How long the default output must have run, across the whole meeting, while
+/// the tap delivered nothing, before the meeting counts as denial evidence.
+pub const OUTPUT_RAN_FOR_DENIAL: Duration = Duration::from_secs(60);
+
+/// Consecutive meetings of evidence it takes to write `looks_denied`.
+pub const DENIAL_STREAK_TO_WRITE: u32 = 2;
+
+/// How often the pump samples the default output's running state.
+pub const OUTPUT_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What one meeting's tap says. Pure: `delivery` is the tap's evidence and
+/// `output_was_running` the total time the default output device was running
+/// during the meeting.
+///
+/// - any non-zero sample → `Granted` (always wins);
+/// - zero samples + output ran ≥ [`OUTPUT_RAN_FOR_DENIAL`] → `LooksDenied`
+///   (evidence for THIS meeting only — see [`fold_denial_streak`]);
+/// - anything else → `Unknown`, which writes nothing.
+pub fn meeting_permission_verdict(
+    delivery: &TapDelivery,
+    output_was_running: Duration,
+) -> SystemAudioPermission {
+    if delivery.ever_delivered() {
+        SystemAudioPermission::Granted
+    } else if output_was_running >= OUTPUT_RAN_FOR_DENIAL {
+        SystemAudioPermission::LooksDenied
+    } else {
+        SystemAudioPermission::Unknown
+    }
+}
+
+/// What a finished meeting writes back, folded with the meetings before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DenialStep {
+    /// The streak to store for the next meeting.
+    pub streak: u32,
+    /// The setup-row verdict to write, or `None` to leave the row alone.
+    pub write: Option<crate::meetings::SetupVerdict>,
+    /// Whether THIS meeting's row carries the denial sentence.
+    pub badge_meeting: bool,
+}
+
+/// Fold one meeting's verdict into the consecutive-evidence streak.
+///
+/// `Granted` resets everything and writes `granted`. `Unknown` (nothing played,
+/// or not for long enough) is not evidence of anything and breaks the streak
+/// without writing. `LooksDenied` evidence extends it, and only at
+/// [`DENIAL_STREAK_TO_WRITE`] consecutive meetings does Yap say so.
+pub fn fold_denial_streak(previous: u32, this_meeting: SystemAudioPermission) -> DenialStep {
+    match this_meeting {
+        SystemAudioPermission::Granted => DenialStep {
+            streak: 0,
+            write: Some(crate::meetings::SetupVerdict::Granted),
+            badge_meeting: false,
+        },
+        SystemAudioPermission::Unknown => DenialStep {
+            streak: 0,
+            write: None,
+            badge_meeting: false,
+        },
+        SystemAudioPermission::LooksDenied => {
+            let streak = previous.saturating_add(1);
+            let denied = streak >= DENIAL_STREAK_TO_WRITE;
+            DenialStep {
+                streak,
+                write: denied.then_some(crate::meetings::SetupVerdict::LooksDenied),
+                badge_meeting: denied,
+            }
+        }
+    }
+}
+
+/// Is the default output device running right now? `None` when it cannot be
+/// read (no device, a CoreAudio error, or not macOS) — never guessed.
+pub fn default_output_is_running() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        imp::default_output_is_running().ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 
@@ -2493,6 +2611,9 @@ struct TapPumpState {
     /// The most recent anchor's host time — the third element of
     /// `CaptureEnv::tap_liveness`, and what the rebuild log stamps attempts with.
     host_ns: u64,
+    /// yap-meetings-fix (NT3) — total time the default output device was
+    /// observed running during this meeting, summed over pump samples.
+    output_was_running: Duration,
     /// Reused every tick. The drain path allocates nothing in steady state, for
     /// the same reason `MeetingCapture`'s does: it runs 50 times a second for
     /// three hours.
@@ -2535,6 +2656,7 @@ impl MeetingTap {
                 delivery: TapDelivery::default(),
                 env: TapEnvironment::default(),
                 host_ns: 0,
+                output_was_running: Duration::ZERO,
                 samples: Vec::new(),
                 anchors: Vec::new(),
             }),
@@ -2617,6 +2739,26 @@ impl MeetingTap {
     /// point at the device the machine is playing through, and is anything
     /// playing at all? Left at [`TapEnvironment::default`] until something
     /// knows better — an unread probe must never become evidence.
+    /// Fold one output-device sample: `running` over the last `dt`.
+    pub fn observe_output(&self, running: bool, dt: Duration) {
+        if running {
+            let mut state = self.state.lock();
+            state.output_was_running = state.output_was_running.saturating_add(dt);
+        }
+    }
+
+    /// How long the default output ran during this meeting.
+    pub fn output_was_running(&self) -> Duration {
+        self.state.lock().output_was_running
+    }
+
+    /// This meeting's own verdict — [`meeting_permission_verdict`] over what
+    /// the tap delivered and how long the output ran.
+    pub fn meeting_verdict(&self) -> SystemAudioPermission {
+        let state = self.state.lock();
+        meeting_permission_verdict(&state.delivery, state.output_was_running)
+    }
+
     pub fn observe_environment(&self, env: TapEnvironment) {
         self.state.lock().env = env;
     }
@@ -2675,8 +2817,18 @@ impl TapPumpThread {
             std::thread::Builder::new()
                 .name("wv-meeting-tap-pump".into())
                 .spawn(move || {
+                    let mut last_output = Duration::ZERO;
                     while !stop.load(Ordering::Relaxed) {
-                        tap.pump(started.elapsed());
+                        let now = started.elapsed();
+                        tap.pump(now);
+                        // NT3 — sample the default output about once a second;
+                        // a CoreAudio property read, nowhere near the RT thread.
+                        if now.saturating_sub(last_output) >= OUTPUT_SAMPLE_INTERVAL {
+                            if let Some(running) = default_output_is_running() {
+                                tap.observe_output(running, now.saturating_sub(last_output));
+                            }
+                            last_output = now;
+                        }
                         std::thread::sleep(TAP_PUMP_INTERVAL);
                     }
                 })
@@ -2835,7 +2987,8 @@ pub mod imp {
     use objc2::runtime::AnyClass;
     use objc2::AllocAnyThread;
     use objc2_core_audio::{
-        kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioDevicePropertyDeviceUID,
+        kAudioHardwarePropertyDefaultOutputDevice,
         kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioObjectPropertyElementMain,
         kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioTapPropertyFormat,
         kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID,
@@ -3001,6 +3154,27 @@ pub mod imp {
         } else {
             Err(status)
         }
+    }
+
+    /// yap-meetings-fix (NT3) — is the default output device running
+    /// somewhere right now (`kAudioDevicePropertyDeviceIsRunningSomewhere` on
+    /// `kAudioHardwarePropertyDefaultOutputDevice`)? The input to the verdict
+    /// that keeps a silent Mac from reading as a denial.
+    pub fn default_output_is_running() -> Result<bool, i32> {
+        // SAFETY: the selector is documented as an AudioObjectID.
+        let device: AudioObjectID = unsafe {
+            get_property(
+                kAudioObjectSystemObject as AudioObjectID,
+                kAudioHardwarePropertyDefaultOutputDevice,
+            )?
+        };
+        if device == 0 {
+            return Err(-1);
+        }
+        // SAFETY: the selector is documented as a UInt32.
+        let running: u32 =
+            unsafe { get_property(device, kAudioDevicePropertyDeviceIsRunningSomewhere)? };
+        Ok(running != 0)
     }
 
     /// Read a `CFStringRef`-valued property and copy it into a Rust `String`.

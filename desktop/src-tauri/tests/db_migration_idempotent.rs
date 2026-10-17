@@ -511,6 +511,15 @@ fn a_two_track_meeting_round_trips_with_both_wavs_and_attributed_segments() {
         std::fs::write(&sys2, b"x").unwrap();
         db2.finish_meeting(&m2.id, 7.0, Some(&mic2)).unwrap();
         db2.set_meeting_sys_wav_path(&m2.id, Some(&sys2)).unwrap();
+        // yap-meetings-fix (NT1): retention is state-aware — only a meeting
+        // that has been transcribed (complete, with segments) ages out.
+        db2.append_meeting_segments(
+            &m2.id,
+            &[wilson_voice_lib::meetings::NewMeetingSegment::new(0.0, 1.0, "words")],
+        )
+        .unwrap();
+        db2.set_meeting_state(&m2.id, wilson_voice_lib::meetings::MeetingState::Complete, None)
+            .unwrap();
         let purged = db2
             .purge_meeting_audio(chrono::Utc::now() + chrono::Duration::days(1))
             .unwrap();

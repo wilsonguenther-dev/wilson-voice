@@ -469,11 +469,19 @@ use wilson_voice_lib::transcribe_progress::{ChunkProgress, ProgressSink, Transcr
 /// for here, not a diff that slips past because the suite only knew about one.
 ///
 /// `(file, event ident or literal, what bounds its cadence)`
-const ACCOUNTED_PROGRESS_EMITTERS: [(&str, &str, &str); 1] = [(
-    "src/transcribe_progress.rs",
-    "TRANSCRIBE_PROGRESS_EVENT",
-    "one event per COMPLETED decode window — bounded by ChunkConfig::min_seconds, not by a timer",
-)];
+const ACCOUNTED_PROGRESS_EMITTERS: [(&str, &str, &str); 2] = [
+    (
+        "src/lib.rs",
+        "meeting_pipeline::MEETING_PROGRESS_EVENT",
+        "yap-meetings-fix: one event per COMPLETED meeting window (>= ChunkConfig::min_seconds \
+         = 25 s of audio) plus one at the end of a job — off the take path, never a timer",
+    ),
+    (
+        "src/transcribe_progress.rs",
+        "TRANSCRIBE_PROGRESS_EVENT",
+        "one event per COMPLETED decode window — bounded by ChunkConfig::min_seconds, not by a timer",
+    ),
+];
 
 /// Every take-path progress emitter found in a source file.
 ///

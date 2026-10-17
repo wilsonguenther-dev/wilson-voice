@@ -504,6 +504,12 @@ pub const CONSENT_NOTICE_KEY: &str = "meeting_consent_notice_ack_v1";
 /// run as covering new behaviour.
 pub const SYSTEM_AUDIO_SETUP_ACK_KEY: &str = "meeting_system_audio_setup_ack_v1";
 
+/// yap-meetings-fix (NT3) — consecutive meetings whose output device ran for at
+/// least [`crate::syscapture::OUTPUT_RAN_FOR_DENIAL`] while the tap delivered
+/// nothing. Its own key: the setup row is what Yap believes, this is the
+/// evidence that has not yet earned a belief.
+pub const SYSTEM_AUDIO_DENIAL_STREAK_KEY: &str = "meeting_system_audio_denial_streak_v1";
+
 /// What the last run of the setup step concluded.
 ///
 /// Note what is NOT here: `Denied`. Yap cannot read TCC — there is no public API

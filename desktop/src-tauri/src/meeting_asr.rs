@@ -48,7 +48,6 @@
 //! the yield are pure or trait-injected. The corpus-scored half lives in
 //! `tests/meeting_eval.rs`, which now scores THIS module's geometry and THIS
 //! module's merge rather than a copy of them.
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
