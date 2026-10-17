@@ -347,6 +347,12 @@ export interface FailedDictation {
    * the backend decodes only the remainder and keeps these words.
    */
   partialText?: string | null;
+  /**
+   * PR #216 re-review — what the last failed retry DID transcribe before a
+   * section failed (the recovered words plus every section that decoded).
+   * Shown on the row; "Keep what was transcribed" saves exactly these words.
+   */
+  attemptText?: string | null;
 }
 
 /**

@@ -126,6 +126,12 @@ pub struct FailedDictation {
     /// chunk. Read-only: the UI shows it so "Finish transcribing" is an offer
     /// with visible substance, and the retry path resumes from it.
     pub partial_text: Option<String>,
+    /// PR #216 re-review — what the LAST failed "Finish transcribing"/"Retry"
+    /// got before a window failed: the recovered words plus every window that
+    /// did decode. Shown on the row and used by "Keep what was transcribed".
+    /// Never a resume source: `partial_text` + `take_resume_sample` stay the
+    /// only resume state, so a later Finish cannot append the same words twice.
+    pub attempt_text: Option<String>,
 }
 
 /// YV52 — how long a failed take's audio is kept before it is purged, matching
@@ -801,6 +807,13 @@ impl Database {
         // (and every take that failed live, where the audio was never orphaned)
         // simply have no partial text to find.
         let _ = conn.execute("ALTER TABLE failed_dictations ADD COLUMN take_id TEXT", []);
+        // PR #216 re-review: the words a failed retry DID transcribe (see
+        // `FailedDictation::attempt_text`). Nullable; cleared by
+        // `clear_transcripts` with the rest of the transcript text.
+        let _ = conn.execute(
+            "ALTER TABLE failed_dictations ADD COLUMN attempt_text TEXT",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE daily_stats ADD COLUMN speech_ms INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1326,9 +1339,10 @@ impl Database {
     ///     "erase everything" that leaves a half-transcribed take behind has
     ///     not erased everything.
     ///
-    /// Deliberately NOT touched: `failed_dictations` (YV52) stores a WAV path,
-    /// a take id and the engine's error string, never transcript text (its
-    /// words live in `take_chunks`, which IS cleared above), and its clips are
+    /// Deliberately NOT deleted: `failed_dictations` (YV52) stores a WAV path,
+    /// a take id and the engine's error string; its only transcript text is
+    /// `attempt_text`, which IS nulled above (its other words live in
+    /// `take_chunks`, which IS cleared above), and its clips are
     /// the user's only copy of a take that was never transcribed;
     /// `dict_candidates`, `snippets` and `scratchpad` are text the user typed,
     /// with their own delete paths; `crash_events` is built from an allowlist
@@ -1360,6 +1374,10 @@ impl Database {
                 .map_err(|e| e.to_string())?;
             // DB-B — see the doc comment: this table holds transcript text.
             tx.execute("DELETE FROM take_chunks", [])
+                .map_err(|e| e.to_string())?;
+            // PR #216 re-review — a failed retry's words are transcript text
+            // too; the row and its clip stay (see the doc comment).
+            tx.execute("UPDATE failed_dictations SET attempt_text = NULL", [])
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
 
@@ -2149,6 +2167,7 @@ impl Database {
             created_at: Utc::now(),
             take_id,
             partial_text: None,
+            attempt_text: None,
         };
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -2221,6 +2240,27 @@ impl Database {
 
     /// The take's already-decoded words, joined in chunk order, or `None` when
     /// it never produced a chunk.
+    /// PR #216 re-review — a retry of row `id` failed: store the error the user
+    /// saw (so the row's reason is the CURRENT one, not the original) and,
+    /// when it transcribed anything, those words. `attempt_text = None` keeps
+    /// whatever an earlier attempt stored. A row that is gone is a no-op.
+    pub fn note_failed_retry(
+        &self,
+        id: &str,
+        error: &str,
+        attempt_text: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE failed_dictations
+             SET error = ?2, attempt_text = COALESCE(?3, attempt_text)
+             WHERE id = ?1",
+            params![id, error, attempt_text],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn take_partial_text(&self, take_id: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut rows = vec![FailedDictation {
@@ -2232,6 +2272,7 @@ impl Database {
             created_at: Utc::now(),
             take_id: Some(take_id.to_string()),
             partial_text: None,
+            attempt_text: None,
         }];
         fill_partial_text(&conn, &mut rows)?;
         Ok(rows.remove(0).partial_text)
@@ -3504,7 +3545,8 @@ fn map_crash_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CrashEvent> {
 }
 
 fn map_failed_dictation(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailedDictation> {
-    // id, wav_path, speech_seconds, error, source_app, created_at, take_id
+    // id, wav_path, speech_seconds, error, source_app, created_at, take_id,
+    // attempt_text
     //
     // `partial_text` is NOT a column: it is joined in afterwards by
     // `fill_partial_text`, under the same lock, so the chunk order it is built
@@ -3518,13 +3560,14 @@ fn map_failed_dictation(row: &rusqlite::Row<'_>) -> rusqlite::Result<FailedDicta
         created_at: parse_dt(row.get::<_, String>(5)?),
         take_id: row.get(6)?,
         partial_text: None,
+        attempt_text: row.get(7)?,
     })
 }
 
 /// The columns `map_failed_dictation` reads, in its order. Spelled once so a
 /// new column cannot be added to one query and forgotten in the other.
 const FAILED_DICTATION_COLUMNS: &str =
-    "id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at, take_id";
+    "id, wav_path, COALESCE(speech_seconds,0), error, source_app, created_at, take_id, attempt_text";
 
 /// DB-B — join each row's persisted chunk text onto it, in chunk order.
 ///
