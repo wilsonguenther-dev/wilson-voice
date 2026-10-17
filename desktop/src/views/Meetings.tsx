@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { canRetry, meetingStateLabel } from "../meetings/progress";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -15,6 +16,14 @@ export default function Meetings() {
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting, 
     toast,
   } = useAppCtx();
+  const { meetingProgress: progress, retryMeeting: retry } = useAppCtx();
+  const retryMeeting = async (id: string) => {
+    try {
+      await retry(id);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  };
   // Y5-B — a third `return null` blank page, and the worst of them: the read
   // that feeds it (loadMeetings) swallowed its own rejection, so a failed
   // meetings query rendered as "No meetings yet" — Yap telling a user their
@@ -272,11 +281,14 @@ export default function Meetings() {
                       <p className="meeting-title">
                         {m.title}
                         <span className={`meeting-state ${m.state}`}>
-                          {m.state}
+                          {meetingStateLabel(m.state, progress[m.id], Boolean(m.summary))}
                         </span>
                       </p>
                       {m.error && <p className="tiny bad">{m.error}</p>}
                       <div className="actions">
+                        {canRetry(m.state) && (
+                          <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                        )}
                         <button
                           className="primary"
                           onClick={() => openMeetingDetail(m.id)}

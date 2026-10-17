@@ -246,15 +246,17 @@ fn a_denied_tap_costs_the_second_track_and_nothing_else() {
         "2026-08-15T00:00:00Z",
     )));
     let plan = track_b_plan(SystemAudioGate::Available, &denied);
+    // yap-meetings-fix (NT3): the row is never sticky — the tap is attempted
+    // again (a fresh one costs ~200 ms) and the BADGE carries the suspicion.
     assert_eq!(
         plan,
-        TrackBPlan::MicOnly {
+        TrackBPlan::AttachWithBadge {
             badge: LOOKS_DENIED_MESSAGE
         },
-        "row 1 is a mic-only MEETING, not a refused one"
+        "row 1 is still a MEETING, not a refused one — and it tries the tap again"
     );
-    assert_eq!(plan.tracks(), 1, "one track, and the meeting still runs");
-    let badge = plan.badge().expect("a mic-only meeting must say why");
+    assert_eq!(plan.tracks(), 2, "the tap is attempted; the mic records regardless");
+    let badge = plan.badge().expect("a suspected denial must say why");
     assert!(
         badge.contains("System Settings"),
         "row 1 ends with `one deep link to the right Settings pane`, so the sentence has to name \

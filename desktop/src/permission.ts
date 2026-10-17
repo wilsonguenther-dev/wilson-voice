@@ -260,6 +260,22 @@ export function permissionTruthNotes(truth: PermissionTruth | null | undefined):
   ];
 }
 
+// ── yap-meetings-fix — System Audio Recording, with the #211 truth rules ────
+
+/** The real pane, spelled the way System Settings spells it (macOS 14.4+). */
+export const SYSTEM_AUDIO_SETTINGS_PATH =
+  "Privacy & Security › Screen & System Audio Recording › System Audio Recording Only";
+
+/**
+ * The banner line when THIS binary's own tap probe (two consecutive meetings in
+ * which OTHER apps played sound while the tap stayed silent) suggests the grant
+ * is missing. It states the evidence, not a fact: Yap cannot read TCC.
+ */
+export function systemAudioDeniedSentence(checkedBundlePath?: string | null): string {
+  const who = checkedBundlePath ? checkedBundlePath : "Yap";
+  return `No system audio reached ${who} in the last 2 meetings while other apps were playing sound — check System Audio Recording in System Settings › ${SYSTEM_AUDIO_SETTINGS_PATH}, then start a new meeting.`;
+}
+
 export interface PermissionHealth {
   /**
    * FALSE whenever nothing is denied — which includes the all-authorized case
@@ -314,10 +330,16 @@ export function permissionHealth(report: ({
   if (denied.length === 0) return INVISIBLE;
 
   const first = denied[0];
+  // yap-meetings-fix: System Audio Recording names the bundle path this binary
+  // checked and the real System Settings path, like every other #211 row.
+  const firstDetail =
+    first.key === "audio_capture"
+      ? systemAudioDeniedSentence(report?.checkedBundlePath)
+      : first.detail;
   const line =
     denied.length === 1
-      ? first.detail
-      : `${denied.map((g) => g.label).join(" and ")} are off for Yap. ${first.detail}`;
+      ? firstDetail
+      : `${denied.map((g) => g.label).join(" and ")} are off for Yap. ${firstDetail}`;
 
   return {
     visible: true,

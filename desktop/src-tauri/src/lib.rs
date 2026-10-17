@@ -67,6 +67,7 @@ mod latency;
 // (`tests/meeting_*.rs`) and because the eval harness (`tests/meeting_eval.rs`)
 // must score the SHIPPED chunk geometry and the SHIPPED merge, not a copy.
 pub mod meeting_asr;
+pub mod meeting_pipeline;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
@@ -1218,6 +1219,9 @@ fn teardown_for_exit_with(
     //    device survived into `exit()` and ggml's static destructor aborted on
     //    it exactly as before YV69. The drain cancels the in-flight decode and
     //    waits (bounded) for the lease to come home first.
+    // yap-meetings-fix — a meeting job stands down at its next window instead
+    // of re-loading the engine this drain is about to take away.
+    meeting_pipeline::request_quit();
     match state.transcription.drain_and_unload(drain) {
         transcription::DrainOutcome::Idle => {}
         transcription::DrainOutcome::Drained => steps.push("asr_drain"),
@@ -4901,6 +4905,50 @@ async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resul
         .map_err(|e| format!("summary task join failed: {e}"))?
 }
 
+/// yap-meetings-fix (D) — the app handle the pipeline's progress events go out
+/// through. Set once in `setup`; before that there is no window to tell.
+static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// yap-meetings-fix (D) — after a transcript lands, summarize it when a local
+/// summary model is installed. "No model" is a state, not an error: the
+/// transcript stands and the Meetings view says "Add a summary model in
+/// Settings".
+fn auto_summarize_meeting(state: &AppState, id: &str) {
+    let model = state.settings.lock().polish_model.trim().to_string();
+    if model.is_empty() || summarize::SidecarSession::for_installed_model(&model).is_err() {
+        log::info!("summary skipped: no model (meeting {id})");
+        return;
+    }
+    match summarize_meeting_blocking(state, id.to_string()) {
+        Ok(_) => log::info!("summary: meeting {id} summarized automatically"),
+        Err(e) => log::warn!("summary: automatic summary of meeting {id} failed: {e}"),
+    }
+    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(id)) {
+        let _ = app.emit(
+            meeting_pipeline::MEETING_PROGRESS_EVENT,
+            meeting_pipeline::MeetingProgressEvent {
+                id: id.to_string(),
+                state: m.state.clone(),
+                percent: 100,
+                processed_through_seconds: m.processed_through_seconds,
+                duration_seconds: m.duration_seconds,
+                error: m.error.clone(),
+            },
+        );
+    }
+}
+
+/// yap-meetings-fix — Retry on a failed (or partial) meeting: forget what was
+/// decoded and run the whole pipeline again over the audio that is still kept.
+#[tauri::command]
+fn retry_meeting(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    meeting_pipeline::reset_for_retry(&state.db, &meetings_dir(), &id)?;
+    if !meeting_pipeline::enqueue(&id) {
+        return Err("the meeting transcription worker is not running — restart Yap".to_string());
+    }
+    Ok(())
+}
+
 /// The body of [`summarize_meeting`], off the main thread.
 fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, String> {
     let meeting = state
@@ -6085,6 +6133,57 @@ pub fn run() {
         support_bundle: PLMutex::new(None),
     });
 
+    // yap-meetings-fix (A, B) — the meeting transcription pipeline: ONE worker
+    // thread, the shipped MeetingAsr driver over the one warm engine, and the
+    // shipped EngineDemand so dictation always wins. Then reconcile every row a
+    // previous run stranded mid-pipeline — BEFORE the first hygiene sweep, so
+    // retention never sees a row whose fate is not decided yet.
+    {
+        let asr_state = state.clone();
+        let sum_state = state.clone();
+        let deps = meeting_pipeline::PipelineDeps {
+            db: state.db.clone(),
+            progress_dir: meetings_dir(),
+            asr: Arc::new(move || {
+                let (native, language) = {
+                    let s = asr_state.settings.lock();
+                    (s.native_model.clone(), s.language.clone())
+                };
+                let (model_id, model_path) = native_model_ready(&native).ok_or_else(|| {
+                    "No speech model is downloaded yet — get one in Settings, then press Retry."
+                        .to_string()
+                })?;
+                meeting_asr::meeting_availability(Some(&model_id), Some(&language))
+                    .map_err(|e| e.message())?;
+                Ok(Box::new(meeting_asr::WarmEngineChunkAsr::new(
+                    asr_state.transcription.clone(),
+                    model_id,
+                    model_path,
+                    Some("en".to_string()),
+                    None,
+                )) as Box<dyn meeting_asr::ChunkAsr>)
+            }),
+            demand: Arc::new(state.transcription.clone()),
+            quit: Arc::new(|| false),
+            sink: Arc::new(|event: &meeting_pipeline::MeetingProgressEvent| {
+                if let Some(app) = MEETING_APP.get() {
+                    let _ = app.emit(meeting_pipeline::MEETING_PROGRESS_EVENT, event);
+                }
+            }),
+            after_transcript: Some(Arc::new(move |id: &str| {
+                auto_summarize_meeting(&sum_state, id)
+            })),
+            config: meeting_asr::MeetingAsrConfig::default(),
+        };
+        meeting_pipeline::install(meeting_pipeline::spawn(deps));
+        let reconciled = meeting_control::reconcile_stranded_meetings(&state.db, &|id| {
+            meeting_pipeline::enqueue(id);
+        });
+        if !reconciled.is_empty() {
+            log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
+        }
+    }
+
     // YV73: memory + disk hygiene, entirely off the dictation path — its own
     // thread, nothing shared with capture, and the first sweep deliberately
     // delayed past the startup I/O burst (stale-wav sweep, retention purge,
@@ -6329,6 +6428,7 @@ pub fn run() {
             // YV95's surface.
             list_meetings,
             summarize_meeting,
+            retry_meeting,
             get_meeting,
             rename_meeting,
             delete_meeting,
@@ -6404,6 +6504,7 @@ pub fn run() {
                 // and writes back what the meeting actually heard on the way out.
                 meeting_control::SessionEngine::new(state.db.clone()),
             ));
+            let _ = MEETING_APP.set(app.handle().clone());
             let _ = state.meeting.set(Arc::new(meeting_control::MeetingController::new(
                 state.db.clone(),
                 meeting_status_sink(app.handle().clone()),

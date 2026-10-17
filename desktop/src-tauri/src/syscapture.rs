@@ -2324,8 +2324,9 @@ impl SystemAudioPermission {
 /// ([`crate::permissions::SYSTEM_AUDIO_PANE`] opens it) because after a denial a
 /// deep link is the ONLY recovery — TCC will not ask a second time.
 pub const LOOKS_DENIED_MESSAGE: &str =
-    "Yap has not received any system audio. macOS has not granted System Audio \
-     Recording to Yap, and it will not ask again — allow it in System Settings, \
+    "No system audio was captured in the last 2 meetings while other apps were \
+     playing sound. That usually means macOS has not granted System Audio \
+     Recording to Yap, and it will not ask again — check it in System Settings, \
      then start a new meeting.";
 
 /// The verdict: pure, total, and the only place the comparison is made.
@@ -2411,20 +2412,31 @@ pub enum TrackBPlan {
     /// Two tracks: the OS gate passed and YV102's setup row says macOS has been
     /// asked about system audio.
     Attach,
+    /// yap-meetings-fix (NT3) — two tracks, attempted, with a badge saying what
+    /// earlier meetings suggested. A `looks_denied` row changes the BADGE and
+    /// never skips the attempt: a fresh tap costs ~200 ms, and this meeting's
+    /// own evidence overwrites the row either way.
+    AttachWithBadge { badge: &'static str },
     /// One track, and the honest badge the matrix rows 1/12 require.
     MicOnly { badge: &'static str },
+    /// An in-person meeting: the room is on the microphone, there is no call
+    /// to tap, and there is nothing to apologise for — no badge, no error.
+    RoomOnly,
 }
 
 impl TrackBPlan {
     pub fn attaches(self) -> bool {
-        matches!(self, TrackBPlan::Attach)
+        matches!(
+            self,
+            TrackBPlan::Attach | TrackBPlan::AttachWithBadge { .. }
+        )
     }
 
     /// The sentence to show, or `None` when both tracks are recording.
     pub fn badge(self) -> Option<&'static str> {
         match self {
-            TrackBPlan::Attach => None,
-            TrackBPlan::MicOnly { badge } => Some(badge),
+            TrackBPlan::Attach | TrackBPlan::RoomOnly => None,
+            TrackBPlan::AttachWithBadge { badge } | TrackBPlan::MicOnly { badge } => Some(badge),
         }
     }
 
@@ -2469,12 +2481,12 @@ pub fn track_b_plan(gate: SystemAudioGate, setup: &SystemAudioSetup) -> TrackBPl
         };
     }
     match setup.verdict {
-        SetupVerdict::Granted | SetupVerdict::Ran => TrackBPlan::Attach,
-        SetupVerdict::LooksDenied => TrackBPlan::MicOnly {
+        // yap-meetings-fix: a failed open last time is retried this time — a
+        // fresh tap is cheap, and a failure here is re-badged by the start path.
+        SetupVerdict::Granted | SetupVerdict::Ran | SetupVerdict::Failed => TrackBPlan::Attach,
+        // Never sticky: attempt, and let this meeting's evidence decide.
+        SetupVerdict::LooksDenied => TrackBPlan::AttachWithBadge {
             badge: LOOKS_DENIED_MESSAGE,
-        },
-        SetupVerdict::Failed => TrackBPlan::MicOnly {
-            badge: SETUP_FAILED_MESSAGE,
         },
         // `Unavailable` was written by a run on an OS below 14.4. The gate above
         // is the live answer to that question — a user who upgraded macOS must
@@ -2484,6 +2496,256 @@ pub fn track_b_plan(gate: SystemAudioGate, setup: &SystemAudioSetup) -> TrackBPl
         },
     }
 }
+
+/// [`track_b_plan`], with the meeting's kind: an in-person meeting never
+/// attaches a tap and never carries a system-audio badge (NT3 DO 1).
+pub fn track_b_plan_for_kind(
+    gate: SystemAudioGate,
+    setup: &SystemAudioSetup,
+    kind: crate::meetings::MeetingKind,
+) -> TrackBPlan {
+    if kind == crate::meetings::MeetingKind::InPerson {
+        return TrackBPlan::RoomOnly;
+    }
+    track_b_plan(gate, setup)
+}
+
+// ── yap-meetings-fix (NT3) · silence is not a denial ───────────────────────
+//
+// The old stop-path verdict was `permission_verdict(delivery, ran_for)`: a tap
+// that heard nothing for 3 s "looked denied". A quiet Mac produces exactly
+// that, so 3 of Wilson's 4 meetings — one of them in person — carried the
+// denial sentence. The verdict now reads whether the DEFAULT OUTPUT DEVICE ran
+// while the tap listened — and since review-opus B1 that means OTHER
+// processes' output (see [`OutputEvidence`]): the device-level probe was
+// satisfied by Yap's own tap aggregate. Only a long run of other-process
+// output with a silent tap counts as evidence. Even then one meeting is never enough: a muted call or an
+// output-device switch runs the output with a silent tap, so it takes two
+// consecutive meetings to write `looks_denied`.
+
+/// How long some process OTHER than Yap must have run output, across the whole meeting, while
+/// the tap delivered nothing, before the meeting counts as denial evidence.
+pub const OUTPUT_RAN_FOR_DENIAL: Duration = Duration::from_secs(60);
+
+/// Consecutive meetings of evidence it takes to write `looks_denied`.
+pub const DENIAL_STREAK_TO_WRITE: u32 = 2;
+
+/// How often the pump samples other processes' output state.
+pub const OUTPUT_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What one meeting's tap says. Pure: `delivery` is the tap's evidence and
+/// `output_was_running` the total time a process OTHER than Yap was running
+/// output during the meeting ([`OutputEvidence::other_output_ran`] — never the
+/// device's running state, which Yap's own aggregate satisfies).
+///
+/// - any non-zero sample → `Granted` (always wins);
+/// - zero samples + output ran ≥ [`OUTPUT_RAN_FOR_DENIAL`] → `LooksDenied`
+///   (evidence for THIS meeting only — see [`fold_denial_streak`]);
+/// - anything else → `Unknown`, which writes nothing.
+pub fn meeting_permission_verdict(
+    delivery: &TapDelivery,
+    output_was_running: Duration,
+) -> SystemAudioPermission {
+    if delivery.ever_delivered() {
+        SystemAudioPermission::Granted
+    } else if output_was_running >= OUTPUT_RAN_FOR_DENIAL {
+        SystemAudioPermission::LooksDenied
+    } else {
+        SystemAudioPermission::Unknown
+    }
+}
+
+/// What a finished meeting writes back, folded with the meetings before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DenialStep {
+    /// The streak to store for the next meeting.
+    pub streak: u32,
+    /// The setup-row verdict to write, or `None` to leave the row alone.
+    pub write: Option<crate::meetings::SetupVerdict>,
+    /// Whether THIS meeting's row carries the denial sentence.
+    pub badge_meeting: bool,
+}
+
+/// Fold one meeting's verdict into the consecutive-evidence streak.
+///
+/// `Granted` resets everything and writes `granted`. `Unknown` (nothing played,
+/// or not for long enough) is not evidence of anything and breaks the streak
+/// without writing. `LooksDenied` evidence extends it, and only at
+/// [`DENIAL_STREAK_TO_WRITE`] consecutive meetings does Yap say so.
+pub fn fold_denial_streak(previous: u32, this_meeting: SystemAudioPermission) -> DenialStep {
+    match this_meeting {
+        SystemAudioPermission::Granted => DenialStep {
+            streak: 0,
+            write: Some(crate::meetings::SetupVerdict::Granted),
+            badge_meeting: false,
+        },
+        SystemAudioPermission::Unknown => DenialStep {
+            streak: 0,
+            write: None,
+            badge_meeting: false,
+        },
+        SystemAudioPermission::LooksDenied => {
+            let streak = previous.saturating_add(1);
+            let denied = streak >= DENIAL_STREAK_TO_WRITE;
+            DenialStep {
+                streak,
+                write: denied.then_some(crate::meetings::SetupVerdict::LooksDenied),
+                badge_meeting: denied,
+            }
+        }
+    }
+}
+
+// ── review-opus B1 · evidence from OTHER processes' output only ────────────
+//
+// The device-level probe (`kAudioDevicePropertyDeviceIsRunningSomewhere` on
+// the default output) is satisfied by Yap's OWN tap aggregate: the aggregate
+// carries the default output as its main sub-device, so `AudioDeviceStart` on
+// it makes the speakers report "running" for the whole meeting with nothing
+// else playing. Evidence now comes from CoreAudio's per-process objects
+// (`kAudioHardwarePropertyProcessObjectList` → `kAudioProcessPropertyPID` +
+// `kAudioProcessPropertyIsRunningOutput`, macOS 14.4+), with every process that
+// is Yap — this pid, and anything this pid spawned — excluded. Below 14.4, or
+// when the list cannot be read, there is no evidence at all: the verdict stays
+// `Unknown` and nothing is ever persisted from it.
+
+/// One CoreAudio client process's output state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessOutputActivity {
+    /// `kAudioProcessPropertyPID`.
+    pub pid: i32,
+    /// The process's parent pid, when the OS would say. Lets a sidecar Yap
+    /// spawned after the meeting started be recognised as Yap.
+    pub parent_pid: Option<i32>,
+    /// `kAudioProcessPropertyIsRunningOutput` != 0.
+    pub running_output: bool,
+}
+
+/// Where per-process output activity comes from. Injectable so a test can
+/// prove what does and does not count.
+pub trait OutputActivitySource: Send + Sync {
+    /// Every client process's output state right now, or `None` when it cannot
+    /// be read (below macOS 14.4, the property missing, a CoreAudio error).
+    /// `None` is never evidence of anything.
+    fn sample(&self) -> Option<Vec<ProcessOutputActivity>>;
+}
+
+/// The processes that are Yap: this process and its direct children (the
+/// sidecars). Their output — including the IO of Yap's own tap aggregate —
+/// can never be denial evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnProcesses {
+    root: i32,
+}
+
+impl OwnProcesses {
+    /// Yap is `root`, plus anything whose parent is `root`.
+    pub fn new(root: i32) -> Self {
+        Self { root }
+    }
+
+    /// This process.
+    pub fn current() -> Self {
+        Self::new(std::process::id() as i32)
+    }
+
+    pub fn root(&self) -> i32 {
+        self.root
+    }
+
+    pub fn contains(&self, activity: &ProcessOutputActivity) -> bool {
+        activity.pid == self.root || activity.parent_pid == Some(self.root)
+    }
+}
+
+/// Is a process OTHER than Yap running output? `None` when the sample could not
+/// be taken — unknown, never "no".
+pub fn other_process_output_running(
+    sample: Option<&[ProcessOutputActivity]>,
+    own: &OwnProcesses,
+) -> Option<bool> {
+    let sample = sample?;
+    Some(sample.iter().any(|p| p.running_output && !own.contains(p)))
+}
+
+/// What one meeting saw of other processes' output, folded sample by sample.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutputEvidence {
+    /// Total time some process other than Yap was running output.
+    pub other_output_ran: Duration,
+    /// Samples that could be read.
+    pub samples: u32,
+    /// Samples that could not be read — no evidence either way.
+    pub unavailable: u32,
+}
+
+impl OutputEvidence {
+    /// Fold one sample covering the last `dt`.
+    pub fn observe(
+        &mut self,
+        sample: Option<&[ProcessOutputActivity]>,
+        own: &OwnProcesses,
+        dt: Duration,
+    ) {
+        match other_process_output_running(sample, own) {
+            None => self.unavailable = self.unavailable.saturating_add(1),
+            Some(running) => {
+                self.samples = self.samples.saturating_add(1);
+                if running {
+                    self.other_output_ran = self.other_output_ran.saturating_add(dt);
+                }
+            }
+        }
+    }
+
+    /// Did any readable sample show another app playing?
+    pub fn saw_other_output(&self) -> bool {
+        !self.other_output_ran.is_zero()
+    }
+}
+
+/// The production source: CoreAudio process objects on macOS 14.4+, nothing
+/// anywhere else.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreAudioProcessActivity;
+
+impl OutputActivitySource for CoreAudioProcessActivity {
+    fn sample(&self) -> Option<Vec<ProcessOutputActivity>> {
+        #[cfg(target_os = "macos")]
+        {
+            if !crate::os_version_gate::system_audio_gate_now().is_available() {
+                return None;
+            }
+            imp::process_output_activity().ok()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+}
+
+/// The note a meeting carries when its tap heard nothing and the evidence was
+/// not enough to say why. Observed facts only — never "not granted".
+pub fn system_audio_unconfirmed_note(evidence: &OutputEvidence) -> &'static str {
+    if evidence.saw_other_output() {
+        SYSTEM_AUDIO_UNCONFIRMED_OTHER_PLAYED
+    } else if evidence.samples == 0 {
+        SYSTEM_AUDIO_UNCONFIRMED_NO_PROBE
+    } else {
+        SYSTEM_AUDIO_UNCONFIRMED_NOTHING_PLAYED
+    }
+}
+
+pub const SYSTEM_AUDIO_UNCONFIRMED_OTHER_PLAYED: &str =
+    "Couldn't confirm system audio: none was captured in this meeting while another app \
+     was playing sound. One meeting is not enough to say why.";
+pub const SYSTEM_AUDIO_UNCONFIRMED_NOTHING_PLAYED: &str =
+    "Couldn't confirm system audio: none was captured in this meeting, and no other app \
+     was seen playing sound.";
+pub const SYSTEM_AUDIO_UNCONFIRMED_NO_PROBE: &str =
+    "Couldn't confirm system audio: none was captured in this meeting, and this Mac could \
+     not report which apps were playing sound.";
 
 /// Everything the pump mutates, behind one lock.
 struct TapPumpState {
@@ -2495,6 +2757,9 @@ struct TapPumpState {
     /// The most recent anchor's host time — the third element of
     /// `CaptureEnv::tap_liveness`, and what the rebuild log stamps attempts with.
     host_ns: u64,
+    /// yap-meetings-fix (NT3, review-opus B1) — what the pump saw of OTHER
+    /// processes' output during this meeting. Yap's own IO is excluded.
+    output: OutputEvidence,
     /// Reused every tick. The drain path allocates nothing in steady state, for
     /// the same reason `MeetingCapture`'s does: it runs 50 times a second for
     /// three hours.
@@ -2537,6 +2802,7 @@ impl MeetingTap {
                 delivery: TapDelivery::default(),
                 env: TapEnvironment::default(),
                 host_ns: 0,
+                output: OutputEvidence::default(),
                 samples: Vec::new(),
                 anchors: Vec::new(),
             }),
@@ -2619,6 +2885,34 @@ impl MeetingTap {
     /// point at the device the machine is playing through, and is anything
     /// playing at all? Left at [`TapEnvironment::default`] until something
     /// knows better — an unread probe must never become evidence.
+    /// Fold one per-process activity sample covering the last `dt`. Yap's
+    /// own processes (`own`) never count; an unreadable sample is no evidence.
+    pub fn observe_process_activity(
+        &self,
+        sample: Option<&[ProcessOutputActivity]>,
+        own: &OwnProcesses,
+        dt: Duration,
+    ) {
+        self.state.lock().output.observe(sample, own, dt);
+    }
+
+    /// How long some process other than Yap ran output during this meeting.
+    pub fn output_was_running(&self) -> Duration {
+        self.state.lock().output.other_output_ran
+    }
+
+    /// Everything the pump saw of other processes' output.
+    pub fn output_evidence(&self) -> OutputEvidence {
+        self.state.lock().output
+    }
+
+    /// This meeting's own verdict — [`meeting_permission_verdict`] over what
+    /// the tap delivered and how long the output ran.
+    pub fn meeting_verdict(&self) -> SystemAudioPermission {
+        let state = self.state.lock();
+        meeting_permission_verdict(&state.delivery, state.output.other_output_ran)
+    }
+
     pub fn observe_environment(&self, env: TapEnvironment) {
         self.state.lock().env = env;
     }
@@ -2669,6 +2963,19 @@ impl TapPumpThread {
     /// the session's own — the liveness durations are all differences inside
     /// this domain, so the two never have to agree on an origin.
     pub fn spawn(tap: Arc<MeetingTap>) -> Self {
+        Self::spawn_with_source(
+            tap,
+            Arc::new(CoreAudioProcessActivity),
+            OwnProcesses::current(),
+        )
+    }
+
+    /// [`TapPumpThread::spawn`] with the output-activity source injected.
+    pub fn spawn_with_source(
+        tap: Arc<MeetingTap>,
+        source: Arc<dyn OutputActivitySource>,
+        own: OwnProcesses,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let started = Instant::now();
         let handle = {
@@ -2677,8 +2984,22 @@ impl TapPumpThread {
             std::thread::Builder::new()
                 .name("wv-meeting-tap-pump".into())
                 .spawn(move || {
+                    let mut last_output = Duration::ZERO;
                     while !stop.load(Ordering::Relaxed) {
-                        tap.pump(started.elapsed());
+                        let now = started.elapsed();
+                        tap.pump(now);
+                        // NT3 / B1 — sample OTHER processes' output about once
+                        // a second; CoreAudio property reads, nowhere near the
+                        // RT thread. Yap's own aggregate IO is excluded by pid.
+                        if now.saturating_sub(last_output) >= OUTPUT_SAMPLE_INTERVAL {
+                            let sample = source.sample();
+                            tap.observe_process_activity(
+                                sample.as_deref(),
+                                &own,
+                                now.saturating_sub(last_output),
+                            );
+                            last_output = now;
+                        }
                         std::thread::sleep(TAP_PUMP_INTERVAL);
                     }
                 })
@@ -2840,11 +3161,13 @@ pub mod imp {
     use objc2::AllocAnyThread;
     use objc2_core_audio::{
         kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultOutputDevice,
-        kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioObjectPropertyElementMain,
-        kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioTapPropertyFormat,
+        kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTranslatePIDToProcessObject,
+        kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+        kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioTapPropertyFormat,
         kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID,
-        AudioDeviceStart, AudioDeviceStop, AudioObjectGetPropertyData, AudioObjectID,
-        AudioObjectPropertyAddress, CATapDescription,
+        AudioDeviceStart, AudioDeviceStop, AudioObjectGetPropertyData,
+        AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+        CATapDescription,
     };
     use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp};
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString};
@@ -3004,6 +3327,89 @@ pub mod imp {
             Ok(value.assume_init())
         } else {
             Err(status)
+        }
+    }
+
+    /// review-opus B1 — every CoreAudio client process's output state:
+    /// `kAudioHardwarePropertyProcessObjectList`, then per object
+    /// `kAudioProcessPropertyPID` and `kAudioProcessPropertyIsRunningOutput`.
+    /// Callers gate this on macOS 14.4. A process whose pid or state cannot be
+    /// read is SKIPPED — that can only lower the evidence, never raise it.
+    pub fn process_output_activity() -> Result<Vec<super::ProcessOutputActivity>, i32> {
+        let address = address(kAudioHardwarePropertyProcessObjectList);
+        let mut size: u32 = 0;
+        // SAFETY: no qualifier; `size` is a stack u32.
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                kAudioObjectSystemObject as AudioObjectID,
+                NonNull::from(&address),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+            )
+        };
+        if status != 0 {
+            return Err(status);
+        }
+        let count = size as usize / std::mem::size_of::<AudioObjectID>();
+        let mut objects: Vec<AudioObjectID> = vec![0; count];
+        if count > 0 {
+            let mut size = (count * std::mem::size_of::<AudioObjectID>()) as u32;
+            // SAFETY: the selector is documented as an array of AudioObjectID;
+            // the buffer holds exactly `size` bytes of them.
+            let status = unsafe {
+                AudioObjectGetPropertyData(
+                    kAudioObjectSystemObject as AudioObjectID,
+                    NonNull::from(&address),
+                    0,
+                    std::ptr::null(),
+                    NonNull::from(&mut size),
+                    NonNull::new(objects.as_mut_ptr().cast::<c_void>())
+                        .expect("vec pointer is non-null"),
+                )
+            };
+            if status != 0 {
+                return Err(status);
+            }
+            objects.truncate(size as usize / std::mem::size_of::<AudioObjectID>());
+        }
+        let mut out = Vec::with_capacity(objects.len());
+        for object in objects {
+            // SAFETY: both selectors are documented as fixed-size scalars
+            // (pid_t, UInt32).
+            let pid: Result<i32, i32> = unsafe { get_property(object, kAudioProcessPropertyPID) };
+            let running: Result<u32, i32> =
+                unsafe { get_property(object, kAudioProcessPropertyIsRunningOutput) };
+            if let (Ok(pid), Ok(running)) = (pid, running) {
+                out.push(super::ProcessOutputActivity {
+                    pid,
+                    parent_pid: parent_pid(pid),
+                    running_output: running != 0,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// `pbi_ppid` from `proc_pidinfo(PROC_PIDTBSDINFO)`, or `None`.
+    fn parent_pid(pid: i32) -> Option<i32> {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        // SAFETY: the buffer is a proc_bsdinfo of exactly `size` bytes.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if n == size {
+            // SAFETY: proc_pidinfo filled all `size` bytes.
+            Some(unsafe { info.assume_init() }.pbi_ppid as i32)
+        } else {
+            None
         }
     }
 

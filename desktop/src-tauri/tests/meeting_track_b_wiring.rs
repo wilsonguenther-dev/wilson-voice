@@ -218,18 +218,22 @@ fn meeting_without_grant_stays_mic_only_with_badge() {
             badge: syscapture::SETUP_REQUIRED_MESSAGE
         }
     );
-    let plan = track_b_plan(
-        SystemAudioGate::Available,
-        &setup_row(SetupVerdict::LooksDenied),
-    );
+    // yap-meetings-fix (NT3): a LooksDenied row is never sticky — the next
+    // meeting still attempts the tap and only the BADGE changes, because the
+    // "denial" was usually a quiet Mac. The mic-only meeting below is what an
+    // open failure degrades to, badge and all.
     assert_eq!(
-        plan,
-        TrackBPlan::MicOnly {
+        track_b_plan(
+            SystemAudioGate::Available,
+            &setup_row(SetupVerdict::LooksDenied),
+        ),
+        TrackBPlan::AttachWithBadge {
             badge: syscapture::LOOKS_DENIED_MESSAGE
         },
-        "TCC never re-asks, so a known denial must not cost a CoreAudio aggregate device and a \
-         second wav of digital silence"
     );
+    let plan = TrackBPlan::MicOnly {
+        badge: syscapture::LOOKS_DENIED_MESSAGE,
+    };
     assert_eq!(plan.tracks(), 1);
 
     let capture = start_capture_session(

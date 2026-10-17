@@ -1,0 +1,5 @@
+[[voice Samantha]] Good morning everyone, thanks for joining the planning call. Today we need to decide the launch date, the budget for the pilot schools, and who owns the onboarding checklist.
+[[voice Daniel]] Thanks. My view is that the launch should move to the second week of November, because the dictation build needs one more round of testing on older Macs.
+[[voice Samantha]] That works for me. On the budget, we agreed on twelve thousand dollars for the pilot, and the first invoice goes out on Friday.
+[[voice Daniel]] Good. I will own the onboarding checklist, and I will send the draft to the team by Wednesday afternoon so we can review it together before the pilot starts.
+[[voice Samantha]] Perfect. Let us meet again next Tuesday to confirm the date and the final numbers.

@@ -722,6 +722,12 @@ impl MeetingController {
             state.as_str()
         );
         self.emit();
+        // yap-meetings-fix (A) — the capture is on disk; hand it to the ONE
+        // transcription worker. A partial capture with audio is transcribed
+        // too: a short meeting is still worth its words.
+        if wav.is_some() || sys_wav.is_some() {
+            crate::meeting_pipeline::enqueue(&active.id);
+        }
         Ok(StoppedMeeting {
             id: active.id,
             title: active.title,
@@ -801,10 +807,11 @@ impl SessionEngine {
 
     /// The T-0 decision this machine makes right now: YV101's runtime OS gate
     /// and YV102's setup row, through the one pure function that reads them.
-    fn track_b_plan(&self) -> syscapture::TrackBPlan {
-        syscapture::track_b_plan(
+    fn track_b_plan(&self, kind: MeetingKind) -> syscapture::TrackBPlan {
+        syscapture::track_b_plan_for_kind(
             crate::os_version_gate::system_audio_gate_now(),
             &self.db.system_audio_setup(),
+            kind,
         )
     }
 }
@@ -992,9 +999,10 @@ impl CaptureEngine for SessionEngine {
         // The tap is opened BEFORE the session, so a tap that cannot open costs
         // a badge rather than a half-built meeting — and so the journal is
         // opened with the track count the meeting will actually record.
-        let (plan, tap) = match self.track_b_plan() {
-            syscapture::TrackBPlan::Attach => match open_meeting_tap() {
-                Ok(tap) => (syscapture::TrackBPlan::Attach, Some(tap)),
+        let (plan, tap) = match self.track_b_plan(kind) {
+            attach @ (syscapture::TrackBPlan::Attach
+            | syscapture::TrackBPlan::AttachWithBadge { .. }) => match open_meeting_tap() {
+                Ok(tap) => (attach, Some(tap)),
                 Err(error) => {
                     // Not a reason to refuse the meeting: 22-A recording is the
                     // product, the tap is the second half of it. The failure is
@@ -1085,30 +1093,55 @@ impl ActiveCapture for SessionCapture {
         let mut tap_notes: Vec<String> = Vec::new();
         if let Some(mut pump) = self.pump.take() {
             pump.finish();
-            let ran_for = pump.elapsed();
-            let permission = pump.tap().permission(ran_for);
-            if let Some(db) = self.db.as_ref() {
-                // What the meeting HEARD, written back over what the 200 ms
-                // pre-warm could only guess at. `Unknown` writes nothing: a
-                // short meeting with a quiet room is not evidence of anything,
-                // and overwriting a good row with it would lose a real grant.
-                let verdict = match permission {
-                    syscapture::SystemAudioPermission::Granted => {
-                        Some(crate::meetings::SetupVerdict::Granted)
+            // yap-meetings-fix (NT3) — the meeting's OWN evidence: did the tap
+            // deliver, and did ANOTHER process run output while it did not? A
+            // silent Mac is `Unknown` and writes nothing; one meeting of
+            // "output ran, tap silent" is not a denial — it takes two in a row.
+            let permission = pump.tap().meeting_verdict();
+            let output_ran = pump.tap().output_was_running();
+            let step = match self.db.as_ref() {
+                Some(db) => {
+                    let step =
+                        syscapture::fold_denial_streak(db.system_audio_denial_streak(), permission);
+                    if let Err(e) = db.set_system_audio_denial_streak(step.streak) {
+                        log::warn!("could not record the system-audio denial streak: {e}");
                     }
-                    syscapture::SystemAudioPermission::LooksDenied => {
-                        Some(crate::meetings::SetupVerdict::LooksDenied)
+                    if let Some(verdict) = step.write {
+                        if let Err(e) = db.record_system_audio_setup(verdict) {
+                            log::warn!("could not record the system-audio setup verdict: {e}");
+                        }
                     }
-                    syscapture::SystemAudioPermission::Unknown => None,
-                };
-                if let Some(verdict) = verdict {
-                    if let Err(e) = db.record_system_audio_setup(verdict) {
-                        log::warn!("could not record the system-audio setup verdict: {e}");
-                    }
+                    step
                 }
+                None => syscapture::fold_denial_streak(0, permission),
+            };
+            log::info!(
+                "meeting system audio: verdict {permission:?}, output ran {}s, streak {}, wrote {:?}",
+                output_ran.as_secs(),
+                step.streak,
+                step.write
+            );
+            // This binary's own probe is what the permission banner reads.
+            match permission {
+                syscapture::SystemAudioPermission::Granted => {
+                    crate::permissions::note_audio_capture_observation(
+                        crate::permissions::AudioCaptureObservation::Delivered,
+                    )
+                }
+                _ if step.badge_meeting => crate::permissions::note_audio_capture_observation(
+                    crate::permissions::AudioCaptureObservation::SilentPastGrace,
+                ),
+                _ => {}
             }
-            if permission.looks_denied() {
+            if step.badge_meeting {
                 tap_notes.push(syscapture::LOOKS_DENIED_MESSAGE.to_string());
+            } else if permission != syscapture::SystemAudioPermission::Granted {
+                // review-opus B1 — the tap heard nothing and the evidence does
+                // not say why: state what was observed, never "not granted".
+                tap_notes.push(
+                    syscapture::system_audio_unconfirmed_note(&pump.tap().output_evidence())
+                        .to_string(),
+                );
             }
         } else if let Some(badge) = self.badge.clone() {
             tap_notes.push(badge);
@@ -1188,6 +1221,86 @@ impl ActiveCapture for SessionCapture {
             }),
         }
     }
+}
+
+/// yap-meetings-fix (B / NT1) — run ONCE at launch, after the DB opens and
+/// before the first hygiene sweep. Every row a previous run left mid-pipeline
+/// is either handed back to the transcription worker (its audio is still on
+/// disk) or failed with one honest sentence (it is not). Never silently
+/// completed, and never deleted.
+///
+/// Returns `(id, old state, new state)` per reconciled row, each also logged.
+pub fn reconcile_stranded_meetings(
+    db: &Database,
+    enqueue: &dyn Fn(&str),
+) -> Vec<(String, String, String)> {
+    let rows = match db.list_meetings(100_000, None) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("reconcile: meetings unreadable ({e}) — nothing reconciled");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for m in rows {
+        let Some(state) = MeetingState::parse(&m.state) else {
+            continue;
+        };
+        let has_audio = [m.mic_wav_path.as_ref(), m.sys_wav_path.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|p| std::path::Path::new(p).exists());
+        let stranded = match state {
+            MeetingState::Transcribing | MeetingState::Summarizing => true,
+            // A partial capture that never reached the pipeline.
+            MeetingState::Partial => m.segment_count == 0,
+            // Nothing is recording at launch, so this row is a crash.
+            MeetingState::Recording => true,
+            MeetingState::Complete | MeetingState::Failed => false,
+        };
+        if !stranded {
+            continue;
+        }
+        let new_state = if state == MeetingState::Summarizing && m.segment_count > 0 {
+            // The transcript is whole; only the summary was interrupted.
+            let _ = db.set_meeting_state(&m.id, MeetingState::Complete, m.error.as_deref());
+            MeetingState::Complete
+        } else if has_audio {
+            if state == MeetingState::Recording {
+                let _ = db.set_meeting_state(&m.id, MeetingState::Partial, m.error.as_deref());
+            }
+            enqueue(&m.id);
+            if state == MeetingState::Recording {
+                MeetingState::Partial
+            } else {
+                state
+            }
+        } else {
+            let _ = db.set_meeting_state(
+                &m.id,
+                MeetingState::Failed,
+                Some(crate::meeting_pipeline::AUDIO_REMOVED_MESSAGE),
+            );
+            MeetingState::Failed
+        };
+        log::info!(
+            "reconcile: meeting {} {} → {}{}",
+            m.id,
+            state.as_str(),
+            new_state.as_str(),
+            if has_audio && new_state != MeetingState::Failed {
+                " (queued for transcription)"
+            } else {
+                ""
+            }
+        );
+        out.push((
+            m.id.clone(),
+            state.as_str().to_string(),
+            new_state.as_str().to_string(),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]

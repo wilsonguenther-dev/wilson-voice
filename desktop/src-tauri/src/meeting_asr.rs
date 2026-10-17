@@ -48,7 +48,6 @@
 //! the yield are pure or trait-injected. The corpus-scored half lives in
 //! `tests/meeting_eval.rs`, which now scores THIS module's geometry and THIS
 //! module's merge rather than a copy of them.
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1696,7 +1695,7 @@ pub struct MeetingTranscript {
     /// merge; false when the text-anchor fallback ran.
     pub timestamps_are_real: bool,
     pub merge: MergeReport,
-    /// Chunks decoded in THIS run.
+    /// Chunks run through ASR in THIS run — failed attempts included.
     pub chunks_decoded: usize,
     /// Chunks that were already in the ledger and were not decoded again.
     pub chunks_resumed: usize,

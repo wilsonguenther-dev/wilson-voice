@@ -46,7 +46,7 @@ describe("the honest denied state", () => {
   it("is reached only by the looks_denied verdict, never by silence", () => {
     const denied = ALL_VERDICTS.filter(
       (v) => setupState(setup(v), true, REQUIREMENT).tone === "bad" &&
-        setupState(setup(v), true, REQUIREMENT).label.includes("not received any system audio"),
+        setupState(setup(v), true, REQUIREMENT).label.includes("while other apps were playing sound"),
     );
     expect(denied).toEqual(["looks_denied"]);
   });

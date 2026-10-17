@@ -1624,6 +1624,37 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
+    /// yap-meetings-fix — drop one track's segments from `from_seconds` on.
+    /// The pipeline calls it before resuming a track, so a window whose
+    /// segment landed but whose ledger write did not is never written twice.
+    pub fn delete_meeting_segments_from(
+        &self,
+        meeting_id: &str,
+        track: i64,
+        from_seconds: f64,
+    ) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM meeting_segments
+             WHERE meeting_id = ?1 AND track = ?2 AND start_seconds >= ?3",
+            params![meeting_id, track, from_seconds.max(0.0) - 1e-6],
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// yap-meetings-fix (NT3) — how many consecutive meetings ended with the
+    /// output device running and the tap silent. Two in a row is the only
+    /// thing allowed to write `looks_denied`.
+    pub fn system_audio_denial_streak(&self) -> u32 {
+        self.setting_get(meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    pub fn set_system_audio_denial_streak(&self, streak: u32) -> Result<(), String> {
+        self.setting_set(meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY, &streak.to_string())
+    }
+
     /// Close out capture: end time, duration, and the WAV the retention sweep
     /// will later purge.
     pub fn finish_meeting(
@@ -1987,7 +2018,16 @@ impl Database {
     /// "Delete this meeting" as the user means it: rows, search index, and the
     /// audio on disk. A privacy feature that half-deletes is worse than none.
     pub fn delete_meeting_with_audio(&self, id: &str) -> Result<(), String> {
-        let wavs = self.delete_meeting(id)?;
+        let mut wavs = self.delete_meeting(id)?;
+        // yap-meetings-fix — the per-track ASR resume ledgers live beside the
+        // WAVs and go with them.
+        let dirs: Vec<PathBuf> = wavs
+            .iter()
+            .filter_map(|w| w.parent().map(Path::to_path_buf))
+            .collect();
+        for dir in dirs {
+            wavs.extend(crate::meeting_pipeline::ledger_paths(&dir, id));
+        }
         for wav in &wavs {
             match std::fs::remove_file(wav) {
                 Ok(()) => log::info!("meeting delete: removed {}", wav.display()),
@@ -2004,6 +2044,11 @@ impl Database {
     /// AUDIO, never their transcript. Returns the WAV paths to unlink; the row
     /// is marked `audio_kept = 0` so the UI can say "audio expired" instead of
     /// offering a play button that fails.
+    ///
+    /// yap-meetings-fix (NT1) — STATE-AWARE: only a `complete` meeting that has
+    /// at least one transcript segment ever loses its audio. A meeting still
+    /// transcribing, partial or failed keeps the only copy of what was said
+    /// until it has been turned into words.
     pub fn purge_meeting_audio(&self, cutoff: DateTime<Utc>) -> Result<Vec<PathBuf>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let cutoff = cutoff.to_rfc3339();
@@ -2016,7 +2061,9 @@ impl Database {
                 .prepare(
                     "SELECT mic_wav_path, sys_wav_path FROM meetings
                      WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
-                       AND started_at < ?1",
+                       AND started_at < ?1
+                       AND state = 'complete'
+                       AND EXISTS (SELECT 1 FROM meeting_segments s WHERE s.meeting_id = meetings.id)",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
@@ -2036,7 +2083,9 @@ impl Database {
         conn.execute(
             "UPDATE meetings SET mic_wav_path = NULL, sys_wav_path = NULL, audio_kept = 0
              WHERE (mic_wav_path IS NOT NULL OR sys_wav_path IS NOT NULL)
-               AND started_at < ?1",
+               AND started_at < ?1
+               AND state = 'complete'
+               AND EXISTS (SELECT 1 FROM meeting_segments s WHERE s.meeting_id = meetings.id)",
             params![cutoff],
         )
         .map_err(|e| e.to_string())?;
