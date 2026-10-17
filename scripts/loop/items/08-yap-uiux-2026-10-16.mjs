@@ -1163,20 +1163,25 @@ ITEMS.push({
 ITEMS.push({
   id: 'yap-recovery-followups', prompt: 'yap-hotkey-stop', branch: 'loop/yap-recovery-followups-no-duplicates-no-race-backend-confirm', gated: null,
   title: 'Recovered long takes: no duplicate history entries, no race, confirmation enforced in the backend',
-  // Pre-flight asserts COMPLETION (the four named tests exist), never a dependency: a passing
+  // Pre-flight asserts COMPLETION (the nine named tests exist), never a dependency: a passing
   // pre-flight retires the item as already-done, a failing one dispatches the builder. PR #216 is MERGED
-  // (2026-10-17, fff7816), so the gh pr view 216 state check (first acceptance command) now passes; it is
+  // (2026-10-17, 07f738d), so the gh pr view 216 state check (first acceptance command) now passes; it is
   // kept as a guard so a build cut from a base without #216 can never go green or open a mergeable PR.
   preflight: `
     git grep -q 'fn db_b_two_concurrent_saves_yield_one_row' -- desktop/src-tauri
     git grep -q 'fn db_b_keep_without_confirm_is_refused' -- desktop/src-tauri
     git grep -q 'fn db_b_keep_while_retry_in_flight_is_refused' -- desktop/src-tauri
     git grep -q 'fn db_b_retry_and_keep_after_live_partial_leave_one_row' -- desktop/src-tauri
+    git grep -q 'fn db_b_all_loop_or_unreadable_resume_converts_without_keep' -- desktop/src-tauri
+    git grep -q 'db_b_already_transcribed_shows_gated_words' -- desktop
+    git grep -q 'fn db_b_short_loop_then_clean_words_kept_on_retry' -- desktop/src-tauri
+    git grep -q 'fn db_b_no_model_still_offers_keep' -- desktop/src-tauri
+    git grep -q 'fn db_b_missing_audio_keeps_recovered_words' -- desktop/src-tauri
   `,
   spec: `
     Panel: not required — FIX (re-review advisories on PR #216).
     Wilson's words (2026-10-16): "A crash or quit mid-long-take loses nothing."
-    DEPENDS: PR #216 (long-take recovery) is MERGED (2026-10-17, fff7816); the FIRST acceptance command checks it and
+    DEPENDS: PR #216 (long-take recovery) is MERGED (2026-10-17, 07f738d); the FIRST acceptance command checks it and
     passes. If it ever fails, stop, push nothing, report BLOCKED on #216. Do not re-implement #216's work here.
 
     ADVISORIES, each with a test:
@@ -1210,7 +1215,11 @@ ITEMS.push({
 
     TESTS: backend tests in the db tests module, named EXACTLY (the pre-flight greps for them):
     db_b_two_concurrent_saves_yield_one_row (a), db_b_keep_without_confirm_is_refused and
-    db_b_keep_while_retry_in_flight_is_refused (b), db_b_retry_and_keep_after_live_partial_leave_one_row (c);
+    db_b_keep_while_retry_in_flight_is_refused (b), db_b_retry_and_keep_after_live_partial_leave_one_row (c),
+    db_b_all_loop_or_unreadable_resume_converts_without_keep (e), db_b_short_loop_then_clean_words_kept_on_retry (g),
+    db_b_no_model_still_offers_keep and db_b_missing_audio_keeps_recovered_words (h); for (f) the test's name (Rust fn
+    or vitest title) must contain db_b_already_transcribed_shows_gated_words. The pre-flight greps all nine, so the
+    item is never retired as already-done while any of (a)-(c) or (e)-(h) is unimplemented;
     desktop/src-tauri/tests/long_take_recovery.rs
     extended for the same three; a vitest next to the toast component for (d).
     RUNTIME DEPENDENCIES: none new.
