@@ -2015,6 +2015,27 @@ const DICT_CANDIDATE_LIMIT: i64 = 12;
 /// real engine failure without matching a string literal in two places.
 const EMPTY_TRANSCRIPT: &str = "Empty transcript";
 
+/// The error for a decode that produced no text. `EMPTY_TRANSCRIPT` means the
+/// audio was SILENCE, and DB-B's resume (`finish_recovered_decode`) acts on
+/// that: it keeps the recovered words as the whole take and the retry then
+/// deletes the clip. A windowed decode that came back blank because windows
+/// FAILED (engine error, per-chunk timeout, the take deadline) is not silence —
+/// the failed window may hold the rest of what he said — so it gets its own
+/// error, which every caller treats as a real failure that keeps the clip.
+fn blank_take_error(take: &transcription::DictationTake) -> String {
+    if take.chunks_failed == 0 {
+        return EMPTY_TRANSCRIPT.into();
+    }
+    let reason = take
+        .degraded_reason
+        .as_deref()
+        .unwrap_or("transcription failed");
+    format!(
+        "{} of {} window(s) failed and nothing else was voiced ({reason})",
+        take.chunks_failed, take.chunks_total
+    )
+}
+
 fn transcribe_native(
     manager: &transcription::TranscriptionManager,
     model_id: &str,
@@ -2058,7 +2079,7 @@ fn transcribe_native(
         );
     }
     if take.text.trim().is_empty() {
-        return Err(EMPTY_TRANSCRIPT.into());
+        return Err(blank_take_error(&take));
     }
     Ok(transcription::AsrOutput {
         text: take.text,
@@ -8359,7 +8380,37 @@ mod tests {
             .split_once("\n}\n")
             .unwrap()
             .0;
-        assert!(native.contains("return Err(EMPTY_TRANSCRIPT.into());"));
+        assert!(native.contains("return Err(blank_take_error(&take));"));
+    }
+
+    /// PR #178 re-review: a remainder whose windows partly FAILED and partly
+    /// decoded to silence comes back blank, but it is not a silent tail. It
+    /// must not be reported as `EMPTY_TRANSCRIPT`, or the resume converts the
+    /// row on the recovered words alone and the retry deletes the only copy of
+    /// the failed window's audio.
+    #[test]
+    fn db_b_blank_decode_with_failed_windows_is_not_a_silent_tail() {
+        let take = |chunks_failed: usize| crate::transcription::DictationTake {
+            text: String::new(),
+            degraded: chunks_failed > 0,
+            windowed: true,
+            chunks_total: 3,
+            chunks_failed,
+            degraded_reason: (chunks_failed > 0).then(|| "chunk decode timed out".to_string()),
+        };
+        // Pure silence is still the silent tail the resume may finish on.
+        assert_eq!(super::blank_take_error(&take(0)), super::EMPTY_TRANSCRIPT);
+        let err = super::blank_take_error(&take(1));
+        assert_ne!(err, super::EMPTY_TRANSCRIPT);
+        // And the resume fails closed on it: the row and the wav stay.
+        let clip = db_b_clip(2, 30);
+        let r = super::finish_recovered_decode(
+            Some("w1 w2".into()),
+            Ok((2 * BLOCK) as i64),
+            &clip,
+            |_| Err(err.clone()),
+        );
+        assert_eq!(r.err(), Some(err));
     }
 
     /// YV66 — the retry path runs the SAME gate as the live path. It is the one
