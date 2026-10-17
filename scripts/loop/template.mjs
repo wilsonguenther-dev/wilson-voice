@@ -594,6 +594,40 @@ const saysReviewed = (v) => /"status"\s*:\s*"reviewed"/i.test(asText(v))
 const hasEmptyBlocking = (v) => /"blocking"\s*:\s*\[\s*\]/.test(asText(v))
 /** A BLOCK verdict with an empty blocking[] is malformed → recorded as PASS + an advisory note. */
 const isMalformedBlock = (v) => saysBlock(v) && hasEmptyBlocking(v)
+const SHA40 = /^[0-9a-f]{40}$/
+/**
+ * Did a fix round produce a NEW head? (review-opus2 B1 on #222.) before: the heads this pass's reviewers recorded
+ * (recordHead) plus the fixer's headBefore (gh pr view headRefOid before it touched anything); after: the fixer's
+ * returned head (gh pr view headRefOid after its push). An unreadable after-head is "no new head" (fails closed).
+ * A refute-only round leaves the head unchanged: re-reviewing it would PASS a head whose BLOCK is final, and LAND
+ * would then refuse it on every later pass, forever. An empty commit is NOT a way out: it launders a refute into
+ * a push. Unchanged → needs-human, no re-review.
+ */
+const fixRoundHead = (fix, reviewedHeads) => {
+  const t = asText(fix)
+  const read = (k, re) => {
+    const v = String((fix && typeof fix === 'object' && typeof fix[k] === 'string' && fix[k]) || (t.match(re) || [])[1] || '').toLowerCase()
+    return SHA40.test(v) ? v : ''
+  }
+  const after = read('head', /"head"\s*:\s*"([0-9a-fA-F]{40})"/)
+  const before = [...(reviewedHeads || []), read('headBefore', /"headBefore"\s*:\s*"([0-9a-fA-F]{40})"/)]
+    .map((h) => String(h || '').toLowerCase()).filter((h) => SHA40.test(h))
+  if (!after) return { changed: false, after, before, why: 'the fixer reported no readable new head' }
+  if (before.includes(after)) return { changed: false, after, before, why: `head unchanged at ${after.slice(0, 9)}` }
+  return { changed: true, after, before, why: '' }
+}
+/**
+ * LAND's review-gate line, when it is a BLOCK (or an outside-seat needs-human) on a head this pass's reviewers
+ * already reviewed: that BLOCK is FINAL for the head, so review-pending would re-queue it forever → needs-human.
+ * A line naming a head none of the reviewers recorded (or no readable head at all) maps to needs-human too.
+ */
+const landBlockedLine = (land, reviewedHeads) => {
+  const m = asText(land).match(/"reviewGate"\s*:\s*"(review: (?:BLOCK|needs-human)[^"]*)"/i)
+  if (!m) return ''
+  const sha = (m[1].match(/ on ([0-9a-f]{7,40})\b/i) || [])[1]
+  const heads = (reviewedHeads || []).map((h) => String(h || '').toLowerCase()).filter((h) => SHA40.test(h))
+  return !sha || !heads.length || heads.some((h) => h.startsWith(sha.toLowerCase())) ? m[1] : ''
+}
 /**
  * The triage agent returns {queue:[...], closed:[...]}. A seat's payload may arrive as a typed
  * object (schema honoured) or as JSON text, so pull the array out of either. A parse failure
@@ -1463,8 +1497,21 @@ ${COMMIT_CONTRACT}
       ? 'errored'
       : /"status"\s*:\s*"fixed"/i.test(fixText)
         ? 'fixed'
-        : (fixText.match(/"status"\s*:\s*"(closed-superseded|needs-human|needs-rebase|ci-red)"/i) || [])[1] || 'needs-human'
+        : (fixText.match(/"status"\s*:\s*"(no-new-head|closed-superseded|needs-human|needs-rebase|ci-red)"/i) || [])[1] || 'needs-human'
     rounds[rounds.length - 1].fix = fix
+    const reviewedHeads = [primary, lens].map((v) => (v && typeof v === 'object' && v.recordHead) || '')
+    const fixHead = fixRoundHead(fix, reviewedHeads)
+    if (fixStatus === 'no-new-head' || (fixStatus === 'fixed' && !fixHead.changed)) {
+      // NO NEW HEAD: a refute-only round. The BLOCK stays final on that head; no reviewer and no lander is spent.
+      const refuted = fix && Array.isArray(fix.blockingDispositions) ? fix.blockingDispositions : fixText.slice(0, 2000)
+      const why = `fix round ${round + 1}: no new head (${fixStatus === 'no-new-head' ? 'the fixer refuted and pushed nothing' : fixHead.why}); refuted findings: ${JSON.stringify(refuted).slice(0, 1500)}`
+      rounds[rounds.length - 1].noNewHead = true
+      // The fixer labels needs-human itself on no-new-head; a fixer that claimed "fixed" without moving the head did
+      // not, so ONE hold seat labels it and comments the refuted findings.
+      const hold = fixStatus === 'no-new-head' ? fix : await withAgents(1, () => agentR(fixLandPrompt('hold', round + 1, why), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+      log(`PR#${pr} (${itemId}, ${klass}): ${why} -> needs-human (not re-reviewed: a refute is not a push)`)
+      return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'needs-human', blocked, rounds, reason: why, land: hold }
+    }
     if (fixStatus !== 'fixed') {
       log(`PR#${pr} (${itemId}, ${klass}): fix round ${round + 1} ended ${fixStatus} — not re-reviewed`)
       return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: fixStatus, blocked, rounds, land: fix }
@@ -1474,7 +1521,7 @@ ${COMMIT_CONTRACT}
       primaryBlocking: blockingOf(primary),
       lensBlocking: blockingOf(lens),
       dispositions: fix && Array.isArray(fix.blockingDispositions) ? fix.blockingDispositions : fixText.slice(0, 4000),
-      newHead: (fix && fix.head) || '(read headRefOid)',
+      newHead: fixHead.after,
     }
     log(`PR#${pr} (${itemId}, ${klass}): fix round ${round} pushed ${prior.newHead} — re-dispatching ${seats === 2 ? 'review-opus + review-opus2' : 'review-opus'} at the new head`)
   }
@@ -1485,8 +1532,8 @@ ${COMMIT_CONTRACT}
    * never handed the record subcommand (build.mjs validation). 'fix' pushes and does NOT merge; 'land'
    * merges only through CI_GATE (whose review gate needs a reviewer PASS on that sha); 'park' labels.
    */
-  function fixLandPrompt(mode, fixRound) {
-    const role = mode === 'fix' ? `FIX agent (fix round ${fixRound} of at most ${MAX_FIX_ROUNDS})` : mode === 'land' ? 'LAND agent' : 'PARK agent'
+  function fixLandPrompt(mode, fixRound, why = '') {
+    const role = mode === 'fix' ? `FIX agent (fix round ${fixRound} of at most ${MAX_FIX_ROUNDS})` : mode === 'land' ? 'LAND agent' : mode === 'hold' ? 'HOLD agent' : 'PARK agent'
     return `You are the ${role} for PR #${pr} on ${REPO} (${itemId}, ${klass}). You are a FIXER seat, never a
 reviewer: you never post a review verdict, and only a reviewer seat's own record on the current head can
 land this PR. Be paranoid, and be fast.
@@ -1496,7 +1543,17 @@ A reviewer BLOCKed this PR again after ${MAX_FIX_ROUNDS} fix rounds. Do NOT fix 
     gh pr edit -R ${REPO} ${pr} --add-label needs-human
     gh pr comment -R ${REPO} ${pr} --body "needs-human: still BLOCKED after ${MAX_FIX_ROUNDS} fix rounds. <every open BLOCKING finding below, verbatim, with the seat that raised it>"
 OPEN BLOCKING FINDINGS: ${JSON.stringify({ primary: blockingOf(primary), lens: blockingOf(lens) })}
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "needs-human", landed: false, reason}` : ''}${mode === 'hold' ? `
+# HOLD THIS PR FOR A HUMAN — A BLOCK IS FINAL ON ITS CURRENT HEAD
+${why}
+Do NOT fix it, do NOT push (an empty commit included), do NOT merge, do NOT re-review.
+    gh label create needs-human -R ${REPO} --color D93F0B --description "a human decides" 2>/dev/null ; true
+    gh pr edit -R ${REPO} ${pr} --add-label needs-human --remove-label review-pending
+    gh pr comment -R ${REPO} ${pr} --body "needs-human: <the reason above, in plain words: the head, the BLOCK that is final on it, and each refuted finding with its evidence>"
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "needs-human", landed: false, reason}` : ''}${mode === 'fix' ? `
+
+# 0 — RECORD THE HEAD BEFORE YOU TOUCH ANYTHING
+    gh pr view -R ${REPO} ${pr} --json headRefOid             -> headBefore (40 hex). Return it.
 ` + REBASE_STEP + `
 # 2 — DISPOSE OF EVERY BLOCKING FINDING.
 PRIMARY REVIEWER: ${JSON.stringify(primary)}
@@ -1518,6 +1575,13 @@ as needs-human. You do NOT merge in this mode, whatever the gate says.
 # 3 — THE GATE, EVERY COMMAND, SEPARATELY, ON THE REBASED HEAD
 ${GATE_CMDS(dir, target)}
 Then git push --force-with-lease, and read the new head: gh pr view -R ${REPO} ${pr} --json headRefOid
+IF YOU HAVE NOTHING TO PUSH — every blocking finding refuted, no fix committed, the rebase a no-op — the head
+does not change, and re-reviewing an unchanged head cannot clear a BLOCK (a BLOCK is final for its head). Do NOT
+push, and NEVER make an empty commit to force a new head: that launders a refute into a push. Instead:
+    gh label create needs-human -R ${REPO} --color D93F0B --description "a human decides" 2>/dev/null ; true
+    gh pr edit -R ${REPO} ${pr} --add-label needs-human --remove-label review-pending
+    gh pr comment -R ${REPO} ${pr} --body "needs-human: fix round ${fixRound} pushed no new head (headBefore <sha>). Refuted findings: <each, with its evidence>"
+and return status "no-new-head" with head = headBefore. The chain dispatches no reviewer and no lander after it.
 ${VERIFY_NOTHING}
 
 # 4 — POST YOUR DISPOSITIONS — A FIXER'S NOTE, NEVER A REVIEW
@@ -1525,11 +1589,12 @@ gh pr comment -R ${REPO} ${pr} --body "Fix round ${fixRound} — fixer dispositi
 
 <each blocking finding, its disposition fixed|refuted, and the hunk or evidence>"
 Never title that comment as a review, never start it with the reviewer record marker, and never use
-gh pr review. Never write the word loop-review anywhere in a comment: the gate reads every comment carrying it
-as a record, and one that is not a reviewer's clean PASS is a BLOCK on that head. Advisory findings stay where the reviewer posted them — never a new PR.
+gh pr review. Never begin any line of a comment with the reviewer record marker (the first line of a reviewer
+record, which you do not need to name or quote): the gate reads a comment with that marker at a line start as a
+record, and one that is not a reviewer's clean PASS is a BLOCK on that head. Advisory findings stay where the reviewer posted them — never a new PR.
 
-RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"needs-human"|"needs-rebase"|"closed-superseded",
-         head: "<the new headRefOid after your push>", rebased: true|false, conflictsResolved: [...],
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"no-new-head"|"needs-human"|"needs-rebase"|"closed-superseded",
+         headBefore: "<headRefOid from step 0>", head: "<the headRefOid after your push (headBefore when nothing was pushed)>", rebased: true|false, conflictsResolved: [...],
          blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}],
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest}}` : ''}${mode === 'land' ? `
 # EVERY REQUIRED REVIEWER SEAT PASSED THE CURRENT HEAD — LAND IT, AND CHANGE NOTHING
@@ -1542,9 +1607,13 @@ If GitHub says CONFLICTING: do not resolve it here. Label needs-rebase and retur
 If gh already says this PR is MERGED or CLOSED, do not merge it again; report it.
 This PR is #${pr}; wherever the gate below says <n>, that is ${pr}. Every blocking finding was disposed
 of and re-reviewed before you were dispatched; a green gate never substitutes for the merge bar.
+THIS PASS ALREADY REVIEWED THIS HEAD. If the review gate's last line starts "review: BLOCK" (or
+"review: needs-human"), that BLOCK is FINAL for this head and re-queueing it would loop forever: do NOT label
+it review-pending. Label it needs-human instead, comment the gate's line verbatim, and return status
+"needs-human" with reviewGate set to that line.
 ${CI_GATE(dir, target)}
 
-RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending",
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending"|"needs-human",
          landed: true|false, reason, mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
          gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
          ciCheckConclusion}` : ''}
@@ -1563,8 +1632,16 @@ ${GUARD(dir)}`
 
   const landText = asText(land)
   const statusOf = (re, name) => (re.test(landText) ? name : null)
+  // A BLOCK at LAND on the head this pass's reviewers reviewed is FINAL for it: needs-human, never review-pending.
+  const landHeld = /"status"\s*:\s*"merged"/i.test(landText) ? '' : landBlockedLine(land, [primary, lens].map((v) => (v && typeof v === 'object' && v.recordHead) || ''))
+  if (landHeld && !/"status"\s*:\s*"needs-human"/i.test(landText)) {
+    // The lander labelled it review-pending (or nothing): ONE hold seat relabels it needs-human.
+    await withAgents(1, () => agentR(fixLandPrompt('hold', round, `LAND refused on a head this pass already reviewed: ${landHeld}`), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+  }
   const status =
     statusOf(/"status"\s*:\s*"merged"/i, 'merged') ||
+    (landHeld ? 'needs-human' : null) ||
+    statusOf(/"status"\s*:\s*"needs-human"/i, 'needs-human') ||
     statusOf(/"status"\s*:\s*"review-pending"/i, 'review-pending') ||
     statusOf(/"status"\s*:\s*"ci-red"/i, 'ci-red') ||
     statusOf(/"status"\s*:\s*"needs-rebase"/i, 'needs-rebase') ||

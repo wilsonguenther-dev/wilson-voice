@@ -201,7 +201,7 @@ test('RECOGNITION: bold / spaced / fenced / blank-line / notes / FAIL / unparsab
     inNotes: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: PASS blocking=0\n\nsecond look — verdict: BLOCK, the updater path`,
     fail: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: FAIL blocking=1`,
     nonPassWord: `loop-review (Opus)\nseat: review-opus\nlens: x\nhead: ${HEAD}\nverdict: REJECT`,
-    unparsable: 'we ran loop-review on this and it is not ready',
+    unparsable: 'loop-review: not ready, see below',
   }
   for (const [name, b] of Object.entries(shapes)) {
     const r = gate(fixture({ comments: [PASS2(), body(b)] }))
@@ -364,4 +364,97 @@ test('(i) build.mjs --validate-only FAILS when the real fix-land prompt is hande
   const out = `${r.stdout}\n${r.stderr}`
   assert.notEqual(r.status, 0, out)
   assert.match(out, /fix-land:\$\{itemId\} prompt \(line \d+\) \(seat fix-land\) contains "review-gate\.mjs record"/)
+})
+
+// ── round 3: marker at line start; refute-only fix round; LAND BLOCK → needs-human (review-opus2 B1 on #222) ──
+test('MARKER: a mid-sentence mention is not a record; a line-start marker (markdown allowed) still is and fails closed', () => {
+  assert.equal(parseRecord('the finding quotes the loop-review marker mid-sentence; verdict: BLOCK is in the old record'), null)
+  assert.equal(gate(fixture({ comments: [rec(), body('as the earlier loop-review said, verdict: BLOCK')] })).code, 0)
+  for (const b of ['loop-review (Opus)\nverdict: BLOCK', '  **loop-review** — verdict: FAIL', '> loop-review (Opus)\n> seat: x', '```\nloop-review (Opus)\n```']) {
+    assert.notEqual(parseRecord(b), null, b)
+    assert.equal(gate(fixture({ comments: [rec(), body(b)] })).code, EXIT_REVIEW, b)
+  }
+})
+
+/** Runs the GENERATED review pass (part-01, args.mode=review) with a scripted agent(): one PR, seats answered by `script`. */
+async function runChain(script) {
+  const src = fs.readFileSync(path.join(HERE, 'generated', 'part-01.mjs'), 'utf8').replace(/^export const meta/m, 'const meta')
+  const benign = () => new Proxy(function () {}, {
+    get(_t, p) {
+      if (p === 'then' || p === 'toJSON' || p === 'length') return p === 'length' ? 0 : undefined
+      if (p === Symbol.iterator) return function* () {}
+      if (p === Symbol.toPrimitive) return () => ''
+      if (typeof p === 'symbol') return undefined
+      return benign()
+    },
+    apply: () => benign(),
+  })
+  const generic = () => new Proxy({ status: 'ok', ok: true, halted: false, exits: [0], allZero: true, verdict: 'PASS', blocking: [], advisory: [], prs: [], items: [], result: {} },
+    { get: (t, p) => (p in t ? t[p] : p === 'then' || p === 'toJSON' || typeof p === 'symbol' ? undefined : benign()) })
+  const seats = []
+  const logs = []
+  const entry = { pr: 7, item: 'X-1', title: 'X-1: a change', headRefName: 'loop/x-1', klass: 'standard', ci: 'none', mergeable: 'MERGEABLE', files: 1, additions: 1 }
+  const agent = async (prompt, opts = {}) => {
+    const label = String(opts.label || '')
+    if (label === 'review-triage') return { queue: [entry], closed: [], held: [] }
+    if (label.endsWith(':X-1')) {
+      const role = label.startsWith('review-opus') ? label.split(':')[0] : (String(prompt).match(/You are the (FIX|LAND|HOLD|PARK) agent/) || [])[1] || '?'
+      seats.push(role)
+      return script(role, seats.filter((r) => r === role).length)
+    }
+    return generic()
+  }
+  const FIXED = 1757808000000
+  class FrozenDate extends Date { constructor(...a) { super(...(a.length ? a : [FIXED])) } static now() { return FIXED } }
+  const boom = () => { throw new Error('no outside world in a chain test') }
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const fn = new AsyncFunction('agent', 'parallel', 'pipeline', 'phase', 'log', 'workflow', 'args', 'budget', 'Date', 'Math', 'fetch', 'process', 'require', src)
+  await fn(agent, async (fs_) => Promise.all(fs_.map((f) => f())), async (fs_) => { const o = []; for (const f of fs_) o.push(await f()); return o },
+    () => {}, (m) => logs.push(String(m)), async () => ({ halted: false, parts: [], items: [] }), { mode: 'review' },
+    new Proxy({ remaining: 1e9, used: 0, limit: 1e9 }, { get: (t, p) => (p in t ? t[p] : benign()) }), FrozenDate, Object.create(Math, { random: { value: () => 0.42 } }),
+    boom, new Proxy({}, { get: boom }), boom)
+  return { seats, logs, outcome: logs.filter((l) => l.startsWith('PR#7 ')) }
+}
+const NEW = 'c'.repeat(40)
+const BLOCKED = { status: 'reviewed', verdict: 'BLOCK', blocking: ['the updater path is unsigned'], advisory: [], recordHead: HEAD, recordPosted: true }
+const PASSED = { status: 'reviewed', verdict: 'PASS', blocking: [], advisory: [], recordHead: HEAD, recordPosted: true }
+const REFUTED = [{ finding: 'the updater path is unsigned', disposition: 'refuted', evidence: 'signed at build.rs:12' }]
+
+test('CHAIN: a refute-only fix round (no new head) -> needs-human and ZERO further seats (no re-review, no LAND)', async () => {
+  const r = await runChain((role) => role === 'review-opus' ? BLOCKED : role === 'FIX' ? { status: 'no-new-head', headBefore: HEAD, head: HEAD, blockingDispositions: REFUTED } : { status: 'merged' })
+  assert.deepEqual(r.seats, ['review-opus', 'FIX'], r.logs.join('\n'))
+  assert.ok(r.outcome.some((l) => /no new head .*-> needs-human/.test(l)), r.outcome.join('\n'))
+  // a fixer that says "fixed" but left the head where the reviewer read it: one HOLD seat labels it, still no re-review
+  const claimed = await runChain((role) => role === 'review-opus' ? BLOCKED : role === 'FIX' ? { status: 'fixed', headBefore: HEAD, head: HEAD, blockingDispositions: REFUTED } : { status: 'needs-human' })
+  assert.deepEqual(claimed.seats, ['review-opus', 'FIX', 'HOLD'], claimed.logs.join('\n'))
+  // an unreadable new head fails closed the same way
+  const blind = await runChain((role) => role === 'review-opus' ? BLOCKED : role === 'FIX' ? { status: 'fixed', blockingDispositions: REFUTED } : { status: 'needs-human' })
+  assert.deepEqual(blind.seats, ['review-opus', 'FIX', 'HOLD'], blind.logs.join('\n'))
+  // control: a real new head IS re-reviewed, then landed
+  const moved = await runChain((role, n) => role === 'review-opus' ? (n === 1 ? BLOCKED : { ...PASSED, recordHead: NEW }) : role === 'FIX' ? { status: 'fixed', headBefore: HEAD, head: NEW, blockingDispositions: REFUTED } : { status: 'merged', landed: true })
+  assert.deepEqual(moved.seats, ['review-opus', 'FIX', 'review-opus', 'LAND'], moved.logs.join('\n'))
+})
+
+test('CHAIN: LAND refused by a BLOCK on the head this pass reviewed -> needs-human, never review-pending', async () => {
+  const line = 'review: BLOCK on aaaaaaaaa by review-opus2 (comment 9) (standard) — refused; a BLOCK is final for this head'
+  const r = await runChain((role) => role === 'review-opus' ? PASSED : role === 'LAND' ? { status: 'review-pending', landed: false, reviewGate: line, reviewGateExit: 6 } : { status: 'needs-human' })
+  assert.deepEqual(r.seats, ['review-opus', 'LAND', 'HOLD'], r.logs.join('\n'))
+  assert.ok(r.outcome.some((l) => /-> needs-human$/.test(l)), r.outcome.join('\n'))
+  assert.ok(!r.outcome.some((l) => /-> review-pending$/.test(l)))
+  // a lander that already labelled it needs-human: no extra seat
+  const self = await runChain((role) => role === 'review-opus' ? PASSED : role === 'LAND' ? { status: 'needs-human', landed: false, reviewGate: line } : { status: 'x' })
+  assert.deepEqual(self.seats, ['review-opus', 'LAND'])
+  assert.ok(self.outcome.some((l) => /-> needs-human$/.test(l)), self.outcome.join('\n'))
+  // a "missing" gate line is still review-pending (nothing final on that head)
+  const missing = await runChain((role) => role === 'review-opus' ? PASSED : role === 'LAND' ? { status: 'review-pending', reviewGate: 'review: missing on aaaaaaaaa (standard): no review-opus or review-opus2 PASS bound to aaaaaaaaa — refused' } : { status: 'x' })
+  assert.ok(missing.outcome.some((l) => /-> review-pending$/.test(l)), missing.outcome.join('\n'))
+})
+
+test('TEMPLATE: no empty-commit escape; the fixer prompt and fix comment never carry the marker word', () => {
+  const tpl = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  assert.ok(tpl.includes('NEVER make an empty commit'))
+  assert.doesNotMatch(tpl, /git commit[^\n]*--allow-empty/)
+  const fixFn = tpl.slice(tpl.indexOf('function fixLandPrompt('), tpl.indexOf("const land = await withAgents(1, () => agentR(fixLandPrompt('land'"))
+  assert.ok(fixFn.length > 1000)
+  assert.doesNotMatch(fixFn, /loop-review/i)
 })

@@ -28,7 +28,9 @@
  * Not a record, ever: an author outside REVIEW_AUTHORS (the account the seats post as); a bot author.
  *
  * RECOGNITION (review-opus B3) — liberal for BLOCK, strict for PASS. From an allowed author:
- *   - ANY comment containing "loop-review" anywhere (``` / ~~~ fence lines stripped first) is a record;
+ *   - ANY comment with a line that STARTS with "loop-review" (``` / ~~~ fence lines stripped first; leading
+ *     markdown — bold, quote, heading, list — allowed) is a record; a mid-sentence mention is not (review-opus2,
+ *     round 3: a finding that quotes the word must not park a harness PR);
  *   - any line matching BLOCK_LINE_RE /verdict\s*:.*\bBLOCK\b/i — bold, "Verdict :", a blank line between header
  *     lines, in the notes, inside a fence — makes it a BLOCK (blocking= missing or unparsable → 1);
  *   - it is a PASS ONLY when it is a CLEAN header: first non-empty line the marker, each field once, seat in
@@ -113,7 +115,8 @@ export const SECURITY_ID_RE = /^\s*(?:SEC-|UPD-|PRIV-|DB-|PERM-)/i
 const SHA_RE = /^[0-9a-f]{40}$/
 /** A BLOCK verdict, anywhere in a record (bold, spaced, fenced, in notes). */
 export const BLOCK_LINE_RE = /verdict\s*:.*\bBLOCK\b/i
-const MARKER_RE = /loop-review/i
+/** The marker at a LINE START (markdown decoration allowed); a mid-sentence mention is not a record. */
+const MARKER_RE = /^[\s*_>#`~-]*loop-review/i
 const FENCE_RE = /^(?:```|~~~)/
 const HEAD_LINE_RE = /\bhead\W*:\W*([0-9a-f]{7,40})(?![0-9a-f])/gi
 const SEAT_LINE_RE = /^\W*seat\W*:\W*([\w.-]+)/i
