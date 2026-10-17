@@ -129,7 +129,7 @@ now" would then 404 on GitHub. So the staging step above has a third part,
 the manifest **and** the bytes it points at, through one script:
 
 ```bash
-scripts/stage-updater-manifest.sh v0.9.0 "$STAGE"   # the tag you are shipping
+scripts/stage-updater-manifest.sh v0.9.1 "$STAGE"   # the tag you are shipping
 ```
 
 It downloads `latest.json`, `Yap.app.tar.gz` and `Yap.app.tar.gz.sig` from that
