@@ -92,7 +92,7 @@ describe("a later refreshAll failure does not replace loaded views", () => {
     booting: false, bootError: LATER_REFRESH_FAILED, settings: { onboarded: true },
     history: [entry], insights: insightsRow({ totalSessions: 1 }), failed: [], feedbackEdits: {}, query: "",
     queryRef: { current: null }, diffId: null, fixingId: null, fixDraft: "", retrying: null, clearing: false,
-    status: { modelReady: true, recording: false, busy: false, hotkeyRegistered: true, accessibility: true },
+    status: { modelReady: true, recording: false, busy: false, hotkeys: { carbon: { state: "registered" }, fnTap: { state: "delivering" } }, accessibility: true },
     dictionary: [{ id: "d1", term: "Kubernetes", preferred: null }], candidates: [], newTerm: "", newPreferred: "",
     scratch: [], activeNoteId: null, noteTitle: "Scratchpad", noteBody: "", scratchComposing: false,
     daily30: [], hasActivity: true, heat: { cols: 0, months: [], cells: [], max: 0 },
@@ -125,7 +125,7 @@ describe("App shell: Settings' loading state is reachable", () => {
     shell.state = {
       nav: "settings", booting: true, bootError: null, settings: null, insights: null, perms: null,
       history: [], meetings: [], scratch: [], dictionary: [], failed: [], toast: null, update: null,
-      status: { modelReady: false, recording: false, busy: false, message: "", hotkeyRegistered: true, accessibility: true },
+      status: { modelReady: false, recording: false, busy: false, message: "", hotkeys: { carbon: { state: "registered" }, fnTap: { state: "delivering" } }, accessibility: true },
       modelSetup: { ready: false, ribbon: null }, licenseChip: null, buyPrompt: null, consentOpen: false, supportOpen: false,
       supportPreview: null, needsPerms: false, pillClass: "", userName: "", installedVersion: "0.0.0",
       settingsTab: "companion",

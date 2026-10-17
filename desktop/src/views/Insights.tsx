@@ -1,4 +1,5 @@
 import { heatLevel, HEAT_FILL, formatMonth, monthName, formatDay, formatDayShort } from "../appTypes";
+import { carbonRegistered, dictateLabel, fnDelivering } from "../hotkeyStatus";
 import { useAppCtx } from "../appShell";
 import { viewState } from "../viewState";
 import { EmptyState, ErrorState, LoadingState, SeriesGlyph } from "../ViewStates";
@@ -195,10 +196,10 @@ export default function Insights() {
                     <li>
                       <span>Hotkey</span>
                       <strong
-                        className={status.hotkeyRegistered ? "ok" : "bad"}
+                        className={carbonRegistered(status) ? "ok" : "bad"}
                       >
-                        {status.hotkeyRegistered
-                          ? settings?.hotkeyLabel || "fn ok"
+                        {carbonRegistered(status)
+                          ? `${dictateLabel(status)}${fnDelivering(status) ? ` · ${settings?.hotkeyLabel || "fn"}` : " · fn off"}`
                           : "not registered"}
                       </strong>
                     </li>

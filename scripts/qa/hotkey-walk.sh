@@ -12,9 +12,14 @@
 #       "hands-free ON" -> "recording started" -> "tap ends hands-free"
 #       -> "transcript ok" | "no-speech gate" (the take ended)
 #
+#   --chord (zero-TCC):   tap the DICTATE_TOGGLE chord ⌃⌥⌘Space, wait 2 s, tap it
+#       "hotkey edge Press from Carbon -> Start" -> "recording started"
+#       -> "hotkey edge Press from Carbon -> Stop" -> "transcript ok" | "no-speech gate"
+#
 # It never launches, quits or signals Yap. Yap must already be running.
 #
 #   hotkey-walk.sh               walk the installed app (needs YAP_QA_DRIVE_RUNNING=1)
+#   hotkey-walk --chord          (hotkey-walk.sh --chord) walk the Carbon dictate chord
 #   hotkey-walk.sh --self-test   refusal paths + the log parser on fixtures; posts NO events
 #
 # Exit: 0 pass, 1 an assertion failed (prints which line never came),
@@ -39,6 +44,12 @@ HOLD_STEPS='PTT hold armed
 recording started
 PTT hold release
 transcript ok|no-speech gate'
+CHORD_STEPS='hotkey edge Press from Carbon -> Start
+recording started
+hotkey edge Press from Carbon -> Stop
+transcript ok|no-speech gate'
+# DICTATE_TOGGLE: kVK_Space (49) with ⌃ 0x40000 | ⌥ 0x80000 | ⌘ 0x100000.
+CHORD_OP='chord:49:1835008'
 HANDSFREE_STEPS='hands-free ON
 recording started
 tap ends hands-free
@@ -174,8 +185,8 @@ settle_and_check() { # $1 offset, $2 start iso, $3 steps, $4 segment file
   check_steps "$4" "$2" "$3"
 }
 
-walk() {
-  local pids fnpost="" rc seg offset start
+walk() { # $1 = "" (fn passes) | chord
+  local mode="${1:-}" pids fnpost="" rc seg offset start
   [ -f "$APP/Contents/Info.plist" ] || die "no app bundle at $APP"
 
   pids="$(yap_pids)"
@@ -206,6 +217,21 @@ walk() {
 
   seg="$(mktemp -t yapqa)" || die "mktemp failed"
   printf 'walking Yap pid %s, log %s\n' "$pids" "$LOG"
+
+  if [ "$mode" = "chord" ]; then
+    printf -- '-- chord pass: tap ⌃⌥⌘Space, wait 2 s, tap ⌃⌥⌘Space\n'
+    offset="$(log_size)"
+    start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    "$fnpost" "$CHORD_OP" || { rm -f "$seg"; die "fn-post chord failed"; }
+    sleep 2
+    "$fnpost" "$CHORD_OP" || { rm -f "$seg"; die "fn-post chord failed"; }
+    settle_and_check "$offset" "$start" "$CHORD_STEPS" "$seg"
+    rc=$?
+    rm -f "$seg"
+    [ "$rc" -eq 0 ] || exit 1
+    printf 'hotkey-walk --chord: pass\n'
+    exit 0
+  fi
 
   printf -- '-- pass 1: hold fn 1.5 s\n'
   offset="$(log_size)"
@@ -272,6 +298,14 @@ self_test() {
   YAP_QA_APP=/nonexistent/Yap.app bash "$0" >"$out" 2>&1
   expect "missing app -> usage error" 2 $? "no app bundle"
 
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING="" \
+    YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
+  expect "--chord: Yap running without YAP_QA_DRIVE_RUNNING=1 -> refuses" 4 $? "this walk posts fn into it"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
+  expect "--chord: all gates open -> reaches the post step (stopped, nothing posted)" 99 $? "stopping before any event is posted"
+
   # The log parser, against fixtures.
   check_steps "$FIXTURES/yap-walk-pass.log" 2026-10-16T18:08:54Z "$HOLD_STEPS" >"$out" 2>&1
   expect "pass fixture: hold take" 0 $? 'ok   "transcript ok|no-speech gate"'
@@ -285,6 +319,10 @@ self_test() {
   expect "pass fixture from an early start: first step late" 1 $? 'FAIL "PTT hold armed" came 15 s after the walk start (limit 5 s)'
   check_steps "$FIXTURES/yap-walk-pass.log" 2026-10-16T18:09:05Z "$HOLD_STEPS" >"$out" 2>&1
   expect "lines before the start stamp are ignored" 1 $? 'FAIL "PTT hold armed" never came'
+  check_steps "$FIXTURES/yap-walk-chord-pass.log" 2026-10-17T09:12:30Z "$CHORD_STEPS" >"$out" 2>&1
+  expect "chord fixture: zero-TCC chord take" 0 $? 'ok   "hotkey edge Press from Carbon -> Stop"'
+  check_steps "$FIXTURES/yap-walk-pass.log" 2026-10-16T18:08:54Z "$CHORD_STEPS" >"$out" 2>&1
+  expect "fn-only fixture: no chord edge" 1 $? 'FAIL "hotkey edge Press from Carbon -> Start" never came'
 
   rm -f "$out"
   if [ "$fails" -ne 0 ]; then
@@ -297,7 +335,8 @@ self_test() {
 
 case "${1:-}" in
   --self-test) self_test ;;
-  -h | --help) sed -n '2,27p' "$0"; exit 0 ;;
+  -h | --help) sed -n '2,32p' "$0"; exit 0 ;;
+  --chord) walk chord ;;
   "") walk ;;
   *) die "unknown argument: $1" ;;
 esac

@@ -100,6 +100,11 @@ export interface AppSettings {
    */
   commandBinding?: string;
   keepCmdShiftV?: boolean;
+  /**
+   * yap-p0-hotkeys-no-permission — the user's rebind of the "Works everywhere"
+   * dictate chord (Code + modifiers only). null/absent = ⌃⌥⌘Space.
+   */
+  dictateToggle?: ChordSetting | null;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
   /**
@@ -237,13 +242,44 @@ export interface AppSettings {
   skippedUpdateVersion?: string | null;
 }
 
+/** A Carbon chord: a KeyboardEvent.code plus modifiers. */
+export interface ChordSetting {
+  code: string;
+  ctrl: boolean;
+  alt: boolean;
+  cmd: boolean;
+  shift: boolean;
+}
+
+/** yap-p0-hotkeys-no-permission — mirrors `hotkeys::HotkeysStatus`. */
+export interface HotkeysStatus {
+  carbon:
+    | { state: "notAttempted" }
+    | { state: "registered" }
+    | { state: "failed"; reason: string };
+  fnTap:
+    | { state: "notAttempted" }
+    | { state: "delivering" }
+    | { state: "armedNoDelivery" }
+    | { state: "blocked"; reason: string }
+    | { state: "secureInput"; reason: string };
+}
+
 export interface AppStatus {
   recording: boolean;
   busy: boolean;
   lastError: string | null;
   message: string;
   accessibility: boolean;
-  hotkeyRegistered: boolean;
+  /** The Carbon dictate chord's register result and the fn tap's delivery. */
+  hotkeys?: HotkeysStatus;
+  /** Main window only (header status chip + home banner; the floating pill
+   *  does not render it). "fn is off — <reason>. Use ⌃⌥⌘Space (works without
+   *  permissions)." only while the chord's register call returned Ok; a failed
+   *  or not-yet-attempted chord is named as not working instead. */
+  hotkeyDegraded?: string | null;
+  /** Label of the registered dictate chord (default ⌃⌥⌘Space). */
+  dictateToggleLabel?: string;
   /**
    * YV33 — dictation can actually run: the selected embedded model is
    * downloaded. Since YV34 that is the only ASR path, so false means the app

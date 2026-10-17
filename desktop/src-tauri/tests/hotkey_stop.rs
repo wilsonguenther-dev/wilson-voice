@@ -265,7 +265,11 @@ fn every_stop_call_site_goes_through_stop_take() {
         2,
         "the tray Stop item and the tray Hands-free item"
     );
-    assert!(lib.contains("stop_take(&h, &st, StopOrigin::Hotkey)"));
+    // yap-p0-hotkeys-no-permission: the hotkey stop moved into the ONE
+    // dispatcher, `take_hotkey_edge`, which both the fn tap's PttEvent::Stop
+    // and the Carbon dictate chord reach.
+    assert!(lib.contains("hotkeys::TakeAction::Stop => stop_take(app, state, StopOrigin::Hotkey)"));
+    assert!(lib.contains("take_hotkey_edge(&h, &st, HotkeyEdge::Release, HotkeySource::FnTap)"));
     // No stop path left that skips end_hands_free.
     assert_eq!(
         lib.matches("ptt_macos::end_hands_free();").count(),

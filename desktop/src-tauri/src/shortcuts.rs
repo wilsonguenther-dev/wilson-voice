@@ -106,6 +106,29 @@ impl Binding {
     }
 }
 
+/// ⌃⌥⌘Space — yap-p0-hotkeys-no-permission: THE dictation chord that works
+/// with ZERO TCC grants. A Carbon `RegisterEventHotKey` chord needs neither
+/// Accessibility nor Input Monitoring and is delivered under Secure Input, so it
+/// is registered UNCONDITIONALLY at launch and is the primary way to start and
+/// stop a take; the fn / fn⌃ tap is the extra. Press toggles; a press held past
+/// `hotkeys::CARBON_HOLD_MS` then released is hold-to-talk.
+///
+/// Chosen after `defaults read com.apple.symbolichotkeys AppleSymbolicHotKeys`
+/// on the dev Mac (2026-10-17): the Space-key entries there are 60 (⌃Space),
+/// 61 (⌃⌥Space), 64 (⌘Space) and 65 (⌘⌥Space) — none is ⌃⌥⌘Space, and
+/// ⌃⌘Space (the emoji viewer) differs by ⌥. Rebindable in Settings.
+pub const DICTATE_TOGGLE: Binding = Binding {
+    id: "dictate_toggle",
+    label: "⌃⌥⌘Space",
+    accelerator: "Ctrl+Cmd+Alt+Space",
+    ctrl: true,
+    cmd: true,
+    shift: false,
+    alt: true,
+    code: Code::Space,
+    scope: Scope::AlwaysGlobal,
+};
+
 /// ⌃⌘V — re-paste the newest transcript (registered unconditionally).
 pub const PASTE_LAST: Binding = Binding {
     id: "paste_last",
@@ -208,6 +231,7 @@ pub const CANCEL: Binding = Binding {
 /// them (`DICTATION_TOGGLE_LEGACY` is settings-gated) but the CONFLICT question
 /// is not: a chord that is only sometimes registered still cannot be re-used.
 pub const ALL: &[Binding] = &[
+    DICTATE_TOGGLE,
     PASTE_LAST,
     UNDO_AI_EDIT,
     DICTATION_TOGGLE_LEGACY,

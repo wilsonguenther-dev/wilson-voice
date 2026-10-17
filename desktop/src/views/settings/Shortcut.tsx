@@ -1,10 +1,54 @@
+import { useEffect, useState } from "react";
 import { useAppCtx } from "../../appShell";
+import type { ChordSetting } from "../../appTypes";
+import { dictateLabel } from "../../hotkeyStatus";
+
+const MODIFIER_CODES = new Set([
+  "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight",
+  "ShiftLeft", "ShiftRight", "CapsLock", "Fn",
+]);
+
+/**
+ * yap-p0-hotkeys-no-permission — turn one keydown into a Carbon chord, or say
+ * why it cannot be one. Code + modifiers only; ⌃, ⌥ or ⌘ is required so the
+ * chord can never swallow a bare key system-wide.
+ */
+export function chordFromKeyEvent(e: {
+  code: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean;
+}): ChordSetting | string {
+  if (MODIFIER_CODES.has(e.code)) return "Keep holding the modifiers and press a key.";
+  if (!(e.ctrlKey || e.altKey || e.metaKey)) return "Add ⌃, ⌥ or ⌘ to the key.";
+  return { code: e.code, ctrl: e.ctrlKey, alt: e.altKey, cmd: e.metaKey, shift: e.shiftKey };
+}
 
 export default function Shortcut() {
   const {
     applyBinding, captureHint, capturing, saveSettings, setCaptureHint, setCapturing,
-    settings,
+    settings, status,
   } = useAppCtx();
+  const [rebinding, setRebinding] = useState(false);
+  const [rebindHint, setRebindHint] = useState<string | null>(null);
+  useEffect(() => {
+    if (!rebinding || !settings) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      if (e.code === "Escape" && !(e.ctrlKey || e.altKey || e.metaKey)) {
+        setRebinding(false);
+        setRebindHint(null);
+        return;
+      }
+      const chord = chordFromKeyEvent(e);
+      if (typeof chord === "string") {
+        setRebindHint(chord);
+        return;
+      }
+      setRebinding(false);
+      setRebindHint(null);
+      saveSettings({ ...settings, dictateToggle: chord });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [rebinding, settings, saveSettings]);
   if (!settings) return null;
   return (
                 <section className="settings-panel">
@@ -14,6 +58,46 @@ export default function Shortcut() {
                       The key you hold to start talking.
                     </span>
                   </h2>
+                  {/* yap-p0-hotkeys-no-permission — the zero-permission chord. */}
+                  <div className="panel">
+                    <h3>Works everywhere</h3>
+                    <p>
+                      Press <strong>{dictateLabel(status)}</strong> to start a
+                      take and press it again to stop — or hold it and let go.
+                      It needs no Accessibility or Input Monitoring permission
+                      and keeps working when another app has Secure Keyboard
+                      Entry on.
+                    </p>
+                    <div
+                      style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+                    >
+                      <button
+                        type="button"
+                        className={rebinding ? "primary" : "ghost"}
+                        aria-pressed={rebinding}
+                        onClick={() => {
+                          setRebindHint(rebinding ? null : "Press the new chord (Esc to cancel).");
+                          setRebinding((r) => !r);
+                        }}
+                      >
+                        {rebinding ? "Listening… press your chord" : "Change"}
+                      </button>
+                      {settings.dictateToggle && (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => saveSettings({ ...settings, dictateToggle: null })}
+                        >
+                          Reset to ⌃⌥⌘Space
+                        </button>
+                      )}
+                    </div>
+                    {rebindHint && (
+                      <p className="muted" style={{ marginTop: 8 }}>
+                        {rebindHint}
+                      </p>
+                    )}
+                  </div>
                   <div className="panel">
                     <h3>Hold-to-talk key</h3>
                     <p>

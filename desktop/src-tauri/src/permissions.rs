@@ -456,6 +456,12 @@ fn tap_is_delivering() -> bool {
 /// API detail: **a working tap is never reported blocked**, and a HID denial
 /// under a live Accessibility grant is UNKNOWN (we cannot prove either way)
 /// rather than a red line telling the user to fix something that is not broken.
+/// The raw IOHIDCheckAccess(ListenEvent) answer — what the hotkey probe reads
+/// (yap-p0-hotkeys-no-permission). Informational: it never gates the tap.
+pub fn input_monitoring_hid() -> GrantState {
+    hid::listen_event_access()
+}
+
 pub fn input_monitoring_state(
     hid: GrantState,
     accessibility: bool,

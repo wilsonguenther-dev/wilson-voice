@@ -112,7 +112,7 @@ describe("Insights: meetings without dictations is not empty", () => {
     booting: false, bootError: null, daily30: [], hasActivity: false,
     heat: { cols: 0, months: [], cells: [], max: 0 }, heatSummary: { words: 0, sessions: 0, best: null },
     monthlySeries: [], monthlyView: { quiet: 0, rows: [], max: 1 }, maxApp: 1, maxDaily30: 1, maxWeek: 1,
-    settings: null, status: { hotkeyRegistered: true, accessibility: true },
+    settings: null, status: { hotkeys: { carbon: { state: "registered" }, fnTap: { state: "delivering" } }, accessibility: true },
   };
   const meetings = {
     totalMeetings: 2, meetingsLast7: 1, totalSeconds: 1200, completeMeetings: 2, partialMeetings: 0,

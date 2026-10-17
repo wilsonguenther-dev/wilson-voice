@@ -31,7 +31,12 @@ export function useAppShell() {
     lastError: null,
     message: "Loading…",
     accessibility: false,
-    hotkeyRegistered: false,
+    hotkeys: {
+      carbon: { state: "notAttempted" },
+      fnTap: { state: "notAttempted" },
+    },
+    hotkeyDegraded: null,
+    dictateToggleLabel: "⌃⌥⌘Space",
     modelReady: false,
     secureInputBlocked: false,
     secureInputDetail: null,

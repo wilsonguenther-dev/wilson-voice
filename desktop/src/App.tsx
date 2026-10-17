@@ -2,6 +2,8 @@
 // host and the global modals. Every screen lives in ./views/<Name>.tsx and the
 // eight settings panels in ./views/settings/. Shell state lives in ./appShell.
 import { AppContext, useAppShell } from "./appShell";
+import { invoke } from "@tauri-apps/api/core";
+import { repairPane } from "./hotkeyStatus";
 import Onboarding from "./Onboarding";
 import { ModelRibbon } from "./ModelSetup";
 import { PermissionHealthRow } from "./PermissionHealthRow";
@@ -222,6 +224,27 @@ export default function App() {
               (Secure Input)
             </strong>
             <span className="banner-detail">{status.secureInputDetail}</span>
+          </div>
+        )}
+
+        {/* yap-p0-hotkeys-no-permission — degraded mode, said out loud: fn is
+            not delivering and/or the dictate chord did not register, so the
+            line names why — and offers the chord only when it registered. */}
+        {status.hotkeyDegraded && !status.secureInputBlocked && (
+          <div className="banner blocked" role="status">
+            <strong>{status.hotkeyDegraded}</strong>
+            {repairPane(status) && (
+              <button
+                type="button"
+                onClick={() =>
+                  invoke("open_privacy_settings", {
+                    pane: repairPane(status),
+                  }).catch((e) => toast(String(e)))
+                }
+              >
+                Repair
+              </button>
+            )}
           </div>
         )}
 

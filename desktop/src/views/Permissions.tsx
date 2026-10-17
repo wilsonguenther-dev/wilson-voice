@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { carbonRegistered, dictateLabel, fnDelivering } from "../hotkeyStatus";
 import { awaitMicDecision } from "../micStatus";
 import { setupState, SYSTEM_AUDIO_PANE, SYSTEM_AUDIO_SETUP } from "../meetings/systemAudio";
 import StatusDot from "../StatusDot";
@@ -168,13 +169,28 @@ export default function Permissions() {
                     </button>
                   </div>
                 </li>
-                <li className={status.hotkeyRegistered ? "ok" : "bad"}>
-                  <StatusDot ok={status.hotkeyRegistered} />
+                <li className={carbonRegistered(status) ? "ok" : "bad"}>
+                  <StatusDot ok={carbonRegistered(status)} />
+                  <div>
+                    <strong>{dictateLabel(status)} — works everywhere</strong>
+                    <p>
+                      {carbonRegistered(status)
+                        ? "Registered. Starts and stops a take with no permissions at all."
+                        : status.hotkeys?.carbon.state === "failed"
+                          ? `Not registered: ${status.hotkeys.carbon.reason}. Pick another chord in Settings → Shortcut.`
+                          : "Not registered yet."}
+                    </p>
+                  </div>
+                </li>
+                <li className={fnDelivering(status) ? "ok" : "bad"}>
+                  <StatusDot ok={fnDelivering(status)} />
                   <div>
                     <strong>Hold fn⌃</strong>
                     <p>
-                      Carbon hotkey registered by Tauri. If this is red, use the
-                      Dictate button. Close Wispr Flow if it steals the combo.
+                      {fnDelivering(status)
+                        ? "Delivering key events."
+                        : status.hotkeyDegraded ??
+                          "No key event has reached Yap yet — press any key."}
                     </p>
                   </div>
                 </li>
