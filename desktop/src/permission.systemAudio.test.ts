@@ -34,6 +34,14 @@ describe("System Audio Recording banner row", () => {
     expect(SYSTEM_AUDIO_SETTINGS_PATH).toBe(
       "Privacy & Security › Screen & System Audio Recording › System Audio Recording Only",
     );
-    expect(systemAudioDeniedSentence(null)).toContain("System Audio Recording is not granted for Yap");
+    expect(systemAudioDeniedSentence(null)).toContain(
+      "No system audio reached Yap in the last 2 meetings while other apps were playing sound",
+    );
+  });
+  it("states observed evidence, never the grant as fact (review-opus B1)", () => {
+    const line = systemAudioDeniedSentence("/Applications/Yap.app");
+    expect(line).not.toContain("is not granted");
+    expect(line).not.toContain("is denied");
+    expect(line).toContain("while other apps were playing sound");
   });
 });

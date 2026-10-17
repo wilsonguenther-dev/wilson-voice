@@ -267,12 +267,13 @@ export const SYSTEM_AUDIO_SETTINGS_PATH =
   "Privacy & Security › Screen & System Audio Recording › System Audio Recording Only";
 
 /**
- * The banner line when THIS binary's own tap probe (two consecutive meetings
- * with the output running and the tap silent) says the grant is missing.
+ * The banner line when THIS binary's own tap probe (two consecutive meetings in
+ * which OTHER apps played sound while the tap stayed silent) suggests the grant
+ * is missing. It states the evidence, not a fact: Yap cannot read TCC.
  */
 export function systemAudioDeniedSentence(checkedBundlePath?: string | null): string {
   const who = checkedBundlePath ? checkedBundlePath : "Yap";
-  return `System Audio Recording is not granted for ${who} — allow it in System Settings › ${SYSTEM_AUDIO_SETTINGS_PATH}, then start a new meeting.`;
+  return `No system audio reached ${who} in the last 2 meetings while other apps were playing sound — check System Audio Recording in System Settings › ${SYSTEM_AUDIO_SETTINGS_PATH}, then start a new meeting.`;
 }
 
 export interface PermissionHealth {

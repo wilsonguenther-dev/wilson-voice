@@ -548,8 +548,9 @@ pub fn audio_capture_detail(state: GrantState) -> String {
         GrantState::Authorized => {
             "Yap is receiving system audio — macOS shows a purple dot while it records.".to_string()
         }
-        GrantState::Denied => "Yap has not received any system audio. macOS will not ask again — \
-             allow System Audio Recording for Yap in System Settings, then start a new meeting."
+        GrantState::Denied => "No system audio reached Yap in the last 2 meetings while other apps \
+             were playing sound. macOS will not ask again — check System Audio Recording for Yap in \
+             System Settings, then start a new meeting."
             .to_string(),
         GrantState::Unknown => {
             "System audio recording has not been tried yet. Run the meeting setup step when you \

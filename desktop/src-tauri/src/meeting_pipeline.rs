@@ -64,6 +64,26 @@ pub const ALL_WINDOWS_FAILED_MESSAGE: &str =
     "Yap could not transcribe this meeting — speech recognition failed on all of its audio. \
      Press Retry.";
 
+/// No words anywhere, and SOME (not all) windows failed: neither "no speech"
+/// nor "all failed" would be true.
+pub const NO_SPEECH_SOME_FAILED_MESSAGE: &str =
+    "Yap found no speech in the parts of this meeting it could transcribe — speech \
+     recognition failed on the rest. Press Retry.";
+
+/// The sentence for a meeting that produced zero segments. `attempted` is every
+/// window run through ASR (this run's `chunks_decoded`, which counts failed
+/// attempts too, plus `chunks_resumed`); `failed` is how many of those failed.
+/// "No speech" only when nothing failed — a failure is never reported as silence.
+pub fn empty_transcript_message(attempted: usize, failed: usize) -> &'static str {
+    if failed == 0 {
+        NO_SPEECH_MESSAGE
+    } else if failed >= attempted {
+        ALL_WINDOWS_FAILED_MESSAGE
+    } else {
+        NO_SPEECH_SOME_FAILED_MESSAGE
+    }
+}
+
 /// Some windows failed.
 pub const SOME_WINDOWS_FAILED_MESSAGE: &str =
     "Part of this meeting could not be transcribed. The rest of the transcript is here.";
@@ -521,14 +541,10 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
 
     let segments = db.list_meeting_segments(id)?.len();
     let (state, error): (MeetingState, Option<String>) = if segments == 0 {
-        if decoded > 0 && failed >= decoded {
-            (
-                MeetingState::Failed,
-                Some(ALL_WINDOWS_FAILED_MESSAGE.into()),
-            )
-        } else {
-            (MeetingState::Failed, Some(NO_SPEECH_MESSAGE.into()))
-        }
+        (
+            MeetingState::Failed,
+            Some(empty_transcript_message(decoded, failed).into()),
+        )
     } else if failed > 0 {
         (
             MeetingState::Partial,

@@ -160,7 +160,7 @@ export function setupState(
       return {
         tone: "bad",
         label:
-          "Yap has not received any system audio. macOS has not granted System Audio Recording to Yap, and it will not ask again — allow it in System Settings, then start a new meeting.",
+          "No system audio was captured in the last 2 meetings while other apps were playing sound. That usually means macOS has not granted System Audio Recording to Yap, and it will not ask again — check it in System Settings, then start a new meeting.",
         showDeepLink: true,
         canRun: true,
         actionLabel: SYSTEM_AUDIO_SETUP.actionAgain,

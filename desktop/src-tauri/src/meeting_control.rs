@@ -1089,17 +1089,15 @@ impl ActiveCapture for SessionCapture {
         if let Some(mut pump) = self.pump.take() {
             pump.finish();
             // yap-meetings-fix (NT3) — the meeting's OWN evidence: did the tap
-            // deliver, and did the default output run while it did not? A
+            // deliver, and did ANOTHER process run output while it did not? A
             // silent Mac is `Unknown` and writes nothing; one meeting of
             // "output ran, tap silent" is not a denial — it takes two in a row.
             let permission = pump.tap().meeting_verdict();
             let output_ran = pump.tap().output_was_running();
             let step = match self.db.as_ref() {
                 Some(db) => {
-                    let step = syscapture::fold_denial_streak(
-                        db.system_audio_denial_streak(),
-                        permission,
-                    );
+                    let step =
+                        syscapture::fold_denial_streak(db.system_audio_denial_streak(), permission);
                     if let Err(e) = db.set_system_audio_denial_streak(step.streak) {
                         log::warn!("could not record the system-audio denial streak: {e}");
                     }
@@ -1132,6 +1130,13 @@ impl ActiveCapture for SessionCapture {
             }
             if step.badge_meeting {
                 tap_notes.push(syscapture::LOOKS_DENIED_MESSAGE.to_string());
+            } else if permission != syscapture::SystemAudioPermission::Granted {
+                // review-opus B1 — the tap heard nothing and the evidence does
+                // not say why: state what was observed, never "not granted".
+                tap_notes.push(
+                    syscapture::system_audio_unconfirmed_note(&pump.tap().output_evidence())
+                        .to_string(),
+                );
             }
         } else if let Some(badge) = self.badge.clone() {
             tap_notes.push(badge);
@@ -1345,4 +1350,3 @@ mod tests {
         assert_eq!(s.unavailable_reason.is_none(), s.capture_available);
     }
 }
-

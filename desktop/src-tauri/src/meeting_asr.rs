@@ -1695,7 +1695,7 @@ pub struct MeetingTranscript {
     /// merge; false when the text-anchor fallback ran.
     pub timestamps_are_real: bool,
     pub merge: MergeReport,
-    /// Chunks decoded in THIS run.
+    /// Chunks run through ASR in THIS run — failed attempts included.
     pub chunks_decoded: usize,
     /// Chunks that were already in the ledger and were not decoded again.
     pub chunks_resumed: usize,

@@ -353,3 +353,27 @@ fn the_production_stop_path_and_launch_wire_the_pipeline() {
         "stop enqueues"
     );
 }
+
+// ── review-opus A1 · a failure is never reported as "no speech" ────────────
+
+#[test]
+fn an_empty_transcript_names_failures_never_no_speech() {
+    use wilson_voice_lib::meeting_pipeline::{
+        empty_transcript_message, ALL_WINDOWS_FAILED_MESSAGE, NO_SPEECH_MESSAGE,
+        NO_SPEECH_SOME_FAILED_MESSAGE,
+    };
+    // `attempted` counts failed attempts too (MeetingAsr bumps `decoded` for
+    // every chunk outcome it records, failed or not).
+    assert_eq!(empty_transcript_message(10, 0), NO_SPEECH_MESSAGE);
+    assert_eq!(empty_transcript_message(0, 0), NO_SPEECH_MESSAGE);
+    assert_eq!(empty_transcript_message(10, 10), ALL_WINDOWS_FAILED_MESSAGE);
+    assert_eq!(
+        empty_transcript_message(0, 3),
+        ALL_WINDOWS_FAILED_MESSAGE,
+        "every window failed, even if none ran in this pass"
+    );
+    assert_eq!(
+        empty_transcript_message(20, 10),
+        NO_SPEECH_SOME_FAILED_MESSAGE
+    );
+}
