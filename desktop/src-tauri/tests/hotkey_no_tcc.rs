@@ -207,7 +207,9 @@ fn failed_registration_never_reported_registered() {
     // Launch and rebind both write their register result through the sink,
     // whose carbon() is `hotkeys::set_carbon_status`.
     assert!(LIB.contains("hotkeys::set_carbon_status(s);"));
-    assert!(LIB.contains("hotkeys::rebind(") && LIB.contains("&mut AppHotkeySink,"));
+    // Fix round 2: the Settings rebind goes through `hotkeys::rebind_and_activate`,
+    // which calls `rebind` and then re-emits status on the chord change.
+    assert!(LIB.contains("hotkeys::rebind_and_activate(") && LIB.contains("&mut AppHotkeySink,"));
     assert!(LIB.contains("sink.carbon") || LIB.contains("fn carbon(&mut self, s: hotkeys::CarbonStatus)"));
 }
 

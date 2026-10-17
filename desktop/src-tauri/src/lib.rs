@@ -179,6 +179,8 @@ pub mod shortcuts;
 // yap-p0-hotkeys-no-permission — the zero-TCC dictate chord, the one hotkey
 // arbiter and the truthful hotkey status.
 pub mod hotkeys;
+// Fix round 2: the exclusive Carbon probe the dictate registrar runs first.
+pub mod carbon_probe;
 use hotkeys::{HotkeyEdge, HotkeySource};
 /// Y4-G: `pub` so `tests/undo_restores_raw.rs` can drive `append_signature`
 /// directly — the signature block is the one stage that copies bytes verbatim
@@ -5381,18 +5383,16 @@ fn start_from_hotkey(app: &AppHandle, state: &Arc<AppState>, source: HotkeySourc
 /// (shown by the Settings capture) and leaves the old chord registered and
 /// active.
 fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
-    let (old, old_label) = hotkeys::active_dictate();
     let (chord, label) = dictate_toggle_chord(settings);
-    hotkeys::rebind(
+    // Fix round 2: `rebind_and_activate` swaps the chord AND re-emits `status`
+    // when the active chord changed, so every surface naming the chord
+    // (Settings, Permissions, Insights, the home banner) drops the old label.
+    hotkeys::rebind_and_activate(
         &mut TauriCarbonRegistrar { app },
-        old,
-        &old_label,
         chord,
-        &label,
+        label,
         &mut AppHotkeySink,
-    )?;
-    hotkeys::set_active_dictate(chord, label);
-    Ok(())
+    )
 }
 
 /// The registered dictate chord: the Settings rebind when it is valid, else
@@ -5419,6 +5419,20 @@ struct TauriCarbonRegistrar<'a> {
 
 impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
     fn register(&mut self, chord: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+        // Fix round 2: the plugin's RegisterEventHotKey is NON-exclusive and
+        // returns noErr for a chord another app or macOS already holds, so ask
+        // first with kEventHotKeyExclusive (on the main thread, where the
+        // plugin registers too; tauri runs this inline when already on it).
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app
+            .run_on_main_thread(move || {
+                let _ = tx.send(carbon_probe::probe_chord(&chord));
+            })
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = rx.recv().map_err(|e| e.to_string())? {
+            log::warn!("dictate-toggle exclusive probe refused the chord: {e}");
+            return Err(e);
+        }
         let r = if chord == shortcuts::DICTATE_TOGGLE.shortcut() {
             self.app.global_shortcut().register(shortcuts::DICTATE_TOGGLE.shortcut())
         } else {

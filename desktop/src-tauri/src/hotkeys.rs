@@ -573,8 +573,36 @@ pub fn active_dictate() -> (Shortcut, String) {
     })
 }
 
+/// Record the active dictate chord. A CHANGE re-emits `status` (through the
+/// [`on_status_change`] hook) — the chord's label is part of the status every
+/// surface reads, and a rebind's Carbon status is Registered → Registered,
+/// which [`set_carbon_status`] rightly does not count as a change.
 pub fn set_active_dictate(chord: Shortcut, label: String) {
-    *ACTIVE_DICTATE.lock() = Some((chord, label));
+    let next = Some((chord, label));
+    let changed = {
+        let mut g = ACTIVE_DICTATE.lock();
+        let changed = *g != next;
+        *g = next;
+        changed
+    };
+    if changed {
+        notify();
+    }
+}
+
+/// The Settings rebind, end to end: [`rebind`] from the active chord to `new`,
+/// then make `new` the active chord (which re-emits `status`). On `Err` the
+/// old chord stays active and nothing is re-emitted.
+pub fn rebind_and_activate(
+    registrar: &mut dyn CarbonRegistrar,
+    new: Shortcut,
+    new_label: String,
+    sink: &mut dyn StatusSink,
+) -> Result<(), String> {
+    let (old, old_label) = active_dictate();
+    rebind(registrar, old, &old_label, new, &new_label, sink)?;
+    set_active_dictate(new, new_label);
+    Ok(())
 }
 
 static CLOCK: OnceLock<Instant> = OnceLock::new();
