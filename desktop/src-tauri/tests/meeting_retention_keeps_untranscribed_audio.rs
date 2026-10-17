@@ -49,17 +49,30 @@ fn retention_is_state_aware() {
     let silent = meeting(&db, &dir, "silent", MeetingState::Complete, 0);
 
     let purged = db.purge_meeting_audio(chrono::Utc::now()).unwrap();
-    assert_eq!(purged.len(), 2, "only the complete meeting WITH segments, both tracks: {purged:?}");
-    assert!(purged.iter().all(|p| p.to_string_lossy().contains("complete.t")));
+    assert_eq!(
+        purged.len(),
+        2,
+        "only the complete meeting WITH segments, both tracks: {purged:?}"
+    );
+    assert!(purged
+        .iter()
+        .all(|p| p.to_string_lossy().contains("complete.t")));
 
     for id in [&transcribing, &partial, &failed, &silent] {
         let m = db.get_meeting(id).unwrap().unwrap();
-        assert!(m.mic_wav_path.is_some() && m.sys_wav_path.is_some(), "kept: {m:?}");
+        assert!(
+            m.mic_wav_path.is_some() && m.sys_wav_path.is_some(),
+            "kept: {m:?}"
+        );
         assert!(m.audio_kept);
     }
     let gone = db.get_meeting(&complete).unwrap().unwrap();
     assert!(gone.mic_wav_path.is_none() && gone.sys_wav_path.is_none());
-    assert_eq!(db.list_meeting_segments(&complete).unwrap().len(), 3, "the transcript stays");
+    assert_eq!(
+        db.list_meeting_segments(&complete).unwrap().len(),
+        3,
+        "the transcript stays"
+    );
 }
 
 #[test]
@@ -77,12 +90,22 @@ fn reconcile_fails_a_row_whose_audio_is_gone_and_requeues_one_whose_audio_is_the
     let out = reconcile_stranded_meetings(&db, &|id| queued.lock().unwrap().push(id.to_string()));
     println!("reconciled: {out:?}");
 
-    assert_eq!(*queued.lock().unwrap(), vec![kept.clone()], "only the row with audio is queued");
+    assert_eq!(
+        *queued.lock().unwrap(),
+        vec![kept.clone()],
+        "only the row with audio is queued"
+    );
     let k = db.get_meeting(&kept).unwrap().unwrap();
-    assert_eq!(k.state, "transcribing", "left as is, handed to the pipeline");
+    assert_eq!(
+        k.state, "transcribing",
+        "left as is, handed to the pipeline"
+    );
     let l = db.get_meeting(&lost).unwrap().unwrap();
     assert_eq!(l.state, "failed");
     assert_eq!(l.error.as_deref(), Some(AUDIO_REMOVED_MESSAGE));
     assert_eq!(db.get_meeting(&done).unwrap().unwrap().state, "complete");
-    assert!(out.iter().all(|(id, _, _)| id != &done), "complete rows are not touched");
+    assert!(
+        out.iter().all(|(id, _, _)| id != &done),
+        "complete rows are not touched"
+    );
 }

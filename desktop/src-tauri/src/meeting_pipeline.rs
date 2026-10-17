@@ -436,7 +436,12 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     }
     if tracks.is_empty() {
         db.set_meeting_state(id, MeetingState::Failed, Some(AUDIO_REMOVED_MESSAGE))?;
-        emit_final(deps, id, MeetingState::Failed, Some(AUDIO_REMOVED_MESSAGE.into()));
+        emit_final(
+            deps,
+            id,
+            MeetingState::Failed,
+            Some(AUDIO_REMOVED_MESSAGE.into()),
+        );
         return Ok(MeetingState::Failed);
     }
 
@@ -517,14 +522,21 @@ pub fn run_meeting_job(deps: &PipelineDeps, id: &str) -> Result<MeetingState, St
     let segments = db.list_meeting_segments(id)?.len();
     let (state, error): (MeetingState, Option<String>) = if segments == 0 {
         if decoded > 0 && failed >= decoded {
-            (MeetingState::Failed, Some(ALL_WINDOWS_FAILED_MESSAGE.into()))
+            (
+                MeetingState::Failed,
+                Some(ALL_WINDOWS_FAILED_MESSAGE.into()),
+            )
         } else {
             (MeetingState::Failed, Some(NO_SPEECH_MESSAGE.into()))
         }
     } else if failed > 0 {
         (
             MeetingState::Partial,
-            Some(capture_note.clone().unwrap_or_else(|| SOME_WINDOWS_FAILED_MESSAGE.into())),
+            Some(
+                capture_note
+                    .clone()
+                    .unwrap_or_else(|| SOME_WINDOWS_FAILED_MESSAGE.into()),
+            ),
         )
     } else if capture_was_partial {
         (MeetingState::Partial, capture_note.clone())

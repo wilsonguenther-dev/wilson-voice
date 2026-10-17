@@ -50,9 +50,16 @@ fn output_ran_but_under_sixty_seconds_is_unknown() {
 #[test]
 fn one_meeting_of_output_with_a_silent_tap_is_not_a_denial() {
     let v = meeting_permission_verdict(&zeros(), OUTPUT_RAN_FOR_DENIAL);
-    assert_eq!(v, SystemAudioPermission::LooksDenied, "this meeting is evidence");
+    assert_eq!(
+        v,
+        SystemAudioPermission::LooksDenied,
+        "this meeting is evidence"
+    );
     let step = fold_denial_streak(0, v);
-    assert_eq!(step.write, None, "a muted call is one meeting of exactly this");
+    assert_eq!(
+        step.write, None,
+        "a muted call is one meeting of exactly this"
+    );
     assert!(!step.badge_meeting);
     assert_eq!(step.streak, 1);
 }
@@ -119,10 +126,15 @@ fn an_in_person_meeting_never_attaches_and_says_nothing() {
         SetupVerdict::LooksDenied,
         SetupVerdict::NotRun,
     ] {
-        let plan = track_b_plan_for_kind(SystemAudioGate::Available, &row(v), MeetingKind::InPerson);
+        let plan =
+            track_b_plan_for_kind(SystemAudioGate::Available, &row(v), MeetingKind::InPerson);
         assert_eq!(plan, TrackBPlan::RoomOnly);
         assert!(!plan.attaches());
-        assert_eq!(plan.badge(), None, "no badge, no error for a room recording");
+        assert_eq!(
+            plan.badge(),
+            None,
+            "no badge, no error for a room recording"
+        );
         assert_eq!(plan.tracks(), 1);
     }
 }
@@ -134,7 +146,10 @@ fn the_stop_path_uses_the_output_aware_verdict() {
         "/src/meeting_control.rs"
     ))
     .unwrap();
-    assert!(ctl.contains("meeting_verdict()"), "stop reads the meeting verdict");
+    assert!(
+        ctl.contains("meeting_verdict()"),
+        "stop reads the meeting verdict"
+    );
     assert!(ctl.contains("fold_denial_streak"), "stop folds the streak");
     assert!(
         !ctl.contains(".permission(ran_for)"),

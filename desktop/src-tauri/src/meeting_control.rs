@@ -1213,60 +1213,6 @@ impl ActiveCapture for SessionCapture {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    #[test]
-    fn a_manual_meeting_is_named_for_when_it_started() {
-        let t = Local.with_ymd_and_hms(2026, 8, 11, 15, 4, 0).unwrap();
-        assert_eq!(default_title(t), "Meeting 3:04 PM");
-        let morning = Local.with_ymd_and_hms(2026, 8, 11, 9, 30, 0).unwrap();
-        assert_eq!(default_title(morning), "Meeting 9:30 AM");
-    }
-
-    /// YV125 — the picker offers each kind exactly once, under an id nothing
-    /// else in the tray claims, and "Not sure" is the same answer as skipping.
-    #[test]
-    fn the_kind_picker_covers_every_kind_once() {
-        let kinds: Vec<MeetingKind> = KIND_PICKER.iter().map(|c| c.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                MeetingKind::InPerson,
-                MeetingKind::Virtual,
-                MeetingKind::Unknown
-            ]
-        );
-        for c in KIND_PICKER {
-            assert_eq!(kind_for_menu_id(c.menu_id), Some(c.kind));
-            assert!(
-                c.menu_id.starts_with("meeting_start_"),
-                "{} must be namespaced so the tray match cannot collide",
-                c.menu_id
-            );
-            assert!(!c.label.is_empty());
-        }
-        assert_eq!(kind_for_menu_id("meeting_toggle"), None);
-        // The skip default and the last visible option are the same answer, so
-        // a user who chooses "Not sure" and a user who never opened the submenu
-        // land on the same branch.
-        assert_eq!(KIND_PICKER[2].kind, MeetingKind::default());
-    }
-
-    #[test]
-    fn an_idle_status_says_why_it_cannot_record() {
-        let s = MeetingStatus::idle();
-        assert!(!s.recording);
-        assert_eq!(s.elapsed_label, "00:00:00");
-        // No engine is installed in a unit-test process.
-        assert_eq!(s.capture_available, capture_available());
-        assert_eq!(s.unavailable_reason.is_none(), s.capture_available);
-    }
-}
-
-
 /// yap-meetings-fix (B / NT1) — run ONCE at launch, after the DB opens and
 /// before the first hygiene sweep. Every row a previous run left mid-pipeline
 /// is either handed back to the transcription worker (its audio is still on
@@ -1346,3 +1292,57 @@ pub fn reconcile_stranded_meetings(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn a_manual_meeting_is_named_for_when_it_started() {
+        let t = Local.with_ymd_and_hms(2026, 8, 11, 15, 4, 0).unwrap();
+        assert_eq!(default_title(t), "Meeting 3:04 PM");
+        let morning = Local.with_ymd_and_hms(2026, 8, 11, 9, 30, 0).unwrap();
+        assert_eq!(default_title(morning), "Meeting 9:30 AM");
+    }
+
+    /// YV125 — the picker offers each kind exactly once, under an id nothing
+    /// else in the tray claims, and "Not sure" is the same answer as skipping.
+    #[test]
+    fn the_kind_picker_covers_every_kind_once() {
+        let kinds: Vec<MeetingKind> = KIND_PICKER.iter().map(|c| c.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                MeetingKind::InPerson,
+                MeetingKind::Virtual,
+                MeetingKind::Unknown
+            ]
+        );
+        for c in KIND_PICKER {
+            assert_eq!(kind_for_menu_id(c.menu_id), Some(c.kind));
+            assert!(
+                c.menu_id.starts_with("meeting_start_"),
+                "{} must be namespaced so the tray match cannot collide",
+                c.menu_id
+            );
+            assert!(!c.label.is_empty());
+        }
+        assert_eq!(kind_for_menu_id("meeting_toggle"), None);
+        // The skip default and the last visible option are the same answer, so
+        // a user who chooses "Not sure" and a user who never opened the submenu
+        // land on the same branch.
+        assert_eq!(KIND_PICKER[2].kind, MeetingKind::default());
+    }
+
+    #[test]
+    fn an_idle_status_says_why_it_cannot_record() {
+        let s = MeetingStatus::idle();
+        assert!(!s.recording);
+        assert_eq!(s.elapsed_label, "00:00:00");
+        // No engine is installed in a unit-test process.
+        assert_eq!(s.capture_available, capture_available());
+        assert_eq!(s.unavailable_reason.is_none(), s.capture_available);
+    }
+}
+

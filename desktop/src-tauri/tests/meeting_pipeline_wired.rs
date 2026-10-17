@@ -68,7 +68,11 @@ impl ChunkAsr for StubAsr {
             t += 0.5;
             k += 1;
         }
-        let text = words.iter().map(|w| w.text.clone()).collect::<Vec<_>>().join(" ");
+        let text = words
+            .iter()
+            .map(|w| w.text.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(TimedTranscript {
             text,
             kind: TimedKind::Word,
@@ -177,7 +181,10 @@ fn stop_hands_the_capture_to_the_pipeline_and_the_row_completes_with_both_tracks
         None,
         Arc::clone(&events),
     ));
-    assert!(meeting_pipeline::install(pipeline.clone()), "first install wins");
+    assert!(
+        meeting_pipeline::install(pipeline.clone()),
+        "first install wins"
+    );
 
     let sink: StatusSink = Arc::new(|_: &MeetingStatus| {});
     let controller = MeetingController::new(Arc::clone(&db), sink);
@@ -185,13 +192,19 @@ fn stop_hands_the_capture_to_the_pipeline_and_the_row_completes_with_both_tracks
     let stopped = controller.stop("test stop").expect("stop");
     assert_eq!(stopped.state, MeetingState::Transcribing);
 
-    assert!(pipeline.wait_idle(Duration::from_secs(20)), "pipeline drained");
+    assert!(
+        pipeline.wait_idle(Duration::from_secs(20)),
+        "pipeline drained"
+    );
     let m = db.get_meeting(&id).unwrap().expect("row");
     assert_eq!(m.state, "complete", "row: {m:?}");
     let segs = db.list_meeting_segments(&id).unwrap();
     let t0 = segs.iter().filter(|s| s.track == MIC_TRACK).count();
     let t1 = segs.iter().filter(|s| s.track == SYSTEM_TRACK).count();
-    println!("segments: track0={t0} track1={t1} decoder calls={}", calls.load(Ordering::SeqCst));
+    println!(
+        "segments: track0={t0} track1={t1} decoder calls={}",
+        calls.load(Ordering::SeqCst)
+    );
     assert!(t0 > 0 && t1 > 0, "segments on BOTH tracks: t0={t0} t1={t1}");
     assert!(
         (m.processed_through_seconds - m.duration_seconds).abs() < 1e-6,
@@ -201,7 +214,10 @@ fn stop_hands_the_capture_to_the_pipeline_and_the_row_completes_with_both_tracks
     );
     let ev = events.lock().unwrap();
     let percents: Vec<u8> = ev.iter().map(|e| e.percent).collect();
-    assert!(percents.windows(2).all(|w| w[0] <= w[1]), "monotonic: {percents:?}");
+    assert!(
+        percents.windows(2).all(|w| w[0] <= w[1]),
+        "monotonic: {percents:?}"
+    );
     assert_eq!(ev.last().map(|e| e.state.as_str()), Some("complete"));
     assert_eq!(ev.last().map(|e| e.percent), Some(100));
 }
@@ -217,36 +233,65 @@ fn a_second_run_resumes_from_processed_through_without_duplicating_segments() {
     let m = db.create_meeting("resume", "manual").unwrap();
     db.finish_meeting(&m.id, SECONDS, Some(&mic)).unwrap();
     db.set_meeting_sys_wav_path(&m.id, Some(&sys)).unwrap();
-    db.set_meeting_state(&m.id, MeetingState::Transcribing, None).unwrap();
+    db.set_meeting_state(&m.id, MeetingState::Transcribing, None)
+        .unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
 
     // Run 1 is interrupted after two windows (a quit).
     let first = Arc::new(AtomicUsize::new(0));
-    let d1 = deps(Arc::clone(&db), &dir, Arc::clone(&first), Some(2), Arc::clone(&events));
+    let d1 = deps(
+        Arc::clone(&db),
+        &dir,
+        Arc::clone(&first),
+        Some(2),
+        Arc::clone(&events),
+    );
     let state = run_meeting_job(&d1, &m.id).unwrap();
-    assert_eq!(state, MeetingState::Transcribing, "interrupted job stays queued");
+    assert_eq!(
+        state,
+        MeetingState::Transcribing,
+        "interrupted job stays queued"
+    );
     let after_first = db.list_meeting_segments(&m.id).unwrap().len();
-    let progress_first = db.get_meeting(&m.id).unwrap().unwrap().processed_through_seconds;
+    let progress_first = db
+        .get_meeting(&m.id)
+        .unwrap()
+        .unwrap()
+        .processed_through_seconds;
     assert_eq!(first.load(Ordering::SeqCst), 2);
     assert!(after_first > 0 && progress_first > 0.0);
 
     // Run 2 resumes: it decodes only what is left.
     let second = Arc::new(AtomicUsize::new(0));
-    let d2 = deps(Arc::clone(&db), &dir, Arc::clone(&second), None, Arc::clone(&events));
+    let d2 = deps(
+        Arc::clone(&db),
+        &dir,
+        Arc::clone(&second),
+        None,
+        Arc::clone(&events),
+    );
     assert_eq!(run_meeting_job(&d2, &m.id).unwrap(), MeetingState::Complete);
 
     // A control meeting over the same audio, decoded in one go.
     let control = db.create_meeting("control", "manual").unwrap();
     db.finish_meeting(&control.id, SECONDS, Some(&mic)).unwrap();
-    db.set_meeting_sys_wav_path(&control.id, Some(&sys)).unwrap();
+    db.set_meeting_sys_wav_path(&control.id, Some(&sys))
+        .unwrap();
     let full = Arc::new(AtomicUsize::new(0));
     let d3 = deps(Arc::clone(&db), &dir, Arc::clone(&full), None, events);
-    assert_eq!(run_meeting_job(&d3, &control.id).unwrap(), MeetingState::Complete);
+    assert_eq!(
+        run_meeting_job(&d3, &control.id).unwrap(),
+        MeetingState::Complete
+    );
 
     let total = full.load(Ordering::SeqCst);
     let resumed = second.load(Ordering::SeqCst);
     println!("full={total} first=2 resumed={resumed}");
-    assert_eq!(2 + resumed, total, "the resumed run decodes ONLY the windows left");
+    assert_eq!(
+        2 + resumed,
+        total,
+        "the resumed run decodes ONLY the windows left"
+    );
     let segs = db.list_meeting_segments(&m.id).unwrap();
     let control_segs = db.list_meeting_segments(&control.id).unwrap();
     assert_eq!(segs.len(), control_segs.len(), "no window written twice");
@@ -267,8 +312,10 @@ fn a_meeting_whose_audio_is_gone_fails_with_the_sentence_and_is_never_complete()
     let dir = temp_dir("meetings-fix-gone");
     let db = Arc::new(open_db(&dir));
     let m = db.create_meeting("gone", "manual").unwrap();
-    db.finish_meeting(&m.id, SECONDS, Some(&dir.join("missing.wav"))).unwrap();
-    db.set_meeting_state(&m.id, MeetingState::Transcribing, None).unwrap();
+    db.finish_meeting(&m.id, SECONDS, Some(&dir.join("missing.wav")))
+        .unwrap();
+    db.set_meeting_state(&m.id, MeetingState::Transcribing, None)
+        .unwrap();
     let d = deps(
         Arc::clone(&db),
         &dir,
@@ -279,16 +326,30 @@ fn a_meeting_whose_audio_is_gone_fails_with_the_sentence_and_is_never_complete()
     assert_eq!(run_meeting_job(&d, &m.id).unwrap(), MeetingState::Failed);
     let row = db.get_meeting(&m.id).unwrap().unwrap();
     assert_eq!(row.state, "failed");
-    assert_eq!(row.error.as_deref(), Some(meeting_pipeline::AUDIO_REMOVED_MESSAGE));
+    assert_eq!(
+        row.error.as_deref(),
+        Some(meeting_pipeline::AUDIO_REMOVED_MESSAGE)
+    );
 }
 
 #[test]
 fn the_production_stop_path_and_launch_wire_the_pipeline() {
     let lib = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
-    assert!(lib.contains("meeting_pipeline::spawn"), "lib.rs spawns the pipeline");
-    assert!(lib.contains("reconcile_stranded_meetings"), "lib.rs reconciles at launch");
-    let ctl =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/meeting_control.rs"))
-            .unwrap();
-    assert!(ctl.contains("meeting_pipeline::enqueue(&active.id)"), "stop enqueues");
+    assert!(
+        lib.contains("meeting_pipeline::spawn"),
+        "lib.rs spawns the pipeline"
+    );
+    assert!(
+        lib.contains("reconcile_stranded_meetings"),
+        "lib.rs reconciles at launch"
+    );
+    let ctl = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/meeting_control.rs"
+    ))
+    .unwrap();
+    assert!(
+        ctl.contains("meeting_pipeline::enqueue(&active.id)"),
+        "stop enqueues"
+    );
 }
