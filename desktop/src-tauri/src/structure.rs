@@ -128,6 +128,14 @@ const END_CUES: &[&str] = &["finally", "lastly"];
 const HEADING_CUES: &[&str] = &["heading", "title"];
 /// The explicit item cue.
 const BULLET_CUE: &str = "bullet";
+/// Continuation cues that are only ever a sequence adverb at the head of a
+/// sentence, so they are consumed bare ("Then wait."). Every OTHER continuation
+/// cue is also an ordinary word there — "Next week", "Second hand", "Third
+/// quarter", "After that meeting", "Step two is" — and is consumed only when
+/// he set it off with a comma or a colon, exactly like the start cues (PR #213
+/// re-review: "First, book the venue. Next week, we send the invites." lost
+/// "Next").
+const BARE_CONTINUE_CUES: &[&str] = &["then", "finally", "lastly", "secondly", "thirdly"];
 
 /// A phrase led by one of these is a clause or a continuation, never a list
 /// item and never a topic: "and then we drove" is a story, "when I got home,"
@@ -432,6 +440,12 @@ fn strip_cue_inner<'a>(
     None
 }
 
+/// A continuation cue inside a numbered sequence: a bare sequence adverb, or
+/// any other cue only when set off as a marker (see [`BARE_CONTINUE_CUES`]).
+fn strip_continue_cue(sentence: &str) -> Option<(&'static str, &str)> {
+    strip_cue(sentence, BARE_CONTINUE_CUES).or_else(|| strip_marker(sentence, STRUCTURE_CUE_WORDS))
+}
+
 fn is_continue_cue(c: &str) -> bool {
     !START_CUES.contains(&c) && !HEADING_CUES.contains(&c) && c != BULLET_CUE
 }
@@ -525,7 +539,7 @@ impl Builder {
                 let mut items = vec![capitalize(first)];
                 let mut j = i + 1;
                 while j < sents.len() {
-                    match strip_cue(&sents[j], STRUCTURE_CUE_WORDS) {
+                    match strip_continue_cue(&sents[j]) {
                         Some((cue, rest)) if is_continue_cue(cue) => {
                             items.push(capitalize(rest));
                             j += 1;
@@ -1032,6 +1046,42 @@ mod tests {
         }
     }
 
+    /// PR #213 re-review: an ordinary word that happens to be a continuation
+    /// cue ("Next week", "After that meeting", "Third quarter", "Second hand",
+    /// "Step two is") must not be eaten just because a set-off "First," came
+    /// before it. Each take must come back byte for byte.
+    #[test]
+    fn structure_ordinary_words_after_a_set_off_first_are_not_consumed() {
+        for s in [
+            "First, book the venue. Next week, we send the invites. Finally, we pick the menu.",
+            "First, we had lunch. After that meeting ended, we left. Finally, we got home.",
+            "First, revenue is up. Third quarter numbers look great. Then we hire. Finally, we celebrate.",
+            "First, open the box. Second hand stores sell these cheap. Lastly, recycle the box.",
+            "First, pick a plan. Step two is the hard part. Finally, ship it.",
+        ] {
+            for fmt in [StructureFormat::Markdown, StructureFormat::PlainBullets] {
+                assert_eq!(structure_text(s, &[], fmt), s, "{fmt:?}: {s}");
+            }
+        }
+        // The same cues SET OFF are still a sequence.
+        assert_eq!(
+            structure_text(
+                "First, book the venue. Next, send the invites. After that, pick the menu.",
+                &[],
+                StructureFormat::Markdown
+            ),
+            "1. Book the venue.\n2. Send the invites.\n3. Pick the menu."
+        );
+        assert_eq!(
+            structure_text(
+                "First, revenue. Second, hiring. Third, the launch.",
+                &[],
+                StructureFormat::Markdown
+            ),
+            "1. Revenue.\n2. Hiring.\n3. The launch."
+        );
+    }
+
     #[test]
     fn structure_set_off_cues_still_work() {
         let md = StructureFormat::Markdown;
@@ -1073,6 +1123,7 @@ mod tests {
             .iter()
             .chain(END_CUES)
             .chain(HEADING_CUES)
+            .chain(BARE_CONTINUE_CUES)
             .chain([BULLET_CUE].iter())
         {
             assert!(STRUCTURE_CUE_WORDS.contains(c), "{c}");
