@@ -176,6 +176,10 @@ mod secure_input;
 // reading the same constants `run()` registers, not an eyeball over three
 // literals.
 pub mod shortcuts;
+// yap-p0-hotkeys-no-permission — the zero-TCC dictate chord, the one hotkey
+// arbiter and the truthful hotkey status.
+pub mod hotkeys;
+use hotkeys::{HotkeyEdge, HotkeySource};
 /// Y4-G: `pub` so `tests/undo_restores_raw.rs` can drive `append_signature`
 /// directly — the signature block is the one stage that copies bytes verbatim
 /// after polish, so undo has to be asserted against the real function.
@@ -288,6 +292,11 @@ pub struct AppSettings {
     /// Keep Carbon ⌘⇧V as secondary hold binding.
     #[serde(default = "default_true")]
     pub keep_cmd_shift_v: bool,
+    /// yap-p0-hotkeys-no-permission — the user's rebind of the "Works
+    /// everywhere" dictate chord (Code + modifiers only). `None` = the default
+    /// `shortcuts::DICTATE_TOGGLE` (⌃⌥⌘Space).
+    #[serde(default)]
+    pub dictate_toggle: Option<hotkeys::ChordSetting>,
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
@@ -497,6 +506,7 @@ impl Default for AppSettings {
             ptt_binding: "fn_control".into(),
             command_binding: "command".into(),
             keep_cmd_shift_v: false,
+            dictate_toggle: None,
             pill_style: "classic".into(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
@@ -534,7 +544,18 @@ pub struct AppStatus {
     pub last_error: Option<String>,
     pub message: String,
     pub accessibility: bool,
-    pub hotkey_registered: bool,
+    /// yap-p0-hotkeys-no-permission — what each keyboard surface is REALLY
+    /// doing: the Carbon dictate chord's register result and the fn tap's
+    /// observed delivery. Replaces the old `true`-on-thread-spawn flag.
+    #[serde(default)]
+    pub hotkeys: hotkeys::HotkeysStatus,
+    /// The degraded-mode line ("fn is off — <reason>. Use ⌃⌥⌘Space (works
+    /// without permissions).") — `None` while fn is delivering.
+    #[serde(default)]
+    pub hotkey_degraded: Option<String>,
+    /// The label of the registered dictate chord (default ⌃⌥⌘Space).
+    #[serde(default)]
+    pub dictate_toggle_label: String,
     #[serde(default)]
     pub hands_free: bool,
     /// YV33 — dictation can actually run right now: the selected embedded model
@@ -593,7 +614,9 @@ struct AppState {
     saved_audio: PLMutex<Option<sysaudio::OutputAudioState>>,
     db: Arc<Database>,
     last_error: PLMutex<Option<String>>,
-    hotkey_registered: PLMutex<bool>,
+    /// yap-p0-hotkeys-no-permission — the ONE start/stop decision for every
+    /// hotkey edge, Carbon or fn tap (see `take_hotkey_edge`).
+    hotkey_arbiter: PLMutex<hotkeys::HotkeyArbiter>,
     /// Menu-bar (tray) handles, set once during setup after the tray is built.
     /// Kept so state transitions can reflect into the dropdown + tooltip (YV26).
     tray: PLMutex<Option<TrayIcon<Wry>>>,
@@ -935,7 +958,6 @@ fn build_status(state: &AppState) -> AppStatus {
     let hands_free = *state.hands_free.lock();
     let last_error = state.last_error.lock().clone();
     let accessibility = permissions::is_accessibility_trusted();
-    let hotkey_registered = *state.hotkey_registered.lock();
     let ptt = state.settings.lock().hotkey_label.clone();
     let ready = model_ready(state);
     let secure = state.secure_input.lock().clone();
@@ -969,13 +991,33 @@ fn build_status(state: &AppState) -> AppStatus {
     } else {
         message
     };
+    // yap-p0-hotkeys-no-permission DO 4/5: truthful hotkey status + the
+    // explicit degraded-mode line. Secure Input outranks the stored tap state.
+    let mut hotkeys_now = hotkeys::status();
+    hotkeys_now.fn_tap =
+        hotkeys::effective_fn_tap(&hotkeys_now.fn_tap, secure.blocked, secure.culprit.as_deref());
+    let (_, dictate_toggle_label) = hotkeys::active_dictate();
+    let probe = OsPermissionProbe;
+    let hotkey_degraded = hotkeys::degraded_line(
+        &hotkeys_now.fn_tap,
+        hotkeys::PermissionProbe::tap_plausible(&probe),
+        &dictate_toggle_label,
+    );
+    // Idle and otherwise "Ready": the pill/home line names the degraded mode
+    // instead of advertising a fn hold that cannot fire.
+    let message = match (&hotkey_degraded, recording || busy || last_error.is_some()) {
+        (Some(line), false) if ready => line.clone(),
+        _ => message,
+    };
     AppStatus {
         recording,
         busy,
         last_error,
         message,
         accessibility,
-        hotkey_registered,
+        hotkeys: hotkeys_now,
+        hotkey_degraded,
+        dictate_toggle_label,
         hands_free,
         model_ready: ready,
         secure_input_blocked: secure.blocked,
@@ -3561,8 +3603,19 @@ fn save_settings(
         "both" | "fn_or_fn_control" => "fn / fn⌃".into(),
         _ => "fn⌃".into(),
     };
+    let dictate_changed = state.settings.lock().dictate_toggle != next.dictate_toggle;
+    if dictate_changed {
+        // Validate BEFORE persisting: a refused rebind is an error the
+        // Settings capture shows, never a silently dead chord.
+        if let Some(c) = next.dictate_toggle.as_ref() {
+            hotkeys::chord_from_setting(c)?;
+        }
+    }
     *state.settings.lock() = next.clone();
     persist_settings(&next)?;
+    if dictate_changed && smoke::global_hotkeys_allowed() {
+        rebind_dictate_toggle(&app, &next);
+    }
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
@@ -5268,6 +5321,225 @@ fn manual_toggle_inner(app: AppHandle, state: State<'_, Arc<AppState>>) {
     }
 }
 
+/// yap-p0-hotkeys-no-permission DO 2 — THE dispatcher for every hotkey edge.
+/// The Carbon dictate chord (and the legacy ⌘⇧V) and the fn tap's
+/// `PttEvent::Start` / `PttEvent::Stop` all land here; `hotkeys::HotkeyArbiter`
+/// decides start / stop / ignore, so the two sources can never double-start
+/// and there is no second start/stop path.
+fn take_hotkey_edge(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    edge: HotkeyEdge,
+    source: HotkeySource,
+) {
+    let live = *state.recording.lock();
+    let action = state
+        .hotkey_arbiter
+        .lock()
+        .edge(edge, source, live, hotkeys::now_ms());
+    log::info!("hotkey edge {edge:?} from {source:?} -> {action:?}");
+    match action {
+        hotkeys::TakeAction::Start => start_from_hotkey(app, state, source),
+        hotkeys::TakeAction::Stop => stop_take(app, state, StopOrigin::Hotkey),
+        hotkeys::TakeAction::Ignore => {}
+    }
+}
+
+/// The start half of `take_hotkey_edge`. YV49: an fn press that carried the
+/// command modifier EDITS the current selection instead of typing — read at
+/// press time, because by the time ASR returns focus and selection may both
+/// have moved. No selection → nothing to edit, so the take never starts.
+fn start_from_hotkey(app: &AppHandle, state: &Arc<AppState>, source: HotkeySource) {
+    #[cfg(target_os = "macos")]
+    if source == HotkeySource::FnTap && ptt_macos::command_mode_active() {
+        match focus::selected_text() {
+            Some(selection) => {
+                *state.command_selection.lock() = Some(selection);
+                start_recording(app, state);
+            }
+            None => {
+                *state.command_selection.lock() = None;
+                log::info!("command mode: no selection — take not started");
+                let _ = app.emit(PASTE_OUTCOME_EVENT, command_mode::NO_SELECTION_MESSAGE);
+            }
+        }
+        return;
+    }
+    let _ = source;
+    *state.command_selection.lock() = None;
+    start_recording(app, state);
+}
+
+/// Swap the registered dictate chord for the Settings rebind, live. The new
+/// register result is the Carbon status — a chord another app holds reads
+/// Failed, never Registered.
+fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) {
+    let (old, _) = hotkeys::active_dictate();
+    if app.global_shortcut().is_registered(old) {
+        if let Err(e) = app.global_shortcut().unregister(old) {
+            log::warn!("dictate toggle unregister failed: {e}");
+        }
+    }
+    let (chord, label) = dictate_toggle_chord(settings);
+    hotkeys::set_active_dictate(chord, label);
+    let r = hotkeys::CarbonRegistrar::register(&mut TauriCarbonRegistrar { app }, chord);
+    hotkeys::set_carbon_status(hotkeys::CarbonStatus::from_result(&r));
+}
+
+/// The registered dictate chord: the Settings rebind when it is valid, else
+/// `shortcuts::DICTATE_TOGGLE`.
+fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
+    if let Some(c) = settings.dictate_toggle.as_ref() {
+        match hotkeys::chord_from_setting(c) {
+            Ok(v) => return v,
+            Err(e) => log::warn!("dictate toggle rebind ignored ({e}) — using the default"),
+        }
+    }
+    (
+        shortcuts::DICTATE_TOGGLE.shortcut(),
+        shortcuts::DICTATE_TOGGLE.label.to_string(),
+    )
+}
+
+/// The real Carbon registrar: the global-shortcut plugin (RegisterEventHotKey).
+/// Every DICTATE_TOGGLE register result goes to `hotkeys::set_carbon_status`
+/// through `AppHotkeySink`.
+struct TauriCarbonRegistrar<'a> {
+    app: &'a AppHandle,
+}
+
+impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
+    fn register(&mut self, chord: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
+        let r = if chord == shortcuts::DICTATE_TOGGLE.shortcut() {
+            self.app.global_shortcut().register(shortcuts::DICTATE_TOGGLE.shortcut())
+        } else {
+            self.app.global_shortcut().register(chord)
+        };
+        match &r {
+            Ok(()) => log::info!("{} dictate-toggle registered (carbon)", hotkeys::active_dictate().1),
+            Err(e) => log::warn!("{} dictate-toggle register failed: {e}", hotkeys::active_dictate().1),
+        }
+        r.map_err(|e| e.to_string())
+    }
+}
+
+/// The real TCC probe (informational: it never gates the tap).
+struct OsPermissionProbe;
+
+impl hotkeys::PermissionProbe for OsPermissionProbe {
+    fn accessibility(&self) -> bool {
+        permissions::is_accessibility_trusted()
+    }
+    fn input_monitoring(&self) -> bool {
+        matches!(
+            permissions::input_monitoring_state(
+                permissions::input_monitoring_hid(),
+                permissions::is_accessibility_trusted(),
+                matches!(hotkeys::status().fn_tap, hotkeys::FnTapStatus::Delivering),
+            ),
+            permissions::GrantState::Authorized
+        )
+    }
+}
+
+/// The real tap source: `ptt_macos::start`, whose tap thread reports its own
+/// install result through `set_fn_tap_status`.
+struct FnTapSource<'a> {
+    app: &'a AppHandle,
+    state: &'a Arc<AppState>,
+}
+
+impl hotkeys::TapEventSource for FnTapSource<'_> {
+fn install(&mut self) -> Result<hotkeys::TapAttempt, String> {
+    #[cfg(target_os = "macos")]
+    {
+        start_fn_tap(self.app, self.state);
+        Ok(hotkeys::TapAttempt::Dispatched)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (self.app, self.state);
+        Err("fn tap is macOS-only".into())
+    }
+}
+}
+
+/// Writes arming results into the process-wide hotkey status.
+struct AppHotkeySink;
+
+impl hotkeys::StatusSink for AppHotkeySink {
+fn carbon(&mut self, s: hotkeys::CarbonStatus) {
+    hotkeys::set_carbon_status(s);
+}
+fn fn_tap(&mut self, s: hotkeys::FnTapStatus) {
+    hotkeys::set_fn_tap_status(s);
+}
+fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
+    hotkeys::status().fn_tap
+}
+}
+
+/// Start (or retry) the fn⌃ hybrid tap. Safe to call again: `ptt_macos::start`
+/// only rebinds while a tap is running, and re-spawns after a failed install.
+#[cfg(target_os = "macos")]
+fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
+    let binding = ptt_macos::PttBinding::from_settings(
+        &state.settings.lock().ptt_binding,
+    );
+    let command_binding = ptt_macos::CommandBinding::from_settings(
+        &state.settings.lock().command_binding,
+    );
+    let st = state.clone();
+    let h = app.clone();
+    ptt_macos::start(
+        binding,
+        command_binding,
+        Arc::new(move |ev| {
+            let st = st.clone();
+            let h = h.clone();
+            if let Err(e) = h.clone().run_on_main_thread(move || match ev {
+                ptt_macos::PttEvent::Start => {
+                    take_hotkey_edge(&h, &st, HotkeyEdge::Press, HotkeySource::FnTap);
+                }
+                ptt_macos::PttEvent::Stop => {
+                    take_hotkey_edge(&h, &st, HotkeyEdge::Release, HotkeySource::FnTap);
+                }
+                ptt_macos::PttEvent::StillRecording => {
+                        // yap-hotkey-stop DO 4: the status event carries
+                        // `still_recording`; the pill swaps its line.
+                        emit_status(&h, &st);
+                        float_pill::show_for_recording(&h);
+                        log::warn!(
+                            "take still recording — pill asks for fn or stop"
+                        );
+                    }
+                    ptt_macos::PttEvent::Interrupted => {
+                        *st.hands_free.lock() = false;
+                        cancel_recording(&h, &st);
+                    }
+                    ptt_macos::PttEvent::HandsFreeOn => {
+                        *st.hands_free.lock() = true;
+                        emit_status(&h, &st);
+                        float_pill::show_for_recording(&h);
+                        log::info!("hands-free ON");
+                    }
+                    ptt_macos::PttEvent::HandsFreeOff => {
+                        *st.hands_free.lock() = false;
+                        emit_status(&h, &st);
+                        log::info!("hands-free OFF");
+                    }
+                }) {
+                    log::error!("PTT main-thread hop failed: {e}");
+                }
+            }),
+        );
+        log::info!(
+            "PTT hybrid started ({} · command mode {})",
+            binding.label(),
+            command_binding.label()
+        );
+}
+
 /// yap-hotkey-stop DO 5 — THE stop for a live dictation. The hotkey (fn
 /// key-up / fn tap), the pill's stop control (`manual_toggle`) and the menu
 /// bar's Stop + Hands-free items all end the take HERE, so all of them clear
@@ -6110,7 +6382,7 @@ pub fn run() {
         saved_audio: PLMutex::new(None),
         db,
         last_error: PLMutex::new(None),
-        hotkey_registered: PLMutex::new(false),
+        hotkey_arbiter: PLMutex::new(hotkeys::HotkeyArbiter::new()),
         tray: PLMutex::new(None),
         tray_dictation: PLMutex::new(None),
         tray_hands_free: PLMutex::new(None),
@@ -6295,6 +6567,18 @@ pub fn run() {
                 .with_handler({
                     let state = state.clone();
                     move |app, shortcut, event| {
+                        // yap-p0-hotkeys-no-permission — the zero-TCC dictate
+                        // chord (default ⌃⌥⌘Space, rebindable). Press and
+                        // release both go to the ONE dispatcher.
+                        if shortcut == &hotkeys::active_dictate().0 {
+                            let edge = if event.state == ShortcutState::Pressed {
+                                HotkeyEdge::Press
+                            } else {
+                                HotkeyEdge::Release
+                            };
+                            take_hotkey_edge(app, &state, edge, HotkeySource::Carbon);
+                            return;
+                        }
                         // YV95 ⌃⌘M — start/stop a meeting. A TOGGLE on
                         // key-down, not a hold: a meeting lasts an hour, and the
                         // dictation-hold gesture is the one thing finding #6
@@ -6360,13 +6644,15 @@ pub fn run() {
                             return;
                         }
                         log::debug!("shortcut event {shortcut:?} {:?}", event.state);
-                        if event.state == ShortcutState::Pressed {
-                            log::info!("⌘⇧V pressed — start");
-                            start_recording(app, &state);
-                        } else if event.state == ShortcutState::Released {
-                            log::info!("⌘⇧V released — stop");
-                            stop_and_transcribe(app.clone(), state.clone());
-                        }
+                        // ⌘⇧V is a Carbon chord too: same dispatcher, so a
+                        // held ⌘⇧V is hold-to-talk and there is no second
+                        // start/stop path.
+                        let edge = if event.state == ShortcutState::Pressed {
+                            HotkeyEdge::Press
+                        } else {
+                            HotkeyEdge::Release
+                        };
+                        take_hotkey_edge(app, &state, edge, HotkeySource::Carbon);
                     }
                 })
                 .build(),
@@ -6572,6 +6858,7 @@ pub fn run() {
             {
                 let read_state = state.clone();
                 let emit_app = app.handle().clone();
+                let tap_state = state.clone();
                 permissions::start_watch(
                     move || {
                         let native = read_state.settings.lock().native_model.clone();
@@ -6581,6 +6868,20 @@ pub fn run() {
                         ))
                     },
                     move |snapshot| {
+                        // yap-p0-hotkeys-no-permission DO 3: every permission
+                        // edge re-attempts a tap that failed to install — a
+                        // grant arriving later arms fn without a restart.
+                        if smoke::global_hotkeys_allowed() {
+                            let h = emit_app.clone();
+                            let st = tap_state.clone();
+                            let _ = emit_app.run_on_main_thread(move || {
+                                hotkeys::attempt_tap(
+                                    &OsPermissionProbe,
+                                    &mut FnTapSource { app: &h, state: &st },
+                                    &mut AppHotkeySink,
+                                );
+                            });
+                        }
                         if let Err(e) =
                             emit_app.emit(permissions::PERMISSION_CHANGED_EVENT, snapshot)
                         {
@@ -6907,91 +7208,22 @@ pub fn run() {
                 permissions::poke(permissions::WatchReason::Refusal);
             }
 
-            // Primary: fn⌃ hybrid (hold PTT / double-tap hands-free)
-            #[cfg(target_os = "macos")]
+            // The fn⌃ hybrid tap (hold PTT / double-tap hands-free) is no longer
+            // started here: yap-p0-hotkeys-no-permission arms it together with
+            // the Carbon dictate chord in the registration block below
+            // (`hotkeys::arm_at_launch`), and re-attempts it on every
+            // permission-watch edge.
+
+            // yap-p0-hotkeys-no-permission: either hotkey half changing re-emits
+            // `status`, off the caller's thread (the tap callback is one caller).
             {
-                let binding = ptt_macos::PttBinding::from_settings(
-                    &state.settings.lock().ptt_binding,
-                );
-                let command_binding = ptt_macos::CommandBinding::from_settings(
-                    &state.settings.lock().command_binding,
-                );
                 let st = state.clone();
                 let h = app.handle().clone();
-                ptt_macos::start(
-                    binding,
-                    command_binding,
-                    Arc::new(move |ev| {
-                        let st = st.clone();
-                        let h = h.clone();
-                        if let Err(e) = h.clone().run_on_main_thread(move || match ev {
-                            ptt_macos::PttEvent::Start => {
-                                // YV49: a press that carried the command modifier
-                                // EDITS the current selection instead of typing.
-                                // Read the selection here, at press time — by the
-                                // time ASR returns, focus and selection may both
-                                // have moved. No selection → nothing to edit, so
-                                // the take never starts (just a toast).
-                                if ptt_macos::command_mode_active() {
-                                    match focus::selected_text() {
-                                        Some(selection) => {
-                                            *st.command_selection.lock() = Some(selection);
-                                            start_recording(&h, &st);
-                                        }
-                                        None => {
-                                            *st.command_selection.lock() = None;
-                                            log::info!(
-                                                "command mode: no selection — take not started"
-                                            );
-                                            let _ = h.emit(
-                                                PASTE_OUTCOME_EVENT,
-                                                command_mode::NO_SELECTION_MESSAGE,
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    *st.command_selection.lock() = None;
-                                    start_recording(&h, &st);
-                                }
-                            }
-                            ptt_macos::PttEvent::Stop => {
-                                stop_take(&h, &st, StopOrigin::Hotkey);
-                            }
-                            ptt_macos::PttEvent::StillRecording => {
-                                // yap-hotkey-stop DO 4: the status event carries
-                                // `still_recording`; the pill swaps its line.
-                                emit_status(&h, &st);
-                                float_pill::show_for_recording(&h);
-                                log::warn!(
-                                    "take still recording — pill asks for fn or stop"
-                                );
-                            }
-                            ptt_macos::PttEvent::Interrupted => {
-                                *st.hands_free.lock() = false;
-                                cancel_recording(&h, &st);
-                            }
-                            ptt_macos::PttEvent::HandsFreeOn => {
-                                *st.hands_free.lock() = true;
-                                emit_status(&h, &st);
-                                float_pill::show_for_recording(&h);
-                                log::info!("hands-free ON");
-                            }
-                            ptt_macos::PttEvent::HandsFreeOff => {
-                                *st.hands_free.lock() = false;
-                                emit_status(&h, &st);
-                                log::info!("hands-free OFF");
-                            }
-                        }) {
-                            log::error!("PTT main-thread hop failed: {e}");
-                        }
-                    }),
-                );
-                *state.hotkey_registered.lock() = true;
-                log::info!(
-                    "PTT hybrid started ({} · command mode {})",
-                    binding.label(),
-                    command_binding.label()
-                );
+                hotkeys::on_status_change(move || {
+                    let st = st.clone();
+                    let h = h.clone();
+                    std::thread::spawn(move || emit_status(&h, &st));
+                });
             }
 
             // YV43: watch for the one condition that kills the tap above without
@@ -7027,6 +7259,21 @@ pub fn run() {
                         log::warn!("{}", smoke::HOTKEY_REFUSAL);
                         emit_status(&h, &st);
                         return;
+                    }
+                    // yap-p0-hotkeys-no-permission DO 1/3: the dictate chord is
+                    // registered UNCONDITIONALLY (Carbon: no TCC grant needed)
+                    // and the fn tap is ALWAYS attempted, never gated on the
+                    // probe. Both report their real result.
+                    {
+                        let (chord, label) = dictate_toggle_chord(&st.settings.lock());
+                        hotkeys::set_active_dictate(chord, label);
+                        hotkeys::arm_at_launch(
+                            chord,
+                            &mut TauriCarbonRegistrar { app: &h },
+                            &OsPermissionProbe,
+                            &mut FnTapSource { app: &h, state: &st },
+                            &mut AppHotkeySink,
+                        );
                     }
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
@@ -8287,7 +8534,7 @@ mod tests {
             saved_audio: super::PLMutex::new(None),
             db,
             last_error: super::PLMutex::new(None),
-            hotkey_registered: super::PLMutex::new(false),
+            hotkey_arbiter: super::PLMutex::new(super::hotkeys::HotkeyArbiter::new()),
             tray: super::PLMutex::new(None),
             tray_dictation: super::PLMutex::new(None),
             tray_hands_free: super::PLMutex::new(None),

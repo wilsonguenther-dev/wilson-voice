@@ -1,0 +1,11 @@
+[2026-10-17T09:12:28Z INFO  wilson_voice_lib] ⌃⌥⌘Space dictate-toggle registered (carbon)
+[2026-10-17T09:12:28Z INFO  wilson_voice_lib::hotkeys] hotkeys: fn tap → Blocked("macOS refused the key listener (Input Monitoring is off for Yap)")
+[2026-10-17T09:12:31Z INFO  wilson_voice_lib] hotkey edge Press from Carbon -> Start
+[2026-10-17T09:12:31Z INFO  wilson_voice_lib] esc cancel registered for this take
+[2026-10-17T09:12:31Z INFO  wilson_voice_lib::record] capture armed: press→capture_start=81ms (arm_wait=81ms)
+[2026-10-17T09:12:31Z INFO  wilson_voice_lib] recording started
+[2026-10-17T09:12:31Z INFO  wilson_voice_lib] hotkey edge Release from Carbon -> Ignore
+[2026-10-17T09:12:33Z INFO  wilson_voice_lib] hotkey edge Press from Carbon -> Stop
+[2026-10-17T09:12:33Z INFO  wilson_voice_lib::ptt_macos] take stop via hotkey
+[2026-10-17T09:12:33Z INFO  wilson_voice_lib] hotkey edge Release from Carbon -> Ignore
+[2026-10-17T09:12:34Z INFO  wilson_voice_lib] no-speech gate: voiced=0.00s speech_present=false below threshold — skipping ASR

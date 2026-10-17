@@ -11,6 +11,12 @@
 #![cfg(target_os = "macos")]
 
 use parking_lot::Mutex;
+
+use crate::hotkeys::{set_fn_tap_status, FnTapStatus};
+
+/// The human reason a failed `CGEventTapCreate` carries into the degraded line.
+pub const TAP_BLOCKED_REASON: &str =
+    "macOS refused the key listener (Input Monitoring is off for Yap)";
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -858,11 +864,16 @@ fn run_tap(state: Arc<TapState>) {
     unsafe {
         if let Err(e) = install_tap(user_info) {
             log::error!("FN PTT: {e}");
+            // yap-p0-hotkeys-no-permission: attempted, nothing delivered. The
+            // next permission-watch edge retries (RUNNING is cleared below).
+            set_fn_tap_status(FnTapStatus::Blocked(TAP_BLOCKED_REASON.into()));
             RUNNING.store(false, Ordering::SeqCst);
             TAP_USER_INFO.store(std::ptr::null_mut(), Ordering::SeqCst);
             let _ = Arc::from_raw(user_info as *const TapState);
             return;
         }
+        FIRST_EDGE_REPORTED.store(false, Ordering::SeqCst);
+        set_fn_tap_status(FnTapStatus::ArmedNoDelivery);
         log::info!("FN PTT hybrid tap running (fn⌃ hold / double-tap hands-free)");
         ffi::CFRunLoopRun();
     }
@@ -1057,7 +1068,15 @@ static EDGES_SINCE_RE_ARM: AtomicU64 = AtomicU64::new(0);
 /// Count one key or flags edge. Called from `tap_callback` only.
 pub fn note_tap_edge() {
     EDGES_SINCE_RE_ARM.fetch_add(1, Ordering::Relaxed);
+    // yap-p0-hotkeys-no-permission: "Delivering" needs a delivered edge. One
+    // atomic swap per event; the status write runs once per install.
+    if !FIRST_EDGE_REPORTED.swap(true, Ordering::Relaxed) {
+        set_fn_tap_status(FnTapStatus::Delivering);
+    }
 }
+
+/// The first delivered edge since this tap was installed has been reported.
+static FIRST_EDGE_REPORTED: AtomicBool = AtomicBool::new(false);
 
 static TAP_HEALTH: Mutex<TapHealth> = Mutex::new(TapHealth {
     re_arms: 0,
@@ -1256,6 +1275,8 @@ unsafe fn recreate_tap(user_info: *mut std::ffi::c_void) -> bool {
     match install_tap(user_info) {
         Ok(tap) => {
             TAPS_RECREATED.fetch_add(1, Ordering::SeqCst);
+            FIRST_EDGE_REPORTED.store(false, Ordering::SeqCst);
+            set_fn_tap_status(FnTapStatus::ArmedNoDelivery);
             log::warn!(
                 "FN PTT: tap recreated on the same run loop ({RECREATE_AFTER_DISABLES} disables in {} s) — old port invalidated",
                 RECREATE_WINDOW_MS / 1000
@@ -1265,6 +1286,7 @@ unsafe fn recreate_tap(user_info: *mut std::ffi::c_void) -> bool {
         }
         Err(e) => {
             log::error!("FN PTT: tap recreate FAILED: {e}");
+            set_fn_tap_status(FnTapStatus::Blocked(TAP_BLOCKED_REASON.into()));
             false
         }
     }
