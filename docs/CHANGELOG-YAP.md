@@ -1,5 +1,14 @@
 # Yap Changelog
 
+## v0.9.1
+
+- **The hotkey that started a take stops it.** Releasing fn ends the take from any app, a tap macOS disabled is re-armed within 100 ms, a second HID-state check backs it up, and a take still recording after 90 seconds asks whether you meant it.
+- **The permission banner is about this copy of Yap.** It re-checks on activation and every five seconds while shown, names the exact condition that is failing and the app path it checked, and points out a duplicate copy of Yap that is holding the grants instead.
+- **Formatting understands structure.** Spoken enumerations become lists, a topic followed by a verdict becomes a "Topic: verdict" line, and a change of subject starts a new paragraph, shaped for the app you paste into.
+- **A crash or quit mid-take loses nothing.** A long take resumes or is offered back on the next launch, and finishing a take whose remainder failed to decode no longer drops that audio silently.
+- **Every screen has a real empty, loading and error state,** the views share one set of colours, spacing and radii, and the pill moves with a spring that respects Reduce Motion.
+- **Updates ask two places.** The updater checks Yap's own site first and GitHub second and takes the newest, so an update offered is also an update that installs.
+
 ## v0.9.0
 
 - **Meetings.** Yap can now record a meeting as two tracks, your microphone and the Mac's system audio, through a CoreAudio process tap (macOS 14.4 and later), and turn it into one time-ordered transcript. Meetings get their own screen, full-text search, a Markdown export and a delete that removes everything a meeting owns. Start and stop from the tray, from the pill, or with ⌃⌘M. Capture keeps a fixed memory ceiling, survives an AirPods swap or a device change mid-meeting, and is transcribed in timed chunks that dictation can interrupt and that resume after a crash.
