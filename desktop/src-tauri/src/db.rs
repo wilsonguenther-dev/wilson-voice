@@ -2243,7 +2243,9 @@ impl Database {
     /// PR #216 re-review — a retry of row `id` failed: store the error the user
     /// saw (so the row's reason is the CURRENT one, not the original) and,
     /// when it transcribed anything, those words. `attempt_text = None` keeps
-    /// whatever an earlier attempt stored. A row that is gone is a no-op.
+    /// whatever an earlier attempt stored, and a SHORTER text never replaces a
+    /// longer one (a later, worse attempt must not shrink the words the row
+    /// showed and "Keep" would save). A row that is gone is a no-op.
     pub fn note_failed_retry(
         &self,
         id: &str,
@@ -2253,7 +2255,12 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE failed_dictations
-             SET error = ?2, attempt_text = COALESCE(?3, attempt_text)
+             SET error = ?2,
+                 attempt_text = CASE
+                   WHEN ?3 IS NULL THEN attempt_text
+                   WHEN attempt_text IS NULL OR length(?3) >= length(attempt_text) THEN ?3
+                   ELSE attempt_text
+                 END
              WHERE id = ?1",
             params![id, error, attempt_text],
         )

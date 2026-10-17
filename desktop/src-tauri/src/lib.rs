@@ -3908,8 +3908,17 @@ fn decode_failed_take(
         match finish_recovered_decode(partial_text, resume_sample, samples, decode) {
             Ok(done) => done,
             Err(e) => {
-                // The recovered words are still the words so far.
-                let _ = db.note_failed_retry(&row.id, &e, prefix.as_deref());
+                // The recovered words are the words so far — but only when no
+                // earlier attempt got further. An attempt that fails on every
+                // window must never shrink what an earlier one saved and showed
+                // (rr1 re-review of 99e577b: "Keep" would then save less and
+                // delete the clip). `note_failed_retry` also refuses to shrink.
+                let so_far = if row.attempt_text.is_some() {
+                    None
+                } else {
+                    prefix.as_deref()
+                };
+                let _ = db.note_failed_retry(&row.id, &e, so_far);
                 return Err(e);
             }
         };
@@ -3923,6 +3932,29 @@ fn decode_failed_take(
         return Err(e);
     }
     Ok((raw_text, asr))
+}
+
+/// YV52 — the success half of a retry: the row converts into a history entry,
+/// then the clip and the take's chunk text go. The ONLY place a retry deletes
+/// a recovery wav, so a test can prove a failed decode never reaches it.
+fn convert_and_drop_clip(
+    db: &db::Database,
+    row: &db::FailedDictation,
+    wav: &Path,
+    text: String,
+    asr: transcription::AsrOutput,
+    raw_text: Option<String>,
+) -> Result<TranscriptEntry, String> {
+    let entry = db.convert_failed_dictation(&row.id, text, asr.backend, asr.seconds, raw_text)?;
+    // The take's audio now follows the normal lifecycle: it is gone. Its
+    // partial text goes with it — the words live in `transcripts` now, and a
+    // `take_chunks` row nothing points at is transcript text that would sit in
+    // the DB until the retention sweep found it.
+    if let Some(take_id) = row.take_id.as_deref() {
+        let _ = db.clear_take_chunks(take_id);
+    }
+    let _ = std::fs::remove_file(wav);
+    Ok(entry)
 }
 
 /// YV52 — re-run ASR on a failed take's preserved clip. The common cause of the
@@ -4088,21 +4120,8 @@ fn retry_failed_dictation(
             },
             |t| polish::polish_llm(t, mode, &polish_config).ok_or("unknown"),
         );
-        let entry = state.db.convert_failed_dictation(
-            &id,
-            text.clone(),
-            asr.backend,
-            asr.seconds,
-            Some(raw_text),
-        )?;
-        // The take's audio now follows the normal lifecycle: it is gone. Its
-        // partial text goes with it — the words live in `transcripts` now, and a
-        // `take_chunks` row nothing points at is transcript text that would sit in
-        // the DB until the retention sweep found it.
-        if let Some(take_id) = row.take_id.as_deref() {
-            let _ = state.db.clear_take_chunks(take_id);
-        }
-        let _ = std::fs::remove_file(&wav);
+        let entry =
+            convert_and_drop_clip(&state.db, &row, &wav, text.clone(), asr, Some(raw_text))?;
         let outcome = paste::copy_and_maybe_paste(&app, &text, false, None);
         log::info!(
             "YV52 recovery: retry succeeded words={} ({})",
@@ -8572,30 +8591,18 @@ mod tests {
         let clip = vec![0.1f32; resume + remainder];
         let db = crate::db::Database::open_in_memory().unwrap();
 
-        for (case, take_id, want_so_far) in [
-            ("resume", Some("take-1"), "w1 w2 w3"),
-            ("whole clip", None, "w3"),
-        ] {
-            calls.store(0, Ordering::SeqCst);
-            let wav = dir.join(format!("{case}.wav"));
-            std::fs::write(&wav, b"RIFF stand-in").unwrap();
-            if let Some(t) = take_id {
-                db.record_take_chunk(t, 0, "w1 w2", resume as i64).unwrap();
-            }
-            let row = db
-                .record_failed_dictation_for_take(
-                    &wav,
-                    120.0,
-                    "Yap quit before this take finished",
-                    None,
-                    take_id.map(str::to_string),
-                )
-                .unwrap();
-            let resume_sample = match take_id {
+        // One "Finish transcribing" exactly as the command runs it: read the
+        // row, decode, and on `Ok` convert and delete the clip. `first_ok`:
+        // window 1 decodes to "w3"; otherwise every window fails.
+        let attempt = |id: &str, first_ok: bool| {
+            calls.store(usize::from(!first_ok), Ordering::SeqCst);
+            let row = db.get_failed_dictation(id).unwrap().expect("row");
+            let resume_sample = match row.take_id.as_deref() {
                 Some(t) => db.take_resume_sample(t),
                 None => Ok(0),
             };
-            let r = super::decode_failed_take(
+            let wav = std::path::PathBuf::from(&row.wav_path);
+            super::decode_failed_take(
                 &db,
                 &row,
                 row.partial_text.clone(),
@@ -8612,36 +8619,78 @@ mod tests {
                         &mut crate::transcribe_progress::NoObserver,
                     )
                 },
-            );
-            let Err(err) = r else {
-                panic!("{case}: a failed window must not convert the row")
-            };
-            assert!(
-                calls.load(Ordering::SeqCst) >= 3,
-                "{case}: windowed loop ran"
-            );
-            let kept = db
-                .get_failed_dictation(&row.id)
-                .unwrap()
-                .unwrap_or_else(|| panic!("{case}: the row must survive"));
-            assert_eq!(kept.error, err, "{case}: the row shows the current error");
-            assert_eq!(kept.attempt_text.as_deref(), Some(want_so_far), "{case}");
-            assert_eq!(
-                kept.partial_text, row.partial_text,
-                "{case}: resume state untouched"
-            );
-            assert!(wav.exists(), "{case}: the clip must survive");
+            )
+            .and_then(|(raw, asr)| {
+                super::convert_and_drop_clip(&db, &row, &wav, raw.clone(), asr, Some(raw))
+            })
+        };
+
+        for (case, take_id, want_so_far) in [
+            ("resume", Some("take-1"), "w1 w2 w3"),
+            ("whole clip", None, "w3"),
+        ] {
+            let wav = dir.join(format!("{case}.wav"));
+            std::fs::write(&wav, b"RIFF stand-in").unwrap();
+            if let Some(t) = take_id {
+                db.record_take_chunk(t, 0, "w1 w2", resume as i64).unwrap();
+            }
+            let row = db
+                .record_failed_dictation_for_take(
+                    &wav,
+                    120.0,
+                    "Yap quit before this take finished",
+                    None,
+                    take_id.map(str::to_string),
+                )
+                .unwrap();
+            // Attempt 1: w3 decodes, the later windows fail. Attempt 2: every
+            // window fails (rr1 re-review of 99e577b: it used to shrink the
+            // saved words back to the recovered prefix).
+            for (n, first_ok) in [(1, true), (2, false)] {
+                let r = attempt(&row.id, first_ok);
+                assert!(
+                    r.is_err(),
+                    "{case} attempt {n}: a failed window must not convert"
+                );
+                let err = r.unwrap_err();
+                assert!(
+                    calls.load(Ordering::SeqCst) >= 3,
+                    "{case} attempt {n}: windowed loop ran"
+                );
+                let kept = db
+                    .get_failed_dictation(&row.id)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{case} attempt {n}: the row must survive"));
+                assert_eq!(
+                    kept.error, err,
+                    "{case} attempt {n}: current error on the row"
+                );
+                assert_eq!(
+                    kept.attempt_text.as_deref(),
+                    Some(want_so_far),
+                    "{case} attempt {n}: the words so far never shrink"
+                );
+                assert_eq!(
+                    kept.partial_text, row.partial_text,
+                    "{case} attempt {n}: resume state untouched"
+                );
+                assert!(wav.exists(), "{case} attempt {n}: the clip must survive");
+            }
         }
-        // Every window decoded: the retry may convert.
+        // Every window decodes: the same pipeline converts the row and DOES
+        // delete the clip — so the "clip must survive" checks above can fail.
         let wav = dir.join("clean.wav");
         std::fs::write(&wav, b"RIFF stand-in").unwrap();
         let row = db
             .record_failed_dictation_for_take(&wav, 1.0, "x", None, None)
             .unwrap();
-        let (text, _) =
+        let (text, asr) =
             super::decode_failed_take(&db, &row, None, Ok(0), &db_b_clip(2, 0), db_b_fake_decode)
                 .unwrap();
         assert_eq!(text, "w1 w2");
+        super::convert_and_drop_clip(&db, &row, &wav, text.clone(), asr, Some(text)).unwrap();
+        assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
+        assert!(!wav.exists(), "a clean retry deletes the clip");
         std::fs::remove_dir_all(&dir).ok();
     }
 
