@@ -32,6 +32,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { stampSeatModels } from './seat-models.mjs'
+import { promptUnits, promptGateProblems, securityClassOf, GATE_NEEDLE, REVIEW_SEATS } from './review-gate.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 /**
@@ -45,7 +46,8 @@ const flag = (name) => {
   return at >= 0 && argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : null
 }
 const VALIDATE_ONLY = argv.includes('--validate-only')
-const TEMPLATE = path.join(ROOT, 'scripts/loop/template.mjs')
+// --template: validate a COPY of the template (review-gate.test.mjs case (i) injects a violation into one)
+const TEMPLATE = flag('template') ? path.resolve(flag('template')) : path.join(ROOT, 'scripts/loop/template.mjs')
 const ITEMS_DIR = flag('items') ? path.resolve(flag('items')) : path.join(ROOT, 'scripts/loop/items')
 const GEN_DIR = flag('gen') ? path.resolve(flag('gen')) : path.join(ROOT, 'scripts/loop/generated')
 const PARENT_OUT = flag('parent') ? path.resolve(flag('parent')) : path.join(ROOT, 'scripts/cicd-loop-all.mjs')
@@ -156,6 +158,17 @@ const PART_LINE = /^const PART = '[^']*'/m
   for (const needle of ['cargo test --features custom-protocol', 'cargo build -p yap-polish --release', 'npx tsc --noEmit']) {
     if (!template.includes(needle))
       fail(`the gate is missing \`${needle}\` — this is Yap's gate, not the sibling project's web gate`)
+  }
+  // THE REVIEW GATE IS HARNESS-SECURITY. A PR that edits it needs two different reviewer seats to PASS its head,
+  // in the triage prompt's classification AND in the gate's own (the gate is the enforcement).
+  {
+    const sp = template.match(/^const SECURITY_PATHS =\s*\n?\s*'([^']*)'/m)
+    if (!sp || !sp[1].includes('scripts/loop/review-gate.mjs'))
+      fail(`template SECURITY_PATHS must name scripts/loop/review-gate.mjs — a PR that weakens the land gate is a security PR`)
+    if (!securityClassOf({ files: ['scripts/loop/review-gate.mjs'] }).security)
+      fail(`review-gate.mjs SECURITY_PATHS must classify scripts/loop/review-gate.mjs as security`)
+    if (!/^const REVIEW_GATE_STEP = `/m.test(template) || !/^const REVIEW_RECORD = \(seat, pr, lens\) => `/m.test(template))
+      fail(`template must declare REVIEW_GATE_STEP (every merge path) and REVIEW_RECORD (reviewer seats only) once each`)
   }
   if (!template.includes('Local gate (CI unavailable)'))
     fail(`template must pin the PR-comment title "Local gate (CI unavailable)" — Reflect counts local-gate merges by that exact string`)
@@ -675,6 +688,22 @@ function validateScript(label, generated, items) {
       for (const item of items) if (!titles.has(item.id)) bad(`phase(item.id) would emit "${item.id}", which is not in meta.phases`)
     } else {
       bad(`phase(${arg}) at line ${line} is neither a string literal nor item.id — the validator cannot prove it is declared`)
+    }
+  }
+  // 5g. THE REVIEW-GATE PROMPT CONTRACT (yap-land-gate-pass-required). Every prompt that can merge runs
+  //     `review-gate.mjs gate` and binds the merge with --match-head-commit; ONLY the reviewer seats
+  //     (review-opus, review-opus2) are handed `review-gate.mjs record`. TRUST LIMIT: every seat posts as one
+  //     GitHub account, so this prompt-level restriction — not the gate — is what keeps a fixer from writing a
+  //     reviewer's PASS; the gate cannot authenticate which seat wrote a record.
+  if (items.length) {
+    const units = promptUnits(generated)
+    for (const p of promptGateProblems(units)) bad(p)
+    for (const seat of ['build', 'fix-land', 'land-sweeper', 'drain']) {
+      if (!units.some((u) => u.seat === seat && u.text.includes(GATE_NEEDLE)))
+        bad(`no ${seat} prompt runs "${GATE_NEEDLE}" — ${seat} is a merge path and must run the review gate before gh pr merge`)
+    }
+    for (const seat of REVIEW_SEATS) {
+      if (!units.some((u) => u.seat === seat)) bad(`no ${seat} dispatch found — the static prompt reader lost a reviewer seat`)
     }
   }
   // 5f. THE CAP THAT FORCED THE SPLIT

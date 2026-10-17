@@ -86,7 +86,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 56 items (yap-qa-harness..Y5-K), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 46 items (yap-qa-harness..SEC-B), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "yap-qa-harness", detail: "Real permission + hotkey QA tools: scripts/qa/perm-probe.sh (signature, duplicates, LaunchServices, a labelled helper probe) and scripts/qa/hotkey-walk.sh (a real fn take on the installed Yap)" },
@@ -135,16 +135,6 @@ export const meta = {
     { title: "Y2-E", detail: "The menu-bar item says the same thing as the pill and the settings card, from one source" },
     { title: "DB-A", detail: "Usage metering and a \"limit reached\" surface — the numbers are Wilson's call" },
     { title: "SEC-B", detail: "The trial state machine gets the adversarial tests its own doc comment promises" },
-    { title: "Y5-G", detail: "Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all" },
-    { title: "Y5-A", detail: "A token layer so the seven views stop each inventing their own colours, spacing and radii" },
-    { title: "Y5-B", detail: "The \"looks broken\" fix: all seven views get a real empty state, a real loading state and a real error state" },
-    { title: "Y5-C", detail: "The pill gets every state the product has, including the transcribe/think gap Wilson named" },
-    { title: "Y5-D", detail: "Soft-body pill motion using Wispr's measured spring constants, with Reduce Motion respected" },
-    { title: "Y5-E", detail: "The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about" },
-    { title: "Y5-F", detail: "One error surface, one sentence per failure, one action — replacing raw strings and silent failures" },
-    { title: "Y5-J", detail: "The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer" },
-    { title: "Y5-I", detail: "Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way" },
-    { title: "Y5-K", detail: "The pill becomes a pluggable character system, and the habitat comes back as its habitat layer" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -209,7 +199,7 @@ const REVIEW_SUMMARY_DOC = '/Users/wilsonguenther/Obsidian/Wilson-Brain/Projects
  * and anything that can send audio or text off the machine.
  */
 const SECURITY_PATHS =
-  'desktop/src-tauri/capabilities/, desktop/src-tauri/tauri.conf.json, the updater/signing path, desktop/src-tauri/src/db or any migration, the polish_protocol/sidecar IPC, or any path or diff hunk matching updater|sign|notariz|keychain|permission|accessibility|microphone|network|http|upload|telemetry'
+  'desktop/src-tauri/capabilities/, desktop/src-tauri/tauri.conf.json, the updater/signing path, desktop/src-tauri/src/db or any migration, the polish_protocol/sidecar IPC, or any path or diff hunk matching updater|sign|notariz|keychain|permission|accessibility|microphone|network|http|upload|telemetry, or the loop harness itself (scripts/loop/, scripts/loop/review-gate.mjs included, scripts/cicd-loop-all.mjs) or .github/workflows/'
 const SECURITY_IDS = 'SEC-|UPD-|PRIV-|DB-|PERM-'
 /**
  * Stamped by build.mjs: true for every part of a multi-part run EXCEPT the last. Parts share the
@@ -223,7 +213,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1,"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0}
+const LANE_BY_ID = {"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -255,6 +245,65 @@ const LOCAL_GATE_TITLE = 'Local gate (CI unavailable)'
 /** The live status board, and the plain-node script every agent writes its row with. */
 const STATUS = LOCAL_REPO + '/scripts/loop/status.mjs'
 const STATUS_BOARD = '/Users/wilsonguenther/Obsidian/Wilson-Brain/Projects/Loop-Logs/STATUS-yap.md'
+/**
+ * THE REVIEW GATE (yap-land-gate-pass-required, review pass 2 audit 2026-10-17). No PR lands without an Opus
+ * reviewer PASS bound to its CURRENT head: one PASS (review-opus or review-opus2) for standard, a PASS from BOTH
+ * seats for security. Every merge path (build-mode LAND, fix-land, the land sweeper, the drain) interpolates
+ * REVIEW_GATE_STEP; ONLY the reviewer prompts interpolate REVIEW_RECORD. build.mjs enforces both
+ * (promptGateProblems in review-gate.mjs).
+ * TRUST LIMIT: every seat posts through the same GitHub account, so the record's seat field is self-declared: the
+ * gate CANNOT authenticate which seat wrote a record, and a seat that runs "record --seat review-opus" is
+ * indistinguishable from the real reviewer. What this enforces is (a) a PASS bound to the current head exists, and
+ * (b) only reviewer prompts are ever handed the record subcommand. It is not authentication.
+ * Run as ${LOCAL_REPO}/scripts/loop/review-gate.mjs, like STATUS: the generated harness is stamped from that
+ * checkout, so the gate is the same version as the prompts that call it. Spelled out literally (not via a const)
+ * so build.mjs's static prompt reader sees "review-gate.mjs gate" / "record" exactly where a seat will.
+ */
+const MAX_FIX_ROUNDS = 2
+const REVIEW_GATE_STEP = `
+THE REVIEW GATE — IMMEDIATELY BEFORE EVERY MERGE, ON THE SAME SHA. CI and the local gate are necessary, NOT
+sufficient. No PR lands without an Opus reviewer PASS bound to its CURRENT head: one PASS from review-opus or
+review-opus2 for a standard PR, a PASS from BOTH review-opus AND review-opus2 for a security PR. There is NO
+unreviewed exception: a PR no reviewer seat has passed on this exact head is refused.
+    gh pr view -R ${REPO} <n> --json headRefOid                -> <headRefOid>
+    node ${LOCAL_REPO}/scripts/loop/review-gate.mjs gate --pr <n> --head <headRefOid> ; echo "reviewgate=$?"      (read the code bare)
+  - exit 0 -> merge THAT sha and nothing else:
+        gh pr merge -R ${REPO} <n> --squash --delete-branch --admin --match-head-commit <the same headRefOid>
+    If GitHub refuses because the head moved, the PR changed under you: do not retry on the new head without
+    running the review gate again on it.
+  - exit 6 -> DO NOT MERGE. The gate's last line names what is missing — the seat with no PASS on this head, a seat
+    whose newest record on it is BLOCK, or "head moved". Label it and say so on the PR:
+        gh label create review-pending -R ${REPO} --color FBCA04 --description "no Opus PASS bound to the head" 2>/dev/null ; true
+        gh pr edit -R ${REPO} <n> --add-label review-pending
+        gh pr comment -R ${REPO} <n> --body "review-pending: <the gate's last line, verbatim>"
+    status "review-pending", reason = that line. For a PR no reviewer has passed yet this is the NORMAL outcome.
+  - any other exit (64 usage, 1) -> DO NOT MERGE; status "review-pending", reason = the raw output.
+Records on older heads never count. If anyone pushed after the PASS — a rebase, a conflict resolution, a fix —
+the gate refuses until a reviewer seat posts a fresh PASS on the new head. A merge agent is not a reviewer seat:
+you never post a review verdict, you are never handed the reviewer's record subcommand, and a verdict in a loop
+log or an agent's return value is not a record. No Codex / Gemini / bot review counts.
+`
+/**
+ * THE REVIEWER'S RECORD. Interpolated by the review-opus and review-opus2 prompts and by NOTHING else — build.mjs
+ * fails validation if any other seat's prompt can reach it.
+ */
+const REVIEW_RECORD = (seat, pr, lens) => `
+# POST YOUR RECORD — YOU, THIS SEAT, ON THE HEAD YOU READ. NOBODY ELSE CAN, AND NOBODY ELSE WILL.
+Bind your review to a sha BEFORE you read a line of the diff:
+    gh pr view -R ${REPO} ${pr} --json headRefOid             -> HEAD (40 hex). Review THAT tree.
+When you have your verdict, write your findings (every BLOCKING and ADVISORY line) to a notes file made with
+mktemp, then post the record:
+    node ${LOCAL_REPO}/scripts/loop/review-gate.mjs record --pr ${pr} --seat ${seat} --lens "${lens}" --head <HEAD> --verdict PASS|BLOCK --blocking <count of BLOCKING findings> --notes-file <notes> ; echo "record=$?"
+  PASS needs --blocking 0. BLOCK needs --blocking 1 or more (a BLOCK that names no finding is refused).
+  exit 64 "is not the PR's current head" -> the PR moved while you read it, so your review is of a stale tree.
+  Re-read headRefOid, review the new head, and post on THAT. Never post on a sha you did not read.
+That comment IS the merge input. The land gate counts only a ${seat} record whose head equals the PR's head at
+merge time; a verdict that lives only in your return value or in a loop log does not exist for it. Post ONE
+record per review and never edit it (an edited record is void — post a new one instead).
+If you could not review the PR at all, post NO record: a PASS nobody earned is the exact defect this gate exists
+to stop, and with no record the PR simply stays review-pending.
+Add recordHead: "<HEAD>" and recordPosted: true|false to your return.
+`
 
 const GUARD = (dir) => `
 GUARDRAILS (HARD):
@@ -546,14 +595,14 @@ cargotest=<code>
 Post that comment BEFORE you merge. With no CI check to point at, this comment is the only
 auditable record that the merge had a gate at all.
 
-THEN MERGE:
-    gh pr merge -R ${REPO} <n> --squash --delete-branch --admin
+THEN THE REVIEW GATE, AND ONLY THEN THE MERGE:
+${REVIEW_GATE_STEP}
 --delete-branch is not optional: an undeleted branch is the stale-branch backlog this loop's Drain
 then has to sweep. Use --admin so a self-opened PR with no approving review can land.
 Every merge comment and every status-board row you write carries ci=local.
 
 OUTCOMES IN THIS MODE:
-  - every command 0, sha matches, MERGEABLE -> merge. status "merged", ciCheckConclusion
+  - every command 0, sha matches, MERGEABLE, review gate exit 0 -> merge. status "merged", ciCheckConclusion
     "local-gate", and localGate: {sha, typecheck, test, build, polish, diarize, stage, polishtest,
     diarizetest, fmt, clippy, cargotest}.
   - any command non-zero  -> this is a red gate. Fix it if this PR is yours to fix; otherwise label
@@ -571,9 +620,9 @@ CI_MODE = github — THE CHECK RUN IS THE MERGE GATE (Actions has been restored)
 Read the check run for the CI workflow's "Tauri build (Rust + frontend)" job whose head_sha EQUALS
 headRefOid. A green check on an older sha proves nothing. A "skipped" check is not a pass and not a
 failure — it is not evidence at all, so do not read it either way.
-  - that job == success AND mergeable == MERGEABLE AND every blocking finding disposed
-        gh pr merge -R ${REPO} <n> --squash --delete-branch --admin
-    status "merged" with the squash sha; the board row carries ci=github.
+  - that job == success AND mergeable == MERGEABLE AND every blocking finding disposed AND the
+    review gate below exits 0 on that same headRefOid -> merge with the command the review gate gives
+    (--match-head-commit <headRefOid>). status "merged" with the squash sha; the board row carries ci=github.
   - it is queued / in_progress / not yet created -> status "ci-pending", reason "ci-pending".
     DO NOT POLL, DO NOT SLEEP, DO NOT WAIT — the land sweeper settles it.
   - it == failure -> label ci-red and comment the FAILING STEP NAME. status "ci-red".
@@ -581,7 +630,7 @@ failure — it is not evidence at all, so do not read it either way.
 NOTE: even in this mode the CI workflow does NOT run clippy or fmt as a gate (both are '|| true'),
 and it does not build or stage yap-diarize at all, so a github-mode merge still owes the local
 clippy run, the local fmt check and both sidecar builds. Run them and paste them.
-`
+${REVIEW_GATE_STEP}`
 
 // ── verdict helpers (string-safe; agent returns may be objects or strings) ──
 const asText = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
@@ -942,8 +991,9 @@ SKIP — do not force, do not fix, do not investigate — anything pending, fail
 NAME each one you skipped and why, in one line each. A conflicting PR is the review pass's problem,
 not yours; you have an item to build.
 THIS IS A BUDGET, NOT AN INVITATION: ${CI_MODE === 'local' ? 'at most 14 tool calls, and at most ONE PR gated and landed — the local gate is eight separate command runs against one worktree, so gate and land the OLDEST eligible PR, name the ones you left, and move on. The review pass settles the rest; do not try to clear the queue here' : 'at most 6 tool calls'}. Do not read diffs, do not
-review, do not chase a red check. These PRs are UNREVIEWED by design and merging them gate-green
-only is a decision Wilson has already made for this pass.
+review, do not chase a red check, and NEVER post a review verdict yourself. A PR merges here ONLY
+when the review gate above exits 0 on its head: a freshly built PR carries no reviewer record, so the
+gate refuses it (review-pending) — that is expected; name it and move on, the review pass reviews it.
 DO NOT TOUCH the pre-existing feat/yv1xx PRs from the previous loop unless they carry the
 ${LOOP_LABEL} label. They are weeks old, they are not this pass's work, and Drain triages them.
 
@@ -1245,9 +1295,14 @@ function takeNextPr() {
 
 /**
  * ONE PR THROUGH THE GATE. (a) reviewer — one seat, or TWO for a security PR (its second lens runs
- * in the REVIEW-STAGE barrier). (b) fix+land — one seat: rebase FIRST, fix every blocking finding or
- * refute it with evidence, push, post the verdicts, and merge if the gate is green. It NEVER waits
- * for CI. Exactly ONE fix round per PR in this pass.
+ * in the REVIEW-STAGE barrier); each seat posts its OWN record on the head it read (review-gate.mjs).
+ * (b) on a BLOCK, fix-land in FIX mode — rebase, fix or refute every blocking finding, push, and NOT
+ * merge — then the reviewer seats are re-dispatched (same lens, fresh context) at the new head. At
+ * most MAX_FIX_ROUNDS fix rounds; a further BLOCK parks the PR as needs-human. (c) once every
+ * required seat has PASSed the current head, fix-land in LAND mode runs CI_GATE (which runs the
+ * review gate) and merges that sha. It NEVER waits for CI.
+ * Re-dispatch covers the seat(s) that blocked AND every other required seat: a push voids every
+ * record, so a security PR's non-blocking seat must PASS the new head too or the gate refuses it.
  */
 async function reviewOnePr(entry, chain) {
   const dir = REVIEW_DIRS[chain]
@@ -1260,7 +1315,18 @@ async function reviewOnePr(entry, chain) {
   const seats = klass === 'security' ? 2 : 1
   const facts = JSON.stringify(entry || {})
 
-  const primaryPrompt = `You are the PRIMARY ADVERSARIAL REVIEWER of PR #${pr} on ${REPO} (${itemId}, classified ${klass}).
+  const reReview = (round, prior) =>
+    round === 0
+      ? ''
+      : `
+# RE-REVIEW ROUND ${round} — A FIX WAS PUSHED, AND ONLY A FRESH PASS ON THE NEW HEAD LANDS IT
+Fix round ${round} of at most ${MAX_FIX_ROUNDS} pushed a new head; every record on the old head is now history.
+You are a FRESH seat with the same lens. Review the WHOLE PR at its CURRENT head — not only the fix — and test
+each prior blocking finding against the new diff. The fixer's word that a finding is "fixed" or "refuted" is a
+claim to test, never evidence. A BLOCK now sends the PR to ${round >= MAX_FIX_ROUNDS ? 'needs-human (this is the last round)' : 'one more fix round'}.
+PRIOR BLOCKING FINDINGS AND THE FIXER'S DISPOSITIONS: ${JSON.stringify(prior)}
+`
+  const primaryPrompt = (round, prior) => `You are the PRIMARY ADVERSARIAL REVIEWER of PR #${pr} on ${REPO} (${itemId}, classified ${klass}).
 Yap is a macOS dictation app: Rust/Tauri v2 backend, a Vite/React frontend, a yap-polish sidecar.
 Your job is to TRY TO DISPROVE this PR's claims. Not to falsify them — to test them honestly and
 hard, and to report what survives. A finding you cannot substantiate is not a finding.
@@ -1269,7 +1335,7 @@ Read it: gh pr view -R ${REPO} ${pr} --json number,title,body,headRefOid,files
 and gh pr diff -R ${REPO} ${pr}. You may read code in ${dir} (do NOT check out a branch there —
 the fix agent owns that worktree next; read-only greps only).
 TRIAGE ALREADY ESTABLISHED: ${facts}
-
+${reReview(round, prior)}
 # THE CONTRACT — classify every finding as exactly one
 BLOCKING — a real defect in shipped behaviour: a code bug; a crash or panic path; data loss in the
   local history; a permission or signing regression; audio or text leaving the machine when it
@@ -1299,15 +1365,17 @@ ${RUNTIME_PROOF(dir)}
 ${VERIFY_NOTHING}
 
 If you return BLOCK you MUST return a non-empty blocking[] array. A BLOCK with an empty blocking[]
-is malformed; it is recorded as a PASS with an advisory note and you will NOT be re-dispatched, so
+is malformed: the record subcommand refuses it, so the PR is left review-pending with no verdict and
 a finding you fail to write down is a finding you did not make.
+${REVIEW_RECORD('review-opus', pr, 'primary adversarial: reachability, evidence class, claims vs diff')}
 
 RETURN: {verdict: "PASS"|"BLOCK", blocking: [...], advisory: [...], reachabilityProofRun: true|false,
-         evidenceClass: "test"|"app"|"probe"|"compiles-only"|"none", supersededByMain: true|false}
+         evidenceClass: "test"|"app"|"probe"|"compiles-only"|"none", supersededByMain: true|false,
+         recordHead: "<40-hex>", recordPosted: true|false}
 ${LOGLINE(`${itemId} review-opus`, itemId, 'review:review-r1', `${pr}`)}
 ${GUARD(dir)}`
 
-  const lensPrompt = `You are the INDEPENDENT ADVERSARIAL REVIEWER of PR #${pr} on ${REPO} (${itemId}) — a second
+  const lensPrompt = (round, prior) => `You are the INDEPENDENT ADVERSARIAL REVIEWER of PR #${pr} on ${REPO} (${itemId}) — a second
 reviewer with a DIFFERENT LENS, seated because triage classified this PR SECURITY.
 A primary adversarial reviewer is reviewing it right now. ITS VERDICT IS HIDDEN FROM YOU BY DESIGN.
 Do not ask for it, do not guess it, do not try to agree with it. Two reviewers that share a premise
@@ -1317,7 +1385,7 @@ both approved, because both accepted the same false premise. You exist to break 
 Read it: gh pr view -R ${REPO} ${pr} --json number,title,body,headRefOid,files
 and gh pr diff -R ${REPO} ${pr}. Read-only greps in ${dir}; never check out a branch there.
 TRIAGE ALREADY ESTABLISHED: ${facts}
-
+${reReview(round, prior)}
 # THE CONTRACT — identical to the primary reviewer's. BLOCKING vs ADVISORY, prefix every finding.
 # YOUR FOUR LENSES — the primary reviewer is NOT asked for these. Spend your effort HERE.
 (a) LIVENESS / FALSE PREMISE. Is the code this PR touches actually REACHED at runtime on current
@@ -1343,60 +1411,27 @@ TRIAGE ALREADY ESTABLISHED: ${facts}
 ${RUNTIME_PROOF(dir)}
 ${VERIFY_NOTHING}
 
-If you cannot read the PR at all (gh fails, the PR is missing), return status "unavailable" with
-verdict "PASS" — NEVER BLOCK on your own inability to review. "unavailable" never blocks a merge.
-A BLOCK with an empty blocking[] is malformed and is recorded as a PASS; you will not be re-dispatched.
+If you cannot read the PR at all (gh fails, the PR is missing), return status "unavailable" and post
+NO record — never BLOCK on your own inability to review, and never PASS it either. With no record from
+you the security PR stays review-pending; it does not land on a verdict nobody gave.
+A BLOCK with an empty blocking[] is malformed: the record subcommand refuses it.
+${REVIEW_RECORD('review-opus2', pr, 'liveness, failure polarity, local data and permission integrity, claims vs diff')}
 
 RETURN: {status: "reviewed"|"unavailable", verdict: "PASS"|"BLOCK", blocking: [...], advisory: [...],
          reachabilityChain: "<entry -> import -> symbol, or why none exists>", failurePolarity: [...],
-         dataOrPermissionRisk: "<what and for whom, or none>", whyUnavailable}
+         dataOrPermissionRisk: "<what and for whom, or none>", whyUnavailable,
+         recordHead: "<40-hex>", recordPosted: true|false}
 ${LOGLINE(`${itemId} review-opus2`, itemId, 'review:review-r1', `${pr}`)}
 ${GUARD(dir)}`
 
-  let rA = null
-  let rB = null
-  await withAgents(seats, async () => {
-    if (seats === 2) {
-      /* REVIEW-STAGE-PARALLEL */
-      // Both prompts are built ABOVE, before either is dispatched, precisely so neither reviewer can
-      // depend on the other's outcome. This barrier is the ONLY concurrent dispatch in the harness
-      // and it costs TWO of the three seats, which is why the other chain can hold at most one.
-      const both = await parallel([
-        () => agentR(primaryPrompt, { model: 'opus', effort: 'high', phase: itemId, label: `review-opus:${itemId}` }),
-        () => agentR(lensPrompt, { model: 'opus', effort: 'high', phase: itemId, label: `review-opus2:${itemId}` }),
-      ])
-      rA = both[0]
-      rB = both[1]
-    } else {
-      rA = await agentR(primaryPrompt, { model: 'opus', effort: 'high', phase: itemId, label: `review-opus:${itemId}` })
-    }
-  })
-
-  // A NULL SEAT IS UNAVAILABLE, NEVER A BLOCK. A reviewer that died produced no finding, and a
-  // broken seat masquerading as a security verdict has halted a whole loop before.
-  const UNAVAILABLE = { status: 'unavailable', verdict: 'PASS', blocking: [], advisory: [], whyUnavailable: 'seat returned null (API failure)' }
-  if (rA === null && (seats === 1 || rB === null)) {
-    noteHalt(`${itemId} PR#${pr} review`, 'every reviewer seat returned null — API failure or session/usage limit')
-    return { itemId, pr, klass, status: 'halted-in-review' }
-  }
-  const primary = rA === null ? UNAVAILABLE : rA
-  const lens = seats === 2 ? (rB === null ? UNAVAILABLE : rB) : null
-  // A BLOCK with an empty blocking[] is a refusal with no content. It is NOT re-dispatched: it is
-  // recorded as a PASS carrying one advisory note. Re-dispatching a malformed refusal is how a
-  // previous pass spent two opus/high seats to learn nothing twice.
-  const malformed = []
-  if (isMalformedBlock(primary)) malformed.push('primary')
-  if (lens && isMalformedBlock(lens)) malformed.push('independent-lens')
-  for (const who of malformed) log(`PR#${pr} (${itemId}): the ${who} reviewer returned BLOCK with an empty blocking[] — recorded as PASS + an advisory note, NOT re-dispatched`)
-  const primaryBlocked = saysBlock(primary) && !isMalformedBlock(primary)
-  const lensBlocked = lens !== null && saysReviewed(lens) && saysBlock(lens) && !isMalformedBlock(lens)
-  const blocked = primaryBlocked || lensBlocked
-  const verdicts = { primary, lens, primaryBlocked, lensBlocked, malformed, seats }
-
-  const landPrompt = `You are the FIX + LAND agent for PR #${pr} on ${REPO} (${itemId}, ${klass}). You are the last gate,
-and you are the ONLY fix round this PR gets in this pass. Be paranoid, and be fast.
-
-# 1 — REBASE FIRST, ALWAYS. THIS IS STEP ONE AND IT IS NOT OPTIONAL.
+  // A NULL SEAT IS UNAVAILABLE, NEVER A BLOCK — AND NEVER A PASS. A reviewer that died produced no
+  // finding and no record, so the PR cannot land on it: it ends review-pending (the land gate refuses
+  // a head with no record), never merged on a verdict nobody gave.
+  const UNAVAILABLE = { status: 'unavailable', verdict: 'NONE', blocking: [], advisory: [], whyUnavailable: 'seat returned null (API failure)' }
+  const noVerdict = (v) => v === null || /"status"\s*:\s*"unavailable"/i.test(asText(v)) || isMalformedBlock(v) || !/"verdict"\s*:\s*"(PASS|BLOCK)"/i.test(asText(v))
+  const blockingOf = (v) => (v && Array.isArray(v.blocking) ? v.blocking : [])
+  // The FIX mode's first step, kept verbatim from the one-round fix+land prompt.
+  const REBASE_STEP = `# 1 — REBASE FIRST, ALWAYS. THIS IS STEP ONE AND IT IS NOT OPTIONAL.
 Main has moved under this PR, and other chains are merging while you work.
     cd ${dir} && git fetch origin
     git checkout -B <the PR's headRefName> origin/<the PR's headRefName>
@@ -1412,7 +1447,103 @@ If gh already says this PR is MERGED, do not merge it again: review the merged d
 verdicts on it, and if there is a BLOCKING defect open a follow-up PR and say so plainly.
 ${COMMIT_CONTRACT}
 
-# 2 — DISPOSE OF EVERY BLOCKING FINDING. ONE ROUND ONLY.
+`
+  let round = 0 // fix rounds completed
+  let prior = null
+  let primary = null
+  let lens = null
+  let blocked = false
+  const rounds = []
+  for (;;) {
+    let rA = null
+    let rB = null
+    await withAgents(seats, async () => {
+      if (seats === 2) {
+        /* REVIEW-STAGE-PARALLEL */
+        // Both prompts are built from the same inputs before either is dispatched, precisely so neither
+        // reviewer can depend on the other's outcome. This barrier is the ONLY concurrent dispatch in the
+        // harness and it costs TWO of the three seats, which is why the other chain can hold at most one.
+        const both = await parallel([
+          () => agentR(primaryPrompt(round, prior), { model: 'opus', effort: 'high', phase: itemId, label: `review-opus:${itemId}` }),
+          () => agentR(lensPrompt(round, prior), { model: 'opus', effort: 'high', phase: itemId, label: `review-opus2:${itemId}` }),
+        ])
+        rA = both[0]
+        rB = both[1]
+      } else {
+        rA = await agentR(primaryPrompt(round, prior), { model: 'opus', effort: 'high', phase: itemId, label: `review-opus:${itemId}` })
+      }
+    })
+    if (rA === null && (seats === 1 || rB === null)) {
+      noteHalt(`${itemId} PR#${pr} review round ${round}`, 'every reviewer seat returned null — API failure or session/usage limit')
+      return { itemId, pr, klass, status: 'halted-in-review', rounds }
+    }
+    primary = rA === null ? UNAVAILABLE : rA
+    lens = seats === 2 ? (rB === null ? UNAVAILABLE : rB) : null
+    for (const [who, v] of [['review-opus', primary], ['review-opus2', lens]]) {
+      if (v && isMalformedBlock(v)) log(`PR#${pr} (${itemId}) round ${round}: ${who} returned BLOCK with an empty blocking[] — no valid record, the PR stays review-pending`)
+    }
+    const primaryBlocked = saysBlock(primary) && !isMalformedBlock(primary)
+    const lensBlocked = lens !== null && saysReviewed(lens) && saysBlock(lens) && !isMalformedBlock(lens)
+    rounds.push({ round, primary, lens, primaryBlocked, lensBlocked })
+    if (primaryBlocked || lensBlocked) blocked = true
+    if (!primaryBlocked && !lensBlocked) {
+      const silent = [['review-opus', primary], ...(seats === 2 ? [['review-opus2', lens]] : [])].filter(([, v]) => noVerdict(v)).map(([w]) => w)
+      if (silent.length) {
+        // No BLOCK, but a required seat gave no verdict, so there is no PASS record on the head. The land
+        // gate would refuse it; spending a lander to learn that is waste. The sweeper's gate labels it.
+        log(`PR#${pr} (${itemId}, ${klass}) round ${round}: no verdict from ${silent.join(', ')} -> review-pending (no PASS bound to the head)`)
+        return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'review-pending', blocked, rounds, reason: `no verdict from ${silent.join(', ')}` }
+      }
+      break
+    }
+    if (round >= MAX_FIX_ROUNDS) {
+      // A BLOCK after the last fix round: the PR is parked, never merged and never fixed a third time.
+      const park = await withAgents(1, () => agentR(fixLandPrompt('park', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+      log(`PR#${pr} (${itemId}, ${klass}): BLOCK after ${round} fix round(s) -> needs-human`)
+      return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'needs-human', blocked, rounds, land: park }
+    }
+    const fix = await withAgents(1, () => agentR(fixLandPrompt('fix', round + 1), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+    const fixText = asText(fix)
+    const fixStatus = fix === null
+      ? 'errored'
+      : /"status"\s*:\s*"fixed"/i.test(fixText)
+        ? 'fixed'
+        : (fixText.match(/"status"\s*:\s*"(closed-superseded|needs-human|needs-rebase|ci-red)"/i) || [])[1] || 'needs-human'
+    rounds[rounds.length - 1].fix = fix
+    if (fixStatus !== 'fixed') {
+      log(`PR#${pr} (${itemId}, ${klass}): fix round ${round + 1} ended ${fixStatus} — not re-reviewed`)
+      return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: fixStatus, blocked, rounds, land: fix }
+    }
+    round++
+    prior = {
+      primaryBlocking: blockingOf(primary),
+      lensBlocking: blockingOf(lens),
+      dispositions: fix && Array.isArray(fix.blockingDispositions) ? fix.blockingDispositions : fixText.slice(0, 4000),
+      newHead: (fix && fix.head) || '(read headRefOid)',
+    }
+    log(`PR#${pr} (${itemId}, ${klass}): fix round ${round} pushed ${prior.newHead} — re-dispatching ${seats === 2 ? 'review-opus + review-opus2' : 'review-opus'} at the new head`)
+  }
+  const verdicts = { primary, lens, seats, rounds: rounds.length }
+
+  /**
+   * THE FIX / LAND / PARK SEAT. Never a reviewer: it never posts a verdict titled as a review and is
+   * never handed the record subcommand (build.mjs validation). 'fix' pushes and does NOT merge; 'land'
+   * merges only through CI_GATE (whose review gate needs a reviewer PASS on that sha); 'park' labels.
+   */
+  function fixLandPrompt(mode, fixRound) {
+    const role = mode === 'fix' ? `FIX agent (fix round ${fixRound} of at most ${MAX_FIX_ROUNDS})` : mode === 'land' ? 'LAND agent' : 'PARK agent'
+    return `You are the ${role} for PR #${pr} on ${REPO} (${itemId}, ${klass}). You are a FIXER seat, never a
+reviewer: you never post a review verdict, and only a reviewer seat's own record on the current head can
+land this PR. Be paranoid, and be fast.
+${mode === 'park' ? `
+# THE PR IS OUT OF FIX ROUNDS
+A reviewer BLOCKed this PR again after ${MAX_FIX_ROUNDS} fix rounds. Do NOT fix it, do NOT push, do NOT merge.
+    gh pr edit -R ${REPO} ${pr} --add-label needs-human
+    gh pr comment -R ${REPO} ${pr} --body "needs-human: still BLOCKED after ${MAX_FIX_ROUNDS} fix rounds. <every open BLOCKING finding below, verbatim, with the seat that raised it>"
+OPEN BLOCKING FINDINGS: ${JSON.stringify({ primary: blockingOf(primary), lens: blockingOf(lens) })}
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "needs-human", landed: false, reason}` : ''}${mode === 'fix' ? `
+` + REBASE_STEP + `
+# 2 — DISPOSE OF EVERY BLOCKING FINDING.
 PRIMARY REVIEWER: ${JSON.stringify(primary)}
 INDEPENDENT REVIEWER (security PRs only; null means it was not seated): ${JSON.stringify(lens)}
 Fix ONLY the BLOCKING findings. Do NOT address advisory findings — they are logged once and never
@@ -1421,59 +1552,68 @@ it: post a PR comment with the evidence that refutes it. A reviewer being wrong 
 outcome; a finding quietly dropped is not.
 ${MERGE_BAR}
 blockingDispositions is REQUIRED in your return, one entry per blocking finding raised by either
-reviewer. If any blocking finding is neither fixed nor refuted: do NOT merge, leave the PR open,
+reviewer. If any blocking finding is neither fixed nor refuted: leave the PR open,
     gh pr edit -R ${REPO} ${pr} --add-label needs-human
-and comment exactly which finding stopped you. THERE IS NO SECOND REVIEW ROUND IN THIS PASS: a
-finding you cannot dispose of ends as needs-human, never as a re-dispatch.
+comment exactly which finding stopped you, and return status "needs-human".
+THE REVIEW PASS HAS A SECOND ROUND, AND YOU ARE NOT IT. After you push, the chain re-dispatches the
+reviewer seat(s) at YOUR new head — same lens, fresh context — and only their fresh PASS, posted by
+them on that head, can land this PR. At most ${MAX_FIX_ROUNDS} fix rounds; a BLOCK after the last one ends
+as needs-human. You do NOT merge in this mode, whatever the gate says.
 
 # 3 — THE GATE, EVERY COMMAND, SEPARATELY, ON THE REBASED HEAD
 ${GATE_CMDS(dir, target)}
-Then git push --force-with-lease.
+Then git push --force-with-lease, and read the new head: gh pr view -R ${REPO} ${pr} --json headRefOid
 ${VERIFY_NOTHING}
 
-# 4 — POST BOTH VERDICTS AS REAL PR REVIEWS, BEFORE YOU MERGE
-gh pr review -R ${REPO} ${pr} --comment --body "Primary adversarial review (Opus)
+# 4 — POST YOUR DISPOSITIONS — A FIXER'S NOTE, NEVER A REVIEW
+gh pr comment -R ${REPO} ${pr} --body "Fix round ${fixRound} — fixer dispositions (NOT a review; the reviewer seats re-review head <new headRefOid>)
 
-<verdict + every finding, BLOCKING and ADVISORY, with its disposition>"
-${seats === 2 ? `gh pr review -R ${REPO} ${pr} --comment --body "Independent adversarial review (Opus, liveness/polarity/data lens)
+<each blocking finding, its disposition fixed|refuted, and the hunk or evidence>"
+Never title that comment as a review, never start it with the reviewer record marker, and never use
+gh pr review. Advisory findings stay where the reviewer posted them — never a new PR.
 
-<verdict + every finding, the reachability chain, and the per-expression fails-open/fails-closed/panics call>"` : `This is a STANDARD PR: one reviewer was seated, and that is the design. Say so in the review body — do not imply a second verdict that does not exist.`}
-Post them even when every verdict is PASS. A verdict that lives only in a loop log is unauditable
-from GitHub. Advisory findings go in a comment on THIS PR — never a new PR; one-PR-per-advisory is
-how a loop grows its own backlog with every success.
-
-# 5 — LAND WHEN GREEN. DO NOT WAIT FOR CI. NOT FOR ONE MINUTE.
-This PR is #${pr}; wherever the gate below says <n>, that is ${pr}. Every blocking finding must be
-disposed of before you even open the gate — a green gate never substitutes for the merge bar.
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"needs-human"|"needs-rebase"|"closed-superseded",
+         head: "<the new headRefOid after your push>", rebased: true|false, conflictsResolved: [...],
+         blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}],
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest}}` : ''}${mode === 'land' ? `
+# EVERY REQUIRED REVIEWER SEAT PASSED THE CURRENT HEAD — LAND IT, AND CHANGE NOTHING
+${klass === 'security' ? 'review-opus AND review-opus2 each' : 'review-opus'} returned PASS${round ? ` after ${round} fix round(s)` : ''} and posted a record on the head
+it read. Do NOT rebase, do NOT push, do NOT fix, do NOT amend: ANY push makes a new head and voids
+every record on the old one, and this pass would then have to review it again.
+    gh pr view -R ${REPO} ${pr} --json headRefOid,mergeable,mergeStateStatus
+If GitHub says CONFLICTING: do not resolve it here. Label needs-rebase and return status "needs-rebase"
+— the next review pass rebases, and its reviewers PASS the rebased head.
+If gh already says this PR is MERGED or CLOSED, do not merge it again; report it.
+This PR is #${pr}; wherever the gate below says <n>, that is ${pr}. Every blocking finding was disposed
+of and re-reviewed before you were dispatched; a green gate never substitutes for the merge bar.
 ${CI_GATE(dir, target)}
 
-# 6 — LEAVE THE LANE CLEAN
+RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"review-pending",
+         landed: true|false, reason, mergeCommit, reviewGate: "<the gate's last line>", reviewGateExit,
+         gateExits: {typecheck, test, build, polish, diarize, stage, polishtest, diarizetest, fmt, clippy, cargotest},
+         ciCheckConclusion}` : ''}
+
+# LEAVE THE LANE CLEAN
 If you started a server on ${port} or left the app running, kill it and confirm nothing listens
 there (lsof -nP -iTCP:${port} -sTCP:LISTEN). Never touch ${other} — the other review chain is in it.
-
-RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "merged"|"ci-pending"|"ci-red"|"needs-rebase"|"needs-human"|"closed-superseded",
-         landed: true|false, reason, mergeCommit, rebased: true|false, conflictsResolved: [...],
-         blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}],
-         gateExits: {typecheck, test, build, sidecar, polishtest, clippy, cargotest, fmt},
-         verdictsPosted, advisoryPosted, ciCheckConclusion}
-${LOGLINE(`${itemId} fix+land PR#${pr}`, itemId, 'review:fixed', `${pr}`)}
+${LOGLINE(`${itemId} fix-land:${mode} PR#${pr}`, itemId, mode === 'fix' ? 'review:fixed' : 'review:land', `${pr}`)}
 Then write the board ONE more time with the OUTCOME — stage review:merged, review:ci-pending,
-review:needs-human or review:closed-superseded — and the PR number as the 4th argument.
+review:review-pending, review:needs-human or review:closed-superseded — and the PR number as the 4th argument.
 ${WORKTREE_CONTRACT(dir, port, target, other)}
 ${RUNTIME_PROOF(dir)}
 ${GUARD(dir)}`
-  const land = await withAgents(1, () => agentR(landPrompt, { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+  }
+  const land = await withAgents(1, () => agentR(fixLandPrompt('land', round), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
 
   const landText = asText(land)
   const statusOf = (re, name) => (re.test(landText) ? name : null)
   const status =
     statusOf(/"status"\s*:\s*"merged"/i, 'merged') ||
-    statusOf(/"status"\s*:\s*"closed-superseded"/i, 'closed-superseded') ||
+    statusOf(/"status"\s*:\s*"review-pending"/i, 'review-pending') ||
     statusOf(/"status"\s*:\s*"ci-red"/i, 'ci-red') ||
     statusOf(/"status"\s*:\s*"needs-rebase"/i, 'needs-rebase') ||
-    statusOf(/"status"\s*:\s*"needs-human"/i, 'needs-human') ||
     'ci-pending'
-  log(`PR#${pr} (${itemId}, ${klass}, chain ${REVIEW_TAGS[chain]}): ${blocked ? 'BLOCKED then fixed' : 'PASS'} -> ${status}`)
+  log(`PR#${pr} (${itemId}, ${klass}, chain ${REVIEW_TAGS[chain]}): ${blocked ? `BLOCKED, ${round} fix round(s), re-reviewed PASS` : 'PASS'} -> ${status}`)
   return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status, blocked, verdicts, land }
 }
 
@@ -5034,929 +5174,6 @@ ITEMS.push({
   `,
 })
 
-// ── 25-y5-ui-ux-polish.mjs ────────────────────────────────────────────────
-// Y5 — UI/UX. Wilson, 2026-09-12, verbatim: "the app looks broken, not smooth —
-// lots of UI/UX problems." And, standing: "we got to really think about this
-// thing end to end."
-//
-// AUDIT, structural, at 4e8c9adf:
-//   desktop/src/App.tsx      3,439 lines  — ONE component holding seven views
-//                            (Nav: home | permissions | meetings | insights |
-//                            dictionary | scratchpad | settings, App.tsx:55-61)
-//                            and eight settings sub-tabs (App.tsx:66-85).
-//   desktop/src/App.css      2,789 lines  — one stylesheet, no token layer.
-//   desktop/src/home/YappyHouse.tsx  919 lines
-//   Empty / loading / error states:
-//     git grep -c "empty-state\|EmptyState\|skeleton" -- desktop/src
-//       -> App.css: 1, App.tsx: 1.  For SEVEN views. That is the "looks broken"
-//          report: a view with no data renders a bare frame with no explanation
-//          and no action.
-//   The pill's whole state vocabulary is four values:
-//     ClassicPill.tsx:23-24  {recording, busy, message} + a `done` flag
-//     live.ts:252   LivePhase = idle | listening | thinking | done | sleepy
-//   Wispr's Flow Bar has TWELVE states with exact geometry per dock
-//   (reference_wispr_parity_research §4.2, [BUNDLE]): resting · ready ·
-//   activePtt · activePopo · processing · polishProcessing · polishCompleted ·
-//   autoCleanupCompleted · error · growthNudgeActive · navigationActive ·
-//   postInstructBubble · instructCollapsing.
-//   project_yap_pill_vision, Wilson's own words: "fill the dead time after
-//   talking stops and before text appears (transcribe/think gap) and every
-//   other micro-state — idle->listening->transcribing->polishing->pasting->
-//   done->fold-back + errors/permission/model-loading/empty. Today only
-//   listening/busy/done exist."
-//
-// MOTION CONSTANTS, primary-sourced, use these exact numbers
-// (reference_wispr_parity_research §4.3 [BUNDLE]):
-//   springs stiffness:600 damping:35 restDelta:0.05 (snappy morphs)
-//   springs stiffness:300 damping:28 (the slower one)
-//   cubic-bezier(0.05,0.6,0.4,0.95) @ 100ms for state changes
-//   300-400ms for expand/collapse
-//   hover hysteresis: an invisible ::before alpha margin at inset:-12px,
-//   painted ONLY while expanded
-//   rgba(0,0,0,0.004) background so the box is clickable while invisible
-//
-// AESTHETIC LOCK — not negotiable, do not re-litigate:
-//   feedback_companion_must_be_cute: PIXEL ART on a little LCD screen/pod
-//   (Tamagotchi / Bitzee). Chunky pixels, imageSmoothingEnabled=false, limited
-//   retro palette. NOT smooth vector. NO angled "angry" eyebrows. Paper/origami
-//   is REJECTED ("def a no on the paper").
-//   feedback_no_generic_ui: reject AI-dashboard aesthetics.
-//   feedback_ui_quality: truly native feel, no webview tells.
-//   feedback_think_ux_first: controls first, prose last.
-//
-// ── OWNER DECISION 2026-09-13 (Wilson) — THE PILL IS A CHARACTER SYSTEM ──
-//   Verbatim: "I thought we were gonna develop it and then make more characters
-//   and make it more flexible ... there's a classic pill and there's a yappy
-//   pill and there's gonna be different pills with the different creatures that
-//   are coming."
-//   So "which pill ships in v1" was the WRONG QUESTION and is closed: BOTH ship,
-//   as the first two CHARACTERS of a pluggable system, and more creatures come
-//   later. The panel's cost objection was real and is answered STRUCTURALLY,
-//   not by picking one:
-//     * THE SHELL owns everything that is not the creature — the window, the
-//       dock, the geometry table, hover/hit-testing, motion, the phase state
-//       machine, a11y names. Dock positions are handled ONCE, in the shell.
-//     * A CHARACTER is a DATA-DRIVEN MODULE behind one interface: given a phase
-//       and a tone it returns a sprite/animation and copy. It knows nothing
-//       about docks, windows or license logic.
-//     * TESTS RUN A FIXTURE MATRIX OVER THE REGISTERED CHARACTERS instead of
-//       duplicating a code path per pill. Y5-C's "13 phases x 2 styles x 3 docks"
-//       becomes 13 phases x 3 docks in the shell, plus one data completeness
-//       sweep per registered character.
-//     * A NEW CREATURE IS A NEW MODULE + A FIXTURE ROW. No shell change.
-//   Y5-K builds that system and reinstates the living habitat (the killed Y5-H)
-//   as its habitat layer. The aesthetic lock below is unchanged and binding.
-//
-// SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
-// EVERY item here owes the two-size screenshots (980x700 and 720x520) plus the
-// pill at three dock positions for each state it touches.
-
-ITEMS.push({
-  id: 'Y5-G', prompt: 'Y5', branch: 'loop/y5-g-split-app-tsx-into-views', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #188) in run wf_f6cd9dfa-860 — acceptance failed twice before merge (needs-human): the review pass re-checks it. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'Split the 4,660-line App.tsx into seven view modules so a screen can be worked on at all',
-  preflight: `
-    test 900 -ge "$(wc -l < desktop/src/App.tsx)"
-    test -d desktop/src/views
-    cd ${APP} && npm ci && npm run build && npm test
-  `,
-  spec: `
-    \`App.tsx\` is 4,660 lines holding seven views and eight settings sub-tabs
-    (PANEL 2026-09-12: the audit's 3,439 was measured against an older tree and
-    is 1,221 lines low — \`wc -l desktop/src/App.tsx\` at 4e8c9adf is 4,660, so
-    this is a ~3,760-line move, not a ~2,500-line one).
-    Every later UI item in this loop has to edit it, which makes them serially
-    conflicting and makes each one hard to review. This is the enabling refactor.
-
-    Do:
-      * \`desktop/src/views/{Home,Permissions,Meetings,Insights,Dictionary,Scratchpad,Settings}.tsx\`,
-        one per \`Nav\` value (App.tsx:55-61), and
-        \`desktop/src/views/settings/\` for the eight \`SettingsTab\`s
-        (App.tsx:66-85). App.tsx keeps the shell: nav, the license chip, the
-        toast host, the event listeners.
-      * PURE MECHANICAL MOVE. No behaviour change, no restyling, no renaming of
-        a state field. The gate is that \`npm test\` and \`npm run build\` pass and
-        Y0-E's structural smoke reports the same result before and after; a
-        mixed refactor-plus-redesign diff
-        is unreviewable and is how a regression ships.
-      * Shared state that currently lives in one component body has to be lifted
-        deliberately. Prefer props and a small number of explicit contexts over
-        a global store; do not add a state-management dependency.
-      * The event listeners (App.tsx:1190-1210 license, plus the take/status
-        listeners) stay in ONE place in the shell. Seven views each subscribing
-        to \`recording\` is seven listeners and a leak.
-
-    Tests: existing suites must pass unchanged, and add
-    \`desktop/src/views/views.test.tsx\` asserting each view module exports a
-    default component and that no view module registers a Tauri \`listen\` —
-    the sweep that keeps the listener discipline from eroding.
-
-    PANEL 2026-09-12 — ORDER REVERSED. This item now runs FIRST in this file.
-    Four seats converged: eleven items across both lanes edit App.tsx, this item
-    empties it, and the build agent's LAND step is told to SKIP a conflicting PR
-    rather than fix it. Doing the states first means Y5-B/Y5-F write markup into
-    the monolith and then this item moves it again, with the cross-lane items
-    (PERM-B, PERM-E, Y2-D, Y4-G, DB-D, Y10-E, Y7-D) all branched off the old
-    shape. So: pure mechanical move FIRST, on the smallest possible diff, then
-    every later UI item writes into desktop/src/views/<View>.tsx.
-    Because it moves first, the gate is the existing suites plus Y0-E's
-    structural windowed smoke (same assertions before and after) — NOT
-    "the screenshots are pixel-identical", which named a golden-image gate that
-    does not exist and that Y7-B explicitly forbids.
-    Split the landing if the diff is unreviewable: views first, then settings/*,
-    two PRs, identical gate on each.
-
-    What NOT to do:
-      - Do NOT restyle while moving.
-      - Do NOT add Redux/Zustand/Jotai.
-      - Do NOT leave a re-export shim that lets code keep importing views from
-        App.tsx.
-  `,
-  acceptance: `
-    test 900 -ge "$(wc -l < desktop/src/App.tsx)"                 # MEASURED baseline: 4660
-    # PANEL: views.test.tsx used to live in views/ and matched this glob, so the
-    # count was 8 and \`test 7 -eq\` could never pass however well the item was built.
-    test 7 -eq "$(ls desktop/src/views/*.tsx | wc -l | tr -d ' ')"
-    test 8 -eq "$(ls desktop/src/views/settings/*.tsx | wc -l | tr -d ' ')"
-    test -f desktop/src/views/__tests__/views.test.tsx
-    grep -q 'no_view_module_registers_a_listener' desktop/src/views/__tests__/views.test.tsx
-    # a PURE MOVE adds no behaviour: the moved lines land, they do not multiply
-    test 5200 -ge "$(cat desktop/src/App.tsx desktop/src/views/*.tsx desktop/src/views/settings/*.tsx | wc -l)"
-    test 0 -eq "$(grep -c 'settingsTab === ' desktop/src/App.tsx)"
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build ; test $? -eq 0
-    npm test      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-A', prompt: 'Y5', branch: 'loop/y5-a-design-tokens-and-one-visual-system', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #190 OPEN and stale (main moved 30+ times under it), labelled needs-human. Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'A token layer so the seven views stop each inventing their own colours, spacing and radii',
-  preflight: `
-    test -f desktop/src/tokens.css
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"
-    cd ${APP} && npm ci && npm run build
-  `,
-  spec: `
-    \`App.css\` is 2,789 lines with literal colours, spacings and radii repeated
-    throughout, which is mechanically why unrelated screens look like different
-    apps — the "looks broken, not smooth" report is largely inconsistency, not
-    any single broken screen.
-
-    Do:
-      * \`desktop/src/tokens.css\`: one \`:root\` block. Colour, elevation,
-        radius, spacing (a 4px-based scale), type scale, motion durations and
-        the two spring curves from the header. Name tokens by ROLE
-        (--surface-raised, --text-muted, --accent-urgent), never by value
-        (--gray-3). A role-named token survives a palette change; a
-        value-named one guarantees the next inconsistency.
-      * Migrate App.css and float.css to the tokens. Zero hex literals left in
-        either. The gate greps for that, so a partial migration fails.
-      * Keep the LOOK as it is in this item, to within a rounding error. This is
-        a refactor whose whole value is that it is invisible; changing the
-        palette at the same time makes every later visual diff unreadable.
-      * Palette: pin the retro/LCD palette the companion already uses so the
-        chrome and the character share one world instead of two
-        (feedback_companion_must_be_cute — chunky pixels, limited retro
-        palette). Read the palette off docs/prototypes/yappy-house.html and
-        src/home/YappyHouse.tsx rather than inventing one.
-      * Dark/light: whichever the app ships today is the one that must keep
-        working. Define both token sets if both exist; define one and say so if
-        only one does. Do not add a theme switcher in this item.
-
-    PR body owes a before/after screenshot of all seven views at both window
-    sizes, and the statement "no intentional visual change" with any unavoidable
-    diff called out by name.
-
-    What NOT to do:
-      - Do NOT add Tailwind or a CSS framework. The CSP is strict
-        (tauri.conf.json app.security.csp: style-src 'self' 'unsafe-inline',
-        no external hosts) and a framework here buys nothing.
-      - Do NOT restyle anything in this item. Y5-B..I do the visual work on top.
-  `,
-  acceptance: `
-    test -f desktop/src/tokens.css
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/App.css)"     # 0 literals left
-    test 0 -eq "$(grep -cE '#[0-9a-fA-F]{3,8}' desktop/src/float.css)"
-    grep -q -- '--surface' desktop/src/tokens.css
-    grep -q -- 'cubic-bezier(0.05, *0.6, *0.4, *0.95)' desktop/src/tokens.css
-    grep -q 'tokens.css' desktop/src/main.tsx desktop/src/float-main.tsx
-    cd ${APP} && npm ci && npm run build ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-B', prompt: 'Y5', branch: 'loop/y5-b-every-view-has-empty-loading-and-error-states', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #192 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'The "looks broken" fix: all seven views get a real empty state, a real loading state and a real error state',
-  preflight: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
-    cd ${APP} && npm ci && npm test -- states
-  `,
-  spec: `
-    MEASURED: \`git grep -c "empty-state\\|EmptyState\\|skeleton" -- desktop/src\`
-    returns one match in App.tsx and one in App.css, for seven views
-    (App.tsx:55-61: home, permissions, meetings, insights, dictionary,
-    scratchpad, settings). A fresh install has no history, no meetings, no
-    dictionary entries, no scratchpad notes and no insights — which is to say
-    every view a new user opens is in its least-designed state. That is the
-    first impression and it is the complaint.
-
-    For EACH of the seven views ship three states:
-      * EMPTY: one sentence saying what lives here, and ONE primary action that
-        creates the first thing. Home's empty action is "hold fn and say
-        something"; Dictionary's is "add a word"; Scratchpad's is "new note".
-        Never a shrug, never a bare illustration with no action.
-      * LOADING: a determinate state where the count is knowable and a calm
-        indeterminate one where it is not. Not a full-page spinner. Not a
-        skeleton that pulses forever (a skeleton with no timeout is how the
-        Drivia audit found nineteen pages "still loading at 15s").
-      * ERROR: what failed, in the user's terms, and the one button that retries
-        or fixes it. A DB error is "Yap could not open its history file", not an
-        SQLite code.
-    Mark each with \`data-empty-state\` / \`data-loading-state\` /
-    \`data-error-state\` so the gate can count them and a future browser walk
-    can assert them.
-
-    Two specific measured cases that must be covered by name:
-      * Home before the model is downloaded. \`status.modelReady\` and
-        \`needsPerms\` already gate a banner (App.tsx:2227) — make the whole view
-        coherent in that state rather than a normal view with a warning strip.
-      * Insights with zero takes. \`nav === "insights" && insights &&\`
-        (App.tsx:2953) renders NOTHING when \`insights\` is falsy — a blank
-        screen with a heading. That is a literal blank page in the shipped app.
-
-    Copy rules: sentence case, no exclamation marks, name the action in the
-    button ("Add a word", not "OK"), say what happens next rather than what went
-    wrong (feedback_think_ux_first).
-
-    Tests: extract each view's state decision into a pure function
-    (\`viewState(data, loading, error)\`) in \`desktop/src/viewState.ts\` with
-    \`viewState.test.ts\` covering the 3x7 matrix, so the assertions do not
-    require rendering 3,439 lines of App.tsx.
-
-    What NOT to do:
-      - Do NOT ship an empty state without an action.
-      - Do NOT use the same generic illustration for all seven. Generic is the
-        thing being fixed (feedback_no_generic_ui).
-      - Do NOT satisfy the gate by adding the attribute to a div that renders
-        nothing. The gate counts attributes; the reviewer looks at the
-        screenshots, and a hollow marker is a failed item.
-    PANEL 2026-09-12 — three corrections.
-      * Enumerate each view's REAL state set instead of demanding all three
-        everywhere. A permissions screen with nothing in it is a bug, not an
-        empty state, and a settings screen has no empty state either: those two
-        get loading + error plus a settled "nothing to fix here" state. The list
-        views (History, Meetings, Dictionary, Insights, Scratchpad) get all
-        three. Lower the counts to match the enumeration — markers that exist
-        only to satisfy a count are the hollow markers this item's own "What NOT
-        to do" forbids, and build mode runs NO reviewer to catch them.
-      * The gate that decides is Y0-E's structural smoke (it already fails a
-        view that renders zero rows with no \`data-empty-state\`), not an
-        attribute count. The counts are a cheap pre-flight.
-      * Scratchpad's shape changes in DB-D (a real second window, versions), so
-        its states are provisional here — say so in the PR body and do not build
-        them twice.
-      * Write the markers into the view MODULES (Y5-G has already moved them);
-        never into the App.tsx shell.
-
-  `,
-  acceptance: `
-    test 7 -le "$(grep -ro 'data-empty-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-loading-state' desktop/src --include=*.tsx | wc -l)"
-    test 7 -le "$(grep -ro 'data-error-state' desktop/src --include=*.tsx | wc -l)"
-    test -f desktop/src/viewState.ts
-    test -f desktop/src/viewState.test.ts
-    grep -q 'insights' desktop/src/viewState.test.ts
-    cd ${APP} && npm ci
-    npm test -- viewState ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build         ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-C', prompt: 'Y5', branch: 'loop/y5-c-the-full-pill-state-machine', gated: null,
-  notes: `STATUS 2026-09-26: MERGED (PR #193) in run wf_f6cd9dfa-860. Pre-flight on main should retire it; if pre-flight fails, the merged work regressed — say so, do not rebuild blind.`,
-  title: 'The pill gets every state the product has, including the transcribe/think gap Wilson named',
-  preflight: `
-    grep -q '"polishing"' desktop/src/pill/live.ts
-    grep -q '"pasting"' desktop/src/pill/live.ts
-    grep -q '"model_loading"' desktop/src/pill/live.ts
-    cd ${APP} && npm ci && npm test -- pill/live
-  `,
-  spec: `
-    \`LivePhase\` (live.ts:252) is \`idle | listening | thinking | done | sleepy\`.
-    PERM-C adds \`blocked\`, Y2-C adds \`gated\`, Y3-C adds \`transcribing\`. This
-    item completes the vocabulary against project_yap_pill_vision's list, which
-    is Wilson's own enumeration:
-
-      idle -> listening -> transcribing -> polishing -> pasting -> done
-      plus: error · blocked (permission) · gated (license) · model_loading ·
-            empty (nothing was said) · cancelled · sleepy
-
-    Add the missing ones — \`polishing\`, \`pasting\`, \`error\`, \`model_loading\`,
-    \`empty\`, \`cancelled\` — and make each REAL:
-      * \`polishing\` is distinct from \`transcribing\`. It is the LLM stage and it
-        has its own deadline (1200 ms, polish.rs:59), so its state has a
-        knowable duration and must not look like an indefinite wait.
-      * \`pasting\` exists because the paste is receipt-sequenced (YV39) and can
-        fail on its own — a failure there is an Accessibility problem, not a
-        transcription problem, and the pill must say the right one.
-      * \`empty\` is the YV16 no-speech / hallucination-gate outcome: Yap
-        correctly refuses to paste garbage, and today says nothing, so a user
-        experiences a dead hotkey. This state is the whole visible payoff of
-        that gate.
-      * \`model_loading\` covers YV80's lazy arm: the first dictation after
-        launch loads the engine while capture is already live (lib.rs:1156-1158).
-        The pill should say the engine is warming rather than appear stuck.
-      * \`error\` is the generic terminal state with a one-line reason from the
-        take's \`last_error\` (lib.rs:1147 sets it) — never a code.
-
-    Every phase needs: a duration policy (how long it holds), a next phase, and
-    a rendering that the SHELL places at ALL THREE dock positions — once, not
-    once per pill (OWNER DECISION 2026-09-13, top of this file). Both
-    ClassicPill and YappyPill ship; they are the first two characters, so what
-    each owes this item is PHASE COVERAGE AS DATA (a sprite/animation and copy
-    for every phase in every tone), never a second copy of the phase logic or of
-    the dock placement. Until Y5-K lands the registry, keep the per-character
-    data in the component that already holds it and DO NOT add a third branch
-    on \`pill_style\` anywhere outside those two components — Y5-K's first act
-    is to lift exactly that data out.
-    Put the policy in the pure state machine (live.ts) and only the rendering in
-    the components — the
-    file is already 310 lines of pure logic with 271 lines of tests precisely so
-    this is possible, and ci.yml calls out that vitest is a gate because a
-    regression here shipped once.
-
-    Also fix the state-gap problem directly: Wilson's words are "fill the dead
-    time after talking stops and before text appears". Assert in tests that
-    there is NO reachable sequence in which the pill sits in a single
-    undifferentiated phase across the whole post-hold pipeline. Concretely:
-    \`listening -> done\` with no intervening phase is illegal.
-
-    Tests, in \`desktop/src/pill/live.test.ts\`:
-      * a transition table test — every phase has a defined successor set, and
-        no phase is unreachable.
-      * \`no_path_from_listening_to_done_without_an_intermediate_phase\`
-      * \`every_phase_has_copy_in_every_tone\` — the tone presets are
-        rude|friendly|rose (live.ts:29) and \`companion_tone: "friendly"\` is the
-        default (lib.rs:412). A phase with no copy in one tone is a blank pill.
-      * \`every_phase_renders_within_the_side_dock_strip\`
-      * \`every_shipped_character_has_copy_and_art_for_every_phase\` — a table
-        test driven off the list of characters that ship (classic, yappy), so
-        adding a creature adds a row and not a test file. This is the fixture
-        matrix the character system formalises in Y5-K.
-      * precedence: blocked > gated > error > cancelled > the happy path.
-
-    Depends on PERM-C, Y2-C, Y3-C.
-
-    What NOT to do:
-      - Do NOT add a phase without copy in all three tones.
-      - Do NOT let a phase hold indefinitely with no timeout except \`idle\`,
-        \`listening\`, \`blocked\` and \`gated\` (the four that legitimately wait on
-        the user or the OS). Everything else has a deadline; say it in the table.
-    PANEL 2026-09-12 — PERM-C now lands the COMPLETE \`LivePhase\` union in one
-    commit (see PERM-C (b)), because six items across two unsynchronised lanes
-    were each adding a variant to the same 310-line pure module from their own
-    branch off main. So this item ADDS RENDERING AND COPY for phases that
-    already exist in the union; it does not edit the union. If a phase is
-    missing when this item starts, that is a signal PERM-C has not landed —
-    report it, add the rendering against the union as PERM-C specifies it, and
-    do not invent a differently-named variant.
-
-  `,
-  acceptance: `
-    grep -q '"polishing"' desktop/src/pill/live.ts
-    grep -q '"pasting"' desktop/src/pill/live.ts
-    grep -q '"model_loading"' desktop/src/pill/live.ts
-    grep -q '"empty"' desktop/src/pill/live.ts
-    grep -q '"cancelled"' desktop/src/pill/live.ts
-    grep -q '"error"' desktop/src/pill/live.ts
-    grep -q 'no_path_from_listening_to_done_without_an_intermediate_phase' desktop/src/pill/live.test.ts
-    grep -q 'every_phase_has_copy_in_every_tone' desktop/src/pill/live.test.ts
-    grep -q 'every_phase_renders_within_the_side_dock_strip' desktop/src/pill/live.test.ts
-    grep -q 'every_shipped_character_has_copy_and_art_for_every_phase' desktop/src/pill/live.test.ts
-    cd ${APP} && npm ci
-    npm test -- pill ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-D', prompt: 'Y5', branch: 'loop/y5-d-pill-physics-and-motion-from-the-parity-constants', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #196 OPEN and stale (main moved 30+ times under it). Rebase that PR onto main and finish it; do not open a second PR.`,
-  title: 'Soft-body pill motion using Wispr\'s measured spring constants, with Reduce Motion respected',
-  preflight: `
-    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
-    cd ${APP} && npm ci && npm test -- motion
-  `,
-  spec: `
-    reference_wispr_parity_research P0 #2: "Soft-body pill physics (M · D).
-    Wispr uses \`motion\` springs \`stiffness:600 damping:35 restDelta:0.05\` for
-    snappy morphs and \`stiffness:300 damping:28\` for the slower one, plus
-    \`cubic-bezier(0.05,0.6,0.4,0.95)\` at 100 ms for state changes and
-    300-400 ms for expand/collapse. Yappy should go further: a squash-and-
-    stretch response on click/drag and a settle bounce on dock. Why: Wilson's
-    exact words — 'bounces when touched, feels soft not stiff'."
-
-    Do:
-      * \`desktop/src/pill/motion.ts\` — a hand-written critically-damped spring
-        integrator (about forty lines) exposing the two named springs and the
-        state-change easing, driven off the rAF loop the pill ALREADY runs
-        (ClassicPill.tsx:48-62, which smooths \`--level\` and parks itself at
-        rest). Do not add a motion library: the CSP blocks external hosts and
-        the parked-rAF discipline from the YV81 energy pass must survive.
-      * Squash-and-stretch on press and on drag release; a settle bounce on dock
-        (the drag machinery is \`pill/drag.ts\`, YV65).
-      * Every morph between the Y5-C phases uses the 100 ms state-change curve;
-        expand/collapse uses 300-400 ms. One table, in motion.ts, so no
-        component hardcodes a duration.
-      * REDUCE MOTION: \`ClassicPill.tsx:44-47\` already paints one calm static
-        frame under \`prefers-reduced-motion: reduce\`. All new motion must be
-        behind the same check, and the information (phase, numeral, progress)
-        must still be fully present in the static frame. Assert it.
-      * ENERGY: the loop must still park when at rest. YV81 removed busy timers
-        on purpose and YV24 idle-throttles canvases; a spring that never settles
-        is a 60 fps rAF forever. Assert the integrator reaches rest and stops
-        scheduling frames within a bounded number of ticks.
-
-    Tests \`desktop/src/pill/motion.test.ts\`, pure and deterministic (inject the
-    timestep, never use real time):
-      * \`spring_600_35_settles_within_the_expected_tick_budget\`
-      * \`spring_never_overshoots_past_the_soft_limit\`
-      * \`reduce_motion_returns_the_target_immediately\`
-      * \`integrator_reports_at_rest_and_stops\`
-      * \`no_duration_literal_outside_motion_ts\` — a source sweep over
-        desktop/src/pill.
-
-    Depends on Y5-A (the motion tokens), Y5-C (the phases to morph between).
-
-    PR body owes a screen recording of press, drag, dock and a phase morph, plus
-    the same four with Reduce Motion on.
-
-    What NOT to do:
-      - Do NOT add framer-motion, motion, or GSAP.
-      - Do NOT animate the trial numeral (Y2-B forbids it) or any other
-        informational text.
-      - Do NOT let the spring run while the pill is idle and off-screen.
-  `,
-  acceptance: `
-    test -f desktop/src/pill/motion.ts
-    test -f desktop/src/pill/motion.test.ts
-    grep -q 'stiffness: 600' desktop/src/pill/motion.ts
-    grep -q 'damping: 35' desktop/src/pill/motion.ts
-    grep -q 'stiffness: 300' desktop/src/pill/motion.ts
-    grep -q 'reduce_motion_returns_the_target_immediately' desktop/src/pill/motion.test.ts
-    grep -q 'integrator_reports_at_rest_and_stops' desktop/src/pill/motion.test.ts
-    node -e "const d=require('./desktop/package.json').dependencies;process.exit(Object.keys(d).some(k=>/framer|^motion$|gsap|popmotion/.test(k))?1:0)"
-    cd ${APP} && npm ci
-    npm test -- pill/motion ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build           ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-E', prompt: 'Y5', branch: 'loop/y5-e-hover-hysteresis-and-alpha-hit-testing', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop. 2026-09-26: the lane-b worktree that held local commit 04e4a94 no longer exists (~/code/wilson-voice-loop is gone), so that partial work is lost — build from scratch.`,
-  title: 'The docked pill stops oscillating on the screen edge — the bug Wispr shipped a comment about',
-  preflight: `
-    grep -q 'inset: -12px' desktop/src/float.css
-    cd ${APP} && npm ci && npm test -- hitbox
-  `,
-  spec: `
-    reference_wispr_parity_research P0 #3, and the reason it is ranked P0:
-    "an invisible \`inset: -12px\` alpha margin painted only in the expanded
-    state, and a ~0.004-alpha background so the panel is clickable while
-    invisible. Why: without it, an edge-docked pill oscillates expand/collapse
-    when the cursor dwells on the screen edge — Wispr shipped a comment
-    explaining they hit exactly this." §4.4 is titled "Hit-testing and hover
-    (the part that breaks naive implementations)" and scores Yap ❌ with the note
-    "Yap will hit this exact bug", plus 🟡 "NSPanel ignores margin clicks" on
-    alpha hit-testing.
-
-    Yap has half the machinery: \`ClassicPill.tsx:38-42\` publishes the capsule's
-    rect via \`watchPillHitbox\` (YV65) "so the panel only takes the cursor over
-    the pill itself; the transparent shadow margin stays click-through".
-
-    Do:
-      * The \`::before\` alpha margin at \`inset: -12px\`, painted ONLY while
-        expanded. Painted always, it makes a 12 px dead zone around an idle
-        pill; painted never, the boundary oscillates. The conditionality IS the
-        fix.
-      * \`rgba(0,0,0,0.004)\` background on the hot area so the box is clickable
-        while visually absent.
-      * Feed the expanded rect (capsule + margin) to \`watchPillHitbox\` so the
-        NSPanel's ignore-mouse-events region matches what CSS is painting. A
-        margin CSS believes in and the panel does not is worse than no margin.
-      * Hysteresis in the state machine, not only in CSS: expand on enter,
-        collapse only after the cursor has been outside the EXPANDED rect for a
-        debounce. Put the thresholds in motion.ts's table.
-
-    Tests \`desktop/src/pill/hitbox.test.ts\`, pure over a
-    \`hoverState(rect, cursorPath)\` reducer:
-      * \`dwell_at_the_dock_edge_produces_at_most_one_transition\` — the exact
-        acceptance the parity note specifies: "simulated pointer dwell at the
-        dock edge produces <=1 state transition". Drive a synthetic path that
-        crosses the collapsed boundary repeatedly by one pixel.
-      * \`collapsed_pill_has_no_margin_dead_zone\`
-      * \`published_hitbox_matches_the_painted_rect_in_both_states\`
-      * all three dock edges.
-
-    Depends on Y5-D.
-
-    What NOT to do:
-      - Do NOT paint the margin in the collapsed state.
-      - Do NOT fix oscillation with a long timeout. A 500 ms lag on expand makes
-        the pill feel dead; hysteresis is a geometry fix, not a delay.
-  `,
-  acceptance: `
-    grep -q 'inset: -12px' desktop/src/float.css
-    grep -qE 'rgba\\(0, *0, *0, *0?\\.004\\)' desktop/src/float.css
-    test -f desktop/src/pill/hitbox.test.ts
-    grep -q 'dwell_at_the_dock_edge_produces_at_most_one_transition' desktop/src/pill/hitbox.test.ts
-    grep -q 'collapsed_pill_has_no_margin_dead_zone' desktop/src/pill/hitbox.test.ts
-    grep -q 'published_hitbox_matches_the_painted_rect_in_both_states' desktop/src/pill/hitbox.test.ts
-    cd ${APP} && npm ci
-    npm test -- hitbox ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-F', prompt: 'Y5', branch: 'loop/y5-f-error-toasts-that-say-what-to-do', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'One error surface, one sentence per failure, one action — replacing raw strings and silent failures',
-  preflight: `
-    test -f desktop/src/toast.ts
-    grep -q 'errorAdvice' desktop/src/errors.ts
-    cd ${APP} && npm ci && npm test -- toast
-  `,
-  spec: `
-    \`errors.ts\` is the right foundation and only half the job. It converts a
-    rejection to a sentence (\`errorText\`, errors.ts:27-30) and falls back to
-    \`String(e)\` — which is a raw Rust error string in front of a user. Nearly
-    every Tauri command in Yap answers \`Result<_, String>\` (errors.ts:3-4 says
-    so), so \`String(e)\` is the common path, not the rare one.
-
-    Do:
-      * An error CATALOGUE: \`errorAdvice(code) -> { line, action }\` in
-        errors.ts, keyed on the structured codes the backend already returns
-        (\`license_required\` exists at errors.ts:38; Y1/Y3 add
-        \`mic_permission_required\`, \`silent_capture\`, \`cancelled\`). Every code
-        Yap can emit gets a line and, where there is one, a button. An unknown
-        code gets a generic line that still tells the user what to do (open the
-        support bundle sheet, which already exists:
-        src/support/SupportBundleSheet.tsx).
-      * Make the backend emit codes where it emits strings on the take path.
-        Do NOT boil the ocean: the take path, the paste path, the model path and
-        the permission path. List the ones you converted in the PR body and
-        leave the rest as strings with the generic advice.
-      * ONE toast implementation, \`desktop/src/toast.ts\`, replacing whatever
-        ad-hoc surfaces exist (audit them first and say in the PR body how many
-        you found — \`git grep -n "note\\|setNote\\|banner" desktop/src/App.tsx\`
-        is the starting point; Onboarding.tsx has its own \`note\` string).
-        Queue, dedupe by code, auto-dismiss with a duration proportional to
-        length, manual dismiss, and a cap so a storm cannot cover the app.
-      * Errors also reach the PILL as \`error\` phase (Y5-C). Both surfaces, one
-        catalogue: the pill shows the line, the main window adds the action.
-      * A FAILURE MUST NEVER BE SILENT. Add a test that sweeps the take path for
-        \`Err(...)\` returns that reach no emit and no toast. If a full sweep is
-        impractical, enumerate the take path's error returns explicitly in the
-        test and assert each is surfaced — an explicit list that must be updated
-        is better than a clever grep that proves nothing.
-
-    Tests: \`desktop/src/toast.test.ts\` (queue, dedupe, cap, duration) and
-    \`desktop/src/errors.test.ts\` extended (it exists, 1 case at errors.test.ts:6)
-    — every catalogued code has a non-empty line; no line contains a Rust type
-    name, \`Error(\`, \`unwrap\` or a file path.
-
-    What NOT to do:
-      - Do NOT show a raw error string. If you have nothing better, say "Yap
-        could not finish that take" and offer the support bundle.
-      - Do NOT add Sentry or PostHog. Local crash capture (crash.rs) is the
-        observability stack (feedback_queryguard).
-      - Do NOT stack more than the cap. Three visible toasts is a broken app.
-  `,
-  acceptance: `
-    test -f desktop/src/toast.ts
-    test -f desktop/src/toast.test.ts
-    grep -q 'errorAdvice' desktop/src/errors.ts
-    grep -q 'every_catalogued_code_has_a_human_line' desktop/src/errors.test.ts
-    grep -q 'no_line_leaks_a_rust_type_or_path' desktop/src/errors.test.ts
-    test 0 -eq "$(git grep -ci 'sentry\\|posthog' -- desktop | wc -l)"
-    cd ${APP} && npm ci
-    npm test -- toast  ; test $? -eq 0
-    npm test -- errors ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build      ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-J', prompt: 'Y5', branch: 'loop/y5-j-focus-names-announcements-and-contrast-floors', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'The accessibility floor: a focus ring, an accessible name per state, one live region, a contrast bar on the token layer',
-  preflight: `
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
-    cd ${APP} && npm ci && npm test -- a11y
-  `,
-  spec: `
-    PANEL 2026-09-12. This loop adds roughly thirteen pill phases and
-    twenty-one view states and not one item requires a focus ring, an
-    accessible name, an announcement or a contrast ratio. MEASURED at 4e8c9adf:
-      grep -rniE 'aria|screen ?reader|focus-visible|contrast|WCAG' over all item
-        files -> only prefers-reduced-motion hits
-      desktop/src/App.css — three focus-related selectors in 2,789 lines
-        (:957, :1408, :2397)
-      desktop/src/pill/ClassicPill.tsx:142-144 — one aria-label covering three
-        of the planned thirteen phases
-      only pill/MeetingBadge.tsx:53 has aria-live
-      desktop/src/App.tsx:2228 — a clickable <div className="banner warn">
-      desktop/src-tauri/src/float_pill.rs:355 \`.focused(false)\` + the
-        non-activating NSPanel: every pill affordance is mouse-only
-    Y5-A freezes the look while centralising every colour, so the one cheap
-    moment to fix contrast is the moment the plan forbids touching it. Hence a
-    separate item, after Y5-G's split and after the states exist.
-
-    Do:
-      * A contrast test over the token pairs in tokens.css: 4.5:1 for body text,
-        3:1 for large text and UI boundaries. A failing pair is a failed item,
-        not a TODO — adjust the token, and say which.
-      * Every state Y5-B added: its primary action is a real \`<button>\` and is
-        keyboard reachable; \`:focus-visible\` is styled once, globally.
-      * Every pill phase supplies an accessible name, and the pill root carries
-        \`aria-live="polite"\` so a state change is announced once, not on every
-        frame. Because the panel is non-activating, any affordance the pill
-        gains must ALSO be reachable from the main window or a binding — state
-        which, per affordance.
-      * Sweep the clickable divs (App.tsx:2228 and its siblings) into buttons.
-
-    What NOT to do:
-      - Do NOT add an accessibility library or a linter plugin to satisfy this.
-      - Do NOT put aria-live on the pill's frame-by-frame amplitude value.
-  `,
-  acceptance: `
-    test -f desktop/src/a11y/contrast.test.ts
-    grep -q 'every_token_pair_meets_its_contrast_floor' desktop/src/a11y/contrast.test.ts
-    grep -q 'every_phase_has_an_accessible_name' desktop/src/pill/live.test.ts
-    grep -rq 'aria-live' desktop/src/pill
-    test 12 -le "$(grep -ro 'focus-visible' desktop/src --include=*.css | wc -l)"
-    test 0 -eq "$(grep -rn 'className="banner warn"' desktop/src --include=*.tsx | wc -l)"
-    cd ${APP} && npm ci
-    npx tsc --noEmit ; test $? -eq 0
-    npm test         ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-I', prompt: 'Y5', branch: 'loop/y5-i-vertical-dock-as-the-css-base', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'Rebuild the docked pill with vertical as the CSS base — the architecture Wispr abandoned trying the other way',
-  preflight: `
-    grep -q 'data-bar-position' desktop/src/float.css
-    grep -q -- '--flow-bar-length' desktop/src/float.css
-    cd ${APP} && npm ci && npm test -- dock
-  `,
-  spec: `
-    THE MOST IMPORTANT ARCHITECTURAL NOTE IN THE PARITY RESEARCH, verbatim from
-    reference_wispr_parity_research (MUST-KNOW section, primary-sourced from the
-    extracted bundle): "Wispr's vertical bar is NOT a rotated horizontal capsule
-    — vertical/column layout is the CSS BASE and horizontal is the override,
-    with orientation-neutral tokens (\`$flow-bar-length\`/\`$flow-bar-thickness\`);
-    their first rotate-the-capsule attempt failed (their comment records the
-    '30x6-always-horizontal collapse bug'). Only the primary listening states
-    (ready/activePtt/activePopo) rotate into the strip — processing/error/
-    completion banners STAY horizontal even when side-docked (fixed-width labels
-    crush in a 30px column). Waveform inverts axis when docked (side dock = 2px
-    bars animating on X). Yap's current YV53/65 move-the-capsule approach is the
-    exact architecture Wispr abandoned — the design loop must rebuild with
-    vertical-as-base."
-
-    §4.2 gives the exact geometry table to build against, per state, with the
-    side-dock overrides. Use it as the golden table; it is [BUNDLE]-sourced:
-      resting 8x40 rgba(0,0,0,.5) 1px rgba(255,255,255,.5) border radius 6 ·
-      ready 30x50 solid radius 22.5 · activePtt 30x73 ·
-      activePopo 30x102.5 (+cancel/stop, row gap 8; padding 6px 0 on side docks) ·
-      processing 30x98 padding 12px 6px, STAYS HORIZONTAL in both docks ·
-      polishProcessing 136x30, on side docks column with label hidden and the
-      progress fill flipping bottom-up · polishCompleted 30x152, side dock
-      152x30 · error 30x91 stays horizontal · navigationActive 72x84 gap 4.
-
-    Do:
-      * Orientation-neutral tokens \`--flow-bar-length\` / \`--flow-bar-thickness\`
-        in tokens.css (Y5-A). Column layout is the BASE. \`[data-bar-position]\`
-        on the pill root supplies the bottom-dock horizontal override.
-      * Map every Y5-C phase onto the table: which rotate into the strip and
-        which stay horizontal. Yap has phases Wispr does not (blocked, gated,
-        transcribing); decide and DOCUMENT each one's orientation, with the
-        30 px-crush rule as the deciding test.
-      * The waveform inverts axis on a side dock (2 px bars animating on X).
-        ClassicPill.tsx drives 9 bars off a \`--level\` CSS var
-        (ClassicPill.tsx:20, :52) — that is already the right seam; make the
-        axis a token.
-      * A golden geometry test: for each of \`left|right|bottom\` x each phase,
-        assert the rendered bounding box matches the table, and that NO state
-        exceeds the 30 px strip on a side dock. This is verbatim the parity
-        note's own acceptance for P0 #1.
-
-    Tests \`desktop/src/pill/dock.test.ts\` with the table as a committed
-    fixture \`desktop/src/pill/dock-geometry.json\` so the numbers are reviewable
-    as data.
-
-    Depends on Y5-A, Y5-C, Y5-D, Y5-E. This item supersedes the YV53/65
-    move-the-capsule approach; delete that code path rather than leaving both.
-
-    What NOT to do:
-      - Do NOT rotate the horizontal capsule with a CSS transform. That is the
-        approach Wispr tried and abandoned, and their bug comment is the evidence.
-      - Do NOT force the banner states into the column. They crush; the research
-        says so explicitly and the golden table encodes it.
-      - Do NOT keep the old positioning code alongside the new base.
-    PANEL 2026-09-12, SUPERSEDED BY THE OWNER DECISION 2026-09-13 — THE
-    GEOMETRY TABLE BELONGS TO THE SHELL AND IS CHARACTER-INDEPENDENT. The panel
-    said "scope it to ClassicPill" because it read the two pills as two products
-    and expected one to be cut. Both ship (top of this file), so scoping the
-    table to one of them would have left the other with no dock contract at all.
-    The correct target is the PILL SHELL: the measured Wispr per-state box
-    (8x40 resting, 30x50 ready, 30x73, 30x102.5, 136x30 polishing ...) is the
-    size and orientation of the WINDOW CONTENT BOX for a phase, and every
-    character renders INSIDE that box. So:
-      * \`dock-geometry.json\` is the shell's table, keyed by phase x dock, with
-        NO style dimension in it. One table, forever, for every creature.
-      * A character declares only how it fills the box it is given — a pixel
-        character on an LCD pod scales or crops to the box, and a capsule paints
-        it. If a character cannot render a phase inside the box the table gives
-        it, that is a CHARACTER defect and the character's fallback covers it;
-        it is never a reason to fork the table.
-      * The golden test asserts the SHELL's boxes. The per-character sweep is
-        Y5-C's completeness table and Y5-K's registry contract test, not this one.
-      * Do not delete either renderer, and do not add a style dimension to the
-        fixture.
-
-  `,
-  acceptance: `
-    grep -q 'data-bar-position' desktop/src/float.css
-    grep -q -- '--flow-bar-length' desktop/src/tokens.css
-    grep -q -- '--flow-bar-thickness' desktop/src/tokens.css
-    test -f desktop/src/pill/dock-geometry.json
-    test 0 -eq "$(grep -c 'pill_style\\|pillStyle\\|classic\\|yappy' desktop/src/pill/dock-geometry.json)"
-    test -f desktop/src/pill/dock.test.ts
-    grep -q 'no_state_exceeds_the_thirty_pixel_strip_on_a_side_dock' desktop/src/pill/dock.test.ts
-    grep -q 'banner_states_stay_horizontal_in_every_dock' desktop/src/pill/dock.test.ts
-    grep -q 'waveform_axis_inverts_on_a_side_dock' desktop/src/pill/dock.test.ts
-    test 0 -eq "$(grep -c 'transform: rotate' desktop/src/float.css)"
-    cd ${APP} && npm ci
-    npm test -- dock ; test $? -eq 0
-    npm test         ; test $? -eq 0
-    npx tsc --noEmit ; test $? -eq 0
-    npm run build    ; test $? -eq 0
-  `,
-})
-
-ITEMS.push({
-  id: 'Y5-K', prompt: 'Y5', branch: 'loop/y5-k-pill-character-system-and-habitat-layer', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
-  title: 'The pill becomes a pluggable character system, and the habitat comes back as its habitat layer',
-  preflight: `
-    test -f desktop/src/pill/characters/registry.ts
-    test -f desktop/src/pill/characters/characters.test.ts
-    test -d desktop/src/home/habitat
-    cd ${APP} && npm ci && npm test -- characters
-  `,
-  spec: `
-    OWNER DECISION 2026-09-13 (Wilson), and it REINSTATES \`Y5-H\`, which the
-    panel killed on a two-seat convergence. Wilson, verbatim: "I thought we were
-    gonna develop it and then make more characters and make it more flexible ...
-    there's a classic pill and there's a yappy pill and there's gonna be
-    different pills with the different creatures that are coming."
-
-    The panel's cost objection was CORRECT and is not waved away: a second pill
-    style doubles the render and test surface of every pill item, and Y5-C alone
-    was 13 phases x 2 styles x 3 docks. The remedy is structural. The shell
-    stops knowing about creatures and the creatures stop knowing about the
-    shell, so the matrix stops multiplying.
-
-    THIS ITEM RUNS LAST IN THIS FILE ON PURPOSE: shell first (Y5-A tokens, Y5-C
-    phases, Y5-D motion, Y5-E hit-testing, Y5-I dock geometry), then the
-    characters, then the habitat. Do not start it before Y5-I has landed — the
-    shell's box contract is the thing the character interface is defined
-    against.
-
-    (1) THE SHELL / CHARACTER SEAM.
-      * \`desktop/src/pill/characters/types.ts\` — ONE interface. A character is
-        \`{ id, label, render(frame) }\` where \`frame\` is what the shell already
-        computed: \`{ phase, tone, level, box: {w,h}, dock, reducedMotion }\`.
-        A character receives a BOX and paints inside it. It never reads
-        \`pill_style\`, never reads settings, never reads license state, never
-        positions a window, never knows a dock exists beyond the axis hint in
-        \`frame\`.
-      * \`registry.ts\` — \`registerCharacter()\` + \`characters()\`. The shell
-        resolves \`settings.pill_style\` to a registered id ONCE, at the mount
-        point, and falls back to \`classic\` for an unknown id rather than
-        rendering nothing. \`pill_style\` stays a free string in
-        \`AppSettings\` (lib.rs:234-235, default "classic", lib.rs:366/411) —
-        do NOT turn it into a Rust enum: a new creature must be shippable
-        without touching Rust.
-      * PORT, do not rewrite: \`ClassicPill.tsx\` and \`YappyPill.tsx\` become
-        \`characters/classic/\` and \`characters/yappy/\` with their phase art and
-        copy as DATA, and everything that is not the creature — the capsule
-        chrome, the waveform placement, dock geometry, hover hysteresis, the
-        license chip placement, aria names — moves UP into the shell. The two
-        characters must end up with NO duplicated shell logic between them; that
-        deduplication is the whole point and it is measurable (see acceptance).
-      * A NEW CREATURE IS A NEW MODULE PLUS A FIXTURE ROW, WITH NO SHELL CHANGE.
-        Prove it: the item ships a third, deliberately minimal character
-        (\`characters/example/\`) whose only purpose is to be the proof that the
-        seam holds, and the contract test registers it with zero shell edits.
-
-    (2) THE TEST MATRIX STOPS DUPLICATING.
-      * The shell owns phase x dock. That suite runs ONCE, character-agnostic,
-        against \`dock-geometry.json\` (Y5-I).
-      * Each registered character is swept by ONE data-completeness contract
-        test over the registry: every phase in the \`LivePhase\` union, in every
-        tone (rude|friendly|rose, live.ts:29), has art and copy; nothing exceeds
-        the box it was handed; \`imageSmoothingEnabled\` is false wherever a
-        character paints to a canvas.
-      * Registering an INCOMPLETE character must turn that contract test RED.
-        That is the test's reason to exist and it is the item's mutation proof.
-
-    (3) THE HABITAT LAYER — the reinstated \`Y5-H\`, with its design note
-        preserved in docs/loop/DEFERRED.md §1. \`desktop/src/home/YappyHouse.tsx\`
-        is 919 lines of working real-clock canvas scene with an ambient
-        director; this is a REFACTOR PLUS A LAYER, not a rewrite.
-      * \`desktop/src/home/habitat/\` — the habitat is the CHARACTER'S WORLD, and
-        it is selected by the same registered character id, so a new creature
-        brings its own pod. Split what exists into: the director (clock,
-        routines, intent pathing), the scene (pod interior, dithered depth,
-        parallax), and the character's own idle/reaction sprites, which come
-        from the SAME character module the pill uses — one creature, two
-        surfaces, one source of art.
-      * EVENT-DRIVEN REACTIONS, from the design note: a take starting, a paste
-        landing, a model finishing its download. The habitat subscribes to the
-        same events the pill does; it never polls.
-      * Routines on a real clock and intent pathing rather than a random walk.
-      * AESTHETIC LOCK, unchanged and binding (top of this file): pixel art,
-        chunky pixels, \`imageSmoothingEnabled = false\`, limited retro palette,
-        Tamagotchi / Bitzee. Hand-coded. NOT smooth vector. No angled "angry"
-        eyebrows. Paper/origami is REJECTED.
-      * Wilson's taste is the real gate on the ART and cannot be automated in a
-        build-first pass — which is why this item's acceptance gates the
-        STRUCTURE (the seam, the completeness sweep, the deduplication, the
-        no-shell-change proof) and the PR body carries the screenshots and a
-        recording of the habitat for him to judge. Say that in the PR body.
-
-    Depends on Y5-A, Y5-C, Y5-D, Y5-E, Y5-I. Consumes PERM-C's complete
-    \`LivePhase\` union.
-
-    What NOT to do:
-      - Do NOT delete either shipped character. Both ship.
-      - Do NOT let a character read settings, license state or dock position
-        directly. Everything it needs arrives in \`frame\`.
-      - Do NOT add a style dimension to \`dock-geometry.json\`.
-      - Do NOT turn \`pill_style\` into a Rust enum or a TypeScript union of two
-        literals — the whole point is that the next creature is additive.
-      - Do NOT rewrite YappyHouse from scratch, and do not lose its ambient
-        director.
-      - Do NOT smooth the pixels.
-  `,
-  acceptance: `
-    test -f desktop/src/pill/characters/types.ts
-    test -f desktop/src/pill/characters/registry.ts
-    test -d desktop/src/pill/characters/classic
-    test -d desktop/src/pill/characters/yappy
-    test -d desktop/src/pill/characters/example
-    test -f desktop/src/pill/characters/characters.test.ts
-    test -d desktop/src/home/habitat
-    test -f desktop/src/home/habitat/habitat.test.ts
-    grep -q 'registerCharacter' desktop/src/pill/characters/registry.ts
-    grep -q 'every_registered_character_covers_every_phase_in_every_tone' desktop/src/pill/characters/characters.test.ts
-    grep -q 'a_character_never_exceeds_the_box_the_shell_hands_it' desktop/src/pill/characters/characters.test.ts
-    grep -q 'a_new_creature_needs_no_shell_change' desktop/src/pill/characters/characters.test.ts
-    grep -q 'imageSmoothingEnabled' desktop/src/pill/characters/characters.test.ts
-    grep -q 'the_director_runs_on_the_real_clock_not_a_random_walk' desktop/src/home/habitat/habitat.test.ts
-    grep -q 'the_habitat_reacts_to_take_paste_and_model_events' desktop/src/home/habitat/habitat.test.ts
-    test 0 -eq "$(grep -rc 'pill_style\\|pillStyle' desktop/src/pill/characters | grep -v ':0$' | wc -l | tr -d ' ')"
-    test 0 -eq "$(grep -rl 'data-bar-position' desktop/src/pill/characters | wc -l | tr -d ' ')"
-    test 0 -eq "$(grep -c 'classic\\|yappy' desktop/src/pill/dock-geometry.json)"
-    cd ${APP} && npm ci
-    npm test -- characters ; test $? -eq 0
-    npm test -- habitat    ; test $? -eq 0
-    npm test               ; test $? -eq 0
-    npx tsc --noEmit       ; test $? -eq 0
-    npm run build          ; test $? -eq 0
-    printf '\\nregisterCharacter({ id: "mutant", label: "mutant", render: () => null });\\n' >> src/pill/characters/registry.ts
-    npm test -- characters ; test $? -ne 0
-    cd .. && git checkout -- desktop/src/pill/characters/registry.ts
-    git diff --exit-code -- desktop/src/pill/characters/registry.ts
-  `,
-})
-
 
 // ── RUN ─────────────────────────────────────────────────────────────────────
 phase('Recon')
@@ -6289,6 +5506,8 @@ Report every close in closed[].
 klass = "security" if ANY of these is true, else "standard":
   - the PR touches ${SECURITY_PATHS}
   - its title's item id matches ${SECURITY_IDS}
+  - node ${LOCAL_REPO}/scripts/loop/review-gate.mjs klass --pr <n> prints "security ..." — the land gate classifies with this, so
+    if it says security, so do you; if it fails, classify security
 A security PR gets a SECOND reviewer with a liveness / failure-polarity / data-and-permission lens,
 and therefore costs two of the run's three agent seats at once. Classify honestly: over-classifying
 halves this pass's throughput, under-classifying is how a permission or signing regression ships.
@@ -6334,7 +5553,7 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
   // one chain never idles the other: it simply takes the next PR the moment a seat frees.
   await Promise.all([reviewChain(0), reviewChain(1)])
 
-  const pending = reviewOutcomes.filter((r) => r && r.status === 'ci-pending')
+  const pending = reviewOutcomes.filter((r) => r && (r.status === 'ci-pending' || r.status === 'review-pending'))
   log(`both review chains finished: ${reviewOutcomes.length} PR(s) processed, ${pending.length} left ci-pending for the sweeper`)
 
   const sweep = await agentR(
@@ -6342,7 +5561,8 @@ ${GUARD(BOTH_REVIEW_DIRS)}`,
 previous pass — so every PR that could not be settled when its fix+land agent finished was recorded
 ci-pending and left open. You settle them, and nothing else.
 
-CI-PENDING PRs FROM THIS PASS:
+CI-PENDING AND REVIEW-PENDING PRs FROM THIS PASS (a review-pending PR lands ONLY if a reviewer seat has
+since posted a PASS on its current head — the review gate decides; you never review it yourself):
 ${JSON.stringify(pending.map((r) => ({ pr: r.pr, item: r.itemId, klass: r.klass })), null, 1)}
 Treat that list as the starting point, not the boundary: also re-list
     gh pr list -R ${REPO} --state open --label ${LOOP_LABEL} --json number,title,headRefOid,mergeable
@@ -6461,15 +5681,19 @@ const drain = await agentR(
    REPORT-ONLY FOR THIS RUN'S OWN UNREVIEWED PRs. Every PR labelled ${LOOP_LABEL} whose body starts
    with "${UNREVIEWED_PREFIX}" is waiting for the REVIEW PASS, not for you. Do NOT merge one that is
    conflicting or red, and do not review one yourself: list them with their mergeStateStatus and
-   leave them open. A build-mode LAND step merges the green ones; the review pass settles the rest.
+   leave them open. The review pass reviews them; a LAND step merges only what a reviewer passed.
    THE PRE-EXISTING feat/yv1xx PRs ARE YOURS TO SETTLE, AND THIS IS THE RUN THAT SETTLES THEM.
    They are weeks old, they carry no ${LOOP_LABEL} label, and nothing has closed them in four
-   sessions. For EACH: rebase onto main and merge it if it still makes sense and the gate is green,
+   sessions. For EACH: rebase onto main and merge it if it still makes sense, the gate is green AND the
+   review gate below passes on its head (it carries no reviewer record, so expect review-pending),
    or CLOSE it with the evidence that supersedes it (name the sha or PR on main that did the work,
    or state plainly that the work was abandoned). "Still open, stale" is not an outcome. A stale PR
    nobody closes is the backlog that grows with every run.
 
 ${MERGE_BAR}
+EVERY MERGE THE DRAIN MAKES GOES THROUGH THE REVIEW GATE — a PR you rebased has a new head and needs a
+fresh reviewer PASS on it, and you never post one:
+${REVIEW_GATE_STEP}
    Enumerate every blocking finding and its disposition in your returned payload as
    blockingDispositions: [{finding, disposition: "fixed"|"refuted", evidence}].
    If ANY blocking finding is neither fixed nor refuted, DO NOT MERGE — leave the PR open and say
