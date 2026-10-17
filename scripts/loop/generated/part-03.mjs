@@ -681,16 +681,31 @@ const fixRoundHead = (fix, reviewedHeads) => {
   return { changed: true, after, before, why: '' }
 }
 /**
- * LAND's review-gate line, when it is a BLOCK (or an outside-seat needs-human) on a head this pass's reviewers
- * already reviewed: that BLOCK is FINAL for the head, so review-pending would re-queue it forever → needs-human.
- * A line naming a head none of the reviewers recorded (or no readable head at all) maps to needs-human too.
+ * LAND's review-gate line when it is a BLOCK (or an outside-seat needs-human) → that line, annotated with which
+ * head it names; '' when the gate did not BLOCK. EVERY such line maps to needs-human (fails closed), whichever of
+ * the three it is:
+ *   - the head this pass's reviewers recorded: the BLOCK is FINAL for it, so review-pending would re-queue it forever;
+ *   - a head NO reviewer in this pass recorded: the PR moved, or a reviewer misreported its head — a human decides;
+ *   - no readable head in the line (or no reviewer head to compare): unknown, so a human decides.
  */
 const landBlockedLine = (land, reviewedHeads) => {
   const m = asText(land).match(/"reviewGate"\s*:\s*"(review: (?:BLOCK|needs-human)[^"]*)"/i)
   if (!m) return ''
   const sha = (m[1].match(/ on ([0-9a-f]{7,40})\b/i) || [])[1]
   const heads = (reviewedHeads || []).map((h) => String(h || '').toLowerCase()).filter((h) => SHA40.test(h))
-  return !sha || !heads.length || heads.some((h) => h.startsWith(sha.toLowerCase())) ? m[1] : ''
+  const which = !sha || !heads.length ? 'no readable head to compare'
+    : heads.some((h) => h.startsWith(sha.toLowerCase())) ? 'the head this pass reviewed'
+    : `head ${sha} — one NO reviewer in this pass recorded`
+  return `${m[1]} [${which}]`
+}
+/**
+ * After a fix round: did the re-review read a head an EARLIER round of this pass already read? Independent of
+ * anything the fixer reports (review-opus round 4 advisory). → the repeated head, or ''.
+ */
+const repeatedReviewHead = (rounds, current) => {
+  const heads = (vs) => vs.map((v) => String((v && typeof v === 'object' && v.recordHead) || '').toLowerCase()).filter((h) => SHA40.test(h))
+  const earlier = new Set((rounds || []).flatMap((r) => heads([r.primary, r.lens])))
+  return heads(current).find((h) => earlier.has(h)) || ''
 }
 /**
  * The triage agent returns {queue:[...], closed:[...]}. A seat's payload may arrive as a typed
@@ -1537,7 +1552,15 @@ ${COMMIT_CONTRACT}
     }
     const primaryBlocked = saysBlock(primary) && !isMalformedBlock(primary)
     const lensBlocked = lens !== null && saysReviewed(lens) && saysBlock(lens) && !isMalformedBlock(lens)
+    const repeated = round > 0 ? repeatedReviewHead(rounds, [primary, lens]) : ''
     rounds.push({ round, primary, lens, primaryBlocked, lensBlocked })
+    if (repeated) {
+      // The fix round's re-review read the SAME head an earlier round read: no new head, whatever the fixer said.
+      const why = `fix round ${round}: the re-review recorded head ${repeated.slice(0, 9)}, which an earlier round of this pass already reviewed — no new head; refuted findings: ${JSON.stringify(prior && prior.dispositions).slice(0, 1500)}`
+      const hold = await withAgents(1, () => agentR(fixLandPrompt('hold', round, why), { model: 'opus', effort: 'high', phase: itemId, label: `fix-land:${itemId}` }))
+      log(`PR#${pr} (${itemId}, ${klass}): ${why} -> needs-human (no LAND)`)
+      return { itemId, pr, klass, chain: REVIEW_TAGS[chain], status: 'needs-human', blocked: true, rounds, reason: why, land: hold }
+    }
     if (primaryBlocked || lensBlocked) blocked = true
     if (!primaryBlocked && !lensBlocked) {
       const silent = [['review-opus', primary], ...(seats === 2 ? [['review-opus2', lens]] : [])].filter(([, v]) => noVerdict(v)).map(([w]) => w)
@@ -1653,9 +1676,9 @@ gh pr comment -R ${REPO} ${pr} --body "Fix round ${fixRound} — fixer dispositi
 
 <each blocking finding, its disposition fixed|refuted, and the hunk or evidence>"
 Never title that comment as a review, never start it with the reviewer record marker, and never use
-gh pr review. Never begin any line of a comment with the reviewer record marker (the first line of a reviewer
-record, which you do not need to name or quote): the gate reads a comment with that marker at a line start as a
-record, and one that is not a reviewer's clean PASS is a BLOCK on that head. Advisory findings stay where the reviewer posted them — never a new PR.
+gh pr review. Never write the reviewer record marker (the first line of a reviewer record) anywhere in a
+comment — not quoted, not mid-sentence — and never write a "verdict:" line: the gate reads a comment that names
+the marker and carries a BLOCK verdict line as a BLOCK on that head, wherever the marker sits. Advisory findings stay where the reviewer posted them — never a new PR.
 
 RETURN: {itemId: "${itemId}", pr: ${pr || 0}, status: "fixed"|"no-new-head"|"needs-human"|"needs-rebase"|"closed-superseded",
          headBefore: "<headRefOid from step 0>", head: "<the headRefOid after your push (headBefore when nothing was pushed)>", rebased: true|false, conflictsResolved: [...],

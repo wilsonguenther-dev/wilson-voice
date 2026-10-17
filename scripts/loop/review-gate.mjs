@@ -28,9 +28,14 @@
  * Not a record, ever: an author outside REVIEW_AUTHORS (the account the seats post as); a bot author.
  *
  * RECOGNITION (review-opus B3) — liberal for BLOCK, strict for PASS. From an allowed author:
- *   - ANY comment with a line that STARTS with "loop-review" (``` / ~~~ fence lines stripped first; leading
- *     markdown — bold, quote, heading, list — allowed) is a record; a mid-sentence mention is not (review-opus2,
- *     round 3: a finding that quotes the word must not park a harness PR);
+ *   - a comment with "loop-review" ANYWHERE (``` / ~~~ fence lines stripped first) AND any line matching
+ *     BLOCK_LINE_RE is a BLOCK — no positional rule (`1. loop-review`, `| loop-review |`, `<b>loop-review</b>`,
+ *     an emoji or `Re:` before it, a mid-sentence mention above an explicit verdict line: all BLOCK);
+ *   - a comment with the marker and NO verdict line at all is an unparsable BLOCK only when the marker starts a
+ *     line (MARKER_RE, leading markdown allowed); a verdict-less mid-sentence mention is not a record. This is
+ *     the ONLY place the line-start rule applies (review-opus round 4);
+ *   - a marker anywhere plus a verdict line that is neither BLOCK nor a clean PASS (`verdict: FAIL`) is an
+ *     unparsable BLOCK;
  *   - any line matching BLOCK_LINE_RE /verdict\s*:.*\bBLOCK\b/i — bold, "Verdict :", a blank line between header
  *     lines, in the notes, inside a fence — makes it a BLOCK (blocking= missing or unparsable → 1);
  *   - it is a PASS ONLY when it is a CLEAN header: first non-empty line the marker, each field once, seat in
@@ -117,6 +122,8 @@ const SHA_RE = /^[0-9a-f]{40}$/
 export const BLOCK_LINE_RE = /verdict\s*:.*\bBLOCK\b/i
 /** The marker at a LINE START (markdown decoration allowed); a mid-sentence mention is not a record. */
 const MARKER_RE = /^[\s*_>#`~-]*loop-review/i
+const MARKER_ANYWHERE_RE = /loop-review/i
+const VERDICT_LINE_RE = /verdict\s*:/i
 const FENCE_RE = /^(?:```|~~~)/
 const HEAD_LINE_RE = /\bhead\W*:\W*([0-9a-f]{7,40})(?![0-9a-f])/gi
 const SEAT_LINE_RE = /^\W*seat\W*:\W*([\w.-]+)/i
@@ -162,10 +169,12 @@ function cleanPass(lines) {
 export function parseRecord(body) {
   const lines = String(body || '').split('\n').map((l) => l.trim())
   const text = lines.filter((l) => !FENCE_RE.test(l))
-  if (!text.some((l) => MARKER_RE.test(l))) return null
+  if (!text.some((l) => MARKER_ANYWHERE_RE.test(l))) return null
   const explicit = text.some((l) => BLOCK_LINE_RE.test(l))
   const clean = explicit ? null : cleanPass(lines)
   if (clean && clean.kind === 'pass') return clean
+  // Verdict-less: a record only when the marker starts a line; a mid-sentence mention with no verdict is prose.
+  if (!explicit && !text.some((l) => VERDICT_LINE_RE.test(l)) && !text.some((l) => MARKER_RE.test(l))) return null
   const seats = [...new Set(text.map((l) => l.match(SEAT_LINE_RE)).filter(Boolean).map((m) => m[1]))]
   const heads = [...new Set([...text.join('\n').matchAll(HEAD_LINE_RE)].map((m) => m[1].toLowerCase()))]
   const bm = explicit ? text.filter((l) => BLOCK_LINE_RE.test(l)).map((l) => l.match(/blocking\W*=\W*(\d+)/i)).find(Boolean) : null

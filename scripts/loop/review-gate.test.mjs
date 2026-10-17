@@ -368,8 +368,9 @@ test('(i) build.mjs --validate-only FAILS when the real fix-land prompt is hande
 
 // ── round 3: marker at line start; refute-only fix round; LAND BLOCK → needs-human (review-opus2 B1 on #222) ──
 test('MARKER: a mid-sentence mention is not a record; a line-start marker (markdown allowed) still is and fails closed', () => {
-  assert.equal(parseRecord('the finding quotes the loop-review marker mid-sentence; verdict: BLOCK is in the old record'), null)
-  assert.equal(gate(fixture({ comments: [rec(), body('as the earlier loop-review said, verdict: BLOCK')] })).code, 0)
+  // verdict-less mid-sentence mention: prose, not a record
+  assert.equal(parseRecord('the finding quotes the loop-review marker mid-sentence and nothing else'), null)
+  assert.equal(gate(fixture({ comments: [rec(), body('as the earlier loop-review said, the updater is fine')] })).code, 0)
   for (const b of ['loop-review (Opus)\nverdict: BLOCK', '  **loop-review** — verdict: FAIL', '> loop-review (Opus)\n> seat: x', '```\nloop-review (Opus)\n```']) {
     assert.notEqual(parseRecord(b), null, b)
     assert.equal(gate(fixture({ comments: [rec(), body(b)] })).code, EXIT_REVIEW, b)
@@ -457,4 +458,57 @@ test('TEMPLATE: no empty-commit escape; the fixer prompt and fix comment never c
   const fixFn = tpl.slice(tpl.indexOf('function fixLandPrompt('), tpl.indexOf("const land = await withAgents(1, () => agentR(fixLandPrompt('land'"))
   assert.ok(fixFn.length > 1000)
   assert.doesNotMatch(fixFn, /loop-review/i)
+})
+
+// ── round 4: BLOCK wherever the marker sits; line-start only for verdict-less records; reviewer-head compare ──
+test('RECOGNITION r4: all seven marker positions with a BLOCK verdict line -> BLOCK', () => {
+  const tail = `\nseat: review-opus\nhead: ${HEAD}\nverdict: BLOCK blocking=1`
+  const formats = {
+    numbered: `1. loop-review (Opus)${tail}`,
+    emoji: `🔴 loop-review (Opus)${tail}`,
+    table: `| loop-review | Opus |\n|---|---|${tail}`,
+    reply: `Re: loop-review (Opus)${tail}`,
+    html: `<b>loop-review</b>${tail}`,
+    diffPlus: `+ loop-review (Opus)${tail}`,
+    midSentence: `An independent pass of the loop-review kind found one defect.\nverdict: BLOCK blocking=1`,
+  }
+  for (const [name, b] of Object.entries(formats)) {
+    const r = parseRecord(b)
+    assert.ok(r && r.verdict === 'BLOCK' && r.kind === 'block', `${name}: ${JSON.stringify(r)}`)
+    const g = gate(fixture({ comments: [rec(), body(b)] }))
+    assert.equal(g.code, EXIT_REVIEW, `${name}: ${g.out}`)
+    assert.match(g.out, /BLOCK on aaaaaaaaa/, name)
+  }
+})
+
+test('RECOGNITION r4: marker with no verdict line — mid-sentence is not a record, line-start is an unparsable BLOCK', () => {
+  assert.equal(parseRecord('we should rerun the loop-review seat tomorrow'), null)
+  assert.equal(gate(fixture({ comments: [rec(), body('we should rerun the loop-review seat tomorrow')] })).code, 0)
+  for (const b of ['loop-review (Opus)\nseat: review-opus\nlooks risky', '**loop-review** notes only', '> loop-review']) {
+    assert.equal(parseRecord(b).kind, 'unparsable', b)
+    const g = gate(fixture({ comments: [rec(), body(b)] }))
+    assert.equal(g.code, EXIT_REVIEW, g.out)
+    assert.match(g.out, /unparsable record/)
+  }
+  // marker mid-sentence + a non-BLOCK, non-clean verdict line → unparsable BLOCK (fails closed)
+  assert.equal(parseRecord('per the loop-review rules\nverdict: FAIL').kind, 'unparsable')
+  // PASS unchanged: strict, marker first
+  assert.equal(parseRecord(rec().body).kind, 'pass')
+  assert.equal(parseRecord(`note\n${rec().body}`).kind, 'unparsable')
+})
+
+test('CHAIN r4: the re-review recorded a head an earlier round read -> needs-human, no LAND (whatever the fixer reported)', async () => {
+  // the fixer claims a new head NEW, but the re-review read HEAD again
+  const r = await runChain((role, n) => role === 'review-opus' ? (n === 1 ? BLOCKED : PASSED) : role === 'FIX' ? { status: 'fixed', headBefore: HEAD, head: NEW, blockingDispositions: REFUTED } : { status: 'merged', landed: true })
+  assert.deepEqual(r.seats, ['review-opus', 'FIX', 'review-opus', 'HOLD'], r.logs.join('\n'))
+  assert.ok(r.outcome.some((l) => /already reviewed — no new head.*-> needs-human/.test(l)), r.outcome.join('\n'))
+})
+
+test('CHAIN r4: LAND BLOCK naming a head no reviewer recorded -> needs-human too (fails closed), annotated', async () => {
+  const line = 'review: BLOCK on ddddddddd by review-opus2 (comment 9) (standard) — refused'
+  const r = await runChain((role) => role === 'review-opus' ? PASSED : role === 'LAND' ? { status: 'review-pending', reviewGate: line } : { status: 'needs-human' })
+  assert.deepEqual(r.seats, ['review-opus', 'LAND', 'HOLD'], r.logs.join('\n'))
+  assert.ok(r.outcome.some((l) => /-> needs-human$/.test(l)), r.outcome.join('\n'))
+  const tpl = fs.readFileSync(path.join(HERE, 'template.mjs'), 'utf8')
+  assert.ok(tpl.includes("one NO reviewer in this pass recorded"))
 })
