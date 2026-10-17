@@ -1040,6 +1040,17 @@ async function runBuild(item, lane) {
     noteHalt(`${item.id} lane ${LANE_TAGS[lane]} preflight`, 'pre-flight runner returned null — API failure or session/usage limit; no capacity')
     return { itemId: item.id, status: 'halted', lane: LANE_TAGS[lane], error: 'agent returned null (limit)' }
   }
+  // DEPENDENCY HOLD (2026-10-17, yap-p0 fix round). An item whose work needs an earlier item's code
+  // writes its preflight as ONE subshell that exits 0 and prints the marker DEPENDENCY-NOT-ON-MAIN
+  // when that code is absent from origin/main. Build mode cannot land an unreviewed PR, so building on
+  // top of a missing dependency only produces a conflicting PR. Such an item is SKIPPED with its own
+  // status, never recorded as already-done; the next build pass (after a review pass lands the
+  // dependency) builds it. Item files assemble the marker at run time, e.g. "DEPENDENCY-NOT-ON-$(printf
+  // MAIN)", so a seat echoing the command text cannot trip this.
+  if (runPassed(pre) && /DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))) {
+    log(`${p} (lane ${tag}): skipped: dependency not on main — the EXECUTED pre-flight says an earlier item has not landed; no builder dispatched. Run the review pass, then the build pass again`)
+    return { itemId: item.id, status: 'skipped: dependency not on main', lane: tag, preflight: pre }
+  }
   if (runPassed(pre)) {
     log(`${p} (lane ${tag}): already-done — EXECUTED pre-flight passed on unmodified origin/main; no builder dispatched, no branch, no PR`)
     return { itemId: item.id, status: 'already-done', lane: tag, preflight: pre }
@@ -6470,6 +6481,7 @@ return {
     alreadyDone: results.filter((r) => r && r.status === 'already-done').length,
     failedAcceptance: results.filter((r) => r && r.status === 'failed-acceptance').length,
     awaitingPanel: results.filter((r) => r && r.status === 'skipped: awaiting Senior Panel').length,
+    awaitingDependency: results.filter((r) => r && r.status === 'skipped: dependency not on main').length,
     errored: errored.length,
     merged: results.filter((r) => r && r.status === 'merged').length,
     ciPending: results.filter((r) => r && r.status === 'ci-pending').length,
