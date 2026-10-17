@@ -5609,9 +5609,16 @@ ITEMS.push({
 ITEMS.push({
   id: 'yap-structure-followups', prompt: 'yap-format-structure', branch: 'loop/yap-structure-followups-keep-every-word-finish-every-list', gated: null,
   title: 'The structure stage keeps every word and finishes every list: narration "Then"/"Finally" survive, four-step lists stay one list, product names keep their casing',
+  // Pre-flight asserts COMPLETION (the six regression inputs live in structure.rs's tests and the
+  // module's tests pass), never a dependency: a passing pre-flight retires the item as already-done.
   preflight: `
-    test -f desktop/src-tauri/src/structure.rs
-    git log --oneline | grep -q 'cf7c8c2'
+    grep -qF 'Then the meeting ran long.' desktop/src-tauri/src/structure.rs
+    grep -qF "Finally I'm home." desktop/src-tauri/src/structure.rs
+    grep -qF 'Then we test it. Then we ship it.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Then you tap General. Finally, tap Reset.' desktop/src-tauri/src/structure.rs
+    grep -qF 'Finally at checkout' desktop/src-tauri/src/structure.rs
+    grep -qF 'eBay' desktop/src-tauri/src/structure.rs
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib structure ; test $? -eq 0
   `,
   spec: `
     Panel: not required — FIX (re-review advisories on PR #217, merged cf7c8c2).
@@ -5656,13 +5663,21 @@ ITEMS.push({
 ITEMS.push({
   id: 'yap-recovery-followups', prompt: 'yap-hotkey-stop', branch: 'loop/yap-recovery-followups-no-duplicates-no-race-backend-confirm', gated: null,
   title: 'Recovered long takes: no duplicate history entries, no race, confirmation enforced in the backend',
+  // Pre-flight asserts COMPLETION (the four named tests exist), never a dependency: a passing
+  // pre-flight retires the item as already-done, a failing one dispatches the builder. The #216
+  // dependency is enforced as the FIRST acceptance command instead, so a build cut before #216 lands
+  // can never go green or open a mergeable PR.
   preflight: `
-    gh pr view 216 --json state -q .state | grep -q MERGED || { echo "BLOCKED: PR #216 (long-take recovery) is not merged yet; this item builds on it"; exit 1; }
+    git grep -q 'fn db_b_two_concurrent_saves_yield_one_row' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_without_confirm_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_keep_while_retry_in_flight_is_refused' -- desktop/src-tauri
+    git grep -q 'fn db_b_retry_and_keep_after_live_partial_leave_one_row' -- desktop/src-tauri
   `,
   spec: `
     Panel: not required — FIX (re-review advisories on PR #216).
     Wilson's words (2026-10-16): "A crash or quit mid-long-take loses nothing."
-    DEPENDS: PR #216 merged (long-take recovery). If #216 is still open at build time the preflight fails with that reason.
+    DEPENDS: PR #216 merged (long-take recovery). If #216 is still open at build time the FIRST acceptance command fails
+    with that reason: stop, push nothing, report BLOCKED on #216. Do not re-implement #216's work here.
 
     ADVISORIES, each with a test:
       (a) Two concurrent saves can add the same take twice. Add a backend idempotency key per take (the take id, a
@@ -5679,7 +5694,10 @@ ITEMS.push({
           can do: Retry, Keep what was transcribed, or Discard. No error codes, no ids, no stack text. Vitest asserts
           the exact copy and that it names all three actions.
 
-    TESTS: backend tests named db_b_* in the db tests module for (a)(b)(c); desktop/src-tauri/tests/long_take_recovery.rs
+    TESTS: backend tests in the db tests module, named EXACTLY (the pre-flight greps for them):
+    db_b_two_concurrent_saves_yield_one_row (a), db_b_keep_without_confirm_is_refused and
+    db_b_keep_while_retry_in_flight_is_refused (b), db_b_retry_and_keep_after_live_partial_leave_one_row (c);
+    desktop/src-tauri/tests/long_take_recovery.rs
     extended for the same three; a vitest next to the toast component for (d).
     RUNTIME DEPENDENCIES: none new.
     WHAT NOT TO DO: no schema change that needs a destructive migration; no UI-only enforcement; do not weaken the
@@ -5688,6 +5706,7 @@ ITEMS.push({
     persisted with the row; the confirm flag defaults to refusing so an old caller cannot bypass it.
   `,
   acceptance: `
+    gh pr view 216 -R wilsonguenther-dev/wilson-voice --json state -q .state | grep -qx MERGED || { echo "BLOCKED: PR #216 (long-take recovery) is not merged yet; this item builds on it"; exit 1; }
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib db_b_ ; test $? -eq 0
     cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test long_take_recovery ; test $? -eq 0
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
