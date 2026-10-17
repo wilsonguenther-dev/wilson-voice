@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
@@ -41,6 +42,13 @@ export default defineConfig(async () => ({
   // hand-typed string, and it was still claiming v0.7.0 after the tree had
   // moved on — a version a user reads off the header has to be the real one.
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+
+  // Y5-D — vitest stubs every CSS module to the empty string by default, which
+  // silently turns a stylesheet assertion into a test of "". `pill/motion.test`
+  // sweeps float.css for reduced-motion rules that would hide information, and
+  // that sweep has to see the real file. Processing CSS in tests costs a few ms
+  // and buys an assertion that cannot quietly become vacuous.
+  test: { css: true },
 
   // Multi-page: main app + compact float pill (never share one React tree)
   build: {

@@ -22,6 +22,9 @@ import {
   type TranscribeProgress,
 } from "./live";
 import { GATED_GLYPH, GATED_TITLE, type PillLicense } from "./license";
+// Y5-D — the ONE duration table. Yappy's done-hold used to be a bare 1600 in
+// two places; `no_duration_literal_outside_motion_ts` now forbids that shape.
+import { DURATION } from "./motion";
 
 /**
  * Y5-C — Yappy's art for EVERY phase, as DATA.
@@ -346,7 +349,7 @@ export default function YappyPill(
     };
     listen<boolean>("pill_visible", (e) => { shown = e.payload !== false; onVisibility(); }).then((u) => (dead ? u() : unsubs.push(u)));
     document.addEventListener("visibilitychange", onVisibility);
-    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + 1600; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, 1600); }).then((u) => (dead ? u() : unsubs.push(u)));
+    listen<Transcript>("transcript", (e) => { words = e.payload?.wordCount ?? 0; setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
 
     function rr(x: number, y: number, w: number, h: number, r: number) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
