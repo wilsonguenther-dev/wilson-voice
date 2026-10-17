@@ -3868,29 +3868,116 @@ fn recovered_only_output() -> transcription::AsrOutput {
     }
 }
 
-/// PR #216 re-review (rr1 BLOCKING) — the error for a retry decode in which at
-/// least one window FAILED (engine error, per-window timeout, the take
-/// deadline) even though others produced words. `None` when every window
-/// decoded. A failed window's audio exists nowhere but the recovery clip, so
-/// such a decode must never convert the row (which deletes the clip).
-fn failed_window_error(asr: &transcription::AsrOutput) -> Option<String> {
-    if asr.chunks_failed == 0 {
-        return None;
+/// What one retry decode means for a failed row. Decided in ONE place,
+/// [`retry_outcome`]; every retry path goes through it.
+enum RetryOutcome {
+    /// The take is complete: the caller converts the row and deletes the clip.
+    Convert(String, transcription::AsrOutput),
+    /// The row and the clip stay. `error` becomes the row's reason and
+    /// `attempt_text` its saved words ("Transcribed so far").
+    Keep {
+        error: String,
+        attempt_text: Option<String>,
+    },
+}
+
+fn word_count(t: Option<&str>) -> usize {
+    t.map_or(0, |t| t.split_whitespace().count())
+}
+
+/// THE RETRY INVARIANT (PR #216). A retry deletes the recovery clip on its own
+/// only when BOTH hold:
+///   (a) this decode had ZERO failed windows (engine error, per-window timeout,
+///       the take deadline, or an error before any window decoded), and
+///   (b) its text is NOT SHORTER, in words, than any text already saved on the
+///       row — the words a failed attempt got (`attempt_text`) or the words
+///       recovered from a killed take (`partial_text`).
+/// Anything else keeps the row and the clip; only the user's confirmed "Keep
+/// what was transcribed" or "Discard" deletes them.
+///
+/// The saved words follow [`next_attempt_text`]: a decode with zero failed
+/// windows that transcribed the remainder is authoritative and replaces them,
+/// even when shorter; any other decode may only extend them, never shrink them.
+fn retry_outcome(
+    row: &db::FailedDictation,
+    decoded: Result<(String, transcription::AsrOutput), String>,
+) -> RetryOutcome {
+    let saved_words =
+        word_count(row.attempt_text.as_deref()).max(word_count(row.partial_text.as_deref()));
+    let (text, asr) = match decoded {
+        Ok(done) => done,
+        Err(error) => {
+            // Nothing new decoded; the recovered words are the words so far.
+            let recovered = row.partial_text.as_deref().map(str::trim);
+            return RetryOutcome::Keep {
+                attempt_text: next_attempt_text(row.attempt_text.as_deref(), recovered, false),
+                error,
+            };
+        }
+    };
+    let failed = asr.chunks_failed > 0;
+    let shorter = word_count(Some(&text)) < saved_words;
+    if !failed && !shorter {
+        return RetryOutcome::Convert(text, asr);
     }
-    Some(format!(
-        "Part of this take didn't transcribe ({} of {} sections failed). The audio is kept — try again, or keep what was transcribed.",
-        asr.chunks_failed,
-        asr.chunks.max(asr.chunks_failed)
-    ))
+    // Authoritative only when the engine really transcribed the remainder: a
+    // blank remainder (`recovered_only_output`, e.g. after a model switch) is
+    // no evidence against words an earlier attempt got.
+    let authoritative = !failed && !asr.text.trim().is_empty();
+    let error = if failed {
+        format!(
+            "Part of this take didn't transcribe ({} of {} sections failed). The audio is kept — try again, or keep what was transcribed.",
+            asr.chunks_failed,
+            asr.chunks.max(asr.chunks_failed)
+        )
+    } else {
+        format!(
+            "This try got fewer words than before ({} vs {}), so the audio is kept — try again, or keep what was transcribed.",
+            word_count(Some(&text)),
+            saved_words
+        )
+    };
+    RetryOutcome::Keep {
+        attempt_text: next_attempt_text(
+            row.attempt_text.as_deref(),
+            Some(text.trim()),
+            authoritative,
+        ),
+        error,
+    }
+}
+
+/// The row's saved words after an attempt that did not convert: an
+/// authoritative (zero-failure) decode replaces them; any other attempt only
+/// EXTENDS them — its words must start with the saved words and add more —
+/// and otherwise leaves them exactly as they were.
+fn next_attempt_text(
+    saved: Option<&str>,
+    candidate: Option<&str>,
+    authoritative: bool,
+) -> Option<String> {
+    let Some(candidate) = candidate.filter(|c| !c.trim().is_empty()) else {
+        return saved.map(str::to_string);
+    };
+    let Some(saved) = saved.filter(|s| !s.trim().is_empty()) else {
+        return Some(candidate.to_string());
+    };
+    let (old, new): (Vec<&str>, Vec<&str>) = (
+        saved.split_whitespace().collect(),
+        candidate.split_whitespace().collect(),
+    );
+    if authoritative || (new.len() > old.len() && new.starts_with(&old)) {
+        Some(candidate.to_string())
+    } else {
+        Some(saved.to_string())
+    }
 }
 
 /// DB-B / YV52 — the decode half of a retry, lifted out of the command so a
-/// test can drive it with a real windowed decode and a real database. On `Ok`
-/// the transcript is complete (every window decoded, or the remainder was true
-/// silence) and the caller may convert the row and delete the clip. On `Err`
-/// the row and the clip are untouched apart from the row's error label and,
-/// when anything was transcribed, `attempt_text` — the words so far, so the
-/// user sees them and can keep them.
+/// test can drive it with a real windowed decode and a real database. `Ok`
+/// only when [`retry_outcome`] says the take is complete; the caller then
+/// converts the row and deletes the clip ([`convert_and_drop_clip`]). On `Err`
+/// the row and the clip stay, with the row's reason and saved words updated.
 fn decode_failed_take(
     db: &db::Database,
     row: &db::FailedDictation,
@@ -3899,39 +3986,18 @@ fn decode_failed_take(
     samples: &[f32],
     decode: impl FnOnce(Vec<f32>) -> Result<transcription::AsrOutput, String>,
 ) -> Result<(String, transcription::AsrOutput), String> {
-    let prefix = partial_text
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(str::to_string);
-    let (raw_text, asr) =
-        match finish_recovered_decode(partial_text, resume_sample, samples, decode) {
-            Ok(done) => done,
-            Err(e) => {
-                // The recovered words are the words so far — but only when no
-                // earlier attempt got further. An attempt that fails on every
-                // window must never shrink what an earlier one saved and showed
-                // (rr1 re-review of 99e577b: "Keep" would then save less and
-                // delete the clip). `note_failed_retry` also refuses to shrink.
-                let so_far = if row.attempt_text.is_some() {
-                    None
-                } else {
-                    prefix.as_deref()
-                };
-                let _ = db.note_failed_retry(&row.id, &e, so_far);
-                return Err(e);
-            }
-        };
-    if let Some(e) = failed_window_error(&asr) {
-        log::warn!(
-            "retry decode had {} failed window(s) — keeping the clip and the row",
-            asr.chunks_failed
-        );
-        let so_far = Some(raw_text.trim()).filter(|t| !t.is_empty());
-        let _ = db.note_failed_retry(&row.id, &e, so_far);
-        return Err(e);
+    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, decode);
+    match retry_outcome(row, decoded) {
+        RetryOutcome::Convert(text, asr) => Ok((text, asr)),
+        RetryOutcome::Keep {
+            error,
+            attempt_text,
+        } => {
+            log::warn!("retry kept the clip and the row: {error}");
+            let _ = db.note_failed_retry(&row.id, &error, attempt_text.as_deref());
+            Err(error)
+        }
     }
-    Ok((raw_text, asr))
 }
 
 /// YV52 — the success half of a retry: the row converts into a history entry,
@@ -8491,7 +8557,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(helper.contains("finish_recovered_decode("));
-        assert!(helper.contains("failed_window_error(&asr)"));
+        assert!(helper.contains("retry_outcome(row, decoded)"));
         for b in [body, helper] {
             assert!(!b.contains(".unwrap_or(0)"), "no fabricated resume point");
         }
@@ -8535,71 +8601,99 @@ mod tests {
         assert_eq!(r.err(), Some(err));
     }
 
-    /// PR #216 re-review (rr1 BLOCKING 1). A recovered row "w1 w2" whose
-    /// remainder runs through the REAL windowed decode (`transcribe_native` →
-    /// `transcribe_take_with_observed`) as [w3 ok][window fails][window fails]
-    /// used to come back `Ok("w1 w2 w3", degraded)`, and the retry converted the
-    /// row and unlinked the only copy of the failed windows' audio. Now any
-    /// failed window keeps the row and the clip, the row's error is the current
-    /// one, and the words so far are on the row (`attempt_text`) without
-    /// touching the resume state. Same for a whole-clip retry with no prefix.
+    /// PR #216 — the retry invariant (`retry_outcome`) over attempt HISTORIES,
+    /// each on a resume row (recovered "w1 w2" + remainder) and a whole-clip
+    /// row, through the REAL windowed decode (`transcribe_native` →
+    /// `transcribe_take_with_observed`, a stub engine scripted per window), a
+    /// real database, and the same convert-and-delete tail the command runs.
+    /// After every attempt: row kept or converted, wav kept or deleted, and the
+    /// saved words.
     #[test]
-    fn db_b_failed_window_with_voiced_words_keeps_the_row_and_the_wav() {
+    fn db_b_retry_invariant_over_attempt_histories() {
         use crate::transcription::{
             Transcriber, TranscriptionManager, DICTATION_CHUNK_SAMPLE_RATE,
             DICTATION_CHUNK_THRESHOLD_SECONDS,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
+        use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        /// Window 1 decodes to "w3"; every later window fails the way a
-        /// per-window timeout does.
-        struct OneThenFail(Arc<AtomicUsize>);
-        impl Transcriber for OneThenFail {
+        /// What window `i` of one attempt decodes to.
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Script {
+            /// Every window decodes: w3, w4, w5, …
+            Clean,
+            /// Every window decodes to nothing (a model switch, or silence).
+            Blank,
+            /// Window 0 → "w3"; every later window fails.
+            Partial,
+            /// Window 1 → "w4"; every other window fails.
+            OtherWindow,
+            /// Window 0 loops ("w3" × 60, more words than a clean decode); every
+            /// later window fails.
+            Loop,
+        }
+        fn window(script: Script, i: usize) -> Result<String, String> {
+            let fail = || Err(format!("window {i} timed out"));
+            match (script, i) {
+                (Script::Clean, i) => Ok(format!("w{}", i + 3)),
+                (Script::Blank, _) => Ok(String::new()),
+                (Script::Partial, 0) => Ok("w3".into()),
+                (Script::OtherWindow, 1) => Ok("w4".into()),
+                (Script::Loop, 0) => Ok(vec!["w3"; 60].join(" ")),
+                _ => fail(),
+            }
+        }
+        struct Scripted(Arc<AtomicUsize>, Arc<Mutex<Script>>);
+        impl Transcriber for Scripted {
             fn transcribe(
                 &mut self,
                 _s: &[f32],
                 _l: Option<&str>,
                 _b: Option<&str>,
             ) -> Result<String, String> {
-                match self.0.fetch_add(1, Ordering::SeqCst) {
-                    0 => Ok("w3".into()),
-                    n => Err(format!("window {n} timed out")),
-                }
+                let i = self.0.fetch_add(1, Ordering::SeqCst);
+                window(*self.1.lock().unwrap(), i)
             }
         }
         let calls = Arc::new(AtomicUsize::new(0));
+        let script = Arc::new(Mutex::new(Script::Clean));
         let manager = {
-            let calls = calls.clone();
+            let (calls, script) = (calls.clone(), script.clone());
             TranscriptionManager::with_loader(
                 Arc::new(move |_p: &std::path::Path| {
-                    Ok(Box::new(OneThenFail(calls.clone())) as Box<dyn Transcriber>)
+                    Ok(Box::new(Scripted(calls.clone(), script.clone())) as Box<dyn Transcriber>)
                 }),
                 Duration::from_secs(3600),
                 Duration::from_secs(3600),
                 Duration::from_secs(30),
             )
         };
-        let dir = std::env::temp_dir().join(format!("db-b-rr1-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("db-b-inv-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = dir.join("stub.bin");
         std::fs::write(&model, b"stub").unwrap();
         let rate = DICTATION_CHUNK_SAMPLE_RATE as usize;
         let resume = 10 * rate;
-        let remainder = (DICTATION_CHUNK_THRESHOLD_SECONDS as usize + 40) * rate;
-        let clip = vec![0.1f32; resume + remainder];
+        let remainder = vec![0.1f32; (DICTATION_CHUNK_THRESHOLD_SECONDS as usize + 40) * rate];
+        let resume_clip: Vec<f32> = std::iter::repeat_n(0.1f32, resume)
+            .chain(remainder.iter().copied())
+            .collect();
         let db = crate::db::Database::open_in_memory().unwrap();
 
-        // One "Finish transcribing" exactly as the command runs it: read the
-        // row, decode, and on `Ok` convert and delete the clip. `first_ok`:
-        // window 1 decodes to "w3"; otherwise every window fails.
-        let attempt = |id: &str, first_ok: bool| {
-            calls.store(usize::from(!first_ok), Ordering::SeqCst);
+        // One "Finish transcribing" exactly as the command runs it.
+        let attempt = |id: &str, s: Script| {
+            calls.store(0, Ordering::SeqCst);
+            *script.lock().unwrap() = s;
             let row = db.get_failed_dictation(id).unwrap().expect("row");
             let resume_sample = match row.take_id.as_deref() {
                 Some(t) => db.take_resume_sample(t),
                 None => Ok(0),
+            };
+            let clip = if row.take_id.is_some() {
+                &resume_clip
+            } else {
+                &remainder
             };
             let wav = std::path::PathBuf::from(&row.wav_path);
             super::decode_failed_take(
@@ -8607,7 +8701,7 @@ mod tests {
                 &row,
                 row.partial_text.clone(),
                 resume_sample,
-                &clip,
+                clip,
                 |rest| {
                     super::transcribe_native(
                         &manager,
@@ -8625,72 +8719,113 @@ mod tests {
             })
         };
 
-        for (case, take_id, want_so_far) in [
-            ("resume", Some("take-1"), "w1 w2 w3"),
-            ("whole clip", None, "w3"),
-        ] {
-            let wav = dir.join(format!("{case}.wav"));
-            std::fs::write(&wav, b"RIFF stand-in").unwrap();
-            if let Some(t) = take_id {
-                db.record_take_chunk(t, 0, "w1 w2", resume as i64).unwrap();
-            }
-            let row = db
-                .record_failed_dictation_for_take(
-                    &wav,
-                    120.0,
-                    "Yap quit before this take finished",
-                    None,
-                    take_id.map(str::to_string),
-                )
-                .unwrap();
-            // Attempt 1: w3 decodes, the later windows fail. Attempt 2: every
-            // window fails (rr1 re-review of 99e577b: it used to shrink the
-            // saved words back to the recovered prefix).
-            for (n, first_ok) in [(1, true), (2, false)] {
-                let r = attempt(&row.id, first_ok);
-                assert!(
-                    r.is_err(),
-                    "{case} attempt {n}: a failed window must not convert"
+        // How many windows the remainder plans into (the same for both rows).
+        let probe = db
+            .record_failed_dictation_for_take(&dir.join("probe.wav"), 1.0, "x", None, None)
+            .unwrap();
+        let _ = attempt(&probe.id, Script::Blank);
+        let n = calls.load(Ordering::SeqCst);
+        assert!(
+            (2..40).contains(&n),
+            "the remainder must window (got {n} windows)"
+        );
+        let clean_tail: Vec<String> = (0..n).map(|i| format!("w{}", i + 3)).collect();
+        let clean_tail = clean_tail.join(" ");
+        let looped = vec!["w3"; 60].join(" ");
+
+        // Expected state after an attempt: None = converted (row gone, wav
+        // deleted); Some(saved words) = row and wav kept with these words.
+        type Want = Option<Option<String>>;
+        let kept = |t: &str| -> Want { Some(Some(t.to_string())) };
+        for resume_row in [true, false] {
+            let p = |t: &str| {
+                if resume_row {
+                    format!("w1 w2 {t}")
+                } else {
+                    t.to_string()
+                }
+            };
+            let histories: Vec<(&str, Vec<(Script, Want)>)> = vec![
+                ("clean full decode", vec![(Script::Clean, None)]),
+                (
+                    "blank, 0 failures, nothing saved",
+                    // Resume: the remainder was silence, the recovered words are
+                    // the whole take. Whole clip: nothing to convert, kept.
+                    vec![(Script::Blank, if resume_row { None } else { Some(None) })],
+                ),
+                (
+                    "blank, 0 failures, longer text saved",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        (Script::Blank, kept(&p("w3"))),
+                        (Script::Blank, kept(&p("w3"))),
+                    ],
+                ),
+                (
+                    "partial with failures",
+                    vec![(Script::Partial, kept(&p("w3")))],
+                ),
+                (
+                    "shorter clean after a looping attempt",
+                    vec![
+                        (Script::Loop, kept(&p(&looped))),
+                        // Authoritative: replaces the loop even though shorter,
+                        // but (b) still keeps the clip this once…
+                        (Script::Clean, kept(&p(&clean_tail))),
+                        // …and the next clean decode is no longer shorter.
+                        (Script::Clean, None),
+                    ],
+                ),
+                (
+                    "two attempts decoding different windows",
+                    vec![
+                        (Script::Partial, kept(&p("w3"))),
+                        // "w4" does not extend "w3": the saved words stay.
+                        (Script::OtherWindow, kept(&p("w3"))),
+                        (Script::Clean, None),
+                    ],
+                ),
+            ];
+            for (name, steps) in histories {
+                let case = format!(
+                    "{name} / {}",
+                    if resume_row {
+                        "resume row"
+                    } else {
+                        "whole-clip row"
+                    }
                 );
-                let err = r.unwrap_err();
-                assert!(
-                    calls.load(Ordering::SeqCst) >= 3,
-                    "{case} attempt {n}: windowed loop ran"
-                );
-                let kept = db
-                    .get_failed_dictation(&row.id)
-                    .unwrap()
-                    .unwrap_or_else(|| panic!("{case} attempt {n}: the row must survive"));
-                assert_eq!(
-                    kept.error, err,
-                    "{case} attempt {n}: current error on the row"
-                );
-                assert_eq!(
-                    kept.attempt_text.as_deref(),
-                    Some(want_so_far),
-                    "{case} attempt {n}: the words so far never shrink"
-                );
-                assert_eq!(
-                    kept.partial_text, row.partial_text,
-                    "{case} attempt {n}: resume state untouched"
-                );
-                assert!(wav.exists(), "{case} attempt {n}: the clip must survive");
+                let take_id = resume_row.then(|| format!("take-{}", name.replace(' ', "-")));
+                if let Some(t) = &take_id {
+                    db.record_take_chunk(t, 0, "w1 w2", resume as i64).unwrap();
+                }
+                let wav = dir.join(format!("{}-{resume_row}.wav", name.replace(' ', "-")));
+                std::fs::write(&wav, b"RIFF stand-in").unwrap();
+                let row = db
+                    .record_failed_dictation_for_take(&wav, 120.0, "Yap quit", None, take_id)
+                    .unwrap();
+                for (k, (s, want)) in steps.into_iter().enumerate() {
+                    let ctx = format!("{case}, attempt {} ({s:?})", k + 1);
+                    let r = attempt(&row.id, s);
+                    let now = db.get_failed_dictation(&row.id).unwrap();
+                    match want {
+                        None => {
+                            assert!(r.is_ok(), "{ctx}: should convert, got {:?}", r.err());
+                            assert!(now.is_none(), "{ctx}: row converted");
+                            assert!(!wav.exists(), "{ctx}: clip deleted");
+                        }
+                        Some(saved) => {
+                            let err = r.expect_err(&ctx);
+                            let now = now.unwrap_or_else(|| panic!("{ctx}: row kept"));
+                            assert!(wav.exists(), "{ctx}: clip kept");
+                            assert_eq!(now.attempt_text, saved, "{ctx}: saved words");
+                            assert_eq!(now.error, err, "{ctx}: the row shows this error");
+                            assert_eq!(now.partial_text, row.partial_text, "{ctx}: resume state");
+                        }
+                    }
+                }
             }
         }
-        // Every window decodes: the same pipeline converts the row and DOES
-        // delete the clip — so the "clip must survive" checks above can fail.
-        let wav = dir.join("clean.wav");
-        std::fs::write(&wav, b"RIFF stand-in").unwrap();
-        let row = db
-            .record_failed_dictation_for_take(&wav, 1.0, "x", None, None)
-            .unwrap();
-        let (text, asr) =
-            super::decode_failed_take(&db, &row, None, Ok(0), &db_b_clip(2, 0), db_b_fake_decode)
-                .unwrap();
-        assert_eq!(text, "w1 w2");
-        super::convert_and_drop_clip(&db, &row, &wav, text.clone(), asr, Some(text)).unwrap();
-        assert!(db.get_failed_dictation(&row.id).unwrap().is_none());
-        assert!(!wav.exists(), "a clean retry deletes the clip");
         std::fs::remove_dir_all(&dir).ok();
     }
 
