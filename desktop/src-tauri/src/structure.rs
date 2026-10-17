@@ -446,6 +446,54 @@ fn strip_continue_cue(sentence: &str) -> Option<(&'static str, &str)> {
     strip_cue(sentence, BARE_CONTINUE_CUES).or_else(|| strip_marker(sentence, STRUCTURE_CUE_WORDS))
 }
 
+/// Words after a bare "then" that make it a fixed phrase, not a sequence
+/// adverb: "Then again, maybe not." is "on the other hand"; "Then and there".
+const THEN_IDIOM_WORDS: &[&str] = &["again", "and"];
+/// A subject right after a bare "then" reads as narration ("Then I drove
+/// home", "Then there's the budget"), not as a step.
+const NARRATIVE_SUBJECTS: &[&str] = &[
+    "i", "we", "you", "he", "she", "they", "it", "there", "i'm", "i've", "i'd", "we're", "we've",
+    "we'd", "you're", "he's", "she's", "they're", "it's", "there's",
+];
+/// Words after a bare "finally"/"lastly" that make it mean "at last" ("Finally
+/// home after a long day", "Finally done", "Finally there") — a state, not a
+/// step.
+const AT_LAST_WORDS: &[&str] = &[
+    "home", "here", "there", "done", "over", "finished", "free", "back", "ready", "safe", "gone",
+    "awake", "asleep", "alone", "together", "now", "at", "time", "peace", "quiet",
+];
+
+/// PR #217 re-review: a continuation cue that matched BARE (not set off) is
+/// still prose when the rest is not a plausible list item, and his words are
+/// kept: "Then again, maybe not." (idiom), "Then I drove home." after a list
+/// of steps (narration), "Finally home after a long day." ("at last").
+/// `items` is the sequence so far, its first item at index 0.
+fn continue_cue_is_prose(cue: &str, sentence: &str, rest: &str, items: &[String]) -> bool {
+    let next = first_word(rest);
+    let set_off = sentence
+        .split_whitespace()
+        .next()
+        .is_some_and(|t| t.ends_with([',', ':']));
+    match cue {
+        "then" => {
+            if THEN_IDIOM_WORDS.contains(&next.as_str()) {
+                return true;
+            }
+            // A subject after "then" continues a list only when the list
+            // itself is told that way ("First, we packed. Then we drove.")
+            // and is not already complete.
+            !set_off
+                && NARRATIVE_SUBJECTS.contains(&next.as_str())
+                && (items.len() >= MIN_LIST_ITEMS
+                    || !items
+                        .first()
+                        .is_some_and(|f| NARRATIVE_SUBJECTS.contains(&first_word(f).as_str())))
+        }
+        "finally" | "lastly" => !set_off && AT_LAST_WORDS.contains(&next.as_str()),
+        _ => false,
+    }
+}
+
 fn is_continue_cue(c: &str) -> bool {
     !START_CUES.contains(&c) && !HEADING_CUES.contains(&c) && c != BULLET_CUE
 }
@@ -540,7 +588,10 @@ impl Builder {
                 let mut j = i + 1;
                 while j < sents.len() {
                     match strip_continue_cue(&sents[j]) {
-                        Some((cue, rest)) if is_continue_cue(cue) => {
+                        Some((cue, rest))
+                            if is_continue_cue(cue)
+                                && !continue_cue_is_prose(cue, &sents[j], rest, &items) =>
+                        {
                             items.push(capitalize(rest));
                             j += 1;
                             if END_CUES.contains(&cue) {
@@ -1058,6 +1109,15 @@ mod tests {
             "First, revenue is up. Third quarter numbers look great. Then we hire. Finally, we celebrate.",
             "First, open the box. Second hand stores sell these cheap. Lastly, recycle the box.",
             "First, pick a plan. Step two is the hard part. Finally, ship it.",
+            // PR #217 re-review (rr1 BLOCKING): "then again" is an idiom.
+            "First, buy milk. Second, buy eggs. Then again, maybe not.",
+            "First, buy milk. Then again, maybe not. Finally, buy eggs.",
+            // rr1 advisory 2: "finally" meaning "at last".
+            "First, we packed. Then we drove ten hours. Finally home after a long day.",
+            "First, buy milk. Second, buy eggs. Finally done.",
+            // rr1 advisory 1: narration after a list of steps.
+            "First, buy milk. Second, buy eggs. Then there's the budget, which nobody wants to talk about.",
+            "First, buy milk. Second, buy eggs. Then I drove home.",
         ] {
             for fmt in [StructureFormat::Markdown, StructureFormat::PlainBullets] {
                 assert_eq!(structure_text(s, &[], fmt), s, "{fmt:?}: {s}");
@@ -1080,6 +1140,56 @@ mod tests {
             ),
             "1. Revenue.\n2. Hiring.\n3. The launch."
         );
+    }
+
+    /// PR #217 re-review: a list followed by an idiom or narration keeps the
+    /// list and leaves the following sentence as prose, every word kept.
+    #[test]
+    fn structure_idiom_and_narration_after_a_list_stay_prose() {
+        let md = StructureFormat::Markdown;
+        for (s, want) in [
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then I drove home and took a nap.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen I drove home and took a nap.",
+            ),
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then again, maybe not.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen again, maybe not.",
+            ),
+            (
+                "First, book the venue. Second, send the invites. Third, pick the menu. Then we went home and slept.",
+                "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\nThen we went home and slept.",
+            ),
+        ] {
+            let out = structure_text(s, &[], md);
+            assert_eq!(out, want, "{s}");
+            assert_words_kept(s, &out, s);
+        }
+        // Still a sequence: steps told with a subject, a bare imperative
+        // "Then", a bare "Lastly", and set-off cues.
+        assert_eq!(
+            structure_text(
+                "First, we design it. Then we build it. Finally we ship it.",
+                &[],
+                md
+            ),
+            "1. We design it.\n2. We build it.\n3. We ship it."
+        );
+        assert_eq!(
+            structure_text("First, wash it. Then dry it. Lastly fold it.", &[], md),
+            "1. Wash it.\n2. Dry it.\n3. Fold it."
+        );
+        assert_eq!(
+            structure_text(
+                "First, book the venue. Next, send the invites. Then pick the menu. Lastly, pay.",
+                &[],
+                md
+            ),
+            "1. Book the venue.\n2. Send the invites.\n3. Pick the menu.\n4. Pay."
+        );
+        // "Finally!" as an exclamation stays prose.
+        let s = "First, we packed. Then we drove. Finally!";
+        assert_eq!(structure_text(s, &[], md), s);
     }
 
     #[test]
