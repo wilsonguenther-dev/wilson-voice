@@ -226,7 +226,9 @@ export default function Home() {
                               onClick={() => {
                                 if (
                                   confirm(
-                                    "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this.",
+                                    f.partialText
+                                      ? "Save the words shown for this take — the words recovered earlier plus everything transcribed since — and delete its audio? Parts that didn't transcribe can't be recovered after this."
+                                      : "Save the words shown for this take and delete its audio? Parts that didn't transcribe can't be recovered after this.",
                                   )
                                 )
                                   void retryFailed(f.id, true);

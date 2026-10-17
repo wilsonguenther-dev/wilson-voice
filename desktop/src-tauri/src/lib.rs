@@ -3885,45 +3885,96 @@ fn word_count(t: Option<&str>) -> usize {
     t.map_or(0, |t| t.split_whitespace().count())
 }
 
+/// Words compared ignoring case and surrounding punctuation ("World," = "world").
+fn norm_words(t: &str) -> Vec<String> {
+    t.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// True when `new` EXTENDS `old`: it starts with all of `old`'s words and adds more.
+fn extends(new: &str, old: &str) -> bool {
+    let (new, old) = (norm_words(new), norm_words(old));
+    new.len() > old.len() && new.starts_with(&old)
+}
+
+/// Saved text as the retry sees it: cut at a repetition loop
+/// (`dictation::degenerate_cutoff`), whatever is left before it. The words
+/// recovered from the live decode were never gated, and a loop in them must
+/// neither inflate the "not shorter" baseline nor be converted or kept.
+fn gated_words(t: &str) -> String {
+    match dictation::degenerate_cutoff(t) {
+        Some(cutoff) => t[..cutoff].trim().to_string(),
+        None => t.trim().to_string(),
+    }
+}
+
+/// THE ROW'S SAVED WORDS, as the invariant, the extend-only rule and "Keep
+/// what was transcribed" all see them: the GATED saved attempt text and the
+/// GATED recovered words (`partial_text`, on every row that has them — also
+/// when a retry fell back to decoding the whole clip), whichever extends the
+/// other, else the longer. Keep therefore never saves less than the recovered
+/// words.
+fn saved_words(row: &db::FailedDictation) -> Option<String> {
+    let gate = |t: &Option<String>| t.as_deref().map(gated_words).filter(|t| !t.is_empty());
+    match (gate(&row.attempt_text), gate(&row.partial_text)) {
+        (Some(attempt), Some(recovered)) => {
+            if extends(&recovered, &attempt)
+                || (!extends(&attempt, &recovered)
+                    && word_count(Some(&recovered)) > word_count(Some(&attempt)))
+            {
+                Some(recovered)
+            } else {
+                Some(attempt)
+            }
+        }
+        (attempt, recovered) => attempt.or(recovered),
+    }
+}
+
 /// THE RETRY INVARIANT (PR #216). A retry deletes the recovery clip on its own
 /// only when BOTH hold:
 ///   (a) this decode had ZERO failed windows (engine error, per-window timeout,
 ///       the take deadline, or an error before any window decoded), and
-///   (b) its text is NOT SHORTER, in words, than any text already saved on the
-///       row — the words a failed attempt got (`attempt_text`) or the words
-///       recovered from a killed take (`partial_text`).
+///   (b) its text is NOT SHORTER, in words, than the row's saved words
+///       ([`saved_words`]: the gated attempt text or gated recovered words).
 /// Anything else keeps the row and the clip; only the user's confirmed "Keep
 /// what was transcribed" or "Discard" deletes them.
 ///
-/// `decoded` is ALWAYS gated text: [`decode_failed_take`] runs the
-/// hallucination gate ([`retry_gate`]) before this, so (b) counts the words
-/// that would really be converted, never a looping tail the gate then cuts.
+/// `decoded` is ALWAYS gated text: [`decode_failed_take`] gates the recovered
+/// words and the decoded remainder SEPARATELY, then the joined text, so (b)
+/// counts the words that would really be converted and a loop in the recovered
+/// words cannot throw away a clean remainder.
 ///
 /// The saved words follow [`next_attempt_text`]: a zero-failure decode that
-/// is SHORTER than the saved words replaces them only when the saved text is
-/// itself degenerate (`dictation::degenerate_cutoff`, a repetition loop);
-/// otherwise, and for any decode with a failed window, they may only be
+/// is SHORTER than the saved words replaces them only when the stored attempt
+/// text is itself degenerate (`dictation::degenerate_cutoff`, a repetition
+/// loop); otherwise, and for any decode with a failed window, they may only be
 /// extended, never shrunk.
 fn retry_outcome(
     row: &db::FailedDictation,
     decoded: Result<(String, transcription::AsrOutput), String>,
 ) -> RetryOutcome {
-    let saved_words =
-        word_count(row.attempt_text.as_deref()).max(word_count(row.partial_text.as_deref()));
+    let saved = saved_words(row);
+    let saved_count = word_count(saved.as_deref());
     let (text, asr) = match decoded {
         Ok(done) => done,
+        // Nothing new decoded; the saved words (at least the gated recovered
+        // words) are the words so far.
         Err(error) => {
-            // Nothing new decoded; the recovered words are the words so far.
-            let recovered = row.partial_text.as_deref().map(str::trim);
             return RetryOutcome::Keep {
-                attempt_text: next_attempt_text(row.attempt_text.as_deref(), recovered, false),
+                attempt_text: saved,
                 error,
-            };
+            }
         }
     };
     let failed = asr.chunks_failed > 0;
-    let shorter = word_count(Some(&text)) < saved_words;
-    if !failed && !shorter {
+    let count = word_count(Some(&text));
+    if !failed && count >= saved_count {
         return RetryOutcome::Convert(text, asr);
     }
     // A clean, shorter decode may replace the saved words ONLY when they are a
@@ -3943,26 +3994,19 @@ fn retry_outcome(
         )
     } else {
         format!(
-            "This try got fewer words than before ({} vs {}), so the audio is kept — try again, or keep what was transcribed.",
-            word_count(Some(&text)),
-            saved_words
+            "This try got fewer words than before ({count} vs {saved_count}). Nothing was deleted — keep what was transcribed, or discard the take."
         )
     };
     RetryOutcome::Keep {
-        attempt_text: next_attempt_text(
-            row.attempt_text.as_deref(),
-            Some(text.trim()),
-            authoritative,
-        ),
+        attempt_text: next_attempt_text(saved.as_deref(), Some(text.trim()), authoritative),
         error,
     }
 }
 
 /// The row's saved words after an attempt that did not convert: an
 /// authoritative decode (zero failures, replacing a degenerate saved text)
-/// replaces them; any other attempt only EXTENDS them — its words must start
-/// with the saved words and add more, compared ignoring case and surrounding
-/// punctuation ("World," = "world") — and otherwise leaves them as they were.
+/// replaces them; any other attempt only EXTENDS them ([`extends`]: case and
+/// punctuation ignored) and otherwise leaves them as they were.
 fn next_attempt_text(
     saved: Option<&str>,
     candidate: Option<&str>,
@@ -3974,17 +4018,7 @@ fn next_attempt_text(
     let Some(saved) = saved.filter(|s| !s.trim().is_empty()) else {
         return Some(candidate.to_string());
     };
-    let norm = |t: &str| -> Vec<String> {
-        t.split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
-                    .to_lowercase()
-            })
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
-    let (old, new) = (norm(saved), norm(candidate));
-    if authoritative || (new.len() > old.len() && new.starts_with(&old)) {
+    if authoritative || extends(candidate, saved) {
         Some(candidate.to_string())
     } else {
         Some(saved.to_string())
@@ -4042,11 +4076,16 @@ fn decode_failed_take(
     samples: &[f32],
     decode: impl FnOnce(Vec<f32>) -> Result<transcription::AsrOutput, String>,
 ) -> Result<(String, transcription::AsrOutput), String> {
-    // The gate runs FIRST, so the invariant judges the text that would really
-    // be converted (rr1 re-review of 9784adf: "not shorter" passed on 76 words
-    // that the gate then cut to 16, and the clip was deleted).
-    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, decode)
-        .and_then(|(mut text, asr)| retry_gate(&mut text).map(|()| (text, asr)));
+    // The recovered words and the remainder are gated SEPARATELY, then joined
+    // (rr1 re-review of 2b09b0d: one gate over the joined text cut at a loop
+    // inside the recovered words and threw the whole clean remainder away).
+    // The joined text is gated once more for a loop across the seam. All of
+    // it runs BEFORE the invariant judges the text.
+    let partial_text = partial_text.map(|t| gated_words(&t));
+    let decoded = finish_recovered_decode(partial_text, resume_sample, samples, |rest| {
+        decode(rest).and_then(|mut asr| retry_gate(&mut asr.text).map(|()| asr))
+    })
+    .and_then(|(mut text, asr)| retry_gate(&mut text).map(|()| (text, asr)));
     match retry_outcome(row, decoded) {
         RetryOutcome::Convert(text, asr) => Ok((text, asr)),
         RetryOutcome::Keep {
@@ -4121,11 +4160,9 @@ fn retry_failed_dictation(
         }
         let settings = state.settings.lock().clone();
         let (raw_text, asr) = if keep_partial {
-            let mut kept = row
-                .attempt_text
-                .clone()
-                .or_else(|| row.partial_text.clone())
-                .filter(|t| !t.trim().is_empty())
+            // The same saved words the invariant judged: gated, and never less
+            // than the gated recovered words.
+            let mut kept = saved_words(&row)
                 .ok_or_else(|| "Nothing from this take has been transcribed yet".to_string())?;
             retry_gate(&mut kept)?;
             (kept, recovered_only_output())
@@ -8860,14 +8897,10 @@ mod tests {
                     ],
                 ),
                 (
-                    // The one case a shorter clean decode replaces saved words:
-                    // the saved words are a repetition loop.
-                    "shorter clean after a saved loop",
-                    vec![
-                        (Script::SeedLoop, kept(&p(&looped))),
-                        (Script::Clean, kept(&p(&clean_tail))),
-                        (Script::Clean, None),
-                    ],
+                    // A loop saved by an earlier build is gated before it is
+                    // counted, so it cannot hold a clean decode back.
+                    "clean after a saved loop converts",
+                    vec![(Script::SeedLoop, kept(&p(&looped))), (Script::Clean, None)],
                 ),
                 (
                     // As designed, documented: an attempt with failed windows
@@ -8933,6 +8966,87 @@ mod tests {
                             assert_eq!(now.partial_text, row.partial_text, "{ctx}: resume state");
                         }
                     }
+                }
+            }
+        }
+        // rr1 on 2b09b0d — recovered words (`partial_text`) come from the live
+        // decode and were never gated. (recovered words, their end sample —
+        // 0 = the resume point is unusable and the retry decodes the whole
+        // clip —, script, converted raw text, or the saved words Keep saves.)
+        let real14 = (1..=14)
+            .map(|k| format!("r{k}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let looped_recovered = format!("{real14} {}", vec!["the"; 60].join(" "));
+        /// (name, recovered words, their end sample, script, converts to, Keep saves)
+        type Special<'a> = (
+            &'a str,
+            &'a str,
+            usize,
+            Script,
+            Option<String>,
+            Option<String>,
+        );
+        let special: Vec<Special> = vec![
+            (
+                "loop in recovered words + clean remainder",
+                &looped_recovered,
+                resume,
+                Script::Clean,
+                Some(format!("{real14} {clean_tail}")),
+                None,
+            ),
+            (
+                "loop in recovered words + failed remainder",
+                &looped_recovered,
+                resume,
+                Script::Partial,
+                None,
+                Some(format!("{real14} w3")),
+            ),
+            (
+                "whole-clip fallback, short clean decode",
+                &real14,
+                0,
+                Script::CleanFew,
+                None,
+                Some(real14.clone()),
+            ),
+        ];
+        for (name, recovered, end, s, converts_to, keeps) in special {
+            let t = format!("special-{}", name.replace(' ', "-"));
+            db.record_take_chunk(&t, 0, recovered, end as i64).unwrap();
+            let wav = dir.join(format!("{t}.wav"));
+            std::fs::write(&wav, b"RIFF stand-in").unwrap();
+            let row = db
+                .record_failed_dictation_for_take(&wav, 120.0, "Yap quit", None, Some(t))
+                .unwrap();
+            let r = attempt(&row.id, s);
+            let now = db.get_failed_dictation(&row.id).unwrap();
+            match converts_to {
+                Some(raw) => {
+                    let entry = r.expect(name);
+                    assert_eq!(entry.raw_text.as_deref(), Some(raw.as_str()), "{name}");
+                    assert!(now.is_none(), "{name}: row converted");
+                    assert!(!wav.exists(), "{name}: clip deleted");
+                }
+                None => {
+                    assert!(r.is_err(), "{name}: must keep the row");
+                    let now = now.unwrap_or_else(|| panic!("{name}: row kept"));
+                    assert!(wav.exists(), "{name}: clip kept");
+                    assert_eq!(now.attempt_text, keeps, "{name}: saved words");
+                    assert_eq!(super::saved_words(&now), keeps, "{name}: what Keep saves");
+                    // A row a previous build left with a SHORTER attempt text
+                    // that does not extend them: Keep saves the gated
+                    // recovered words, never the shorter attempt.
+                    db.note_failed_retry(&row.id, "older build", Some("w3"))
+                        .unwrap();
+                    let older = db.get_failed_dictation(&row.id).unwrap().unwrap();
+                    assert_eq!(
+                        super::saved_words(&older).as_deref(),
+                        Some(real14.as_str()),
+                        "{name}: Keep vs a short attempt"
+                    );
                 }
             }
         }
