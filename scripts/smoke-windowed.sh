@@ -40,6 +40,13 @@
 #   YAP_SMOKE_CHROME      path to a Chromium binary that speaks CDP
 #   YAP_SMOKE_SKIP_BUILD  1 to reuse desktop/dist instead of rebuilding
 #   YAP_SMOKE_SHOTS       capture root (default docs/smoke-shots)
+#   YAP_SMOKE_FIXTURES    fixture set the Tauri shim answers from (default
+#                         scripts/smoke-fixtures.json). Persona sets:
+#                         scripts/smoke-fixtures-first-run.json (empty first run,
+#                         shows the onboarding overlay) and
+#                         scripts/smoke-fixtures-daily.json (a lived-in day).
+#   YAP_SMOKE_VIEWS       comma list of Nav labels to walk, case-insensitive,
+#                         plus the pseudo-view Onboarding (default: all)
 
 set -euo pipefail
 

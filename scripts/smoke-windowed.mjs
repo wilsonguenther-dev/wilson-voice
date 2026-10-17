@@ -30,11 +30,12 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /* ── the contract ───────────────────────────────────────────────────────── */
 
-const VIEWS = [
+/* The seven Nav views, in sidebar order, keyed by their Nav label. */
+const NAV_VIEWS = [
   "home",
   "permissions",
   "meetings",
@@ -43,6 +44,34 @@ const VIEWS = [
   "scratchpad",
   "settings",
 ];
+
+/* The first-run overlay (Onboarding.tsx, which mounts ModelSetup's hook) is
+   not a Nav view: App.tsx renders it INSTEAD of the shell while
+   settings.onboarded is false. It is captured as the pseudo-view "onboarding"
+   whenever the fixture set shows it, before the Nav walk. */
+const ONBOARDING = "onboarding";
+
+/* YAP_SMOKE_VIEWS — a comma list of Nav labels, case-insensitive (plus the
+   pseudo-view "Onboarding"). Unset or empty = every view. An unknown label is
+   an ARGUMENT error (exit 2), never a silently shorter walk: a typo that
+   walked nothing would report a clean run on zero captures. */
+function selectViews(raw) {
+  const all = [ONBOARDING, ...NAV_VIEWS];
+  if (!raw || !raw.trim()) return all;
+  const want = raw.split(",").map((v) => v.trim().toLowerCase()).filter(Boolean);
+  const unknown = want.filter((v) => !all.includes(v));
+  if (unknown.length) {
+    console.error(
+      "YAP_SMOKE_VIEWS names unknown view(s): " + unknown.join(", ") +
+      ". Known (case-insensitive): Onboarding, " + NAV_VIEWS.map((v) => v[0].toUpperCase() + v.slice(1)).join(", ")
+    );
+    process.exit(2);
+  }
+  return all.filter((v) => want.includes(v));
+}
+const SELECTED = selectViews(process.env.YAP_SMOKE_VIEWS);
+const VIEWS = NAV_VIEWS.filter((v) => SELECTED.includes(v));
+const WANT_ONBOARDING = SELECTED.includes(ONBOARDING);
 
 const SIZES = [
   { w: Number(process.env.YAP_SMOKE_W1 || 980), h: Number(process.env.YAP_SMOKE_H1 || 700) },
@@ -70,9 +99,18 @@ const CHROME =
  * wrong-shaped object instead would throw inside render and blank the view,
  * turning an instrument into a noise generator.
  */
-const FIXTURES = JSON.parse(
-  readFileSync(new URL("./smoke-fixtures.json", import.meta.url), "utf8")
-);
+/* YAP_SMOKE_FIXTURES — a path to the fixture set (resolved against the cwd,
+   which smoke-windowed.sh pins to the repo root). Unset = the original
+   scripts/smoke-fixtures.json, so behaviour is unchanged when it is not given.
+   Persona sets: scripts/smoke-fixtures-first-run.json, scripts/smoke-fixtures-daily.json. */
+const FIXTURES_PATH = process.env.YAP_SMOKE_FIXTURES
+  ? resolve(process.env.YAP_SMOKE_FIXTURES)
+  : new URL("./smoke-fixtures.json", import.meta.url).pathname;
+if (!existsSync(FIXTURES_PATH)) {
+  console.error("YAP_SMOKE_FIXTURES: no fixture file at " + FIXTURES_PATH);
+  process.exit(2);
+}
+const FIXTURES = JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
 delete FIXTURES._README;
 
 const TAURI_SHIM = String.raw`
@@ -409,6 +447,49 @@ async function selfTest() {
   }
 }
 
+/* ── the first-run overlay ──────────────────────────────────────────────── */
+/*
+ * Captures every onboarding step reachable by its primary button (Welcome ->
+ * Permissions -> ...) as onboarding-<n>, judged by the SAME five detectors as
+ * the Nav views. It stops at the first step whose primary button is absent or
+ * does not change the step, so it never drives a permission prompt: on the
+ * first-run persona nothing is granted, and the Permissions step offers
+ * "continue without" instead of a primary Next.
+ */
+async function captureOnboarding(cdp, s, label, outDir, views) {
+  let n = 0;
+  let prev = null;
+  for (let step = 1; step <= 4; step++) {
+    await sleep(500);
+    await evaluate(cdp, s, DETECTORS + ";'loaded'");
+    const res = await evaluate(cdp, s, `__yapDetect(${CFG()})`);
+    const heading = await evaluate(
+      cdp,
+      s,
+      `((document.querySelector(".onboard-step h1, .onboard-step h2, .onboard-step h3") || {}).innerText || "").trim()`
+    );
+    if (heading === prev) break;
+    prev = heading;
+    n++;
+    const name = ONBOARDING + "-" + n;
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, s);
+    const file = join(outDir, name + "-" + label + ".png");
+    writeFileSync(file, Buffer.from(shot.data, "base64"));
+    const pageErrors = (cdp.errors.get(s) || []).slice(0, 6);
+    views.push({ view: name, size: label, heading, findings: res.findings, rows: res.rows, chars: res.chars, shot: file, nav: "overlay", pageErrors });
+    const tag = res.findings.length ? "FAIL" : "ok  ";
+    console.log(tag + " " + name.padEnd(13) + label.padEnd(9) + "rows=" + String(res.rows).padEnd(4) + "chars=" + String(res.chars).padEnd(6) + file + "  [" + heading + "]");
+    for (const f of res.findings) console.log("       " + f.id + " — " + f.detail);
+    const moved = await evaluate(
+      cdp,
+      s,
+      `(() => { const b = document.querySelector(".onboard-actions button.primary"); if (!b || b.disabled) return false; b.click(); return true; })()`
+    );
+    if (!moved) break;
+  }
+  return n;
+}
+
 /* ── the capture walk ───────────────────────────────────────────────────── */
 
 async function capture() {
@@ -423,8 +504,42 @@ async function capture() {
       const s = await newPage(cdp, URL_BASE + "/index.html");
       await setSize(cdp, s, size.w, size.h);
       await sleep(1200);
+      const label = size.w + "x" + size.h;
+
+      /* ── the first-run overlay, when this fixture set shows it ── */
+      const overlay = await evaluate(cdp, s, `!!document.querySelector(".onboard-overlay")`);
+      if (overlay) {
+        const steps = WANT_ONBOARDING ? await captureOnboarding(cdp, s, label, outDir, views) : 0;
+        /* The Nav views are unreachable behind the overlay, so leave it the way
+           a user who skips does: Back to the first step, then its Skip button
+           (onSkip -> finishOnboarding -> save_settings, which the first-run
+           fixture set resolves). */
+        const left = await evaluate(
+          cdp,
+          s,
+          `(async () => {
+             for (let i = 0; i < 4; i++) {
+               const skip = [...document.querySelectorAll(".onboard-actions button")]
+                 .find(b => /skip/i.test(b.innerText || ""));
+               if (skip) { skip.click(); break; }
+               const back = [...document.querySelectorAll(".onboard-actions button")]
+                 .find(b => /back/i.test(b.innerText || ""));
+               if (!back) break;
+               back.click();
+               await new Promise(r => setTimeout(r, 300));
+             }
+             await new Promise(r => setTimeout(r, 600));
+             return document.querySelector(".onboard-overlay") ? "still-open" : "dismissed";
+           })()`
+        );
+        console.log("     onboarding@" + label + ": " + steps + " step(s) captured, overlay " + left);
+        if (left !== "dismissed" && VIEWS.length)
+          console.error("     onboarding overlay would not dismiss — the Nav walk below runs against the overlay");
+      } else if (WANT_ONBOARDING && process.env.YAP_SMOKE_VIEWS) {
+        console.log("     onboarding@" + label + ": not shown by this fixture set (settings.onboarded is true)");
+      }
+
       for (const view of VIEWS) {
-        const label = size.w + "x" + size.h;
         const nav = await evaluate(
           cdp,
           s,
@@ -483,6 +598,8 @@ async function capture() {
   const result = {
     run,
     url: URL_BASE,
+    fixtures: FIXTURES_PATH,
+    selected: SELECTED,
     sizes: SIZES.map((s) => s.w + "x" + s.h),
     emptyStateAttr: EMPTY_STATE_ATTR,
     spinnerBudgetMs: SPINNER_BUDGET_MS,
