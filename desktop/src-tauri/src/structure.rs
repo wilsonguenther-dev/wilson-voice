@@ -20,6 +20,9 @@
 //! * **Never his words, only their layout.** No new content, no summaries, no
 //!   reordering. The only words that may disappear are the spoken cue words in
 //!   [`STRUCTURE_CUE_WORDS`], and only when they were consumed as a marker.
+//!   "heading", "title", "bullet" and the sequence openers are ordinary
+//!   words, so they count as a marker only when SET OFF by a comma or colon
+//!   (`strip_marker`): "Heading home now" and "First of all" stay his words.
 //!   `structure_never_invents_content_words` checks both directions over every
 //!   fixture and over seeded shuffles of them.
 //! * **Conservative.** A take where no list or heading forms comes back
@@ -138,6 +141,8 @@ const CLAUSE_OPENERS: &[&str] = &[
 const MAX_INLINE_ITEM_WORDS: usize = 4;
 const MAX_OPENER_SENTENCE_WORDS: usize = 25;
 const MAX_PAUSE_ITEM_WORDS: usize = 100;
+/// A dictated heading is a short label, never a sentence.
+const MAX_HEADING_WORDS: usize = 8;
 const MAX_LEAD_IN_WORDS: usize = 12;
 const MAX_TOPIC_WORDS: usize = 20;
 
@@ -207,7 +212,11 @@ pub fn structure_text(text: &str, pauses: &[StructurePause], format: StructureFo
     for i in 0..texts.len() {
         let last = i + 1 == texts.len();
         if last || marks.after[i] == Some(Mark::Block) {
-            out.block(&texts[block_start..=i], &marks.after[block_start..=i]);
+            out.block(
+                &texts[block_start..=i],
+                &marks.after[block_start..=i],
+                !last,
+            );
             block_start = i + 1;
         }
     }
@@ -377,6 +386,23 @@ fn lead_words(s: &str, n: usize) -> Vec<String> {
 /// If `sentence` opens with one of `cues`, the cue and the rest (leading comma
 /// and space trimmed).
 fn strip_cue<'a>(sentence: &'a str, cues: &[&'static str]) -> Option<(&'static str, &'a str)> {
+    strip_cue_inner(sentence, cues, false)
+}
+
+/// Like [`strip_cue`], but only when the speaker SET THE CUE OFF as a marker:
+/// the cue's last word carries a comma or a colon ("Heading, weekly update.",
+/// "First, unplug it.", "Bullet: eggs."). "heading", "title", "bullet" and
+/// "first" are ordinary words — "Heading home now", "Title insurance",
+/// "Bullet points", "First of all" — and consuming them deletes his words.
+fn strip_marker<'a>(sentence: &'a str, cues: &[&'static str]) -> Option<(&'static str, &'a str)> {
+    strip_cue_inner(sentence, cues, true)
+}
+
+fn strip_cue_inner<'a>(
+    sentence: &'a str,
+    cues: &[&'static str],
+    need_sep: bool,
+) -> Option<(&'static str, &'a str)> {
     for &cue in cues {
         let n = cue.split(' ').count();
         if lead_words(sentence, n).join(" ") != cue {
@@ -384,12 +410,20 @@ fn strip_cue<'a>(sentence: &'a str, cues: &[&'static str]) -> Option<(&'static s
         }
         // Byte offset just past the n-th word.
         let mut rest = sentence;
+        let mut last_tok = "";
         for _ in 0..n {
             rest = rest.trim_start();
             let end = rest.find(' ').unwrap_or(rest.len());
+            last_tok = &rest[..end];
             rest = &rest[end..];
         }
-        let rest = rest.trim_start().trim_start_matches(',').trim_start();
+        if need_sep && !last_tok.ends_with([',', ':']) {
+            continue;
+        }
+        let rest = rest
+            .trim_start()
+            .trim_start_matches([',', ':'])
+            .trim_start();
         if rest.is_empty() {
             return None;
         }
@@ -440,7 +474,8 @@ impl Builder {
         }
     }
 
-    fn block(&mut self, sents: &[String], after: &[Option<Mark>]) {
+    /// `more_after`: another block of this take follows this one.
+    fn block(&mut self, sents: &[String], after: &[Option<Mark>], more_after: bool) {
         // 1. A block the speaker beat out item by item is a list.
         let beats = after[..after.len() - 1]
             .iter()
@@ -471,8 +506,13 @@ impl Builder {
         let mut i = 0;
         while i < sents.len() {
             let s = &sents[i];
-            // Heading — only when he said so.
-            if let Some((_, rest)) = strip_cue(s, HEADING_CUES) {
+            // Heading — only when he said so, set the cue off, kept it short,
+            // and something follows it: a heading never takes the take alone.
+            let heading = strip_marker(s, HEADING_CUES).filter(|(_, rest)| {
+                rest.split_whitespace().count() <= MAX_HEADING_WORDS
+                    && (i + 1 < sents.len() || more_after)
+            });
+            if let Some((_, rest)) = heading {
                 self.flush();
                 self.structured = true;
                 let h = rest.trim_end_matches(['.', ',', ';', ':']);
@@ -481,8 +521,8 @@ impl Builder {
                 continue;
             }
             // Numbered sequence: first … then … finally.
-            if strip_cue(s, START_CUES).is_some() {
-                let mut items = vec![capitalize(strip_cue(s, START_CUES).unwrap().1)];
+            if let Some((_, first)) = strip_marker(s, START_CUES) {
+                let mut items = vec![capitalize(first)];
                 let mut j = i + 1;
                 while j < sents.len() {
                     match strip_cue(&sents[j], STRUCTURE_CUE_WORDS) {
@@ -504,11 +544,11 @@ impl Builder {
                 }
             }
             // Explicit "bullet …" items: he said the marker, two is enough.
-            if strip_cue(s, &[BULLET_CUE]).is_some() {
+            if strip_marker(s, &[BULLET_CUE]).is_some() {
                 let mut items = Vec::new();
                 let mut j = i;
                 while j < sents.len() {
-                    match strip_cue(&sents[j], &[BULLET_CUE]) {
+                    match strip_marker(&sents[j], &[BULLET_CUE]) {
                         Some((_, rest)) => items.push(capitalize(rest)),
                         None => break,
                     }
@@ -962,6 +1002,68 @@ mod tests {
         assert_eq!(
             structure_text(s, &[], StructureFormat::PlainBullets),
             "• Make sure A works.\n• Make sure B works.\n• Make sure C works."
+        );
+    }
+
+    /// PR #213 review: "heading", "title", "bullet" and "first" are ordinary
+    /// words. They are a dictated marker only when the speaker set them off
+    /// ("Heading, weekly update." / "First, unplug it."), never when they open
+    /// a sentence as a verb or an idiom — and a heading never takes a take on
+    /// its own. Every one of these comes back byte for byte.
+    #[test]
+    fn structure_common_words_are_not_consumed_as_cues() {
+        for s in [
+            "Heading home now, see you in twenty.",
+            "Heading into the meeting now.",
+            "Heading out. Be back soon.",
+            "Title insurance is expensive in Texas.",
+            "Bullet points are fine. Bullet trains are fast.",
+            "First of all, great job on the launch. Then we can talk pricing. Finally, let's grab lunch.",
+            "First off, thanks. Then we can talk pricing. Finally, let's grab lunch.",
+            "First time I went there it rained. Then it snowed. Finally it cleared up.",
+            "Heading, weekly update.",
+            "Title: the plan.",
+            "Notes for today. Heading, next steps.",
+            "Heading, this is a whole long sentence that keeps going and going well past any heading length.",
+        ] {
+            for fmt in [StructureFormat::Markdown, StructureFormat::PlainBullets] {
+                assert_eq!(structure_text(s, &[], fmt), s, "{fmt:?}: {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn structure_set_off_cues_still_work() {
+        let md = StructureFormat::Markdown;
+        assert_eq!(
+            structure_text("Heading: weekly update. The billing page shipped.", &[], md),
+            "## Weekly update\nThe billing page shipped."
+        );
+        assert_eq!(
+            structure_text(
+                "Title, launch plan. We ship Friday.",
+                &[],
+                StructureFormat::PlainBullets
+            ),
+            "Launch plan\nWe ship Friday."
+        );
+        assert_eq!(
+            structure_text("Bullet, eggs. Bullet, milk.", &[], md),
+            "- Eggs.\n- Milk."
+        );
+        assert_eq!(
+            structure_text("First, unplug it. Then wait. Finally, plug it in.", &[], md),
+            "1. Unplug it.\n2. Wait.\n3. Plug it in."
+        );
+        // A heading followed by a block pause still has content after it.
+        let s = "Heading, weekly update. The billing page shipped.";
+        let p = [StructurePause {
+            seconds: 1.2,
+            at_fraction: 23.0 / s.len() as f64,
+        }];
+        assert_eq!(
+            structure_text(s, &p, md),
+            "## Weekly update\nThe billing page shipped."
         );
     }
 
