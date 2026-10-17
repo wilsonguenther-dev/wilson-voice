@@ -1212,3 +1212,137 @@ ITEMS.push({
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
   `,
 })
+
+// yap-review-pass-2-audit (2026-10-17T01:2xZ, seat yap-pass-summary, read-only audit of review pass
+// wf_d0209003-efe 20:17Z->01:20Z). Two items, FIX, no panel (harness + test hygiene, unambiguous):
+//   1. THE LAND GATE WAS CI-ONLY. All six merged PRs (#178 #192 #195 #212 security, #196 #213 standard)
+//      and #214 landed with NO reviewer PASS on the merged head. The reviewers' verdicts were BLOCK on the
+//      pre-fix heads; the fix-land seat fixed its own findings and posted "Primary/Independent adversarial
+//      review (Opus)" bodies on the new head itself ("Verdict at review time: BLOCK. Disposition after the
+//      fix round: FIXED"). The land sweeper's gate was the CI check on headRefOid plus sidecar build, fmt and
+//      clippy ("I did not run cargo test locally"). template.mjs says "THERE IS NO SECOND REVIEW ROUND IN THIS
+//      PASS" and CI_GATE never reads a review record. #196's only PASS was on cb60606; it landed at 16f7241
+//      after a float.css conflict resolution nobody reviewed. #214 was merged by the drain seat on its own
+//      fixes to Codex-bot suggestions, with no Opus seat at all.
+//   2. meeting::tests ARE NOT HERMETIC. SessionConfig::new (meeting.rs) defaults env to SystemEnv, whose
+//      battery() runs /usr/bin/pmset. Seven meeting::tests failed at recon with
+//      "LowBattery { percent: 11, budgeted: 10800s }" because the host Mac was at 11% on battery.
+
+ITEMS.push({
+  id: 'yap-land-gate-pass-required', prompt: 'yap-land-gate', branch: 'loop/yap-land-gate-pass-required-review-record-on-head', gated: null,
+  title: 'No PR lands without an Opus PASS bound to its head: one seat for standard, two different seats for security, enforced by scripts/loop/review-gate.mjs in every merge path (LAND, fix-land, land sweeper, drain)',
+  preflight: `
+    test -f scripts/loop/review-gate.mjs
+    test -f scripts/loop/review-gate.test.mjs
+    grep -q "review-gate.mjs gate" scripts/loop/template.mjs
+    ! grep -q "THERE IS NO SECOND REVIEW ROUND IN THIS PASS" scripts/loop/template.mjs
+  `,
+  spec: `
+    Panel: not required — harness defect found by the review pass 2 audit (2026-10-17). Opus only, every seat.
+    EVIDENCE (pass wf_d0209003-efe): every merged head carries only the FIXER's disposition review, never a
+    reviewer PASS. #178 96e5380, #192 45fa4cd, #195 1dfb328, #212 0b7449b, #213 d956c11: reviewer verdicts BLOCK
+    on the earlier heads, fixer self-attested FIXED on the merged head. #196 16f7241: reviewer PASS on cb60606
+    only. #214 8bfd8a5: no Opus review at all (drain fixed Codex-bot suggestions and merged). The sweeper's gate
+    was CI on headRefOid + build/fmt/clippy, no cargo test.
+
+      1. Port Learn's gate: scripts/loop/review-gate.mjs, modelled line for line on Drivia Learn's H-GATE-1 gate
+         (Learn repo, main branch, file scripts/loop/review-gate.mjs; read it with gh api). DEFAULT_REPO wilsonguenther-dev/wilson-voice,
+         RECORD_MARKER "loop-review (Opus)", seats review-opus and review-opus2, EXIT_REVIEW 6, EXIT_USAGE 64,
+         REVIEW_AUTHORS the account the seats post as. Subcommands: gate --pr N [--head SHA], record --pr N
+         --seat --lens --head --verdict PASS|BLOCK --blocking N, klass --pr N. The record is a PR comment whose
+         first line is the marker and which names seat, lens, head (40 hex) and "verdict: PASS blocking=0" or
+         "verdict: BLOCK blocking=n". record refuses a sha that is not the PR's current head.
+      2. Decision against the CURRENT head only. SECURITY class (the triage klass rule: SECURITY_IDS,
+         SECURITY_PATHS, a security label, or a file list longer than one page) needs a PASS from review-opus
+         AND a PASS from review-opus2 on the head. STANDARD needs one PASS from either seat on the head. There is
+         NO unreviewed exception in Yap: no record on the head refuses. Not a record: a fixer seat (any seat
+         starting "fix"), a drain/sweeper/land seat, an unknown seat, a bot author, an edited comment, PASS with
+         blocking > 0, a short head. A seat whose newest record on the head is BLOCK refuses. Records on older
+         heads are history and never count, so any push (a rebase, a conflict resolution, a fix) needs a fresh
+         PASS.
+      3. Wire it into every agent that can merge: the build-mode LAND step, fix-land, the land sweeper and the
+         drain. Each runs "node scripts/loop/review-gate.mjs gate --pr N --head <headRefOid>" immediately before
+         gh pr merge --match-head-commit <same sha>, and does not merge on a non-zero exit (it labels the PR
+         review-pending and names the missing seat). CI_GATE and the local gate stay as they are — they are
+         necessary, not sufficient.
+      4. The review pass gets its second round. After fix-land pushes a fix it does NOT merge: the chain
+         re-dispatches the reviewer seat(s) that blocked (same lens, fresh context) at the new head, and they
+         post their own record with "record". Cap: two fix rounds; a third BLOCK ends as needs-human. Replace
+         the "THERE IS NO SECOND REVIEW ROUND IN THIS PASS" contract text accordingly. Reviewer seats post the
+         record themselves; the fixer never posts a verdict body titled as a review.
+      5. build.mjs validation: every prompt that contains "gh pr merge" also contains "review-gate.mjs gate";
+         review-gate.mjs is in the harness SECURITY_PATHS; and ONLY reviewer-seat prompts (review-opus,
+         review-opus2) contain "review-gate.mjs record" — a fix, fix-land, land, sweeper or drain prompt that
+         contains it fails validation.
+      6. TRUST LIMIT — say it, do not over-claim it. Every seat posts through the same GitHub account, so the
+         record's seat field is self-declared: the gate CANNOT authenticate which seat wrote a record, and a
+         seat that runs "record --seat review-opus" is indistinguishable from the real reviewer. What this item
+         enforces is (a) a PASS bound to the current head exists, and (b) only reviewer prompts are ever handed
+         the record subcommand (validation in 5). Write that limit, in those words, in the review-gate.mjs
+         header and in the PR body. Never describe the gate as authenticating or unforgeable. Seat
+         authentication (per-seat credentials, or records the controller signs) is out of scope here.
+    TESTS: scripts/loop/review-gate.test.mjs (node --test), hermetic — gh is a stub fed from fixture JSON via an
+    injectable runner, never the network. Cases: (a) CI green, MERGEABLE, no record on any head -> gate exit 6;
+    (b) standard PR, one review-opus PASS on the head -> 0; (c) PASS on an older head only (the #196 shape) -> 6;
+    (d) security PR, PASS from review-opus only -> 6; two PASSes both from review-opus -> 6; review-opus +
+    review-opus2 PASS on head -> 0; (e) a fix-land seat record saying PASS on the head (the #178 shape) -> 6;
+    (f) newest review-opus2 record on head is BLOCK -> 6; (g) edited record -> 6; (h) record --head with a sha
+    that is not the current head -> 64; (i) build.mjs validation fails on a stub fix-land prompt containing
+    "review-gate.mjs record".
+    WHAT NOT TO DO: no Codex/Gemini/bot review counts; never accept a verdict from a loop log instead of the PR.
+  `,
+  acceptance: `
+    test -f scripts/loop/review-gate.mjs
+    test -f scripts/loop/review-gate.test.mjs
+    node --test scripts/loop/review-gate.test.mjs
+    grep -q "review-gate.mjs gate" scripts/loop/template.mjs
+    ! grep -q "THERE IS NO SECOND REVIEW ROUND IN THIS PASS" scripts/loop/template.mjs
+    cd ${APP} && npm run loop:build && npm run loop:validate
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-tests-hermetic-power', prompt: 'yap-tests-hermetic', branch: 'loop/yap-tests-hermetic-power-injected-power-source', gated: null,
+  title: 'Meeting tests stop reading the host battery: an injected PowerSource, pmset only in production wiring, so cargo test passes on a Mac at 5% on battery',
+  preflight: `
+    grep -q "trait PowerSource" desktop/src-tauri/src/meeting.rs
+    grep -q "YAP_HOST_BATTERY_OVERRIDE" desktop/src-tauri/src/meeting.rs
+  `,
+  spec: `
+    Panel: not required — test-design defect (non-hermetic tests), found by the review pass 2 audit.
+    EVIDENCE: recon 2026-10-16T20:2xZ, cargo test exit 101, 7 failures all in meeting::tests
+    (a_dictation_take_mid_meeting_costs_the_meeting_nothing, a_meeting_registers_and_deregisters_the_active_capture,
+    a_meeting_session_holds_its_own_audio_stream_for_its_whole_length, a_meeting_whose_stream_refuses_never_starts,
+    a_refused_start_releases_its_claim, a_second_meeting_is_refused_not_silently_swapped_in,
+    a_session_that_lost_the_slot_finalizes_partial_and_leaves_it_alone), panic "LowBattery { percent: 11,
+    budgeted: 10800s }"; pmset showed the host on battery at 11%. Root cause: SessionConfig::new sets
+    env: Arc::new(SystemEnv { path }), SystemEnv::battery() calls probe_battery() (/usr/bin/pmset -g batt), and
+    the tests build sessions with ..SessionConfig::new(&dir, ...). The CaptureEnv seam exists
+    (tests/matrix_row4_disk_preflight.rs uses FakeDisk) but the default constructor wires the real machine, and
+    tests/matrix_row3_mic_denied_system_only.rs plus matrix_row4 inherit it for battery and thermal too.
+
+      1. A PowerSource trait (fn battery(&self) -> BatterySnapshot) in meeting.rs. PmsetPower is the only
+         implementation that runs pmset. SystemEnv takes its battery from a PowerSource it is given.
+      2. Production wiring passes the real machine explicitly: the session constructors used by
+         meeting_control.rs (~942) and syscapture.rs (~2106, ~2749) build SystemEnv with PmsetPower. The
+         generic constructor used by tests (SessionConfig::new or a new SessionConfig::hermetic) defaults to a
+         HermeticEnv: AC power at 100%, nominal thermal, ample disk — so no unit or integration test reads pmset,
+         statvfs or the thermal state unless it injects them on purpose.
+      3. A debug-only seam to PROVE hermeticity: PmsetPower honours YAP_HOST_BATTERY_OVERRIDE="<percent>,<ac|battery>"
+         under cfg(debug_assertions) only, so a test run can simulate a dying host. Release builds compile it out.
+      4. Battery behaviour stays tested, through injection: a test that injects 5% on battery with the default
+         3 h budget asserts PreflightError::LowBattery, and one on AC asserts it starts.
+    TESTS: meeting::tests::hermetic_power_override_is_real (with the override set to 5,battery, PmsetPower reports
+    5% on battery — so the acceptance run below is not vacuous); the injected-5% LowBattery test; every existing
+    meeting::tests case unchanged in intent.
+    WHAT NOT TO DO: do not mark the seven tests #[ignore]; do not loosen the LowBattery threshold; do not read the
+    override in release builds.
+  `,
+  acceptance: `
+    grep -q "trait PowerSource" desktop/src-tauri/src/meeting.rs
+    grep -q "YAP_HOST_BATTERY_OVERRIDE" desktop/src-tauri/src/meeting.rs
+    cd ${APP}/src-tauri && YAP_HOST_BATTERY_OVERRIDE="5,battery" YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting:: ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_HOST_BATTERY_OVERRIDE="5,battery" YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test matrix_row3_mic_denied_system_only --test matrix_row4_disk_preflight ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --lib meeting::tests::hermetic_power_override_is_real ; test $? -eq 0
+  `,
+})
