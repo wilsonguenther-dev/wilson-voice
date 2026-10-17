@@ -2103,7 +2103,9 @@ fn mach_ticks_to_ns(ticks: u64) -> u64 {
 /// finished tracks is **YV106**. This builds the config; it does not start
 /// anything.
 pub fn virtual_meeting_config(dir: impl Into<PathBuf>, format: TapFormat) -> SessionConfig {
-    let mut config = SessionConfig::new(dir, format.sample_rate, format.channels);
+    // Production wiring: the real Mac (pmset, statvfs, thermal), stated here
+    // rather than inherited from `SessionConfig::new`, which is hermetic.
+    let mut config = SessionConfig::new(dir, format.sample_rate, format.channels).on_this_mac();
     config.tracks = 2;
     config.stream = Arc::new(ExternalStream);
     config
@@ -2738,17 +2740,19 @@ impl Drop for TapPumpThread {
 /// refuses to blame permission without evidence — has been reachable only from
 /// its own tests, because `CaptureEnv::tap_liveness`'s default is `None` and
 /// nothing overrode it. A tap that cannot exist cannot die.
+///
+/// It decorates the HOST environment it is given rather than building one: the
+/// production caller hands it [`crate::meeting::SystemEnv::this_mac`], and a
+/// test hands it a [`crate::meeting::HermeticEnv`], so wrapping a tap around a
+/// session never smuggles the real machine's battery back into a test.
 pub struct TappedEnv {
-    inner: crate::meeting::SystemEnv,
+    inner: Arc<dyn crate::meeting::CaptureEnv>,
     tap: Arc<MeetingTap>,
 }
 
 impl TappedEnv {
-    pub fn new(path: PathBuf, tap: Arc<MeetingTap>) -> Self {
-        Self {
-            inner: crate::meeting::SystemEnv { path },
-            tap,
-        }
+    pub fn new(host: Arc<dyn crate::meeting::CaptureEnv>, tap: Arc<MeetingTap>) -> Self {
+        Self { inner: host, tap }
     }
 }
 

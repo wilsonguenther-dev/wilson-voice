@@ -916,8 +916,11 @@ fn open_meeting_tap() -> Result<Arc<syscapture::MeetingTap>, syscapture::TapErro
 /// reason a two-track test needs no microphone.
 // Seven parameters, and each one is a thing the caller genuinely decides: where
 // the audio goes, the mic's format, whether Track B attaches, the tap itself,
-// where the permission verdict is written back, and which stream the meeting
-// holds. Collapsing them into a struct would move the same list one line up.
+// where the permission verdict is written back, which stream the meeting
+// holds, and which machine its preflight and watchdog read (`host`:
+// `SystemEnv::this_mac` in production, a `HermeticEnv` in a test, so no test
+// is refused by the battery of the laptop it runs on). Collapsing them into a
+// struct would move the same list one line up.
 #[allow(clippy::too_many_arguments)]
 pub fn start_capture_session(
     dir: &Path,
@@ -927,6 +930,7 @@ pub fn start_capture_session(
     tap: Option<Arc<syscapture::MeetingTap>>,
     db: Option<Arc<Database>>,
     stream: Arc<dyn crate::meeting::CaptureStream>,
+    host: Arc<dyn crate::meeting::CaptureEnv>,
     kind: MeetingKind,
 ) -> Result<Box<dyn ActiveCapture>, String> {
     // `SessionConfig::virtual_meeting` and NOT `syscapture::virtual_meeting_config`:
@@ -942,16 +946,14 @@ pub fn start_capture_session(
         crate::meeting::SessionConfig::new(dir, native_rate, channels)
     };
     config.stream = stream;
+    config.env = Arc::clone(&host);
     // YV125 — what the USER said, never what the tap implies. A hybrid meeting
     // opens the same tap as a call and must still cluster Track A.
     config.kind = kind;
     if let Some(tap) = tap.as_ref() {
         // The environment that finally answers `Some` to `tap_liveness`, which
         // is what puts YV104's ghost watchdog in effect inside a real meeting.
-        config.env = Arc::new(syscapture::TappedEnv::new(
-            dir.to_path_buf(),
-            Arc::clone(tap),
-        ));
+        config.env = Arc::new(syscapture::TappedEnv::new(host, Arc::clone(tap)));
     }
     let session = crate::meeting::MeetingSession::start(config).map_err(|e| e.to_string())?;
     let pump = tap.map(|tap| {
@@ -1023,6 +1025,9 @@ impl CaptureEngine for SessionEngine {
             tap,
             Some(Arc::clone(&self.db)),
             Arc::new(crate::meeting::MicStream),
+            // The real Mac — the one production call site that reads pmset,
+            // statvfs and the thermal state for a meeting.
+            Arc::new(crate::meeting::SystemEnv::this_mac(dir)),
             kind,
         ) {
             Ok(capture) => Ok(capture),

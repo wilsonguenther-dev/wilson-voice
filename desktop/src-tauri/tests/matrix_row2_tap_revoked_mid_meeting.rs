@@ -346,7 +346,11 @@ fn attached_tap() -> (Arc<MeetingTap>, Arc<RtCapture>) {
 #[test]
 fn the_shipping_environment_supplies_the_liveness_this_row_runs_on() {
     let (tap, ring) = attached_tap();
-    let env = TappedEnv::new(std::path::PathBuf::from("."), Arc::clone(&tap));
+    // A hermetic host: this test is about the tap, not the laptop's battery.
+    let env = TappedEnv::new(
+        Arc::new(wilson_voice_lib::meeting::HermeticEnv::default()),
+        Arc::clone(&tap),
+    );
 
     // A minute of the call, captured properly.
     for i in 0..100u64 {

@@ -2768,9 +2768,86 @@ pub trait CaptureEnv: Send + Sync + 'static {
     }
 }
 
-/// The real machine.
+/// Where a battery reading comes from.
+///
+/// Split out of [`CaptureEnv`] because the battery is the one probe that spawns
+/// a process and the one whose answer changes with where the code happens to be
+/// running: a `cargo test` on a laptop at 11% on battery used to refuse seven
+/// meeting tests with `LowBattery` because the tests inherited the real
+/// machine's `pmset`. [`PmsetPower`] is the ONLY implementation that runs
+/// `pmset`; everything else is injected.
+pub trait PowerSource: Send + Sync + 'static {
+    fn battery(&self) -> BatterySnapshot;
+}
+
+/// The real power source: `/usr/bin/pmset -g batt`, parsed.
+///
+/// In a debug build only, `YAP_HOST_BATTERY_OVERRIDE="<percent>,<ac|battery>"`
+/// replaces the reading, so a test run (or a dev build) can simulate a dying
+/// host without unplugging one. A release build compiles the override out
+/// entirely — the variable is never read by anything that ships.
+pub struct PmsetPower;
+
+impl PowerSource for PmsetPower {
+    fn battery(&self) -> BatterySnapshot {
+        #[cfg(debug_assertions)]
+        if let Some(simulated) = host_battery_override() {
+            return simulated;
+        }
+        probe_battery()
+    }
+}
+
+/// The debug-only override [`PmsetPower`] honours. Not compiled in release.
+#[cfg(debug_assertions)]
+pub const HOST_BATTERY_OVERRIDE_VAR: &str = "YAP_HOST_BATTERY_OVERRIDE";
+
+/// Parse `"<percent>,<ac|battery>"`, e.g. `"5,battery"` or `"100,ac"`.
+/// `None` for anything else, including a percent above 100.
+#[cfg(debug_assertions)]
+pub fn parse_host_battery_override(raw: &str) -> Option<BatterySnapshot> {
+    let (percent, source) = raw.trim().split_once(',')?;
+    let percent: u8 = percent.trim().parse().ok().filter(|p| *p <= 100)?;
+    let on_ac = match source.trim().to_ascii_lowercase().as_str() {
+        "ac" => true,
+        "battery" => false,
+        _ => return None,
+    };
+    Some(BatterySnapshot {
+        on_ac,
+        percent: Some(percent),
+    })
+}
+
+/// The override, if set. A SET but malformed value panics rather than being
+/// ignored: someone who set it meant to simulate a host, and silently falling
+/// back to the real `pmset` is exactly the vacuous run the override exists to
+/// rule out.
+#[cfg(debug_assertions)]
+fn host_battery_override() -> Option<BatterySnapshot> {
+    let raw = std::env::var(HOST_BATTERY_OVERRIDE_VAR).ok()?;
+    Some(parse_host_battery_override(&raw).unwrap_or_else(|| {
+        panic!("{HOST_BATTERY_OVERRIDE_VAR}={raw:?} is not \"<percent>,<ac|battery>\"")
+    }))
+}
+
+/// The real machine: `statvfs` on the meeting's volume, the thermal state, and
+/// a battery read from the [`PowerSource`] it is given — [`PmsetPower`] in
+/// production, via [`SystemEnv::this_mac`].
 pub struct SystemEnv {
     pub path: PathBuf,
+    pub power: Arc<dyn PowerSource>,
+}
+
+impl SystemEnv {
+    /// The Mac this process is running on, battery from `pmset`. The
+    /// constructor every production session goes through.
+    pub fn this_mac(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            power: Arc::new(PmsetPower),
+        }
+    }
 }
 
 impl CaptureEnv for SystemEnv {
@@ -2779,7 +2856,7 @@ impl CaptureEnv for SystemEnv {
     }
 
     fn battery(&self) -> BatterySnapshot {
-        probe_battery()
+        self.power.battery()
     }
 
     fn thermal(&self) -> ThermalState {
@@ -2826,6 +2903,46 @@ fn probe_battery() -> BatterySnapshot {
     #[cfg(not(target_os = "macos"))]
     {
         BatterySnapshot::default()
+    }
+}
+
+/// Free space a [`HermeticEnv`] reports: 1 TiB, far above
+/// [`required_free_bytes`] for the three-hour cap and above
+/// [`DISK_FLOOR_BYTES`], without being a sentinel like `u64::MAX`.
+pub const HERMETIC_FREE_BYTES: u64 = 1 << 40;
+
+/// A machine that is never the one the code is running on: AC power at 100%,
+/// nominal thermal, [`HERMETIC_FREE_BYTES`] free. The default
+/// [`SessionConfig::new`] wires, so no unit or integration test reads `pmset`,
+/// `statvfs` or the thermal state unless it injects them on purpose — which a
+/// test does by setting `battery` (or by supplying its own [`CaptureEnv`]).
+#[derive(Debug, Clone, Copy)]
+pub struct HermeticEnv {
+    pub battery: BatterySnapshot,
+}
+
+impl Default for HermeticEnv {
+    fn default() -> Self {
+        Self {
+            battery: BatterySnapshot {
+                on_ac: true,
+                percent: Some(100),
+            },
+        }
+    }
+}
+
+impl CaptureEnv for HermeticEnv {
+    fn free_bytes(&self) -> u64 {
+        HERMETIC_FREE_BYTES
+    }
+
+    fn battery(&self) -> BatterySnapshot {
+        self.battery
+    }
+
+    fn thermal(&self) -> ThermalState {
+        ThermalState::Nominal
     }
 }
 
@@ -2932,10 +3049,17 @@ pub struct SessionConfig {
 }
 
 impl SessionConfig {
+    /// A config on a [`HermeticEnv`] — NOT the real machine. Production wiring
+    /// chains [`SessionConfig::on_this_mac`] (or sets `env` to a
+    /// [`SystemEnv::this_mac`]-backed environment) explicitly, so the one
+    /// place a session reads `pmset`, `statvfs` and the thermal state is a
+    /// place someone wrote down on purpose; a test that builds
+    /// `..SessionConfig::new(..)` can no longer be refused by the battery of
+    /// the laptop it happens to run on.
     pub fn new(dir: impl Into<PathBuf>, native_rate: u32, channels: u16) -> Self {
         let dir = dir.into();
         Self {
-            env: Arc::new(SystemEnv { path: dir.clone() }),
+            env: Arc::new(HermeticEnv::default()),
             stream: Arc::new(MicStream),
             dir,
             // The skip default (YV125): a session nobody told anything about is
@@ -2975,6 +3099,13 @@ impl SessionConfig {
             tracks: 2,
             ..Self::new(dir, native_rate, channels)
         }
+    }
+
+    /// The same config, reading the Mac this process runs on: disk at
+    /// `self.dir`, the real thermal state, and the battery from [`PmsetPower`].
+    pub fn on_this_mac(mut self) -> Self {
+        self.env = Arc::new(SystemEnv::this_mac(self.dir.clone()));
+        self
     }
 }
 
@@ -4225,6 +4356,168 @@ mod tests {
             ..SessionConfig::new(&dir, 16_000, 1)
         })
         .expect("a failed start does not poison the slot");
+        session.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Hermetic power (yap-tests-hermetic-power) ──────────────────────────
+
+    /// Set the debug-only override to "a dying host". Every test that sets it
+    /// sets the SAME value, so parallel tests can never observe a different one.
+    #[cfg(debug_assertions)]
+    fn simulate_dying_host() {
+        std::env::set_var(HOST_BATTERY_OVERRIDE_VAR, "5,battery");
+    }
+
+    /// The seam that makes the acceptance run non-vacuous: with the override
+    /// set, the REAL power source reports a dying host — and the preflight a
+    /// production meeting runs on that reading refuses the three-hour budget.
+    /// So a `cargo test` run under `YAP_HOST_BATTERY_OVERRIDE="5,battery"` that
+    /// passes is a run in which any test still reading `pmset` would have been
+    /// refused.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn hermetic_power_override_is_real() {
+        simulate_dying_host();
+        let dying = PmsetPower.battery();
+        assert_eq!(
+            dying,
+            BatterySnapshot {
+                on_ac: false,
+                percent: Some(5),
+            },
+            "PmsetPower honours YAP_HOST_BATTERY_OVERRIDE in a debug build"
+        );
+        assert_eq!(
+            SystemEnv::this_mac(std::env::temp_dir()).battery(),
+            dying,
+            "and the real-machine env reads its battery through it"
+        );
+        assert!(matches!(
+            preflight(&PreflightInputs {
+                free_bytes: HERMETIC_FREE_BYTES,
+                duration_estimate: None,
+                battery: dying,
+                thermal: ThermalState::Nominal,
+            }),
+            Err(PreflightError::LowBattery { percent: 5, .. })
+        ));
+
+        assert_eq!(
+            parse_host_battery_override("100,ac"),
+            Some(BatterySnapshot {
+                on_ac: true,
+                percent: Some(100),
+            })
+        );
+        for malformed in ["", "5", "five,battery", "101,ac", "5,mains", "5;battery"] {
+            assert_eq!(
+                parse_host_battery_override(malformed),
+                None,
+                "{malformed:?}"
+            );
+        }
+    }
+
+    /// The default constructor is hermetic and production wiring is not —
+    /// asserted with the override set, so the two answers can only be told
+    /// apart if one of them really reads `PmsetPower` and the other does not.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn only_production_wiring_reads_the_host() {
+        simulate_dying_host();
+        let dir = std::env::temp_dir();
+        let hermetic = SessionConfig::new(&dir, 16_000, 1);
+        assert_eq!(
+            hermetic.env.battery(),
+            HermeticEnv::default().battery,
+            "SessionConfig::new never reads pmset"
+        );
+        assert_eq!(hermetic.env.free_bytes(), HERMETIC_FREE_BYTES);
+        assert_eq!(hermetic.env.thermal(), ThermalState::Nominal);
+        assert_eq!(
+            SessionConfig::virtual_meeting(&dir, 16_000, 1)
+                .env
+                .battery(),
+            HermeticEnv::default().battery
+        );
+        assert_eq!(
+            SessionConfig::new(&dir, 16_000, 1)
+                .on_this_mac()
+                .env
+                .battery(),
+            BatterySnapshot {
+                on_ac: false,
+                percent: Some(5),
+            },
+            "on_this_mac is the real machine"
+        );
+        assert_eq!(
+            syscapture::virtual_meeting_config(
+                &dir,
+                syscapture::TapFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+            )
+            .env
+            .battery()
+            .percent,
+            Some(5),
+            "the tap-only production config reads the real machine too"
+        );
+    }
+
+    /// Battery behaviour stays tested — through injection, not the host. 5% on
+    /// battery with no estimate (budgeted against the 3 h cap) refuses with
+    /// the real number in it, and leaves the slot free.
+    #[test]
+    fn an_injected_five_percent_battery_refuses_a_three_hour_meeting() {
+        let _turn = session_turn();
+        let dir = tmpdir("injected-low-battery");
+        let refused = MeetingSession::start(SessionConfig {
+            stream: Arc::new(ExternalStream),
+            watchdog_interval: Duration::from_secs(3600),
+            env: Arc::new(HermeticEnv {
+                battery: BatterySnapshot {
+                    on_ac: false,
+                    percent: Some(5),
+                },
+            }),
+            ..SessionConfig::new(&dir, 16_000, 1)
+        });
+        match refused {
+            Err(PreflightError::LowBattery { percent, budgeted }) => {
+                assert_eq!(percent, 5);
+                assert_eq!(budgeted, MEETING_HARD_CAP);
+            }
+            Err(other) => panic!("expected LowBattery, got {other:?}"),
+            Ok(_) => panic!("a 3 h meeting on 5% battery must be refused"),
+        }
+        assert!(
+            active_capture().is_none(),
+            "a refused start registers nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same 5% on AC power is not a dying host: the meeting starts.
+    #[test]
+    fn an_injected_five_percent_on_ac_starts() {
+        let _turn = session_turn();
+        let dir = tmpdir("injected-ac");
+        let session = MeetingSession::start(SessionConfig {
+            stream: Arc::new(ExternalStream),
+            watchdog_interval: Duration::from_secs(3600),
+            env: Arc::new(HermeticEnv {
+                battery: BatterySnapshot {
+                    on_ac: true,
+                    percent: Some(5),
+                },
+            }),
+            ..SessionConfig::new(&dir, 16_000, 1)
+        })
+        .expect("on AC power a low percent is not a refusal");
         session.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
