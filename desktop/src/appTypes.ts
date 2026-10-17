@@ -328,6 +328,15 @@ export interface FailedDictation {
   error: string;
   sourceApp?: string | null;
   createdAt: string;
+  /** DB-B — the id the take's audio carries on disk, for a recovered take. */
+  takeId?: string | null;
+  /**
+   * DB-B — the words this take had ALREADY decoded before the app went away,
+   * read back from `take_chunks` at launch. Its presence is what turns "Retry"
+   * (decode this clip again) into "Finish transcribing" (resume from here) —
+   * the backend decodes only the remainder and keeps these words.
+   */
+  partialText?: string | null;
 }
 
 /**

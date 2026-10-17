@@ -164,6 +164,18 @@ pub trait TakeObserver {
     fn planned(&mut self, windows: usize);
     /// One window finished, and `text` is what it really decoded.
     fn chunk_done(&mut self, text: &str);
+    /// DB-B — does this observer persist the decoded prefix? Merging the prefix
+    /// costs a pass over every window so far, so the loop only pays for it when
+    /// someone will keep the result. Default: no.
+    fn wants_prefix(&self) -> bool {
+        false
+    }
+    /// DB-B — every window up to and including `window_index` decoded. `text`
+    /// is the seam-merged text of that unbroken prefix and `end_sample` is
+    /// where its content ends in the decoded buffer: what a resume after a
+    /// crash keeps, and where it starts decoding again. Only called when
+    /// [`wants_prefix`](Self::wants_prefix) is true.
+    fn prefix_done(&mut self, _window_index: usize, _end_sample: usize, _text: &str) {}
 }
 
 /// The observer for every decode with no pill in front of it — the headless

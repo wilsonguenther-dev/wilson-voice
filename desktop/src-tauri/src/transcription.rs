@@ -1393,6 +1393,10 @@ impl TranscriptionManager {
         let mut decoded = 0usize;
         let mut first_error: Option<String> = None;
         let mut deadline_tripped = false;
+        // DB-B — true while every window so far decoded. Only an UNBROKEN prefix
+        // is persisted for a resume: a resume decodes from the prefix's end, so
+        // a prefix with a hole in it would skip the hole's audio forever.
+        let mut prefix_intact = true;
         for window in &windows {
             // Y3-D — THE CHUNK BOUNDARY. Checked before every window, including
             // the first, so a cancel that lands while chunk 4 decodes stops the
@@ -1413,6 +1417,7 @@ impl TranscriptionManager {
                 // stays in `outcomes` and is merged below.
                 deadline_tripped = true;
                 first_error.get_or_insert_with(|| TAKE_DEADLINE_EXCEEDED.to_string());
+                prefix_intact = false;
                 outcomes.push(meeting_asr::ChunkOutcome::failed(
                     window,
                     TAKE_DEADLINE_EXCEEDED.to_string(),
@@ -1430,8 +1435,22 @@ impl TranscriptionManager {
                     outcomes.push(meeting_asr::ChunkOutcome::from_transcript(
                         window, transcript,
                     ));
+                    // DB-B — the durable half of the progress report: the
+                    // seam-merged text of the unbroken prefix, and the sample
+                    // its CONTENT ends at (the same boundary the meeting resume
+                    // uses, `ResumePoint` at `content_end_seconds`; the timed
+                    // merge keeps exactly the words inside the content span, so
+                    // resuming there neither repeats nor skips a word). The
+                    // coordinates are those of THIS buffer — the one the clip
+                    // wav is written from — so a resume reads the same samples.
+                    if prefix_intact && observer.wants_prefix() {
+                        let merged = meeting_asr::assemble(outcomes.clone(), 0, decoded, 0, false);
+                        let end_sample = (window.content_end_seconds * rate).round().max(0.0);
+                        observer.prefix_done(window.index, end_sample as usize, &merged.text);
+                    }
                 }
                 Err(e) => {
+                    prefix_intact = false;
                     // Chunk 9 of 12 failing costs chunk 9, not the take.
                     log::warn!("dictation chunk {} failed: {e}", window.index);
                     first_error.get_or_insert_with(|| e.clone());

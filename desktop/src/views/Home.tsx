@@ -147,10 +147,10 @@ export default function Home() {
               {failed.length > 0 && (
                 <section className="failed-takes">
                   <div className="failed-head">
-                    <h3>Failed dictations</h3>
+                    <h3>Failed and unfinished dictations</h3>
                     <span className="tiny">
-                      Audio kept for 7 days — retry when the engine is ready,
-                      nothing was lost.
+                      Audio kept for 7 days — finish or retry when the engine is
+                      ready, nothing was lost. Nothing here is pasted for you.
                     </span>
                   </div>
                   <ul className="feed">
@@ -168,13 +168,24 @@ export default function Home() {
                           </span>
                         </div>
                         <p className="failed-why">{f.error}</p>
+                        {f.partialText ? (
+                          <p className="failed-partial" title={f.partialText}>
+                            Already transcribed: “{f.partialText}”
+                          </p>
+                        ) : null}
                         <div className="actions">
                           <button
                             className="primary"
                             disabled={retrying === f.id}
                             onClick={() => retryFailed(f.id)}
                           >
-                            {retrying === f.id ? "Retrying…" : "Retry"}
+                            {retrying === f.id
+                              ? f.partialText
+                                ? "Finishing…"
+                                : "Retrying…"
+                              : f.partialText
+                                ? "Finish transcribing"
+                                : "Retry"}
                           </button>
                           <button
                             className="ghost danger"
