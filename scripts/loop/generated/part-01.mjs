@@ -5040,7 +5040,9 @@ ITEMS.push({
       C. Silence is not a denial (NT3). The verdict reads "did the OUTPUT device run during the meeting"
          (kAudioDevicePropertyDeviceIsRunningSomewhere on the default output, sampled by the pump; field
          output_was_running). Zero samples + output never ran = Unknown (write nothing). Zero samples +
-         output ran >= DENIAL_GRACE = LooksDenied. And the verdict is never sticky: a Virtual/Unknown meeting
+         output ran >= 60 s across the whole meeting, in TWO consecutive meetings = LooksDenied (NT3 guards,
+         01-yap24-notetaker.mjs ~:376-378: a muted call or an output-device switch runs the output with a silent
+         tap; one meeting or DENIAL_GRACE alone is never a denial). And the verdict is never sticky: a Virtual/Unknown meeting
          ALWAYS attempts the tap (a fresh tap costs ~200 ms) and lets this meeting's evidence overwrite the
          row; LooksDenied only changes the BADGE, never skips the attempt. In-person meetings never attach.
       D. After Complete, if a local summary model is installed (settings polishModel, today
@@ -5086,7 +5088,8 @@ ITEMS.push({
     TESTS: tests/meeting_pipeline_wired.rs (real SQLite file, a 6 s two-track WAV fixture, a stub decoder
     behind the existing seam so it finishes in < 20 s: stop → segments on both tracks → Complete; a second
     run resumes from processed_through); tests/system_audio_verdict_silence_is_not_denial.rs (silent output =
-    Unknown, output ran + zeros = LooksDenied, LooksDenied row still attempts the tap next meeting, in-person
+    Unknown, output ran + zeros for < 60 s or in one meeting only = Unknown, output ran >= 60 s + zeros in two
+    consecutive meetings = LooksDenied, LooksDenied row still attempts the tap next meeting, in-person
     never attaches); tests/meeting_retention_keeps_untranscribed_audio.rs (NT1); a vitest for the banner row.
 
     WHAT NOT TO DO
@@ -5112,11 +5115,10 @@ ITEMS.push({
     ! grep -n "allow(dead_code)" desktop/src-tauri/src/meeting_asr.rs
     grep -rl "System Audio Recording" desktop/src --include=*.ts --include=*.tsx | grep -q .
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
-    cd src-tauri
-    cargo test --features custom-protocol --test meeting_pipeline_wired ; test $? -eq 0
-    cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_manual_start_stop ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_pipeline_wired ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test system_audio_verdict_silence_is_not_denial ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_retention_keeps_untranscribed_audio ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_manual_start_stop ; test $? -eq 0
   `,
 })
 
@@ -5492,10 +5494,9 @@ ITEMS.push({
     ! grep -rn "saveEvent\|removeEvent\|save(event\|remove(event" desktop/src-tauri/src
     grep -q "Set up Notetaker" desktop/src/meetings/NotetakerSetupCard.tsx
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
-    cargo test -p yap-mcp ; test $? -eq 0
-    cd src-tauri
-    cargo test --features custom-protocol meeting_import ; test $? -eq 0
-    cargo test --features custom-protocol --test calendar_permission_readonly ; test $? -eq 0
+    cd ${APP} && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test -p yap-mcp ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol meeting_import ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test calendar_permission_readonly ; test $? -eq 0
   `,
 })
 
@@ -5542,9 +5543,8 @@ ITEMS.push({
     grep -q "Recording is sacred" desktop/src/pill/*.tsx desktop/src/meetings/*.tsx
     ! grep -rn "auto_record\|autoRecord" desktop/src desktop/src-tauri/src
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
-    cd src-tauri
-    cargo test --features custom-protocol --test calendar_prompt_policy ; test $? -eq 0
-    cargo test --features custom-protocol meeting_detect ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test calendar_prompt_policy ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol meeting_detect ; test $? -eq 0
   `,
 })
 
@@ -5594,10 +5594,9 @@ ITEMS.push({
     test -f desktop/src-tauri/tests/meeting_notes_stay_local.rs
     grep -rln "diarize::pool()" desktop/src-tauri/src | grep -v "diarize.rs" | grep -q .
     cd ${APP} && npm ci && npx tsc --noEmit && npm test
-    cargo test -p yap-mcp ; test $? -eq 0
-    cd src-tauri
-    cargo test --features custom-protocol --test meeting_notes_auto_summary ; test $? -eq 0
-    cargo test --features custom-protocol --test meeting_notes_stay_local ; test $? -eq 0
+    cd ${APP} && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test -p yap-mcp ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_auto_summary ; test $? -eq 0
+    cd ${APP}/src-tauri && YAP_DATA_DIR="$(mktemp -d)/yap-state" cargo test --features custom-protocol --test meeting_notes_stay_local ; test $? -eq 0
   `,
 })
 
