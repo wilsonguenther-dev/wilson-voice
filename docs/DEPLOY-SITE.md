@@ -10,8 +10,8 @@ push`**. This file is the whole procedure.
 ## Why Vercel
 
 Forge (the self-hosted box) serves the site fine, but its edge caps a single
-response at **25 MB** and `Yap-0.7.0-arm64.dmg` is 22.4 MB and growing with every
-model and sidecar we bundle. The first release that crosses 25 MB would break the
+response at **25 MB**, and the DMG already crossed it (`Yap-0.9.1-arm64.dmg` is
+31.9 MB) and keeps growing with every model and sidecar we bundle. The first release that crosses 25 MB would break the
 Download button with no build failure and no test to catch it — the page would
 still be 200, the button would just die. Vercel's static file limit is 100 MB, so
 the download lives there now.
@@ -39,41 +39,70 @@ is now `wilsonguenther-9414`, but **every command below still passes
 `--scope wilson-guenthers-projects` and `--token`** so a stale login or a second
 team can never receive the deploy.
 
-**Git link: dropped by the team transfer.** The project used to be linked to
-`wilsonguenther-dev/wilson-voice` @ `main` (root `site/dist`, path-diff ignore
-step), and the transfer removed that link because the gmail Vercel account has
-no GitHub login connection yet. Until Wilson connects GitHub on that account and
-re-links the project (`~/.config/drivia/vercel-migration-2026-09-27/relink-git.sh`),
-**a push to `main` builds nothing on Vercel.** The CLI deploy below does not
-depend on the git link and keeps working.
+**Git link: connected, but git builds are IGNORED.** The project *is* linked to
+`wilsonguenther-dev/wilson-voice`, production branch `main`, Root Directory
+`site/dist`. A git build only ever sees what is committed under `site/dist/`,
+which never includes the DMG (`*.dmg` is gitignored) or `updates/`. So every
+merge that touched `site/dist/` used to auto-build a production deployment
+*without* the download and the updater manifest, and silently replaced the last
+manual deploy: from 0.9.0 (2026-10-16 14:14Z) until 2026-10-17 `yapvoice.app`
+answered 404 for `/downloads/*.dmg` and `/updates/latest.json` with a perfect
+200 on the page.
+
+Since 2026-10-17 the project's Ignored Build Step
+(`commandForIgnoringBuildStep`) is **`exit 0`**, which tells Vercel to skip
+every git-triggered build. The git link is kept on purpose, for the Deployments
+history and so builds can be re-enabled, but **every site release is a manual
+staged deploy** (below). Check the setting, and confirm a merge was skipped:
+
+```bash
+curl -s -H "Authorization: Bearer $VERCEL_TOKEN" \
+  "https://api.vercel.com/v9/projects/yap?teamId=$VERCEL_TEAM_ID" \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["commandForIgnoringBuildStep"])'   # exit 0
+vercel ls yap --yes --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
+# the git deployment for the merge commit must read "Canceled" (ignored), and
+# the current Production row must still be the manual deploy
+```
+
+Do not change it back to a path-diff ignore step: any command that lets a
+`main` build through puts a DMG-less deployment into production again.
 
 ## The staged deploy directory
 
 Vercel uploads a directory. The directory we want does not exist anywhere on
-disk, because the DMG is `.gitignore`d (`*.dmg`) and always will be — a 22 MB
+disk, because the DMG is `.gitignore`d (`*.dmg`) and always will be — a 30 MB
 binary is a release artifact, never a commit. So build it fresh each time,
-**outside the repo**, and throw it away after:
+**outside the repo**, and throw it away after.
+
+**Root-directory gotcha:** the project's Root Directory is `site/dist`, and the
+CLI applies it to the uploaded directory too. Files must therefore sit at
+`$STAGE/site/dist/...` and you deploy from `$STAGE`. Stage them at the top of
+`$STAGE` and the build fails (or serves nothing) because `site/dist` does not
+exist in the upload.
 
 ```bash
+TAG=v0.9.1; VER=${TAG#v}                       # the tag you are shipping
 STAGE=$(mktemp -d)/yap-site
-mkdir -p "$STAGE/downloads"
+OUT="$STAGE/site/dist"
+mkdir -p "$OUT/downloads"
 cp site/dist/*.html site/dist/*.css site/dist/*.woff2 \
-   site/dist/DepartureMono-LICENSE.txt site/dist/vercel.json "$STAGE/"
-gh release download v0.7.0 --repo wilsonguenther-dev/wilson-voice \
-  --pattern 'Yap-0.7.0-arm64.dmg' --dir "$STAGE/downloads"
+   site/dist/DepartureMono-LICENSE.txt site/dist/vercel.json "$OUT/"
+gh release download "$TAG" --repo wilsonguenther-dev/wilson-voice \
+  --pattern "Yap-$VER-arm64.dmg" --dir "$OUT/downloads"
+scripts/stage-updater-manifest.sh "$TAG" "$OUT"   # writes $OUT/updates/
 ```
 
 Verify the asset you just staged is the asset that was notarized, before it goes
 anywhere public:
 
 ```bash
-shasum -a 256 "$STAGE/downloads/Yap-0.7.0-arm64.dmg"
-gh release view v0.7.0 --repo wilsonguenther-dev/wilson-voice \
-  --json assets -q '.assets[].size'      # must read 22410130 for v0.7.0
+shasum -a 256 "$OUT/downloads/Yap-$VER-arm64.dmg"
+gh release view "$TAG" --repo wilsonguenther-dev/wilson-voice \
+  --json assets -q '.assets[] | "\(.name) \(.size)"'   # 0.9.1 DMG: 31914068
 ```
 
 The three Download buttons in `site/dist/index.html` point at the **relative**
-path `/downloads/Yap-0.7.0-arm64.dmg`, which resolves against whatever host is
+path `/downloads/Yap-<version>-arm64.dmg`, which resolves against whatever host is
 serving the page. That is why moving hosts needed no HTML change at all, and why
 the same `site/dist/` still works on Forge unmodified. Keep them relative.
 
@@ -86,15 +115,26 @@ Vercel's autodetect cannot decide this is an npm project and try to build it, an
 
 ```bash
 set -a; . ~/.config/drivia/drivia-accounts.env; set +a
+unset VERCEL_PROJECT_ID          # the env file exports one for another project
 cd "$STAGE"
 vercel link --yes --project yap --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
+rm -f .env.local site/dist/.env.local   # vercel link may pull env vars; never upload them
 vercel deploy --prod --yes --archive=tgz --scope wilson-guenthers-projects --token "$VERCEL_TOKEN"
 ```
 
-`VERCEL_TOKEN` is, as of 2026-09-27, a CLI login token that expires
-2026-09-28T02:24Z. If `vercel deploy` answers 401/403, the durable replacement
-token has not been written into `drivia-accounts.env` yet; that is Wilson's
-dashboard step, not something to work around with the old team's token.
+`drivia-accounts.env` exports `VERCEL_PROJECT_ID` for a different project, and
+the CLI refuses (or links the wrong project) when `VERCEL_PROJECT_ID` is set
+without a matching `VERCEL_ORG_ID`. Unset it before `vercel link`, or export
+`VERCEL_ORG_ID="$VERCEL_TEAM_ID"` together with
+`VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID_YAP"`. `VERCEL_TOKEN` is the durable
+`drivia-harness` token.
+
+**Previews sit behind the Vercel login wall** (deployment protection), so an
+unauthenticated `curl` of a `yap-xxxx-wilson-guenthers-projects.vercel.app`
+preview URL answers 302 to the Vercel login page, not your files. Verify on production
+(`https://yapvoice.app`, `https://yap-lemon.vercel.app`), or deploy a preview
+first and `vercel promote <preview-url>` once it checks out with an
+authenticated look.
 
 `--archive=tgz` matters: without it the CLI uploads file-by-file and a 22 MB DMG
 is a slow, flaky single request. `vercel link` is idempotent — it creates the
@@ -129,12 +169,12 @@ now" would then 404 on GitHub. So the staging step above has a third part,
 the manifest **and** the bytes it points at, through one script:
 
 ```bash
-scripts/stage-updater-manifest.sh v0.9.0 "$STAGE"   # the tag you are shipping
+scripts/stage-updater-manifest.sh "$TAG" "$STAGE/site/dist"   # already in the staging block above
 ```
 
 It downloads `latest.json`, `Yap.app.tar.gz` and `Yap.app.tar.gz.sig` from that
 release (`gh` is authenticated, so this works while the repo is private) into
-`$STAGE/updates/` and rewrites every `platforms.*.url` to
+`$STAGE/site/dist/updates/` and rewrites every `platforms.*.url` to
 `https://yap-lemon.vercel.app/updates/<tarball>`. It refuses to finish if the
 manifest's version is not the tag, if any referenced file is missing or over
 Vercel's 100 MB static limit, or if any manifest signature differs from its
@@ -156,7 +196,7 @@ the primary is the only endpoint that answers.
 keypair makes every installed copy unable to verify any update.
 
 Then bump the version everywhere it is written down: the three `href`s and the
-`v0.7.0` label in `site/dist/index.html`, and the `--pattern` above.
+version label in `site/dist/index.html`, and `TAG` in the staging block above.
 
 ## Verify (do not skip — a broken download is invisible from the dashboard)
 
@@ -170,9 +210,10 @@ for p in index.html terms.html privacy.html style.css; do
       && echo "$p load$i OK" || echo "$p load$i MISMATCH"
   done
 done
-curl -sI $U/downloads/Yap-0.7.0-arm64.dmg | grep -i content-length   # 22410130
-curl -sL -o /tmp/yap.dmg $U/downloads/Yap-0.7.0-arm64.dmg
+curl -sI $U/downloads/Yap-$VER-arm64.dmg | grep -i content-length   # 31914068 for 0.9.1
+curl -sL -o /tmp/yap.dmg $U/downloads/Yap-$VER-arm64.dmg
 shasum -a 256 /tmp/yap.dmg        # must equal the release asset's hash
+curl -s $U/updates/latest.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])'   # $VER
 ```
 
 Each page is fetched **twice** deliberately. A compressed response that is cached
@@ -202,7 +243,7 @@ disk image macOS refuses to mount.
 - Buy, attach or move a custom domain. `yapvoice.app` is already attached to the
   `yap` project on team `wilson-guenthers-projects`; domain and DNS changes are
   Wilson's call.
-- Re-link the Vercel project to GitHub. That needs Wilson's GitHub login
-  connection on the gmail Vercel account (see above).
+- Re-enable git builds. The ignore step stays `exit 0` until git builds can
+  ship the DMG and `updates/` (they cannot today); changing it is Wilson's call.
 - Publish the release. That is `docs/RELEASE.md`; this runbook assumes the
   notarized DMG is already a release asset and only ever *reads* it.
