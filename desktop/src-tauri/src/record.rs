@@ -454,17 +454,75 @@ pub fn stop_recording(
     active: ActiveRecording,
     isolation_vad: Option<&vad::WarmVad>,
 ) -> Result<RecordingResult, String> {
+    finish_recording(end_capture(active)?, isolation_vad)
+}
+
+/// yap-ptt-capture-tail (D4) — the longest a take may keep capturing after its
+/// stop edge. There is NO trailing pad: capture ends at the `Disarm`, one
+/// channel round-trip to the capture worker, so the real tail is a thread
+/// spawn plus the device callback buffer in flight (~10 ms at 48 kHz).
+#[allow(dead_code)] // the D4 contract; held by capture_ends_within_budget_of_the_stop_edge_while_context_reads_stall
+pub const STOP_EDGE_BUDGET: Duration = Duration::from_millis(300);
+
+/// A take whose capture has ended (`end_capture`) but whose DSP has not run
+/// (`finish_recording`).
+pub struct EndedCapture {
+    active: ActiveRecording,
+    hold_wall_seconds: f64,
+    captured: CapturedAudio,
+}
+
+/// The capture half of a stop: wake the waiters, stop buffering, take the raw
+/// capture off the persistent worker (the stream itself stays open for the next
+/// take — see `capture_worker_loop`). Bounded by `DISARM_TIMEOUT`.
+pub fn end_capture(active: ActiveRecording) -> Result<EndedCapture, String> {
     let hold_wall_seconds = active.started.elapsed().as_secs_f64().max(0.01);
     // YV38: signal (not a flag another thread has to notice) — the HUD level
     // thread is woken here, on release, instead of up to 50 ms afterwards.
     active.stop.stop();
     active.level.store(0, Ordering::Relaxed);
-
-    // Stop buffering and take the raw capture off the persistent worker; the
-    // stream itself stays open for the next take (see `capture_worker_loop`).
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Disarm { reply: reply_tx })?;
-    let mut captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
+    let captured = await_reply(&reply_rx, DISARM_TIMEOUT, "stop")?;
+    Ok(EndedCapture {
+        active,
+        hold_wall_seconds,
+        captured,
+    })
+}
+
+/// yap-ptt-capture-tail (D4) — the stop edge's ordering, in one place: the
+/// capture is ended FIRST, on its own thread, and only then does
+/// `read_context` run (frontmost app, bundle id, the AX text before the caret).
+/// Those reads go to the user's app over Accessibility with the system's
+/// default messaging timeout (6 s); in the 2026-10-19 walk a busy frontmost app
+/// stalled them ~3.3 s, and because the `Disarm` ran only after them, a 1.5 s
+/// hold came back as 4.2 s of audio (`capture_ms=4226`) and the ambient speech
+/// after release was transcribed and pasted.
+pub fn end_at_stop_edge<T, C>(
+    end: impl FnOnce() -> T + Send + 'static,
+    read_context: impl FnOnce() -> C,
+) -> (thread::JoinHandle<T>, C)
+where
+    T: Send + 'static,
+{
+    let capture = thread::Builder::new()
+        .name("wv-capture-stop".into())
+        .spawn(end)
+        .expect("spawn the capture-stop thread");
+    (capture, read_context())
+}
+
+/// The DSP half of a stop: finalize, cap, VAD, isolate, spawn the wav write.
+pub fn finish_recording(
+    ended: EndedCapture,
+    isolation_vad: Option<&vad::WarmVad>,
+) -> Result<RecordingResult, String> {
+    let EndedCapture {
+        active,
+        hold_wall_seconds,
+        mut captured,
+    } = ended;
     // YV63: the take is off the capture worker, so its crash journal comes back
     // with it. Held here (not passed on to the DSP) so EVERY exit from this
     // function retires it — the early return below drops it, which cleans the
@@ -5302,4 +5360,27 @@ mod tests {
             "non-finite input must be returned byte-identical (unchanged)"
         );
     }
+
+    /// yap-ptt-capture-tail (D4): the capture must end within
+    /// `STOP_EDGE_BUDGET` of the stop edge even when the focus/AX context reads
+    /// stall (the walk's ~3.3 s). The pre-fix order — reads, then the worker's
+    /// Disarm — ends it after the stall and fails this.
+    #[test]
+    fn capture_ends_within_budget_of_the_stop_edge_while_context_reads_stall() {
+        let edge = Instant::now();
+        let (capture, ctx) = end_at_stop_edge(
+            move || edge.elapsed(),
+            || {
+                thread::sleep(Duration::from_millis(1200));
+                "context"
+            },
+        );
+        let ended_after = capture.join().unwrap();
+        assert_eq!(ctx, "context");
+        assert!(
+            ended_after <= STOP_EDGE_BUDGET,
+            "capture ended {ended_after:?} after the stop edge (budget {STOP_EDGE_BUDGET:?})"
+        );
+    }
+
 }

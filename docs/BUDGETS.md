@@ -266,10 +266,14 @@ a loop is a busy-wait wearing a `Duration`'s clothes. As measured on
 `344a335`:
 
 ```
-src/record.rs        {1:1, 2:1, 5:3, 10:3, 60:2, 300:1, 500:4}
+src/record.rs        {1:1, 2:1, 5:3, 10:3, 60:2, 300:2, 500:4}
 src/transcription.rs {2:2, 5:2, 10:2, 20:2, 50:3, 80:1, 120:1, 150:1, 200:1, 300:1, 400:3}
 src/lib.rs           {5:2, 10:1, 50:1, 100:1, 150:2, 400:1, 500:1}
 ```
+
+Row change (2026-10-19, yap-ptt-capture-tail D4): record.rs `300:1 -> 300:2` is `STOP_EDGE_BUDGET`,
+the contract that a take stops capturing within 300 ms of its stop edge. It is a test budget, never
+slept on or polled with.
 
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a

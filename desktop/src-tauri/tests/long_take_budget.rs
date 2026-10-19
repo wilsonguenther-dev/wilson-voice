@@ -887,7 +887,7 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     let mut all = BTreeMap::new();
     all.insert(
         "src/record.rs",
-        BTreeMap::from([(1, 1), (2, 1), (5, 3), (10, 3), (60, 2), (300, 1), (500, 4)]),
+        BTreeMap::from([(1, 1), (2, 1), (5, 3), (10, 3), (60, 2), (300, 2), (500, 4)]),
     );
     all.insert(
         "src/transcription.rs",
