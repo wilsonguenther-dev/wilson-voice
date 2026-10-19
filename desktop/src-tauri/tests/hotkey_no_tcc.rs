@@ -373,11 +373,20 @@ fn rebind_to_held_chord_keeps_old_chord_and_errs() {
     assert!(carbon.is_registered(free));
     assert!(!carbon.is_registered(old));
     assert_eq!(sim.status.carbon, CarbonStatus::Registered);
-    // save_settings registers before it persists, and returns the error.
-    assert!(LIB.contains("rebind_dictate_toggle(&app, &next)?;"));
-    let reg = LIB.find("rebind_dictate_toggle(&app, &next)?;").unwrap();
-    let persist = LIB[reg..].find("persist_settings(&next)?;").expect("persist after rebind");
-    assert!(persist > 0);
+    // fix-249 advisory (b): save_settings validates, persists, THEN applies;
+    // a refused rebind returns the error through `rollback`, which restores
+    // the previous chords and re-persists the previous settings.
+    let persist = LIB.find("persist_settings(&next)?;").expect("save_settings persists");
+    let reg = LIB[persist..]
+        .find("if let Err(e) = rebind_dictate_toggle(&app, &next) {")
+        .expect("the dictate rebind is applied after persisting");
+    assert!(LIB[persist + reg..].contains("return Err(rollback(e, false, None));"));
+    let rb = LIB.find("let rollback = |why: String").expect("rollback closure");
+    let rb_end = LIB[rb..].find("\n    };\n").expect("rollback closure end");
+    assert!(
+        LIB[rb..rb + rb_end].contains("persist_settings(&prev)"),
+        "rollback re-persists the previous settings"
+    );
 }
 
 /// Review round 1 BLOCKING: a rebind can never take another Yap chord.
