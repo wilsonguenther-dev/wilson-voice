@@ -32,8 +32,31 @@ export default function App() {
     scratch, sendSupportBundle, setBuyPrompt, setCopyAgainId, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
-    userName,
+    userName, insights, query,
   } = ctx;
+
+  // yap-uiux-2026-10-16-H1 — "Welcome back" to someone who has never dictated
+  // reads as a mistake. Returning means a take exists: in the store
+  // (insights) or on screen. A search that matches nothing is still a
+  // returning user, so the filtered list alone is not the test.
+  const returning =
+    history.length > 0 || !!query || (insights?.totalSessions ?? 0) > 0;
+  const greeting = returning ? "Welcome back" : "Welcome";
+  // yap-uiux-2026-10-16-H6 — the header status chip rendered status.message
+  // verbatim, so an idle bridge that reports "" left an unlabeled dark
+  // capsule beside the license chip. It always says something now, and
+  // carries the same words for VoiceOver and on hover.
+  const statusText =
+    (status.message ?? "").trim() ||
+    (status.recording
+      ? "Listening"
+      : status.busy
+        ? "Transcribing…"
+        : status.lastError
+          ? "Something went wrong"
+          : needsPerms
+            ? "Needs permissions"
+            : "Ready — hold fn⌃ to dictate");
 
   if (bootError && !settings) {
     return (
@@ -131,7 +154,7 @@ export default function App() {
         <header className="main-head">
           <div>
             <h1>
-              {nav === "home" && (userName ? `Welcome back, ${userName}` : "Welcome back")}
+              {nav === "home" && (userName ? `${greeting}, ${userName}` : greeting)}
               {nav === "permissions" && "Permissions"}
               {nav === "meetings" && "Meetings"}
               {nav === "insights" && "Insights"}
@@ -176,7 +199,14 @@ export default function App() {
                 )}
               </button>
             )}
-            <div className={pillClass}>{status.message}</div>
+            <div
+              className={pillClass}
+              role="status"
+              aria-label={`Yap status: ${statusText}`}
+              title={statusText}
+            >
+              {statusText}
+            </div>
           </div>
         </header>
 
