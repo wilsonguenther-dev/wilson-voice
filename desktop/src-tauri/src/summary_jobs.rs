@@ -869,4 +869,37 @@ mod tests {
         assert_ne!(NotesError::Server(404).plain(), NotesError::Server(503).plain());
     }
 
+
+    /// A1: a backend that panics on one meeting.
+    struct Panicky;
+    impl NotesBackend for Panicky {
+        fn model_ready(&self) -> bool {
+            true
+        }
+        fn fetch_model(&self, _: &mut dyn FnMut(u8), _: &CancelToken) -> Result<(), NotesError> {
+            Ok(())
+        }
+        fn summarize(&self, id: &str, _: &CancelToken) -> Result<(), NotesError> {
+            if id == "boom" {
+                panic!("stub panic");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_panicking_job_fails_that_meeting_and_the_worker_keeps_going() {
+        let j = SummaryJobs::spawn(Arc::new(Panicky), Arc::new(|_: &NotesStatus| {}));
+        assert!(j.submit("boom"));
+        assert!(j.submit("fine"));
+        let boom = j.wait_for("boom", Duration::from_secs(5)).expect("status");
+        assert_eq!(boom.phase, NotesPhase::Failed);
+        assert_eq!(boom.reason.as_deref(), Some(INTERNAL_ERROR_REASON));
+        let fine = j.wait_for("fine", Duration::from_secs(5)).expect("status");
+        assert_eq!(fine.phase, NotesPhase::Ready, "the worker survived the panic");
+        // Retry is accepted: the slot was cleared.
+        assert!(j.submit("boom"));
+        assert!(j.wait_idle(Duration::from_secs(5)));
+    }
+
 }
