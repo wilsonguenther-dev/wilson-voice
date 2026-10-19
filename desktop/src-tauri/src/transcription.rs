@@ -435,14 +435,14 @@ pub enum DrainOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Discard {
     /// A dictation took the engine mid-chunk. Re-decode after the handback.
-    ForDictation,
+    Dictation,
     /// The exit drain cancelled it. Do NOT re-decode: the engine has been
     /// unloaded and the process is leaving. The next launch resumes here.
-    ForExit,
+    Exit,
     /// Y3-D — the user cancelled the take this decode belongs to. Do NOT
     /// re-decode and do NOT retry: unlike the two above, the result is not
     /// wanted by anyone.
-    ForUserCancel,
+    UserCancel,
 }
 
 /// The decode holding the engine right now.
@@ -950,7 +950,7 @@ impl TranscriptionManager {
             let mut slot = self.inner.in_flight.lock();
             match slot.as_mut() {
                 Some(f) if f.discard.is_none() && f.cancel.is_some() => {
-                    f.discard = Some(Discard::ForUserCancel);
+                    f.discard = Some(Discard::UserCancel);
                     f.cancel.clone()
                 }
                 _ => None,
@@ -985,7 +985,7 @@ impl TranscriptionManager {
             let mut slot = self.inner.in_flight.lock();
             match slot.as_mut() {
                 Some(f) if f.preemptible && f.discard.is_none() && f.cancel.is_some() => {
-                    f.discard = Some(Discard::ForDictation);
+                    f.discard = Some(Discard::Dictation);
                     f.cancel.clone()
                 }
                 _ => None,
@@ -1012,7 +1012,7 @@ impl TranscriptionManager {
     ///
     /// Two deliberate asymmetries with the dictation half:
     ///
-    /// * `ForExit` OVERWRITES a `ForDictation` mark. Both discard the result,
+    /// * `Exit` OVERWRITES a `Dictation` mark. Both discard the result,
     ///   but only one of them is worth retrying, and once the engine is being
     ///   unloaded the retry is guaranteed to fail — as `NO_ENGINE_LOADED`,
     ///   which the driver writes off as a failure after its contention
@@ -1027,7 +1027,7 @@ impl TranscriptionManager {
             match slot.as_mut() {
                 Some(f) => {
                     if f.preemptible && f.cancel.is_some() {
-                        f.discard = Some(Discard::ForExit);
+                        f.discard = Some(Discard::Exit);
                     }
                     f.cancel.clone()
                 }
@@ -1150,9 +1150,9 @@ impl TranscriptionManager {
         // the next launch owns this window". Collapsing them to one message is
         // how a Cmd-Q became an `asr_failed` row and a permanent hole.
         match discard {
-            Some(Discard::ForDictation) => return Err(PREEMPTED_FOR_DICTATION.into()),
-            Some(Discard::ForExit) => return Err(ABANDONED_FOR_EXIT.into()),
-            Some(Discard::ForUserCancel) => return Err(CANCELLED_BY_USER.into()),
+            Some(Discard::Dictation) => return Err(PREEMPTED_FOR_DICTATION.into()),
+            Some(Discard::Exit) => return Err(ABANDONED_FOR_EXIT.into()),
+            Some(Discard::UserCancel) => return Err(CANCELLED_BY_USER.into()),
             None => {}
         }
         result

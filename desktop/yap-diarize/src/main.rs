@@ -833,7 +833,7 @@ mod tests {
         // And the speaker count is never fixed: the threshold path is the whole
         // point (plan §2.3), so `num_clusters` stays sherpa's "unknown".
         assert_eq!(clustering_from(0.35).num_clusters, CLUSTER_COUNT_UNKNOWN);
-        assert!(CLUSTER_COUNT_UNKNOWN < 0);
+        const { assert!(CLUSTER_COUNT_UNKNOWN < 0) };
     }
 
     /// No clustering number is written down in this file.

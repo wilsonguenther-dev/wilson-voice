@@ -89,14 +89,38 @@ jobs:
         working-directory: desktop
         run: cargo test -p yap-diarize --release
 
-      - name: rustfmt (informational)
+      # Y0-A: rustfmt is ADVISORY for this loop, by ledger decision (PANEL
+      # 2026-09-12). The tree-wide sweep landed once (b4b8d06, listed in
+      # .git-blame-ignore-revs) but main has drifted since, and re-sweeping
+      # mid-loop conflicts every open branch that edits the large files. The
+      # next sweep is its own mechanical commit between loops; THEN this step
+      # loses `continue-on-error` and becomes a gate.
+      #
+      # `continue-on-error` is the advisory mechanism rather than a no-fail
+      # shell suffix because it is MORE visible: the step renders as failed
+      # with an annotation instead of a green check on a red command. It is
+      # allowed on THIS step only — never on either clippy step below.
+      - name: rustfmt (advisory until the next tree-wide sweep)
         working-directory: desktop/src-tauri
-        run: cargo fmt --all -- --check || true
-      - name: clippy (informational)
-        working-directory: desktop/src-tauri
-        run: cargo clippy --all-targets --features custom-protocol || true
+        continue-on-error: true
+        run: cargo fmt --all -- --check
 
-      # Build + tests are the gate. Lints are informational until the tree is clean.
+      # Y0-A: clippy is a GATE. It used to carry a no-fail suffix, which is how
+      # the tree accumulated 20+ findings with every run green. `-D warnings`
+      # is the point of the step: never remove it, never give this step
+      # `continue-on-error`, and fix the code rather than `#[allow]` it (an
+      # allow needs a one-line comment saying why the lint is wrong there).
+      - name: clippy (app)
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets --features custom-protocol -- -D warnings
+      # The sidecars are separate crates in the same workspace and the app's
+      # clippy never compiles them, so they get their own gate. `--release`
+      # matches how they are built and staged above, so it reuses that build.
+      - name: clippy (sidecars)
+        working-directory: desktop
+        run: cargo clippy -p yap-polish -p yap-diarize --all-targets --release -- -D warnings
+
+      # Build, tests and clippy are the gate.
       - name: cargo build (release, embedded frontend)
         working-directory: desktop/src-tauri
         run: cargo build --release --features custom-protocol

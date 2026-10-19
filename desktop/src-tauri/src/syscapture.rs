@@ -3490,6 +3490,18 @@ pub mod imp {
         NSDictionary::from_slices(&key_refs, &value_refs)
     }
 
+    /// The CoreAudio IOProc block signature: (now, input data, input time,
+    /// output data, output time).
+    type IoProcBlock = RcBlock<
+        dyn Fn(
+            NonNull<AudioTimeStamp>,
+            NonNull<AudioBufferList>,
+            NonNull<AudioTimeStamp>,
+            NonNull<AudioBufferList>,
+            NonNull<AudioTimeStamp>,
+        ),
+    >;
+
     /// The live IOProc's owned state. Dropping it releases the block and the
     /// queue; CoreAudio holds its own reference until `AudioDeviceDestroyIOProcID`,
     /// which is why teardown order matters here too.
@@ -3502,15 +3514,7 @@ pub mod imp {
         /// creates a second one, and a panic between `create_ioproc` returning
         /// and its token reaching `TapResources` — have no other way to know it.
         aggregate: objc2_core_audio::AudioObjectID,
-        _block: RcBlock<
-            dyn Fn(
-                NonNull<AudioTimeStamp>,
-                NonNull<AudioBufferList>,
-                NonNull<AudioTimeStamp>,
-                NonNull<AudioBufferList>,
-                NonNull<AudioTimeStamp>,
-            ),
-        >,
+        _block: IoProcBlock,
         _queue: DispatchRetained<DispatchQueue>,
     }
 
