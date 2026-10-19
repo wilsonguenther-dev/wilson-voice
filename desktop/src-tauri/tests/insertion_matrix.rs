@@ -466,3 +466,48 @@ fn ax_unverified_never_posts_cmd_v() {
     assert_eq!(f.cards[0].repair_service, None);
     assert_eq!(f.copies, vec![TAKE.to_string()]);
 }
+
+/// Fix round 2 (independent BLOCKING 1): a `kAXSelectedText` set that returned
+/// kAXErrorCannotComplete (-25204, the 1 s messaging timeout) may still be
+/// applied by a busy target, so it ends on the Copy card with ZERO ⌘V — never
+/// Refused → paste bridge (a double insert). A proven refusal still falls back.
+#[test]
+fn ax_set_timeout_never_posts_cmd_v() {
+    let mut f = Fake::new();
+    f.ax_result = paste::ax_insert_after_set_error(-25204);
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
+    println!(
+        "ax set -25204: ax_calls={} posts={} cards={} pasted={}",
+        f.ax_calls,
+        f.posts,
+        f.cards.len(),
+        out.pasted
+    );
+    assert_eq!(f.ax_calls, 1);
+    assert_eq!(f.posts, 0, "no ⌘V on top of a set that timed out");
+    assert!(!out.pasted);
+    assert_eq!(f.cards.len(), 1);
+    assert_eq!(f.cards[0].reason, CopyCardReason::AxUnverified);
+    assert_eq!(f.copies, vec![TAKE.to_string()]);
+
+    // Positive control: kAXErrorAttributeUnsupported (-25205) proves nothing
+    // was written, so the bridge fallback (one ⌘V) is still allowed.
+    let mut g = Fake::new();
+    g.ax_result = paste::ax_insert_after_set_error(-25205);
+    assert!(matches!(g.ax_result, AxInsert::Refused(_)));
+    let out = paste::insert_with(
+        &mut g,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
+    println!("ax set -25205: posts={} pasted={}", g.posts, out.pasted);
+    assert_eq!(g.posts, 1, "a proven refusal falls back to exactly one ⌘V");
+}

@@ -496,6 +496,22 @@ pub fn delete_with(
     }
 }
 
+fn ax_insert_from(r: Result<crate::focus::AxSet, String>) -> AxInsert {
+    match r {
+        Ok(crate::focus::AxSet::Verified) => AxInsert::Inserted,
+        Ok(crate::focus::AxSet::Unverified(why)) => AxInsert::Unverified(why),
+        Err(why) => AxInsert::Refused(why),
+    }
+}
+
+/// Fix round 2 (independent BLOCKING 1) — what [`LiveInsert`] reports when the
+/// `kAXSelectedText` set itself returned the non-OK AXError `code`: the same
+/// mapping the live path uses, exposed so the insertion matrix can drive
+/// [`insert_with`] from a raw AX code (e.g. -25204, a messaging timeout).
+pub fn ax_insert_after_set_error(code: i32) -> AxInsert {
+    ax_insert_from(crate::focus::set_error_outcome(code))
+}
+
 /// The live backend: the real clipboard, AX, `paste_tx`, CGEvent and the pill.
 struct LiveInsert<'a> {
     app: &'a AppHandle,
@@ -513,11 +529,7 @@ impl InsertBackend for LiveInsert<'_> {
         crate::focus::frontmost_bundle_id()
     }
     fn ax_insert(&mut self, text: &str) -> AxInsert {
-        match crate::focus::insert_selected_text(text) {
-            Ok(crate::focus::AxSet::Verified) => AxInsert::Inserted,
-            Ok(crate::focus::AxSet::Unverified(why)) => AxInsert::Unverified(why),
-            Err(why) => AxInsert::Refused(why),
-        }
+        ax_insert_from(crate::focus::insert_selected_text(text))
     }
     fn paste_bridge(&mut self, text: &str) -> Result<BridgeReceipt, String> {
         // YV39: publish → ⌘V → restore on the READ RECEIPT; YV74: the receipt
