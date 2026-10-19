@@ -474,6 +474,18 @@ pub struct NeedsNotes {
     pub started_at: DateTime<Utc>,
 }
 
+/// A5 — rows a crash left in DB state `summarizing` (this version or an older
+/// one): `(id, state)` pairs in, the ids to put back to `complete` out. A row
+/// whose job is live in this process (`active`) is really being summarized
+/// and is left alone. Without this the card says "Writing notes" forever and
+/// offers no button once the backlog banner is dismissed.
+pub fn stale_summarizing(rows: &[(String, String)], active: &dyn Fn(&str) -> bool) -> Vec<String> {
+    rows.iter()
+        .filter(|(id, state)| state == "summarizing" && !active(id))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// Split the meetings that need notes into the ones resumed automatically
 /// (recorded since automatic notes started, or the backlog was accepted) and
 /// the backlog that waits for the banner's click. Never a 1.1 GB download on
@@ -819,4 +831,17 @@ mod tests {
         assert_eq!(NotesLedger::load_or_create(&path, t2).backlog, BacklogChoice::Accepted);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A5: a crash's leftover `summarizing` row is reset; a live job is not.
+    #[test]
+    fn stale_summarizing_rows_are_reset_but_live_jobs_are_not() {
+        let rows = vec![
+            ("old".to_string(), "summarizing".to_string()),
+            ("live".to_string(), "summarizing".to_string()),
+            ("done".to_string(), "complete".to_string()),
+        ];
+        let active = |id: &str| id == "live";
+        assert_eq!(stale_summarizing(&rows, &active), vec!["old".to_string()]);
+    }
+
 }

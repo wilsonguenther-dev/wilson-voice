@@ -5263,6 +5263,29 @@ fn dismiss_notes_backlog() {
 /// Only meetings recorded since automatic notes started, unless the backlog
 /// banner was accepted (A3): an upgrade never starts a 1.1 GB fetch unasked.
 fn resume_pending_summaries(state: &AppState) {
+    // A5: nothing is summarizing at launch, so a row still marked
+    // `summarizing` is a crash's leftover. Back to `complete`: its card then
+    // offers Write notes / Retry instead of "Writing notes" forever.
+    if let Ok(rows) = state.db.list_meetings(500, None) {
+        let pairs: Vec<(String, String)> =
+            rows.iter().map(|m| (m.id.clone(), m.state.clone())).collect();
+        let active = |id: &str| {
+            SUMMARY_JOBS
+                .get()
+                .and_then(|j| j.status(id))
+                .is_some_and(|s| s.phase.is_active())
+        };
+        for id in summary_jobs::stale_summarizing(&pairs, &active) {
+            let error = rows.iter().find(|m| m.id == id).and_then(|m| m.error.clone());
+            if state
+                .db
+                .set_meeting_state(&id, meetings::MeetingState::Complete, error.as_deref())
+                .is_ok()
+            {
+                log::info!("summary: meeting {id} was left 'summarizing' by a crash — reset for Retry");
+            }
+        }
+    }
     let ledger = summary_jobs::NotesLedger::load_or_create(&notes_ledger_path(), chrono::Utc::now());
     let (resume, backlog) = summary_jobs::plan_resume(&meetings_needing_notes(state), &ledger);
     if !backlog.is_empty() {
