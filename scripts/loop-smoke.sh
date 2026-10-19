@@ -47,28 +47,41 @@
 #     fresh clone on a fresh machine has no models, so a test that needs one is
 #     a test that only passes on the author's laptop.
 #
-#     `YAP_SMOKE_EMPTY_STATE=1` proves it mechanically: it points YAP_DATA_DIR
-#     (the documented, resolved-once state-root override — see ARCHITECTURE.md's
-#     Runtime Dependencies table) at a freshly created EMPTY directory for every
-#     cargo test stage, so a test leaning on the developer's own
+#     The DEFAULT run proves it mechanically, with FRESH-CLONE semantics: every
+#     cargo test stage runs with YAP_DATA_DIR (the documented, resolved-once
+#     state-root override — see ARCHITECTURE.md's Runtime Dependencies table)
+#     pointed at a freshly created EMPTY directory, and with YAP_EVAL_CORPUS and
+#     YAP_DIARIZE_MODELS pointed at paths that do not exist. So `cargo test`
+#     must pass with an EMPTY application-support dir and nothing found on the
+#     machine — the state a fresh clone on a fresh machine is in, and the state
+#     CI is in. A test that leans on the developer's own
 #     ~/Library/Application Support/WilsonVoice/models fails HERE.
 #
-#     It is OPT-IN, and that is a measured decision, not an oversight. Run on
-#     2026-09-14 against origin/main it is RED, with six named failures, all in
-#     tests/meeting_eval.rs and all only reachable on a machine that also has the
-#     ~/yap-eval-corpus fixtures (CI has neither, and returns early):
+#     Why the corpus and diarize models are hidden too, not only the state
+#     root (measured 2026-10-19, fix round for Y0-B): on a dev box that HAS
+#     ~/yap-eval-corpus and ~/yap-diarize-models, stage [11] ran
+#     tests/meeting_eval.rs's real-weights sweeps through a DEBUG yap-diarize
+#     and was still running after the acceptance seat's 600 s window — the
+#     smoke test could not answer its own question in a usable time. And with
+#     ONLY the state root emptied (the 2026-09-14 probe) six meeting_eval
+#     tests go red, because the corpus is found but the models are not:
 #         meeting_eval_anti_alias_eer_regression                            <- needs sherpa-onnx-pyannote-segmentation-3-0
 #         meeting_eval_lecture_wer_is_under_the_gate                        <- needs an ASR model
 #         meeting_eval_seam_dedupe_and_ordering_hold                        <- needs an ASR model
 #         meeting_eval_two_track_ordering_survives_the_clock_mismatch       <- needs an ASR model
 #         meeting_eval_the_fixed_clock_tie_break_only_pops_words_the_cut_truncated
 #         meeting_eval_vad_cut_boundaries_put_no_speech_in_the_overlap
-#     Those six tests are wrong by this rule and fixing them is Y7's item, not
-#     this script's. Making the probe blocking today would paint the smoke test
-#     red for a defect it does not own, and a smoke test that is always red
-#     tells you nothing. Do NOT make this script download a model to go green.
-#     The default run therefore uses the machine's real state root, which is
-#     exactly what CI and the shared preamble's gate measure.
+#     Those six mix "host has a corpus" with "host has no model", which a
+#     fresh clone never does; fixing them is Y7's item, not this script's.
+#     Hiding every host asset puts each eval test on its named-skip path, the
+#     same path CI takes. Do NOT make this script download a model to go green.
+#
+#     Opt-outs (neither is a fresh clone, and the summary line says so):
+#       YAP_SMOKE_HOST_ASSETS=1                         use this machine's models,
+#                                                       corpus and diarize models
+#       YAP_SMOKE_HOST_ASSETS=1 YAP_SMOKE_EMPTY_STATE=1 the 2026-09-14 Y7 probe:
+#                                                       empty state root, host
+#                                                       corpus visible (known red)
 #
 # LINT STRICTNESS — clippy runs in the same INFORMATIONAL mode that ci.yml uses
 # today: `cargo clippy --all-targets --features custom-protocol`, with no
@@ -180,26 +193,43 @@ stage_provenance() {
   fi
   printf '  model weights:    none in this repo, none downloaded by this script.\n'
   printf '                    The app fetches them at runtime from src-tauri/src/catalog.json.\n'
-  if [ "${YAP_SMOKE_EMPTY_STATE:-0}" = "1" ]; then
-    SMOKE_STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yap-smoke-state.XXXXXX")"
-    export YAP_DATA_DIR="$SMOKE_STATE_ROOT"
-    if [ -n "$(ls -A "$YAP_DATA_DIR" 2>/dev/null)" ]; then
-      printf '  the smoke state root is not empty — refusing to claim a model-free test run.\n' >&2
-      return 1
+  if [ "${YAP_SMOKE_HOST_ASSETS:-0}" = "1" ]; then
+    STATE_MODE="HOST ASSETS (YAP_SMOKE_HOST_ASSETS=1) — machine state root, ~/yap-eval-corpus, ~/yap-diarize-models"
+    printf '  host assets:      YAP_SMOKE_HOST_ASSETS=1 — tests may find THIS machine%ss models, eval corpus and\n' "'"
+    printf '                    diarize models. On a machine that has them, stage [11] runs the real-weights\n'
+    printf '                    eval sweeps in a debug build: HOURS, not minutes. This is not a fresh clone.\n'
+    if [ "${YAP_SMOKE_EMPTY_STATE:-0}" = "1" ]; then
+      SMOKE_STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yap-smoke-state.XXXXXX")"
+      export YAP_DATA_DIR="$SMOKE_STATE_ROOT"
+      STATE_MODE="$STATE_MODE, but EMPTY state root (YAP_SMOKE_EMPTY_STATE=1)"
+      printf '  YAP_DATA_DIR:     %s (EMPTY; host corpus still visible — the Y7 probe, known red)\n' "$YAP_DATA_DIR"
     fi
-    STATE_MODE="empty (YAP_SMOKE_EMPTY_STATE=1)"
-    printf '  YAP_DATA_DIR:     %s\n' "$YAP_DATA_DIR"
-    printf '                    freshly created and EMPTY. Every cargo test stage below runs against it,\n'
-    printf '                    which is how "no test requires a model on disk" is ENFORCED, not claimed.\n'
-    printf '                    Known RED on origin/main: six tests/meeting_eval.rs tests need models and\n'
-    printf '                    the ~/yap-eval-corpus fixtures. That is Y7, not this script. See the header.\n'
-  else
-    STATE_MODE="machine default (set YAP_SMOKE_EMPTY_STATE=1 to prove no test needs a model)"
-    printf '  YAP_DATA_DIR:     unset — using this machine%ss real state root, which is what CI measures.\n' "'"
-    printf '                    Set YAP_SMOKE_EMPTY_STATE=1 to re-run every cargo test against an EMPTY\n'
-    printf '                    state root and prove no test requires a model on disk (header explains\n'
-    printf '                    why that probe is opt-in and which six tests it currently catches).\n'
+    return 0
   fi
+  # DEFAULT: FRESH-CLONE semantics. A fresh clone on a fresh machine has no
+  # models, no eval corpus and no diarize models, so every host-asset lookup a
+  # test makes is pointed somewhere EMPTY or ABSENT. This is what makes
+  # "cargo test passes with an empty application-support dir" ENFORCED rather
+  # than claimed, and it is why this script finishes in minutes on a dev box
+  # that does have ~/yap-eval-corpus (where stage [11] otherwise spends hours
+  # in debug-build real-weights eval sweeps — measured 2026-10-19).
+  SMOKE_STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yap-smoke-state.XXXXXX")"
+  if [ -n "$(ls -A "$SMOKE_STATE_ROOT" 2>/dev/null)" ]; then
+    printf '  the smoke state root is not empty — refusing to claim a model-free test run.\n' >&2
+    return 1
+  fi
+  export YAP_DATA_DIR="$SMOKE_STATE_ROOT/state"            # app state root: no models, no history
+  export YAP_EVAL_CORPUS="$SMOKE_STATE_ROOT/absent-eval-corpus"      # never created
+  export YAP_DIARIZE_MODELS="$SMOKE_STATE_ROOT/absent-diarize-models" # never created
+  mkdir -p "$YAP_DATA_DIR" || return 1
+  unset YAP_POLISH_MODEL
+  STATE_MODE="fresh clone (empty YAP_DATA_DIR, absent eval corpus + diarize models)"
+  printf '  YAP_DATA_DIR:       %s  (EMPTY)\n' "$YAP_DATA_DIR"
+  printf '  YAP_EVAL_CORPUS:    %s  (absent)\n' "$YAP_EVAL_CORPUS"
+  printf '  YAP_DIARIZE_MODELS: %s  (absent)\n' "$YAP_DIARIZE_MODELS"
+  printf '                    Every cargo test stage below runs against these, exactly as a fresh clone\n'
+  printf '                    would: "no test requires a model on disk" is ENFORCED, not claimed.\n'
+  printf '                    YAP_SMOKE_HOST_ASSETS=1 opts back into this machine%ss own assets.\n' "'"
   return 0
 }
 
