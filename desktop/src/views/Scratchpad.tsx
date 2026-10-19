@@ -6,7 +6,7 @@ import { EmptyState, ErrorState, LoadingState, PageGlyph } from "../ViewStates";
 
 export default function Scratchpad() {
   const {
-    activeNoteId, bootError, booting, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
+    activeNoteId, bootError, bootErrors, booting, retryBoot, copyText, noteBody, noteTitle, pasteText, refreshAll, scratch,
     scratchComposing, setActiveNoteId, setNoteBody, setNoteTitle, setScratch, setScratchComposing, settings, toast,
   } = useAppCtx();
   async function saveNote() {
@@ -58,15 +58,16 @@ export default function Scratchpad() {
   // This list starts as [] so it cannot say "never loaded"; settings lands in
   // the same refreshAll batch (all setters run together), so null settings is
   // that signal.
-  const state = viewState(scratch, booting, settings == null ? bootError : null);
+  const scratchError = bootErrors?.list_scratch ?? (settings == null ? bootError : null);
+  const state = viewState(scratch, booting, scratchError);
   if (state === "error")
     return (
       <ErrorState
         data-error-state="scratchpad"
         view="scratchpad"
-        error={bootError}
+        error={scratchError}
         actionLabel="Open your notes again"
-        onAction={() => void refreshAll()}
+        onAction={() => void (settings == null ? refreshAll() : retryBoot(["list_scratch"]))}
       />
     );
   if (state === "loading")

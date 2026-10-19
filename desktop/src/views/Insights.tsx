@@ -1,3 +1,4 @@
+import BootNote from "../BootNote";
 import { heatLevel, HEAT_FILL, formatMonth, monthName, formatDay, formatDayShort } from "../appTypes";
 import { carbonRegistered, dictateLabel, fnDelivering } from "../hotkeyStatus";
 import { useAppCtx } from "../appShell";
@@ -6,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState, SeriesGlyph } from "../ViewStates
 
 export default function Insights() {
   const {
-    bootError, booting, daily30, hasActivity, heat, heatSummary, insights, refreshAll, setNav, toggleRecord,
+    bootError, bootErrors, booting, retryBoot, daily30, hasActivity, heat, heatSummary, insights, refreshAll, setNav, toggleRecord,
     maxApp, maxDaily30, maxWeek, monthlySeries, monthlyView,
     settings, status,
   } = useAppCtx();
@@ -22,16 +23,16 @@ export default function Insights() {
       : insights.totalSessions + (insights.meetings?.totalMeetings ?? 0),
     booting,
     // Y5-B fix round (#192): only when insights never landed - see Home.tsx.
-    insights == null ? bootError : null,
+    bootErrors?.get_insights ?? (insights == null ? bootError : null),
   );
   if (state === "error")
     return (
       <ErrorState
         data-error-state="insights"
         view="insights"
-        error={bootError}
+        error={bootErrors?.get_insights ?? bootError}
         actionLabel="Read stats again"
-        onAction={() => void refreshAll()}
+        onAction={() => void (bootErrors?.get_insights ? retryBoot(["get_insights"]) : refreshAll())}
       />
     );
   if (state === "loading")
@@ -52,6 +53,7 @@ export default function Insights() {
     );
   return (
             <div className="insights">
+              <BootNote keys={["daily_series", "monthly_series"]} />
               <div className="stats-row">
                 <div className="stat big">
                   <div className="stat-n">

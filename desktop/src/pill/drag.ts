@@ -112,11 +112,36 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
  * only a real geometry change is worth an IPC hop.
  */
 let lastHitbox = "";
-export function reportPillHitbox(x: number, y: number, w: number, h: number): void {
+function sendHitbox(x: number, y: number, w: number, h: number): void {
   const key = `${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
   if (key === lastHitbox) return;
   lastHitbox = key;
   invoke("pill_set_hitbox", { x, y, w, h }).catch(() => {});
+}
+
+/** The capsule's latest rect, kept while a held rect overrides it. */
+let capsuleRect: [number, number, number, number] | null = null;
+let held = false;
+
+export function reportPillHitbox(x: number, y: number, w: number, h: number): void {
+  capsuleRect = [x, y, w, h];
+  if (held) return;
+  sendHitbox(x, y, w, h);
+}
+
+/**
+ * yap-p0-insertion-bridge-fallback — the Copy card takes the hitbox while it is
+ * up (so its buttons receive clicks through the click-through panel); `null`
+ * hands it back to the capsule's last reported rect.
+ */
+export function holdPillHitbox(rect: { x: number; y: number; w: number; h: number } | null): void {
+  if (rect) {
+    held = true;
+    sendHitbox(rect.x, rect.y, rect.w, rect.h);
+    return;
+  }
+  held = false;
+  if (capsuleRect) sendHitbox(...capsuleRect);
 }
 
 /**

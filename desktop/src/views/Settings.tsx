@@ -1,3 +1,4 @@
+import BootNote from "../BootNote";
 import Companion from "./settings/Companion";
 import Dictation from "./settings/Dictation";
 import Snippets from "./settings/Snippets";
@@ -61,7 +62,12 @@ export default function Settings() {
               {settingsTab === "dictation" && <Dictation />}
 
               {/* ── Snippets (YV48) — spoken triggers expand to saved text ── */}
-              {settingsTab === "snippets" && <Snippets />}
+              {settingsTab === "snippets" && (
+                <>
+                  <BootNote keys={["list_snippets"]} />
+                  <Snippets />
+                </>
+              )}
 
               {/* ── Audio — capture cleanup + what plays while you talk ── */}
               {settingsTab === "audio" && <Audio />}

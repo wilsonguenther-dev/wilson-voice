@@ -830,3 +830,65 @@ html[data-dock="right"] .phase-strip {
      progress fill — because none of that is carried by motion. */
   .pill { scale: 1 1; animation: none; }
 }
+
+/* yap-p0-insertion-bridge-fallback — the Copy card. Sits in the float window's
+   top band (300 x 140 pt window; the capsule docks to the bottom/side), above
+   the capsule, and is the window's hitbox while it is up (CopyCard.tsx). */
+.copy-card {
+  position: fixed;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 20;
+  box-sizing: border-box;
+  padding: 7px 9px 6px;
+  border-radius: 12px;
+  background: rgba(22, 22, 26, 0.94);
+  color: #f4f4f6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  pointer-events: auto;
+}
+.copy-card-text {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  user-select: text;
+}
+.copy-card-hint {
+  margin: 3px 0 5px;
+  font-size: 11px;
+  color: rgba(244, 244, 246, 0.72);
+}
+.copy-card-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.copy-card-actions button {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  color: #f4f4f6;
+  background: rgba(255, 255, 255, 0.12);
+}
+.copy-card-actions .copy-card-copy {
+  background: #4f7cff;
+  color: #fff;
+}
+.copy-card-actions .copy-card-close {
+  margin-left: auto;
+  background: transparent;
+  font-size: 14px;
+  padding: 2px 4px;
+}
+.copy-card-actions button:focus-visible {
+  outline: 2px solid #9db6ff;
+  outline-offset: 1px;
+}

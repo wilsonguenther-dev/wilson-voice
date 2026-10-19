@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClassicPill from "./pill/ClassicPill";
 import YappyPill from "./pill/YappyPill";
+import CopyCard from "./pill/CopyCard";
 import {
   acceptProgress,
   errorSentence,
@@ -312,6 +313,7 @@ function Float() {
   return (
     <>
       {pill}
+      <CopyCard />
       <div
         className="phase-strip"
         data-phase={PHASE_ID[phase]}

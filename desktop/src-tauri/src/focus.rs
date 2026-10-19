@@ -33,6 +33,17 @@ mod ax {
         ) -> i32;
         /// Unwraps an AXValue (here: kAXValueTypeCFRange) into a plain C struct.
         fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
+        fn AXUIElementSetAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFStringRef,
+            value: CFTypeRef,
+        ) -> i32;
+        fn AXUIElementIsAttributeSettable(
+            element: AXUIElementRef,
+            attribute: CFStringRef,
+            settable: *mut u8,
+        ) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
     }
 
     const AX_OK: i32 = 0;
@@ -117,6 +128,85 @@ mod ax {
             let selection = attr_string(el, "AXSelectedText").filter(|s| !s.trim().is_empty());
             CFRelease(focused);
             selection
+        }
+    }
+
+    /// yap-p0-insertion-bridge-fallback — insert `text` by setting
+    /// `kAXSelectedText` on the focused element (replaces the selection, or
+    /// inserts at the caret). `Err` = the element refused BEFORE anything was
+    /// written (a pre-set check failed, or the set returned a code that proves
+    /// refusal — see `super::set_error_outcome`), and only then may the caller
+    /// fall back to the paste bridge.
+    /// Once the set returned success the answer is never `Err`: a value that
+    /// reads back changed is `Verified`, anything else (async accessibility
+    /// trees in Chromium/Electron, a timed-out re-read, identical replacement
+    /// text) is `Unverified` — the text may be there, so no ⌘V may follow.
+    pub fn insert_selected_text(text: &str) -> Result<super::AxSet, String> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return Err("AXUIElementCreateSystemWide failed".into());
+            }
+            let key = CFString::new("AXFocusedUIElement");
+            let mut focused: CFTypeRef = std::ptr::null_mut();
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || focused.is_null() {
+                return Err(format!("no focused element (AX error {err})"));
+            }
+            let el = focused as AXUIElementRef;
+            // Per-element bound: a hung target must not hold the take for the
+            // system default of 6 s. Never set on the system-wide element (that
+            // would change every AX call Yap makes).
+            let _ = AXUIElementSetMessagingTimeout(el, 1.0);
+            let sel = CFString::new("AXSelectedText");
+            let mut settable: u8 = 0;
+            let e = AXUIElementIsAttributeSettable(el, sel.as_concrete_TypeRef(), &mut settable);
+            if e != AX_OK || settable == 0 {
+                CFRelease(focused);
+                return Err(format!("AXSelectedText is not settable (AX error {e})"));
+            }
+            let Some(before) = attr_cfstring(el, "AXValue") else {
+                CFRelease(focused);
+                return Err("AXValue is unreadable, so an AX insert could not be verified".into());
+            };
+            let value = CFString::new(text);
+            let e = AXUIElementSetAttributeValue(
+                el,
+                sel.as_concrete_TypeRef(),
+                value.as_concrete_TypeRef() as CFTypeRef,
+            );
+            if e != AX_OK {
+                CFRelease(focused);
+                // Fix round 2 (independent BLOCKING 1): only a code that PROVES
+                // the set was refused may become `Err` (→ paste bridge). Any
+                // other code — kAXErrorCannotComplete from the 1 s messaging
+                // timeout above first of all — may still be applied by a busy
+                // target, so it is `Unverified` (copy + card, zero ⌘V).
+                return super::set_error_outcome(e);
+            }
+            // Give an async accessibility tree a moment to catch up before
+            // calling the set unverified (5 reads over ~120 ms at most).
+            let mut changed = false;
+            for i in 0..5 {
+                if i > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                if matches!(attr_cfstring(el, "AXValue"), Some(a) if a != before) {
+                    changed = true;
+                    break;
+                }
+            }
+            CFRelease(focused);
+            Ok(if changed {
+                super::AxSet::Verified
+            } else {
+                super::AxSet::Unverified(
+                    "the element accepted AXSelectedText but its value never read back changed"
+                        .into(),
+                )
+            })
         }
     }
 
@@ -229,11 +319,14 @@ mod ax {
     }
 }
 
-/// Should we auto-paste? Requires Accessibility trust + a focused text control.
-/// Always return false if AX not trusted (caller still copies to clipboard).
+/// Should we try to insert? With Accessibility, only when a text control is
+/// focused. WITHOUT it the focused element is invisible to Yap, so this says
+/// yes and `paste::choose_insert_path` decides: a receipt-checked paste bridge
+/// when PostEvent is granted, the Copy card otherwise (yap-p0-insertion-bridge-
+/// fallback — answering "no" here was the silent clipboard-only take).
 pub fn should_auto_paste() -> bool {
     if !crate::permissions::is_accessibility_trusted() {
-        return false;
+        return true;
     }
     #[cfg(target_os = "macos")]
     {
@@ -321,6 +414,68 @@ pub fn frontmost_bundle_id() -> Option<String> {
     }
 }
 
+/// What a `kAXSelectedText` set that macOS ACCEPTED observed afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AxSet {
+    /// The focused element's value read back changed.
+    Verified,
+    /// Accepted, but no change was observed — the text may still have landed.
+    Unverified(String),
+}
+
+/// AXError codes (HIServices `AXError.h`) that, returned by
+/// `AXUIElementSetAttributeValue(kAXSelectedText)`, PROVE nothing was written:
+/// the argument, the element, the attribute or the API itself was rejected
+/// before the target applied anything. This is an ALLOWLIST on purpose.
+const AX_SET_REFUSED: [(i32, &str); 6] = [
+    (-25201, "kAXErrorIllegalArgument"),
+    (-25202, "kAXErrorInvalidUIElement"),
+    (-25205, "kAXErrorAttributeUnsupported"),
+    (-25206, "kAXErrorActionUnsupported"),
+    (-25208, "kAXErrorNotImplemented"),
+    (-25211, "kAXErrorAPIDisabled"),
+];
+
+/// kAXErrorCannotComplete — what a messaging timeout returns. AXUIElement.h:
+/// it "does not necessarily mean that the function has failed".
+pub(crate) const AX_ERROR_CANNOT_COMPLETE: i32 = -25204;
+
+/// Fix round 2 (independent BLOCKING 1) — the outcome of a NON-OK return from
+/// the `kAXSelectedText` set. `Err` (refused, the caller may fall back to the
+/// ⌘V bridge) ONLY for a code in [`AX_SET_REFUSED`]; every other code
+/// (kAXErrorCannotComplete, kAXErrorFailure, kAXErrorNoValue, anything
+/// unknown) fails CLOSED to `Unverified`: the text may still land, so it is
+/// copied and carded and no ⌘V may follow it. `code` must not be 0.
+pub(crate) fn set_error_outcome(code: i32) -> Result<AxSet, String> {
+    match AX_SET_REFUSED.iter().find(|(c, _)| *c == code) {
+        Some((_, name)) => Err(format!(
+            "setting AXSelectedText was refused ({name}, AX error {code})"
+        )),
+        None if code == AX_ERROR_CANNOT_COMPLETE => Ok(AxSet::Unverified(format!(
+            "setting AXSelectedText timed out (kAXErrorCannotComplete, AX error {code}); a busy \
+             target may still apply it"
+        ))),
+        None => Ok(AxSet::Unverified(format!(
+            "setting AXSelectedText returned AX error {code}, which does not prove nothing was \
+             written"
+        ))),
+    }
+}
+
+/// yap-p0-insertion-bridge-fallback — AX insertion (see [`ax::insert_selected_text`]).
+/// `Err` only when nothing was written (see [`set_error_outcome`]).
+pub fn insert_selected_text(text: &str) -> Result<AxSet, String> {
+    #[cfg(target_os = "macos")]
+    {
+        ax::insert_selected_text(text)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = text;
+        Err("AX insertion is macOS-only".into())
+    }
+}
+
 /// Best-effort focused app name for transcript hygiene. None if AX denied.
 pub fn frontmost_app_name() -> Option<String> {
     #[cfg(target_os = "macos")]
@@ -335,7 +490,35 @@ pub fn frontmost_app_name() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{prefix_before_caret, CONTEXT_CHAR_LIMIT};
+    use super::{
+        prefix_before_caret, set_error_outcome, AxSet, AX_ERROR_CANNOT_COMPLETE, AX_SET_REFUSED,
+        CONTEXT_CHAR_LIMIT,
+    };
+
+    // Fix round 2 (independent BLOCKING 1): a set that timed out may still be
+    // applied, so it must never read as "refused" (which would earn a ⌘V).
+    #[test]
+    fn timed_out_ax_set_is_unverified_never_refused() {
+        assert_eq!(AX_ERROR_CANNOT_COMPLETE, -25204);
+        assert!(matches!(
+            set_error_outcome(AX_ERROR_CANNOT_COMPLETE),
+            Ok(AxSet::Unverified(_))
+        ));
+        // kAXErrorFailure, kAXErrorNoValue and codes nobody listed fail closed too.
+        for code in [-25200, -25212, -25299, -1, 1] {
+            assert!(
+                matches!(set_error_outcome(code), Ok(AxSet::Unverified(_))),
+                "{code} must not count as a proven refusal"
+            );
+        }
+        // Only the allowlisted codes are proven refusals.
+        for (code, name) in AX_SET_REFUSED {
+            match set_error_outcome(code) {
+                Err(why) => assert!(why.contains(name), "{why}"),
+                other => panic!("{code} ({name}) should be refused, got {other:?}"),
+            }
+        }
+    }
 
     // YV50: the context read is BOUNDED — a whole document behind the caret can
     // never be pulled into the pipeline, only the last CONTEXT_CHAR_LIMIT chars.

@@ -6,6 +6,7 @@
 //!   fullScreenAuxiliary, transparent host so only the glass pill is visible.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -689,7 +690,65 @@ pub fn show_for_recording(app: &AppHandle) {
     });
 }
 
+/// yap-p0-insertion-bridge-fallback — the Copy card waiting on the pill. While
+/// it is set the pill stays up after the take, whatever `show_floating_pill`
+/// says, and a pill webview that mounts late reads it via `pending_copy_card`.
+static COPY_CARD: Mutex<Option<crate::paste::CopyCard>> = Mutex::new(None);
+
+/// Park `card` on the pill and make sure the pill is on screen. Safe from any thread.
+pub fn hold_copy_card(app: &AppHandle, card: crate::paste::CopyCard) {
+    if let Ok(mut slot) = COPY_CARD.lock() {
+        *slot = Some(card);
+    }
+    show_for_recording(app);
+}
+
+/// The card the pill should be showing, if any.
+pub fn pending_copy_card() -> Option<crate::paste::CopyCard> {
+    COPY_CARD.lock().ok().and_then(|slot| slot.clone())
+}
+
+fn copy_card_held() -> bool {
+    COPY_CARD.lock().map(|slot| slot.is_some()).unwrap_or(false)
+}
+
+/// The Tauri event that tells the pill to drop its Copy card without a hide
+/// (a new take started; desktop/src/pill/CopyCard.tsx listens).
+pub const COPY_CARD_CLEAR_EVENT: &str = "insert-copy-card-clear";
+
+/// Should the pill stay up once the Copy card is released? A take (or a
+/// meeting) in flight always keeps it: the card's TTL or × must never hide
+/// the pill of a recording or processing take.
+pub fn pill_visible_after_card(show_floating_pill: bool, take_in_flight: bool) -> bool {
+    show_floating_pill || take_in_flight
+}
+
+/// The card was dismissed (Copy, Repair, ×, or its timeout): forget it and let
+/// the pill follow `show_floating_pill` again — unless a take is in flight
+/// (`take_in_flight`: recording or processing), in which case the pill stays
+/// and the take's own `after_recording` decides.
+pub fn release_copy_card(app: &AppHandle, show_floating_pill: bool, take_in_flight: bool) {
+    if let Ok(mut slot) = COPY_CARD.lock() {
+        *slot = None;
+    }
+    let in_flight = take_in_flight || dictating() || meeting_recording();
+    after_recording(app, pill_visible_after_card(show_floating_pill, in_flight));
+}
+
+/// A new take started: drop any Copy card from an earlier take (so it can no
+/// longer hold the pill's hitbox or the pill itself) WITHOUT hiding the pill.
+pub fn clear_copy_card_for_new_take(app: &AppHandle) {
+    if let Ok(mut slot) = COPY_CARD.lock() {
+        *slot = None;
+    }
+    // Always emitted: the pill webview may hold a card the slot no longer does.
+    if let Err(e) = app.emit(COPY_CARD_CLEAR_EVENT, ()) {
+        log::warn!("emit {COPY_CARD_CLEAR_EVENT}: {e}");
+    }
+}
+
 pub fn after_recording(app: &AppHandle, keep_visible: bool) {
+    let keep_visible = keep_visible || copy_card_held();
     dispatch_main(app, move |a| {
         if keep_visible {
             let _ = show_float(a);
@@ -949,6 +1008,16 @@ pub fn start_space_keeper(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copy_card_release_never_hides_a_take_in_flight() {
+        // yap-p0-insertion-bridge-fallback: with show_floating_pill off, the
+        // card's TTL / × used to hide the pill mid-take.
+        assert!(super::pill_visible_after_card(false, true));
+        assert!(super::pill_visible_after_card(true, false));
+        assert!(super::pill_visible_after_card(true, true));
+        assert!(!super::pill_visible_after_card(false, false));
+    }
+
     use super::{panel_origin, point_in_hitbox, snap_position, PillPosition, EDGE_SNAP_PT};
 
     // A 2x Retina 1440x900-point display at the global origin, and the float

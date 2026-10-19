@@ -1,3 +1,4 @@
+import BootNote from "../BootNote";
 import { invoke } from "@tauri-apps/api/core";
 import YappyHouse from "../home/YappyHouse";
 import DiffView from "../DiffView";
@@ -8,7 +9,7 @@ import { EmptyState, ErrorState, LoadingState, WaveGlyph } from "../ViewStates";
 
 export default function Home() {
   const {
-    bootError, booting, clearAll, clearing, copyText, diffId, refreshAll,
+    bootError, bootErrors, booting, retryBoot, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
     insights, loadHistory, pasteText, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
@@ -23,7 +24,10 @@ export default function Home() {
   // data never landed. A later refresh that fails (model-ready edge,
   // silent_capture) keeps already-loaded data on screen; the bridge message
   // is in status, the same as on main.
-  const state = viewState(history, booting || !insights, insights == null ? bootError : null);
+  // DO 3 — history and stats are this view's data; each names its own error.
+  const homeError =
+    bootErrors?.get_history ?? bootErrors?.get_insights ?? (insights == null ? bootError : null);
+  const state = viewState(history, booting || !insights, homeError);
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
@@ -91,9 +95,9 @@ export default function Home() {
       <ErrorState
         data-error-state="home"
         view="home"
-        error={bootError}
+        error={homeError}
         actionLabel="Reload history"
-        onAction={() => void refreshAll()}
+        onAction={() => void retryBoot(["get_history", "get_insights"])}
       />
     );
   if (state === "loading")
@@ -106,6 +110,7 @@ export default function Home() {
   // selected model file is missing.
   return (
             <>
+              <BootNote keys={["get_status", "list_failed_dictations", "list_crash_events"]} />
               <YappyHouse
                 wordsToday={insights?.wordsToday}
                 streakDays={insights?.streakDays}
