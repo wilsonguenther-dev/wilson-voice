@@ -107,7 +107,9 @@ pub fn chip_text(channel: Channel, sha: Option<&str>, branch: Option<&str>) -> O
         Channel::Production => None,
         Channel::Test => {
             let sha = sha.map(|s| s.chars().take(7).collect::<String>());
-            let sha = sha.filter(|s| !s.is_empty()).unwrap_or_else(|| "local".into());
+            let sha = sha
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "local".into());
             Some(match branch.map(str::trim).filter(|b| !b.is_empty()) {
                 Some(b) => format!("TEST BUILD {sha} · {b}"),
                 None => format!("TEST BUILD {sha}"),
@@ -125,7 +127,11 @@ pub fn startup_line() -> String {
         CURRENT.name(),
         p.identifier,
         p.product_name,
-        if p.updater_enabled { "enabled" } else { "DISABLED" },
+        if p.updater_enabled {
+            "enabled"
+        } else {
+            "DISABLED"
+        },
         chip
     )
 }
@@ -139,7 +145,10 @@ mod tests {
         let p = Channel::Production.profile();
         assert_eq!(p.identifier, "com.wilsonguenther.wilson-voice");
         assert_eq!(p.product_name, "Yap");
-        assert_eq!(p.data_dir_name, "WilsonVoice", "the data dir name is frozen");
+        assert_eq!(
+            p.data_dir_name, "WilsonVoice",
+            "the data dir name is frozen"
+        );
         assert_eq!(p.log_relpath, "logs/yap.log");
         assert!(p.updater_enabled);
     }
@@ -162,10 +171,16 @@ mod tests {
         );
         let prod_log = prod_root.join(prod.log_relpath);
         let test_log = test_root.join(test.log_relpath);
-        assert_ne!(test_log, prod_log, "the two channels must never share a log");
+        assert_ne!(
+            test_log, prod_log,
+            "the two channels must never share a log"
+        );
         assert!(test_log.starts_with(&test_root));
 
-        assert!(!test.updater_enabled, "a test build must never update itself");
+        assert!(
+            !test.updater_enabled,
+            "a test build must never update itself"
+        );
     }
 
     #[test]
@@ -179,7 +194,10 @@ mod tests {
 
     #[test]
     fn chip_text_names_sha_and_branch_and_is_absent_on_production() {
-        assert_eq!(chip_text(Channel::Production, Some("abc1234"), Some("main")), None);
+        assert_eq!(
+            chip_text(Channel::Production, Some("abc1234"), Some("main")),
+            None
+        );
         assert_eq!(
             chip_text(Channel::Test, Some("7e3276cdeadbeef"), Some("pr-240")).as_deref(),
             Some("TEST BUILD 7e3276c · pr-240")

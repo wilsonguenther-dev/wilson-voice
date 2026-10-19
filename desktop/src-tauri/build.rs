@@ -81,7 +81,10 @@ fn build_channel() {
     println!("cargo:rerun-if-env-changed=YAP_CHANNEL");
     println!("cargo:rerun-if-env-changed=YAP_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=YAP_BUILD_BRANCH");
-    if std::env::var("YAP_CHANNEL").map(|v| v.trim() == "test").unwrap_or(false) {
+    if std::env::var("YAP_CHANNEL")
+        .map(|v| v.trim() == "test")
+        .unwrap_or(false)
+    {
         println!("cargo:rustc-cfg=yap_channel_test");
     }
 }
