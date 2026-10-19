@@ -98,7 +98,7 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap-lic-02-activation-client', prompt: 'yap-lic-02-activation-client', branch: 'loop/yap-lic-02-activation-client-forge-removed', gated: null,
-  title: 'Activate / refresh / deactivate against https://drivia[.]consulting/api/v1/licensing with X-Drivia-App; token + device_id in the Keychain (security-framework) with device_id mirrored in license.json; refresh at most every 24 h; never downgrade on network/5xx/429/400/413/403 blocked; NO key-list fetch; the Forge format deleted',
+  title: 'Activate / refresh / deactivate against https://drivia[.]consulting/api/v1/licensing with X-Drivia-App; token + device_id in the Keychain (security-framework) with device_id mirrored in license.json; refresh at most every 24 h; 403 revoked/expired/deactivated + 401 reactivate_required/device_mismatch delete the token; never downgrade on network/5xx/429/400/413; NO key-list fetch; the Forge format deleted',
   preflight: `
     ( M=0; test -f desktop/src-tauri/src/license_v2.rs || M=1; grep -q 'pub fn verify_token' desktop/src-tauri/src/license_v2.rs || M=1; grep -q 'pub const EMBEDDED_KEYS' desktop/src-tauri/src/license_v2.rs || M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/docs/licensing/YAP-ROUNDTRIP.md --silent >/dev/null 2>&1 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-01-jws-verifier (license_v2.rs verify_token) and drivia-consulting dc-yap-05-test-roundtrip (docs/licensing/YAP-ROUNDTRIP.md) must both be on main — land them, then the build pass again"; exit 0; fi; test -f desktop/src-tauri/src/license_client.rs && grep -q 'pub const LICENSING_BASE' desktop/src-tauri/src/license_client.rs && ! git grep -qnE 'ISSUER_SKID|GRACE_PLAN|PRODUCTION_SIGNED_FIXTURE|ISSUER_PUBLIC_KEY_SPKI_B64' -- desktop/src-tauri/src desktop/src )
   `,
@@ -125,9 +125,12 @@ ITEMS.push({
       4. NO KEY-LIST FETCH (Panel BLOCKING): no JWKS URL, no key download, no merge into a cached set. Trust = license_v2::EMBEDDED_KEYS.
          An UnknownKid from verify_token triggers re-activation, not a fetch.
       5. RESPONSES: 200 stores the token; 404 invalid_key and 409 seat_limit are shown (409 lists the devices, links the portal);
-         403 revoked deletes the token; 403 disputed KEEPS the token (state "on hold"); 403 blocked, 400 invalid_request and
-         413 too_large never downgrade a valid stored token; 401 per CLIENT-INTEGRATION.md; 5xx / timeout / offline keep the token;
-         429 honours Retry-After. Deactivate frees the seat server-side BEFORE clearing locally.
+         FAIL CLOSED (CLIENT-INTEGRATION.md:122): 403 revoked, 403 expired, 403 deactivated, 401 reactivate_required and 401
+         device_mismatch delete the token and show activation with the reason. Refresh returns 403 deactivated for a seat freed in
+         the portal or a staff-blocked device (licensing_api.sql:149); keeping the token would let seat-cycling exceed 3 Macs.
+         403 disputed (:123) keeps the token but is NOT entitled: dictation stops, its message shows, retry next launch.
+         403 blocked (activate only) and 400 / 413 never downgrade a valid stored token; 401 invalid_token per CLIENT-INTEGRATION.md;
+         5xx / timeout / offline keep the token; 429 honours Retry-After. Deactivate frees the seat server-side BEFORE clearing locally.
       6. lib.rs: activate_license / deactivate_license commands call license_client.
       7. FORGE REMOVAL (decision 4): delete ISSUER_PUBLIC_KEY_SPKI_B64, ISSUER_SKID, GRACE_PLAN and its grace path,
          PRODUCTION_SIGNED_FIXTURE and the test that verifies it, and the legacy branch of decide_entitlement in license.rs, and every
@@ -137,7 +140,8 @@ ITEMS.push({
     TESTS live in #[cfg(test)] mod tests inside license_client.rs, against a local stub HTTP server. The client core takes (base, keys)
     privately, and release code has no runtime base or key override (the core reaches license_v2's verify_with crate-privately, never
     pub). No internet. Cases: 200, 404 invalid_key, 409 seat_limit,
-    403 revoked deletes token, 403 disputed keeps it, 403 blocked keeps it, 400 keeps it, 413 keeps it, 503/timeout keeps it, 429 honours
+    403 revoked/expired/deactivated and 401 reactivate_required/device_mismatch delete token, 403 disputed keeps it but not
+    entitled, 403 blocked keeps it, 400 keeps it, 413 keeps it, 503/timeout keeps it, 429 honours
     Retry-After, refresh skipped inside 24 h, refresh forced under 7 d, keychain_delete_reactivates_same_seat (deletes the throwaway
     Keychain item, re-activation sends the mirrored device_id).
     MANUAL PROOF (PR body): activate a test-mode key from dc-yap-05 in a clean YAP_DATA_DIR with a dev build (never the installed app),
@@ -152,6 +156,11 @@ ITEMS.push({
     (cd desktop/src-tauri && cargo test --features custom-protocol --lib -- --list) > desktop/target/lic02-list.txt 2>/dev/null
     grep -q '^license_client::tests::disputed_403_keeps_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::revoked_403_deletes_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::expired_403_deletes_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::deactivated_403_deletes_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::disputed_403_not_entitled: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::reactivate_required_401_deletes_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::device_mismatch_401_deletes_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::blocked_403_keeps_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::too_large_413_keeps_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::retry_after_429_honoured: test$' desktop/target/lic02-list.txt
