@@ -70,8 +70,6 @@ pub enum BindingStatus {
     Ready,
     /// The fn tap gets no events: Input Monitoring is off for this bundle.
     NeedsInputMonitoring,
-    /// The fn tap could not be created: Accessibility is off.
-    NeedsAccessibility,
     /// A grant row exists but the tap still cannot install / re-arm: the grant
     /// is bound to an older signature. Remove and re-add.
     StaleGrant,
@@ -98,7 +96,6 @@ impl BindingStatus {
             Self::Works => "Works".into(),
             Self::Ready => "Ready".into(),
             Self::NeedsInputMonitoring => "Needs Input Monitoring".into(),
-            Self::NeedsAccessibility => "Needs Accessibility".into(),
             Self::StaleGrant => "Stale grant — remove and re-add".into(),
             Self::Conflict(e) => format!("Conflict: {e}"),
             Self::SecureInput(who) => format!("Blocked by {who} (Secure Input)"),
@@ -145,25 +142,42 @@ pub struct TableInputs {
     pub meeting_label: String,
 }
 
-/// The fn tap's status in table terms. Stale-grant rule: a ListenEvent row the
-/// TCC database says is allowed, while the live check / the tap disagrees, is a
-/// grant bound to another signature — the only fix is remove + re-add.
+/// The fn tap's status in table terms. PURE.
+///
+/// The fn / fn⌃ hold is a listen-only CGEventTap: it needs **Input
+/// Monitoring** and nothing else. Accessibility gates insertion (PostEvent /
+/// AX), never the tap, so it plays no part here (fix-249 BLOCKING 1: an
+/// `|| accessibility` arm read "Ready" on both of Wilson's failing Macs).
+///
+/// | tap                         | Input Monitoring            | status                  |
+/// |-----------------------------|-----------------------------|-------------------------|
+/// | delivering                  | any                         | Works                   |
+/// | Secure Input                | any                         | SecureInput(app)        |
+/// | not attempted               | any                         | NotStarted              |
+/// | armed / blocked             | TCC row allowed, live = no  | StaleGrant              |
+/// | armed, no edge yet          | granted                     | Ready                   |
+/// | armed, no edge yet          | none                        | NeedsInputMonitoring    |
+/// | blocked, re-arming          | granted                     | Paused                  |
+/// | blocked (install / re-arm failed, or the bounded re-arm gave up) | granted | StaleGrant |
+/// | blocked                     | none                        | NeedsInputMonitoring    |
+///
+/// Every non-usable row falls back to the dictate chord in [`binding_table`].
+/// Stale-grant rule: a ListenEvent row the TCC database says is allowed while
+/// the live check disagrees, or a granted check while the tap still cannot
+/// install / re-arm, is a grant bound to another signature — the only fix is
+/// remove + re-add.
 pub fn fn_binding_status(i: &TableInputs) -> BindingStatus {
-    let stale = i.listen_event_row == Some(true) && !i.input_monitoring;
+    let stale_row = i.listen_event_row == Some(true) && !i.input_monitoring;
     match &i.fn_tap {
         FnTapStatus::Delivering => BindingStatus::Works,
         FnTapStatus::SecureInput(who) => BindingStatus::SecureInput(who.clone()),
         FnTapStatus::NotAttempted => BindingStatus::NotStarted,
-        FnTapStatus::ArmedNoDelivery if i.input_monitoring || i.accessibility => {
-            BindingStatus::Ready
-        }
-        FnTapStatus::ArmedNoDelivery if stale => BindingStatus::StaleGrant,
+        _ if stale_row => BindingStatus::StaleGrant,
+        FnTapStatus::ArmedNoDelivery if i.input_monitoring => BindingStatus::Ready,
         FnTapStatus::ArmedNoDelivery => BindingStatus::NeedsInputMonitoring,
+        FnTapStatus::Blocked(_) if !i.input_monitoring => BindingStatus::NeedsInputMonitoring,
         FnTapStatus::Blocked(r) if r.starts_with(PAUSED_PREFIX) => BindingStatus::Paused,
-        FnTapStatus::Blocked(_) if stale => BindingStatus::StaleGrant,
-        FnTapStatus::Blocked(_) if !i.accessibility => BindingStatus::NeedsAccessibility,
-        FnTapStatus::Blocked(_) if i.input_monitoring => BindingStatus::StaleGrant,
-        FnTapStatus::Blocked(_) => BindingStatus::NeedsInputMonitoring,
+        FnTapStatus::Blocked(_) => BindingStatus::StaleGrant,
     }
 }
 
@@ -582,28 +596,87 @@ mod tests {
         assert_eq!(s, BindingStatus::Paused);
     }
 
+    /// fix-249 BLOCKING 1 — the whole fn decision table, one row per case, and
+    /// the hold row's live key / fallback for each. Accessibility is varied on
+    /// every row and must never change the answer.
     #[test]
-    fn permission_cases() {
-        let mut i = inputs(FnTapStatus::ArmedNoDelivery, CarbonStatus::Registered);
-        i.accessibility = false;
-        i.input_monitoring = false;
-        assert_eq!(fn_binding_status(&i), BindingStatus::NeedsInputMonitoring);
-        i.fn_tap = FnTapStatus::Blocked("CGEventTapCreate failed".into());
-        assert_eq!(fn_binding_status(&i), BindingStatus::NeedsAccessibility);
-        // A TCC row says allowed but the live check says no: stale signature.
-        i.listen_event_row = Some(true);
-        assert_eq!(fn_binding_status(&i), BindingStatus::StaleGrant);
-        i.fn_tap = FnTapStatus::ArmedNoDelivery;
-        assert_eq!(fn_binding_status(&i), BindingStatus::StaleGrant);
-        // Every grant on and the tap still cannot install: also stale.
-        let mut j = inputs(
-            FnTapStatus::Blocked("CGEventTapCreate failed".into()),
-            CarbonStatus::Registered,
-        );
-        j.listen_event_row = None;
-        assert_eq!(fn_binding_status(&j), BindingStatus::StaleGrant);
-        j.fn_tap = FnTapStatus::ArmedNoDelivery;
-        assert_eq!(fn_binding_status(&j), BindingStatus::Ready);
+    fn fn_decision_table_every_row() {
+        let paused = FnTapStatus::Blocked(format!("{PAUSED_PREFIX} — re-arming"));
+        let install_failed = FnTapStatus::Blocked("CGEventTapCreate failed".into());
+        let gave_up = FnTapStatus::Blocked("macOS kept the fn listener off after 330 re-arm tries".into());
+        use BindingStatus as S;
+        use FnTapStatus as T;
+        // (tap, input_monitoring, listen_event_row, expected, fn⌃ live?)
+        let rows: Vec<(FnTapStatus, bool, Option<bool>, BindingStatus, bool)> = vec![
+            (T::Delivering, true, Some(true), S::Works, true),
+            (T::Delivering, false, None, S::Works, true),
+            (T::SecureInput("1Password".into()), true, None, S::SecureInput("1Password".into()), false),
+            (T::NotAttempted, true, None, S::NotStarted, false),
+            // granted, tap installed, no edge yet → Ready, fn⌃ live
+            (T::ArmedNoDelivery, true, Some(true), S::Ready, true),
+            (T::ArmedNoDelivery, true, None, S::Ready, true),
+            // no Input Monitoring row → Needs Input Monitoring, chord live
+            (T::ArmedNoDelivery, false, Some(false), S::NeedsInputMonitoring, false),
+            (T::ArmedNoDelivery, false, None, S::NeedsInputMonitoring, false),
+            (install_failed.clone(), false, Some(false), S::NeedsInputMonitoring, false),
+            (install_failed.clone(), false, None, S::NeedsInputMonitoring, false),
+            (paused.clone(), false, None, S::NeedsInputMonitoring, false),
+            // TCC row allowed, live check says no → stale, chord live
+            (T::ArmedNoDelivery, false, Some(true), S::StaleGrant, false),
+            (install_failed.clone(), false, Some(true), S::StaleGrant, false),
+            (paused.clone(), false, Some(true), S::StaleGrant, false),
+            // granted but the tap cannot install / the bounded re-arm gave up → stale
+            (install_failed.clone(), true, None, S::StaleGrant, false),
+            (install_failed, true, Some(true), S::StaleGrant, false),
+            (gave_up, true, None, S::StaleGrant, false),
+            // granted, macOS switched it off and the re-arm is running → Paused
+            (paused, true, None, S::Paused, false),
+        ];
+        for (tap, im, row, want, fn_live) in rows {
+            for accessibility in [true, false] {
+                let mut i = inputs(tap.clone(), CarbonStatus::Registered);
+                i.accessibility = accessibility;
+                i.input_monitoring = im;
+                i.listen_event_row = row;
+                let ctx = format!("{tap:?} im={im} row={row:?} acc={accessibility}");
+                assert_eq!(fn_binding_status(&i), want, "{ctx}");
+                let table = binding_table(&i);
+                let h = hold(&table);
+                if fn_live {
+                    assert_eq!(h.live_key.as_deref(), Some("fn⌃"), "{ctx}");
+                    assert!(!h.fallback, "{ctx}");
+                } else {
+                    assert_eq!(h.live_key.as_deref(), Some("⌃⌥⌘Space"), "{ctx}");
+                    assert!(h.fallback, "{ctx}");
+                }
+            }
+        }
+    }
+
+    /// Wilson's two Macs, 2026-10-19: Yap Test (Accessibility on, no
+    /// Input Monitoring row) and real Yap (Accessibility on, a stale
+    /// Input Monitoring row). Neither may read Ready / fn⌃.
+    #[test]
+    fn wilsons_two_machines_name_the_chord() {
+        let mut yap_test = inputs(FnTapStatus::ArmedNoDelivery, CarbonStatus::Registered);
+        yap_test.accessibility = true;
+        yap_test.input_monitoring = false;
+        yap_test.listen_event_row = Some(false);
+        let rows = binding_table(&yap_test);
+        assert_eq!(hold(&rows).status, BindingStatus::NeedsInputMonitoring);
+        assert_eq!(hold(&rows).live_key.as_deref(), Some("⌃⌥⌘Space"));
+        assert!(hold(&rows).fallback);
+        assert_eq!(live_dictate_key(&rows).as_deref(), Some("⌃⌥⌘Space"));
+
+        let mut real_yap = yap_test.clone();
+        real_yap.listen_event_row = Some(true);
+        let rows = binding_table(&real_yap);
+        assert_eq!(hold(&rows).status, BindingStatus::StaleGrant);
+        assert_eq!(hold(&rows).live_key.as_deref(), Some("⌃⌥⌘Space"));
+        assert!(hold(&rows).fallback);
+        let hf = rows.iter().find(|r| r.action == BindingAction::HandsFree).unwrap();
+        assert_eq!(hf.status, BindingStatus::StaleGrant);
+        assert!(hf.fallback);
     }
 
     #[test]
