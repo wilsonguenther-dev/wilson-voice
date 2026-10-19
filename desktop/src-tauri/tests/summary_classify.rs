@@ -16,6 +16,10 @@ const FIXTURE: &[&str] = &[
     "Wilson to book the demo with Liberty University next week.",
     "The open question is whether annual billing gets a discount.",
     "We also decided to drop the free trial for enterprise accounts.",
+    // R2-B2: a bold / backfilled owner must be a name the meeting uses
+    // mid-sentence (twice), as a real meeting does.
+    "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
+    "I'll sync with Jeisil and Wilson after the call.",
 ];
 
 /// The real-model MAP answer's bucketing from the PR #250 run, verbatim: the

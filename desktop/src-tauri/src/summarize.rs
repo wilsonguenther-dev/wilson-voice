@@ -693,8 +693,33 @@ const NOT_A_NAME: &[&str] = &[
     "also", "then", "quite", "very", "too", "exactly", "absolutely", "totally", "agreed",
 ];
 
-/// A capitalized single word that is not a pronoun, a determiner or a
-/// small-talk opener — the only shape a NAME may have.
+/// #250 round 4 (R2-B2) — common English words that open a sentence and are
+/// never a person: days, months, the indefinite pronouns, everyday nouns of
+/// small talk ("Everything will be fine", "Monday will be busy", "Coffee will
+/// help"). None of them is ever an owner, and none is ever a transcript name.
+const COMMON_WORDS: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december", "everything", "nothing", "something", "anything", "everywhere",
+    "somewhere", "nowhere", "coffee", "tea", "lunch", "dinner", "breakfast", "traffic",
+    "revenue", "sales", "budget", "money", "weather", "rain", "food", "water", "work",
+    "life", "team", "morning", "afternoon", "evening", "tonight", "weekend", "week", "month",
+    "year", "quarter", "noon", "midnight", "people", "things", "stuff", "nobody", "none",
+    "each", "every", "all", "both", "some", "most", "many", "much", "more", "less", "other",
+    "another", "such", "same", "which", "where", "while", "because", "although", "after",
+    "before", "since", "until", "during", "without", "with", "for", "from", "into", "onto",
+    "over", "under", "about", "again", "still", "even", "only", "never", "always", "often",
+    "sometimes", "usually", "soon", "later", "earlier", "otherwise", "instead", "anyway",
+    "meanwhile", "though", "however", "therefore", "plus", "or", "nor", "yet", "not",
+];
+
+/// Is `lower` (already lowercased) one of [`COMMON_WORDS`]?
+fn is_common_word(lower: &str) -> bool {
+    COMMON_WORDS.contains(&lower)
+}
+
+/// A capitalized single word that is not a pronoun, a determiner, a
+/// small-talk opener or a common word — the only shape a NAME may have.
 fn is_name_word(word: &str) -> bool {
     let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
     let lower = w.to_lowercase();
@@ -702,6 +727,7 @@ fn is_name_word(word: &str) -> bool {
     chars.next().is_some_and(char::is_uppercase)
         && chars.all(|c| c.is_lowercase())
         && !NOT_A_NAME.contains(&lower.as_str())
+        && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
             "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
@@ -710,29 +736,43 @@ fn is_name_word(word: &str) -> bool {
         )
 }
 
-/// #250 round 3 (B4) — the names this transcript itself uses: its speaker
-/// labels, and every capitalized word that sits INSIDE a sentence ("Thanks to
-/// Priya …" names Priya; it does not name "Thanks"). A sentence-initial word
-/// is not evidence of a name — every sentence starts with a capital.
+/// #250 round 4 (R2-B2) — the names this transcript itself uses: its NAMED
+/// speakers (never `Me` / `Them` / `Speaker 2`), and every capitalized word
+/// that sits INSIDE a sentence at least twice and is not a common word. A
+/// sentence-initial word is no evidence of a name — every sentence starts
+/// with a capital — and one mid-sentence capital can be a product, a place
+/// or a typo. "Thanks Priya … ask Priya" names Priya; "Coffee will help"
+/// names nobody.
 pub fn transcript_names(lines: &[TranscriptLine]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    let mut add = |n: &str| {
+    let add = |names: &mut Vec<String>, n: &str| {
         if !n.is_empty() && !names.iter().any(|k| k.eq_ignore_ascii_case(n)) {
             names.push(n.to_string());
         }
     };
+    let mut mid: Vec<(String, usize)> = Vec::new();
     for l in lines {
         if let Some(sp) = &l.speaker {
-            add(sp.label().trim());
+            if sp.is_named() {
+                add(&mut names, sp.label().trim());
+            }
         }
         let mut prev_ends_sentence = true;
         for raw in l.text.split_whitespace() {
             let w = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
             let w = w.strip_suffix("'s").or(w.strip_suffix("'ll")).unwrap_or(w);
             if !prev_ends_sentence && is_name_word(w) {
-                add(w);
+                match mid.iter_mut().find(|(k, _)| k == w) {
+                    Some((_, n)) => *n += 1,
+                    None => mid.push((w.to_string(), 1)),
+                }
             }
             prev_ends_sentence = raw.ends_with(['.', '!', '?', ':']);
+        }
+    }
+    for (w, n) in mid {
+        if n >= 2 {
+            add(&mut names, &w);
         }
     }
     names
@@ -748,6 +788,7 @@ fn is_owner_word(word: &str) -> bool {
     chars.next().is_some_and(char::is_uppercase)
         && chars.all(|c| c.is_lowercase())
         && !NOT_A_NAME.contains(&lower.as_str())
+        && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
             "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
@@ -778,13 +819,13 @@ fn owner_commitment(text: &str) -> bool {
     COMMIT_AFTER_OWNER.iter().any(|c| rest.starts_with(c))
 }
 
-/// #250 round 3 (B4) — the backfill's owner rule, stricter than
+/// #250 round 4 (R2-B2) — the backfill's owner rule, stricter than
 /// [`owner_commitment`] because a backfilled line is one the model did NOT
-/// pick. The owner must be a name from `names` (the transcript's speakers and
-/// mid-sentence names) followed by an explicit commitment verb, or an unknown
-/// capitalized word (never a [`NOT_A_NAME`] opener) followed by `will`,
-/// `should` or `is going to`. "Can", "owns", "is on", a bare adjective + "to"
-/// — none of them commits anyone.
+/// pick. The owner must be a name from `names` ([`transcript_names`]: named
+/// speakers, and capitalized words said twice mid-sentence) followed by an
+/// explicit commitment verb. There is no unknown-word branch: without a real
+/// owner there is no backfilled action item at all. "Can", "owns", "is on", a
+/// bare adjective + "to" — none of them commits anyone.
 fn backfill_commitment(text: &str, names: &[String]) -> bool {
     let t = text.trim();
     let Some((first, rest)) = t.split_once(char::is_whitespace) else {
@@ -803,11 +844,7 @@ fn backfill_commitment(text: &str, names: &[String]) -> bool {
         "will ", "is going to ", "agreed to ", "offered to ", "promised to ", "needs to ",
         "has to ", "should ",
     ];
-    if known(bare) {
-        EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to ")
-    } else {
-        ["will ", "should ", "is going to "].iter().any(|c| rest.starts_with(c))
-    }
+    known(bare) && (EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to "))
 }
 
 /// #250 round 3 (A2) — a line ABOUT whether something was decided is an open
@@ -915,6 +952,11 @@ pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
                 first,
                 "the" | "this" | "that" | "it" | "there" | "these" | "those" | "its" | "a" | "an"
             ) || NOT_A_NAME.contains(&first);
+            // R2-B2: "Coffee will help", "Monday will be busy" — a common
+            // word for a subject is small talk, whatever verb follows.
+            if is_common_word(first) {
+                return None;
+            }
             (!statement || generic_commitment(&lower)).then_some(Bucket::Actions)
         }
         other => Some(other),
@@ -1700,6 +1742,7 @@ pub fn summarize_segments_with(
     let questions = resolve(&merged.questions);
     let markdown = render_notes(
         &headline,
+        &names,
         &narrative,
         &actions,
         &decisions,
@@ -2335,12 +2378,16 @@ pub fn backfill_key_points(
 }
 
 /// "Owner" of an action item, ONLY when the item's own words name one at the
-/// front ("Jeisil will send …", "Wilson to book …"). Never inferred.
-pub fn action_owner(text: &str) -> Option<String> {
+/// front ("Jeisil will send …", "Wilson to book …") AND (R2-B2) that word is
+/// one of the transcript's `names` ([`transcript_names`]). Never inferred: a
+/// capitalized first word nobody in the meeting is called is not a bold owner.
+pub fn action_owner(text: &str, names: &[String]) -> Option<String> {
     let mut words = text.split_whitespace();
     let first = words.next()?.trim_matches(|c: char| !c.is_alphanumeric());
     let second = words.next()?.to_lowercase();
-    let is_name = first.chars().next()?.is_uppercase()
+    let is_name = names.iter().any(|n| n == first)
+        && is_name_word(first)
+        && first.chars().next()?.is_uppercase()
         && first.chars().skip(1).all(|c| c.is_lowercase())
         && !NOT_A_NAME.contains(&first.to_lowercase().as_str())
         && !matches!(
@@ -2370,6 +2417,7 @@ pub fn action_owner(text: &str) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 pub fn render_notes(
     headline: &Headline,
+    names: &[String],
     narrative: &str,
     actions: &[SummaryItem],
     decisions: &[SummaryItem],
@@ -2418,7 +2466,7 @@ pub fn render_notes(
         out.push_str("### Action items\n\n");
         for item in actions {
             let at = format_offset(item.start_seconds);
-            let owner = action_owner(&item.text)
+            let owner = action_owner(&item.text, names)
                 .map(|o| format!("**{o}** — "))
                 .unwrap_or_default();
             match &item.speaker {

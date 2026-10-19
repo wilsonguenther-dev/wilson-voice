@@ -47,10 +47,17 @@ fn small_talk_never_becomes_an_action_item() {
     for line in SMALL_TALK {
         // Filed by the model as an action, the classifier still drops it.
         assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
-        assert_eq!(action_owner(line), None, "fake owner for {line}");
+        assert_eq!(action_owner(line, &transcript_names(&lines)), None, "fake owner for {line}");
     }
-    // "Thanks to Priya" names Priya — mid-sentence — and never "Thanks".
+    // "Thanks to Priya" names Priya — mid-sentence — and never "Thanks";
+    // R2-B2: once is not enough, twice mid-sentence is.
     let names = transcript_names(&lines);
+    assert!(!names.iter().any(|n| n == "Priya"), "one mention is no name: {names:?}");
+    let twice = transcript_lines(&segments_from(&[
+        "Thanks to Priya the import works now.",
+        "Ask Priya about the migration.",
+    ]));
+    let names = transcript_names(&twice);
     assert!(names.iter().any(|n| n == "Priya"), "{names:?}");
     assert!(!names.iter().any(|n| n == "Thanks" || n == "Nice" || n == "Honestly"), "{names:?}");
 }
@@ -62,6 +69,7 @@ fn backfill_still_takes_named_commitments() {
         "Priya to file the migration report.",
         "Jeisil will send the updated deck by Friday.",
         "Happy to help with the rollout.",
+        "I checked with Priya and Jeisil this morning, and thanks Jeisil for the deck.",
     ]);
     let lines = transcript_lines(&segments);
     let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
@@ -72,7 +80,7 @@ fn backfill_still_takes_named_commitments() {
         texts,
         vec!["Priya to file the migration report", "Jeisil will send the updated deck by Friday"],
     );
-    assert_eq!(action_owner(texts[0]), Some("Priya".into()));
+    assert_eq!(action_owner(texts[0], &transcript_names(&lines)), Some("Priya".into()));
 }
 
 #[test]

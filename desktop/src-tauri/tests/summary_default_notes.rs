@@ -21,6 +21,9 @@ const FIXTURE: &[&str] = &[
     "Wilson to book the demo with Liberty University next week.",
     "The open question is whether annual billing gets a discount.",
     "We also decided to drop the free trial for enterprise accounts.",
+    // R2-B2: a bold owner must be a name the meeting uses mid-sentence twice.
+    "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
+    "I'll sync with Jeisil and Wilson after the call.",
 ];
 
 fn answer(req: &wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError> {
@@ -160,12 +163,14 @@ fn headline_parse_drops_invented_points_and_owner_needs_a_name_up_front() {
         invented, None,
         "a title with a number the notes lack is not kept"
     );
+    let names = vec!["Jeisil".to_string()];
     assert_eq!(
-        action_owner("Jeisil will send the doc"),
+        action_owner("Jeisil will send the doc", &names),
         Some("Jeisil".into())
     );
-    assert_eq!(action_owner("We will send the doc"), None);
-    assert_eq!(action_owner("send the doc"), None);
+    assert_eq!(action_owner("Priya will send the doc", &names), None, "not a meeting name");
+    assert_eq!(action_owner("We will send the doc", &names), None);
+    assert_eq!(action_owner("send the doc", &names), None);
 }
 
 /// A4: the old process-global flag is gone; a cancel is a per-job token, so

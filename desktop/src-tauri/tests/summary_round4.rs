@@ -2,12 +2,16 @@
 //!
 //! R2-B1: key points come FIRST, from the transcript — 3–6 distinct facts —
 //!        and the Summary paragraph is written from them.
+//! R2-B2: an owner is a name the meeting uses; small talk is never a task.
 
 mod support;
 
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::polish_protocol::PolishRequest;
-use wilson_voice_lib::summarize::{point_overlap, summarize_segments, SummaryError};
+use wilson_voice_lib::summarize::{
+    action_owner, classify_item, ground_extract, point_overlap, summarize_segments,
+    transcript_lines, transcript_names, Bucket, MapExtract, SummaryError,
+};
 
 const FIXTURE: &[&str] = &[
     "Okay, this is the pricing review for the Drivia consulting tier.",
@@ -116,4 +120,57 @@ fn a_failed_headline_call_still_backfills_three_points() {
     let points = key_points(&s.markdown);
     assert!(points.len() >= 3, "{}", s.markdown);
     assert_distinct(&points);
+}
+
+/// The reviewer's seven probe lines (round 2): every one was backfilled as an
+/// action item with a bold "owner" (Everything, Monday, Traffic, …).
+const NOT_OWNERS: &[&str] = &[
+    "Everything will be fine",
+    "Monday will be busy for everyone",
+    "Traffic should be lighter after six",
+    "Something should change eventually",
+    "Revenue will grow next quarter hopefully",
+    "Lunch should be here soon",
+    "Coffee will help",
+];
+
+#[test]
+fn small_talk_with_will_or_should_never_becomes_an_owned_action() {
+    let segments = segments_from(NOT_OWNERS);
+    let lines = transcript_lines(&segments);
+    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let names = transcript_names(&lines);
+    assert!(names.is_empty(), "no names in small talk: {names:?}");
+    let mut extract = MapExtract::default();
+    ground_extract(&mut extract, &lines, &source);
+    assert!(extract.actions.is_empty(), "backfilled small talk: {:?}", extract.actions);
+    for line in NOT_OWNERS {
+        assert_eq!(action_owner(line, &names), None, "fake owner for {line}");
+        // Even with every word on the name list, a common word is no owner.
+        let everyone: Vec<String> =
+            line.split_whitespace().map(str::to_string).collect();
+        assert_eq!(action_owner(line, &everyone), None, "common word as owner: {line}");
+        assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
+    }
+}
+
+#[test]
+fn a_real_owner_is_a_name_the_meeting_uses() {
+    let segments = segments_from(&[
+        "Jeisil will send the pricing doc by Friday.",
+        "Coffee will help.",
+        "Thanks Jeisil, and Priya too.",
+        "I'll check with Jeisil after lunch.",
+        "Priya will draft the follow up.",
+    ]);
+    let lines = transcript_lines(&segments);
+    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let names = transcript_names(&lines);
+    assert_eq!(names, vec!["Jeisil".to_string()], "Priya is said once mid-sentence");
+    let mut extract = MapExtract::default();
+    ground_extract(&mut extract, &lines, &source);
+    let texts: Vec<&str> = extract.actions.iter().map(|a| a.text.as_str()).collect();
+    assert_eq!(texts, vec!["Jeisil will send the pricing doc by Friday"]);
+    assert_eq!(action_owner(texts[0], &names), Some("Jeisil".into()));
+    assert_eq!(action_owner("Priya will draft the follow up", &names), None);
 }
