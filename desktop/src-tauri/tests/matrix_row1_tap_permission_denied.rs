@@ -255,7 +255,11 @@ fn a_denied_tap_costs_the_second_track_and_nothing_else() {
         },
         "row 1 is still a MEETING, not a refused one — and it tries the tap again"
     );
-    assert_eq!(plan.tracks(), 2, "the tap is attempted; the mic records regardless");
+    assert_eq!(
+        plan.tracks(),
+        2,
+        "the tap is attempted; the mic records regardless"
+    );
     let badge = plan.badge().expect("a suspected denial must say why");
     assert!(
         badge.contains("System Settings"),

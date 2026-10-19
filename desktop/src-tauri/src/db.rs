@@ -1652,7 +1652,10 @@ impl Database {
     }
 
     pub fn set_system_audio_denial_streak(&self, streak: u32) -> Result<(), String> {
-        self.setting_set(meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY, &streak.to_string())
+        self.setting_set(
+            meetings::SYSTEM_AUDIO_DENIAL_STREAK_KEY,
+            &streak.to_string(),
+        )
     }
 
     /// Close out capture: end time, duration, and the WAV the retention sweep

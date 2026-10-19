@@ -5382,5 +5382,4 @@ mod tests {
             "capture ended {ended_after:?} after the stop edge (budget {STOP_EDGE_BUDGET:?})"
         );
     }
-
 }
