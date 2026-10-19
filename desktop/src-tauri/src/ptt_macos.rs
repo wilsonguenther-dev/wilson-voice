@@ -1257,8 +1257,101 @@ fn spawn_re_arm_verifier(tap: ffi::CFMachPortRef) {
                 log::error!(
                     "FN PTT: {verdict} — CGEventTapIsEnabled still false {RE_ARM_VERIFY_MS} ms after CGEventTapEnable"
                 );
+                // focus-2026-10-19: a failed re-arm used to END here, leaving
+                // the stored status `Delivering` — nothing retried, every
+                // surface said fn works, and fn was dead until the next
+                // disable (which a disabled tap does not get). Say so, so the
+                // hotkey table falls back to the dictate chord, and keep
+                // re-enabling until macOS lets the tap back on.
+                set_fn_tap_status(FnTapStatus::Blocked(format!(
+                    "{} — re-arming",
+                    crate::hotkey_table::PAUSED_PREFIX
+                )));
+                keep_re_arming(tap);
             }
         });
+}
+
+/// Retry delays for a tap macOS will not re-enable yet (Secure Input up, a
+/// user-input flood still running). Short at first, then a steady 2 s.
+pub fn re_arm_retry_delay_ms(attempt: u32) -> u64 {
+    match attempt {
+        0..=9 => 250,
+        10..=29 => 1_000,
+        _ => 2_000,
+    }
+}
+
+/// fix-249 advisory (a): the retry is BOUNDED. 10 × 250 ms + 20 × 1 s + 300 ×
+/// 2 s ≈ 10.4 min, then the thread stops and leaves the terminal
+/// [`RE_ARM_GAVE_UP_PREFIX`] status (the hotkey table reads it as a stale grant
+/// when Input Monitoring is on, as Needs Input Monitoring when it is off; the
+/// dictate chord is the live key either way), and `attempt_tap` / the next
+/// disable owns recovery.
+pub const RE_ARM_MAX_ATTEMPTS: u32 = 330;
+
+/// The terminal reason stored once [`RE_ARM_MAX_ATTEMPTS`] retries failed.
+pub const RE_ARM_GAVE_UP_PREFIX: &str = "macOS kept the fn listener off";
+
+pub fn re_arm_gave_up_reason(attempts: u32) -> String {
+    format!("{RE_ARM_GAVE_UP_PREFIX} after {attempts} re-arm tries")
+}
+
+/// The port a re-arm retry thread currently owns (null = none). Single flight
+/// PER TAP: a second verifier for the same port does not start a second loop;
+/// a recreated port takes ownership and the old loop exits on its next tick.
+static RE_ARM_RETRY_OWNER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Claim the retry loop for `tap`. `false` = one is already running for it.
+pub fn claim_re_arm(owner: &AtomicPtr<std::ffi::c_void>, tap: *mut std::ffi::c_void) -> bool {
+    owner.swap(tap, Ordering::SeqCst) != tap
+}
+
+/// Release the claim, only if `tap` still owns it.
+pub fn release_re_arm(owner: &AtomicPtr<std::ffi::c_void>, tap: *mut std::ffi::c_void) {
+    let _ = owner.compare_exchange(tap, std::ptr::null_mut(), Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// Keep calling `CGEventTapEnable` on `tap` until it reads enabled, a recreate
+/// replaced the port (then the new tap's own verifier owns it), or
+/// [`RE_ARM_MAX_ATTEMPTS`] tries failed (terminal status, thread ends).
+fn keep_re_arming(tap: ffi::CFMachPortRef) {
+    if !claim_re_arm(&RE_ARM_RETRY_OWNER, tap) {
+        log::debug!("FN PTT: re-arm retry already running for this tap");
+        return;
+    }
+    let mut attempt: u32 = 0;
+    loop {
+        thread::sleep(Duration::from_millis(re_arm_retry_delay_ms(attempt)));
+        attempt = attempt.saturating_add(1);
+        if TAP_PORT.load(Ordering::SeqCst) != tap
+            || RE_ARM_RETRY_OWNER.load(Ordering::SeqCst) != tap
+        {
+            log::info!("FN PTT: re-arm retry stopped — the tap was replaced");
+            release_re_arm(&RE_ARM_RETRY_OWNER, tap);
+            return;
+        }
+        unsafe { ffi::CGEventTapEnable(tap, true) };
+        if unsafe { ffi::CGEventTapIsEnabled(tap) } {
+            RE_ARMS_VERIFIED.fetch_add(1, Ordering::SeqCst);
+            FIRST_EDGE_REPORTED.store(false, Ordering::SeqCst);
+            set_fn_tap_status(FnTapStatus::ArmedNoDelivery);
+            log::info!("FN PTT: re-arm retry #{attempt} took — fn listener back on");
+            release_re_arm(&RE_ARM_RETRY_OWNER, tap);
+            return;
+        }
+        if attempt >= RE_ARM_MAX_ATTEMPTS {
+            log::error!(
+                "FN PTT: re-arm gave up after {attempt} tries — the dictate chord stays the live key"
+            );
+            set_fn_tap_status(FnTapStatus::Blocked(re_arm_gave_up_reason(attempt)));
+            release_re_arm(&RE_ARM_RETRY_OWNER, tap);
+            return;
+        }
+        if attempt.is_multiple_of(30) {
+            log::warn!("FN PTT: tap still off after {attempt} re-arm retries (Secure Input or a stale grant?)");
+        }
+    }
 }
 
 /// Invalidate the current port and build a fresh tap on THIS thread's run loop
@@ -1333,6 +1426,33 @@ unsafe fn on_tap_disabled(kind: TapDisable, user_info: *mut std::ffi::c_void) {
 #[cfg(test)]
 mod tests {
     use super::{combo_wanted, command_wanted, CommandBinding, PttBinding};
+
+    /// fix-249 advisory (a): one retry loop per tap, bounded, terminal != Paused.
+    #[test]
+    fn re_arm_retry_is_single_flight_per_tap_and_bounded() {
+        use super::{
+            claim_re_arm, re_arm_gave_up_reason, re_arm_retry_delay_ms, release_re_arm,
+            RE_ARM_MAX_ATTEMPTS,
+        };
+        use std::sync::atomic::{AtomicPtr, Ordering};
+        let owner = AtomicPtr::new(std::ptr::null_mut());
+        let a = 0x10usize as *mut std::ffi::c_void;
+        let b = 0x20usize as *mut std::ffi::c_void;
+        assert!(claim_re_arm(&owner, a), "first claim wins");
+        assert!(!claim_re_arm(&owner, a), "a second loop for the same tap is refused");
+        assert!(claim_re_arm(&owner, b), "a recreated tap takes over");
+        release_re_arm(&owner, a); // the old loop exiting must not free b's claim
+        assert_eq!(owner.load(Ordering::SeqCst), b);
+        release_re_arm(&owner, b);
+        assert!(owner.load(Ordering::SeqCst).is_null());
+        let total_ms: u64 = (0..RE_ARM_MAX_ATTEMPTS).map(re_arm_retry_delay_ms).sum();
+        assert!(total_ms <= 11 * 60 * 1_000, "bounded: {total_ms} ms");
+        assert!(
+            !re_arm_gave_up_reason(RE_ARM_MAX_ATTEMPTS)
+                .starts_with(crate::hotkey_table::PAUSED_PREFIX),
+            "the terminal state is not Paused"
+        );
+    }
 
     /// YV49: the command-mode modifier must ride ON TOP of the existing PTT
     /// bindings — adding ⌘ can never stop a normal press from starting.

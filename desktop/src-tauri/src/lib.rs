@@ -182,6 +182,7 @@ mod shortcut_defer;
 // yap-p0-hotkeys-no-permission — the zero-TCC dictate chord, the one hotkey
 // arbiter and the truthful hotkey status.
 pub mod hotkeys;
+pub mod hotkey_table;
 // Fix round 2: the exclusive Carbon probe the dictate registrar runs first.
 pub mod carbon_probe;
 use hotkeys::{HotkeyEdge, HotkeySource};
@@ -302,6 +303,12 @@ pub struct AppSettings {
     /// `shortcuts::DICTATE_TOGGLE` (⌃⌥⌘Space).
     #[serde(default)]
     pub dictate_toggle: Option<hotkeys::ChordSetting>,
+    /// focus-2026-10-19 — the Record meeting chord rebind. `None` = ⌃⌘M.
+    #[serde(default)]
+    pub meeting_chord: Option<hotkeys::ChordSetting>,
+    /// focus-2026-10-19 — the Cancel take key rebind. `None` = Escape.
+    #[serde(default)]
+    pub cancel_chord: Option<hotkeys::ChordSetting>,
     /// Floating pill style: "classic" (obsidian capsule) | "yappy" (pixel pet).
     #[serde(default = "default_pill_style")]
     pub pill_style: String,
@@ -512,6 +519,8 @@ impl Default for AppSettings {
             command_binding: "command".into(),
             keep_cmd_shift_v: false,
             dictate_toggle: None,
+            meeting_chord: None,
+            cancel_chord: None,
             pill_style: "classic".into(),
             pill_position: "bottom".into(),
             companion_tone: "friendly".into(),
@@ -842,10 +851,8 @@ fn toggle_meeting(
         notify(
             app,
             "Recording this meeting",
-            format!(
-                "Stop with {} or the menu bar.",
-                shortcuts::MEETING_TOGGLE.label
-            ),
+            // fix-249 advisory (e): the LIVE chord, not the literal ⌃⌘M.
+            hotkey_table::meeting_started_body(&hotkey_table::active_meeting().1),
         );
     } else if !status.recording && was_recording {
         // Never yank the pill out from under a dictation that is still running.
@@ -1690,17 +1697,20 @@ fn register_cancel_shortcut(app: &AppHandle) {
     if !smoke::global_hotkeys_allowed() {
         return;
     }
-    let sc = shortcuts::CANCEL.shortcut();
+    // fix-249 advisory (c): re-arm the key this take already holds, if any.
+    let sc = hotkey_table::cancel_to_register();
+    let cancel_label = format!("{sc:?}");
     if app.global_shortcut().is_registered(sc) {
-        log::debug!("{} cancel already registered", shortcuts::CANCEL.label);
+        log::debug!("{} cancel already registered", cancel_label);
+        hotkey_table::note_cancel_registered(sc);
         return;
     }
     match app.global_shortcut().register(sc) {
-        Ok(()) => log::info!(
-            "{} cancel registered for this take",
-            shortcuts::CANCEL.label
-        ),
-        Err(e) => log::warn!("{} register failed: {e}", shortcuts::CANCEL.label),
+        Ok(()) => {
+            hotkey_table::note_cancel_registered(sc);
+            log::info!("{} cancel registered for this take", cancel_label)
+        }
+        Err(e) => log::warn!("{} register failed: {e}", cancel_label),
     }
 }
 
@@ -1712,13 +1722,16 @@ fn unregister_cancel_shortcut(app: &AppHandle) {
     if !smoke::global_hotkeys_allowed() {
         return;
     }
-    let sc = shortcuts::CANCEL.shortcut();
+    // fix-249 advisory (c): drop the key the take ARMED, not whatever the
+    // setting says now — a mid-take rebind must not leave Esc registered.
+    let sc = hotkey_table::cancel_to_release();
+    let cancel_label = format!("{sc:?}");
     if !app.global_shortcut().is_registered(sc) {
         return;
     }
     match app.global_shortcut().unregister(sc) {
-        Ok(()) => log::info!("{} cancel released", shortcuts::CANCEL.label),
-        Err(e) => log::warn!("{} unregister failed: {e}", shortcuts::CANCEL.label),
+        Ok(()) => log::info!("{} cancel released", cancel_label),
+        Err(e) => log::warn!("{} unregister failed: {e}", cancel_label),
     }
 }
 
@@ -3652,16 +3665,151 @@ fn save_settings(
         // Settings capture shows, never a silently dead chord.
         if let Some(c) = next.dictate_toggle.as_ref() {
             hotkeys::chord_from_setting(c)?;
+            // fix-249 BLOCKING 2: the dictate chord is system-wide too.
+            if let Some(why) = hotkey_table::reserved_chord_reason(c, false) {
+                return Err(why);
+            }
         }
     }
-    // Register the new chord BEFORE persisting: a chord another app holds is
-    // an Err the Settings capture toasts, the old chord stays live, and the
-    // refused setting is never written.
-    if dictate_changed && smoke::global_hotkeys_allowed() {
-        rebind_dictate_toggle(&app, &next)?;
+    // fix-249 advisory (d): the three rebindable chords' NEW values must all
+    // differ — refused here, before anything is registered or saved.
+    {
+        // `resolve` = the chord each action would actually hold (an invalid
+        // stored value falls back to its default); a CHANGED invalid value is
+        // refused with its own reason by `chord_for_action` below.
+        let (dc, dl) = dictate_toggle_chord(&next);
+        let (mc, ml) = hotkey_table::resolve(
+            hotkey_table::BindingAction::RecordMeeting,
+            next.meeting_chord.as_ref(),
+        );
+        let (cc, cl) =
+            hotkey_table::resolve(hotkey_table::BindingAction::Cancel, next.cancel_chord.as_ref());
+        hotkey_table::check_distinct(&[
+            (hotkey_table::BindingAction::DictateToggle, dc, dl),
+            (hotkey_table::BindingAction::RecordMeeting, mc, ml),
+            (hotkey_table::BindingAction::Cancel, cc, cl),
+        ])?;
     }
-    *state.settings.lock() = next.clone();
+    // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
+    // PERSIST, then APPLY the chords; an apply that fails rolls back every
+    // chord this save already swapped AND the persisted file, so the live
+    // chords always match the stored settings.
+    let (meeting_changed, cancel_changed) = {
+        let live = state.settings.lock();
+        (live.meeting_chord != next.meeting_chord, live.cancel_chord != next.cancel_chord)
+    };
+    let new_meeting = if meeting_changed {
+        Some(match next.meeting_chord.as_ref() {
+            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::RecordMeeting, c)?,
+            None => hotkey_table::resolve(hotkey_table::BindingAction::RecordMeeting, None),
+        })
+    } else {
+        None
+    };
+    let new_cancel = if cancel_changed {
+        Some(match next.cancel_chord.as_ref() {
+            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)?,
+            None => hotkey_table::resolve(hotkey_table::BindingAction::Cancel, None),
+        })
+    } else {
+        None
+    };
+    if new_cancel.is_some() && *state.recording.lock() {
+        return Err("finish the current take, then change the cancel key".into());
+    }
+    let prev = state.settings.lock().clone();
     persist_settings(&next)?;
+    *state.settings.lock() = next.clone();
+    let rollback = |why: String, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> String {
+        if let Some((old_chord, old_label)) = meeting_applied {
+            let new_chord = hotkey_table::active_meeting().0;
+            let gs = app.global_shortcut();
+            if let Err(e) = hotkey_table::swap_chord(
+                new_chord,
+                old_chord,
+                &|s| gs.is_registered(s),
+                &mut |s| gs.register(s).map_err(|e| e.to_string()),
+                &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
+            ) {
+                log::warn!("record-meeting rollback to {old_label} failed: {e}");
+            }
+            hotkey_table::set_active_meeting((old_chord, old_label));
+        }
+        if dictate_applied {
+            if let Err(e) = rebind_dictate_toggle(&app, &prev) {
+                log::warn!("dictate chord rollback failed: {e}");
+            }
+        }
+        if let Err(e) = persist_settings(&prev) {
+            log::warn!("settings rollback persist failed: {e}");
+        }
+        *state.settings.lock() = prev.clone();
+        why
+    };
+    // 1. dictate chord — new registered BEFORE the old is dropped.
+    let mut dictate_applied = false;
+    if dictate_changed && smoke::global_hotkeys_allowed() {
+        if let Err(e) = rebind_dictate_toggle(&app, &next) {
+            return Err(rollback(e, false, None));
+        }
+        dictate_applied = true;
+    }
+    // 2. Record meeting — atomic swap; runs on the command thread, never
+    // inside the shortcut plugin's handler (yap-p0-chord-deadlock).
+    let mut meeting_applied = None;
+    if let Some((new_chord, new_label)) = new_meeting {
+        let old = hotkey_table::active_meeting();
+        if smoke::global_hotkeys_allowed() {
+            let gs = app.global_shortcut();
+            let r = hotkey_table::swap_chord(
+                old.0,
+                new_chord,
+                &|s| gs.is_registered(s),
+                &mut |s| gs.register(s).map_err(|e| e.to_string()),
+                &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
+            );
+            if let Err(e) = r {
+                return Err(rollback(
+                    format!("{new_label} could not be registered ({e}) — the old chord stays"),
+                    dictate_applied,
+                    None,
+                ));
+            }
+            hotkey_table::set_meeting_status(hotkeys::CarbonStatus::Registered);
+        }
+        log::info!("record-meeting chord → {new_label}");
+        hotkey_table::set_active_meeting((new_chord, new_label));
+        meeting_applied = Some(old);
+    }
+    // 3. Cancel — registered per take. fix-249 advisory (c): the recording
+    // lock is HELD across the check and the set, so a take cannot start in
+    // between; and the release drops the key a take actually armed
+    // (`hotkey_table::cancel_to_release`), so a rebind can never leave Esc
+    // registered while idle.
+    if let Some(v) = new_cancel {
+        let recording = state.recording.lock();
+        if *recording {
+            drop(recording);
+            return Err(rollback(
+                "finish the current take, then change the cancel key".into(),
+                dictate_applied,
+                meeting_applied,
+            ));
+        }
+        log::info!("cancel key → {}", v.1);
+        hotkey_table::set_active_cancel(v);
+        drop(recording);
+    }
+    // fix-249 advisory (e): the tray item shows the live Record meeting chord.
+    if meeting_applied.is_some() {
+        if let Some(item) = state.tray_meeting.lock().as_ref() {
+            if let Err(e) = item.set_accelerator(Some(hotkey_table::meeting_accelerator(
+                next.meeting_chord.as_ref(),
+            ))) {
+                log::warn!("tray meeting accelerator update failed: {e}");
+            }
+        }
+    }
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
@@ -5460,6 +5608,47 @@ fn start_from_hotkey(app: &AppHandle, state: &Arc<AppState>, source: HotkeySourc
     start_recording(app, state);
 }
 
+/// focus-2026-10-19 — the live hotkey table (every action, its key, whether
+/// it works now, and the key that performs it right now).
+fn current_binding_rows(state: &AppState) -> Vec<hotkey_table::BindingRow> {
+    let secure = state.secure_input.lock().clone();
+    let hk = hotkeys::status();
+    let fn_tap = hotkeys::effective_fn_tap(&hk.fn_tap, secure.blocked, secure.culprit.as_deref());
+    let settings = state.settings.lock().clone();
+    let im = matches!(perm_probe::listen_event_hid(), permissions::GrantState::Authorized);
+    let inputs = hotkey_table::TableInputs {
+        fn_tap,
+        dictate_carbon: hk.carbon,
+        meeting_carbon: hotkey_table::meeting_status(),
+        accessibility: perm_probe::accessibility_trusted(),
+        input_monitoring: im,
+        listen_event_row: hotkey_table::tcc_listen_event_row(&perm_truth::running_identity().bundle_id),
+        hold_label: settings.hotkey_label.clone(),
+        toggle_label: hotkeys::active_dictate().1,
+        cancel_label: hotkey_table::active_cancel().1,
+        meeting_label: hotkey_table::active_meeting().1,
+    };
+    hotkey_table::binding_table(&inputs)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HotkeyBindingsReport {
+    rows: Vec<hotkey_table::BindingRow>,
+    live_dictate_key: Option<String>,
+    dump: String,
+}
+
+#[tauri::command]
+fn hotkey_bindings(state: State<'_, Arc<AppState>>) -> HotkeyBindingsReport {
+    let rows = current_binding_rows(&state);
+    HotkeyBindingsReport {
+        live_dictate_key: hotkey_table::live_dictate_key(&rows),
+        dump: hotkey_table::debug_dump(&rows),
+        rows,
+    }
+}
+
 /// Swap the registered dictate chord for the Settings rebind, live, through
 /// `hotkeys::rebind`: the new chord is registered FIRST and the old one is
 /// dropped only after that succeeded. A chord another app holds returns Err
@@ -6749,6 +6938,7 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            hotkey_bindings,
             // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
             cancel_transcription,
             user_display_name,
@@ -7056,7 +7246,10 @@ pub fn run() {
                     format!("{MEETING_TRAY_START_LABEL} (unavailable)")
                 },
                 meeting_available,
-                Some(shortcuts::MEETING_TOGGLE.accelerator),
+                // fix-249 advisory (e): the rebound chord, not the literal ⌃⌘M.
+                Some(hotkey_table::meeting_accelerator(
+                    state.settings.lock().meeting_chord.as_ref(),
+                )),
             )?;
             // YV125 — the kind picker, as the qualified variant of the item
             // directly above it (the "Open" / "Open With ▸" shape macOS menus
@@ -7382,18 +7575,36 @@ pub fn run() {
                     // unconditionally so the tray item's accelerator fires
                     // system-wide, exactly like the two above; a failure here is
                     // logged and the tray item still works.
-                    match h
-                        .global_shortcut()
-                        .register(shortcuts::MEETING_TOGGLE.shortcut())
+                    // focus-2026-10-19: the chord is the Settings rebind when
+                    // there is one, and its register result is the Record
+                    // meeting row's status in the hotkey table.
                     {
-                        Ok(()) => log::info!(
-                            "{} meeting-toggle registered",
-                            shortcuts::MEETING_TOGGLE.label
-                        ),
-                        Err(e) => log::warn!(
-                            "{} register failed: {e}",
-                            shortcuts::MEETING_TOGGLE.label
-                        ),
+                        let settings = st.settings.lock().clone();
+                        hotkey_table::set_active_cancel(hotkey_table::resolve(
+                            hotkey_table::BindingAction::Cancel,
+                            settings.cancel_chord.as_ref(),
+                        ));
+                        hotkey_table::set_active_meeting(hotkey_table::resolve(
+                            hotkey_table::BindingAction::RecordMeeting,
+                            settings.meeting_chord.as_ref(),
+                        ));
+                    }
+                    let (meeting_chord, meeting_label) = hotkey_table::active_meeting();
+                    let meeting_result = h.global_shortcut().register(meeting_chord);
+                    match &meeting_result {
+                        Ok(()) => log::info!("{meeting_label} meeting-toggle registered"),
+                        Err(e) => log::warn!("{meeting_label} register failed: {e}"),
+                    }
+                    hotkey_table::set_meeting_status(hotkeys::CarbonStatus::from_result(&meeting_result));
+                    {
+                        // The binding table at launch, once the tap thread has
+                        // answered — the first line to read in a hotkey report.
+                        let h2 = h.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                            let st2 = h2.state::<Arc<AppState>>();
+                            log::info!("hotkey table at launch:\n{}", hotkey_table::debug_dump(&current_binding_rows(&st2)));
+                        });
                     }
                     // YV51 ⌃⌘Z — Undo AI edit (paste the raw take). Also
                     // registered unconditionally so the tray item's accelerator

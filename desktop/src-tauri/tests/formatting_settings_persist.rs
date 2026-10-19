@@ -51,7 +51,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// THIS CONSTANT IS THE POINT. When it fails, do not just bump it: add the new
 /// field to `fully_populated()` with a non-default value and assert it in
 /// `every_app_settings_field_round_trips`, THEN bump it.
-const APP_SETTINGS_FIELD_COUNT: usize = 34;
+const APP_SETTINGS_FIELD_COUNT: usize = 36;
 
 /// Every field set to something that is NOT its default. A field that happens
 /// to equal its default proves nothing — the store could drop it and the
@@ -76,6 +76,16 @@ fn fully_populated() -> AppSettings {
         command_binding: "option".into(),
         keep_cmd_shift_v: true,
         // yap-p0-hotkeys-no-permission — the rebind of the dictate chord.
+        meeting_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
+            code: "KeyR".into(),
+            ctrl: true,
+            cmd: true,
+            ..Default::default()
+        }),
+        cancel_chord: Some(wilson_voice_lib::hotkeys::ChordSetting {
+            code: "F6".into(),
+            ..Default::default()
+        }),
         dictate_toggle: Some(wilson_voice_lib::hotkeys::ChordSetting {
             code: "KeyD".into(),
             ctrl: true,

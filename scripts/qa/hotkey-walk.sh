@@ -20,13 +20,16 @@
 #
 #   hotkey-walk.sh               walk the installed app (needs YAP_QA_DRIVE_RUNNING=1)
 #   hotkey-walk --chord          (hotkey-walk.sh --chord) walk the Carbon dictate chord
+#   hotkey-walk.sh --table       PASSIVE: this bundle's TCC grants + the hotkey
+#                                table Yap logged at launch; posts NO events
 #   hotkey-walk.sh --self-test   refusal paths + the log parser on fixtures; posts NO events
 #
 # Exit: 0 pass, 1 an assertion failed (prints which line never came),
 #       2 usage / app or log missing, 3 the CALLER lacks Accessibility,
 #       4 Yap is running and YAP_QA_DRIVE_RUNNING is not 1, 5 Yap is not running.
 #
-# Environment: YAP_QA_DRIVE_RUNNING=1 (consent to post fn into a running Yap),
+# Environment: YAP_QA_ALLOW_KEYS=1 (REQUIRED before any key is posted —
+#   never set it while someone is typing), YAP_QA_DRIVE_RUNNING=1 (consent to post fn into a running Yap),
 #   YAP_QA_APP (default /Applications/Yap.app), YAP_QA_LOG (default Yap's log).
 set -u
 
@@ -194,8 +197,10 @@ walk() { # $1 = "" (fn passes) | chord
     printf 'Yap is not running (%s); this walk never launches it — open Yap, then rerun\n' "$APP"
     exit 5
   fi
-  if [ "${YAP_QA_DRIVE_RUNNING:-}" != "1" ]; then
-    printf 'Yap is running (pid %s); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 when you are not dictating\n' "$pids"
+  # focus-2026-10-19: posting keys needs a SECOND, explicit consent —
+  # YAP_QA_ALLOW_KEYS=1 — so a walk can never type into someone's session.
+  if [ "${YAP_QA_DRIVE_RUNNING:-}" != "1" ] || [ "${YAP_QA_ALLOW_KEYS:-}" != "1" ]; then
+    printf 'Yap is running (pid %s); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 when you are not dictating\n' "$pids"
     exit 4
   fi
 
@@ -284,14 +289,31 @@ self_test() {
   YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING="" \
     YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
   expect "Yap running without YAP_QA_DRIVE_RUNNING=1 -> refuses" 4 $? \
-    "Yap is running (pid 4242); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 when you are not dictating"
+    "Yap is running (pid 4242); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 when you are not dictating"
 
-  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 \
+  # fix-249 advisory (f): consent to drive a running Yap is NOT consent to
+  # post keys — YAP_QA_ALLOW_KEYS must be exactly 1, or the walk refuses.
+  env -u YAP_QA_ALLOW_KEYS YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 \
+    YAP_QA_DRIVE_RUNNING=1 YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
+  expect "YAP_QA_DRIVE_RUNNING=1 without YAP_QA_ALLOW_KEYS -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=yes \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
+  expect "YAP_QA_ALLOW_KEYS other than 1 -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
+  env -u YAP_QA_ALLOW_KEYS YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 \
+    YAP_QA_DRIVE_RUNNING=1 YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
+  expect "--chord: YAP_QA_DRIVE_RUNNING=1 without YAP_QA_ALLOW_KEYS -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
     YAP_QA_FAKE_POST_ACCESS=0 YAP_QA_NO_POST=1 TERM_PROGRAM=QA-Terminal bash "$0" >"$out" 2>&1
   expect "caller without Accessibility -> refuses" 3 $? \
     "hotkey-walk needs Accessibility for QA-Terminal — grant it in System Settings -> Privacy & Security -> Accessibility, then rerun"
 
-  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 \
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
     YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
   expect "all gates open -> reaches the post step (stopped, nothing posted)" 99 $? "stopping before any event is posted"
 
@@ -302,7 +324,7 @@ self_test() {
     YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
   expect "--chord: Yap running without YAP_QA_DRIVE_RUNNING=1 -> refuses" 4 $? "this walk posts fn into it"
 
-  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 \
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
     YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
   expect "--chord: all gates open -> reaches the post step (stopped, nothing posted)" 99 $? "stopping before any event is posted"
 
@@ -333,7 +355,22 @@ self_test() {
   exit 0
 }
 
+table() {
+  bundle="${YAP_QA_BUNDLE_ID:-com.wilsonguenther.wilson-voice}"
+  printf '== TCC grants for %s\n' "$bundle"
+  sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+    "select service, auth_value, datetime(last_modified,'unixepoch') from access where client = '$bundle'" 2>/dev/null \
+    || echo "(TCC.db not readable from this terminal — needs Full Disk Access)"
+  [ -f "$LOG" ] || die "no log at $LOG"
+  printf '== hotkey table at the last launch (%s)\n' "$LOG"
+  awk '/hotkey table at launch:/{buf=""; grab=7} grab>0{buf=buf $0 "\n"; grab--} END{printf "%s", buf}' "$LOG"
+  printf '== last 15 hotkey lines\n'
+  grep -E "hotkey edge|FN PTT|dictate-toggle|meeting-toggle|re-arm" "$LOG" | tail -15
+  exit 0
+}
+
 case "${1:-}" in
+  --table) table ;;
   --self-test) self_test ;;
   -h | --help) sed -n '2,32p' "$0"; exit 0 ;;
   --chord) walk chord ;;
