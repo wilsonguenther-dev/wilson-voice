@@ -438,6 +438,11 @@ pub struct StubModel {
     >,
     requests: std::sync::Mutex<Vec<wilson_voice_lib::polish_protocol::PolishRequest>>,
     counts: AtomicU64,
+    /// focus-2026-10-19 — does the responder script the HEADLINE stage itself?
+    /// A stub written for MAP + REDUCE is not asked to: its HEADLINE requests
+    /// (still recorded) get [`grounded_headline`], so the stage it never knew
+    /// about cannot fail a test that is about the other two.
+    answers_headline: bool,
 }
 
 use wilson_voice_lib::summarize::{Generated, SummaryClient, SummaryError, TokenCounter};
@@ -466,6 +471,21 @@ impl StubModel {
             responder: Box::new(responder),
             requests: std::sync::Mutex::new(Vec::new()),
             counts: AtomicU64::new(0),
+            answers_headline: false,
+        }
+    }
+
+    /// A stub whose responder scripts every stage, HEADLINE included — for the
+    /// tests that are about the title / key points.
+    pub fn with_headline(
+        responder: impl Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            answers_headline: true,
+            ..Self::new(responder)
         }
     }
 
@@ -501,12 +521,41 @@ impl SummaryClient for StubModel {
         req: &wilson_voice_lib::polish_protocol::PolishRequest,
     ) -> Result<Generated, SummaryError> {
         self.requests.lock().expect("stub lock").push(req.clone());
+        if !self.answers_headline
+            && req.mode == wilson_voice_lib::polish_protocol::SUMMARIZE_HEADLINE
+        {
+            return Ok(Generated::whole(grounded_headline(&req.text)));
+        }
         (self.responder)(req)
     }
 
     fn model_id(&self) -> String {
         "stub-1.5b".to_string()
     }
+}
+
+/// A HEADLINE answer grounded by construction in the text it was handed: the
+/// title is the first line's first four words, the key points its first three
+/// lines (list markers and section labels stripped), each cut to twelve words.
+/// Real words from the notes, so the validators keep them — a stub that
+/// invented a title would be measuring the gate, not the pipeline.
+pub fn grounded_headline(source: &str) -> String {
+    let lines: Vec<String> = source
+        .lines()
+        .map(|l| l.trim().trim_start_matches("- ").trim().to_string())
+        .filter(|l| !l.is_empty() && !l.ends_with(':'))
+        .collect();
+    let words = |s: &str, n: usize| s.split_whitespace().take(n).collect::<Vec<_>>().join(" ");
+    let title = lines
+        .first()
+        .map(|l| {
+            words(l, 4)
+                .trim_end_matches(['.', ',', '!', '?'])
+                .to_string()
+        })
+        .unwrap_or_default();
+    let points: Vec<String> = lines.iter().take(3).map(|l| words(l, 12)).collect();
+    serde_json::json!({ "title": title, "key_points": points }).to_string()
 }
 
 /// The `seg_NNNN` labels present in a rendered chunk — how a stub answers with

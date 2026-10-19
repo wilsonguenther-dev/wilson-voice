@@ -5052,14 +5052,64 @@ async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resul
 /// through. Set once in `setup`; before that there is no window to tell.
 static MEETING_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
-/// yap-meetings-fix (D) — after a transcript lands, summarize it when a local
-/// summary model is installed. "No model" is a state, not an error: the
-/// transcript stands and the Meetings view says "Add a summary model in
-/// Settings".
+/// focus-2026-10-19 — is this polish-catalog model's GGUF on disk?
+fn summary_model_on_disk(id: &str) -> bool {
+    models::polish_model(id).map(models::is_polish_downloaded).unwrap_or(false)
+}
+
+/// focus-2026-10-19 — one progress event for a meeting row (the Meetings card
+/// reads these; `state` may be the transient "preparing_notes" / "summarizing").
+fn emit_meeting_progress(state: &AppState, id: &str, row_state: &str, percent: u8) {
+    if let (Some(app), Ok(Some(m))) = (MEETING_APP.get(), state.db.get_meeting(id)) {
+        let _ = app.emit(
+            meeting_pipeline::MEETING_PROGRESS_EVENT,
+            meeting_pipeline::MeetingProgressEvent {
+                id: id.to_string(),
+                state: row_state.to_string(),
+                percent,
+                processed_through_seconds: m.processed_through_seconds,
+                duration_seconds: m.duration_seconds,
+                error: m.error.clone(),
+            },
+        );
+    }
+}
+
+/// focus-2026-10-19 — make sure a summary model is on disk, fetching the
+/// default one (managed: the app's own models dir, sha256-verified, resumable)
+/// when none is. The card shows "Getting the notes model N%" meanwhile. Never
+/// the machine's Python, never a model "found" elsewhere on disk.
+fn ensure_summary_model(state: &AppState, meeting_id: &str) -> Result<String, String> {
+    let chosen = state.settings.lock().polish_model.clone();
+    match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
+        summarize::SummaryModelPlan::Use(m) => Ok(m),
+        summarize::SummaryModelPlan::Download(m) => {
+            let model = models::polish_model(&m).ok_or_else(|| format!("unknown model {m}"))?;
+            let dir = models::models_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+            models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))?;
+            log::info!("summary: fetching the default notes model {m} for meeting {meeting_id}");
+            let mut last = 255u8;
+            tauri::async_runtime::block_on(models::download_polish_model_with(&m, |done, total| {
+                let pct = if total == 0 { 0 } else { ((done.saturating_mul(100)) / total).min(100) as u8 };
+                if pct != last {
+                    last = pct;
+                    emit_meeting_progress(state, meeting_id, "preparing_notes", pct);
+                }
+            }))?;
+            Ok(m)
+        }
+    }
+}
+
+/// yap-meetings-fix (D) → focus-2026-10-19 — after a transcript lands, ALWAYS
+/// summarize it: the user's polish model when on disk, else the default notes
+/// model (fetched once, managed). Runs after the transcript, off the recording
+/// path, and is cancellable (`cancel_meeting_summary`).
 fn auto_summarize_meeting(state: &AppState, id: &str) {
-    let model = state.settings.lock().polish_model.trim().to_string();
-    if model.is_empty() || summarize::SidecarSession::for_installed_model(&model).is_err() {
-        log::info!("summary skipped: no model (meeting {id})");
+    if let Err(e) = ensure_summary_model(state, id) {
+        log::warn!("summary: the notes model is not available yet for meeting {id}: {e}");
+        emit_meeting_progress(state, id, "complete", 100);
         return;
     }
     match summarize_meeting_blocking(state, id.to_string()) {
@@ -5078,6 +5128,29 @@ fn auto_summarize_meeting(state: &AppState, id: &str) {
                 error: m.error.clone(),
             },
         );
+    }
+}
+
+/// focus-2026-10-19 — stop the summary in flight at its next model call. The
+/// transcript is untouched and the next launch resumes the summary.
+#[tauri::command]
+fn cancel_meeting_summary() {
+    summarize::request_cancel();
+    log::info!("summary: cancel requested");
+}
+
+/// focus-2026-10-19 — a summary that a quit interrupted resumes on the next
+/// launch: every complete meeting with a transcript and no summary.
+fn resume_pending_summaries(state: &AppState) {
+    let Ok(rows) = state.db.list_meetings(500, None) else { return };
+    for m in rows {
+        let pending = (m.state == "complete" || m.state == "summarizing")
+            && m.summary.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+        let has_transcript = state.db.list_meeting_segments(&m.id).map(|s| !s.is_empty()).unwrap_or(false);
+        if pending && has_transcript {
+            log::info!("summary: resuming the summary of meeting {}", m.id);
+            auto_summarize_meeting(state, &m.id);
+        }
     }
 }
 
@@ -5102,9 +5175,17 @@ fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, St
     if segments.is_empty() {
         return Err("that meeting has no transcript to summarize".to_string());
     }
-    let model = state.settings.lock().polish_model.trim().to_string();
+    // focus-2026-10-19: the resolved notes model, never "none".
+    let chosen = state.settings.lock().polish_model.clone();
+    let model = match summarize::plan_summary_model(&chosen, &summary_model_on_disk) {
+        summarize::SummaryModelPlan::Use(m) => m,
+        summarize::SummaryModelPlan::Download(_) => {
+            return Err("the notes model is still downloading — the summary starts when it lands".into())
+        }
+    };
+    summarize::clear_cancel();
     let session = summarize::SidecarSession::for_installed_model(&model)
-        .map_err(|_| "no local summary model is installed".to_string())?;
+        .map_err(|_| "the notes model could not start".to_string())?;
     let client = summarize::SidecarSummaryClient::new(session);
 
     let previous =
@@ -5112,6 +5193,7 @@ fn summarize_meeting_blocking(state: &AppState, id: String) -> Result<String, St
     let _ = state
         .db
         .set_meeting_state(&id, meetings::MeetingState::Summarizing, None);
+    emit_meeting_progress(state, &id, "summarizing", 0);
     // YV133 — the summary is attributed with the SAME labelling the transcript
     // is rendered with: `TrackSpeakers::for_meeting` makes the two calls
     // `meetings::render_transcript` makes, off this meeting's stored `kind` and
@@ -6566,6 +6648,14 @@ pub fn run() {
     {
         let asr_state = state.clone();
         let sum_state = state.clone();
+        let resume_state = state.clone();
+        std::thread::Builder::new()
+            .name("wv-summary-resume".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                resume_pending_summaries(&resume_state);
+            })
+            .ok();
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
@@ -6749,6 +6839,7 @@ pub fn run() {
         )
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
+            cancel_meeting_summary,
             // Y3-D — the pill's Cancel button and the Escape hotkey both land here.
             cancel_transcription,
             user_display_name,

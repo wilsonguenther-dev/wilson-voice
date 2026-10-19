@@ -78,15 +78,16 @@ use crate::meetings::{
     MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_MAP,
-    SUMMARIZE_REDUCE, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
+    SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
+    summary_map_max_out, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
 /// vocabulary.
 ///
 /// Sized against the sidecar's 4096-token context with room for the system turn,
-/// the chat template and [`SUMMARY_MAP_MAX_OUT`] of output. It is a budget for
+/// the chat template and up to [`SUMMARY_MAP_MAX_OUT_CEILING`](crate::polish_protocol::SUMMARY_MAP_MAX_OUT_CEILING) of output. It is a budget for
 /// the transcript body only — the sidecar re-checks the assembled prompt and
 /// truncates-and-warns if it still does not fit, so a wrong guess here degrades
 /// rather than fails.
@@ -638,11 +639,304 @@ pub fn parse_map_output(raw: &str, labels: &[String], source: &str) -> MapExtrac
     out
 }
 
+/// Which list an extracted line goes in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bucket {
+pub enum Bucket {
     Actions,
     Decisions,
     Questions,
+}
+
+// ── #250 round 2: the post-parse classifier ─────────────────────────────────
+
+/// Words that open an imperative action item ("Send the deck to Priya").
+const IMPERATIVE_VERBS: &[&str] = &[
+    "send", "book", "schedule", "email", "call", "share", "draft", "write", "update",
+    "review", "check", "prepare", "finish", "fix", "ship", "file", "create", "add",
+    "confirm", "ask", "invite", "circulate", "post", "follow", "set", "reach", "get",
+    "find", "look", "test", "submit", "sign", "order", "contact", "loop",
+];
+
+/// Owner-led commitments: `<owner> will …`, `<owner> to …`, `I'll …`.
+const COMMIT_AFTER_OWNER: &[&str] = &[
+    "will ", "to ", "should ", "must ", "needs to ", "has to ", "is going to ",
+    "agreed to ", "offered to ", "promised to ", "owns ", "can ", "is on ",
+];
+
+/// Settled things. Checked first: "we also decided to drop X" carries a
+/// `to <verb>` that would otherwise read as a commitment.
+const DECISION_MARKERS: &[&str] = &[
+    "decided", "decision", "we agreed", "agreed that", "agreed the", "settled",
+    "will remain", "will stay", "stays at", "remains at", "stay at", "remain at",
+    "going with", "go with", "approved", "signed off", "is final",
+];
+
+fn is_owner_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    let lower = w.to_lowercase();
+    if matches!(lower.as_str(), "i" | "we") {
+        return true;
+    }
+    let mut chars = w.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(|c| c.is_lowercase())
+        && !matches!(
+            lower.as_str(),
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "also" | "and" | "so" | "then"
+        )
+}
+
+/// `<owner> will/to/…` at the front, or a contracted `I'll` / `We'll` /
+/// `Jeisil'll`. The owner + verb shape the action-item rule asks for.
+fn owner_commitment(text: &str) -> bool {
+    let t = text.trim();
+    let Some((first, rest)) = t.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let rest = rest.trim_start().to_lowercase();
+    let lower_first = first.to_lowercase();
+    if let Some(owner) = lower_first.strip_suffix("'ll").or(lower_first.strip_suffix("\u{2019}ll")) {
+        return !owner.is_empty();
+    }
+    if !is_owner_word(first) {
+        return false;
+    }
+    // "We agreed to keep the price" is a decision, not a task.
+    if lower_first == "we" && rest.starts_with("agreed") {
+        return false;
+    }
+    COMMIT_AFTER_OWNER.iter().any(|c| rest.starts_with(c))
+}
+
+fn starts_imperative(text: &str) -> bool {
+    let first = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    IMPERATIVE_VERBS.contains(&first.as_str())
+}
+
+fn is_strong_question(lower: &str) -> bool {
+    lower.trim_end().ends_with('?')
+        || lower.contains("open question")
+        || lower.contains("still open")
+        || lower.contains("unresolved")
+        || lower.contains("undecided")
+        || lower.contains("not yet decided")
+        || lower.contains("still unclear")
+}
+
+fn is_weak_question(lower: &str) -> bool {
+    [
+        "whether ", "should we ", "do we ", "does anyone ", "can we ", "are we ", "is it ",
+        "how do we ", "what if ",
+    ]
+    .iter()
+    .any(|q| lower.starts_with(q))
+        || lower.contains(" is whether ")
+        || lower.contains(" was whether ")
+        || lower.contains(" asked whether ")
+        || lower.contains(" asked if ")
+}
+
+fn generic_commitment(lower: &str) -> bool {
+    [
+        " will ", "'ll ", " need to ", " needs to ", " has to ", " have to ", " must ",
+        " should ", " to do", "follow up", "going to ", " by friday", " by monday",
+    ]
+    .iter()
+    .any(|c| format!(" {lower} ").contains(c))
+}
+
+/// Which list `text` belongs in, judged from its own words; `None` when it
+/// was offered as an action item and carries no commitment at all.
+///
+/// The 1.5B MAP model buckets by topic, not by speech act — the real run on
+/// PR #250 filed "The open question is whether annual billing gets a
+/// discount" and "We also decided to drop the free trial" under Action
+/// items. Grounding was right; the bucket was wrong. Order matters:
+///
+/// 1. a settled marker ("decided", "stays at", "will remain") → Decisions;
+/// 2. an explicit open marker ("?", "open question") → Open questions;
+/// 3. an owner + commitment ("Jeisil will send", "Wilson to book") or an
+///    imperative ("Send the deck") → Action items;
+/// 4. a softer question shape ("whether …", "should we …") → Open questions;
+/// 5. otherwise the model's bucket stands — except Action items, which must
+///    carry a commitment ("will", "need to", "follow up", …) or are dropped:
+///    an action item without one is a statement the narrative already holds.
+pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
+    let lower = text.trim().to_lowercase();
+    if (DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower))
+        && !owner_commits_strongly(text)
+    {
+        return Some(Bucket::Decisions);
+    }
+    if is_strong_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    // An imperative keeps an item the model already called an action; only an
+    // owner + commitment moves one IN ("Drop the free trial" filed as a
+    // decision is a decision).
+    if owner_commitment(text) || (from == Bucket::Actions && starts_imperative(text)) {
+        return Some(Bucket::Actions);
+    }
+    if is_weak_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    match from {
+        // A statement ("The pricing review is complete") is not a task: its
+        // subject is a thing, and nothing in it commits anyone.
+        Bucket::Actions => {
+            let first = lower.split_whitespace().next().unwrap_or("");
+            let statement = matches!(
+                first,
+                "the" | "this" | "that" | "it" | "there" | "these" | "those" | "its" | "a" | "an"
+            );
+            (!statement || generic_commitment(&lower)).then_some(Bucket::Actions)
+        }
+        other => Some(other),
+    }
+}
+
+/// A named owner who will DO something outranks a decision word later in the
+/// line: "Jeisil will send the doc we decided on" is Jeisil's task.
+fn owner_commits_strongly(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or("");
+    let lower = first.to_lowercase();
+    owner_commitment(text) && lower != "we" && !lower.starts_with("we'")
+        && !text.to_lowercase().contains(" will remain")
+        && !text.to_lowercase().contains(" will stay")
+}
+
+/// "The free trial will be dropped" — a settled change in the passive voice,
+/// which has no owner and so is a decision, not a task.
+fn passive_settled(lower: &str) -> bool {
+    lower
+        .split(" will be ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
+}
+
+/// Function words that two unrelated lines share ("the", "will"); they say
+/// nothing about which line an item came from.
+const CITE_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you",
+    "has", "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
+];
+
+fn content_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 3 && !CITE_STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+fn overlap(item: &[String], line: &str) -> usize {
+    let line = content_words(line);
+    item.iter().filter(|w| line.contains(w)).count()
+}
+
+/// #250 round 2 — make one MAP extract's citations and coverage hold up.
+///
+/// The real 1.5B run cited the question's line for the "drop the free trial"
+/// decision and vice versa (so both timestamps were wrong), and with any
+/// prompt wording it skipped one of the plainly-said lines. Both are fixed
+/// mechanically, from the chunk's own lines, so nothing here can invent text:
+///
+/// * **re-cite** — an item whose cited line shares none of its content words
+///   moves to the chunk line that shares the most (two or more). The new id is
+///   still one of THIS chunk's ids, so the provenance guarantee is unchanged.
+/// * **backfill** — a line no item cites, whose own words are an unambiguous
+///   commitment by a NAMED owner ("Jeisil will send …"), an explicit decision
+///   ("we decided", "we agreed") or an explicit open question ("open
+///   question", "…?"), is added verbatim, through the same [`validate_item`].
+/// * each list is put back in meeting order.
+pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source: &str) {
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        for item in list.iter_mut() {
+            let words = content_words(&item.text);
+            let score = |l: &TranscriptLine| overlap(&words, &l.text);
+            let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
+            // Only a citation that shares NO content word with its item moves,
+            // and only to a line that clearly matches (two words or more): the
+            // model's id stands whenever it is plausible at all.
+            if cited > 0 {
+                continue;
+            }
+            if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
+                if score(best) >= 2 {
+                    item.segment = best.label.clone();
+                }
+            }
+        }
+    }
+    for line in lines {
+        let cited = [&extract.actions, &extract.decisions, &extract.questions]
+            .iter()
+            .any(|list| list.iter().any(|i| i.segment == line.label));
+        if cited {
+            continue;
+        }
+        let text = line.text.trim();
+        let lower = text.to_lowercase();
+        let first = text.split_whitespace().next().unwrap_or("").to_lowercase();
+        let bucket = if ["decided", "we agreed", "agreed that", "agreed the"]
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            Bucket::Decisions
+        } else if is_strong_question(&lower) {
+            Bucket::Questions
+        } else if owner_commitment(text) && !matches!(first.as_str(), "i" | "we" | "i'll" | "we'll") {
+            Bucket::Actions
+        } else {
+            continue;
+        };
+        let Some(text) = validate_item(source, text.trim_end_matches('.')) else {
+            continue;
+        };
+        let item = ExtractedItem { text, segment: line.label.clone() };
+        match bucket {
+            Bucket::Actions => extract.actions.push(item),
+            Bucket::Decisions => extract.decisions.push(item),
+            Bucket::Questions => extract.questions.push(item),
+        }
+    }
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        list.sort_by(|a, b| a.segment.cmp(&b.segment));
+        let mut kept: Vec<ExtractedItem> = Vec::with_capacity(list.len());
+        for item in list.drain(..) {
+            if !kept.iter().any(|k| same_item(&k.text, &item.text)) {
+                kept.push(item);
+            }
+        }
+        *list = kept;
+    }
+}
+
+/// Re-bucket one MAP extract with [`classify_item`]. Order inside each list is
+/// kept; a dropped action counts toward [`MapExtract::dropped`].
+pub fn classify_extract(extract: &mut MapExtract) {
+    let all = [
+        (Bucket::Actions, std::mem::take(&mut extract.actions)),
+        (Bucket::Decisions, std::mem::take(&mut extract.decisions)),
+        (Bucket::Questions, std::mem::take(&mut extract.questions)),
+    ];
+    for (from, items) in all {
+        for item in items {
+            match classify_item(from, &item.text) {
+                Some(Bucket::Actions) => extract.actions.push(item),
+                Some(Bucket::Decisions) => extract.decisions.push(item),
+                Some(Bucket::Questions) => extract.questions.push(item),
+                None => extract.dropped += 1,
+            }
+        }
+    }
 }
 
 /// Strip a markdown fence a model wrapped its JSON in. The grammar forbids one;
@@ -813,6 +1107,12 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
     if grounded(source, output) < GROUNDEDNESS_FLOOR {
         return reject("v3_ungrounded").map(|_| ());
     }
+    content_gates(source, output)
+}
+
+/// V4–V7: the gates that hold for every piece of stored text, whatever its
+/// groundedness floor (an item's, the narrative's, or a title's).
+fn content_gates(source: &str, output: &str) -> Option<()> {
     // V4 — invented numbers, times, dates, prices.
     let known_digits = crate::polish::digit_runs(source);
     if crate::polish::digit_runs(output)
@@ -1108,11 +1408,15 @@ pub fn summarize_segments_with(
         let Some(grammar) = map_grammar(&labels) else {
             continue;
         };
+        // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
+        // ran out on a six-line meeting), and the deadline grows with it so a
+        // bigger budget can never turn into a `deadline` failure instead.
+        let max_out = summary_map_max_out(chunk.tokens);
         let req = PolishRequest::summarize(
             next_id(),
             SUMMARIZE_MAP,
-            SUMMARY_MAP_MAX_OUT,
-            MAP_DEADLINE_MS,
+            max_out,
+            MAP_DEADLINE_MS.max(u64::from(max_out) * 80),
             source.clone(),
             Some(grammar),
         );
@@ -1122,6 +1426,10 @@ pub fn summarize_segments_with(
             Ok(answer) => {
                 truncated |= answer.truncated;
                 let mut extract = parse_map_output(&answer.text, &labels, &source);
+                // #250 round 2: the model's bucket is a suggestion; the line's
+                // own words decide (a question is never an action item).
+                classify_extract(&mut extract);
+                ground_extract(&mut extract, &chunk.lines, &source);
                 // The chunk narrative goes through the same gate the items do.
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
@@ -1185,7 +1493,12 @@ pub fn summarize_segments_with(
     let actions = resolve(&merged.actions);
     let decisions = resolve(&merged.decisions);
     let questions = resolve(&merged.questions);
-    let markdown = render_summary(
+    // focus-2026-10-19 — title + key points: one grammar-shaped pass over
+    // what is already validated; a failed / rejected pass falls back to a
+    // mechanical headline from the narrative, never to nothing.
+    let headline = headline_pass(client, &narrative, &actions, &decisions);
+    let markdown = render_notes(
+        &headline,
         &narrative,
         &actions,
         &decisions,
@@ -1444,6 +1757,352 @@ pub fn render_summary(
     out.trim_end().to_string()
 }
 
+// ── focus-2026-10-19: zero-setup notes — headline, owners, model plan, cancel ─
+
+/// The model a meeting summary uses when the user picked none: the catalog's
+/// rank-1 polish model (Qwen2.5 1.5B Instruct Q4_K_M, 1.04 GiB GGUF, run by
+/// the bundled llama.cpp sidecar). 0.5B was tried for the role and is too weak
+/// on multi-speaker extraction; the bigger choice stays in Settings.
+pub const DEFAULT_SUMMARY_MODEL: &str = "qwen2.5-1.5b-instruct-q4_k_m";
+
+/// What the summary must do about its model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryModelPlan {
+    /// This model is on disk — use it.
+    Use(String),
+    /// Nothing usable is on disk — fetch this one (managed, into the app's
+    /// own models dir, with a progress row), then use it.
+    Download(String),
+}
+
+/// PURE. The user's polish model wins when it is on disk; else the default
+/// when it is; else download the default. Never "no model".
+pub fn plan_summary_model(chosen: &str, on_disk: &dyn Fn(&str) -> bool) -> SummaryModelPlan {
+    let chosen = chosen.trim();
+    if !chosen.is_empty() && on_disk(chosen) {
+        return SummaryModelPlan::Use(chosen.to_string());
+    }
+    if on_disk(DEFAULT_SUMMARY_MODEL) {
+        return SummaryModelPlan::Use(DEFAULT_SUMMARY_MODEL.to_string());
+    }
+    SummaryModelPlan::Download(DEFAULT_SUMMARY_MODEL.to_string())
+}
+
+static SUMMARY_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the running summary to stop at its next model call.
+pub fn request_cancel() {
+    SUMMARY_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// Clear a cancel before a new summary starts.
+pub fn clear_cancel() {
+    SUMMARY_CANCEL.store(false, Ordering::SeqCst);
+}
+
+pub fn cancel_requested() -> bool {
+    SUMMARY_CANCEL.load(Ordering::SeqCst)
+}
+
+/// A meeting's title and key points.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Headline {
+    pub title: String,
+    pub key_points: Vec<String>,
+}
+
+pub const MIN_KEY_POINTS: usize = 3;
+pub const MAX_KEY_POINTS: usize = 6;
+const MAX_TITLE_WORDS: usize = 10;
+
+/// The HEADLINE grammar: exactly the JSON shape, 3–6 key points.
+pub const HEADLINE_GRAMMAR: &str = r#"root ::= "{" ws "\"title\":" ws str "," ws "\"key_points\":" ws "[" ws str ws "," ws str ws "," ws str (ws "," ws str)? (ws "," ws str)? (ws "," ws str)? ws "]" ws "}"
+str ::= "\"" [^"\\\n]+ "\""
+ws ::= [ \t\n]*"#;
+
+#[derive(Deserialize)]
+struct RawHeadline {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    key_points: Vec<String>,
+}
+
+/// Share of a TITLE's content words that must be in the notes. Lower than an
+/// item's [`GROUNDEDNESS_FLOOR`] on purpose: a title names the topic, so one
+/// abstracting word ("review", "sync") per grounded one is the job, not an
+/// invention — "Drivia consulting pricing review" over notes that say "reviewed
+/// pricing for the Drivia consulting tier" is 3 of 4. V4–V7 still apply in
+/// full: a title never carries a number, contact or template the notes lack.
+pub const TITLE_GROUNDEDNESS_FLOOR: f64 = 0.5;
+
+/// A title the notes support, or `None`.
+pub fn validate_title(source: &str, title: &str) -> Option<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return reject("v1_empty");
+    }
+    if title.split_whitespace().count() > MAX_TITLE_WORDS {
+        return reject("v2_runaway");
+    }
+    if grounded(source, title) < TITLE_GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded");
+    }
+    content_gates(source, title)?;
+    Some(title.to_string())
+}
+
+/// Parse + validate a HEADLINE answer against `source` (the narrative and
+/// items it was written from). `None` when nothing usable survived.
+pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
+    let cleaned = strip_fences(raw);
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    let parsed: RawHeadline = serde_json::from_str(cleaned.get(start..=end)?).ok()?;
+    let title = parsed
+        .title
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches('.')
+        .to_string();
+    let title_ok = validate_title(source, &title).is_some();
+    let mut key_points: Vec<String> = Vec::new();
+    for p in parsed.key_points {
+        if let Some(ok) = validate_item(source, &p) {
+            if !key_points.iter().any(|k| same_item(k, &ok)) {
+                key_points.push(ok);
+            }
+        }
+        if key_points.len() == MAX_KEY_POINTS {
+            break;
+        }
+    }
+    if !title_ok && key_points.is_empty() {
+        return None;
+    }
+    Some(Headline {
+        title: if title_ok { title } else { String::new() },
+        key_points,
+    })
+}
+
+fn sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        cur.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            let s = cur.trim().to_string();
+            if s.split_whitespace().count() >= 3 {
+                out.push(s);
+            }
+            cur.clear();
+        }
+    }
+    let tail = cur.trim();
+    if tail.split_whitespace().count() >= 3 {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+/// The mechanical headline: a title from the narrative's first sentence, key
+/// points from its sentences then the decisions and actions. Used to fill
+/// whatever the model's pass did not supply.
+pub fn fallback_headline(
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+) -> Headline {
+    let sents = sentences(narrative);
+    let title = sents
+        .first()
+        .map(|s| {
+            let words: Vec<&str> = s
+                .trim_end_matches(['.', '!', '?'])
+                .split_whitespace()
+                .take(8)
+                .collect();
+            words.join(" ")
+        })
+        .unwrap_or_else(|| "Meeting notes".to_string());
+    let mut key_points: Vec<String> = Vec::new();
+    for p in sents
+        .into_iter()
+        .chain(decisions.iter().map(|d| d.text.clone()))
+        .chain(actions.iter().map(|a| a.text.clone()))
+    {
+        if !key_points.iter().any(|k| same_item(k, &p)) {
+            key_points.push(p);
+        }
+        if key_points.len() == MAX_KEY_POINTS {
+            break;
+        }
+    }
+    Headline { title, key_points }
+}
+
+/// The HEADLINE pass, with the fallback filling any gap (empty title, fewer
+/// than three points). A cancel or a failed call is the fallback alone.
+pub fn headline_pass(
+    client: &dyn SummaryClient,
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+) -> Headline {
+    let fallback = fallback_headline(narrative, actions, decisions);
+    if narrative.trim().is_empty() && actions.is_empty() && decisions.is_empty() {
+        return fallback;
+    }
+    let mut source = narrative.trim().to_string();
+    for (h, items) in [("Decisions:", decisions), ("Action items:", actions)] {
+        if !items.is_empty() {
+            source.push_str(&format!("\n\n{h}\n"));
+            for i in items {
+                source.push_str(&format!("- {}\n", i.text));
+            }
+        }
+    }
+    let req = PolishRequest::summarize(
+        next_id(),
+        SUMMARIZE_HEADLINE,
+        SUMMARY_HEADLINE_MAX_OUT,
+        REDUCE_DEADLINE_MS,
+        source.clone(),
+        Some(HEADLINE_GRAMMAR.to_string()),
+    );
+    let got = match client.generate(&req) {
+        Ok(answer) => parse_headline(&answer.text, &source),
+        Err(e) => {
+            log::warn!(
+                "summary: headline pass failed ({}) — using the mechanical headline",
+                e.tag()
+            );
+            None
+        }
+    };
+    let mut h = got.unwrap_or_default();
+    if h.title.trim().is_empty() {
+        h.title = fallback.title.clone();
+    }
+    for p in fallback.key_points {
+        if h.key_points.len() >= MIN_KEY_POINTS {
+            break;
+        }
+        if !h.key_points.iter().any(|k| same_item(k, &p)) {
+            h.key_points.push(p);
+        }
+    }
+    h
+}
+
+/// "Owner" of an action item, ONLY when the item's own words name one at the
+/// front ("Jeisil will send …", "Wilson to book …"). Never inferred.
+pub fn action_owner(text: &str) -> Option<String> {
+    let mut words = text.split_whitespace();
+    let first = words.next()?.trim_matches(|c: char| !c.is_alphanumeric());
+    let second = words.next()?.to_lowercase();
+    let is_name = first.chars().next()?.is_uppercase()
+        && first.chars().skip(1).all(|c| c.is_lowercase())
+        && !matches!(
+            first,
+            "We" | "They"
+                | "The"
+                | "Someone"
+                | "Everyone"
+                | "I"
+                | "You"
+                | "He"
+                | "She"
+                | "It"
+                | "This"
+                | "That"
+        );
+    let commits = matches!(
+        second.as_str(),
+        "will" | "to" | "should" | "needs" | "is" | "owns" | "agreed"
+    );
+    (is_name && commits).then(|| first.to_string())
+}
+
+/// The stored notes: title, one-paragraph summary, key points, decisions,
+/// action items (owner when said), open questions. Markdown — what the card,
+/// Open transcript and Export Markdown all show.
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes(
+    headline: &Headline,
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    truncated_chunks: usize,
+    chunks: usize,
+    truncated: bool,
+) -> String {
+    let body = render_summary(
+        narrative,
+        &[],
+        decisions,
+        questions,
+        truncated_chunks,
+        chunks,
+        truncated,
+    );
+    let mut out = String::new();
+    if !headline.title.trim().is_empty() {
+        out.push_str(&format!("## {}\n\n", headline.title.trim()));
+    }
+    let (summary_para, rest) = if narrative.trim().is_empty() {
+        (String::new(), body.as_str())
+    } else {
+        (
+            narrative.trim().to_string(),
+            body.strip_prefix(narrative.trim()).unwrap_or(&body),
+        )
+    };
+    if !summary_para.is_empty() {
+        out.push_str("### Summary\n\n");
+        out.push_str(&summary_para);
+        out.push_str("\n\n");
+    }
+    if !headline.key_points.is_empty() {
+        out.push_str("### Key points\n\n");
+        for p in &headline.key_points {
+            // #250 round 2: the HEADLINE input carries "Decisions:" /
+            // "Action items:" labels, and a 1.5B model sometimes echoes one
+            // into a point. The label is ours, never the meeting's.
+            let p = ["Decisions:", "Action items:", "Key points:", "Summary:"]
+                .iter()
+                .find_map(|l| p.strip_prefix(l))
+                .map_or(p.as_str(), str::trim_start);
+            out.push_str(&format!("- {p}\n"));
+        }
+        out.push('\n');
+    }
+    if !actions.is_empty() {
+        out.push_str("### Action items\n\n");
+        for item in actions {
+            let at = format_offset(item.start_seconds);
+            let owner = action_owner(&item.text)
+                .map(|o| format!("**{o}** — "))
+                .unwrap_or_default();
+            match &item.speaker {
+                Some(who) => out.push_str(&format!("- {owner}{} ({who}, {at})\n", item.text)),
+                None => out.push_str(&format!("- {owner}{} ({at})\n", item.text)),
+            }
+        }
+        out.push('\n');
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() && !rest.starts_with("_No summary could be produced") {
+        out.push_str(rest);
+    }
+    if out.trim().is_empty() {
+        return "_No summary could be produced for this meeting._".to_string();
+    }
+    out.trim_end().to_string()
+}
+
 // ── the sidecar session ─────────────────────────────────────────────────────
 
 /// Request ids for this process's summarize sessions.
@@ -1604,10 +2263,20 @@ impl TokenCounter for SidecarSummaryClient {
 
 impl SummaryClient for SidecarSummaryClient {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError> {
+        // focus-2026-10-19: Cancel stops the summary at its next model call.
+        if cancel_requested() {
+            return Err(SummaryError::Unavailable);
+        }
         let response = self.call(req)?;
         let truncated = response.was_truncated();
         if truncated {
             log::warn!("summary: the sidecar truncated a pass to fit its context");
+        }
+        // #250 round 2: an answer that reached its output budget dropped none of
+        // the INPUT, so it is not `truncated` and earns no reader-facing note —
+        // the partial answer is parsed defensively and keeps every closed item.
+        if response.was_out_capped() {
+            log::warn!("summary: a pass reached its output budget; keeping the closed items");
         }
         response
             .into_text()

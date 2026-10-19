@@ -72,6 +72,9 @@ pub const KIND_COUNT_TOKENS: &str = "count_tokens";
 pub const SUMMARIZE_MAP: &str = "map";
 /// REDUCE stage of a summarize request.
 pub const SUMMARIZE_REDUCE: &str = "reduce";
+/// focus-2026-10-19 — HEADLINE stage: a title and 3–6 key points over the
+/// finished narrative + extracted items (one small pass, grammar-shaped).
+pub const SUMMARIZE_HEADLINE: &str = "headline";
 
 /// Output budget for one MAP pass, in tokens (finding #35).
 ///
@@ -81,9 +84,32 @@ pub const SUMMARIZE_REDUCE: &str = "reduce";
 /// is a fixed-size object — a handful of actions, decisions and questions — so
 /// it gets a fixed budget.
 pub const SUMMARY_MAP_MAX_OUT: u32 = 288;
+/// Ceiling on a chunk-sized MAP budget (see [`summary_map_max_out`]): a full
+/// `summarize::MAP_CHUNK_TOKENS` chunk (1400) plus
+/// the system turn and chat template (~450) plus this still fits the
+/// sidecar's 4096-token context with room to spare.
+pub const SUMMARY_MAP_MAX_OUT_CEILING: u32 = 1536;
+
+/// #250 round 2 — the MAP output budget, sized to the chunk it extracts from.
+///
+/// The fixed [`SUMMARY_MAP_MAX_OUT`] (288) ran out on a SIX-line meeting with
+/// the real 1.5B model: the JSON skeleton plus the chunk narrative is ~150
+/// tokens before the first item, and every item repeats its sentence plus ~12
+/// tokens of id and punctuation, so the item lists scale with the chunk. The
+/// floor stays 288; on top of it a fixed 96 for the skeleton and two output
+/// tokens per input token (every line may become an item, copied near
+/// verbatim) — capped at [`SUMMARY_MAP_MAX_OUT_CEILING`] so a full chunk still
+/// fits the context. Still never the rewriter's `max_out_for`: this grows
+/// with the chunk, but a model can only fill it by citing the chunk.
+pub fn summary_map_max_out(chunk_tokens: usize) -> u32 {
+    let sized = SUMMARY_MAP_MAX_OUT as usize + 96 + chunk_tokens.saturating_mul(2);
+    sized.min(SUMMARY_MAP_MAX_OUT_CEILING as usize) as u32
+}
 /// Output budget for the REDUCE narrative, in tokens. One paragraph or three,
 /// never a re-transcript.
 pub const SUMMARY_REDUCE_MAX_OUT: u32 = 384;
+/// Output budget for the HEADLINE pass: a title and at most six short points.
+pub const SUMMARY_HEADLINE_MAX_OUT: u32 = 224;
 
 /// The GBNF start symbol every generated grammar uses.
 pub const GRAMMAR_ROOT: &str = "root";
@@ -303,6 +329,13 @@ pub struct PolishResponse {
     /// answer is real; it is just not over all of the text that was sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    /// #250 round 2 — set when the OUTPUT reached `max_out` and generation was
+    /// stopped. Nothing of the input was dropped, so this is NOT `truncated`:
+    /// the sidecar used to set `truncated` for both, and every MAP pass that
+    /// ran out of output room rendered "part of this meeting did not fit" on a
+    /// meeting that fit whole. The parent parses partial output defensively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_capped: Option<bool>,
 }
 
 impl PolishResponse {
@@ -317,6 +350,7 @@ impl PolishResponse {
             ms: Some(ms),
             tokens: None,
             truncated: None,
+            out_capped: None,
         }
     }
 
@@ -341,6 +375,7 @@ impl PolishResponse {
             ms: Some(ms),
             tokens: Some(tokens),
             truncated: None,
+            out_capped: None,
         }
     }
 
@@ -358,6 +393,19 @@ impl PolishResponse {
         self.truncated.unwrap_or(false)
     }
 
+    /// A successful generation stopped at its output budget (input whole).
+    pub fn ok_capped(id: u64, text: String, out_tokens: u32, ms: u64) -> Self {
+        Self {
+            out_capped: Some(true),
+            ..Self::ok(id, text, out_tokens, ms)
+        }
+    }
+
+    /// Whether the output reached `max_out` — never a claim about the input.
+    pub fn was_out_capped(&self) -> bool {
+        self.out_capped.unwrap_or(false)
+    }
+
     /// A failure. `reason` is a short tag (`deadline`, `decode`, `bad_request`,
     /// …) — never text, so nothing dictated can reach a log through it.
     pub fn err(id: u64, reason: &str) -> Self {
@@ -370,6 +418,7 @@ impl PolishResponse {
             ms: None,
             tokens: None,
             truncated: None,
+            out_capped: None,
         }
     }
 
@@ -687,6 +736,31 @@ mod tests {
             parse_ready(r#"{"type":"bye","version":"0.6.0","model_loaded":true}"#),
             None
         );
+    }
+
+    #[test]
+    fn map_output_budget_is_sized_to_the_chunk_and_fits_the_context() {
+        // A six-line meeting gets more than the old fixed 288.
+        assert!(summary_map_max_out(120) > SUMMARY_MAP_MAX_OUT);
+        assert!(summary_map_max_out(0) >= SUMMARY_MAP_MAX_OUT);
+        // Monotone in the chunk, and capped.
+        assert!(summary_map_max_out(600) > summary_map_max_out(120));
+        let full = summary_map_max_out(1400);
+        assert_eq!(full, SUMMARY_MAP_MAX_OUT_CEILING);
+        // A full chunk + ~600 tokens of system turn/template + the budget fit 4096.
+        assert!(1400 + 600 + full as usize <= 4096);
+    }
+
+    #[test]
+    fn an_output_cap_is_not_an_input_truncation() {
+        let capped = PolishResponse::ok_capped(14, "{".to_string(), 288, 900);
+        assert!(capped.was_out_capped());
+        assert!(!capped.was_truncated());
+        let wire = serde_json::to_string(&capped).expect("serializes");
+        assert!(wire.contains(r#""out_capped":true"#) && !wire.contains("truncated"));
+        let plain: PolishResponse =
+            serde_json::from_str(r#"{"id":1,"ok":true,"text":"x"}"#).expect("parses");
+        assert!(!plain.was_out_capped());
     }
 
     #[test]

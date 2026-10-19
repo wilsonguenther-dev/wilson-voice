@@ -63,8 +63,8 @@ use llama_cpp_2::token::LlamaToken;
 
 use polish_protocol::{
     fit_to_budget, max_out_for, sampler_plan, PolishReady, PolishRequest, PolishResponse,
-    SamplerPlan, KIND_COUNT_TOKENS, KIND_POLISH, KIND_SUMMARIZE, SUMMARIZE_MAP, SUMMARIZE_REDUCE,
-    SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
+    SamplerPlan, KIND_COUNT_TOKENS, KIND_POLISH, KIND_SUMMARIZE, SUMMARIZE_HEADLINE, SUMMARIZE_MAP,
+    SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
 };
 
 /// Static base prompt — byte-identical for every request so its KV survives
@@ -150,8 +150,9 @@ RULES
    that appear in this input. Never invent an id.
 3. Copy names, numbers, dates, times and addresses exactly as they appear.
    Never add one that is not in the input.
-4. `actions` are things someone committed to do. `decisions` are things that
-   were settled. `questions` are things left open.
+4. `actions` are things someone committed to do (\"<name> will ...\").
+   `decisions` are things that were settled. `questions` are things left
+   open (\"whether ...\"). A question is not an action.
 5. Empty arrays are correct answers. Do not manufacture items to fill them.
 6. Keep each `text` to one short sentence.";
 
@@ -170,11 +171,26 @@ RULES
    address that is not in them.
 4. Do not list action items. They are collected separately.";
 
+/// HEADLINE (focus-2026-10-19): a title and the key points, over the finished
+/// narrative and items. The parent's grammar fixes the JSON shape (3–6 points);
+/// its validators drop anything the notes do not support.
+const SUMMARIZE_HEADLINE_SYSTEM: &str = "You write the title and key points for a meeting's notes.
+
+The input is the meeting's summary, then its decisions and action items.
+
+RULES
+1. Output ONLY a JSON object: {\"title\": ..., \"key_points\": [...]}.
+2. `title`: 3 to 8 words naming what the meeting was about. No date, no quotes.
+3. `key_points`: 3 to 6 short sentences, the most important things said, in order.
+4. Use only what the input contains. Never add a fact, name, number, date or
+   address that is not in it.";
+
 /// The system turn for a summarize request, by stage.
 fn summarize_prompt(stage: &str) -> Option<String> {
     Some(match stage {
         SUMMARIZE_MAP => SUMMARIZE_MAP_SYSTEM.to_string(),
         SUMMARIZE_REDUCE => SUMMARIZE_REDUCE_SYSTEM.to_string(),
+        SUMMARIZE_HEADLINE => SUMMARIZE_HEADLINE_SYSTEM.to_string(),
         _ => return None,
     })
 }
@@ -194,6 +210,7 @@ fn default_max_out(req: &PolishRequest) -> u32 {
         // Finding #35: a summary never inherits the rewriter's input-scaled
         // budget — that would give the summary more room than its input.
         (KIND_SUMMARIZE, SUMMARIZE_MAP) => SUMMARY_MAP_MAX_OUT,
+        (KIND_SUMMARIZE, SUMMARIZE_HEADLINE) => SUMMARY_HEADLINE_MAX_OUT,
         (KIND_SUMMARIZE, _) => SUMMARY_REDUCE_MAX_OUT,
         _ => max_out_for(&req.text),
     }
@@ -201,6 +218,9 @@ fn default_max_out(req: &PolishRequest) -> u32 {
 
 /// The user turn: `{topic_line?}\n---\n{text}` (spec §2.4). Never the AX cursor
 /// context — that never leaves the app process.
+/// Test-only since the overflow path builds every turn through
+/// [`user_prompt_with`]; kept as the spec §2.4 reference shape.
+#[cfg(test)]
 fn user_prompt(req: &PolishRequest) -> String {
     user_prompt_with(req, &req.text)
 }
@@ -437,6 +457,10 @@ fn handle(
 
     let budget = (n_ctx as usize).saturating_sub(max_out as usize + 1);
     let mut truncated = false;
+    // #250 round 2: output reaching `max_out` is its OWN flag. Folding it into
+    // `truncated` (= input dropped) made the app tell readers part of their
+    // meeting "did not fit" whenever a MAP answer simply ran long.
+    let mut out_capped = false;
     let tokens = match tokenize(&req.text) {
         Some(tokens) if tokens.len() <= budget => tokens,
         other => {
@@ -559,8 +583,9 @@ fn handle(
             // A summary that hits its budget is cut, not lost: the parent parses
             // partial output defensively and keeps the complete items. Flagged,
             // so "the model ran out of room" is never mistaken for "the meeting
-            // had nothing else in it".
-            truncated = true;
+            // had nothing else in it" — and flagged as `out_capped`, never as
+            // `truncated`, because no input was dropped.
+            out_capped = true;
             break;
         }
         batch.clear();
@@ -591,11 +616,15 @@ fn handle(
         text
     };
     let ms = started.elapsed().as_millis() as u64;
-    if truncated {
+    let mut response = if truncated {
         PolishResponse::ok_truncated(req.id, text, out_tokens, ms)
     } else {
         PolishResponse::ok(req.id, text, out_tokens, ms)
+    };
+    if out_capped {
+        response.out_capped = Some(true);
     }
+    response
 }
 
 #[cfg(test)]
