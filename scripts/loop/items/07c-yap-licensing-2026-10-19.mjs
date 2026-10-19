@@ -64,8 +64,9 @@ ITEMS.push({
          "license.max_seen_wall_ms", ~:114-:183) for "now"; also record the highest token iat seen (maxIat) in license.json AND the
          SQLite corroborating row, and refuse a token with iat below it. Do not write a second ratchet.
       5. Wire into license.rs entitlement as the v2 path (the Forge path is removed in yap-lic-02, not here).
-    TESTS live in #[cfg(test)] mod tests inside license_v2.rs. pub fn verify_token calls a private fn verify_with(keys, token, now_ms)
-    with EMBEDDED_KEYS, and only the in-module tests call verify_with with throwaway keys. Vectors: embedded_key_matches_server_seed
+    TESTS live in #[cfg(test)] mod tests inside license_v2.rs. pub fn verify_token calls a pub(crate) fn verify_with(keys, token, now_ms)
+    with EMBEDDED_KEYS (crate-private, never pub; yap-lic-02's client core is its only other caller), and only #[cfg(test)] code
+    passes throwaway keys. Vectors: embedded_key_matches_server_seed
     (reads the fixture), valid, tampered payload, tampered signature, alg none, alg HS256,
     typ missing, unknown kid, wrong prd, no ent.dictation, plan not lifetime, expired-in-grace (accepted), past-grace (refused),
     clock rollback (refused), iat below maxIat (refused), and non_embedded_key_fails_even_when_cached: a token signed by a key that
