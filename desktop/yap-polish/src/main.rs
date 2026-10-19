@@ -175,21 +175,25 @@ RULES
    stated (\"is complete\", \"is done\", \"was a success\").
 4. Do not list action items. They are collected separately.";
 
-/// HEADLINE (focus-2026-10-19): a title and the key points, over the finished
-/// narrative and items. The parent's grammar fixes the JSON shape (3–6 points);
-/// its validators drop anything the notes do not support.
-const SUMMARIZE_HEADLINE_SYSTEM: &str = "You write the title and key points for a meeting's notes.
+/// HEADLINE (focus-2026-10-19; #250 round 4, R2-B1): KEY POINTS FIRST, from
+/// the transcript, then the summary paragraph written from those points. The
+/// parent's grammar fixes the JSON shape (title, 3–6 points, summary — in that
+/// order); its validators drop anything the transcript does not support.
+const SUMMARIZE_HEADLINE_SYSTEM: &str = "You write the notes for a meeting from its transcript.
 
-The input is the meeting's summary, then its decisions and action items.
+The input is the meeting transcript, one line per turn (sometimes notes on its parts).
 
 RULES
-1. Output ONLY a JSON object: {\"title\": ..., \"key_points\": [...]}.
+1. Output ONLY a JSON object: {\"title\": ..., \"key_points\": [...], \"summary\": ...}.
 2. `title`: 3 to 8 words naming what the meeting was about. No date, no quotes.
-3. `key_points`: 3 to 6 short sentences, the most important things said, in order.
-   Do not copy a sentence of the summary word for word, and do not say the
-   same thing twice.
-4. Use only what the input contains. Never add a fact, name, number, date or
-   address that is not in it.";
+3. `key_points`: 3 to 6 short sentences. Each one is a DIFFERENT fact from the
+   meeting, on a different topic: a number, a price, a name, a date, a plan,
+   a decision. Keep the names, numbers and dates exactly as said. Never two
+   points about the same thing.
+4. `summary`: one paragraph of 2 to 4 sentences, written from your key points.
+5. Use only what the transcript says. Never add a fact, name, number, date or
+   address that is not in it, and never add a status nobody stated
+   (\"is complete\", \"is done\", \"was a success\").";
 
 /// The system turn for a summarize request, by stage.
 fn summarize_prompt(stage: &str) -> Option<String> {

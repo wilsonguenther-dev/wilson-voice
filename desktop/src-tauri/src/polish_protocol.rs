@@ -108,8 +108,9 @@ pub fn summary_map_max_out(chunk_tokens: usize) -> u32 {
 /// Output budget for the REDUCE narrative, in tokens. One paragraph or three,
 /// never a re-transcript.
 pub const SUMMARY_REDUCE_MAX_OUT: u32 = 384;
-/// Output budget for the HEADLINE pass: a title and at most six short points.
-pub const SUMMARY_HEADLINE_MAX_OUT: u32 = 224;
+/// Output budget for the HEADLINE pass: a title, at most six short points and
+/// (#250 round 4, R2-B1) the Summary paragraph written from them.
+pub const SUMMARY_HEADLINE_MAX_OUT: u32 = 448;
 
 /// The GBNF start symbol every generated grammar uses.
 pub const GRAMMAR_ROOT: &str = "root";

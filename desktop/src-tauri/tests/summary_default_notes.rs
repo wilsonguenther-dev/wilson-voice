@@ -68,12 +68,11 @@ fn fixture_transcript_becomes_full_notes() {
         .next()
         .unwrap();
     let n = kp.lines().filter(|l| l.starts_with("- ")).count();
-    // #250 round 3 (A1): the stub's points that restate a decision ("stays at
-    // forty nine dollars", "the free trial is dropped") are gone; the ones
-    // that add something stay.
-    assert!((1..=6).contains(&n), "{n} key points: {kp}");
-    assert!(!kp.contains("forty nine dollars"), "a decision echoed as a key point: {kp}");
-    assert!(!kp.contains("free trial"), "a decision echoed as a key point: {kp}");
+    // #250 round 4 (R2-B1): key points are distinct FACTS from the
+    // transcript. A point that a decision or an action item also states is
+    // kept — only a point that repeats another key point goes.
+    assert!((3..=6).contains(&n), "{n} key points: {kp}");
+    assert!(kp.contains("forty nine dollars"), "the price is a key fact: {kp}");
     assert!(kp.contains("- Jeisil will send the updated pricing doc by Friday."), "{kp}");
     assert!(md.contains("### Decisions"), "{md}");
     assert!(md.contains("- **Jeisil** — Jeisil will send"), "{md}");
@@ -101,11 +100,14 @@ fn a_failed_headline_pass_still_yields_title_and_three_points() {
         .nth(1)
         .expect("key points");
     let points: Vec<&str> = kp.lines().take_while(|l| l.starts_with("- ")).collect();
-    assert!(!points.is_empty(), "{kp}");
-    // A1: the mechanical fallback never echoes the Summary paragraph.
-    let summary = s.markdown.split("### Summary\n\n").nth(1).unwrap().split("\n\n").next().unwrap();
-    for p in &points {
-        assert!(!summary.contains(p.trim_start_matches("- ")), "{p} echoes the Summary");
+    // R2-B1: no model answer → at least three distinct points, verbatim
+    // from the transcript's most informative sentences.
+    assert!(points.len() >= 3, "{kp}");
+    for (i, a) in points.iter().enumerate() {
+        assert!(a.trim_start_matches("- ").trim().len() > 3, "empty point: {kp}");
+        for b in &points[i + 1..] {
+            assert!(wilson_voice_lib::summarize::point_overlap(a, b) < 0.6, "{a} ~ {b}");
+        }
     }
 }
 

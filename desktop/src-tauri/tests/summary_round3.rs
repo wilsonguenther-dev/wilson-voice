@@ -1,7 +1,7 @@
 //! #250 round 3 — the review-opus findings, as fixtures.
 //!
 //! B4: small talk never becomes an action item and never gets a bold owner.
-//! A1: key points never echo the Summary paragraph or a decision.
+//! A1 → round 4 R2-B1: key points are deduped only against each other.
 //! A2: a line ABOUT whether something was decided is an open question.
 //! A5: the Summary never claims a status nobody stated.
 //! B2: a cancelled summary stores nothing; a cancelled download stops
@@ -19,7 +19,7 @@ use wilson_voice_lib::polish_protocol::PolishRequest;
 use wilson_voice_lib::summarize::{
     action_owner, classify_item, dedupe_key_points, ground_extract, summarize_segments,
     transcript_lines, transcript_names, validate_narrative, Bucket, Generated, MapExtract,
-    SummaryClient, SummaryError, SummaryItem, TokenCounter,
+    SummaryClient, SummaryError, TokenCounter,
 };
 use wilson_voice_lib::summary_jobs::CancelToken;
 
@@ -91,15 +91,12 @@ fn asking_about_a_decision_is_an_open_question() {
     );
 }
 
-fn item(text: &str) -> SummaryItem {
-    SummaryItem { text: text.into(), segment: "seg_0001".into(), start_seconds: 0.0, speaker: None }
-}
-
+/// #250 round 4 (R2-B1) supersedes round 3's A1 rule: key points are
+/// deduped only against EACH OTHER. The round-3 real run's points (Summary
+/// sentences and the price decision) used to all be dropped, leaving at most
+/// one line; now the distinct ones stay and only true repeats go.
 #[test]
-fn key_points_never_echo_the_summary_or_a_decision() {
-    // The round-2 real run, verbatim: points 1–5 were Summary sentences and
-    // point 6 the price decision again.
-    let narrative = "The pricing review for the Drivia consulting tier is complete. The starter package will remain at forty-nine dollars a month. A pricing update document will be sent to the team by Friday. Wilson will book a demo with Liberty University next week. The open question is whether annual billing gets a discount. The free trial for enterprise accounts will be dropped.";
+fn round3_points_are_kept_when_distinct_and_only_repeats_go() {
     let points: Vec<String> = [
         "The pricing review for the Drivia consulting tier is complete.",
         "The starter package will remain at forty-nine dollars a month.",
@@ -109,13 +106,24 @@ fn key_points_never_echo_the_summary_or_a_decision() {
         "We agreed the starter package stays at forty-nine dollars a month.",
         "Annual billing discount is still being weighed.",
         "Annual billing discount is still being weighed for now.",
+        "",
+        "Key points:",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let decisions = [item("We agreed the starter package stays at forty nine dollars a month")];
-    let kept = dedupe_key_points(points, narrative, &decisions);
-    assert_eq!(kept, vec!["Annual billing discount is still being weighed."]);
+    let kept = dedupe_key_points(points);
+    assert_eq!(
+        kept,
+        vec![
+            "The pricing review for the Drivia consulting tier is complete.",
+            "The starter package will remain at forty-nine dollars a month.",
+            "A pricing update document will be sent to the team by Friday.",
+            "Wilson will book a demo with Liberty University next week.",
+            "The free trial for enterprise accounts will be dropped.",
+            "Annual billing discount is still being weighed.",
+        ]
+    );
 }
 
 #[test]

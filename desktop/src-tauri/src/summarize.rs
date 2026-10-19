@@ -1643,10 +1643,26 @@ pub fn summarize_segments_with(
     }
     let merged = merge_extracts(&extracts);
 
-    let (narrative, reduce_truncated) = reduce_narrative(&merged.narratives, &full_text, client);
-    truncated |= reduce_truncated;
+    // #250 round 4 (R2-B1): KEY POINTS FIRST, from the transcript, then the
+    // Summary paragraph written from them (same call). Only when that
+    // paragraph does not hold up does the MAP → REDUCE narrative stand in.
+    let mut headline = headline_pass(client, &lines, &names, &merged.narratives);
     if client.cancelled() {
         return Err(SummaryError::Cancelled);
+    }
+    let narrative = if headline.summary.trim().is_empty() {
+        let (narrative, reduce_truncated) =
+            reduce_narrative(&merged.narratives, &full_text, client);
+        truncated |= reduce_truncated;
+        narrative
+    } else {
+        headline.summary.clone()
+    };
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
+    if headline.title.trim().is_empty() {
+        headline.title = fallback_title(&narrative);
     }
     // The evidence table: for every citable id, the two facts about it that are
     // already known here — when it was said, and (YV133) who said it. Both are
@@ -1682,13 +1698,6 @@ pub fn summarize_segments_with(
     let actions = resolve(&merged.actions);
     let decisions = resolve(&merged.decisions);
     let questions = resolve(&merged.questions);
-    // focus-2026-10-19 — title + key points: one grammar-shaped pass over
-    // what is already validated; a failed / rejected pass falls back to a
-    // mechanical headline from the narrative, never to nothing.
-    let headline = headline_pass(client, &narrative, &actions, &decisions);
-    if client.cancelled() {
-        return Err(SummaryError::Cancelled);
-    }
     let markdown = render_notes(
         &headline,
         &narrative,
@@ -1984,19 +1993,32 @@ pub fn plan_summary_model(chosen: &str, on_disk: &dyn Fn(&str) -> bool) -> Summa
 // `summary_jobs::CancelToken` handed to the client — never a process-global
 // flag that a new summary's start would wipe.
 
-/// A meeting's title and key points.
+/// A meeting's title, key points and — #250 round 4 (R2-B1) — the Summary
+/// paragraph written FROM those key points.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Headline {
     pub title: String,
     pub key_points: Vec<String>,
+    /// The paragraph the model wrote from its own key points, validated
+    /// against the transcript; empty when it wrote none that held up (the
+    /// MAP → REDUCE narrative is used then).
+    pub summary: String,
 }
 
 pub const MIN_KEY_POINTS: usize = 3;
 pub const MAX_KEY_POINTS: usize = 6;
 const MAX_TITLE_WORDS: usize = 10;
 
-/// The HEADLINE grammar: exactly the JSON shape, 3–6 key points.
-pub const HEADLINE_GRAMMAR: &str = r#"root ::= "{" ws "\"title\":" ws str "," ws "\"key_points\":" ws "[" ws str ws "," ws str ws "," ws str (ws "," ws str)? (ws "," ws str)? (ws "," ws str)? ws "]" ws "}"
+/// #250 round 4 (R2-B1) — two key points whose content words overlap this
+/// much (shared ÷ the smaller set) are about the same thing; the later one
+/// goes. Overlap with the Summary, a decision or an action item is NOT
+/// checked: the Summary is written from the key points, so it is expected.
+pub const KEY_POINT_OVERLAP_MAX: f64 = 0.6;
+
+/// The HEADLINE grammar: exactly the JSON shape — the title, 3–6 key points,
+/// then the summary paragraph. Key points come BEFORE the summary on
+/// purpose: the model writes the facts first and the paragraph from them.
+pub const HEADLINE_GRAMMAR: &str = r#"root ::= "{" ws "\"title\":" ws str "," ws "\"key_points\":" ws "[" ws str ws "," ws str ws "," ws str (ws "," ws str)? (ws "," ws str)? (ws "," ws str)? ws "]" ws "," ws "\"summary\":" ws str ws "}"
 str ::= "\"" [^"\\\n]+ "\""
 ws ::= [ \t\n]*"#;
 
@@ -2006,6 +2028,8 @@ struct RawHeadline {
     title: String,
     #[serde(default)]
     key_points: Vec<String>,
+    #[serde(default)]
+    summary: String,
 }
 
 /// Share of a TITLE's content words that must be in the notes. Lower than an
@@ -2032,8 +2056,17 @@ pub fn validate_title(source: &str, title: &str) -> Option<String> {
     Some(title.to_string())
 }
 
-/// Parse + validate a HEADLINE answer against `source` (the narrative and
-/// items it was written from). `None` when nothing usable survived.
+/// Our own section labels, which a 1.5B model sometimes echoes into a point.
+fn strip_section_label(p: &str) -> String {
+    ["Decisions:", "Action items:", "Key points:", "Summary:"]
+        .iter()
+        .find_map(|l| p.trim().strip_prefix(l))
+        .map_or(p.trim(), str::trim_start)
+        .to_string()
+}
+
+/// Parse + validate a HEADLINE answer against `source` (the transcript it
+/// was written from). `None` when nothing usable survived.
 pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
     let cleaned = strip_fences(raw);
     let start = cleaned.find('{')?;
@@ -2046,23 +2079,26 @@ pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
         .trim_end_matches('.')
         .to_string();
     let title_ok = validate_title(source, &title).is_some();
-    let mut key_points: Vec<String> = Vec::new();
-    for p in parsed.key_points {
-        if let Some(ok) = validate_item(source, &p) {
-            if !key_points.iter().any(|k| same_item(k, &ok)) {
-                key_points.push(ok);
-            }
-        }
-        if key_points.len() == MAX_KEY_POINTS {
-            break;
-        }
-    }
-    if !title_ok && key_points.is_empty() {
+    let valid: Vec<String> = parsed
+        .key_points
+        .iter()
+        .map(|p| strip_section_label(p))
+        .filter_map(|p| validate_item(source, &p))
+        .collect();
+    let mut key_points = dedupe_key_points(valid);
+    key_points.truncate(MAX_KEY_POINTS);
+    let summary = if parsed.summary.trim().is_empty() {
+        String::new()
+    } else {
+        validate_narrative(source, &parsed.summary).unwrap_or_default()
+    };
+    if !title_ok && key_points.is_empty() && summary.is_empty() {
         return None;
     }
     Some(Headline {
         title: if title_ok { title } else { String::new() },
         key_points,
+        summary,
     })
 }
 
@@ -2086,153 +2122,216 @@ fn sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// The mechanical headline: a title from the narrative's first sentence, key
-/// points from its sentences then the decisions and actions. Used to fill
-/// whatever the model's pass did not supply.
-pub fn fallback_headline(
-    narrative: &str,
-    actions: &[SummaryItem],
-    decisions: &[SummaryItem],
-) -> Headline {
-    let sents = sentences(narrative);
-    let title = sents
+/// The mechanical title: the narrative's first sentence, cut to 8 words.
+pub fn fallback_title(narrative: &str) -> String {
+    sentences(narrative)
         .first()
         .map(|s| {
-            let words: Vec<&str> = s
-                .trim_end_matches(['.', '!', '?'])
+            s.trim_end_matches(['.', '!', '?'])
                 .split_whitespace()
                 .take(8)
-                .collect();
-            words.join(" ")
+                .collect::<Vec<_>>()
+                .join(" ")
         })
-        .unwrap_or_else(|| "Meeting notes".to_string());
-    let mut key_points: Vec<String> = Vec::new();
-    for p in sents
-        .into_iter()
-        .chain(decisions.iter().map(|d| d.text.clone()))
-        .chain(actions.iter().map(|a| a.text.clone()))
-    {
-        if !key_points.iter().any(|k| same_item(k, &p)) {
-            key_points.push(p);
-        }
-        if key_points.len() == MAX_KEY_POINTS {
-            break;
-        }
-    }
-    Headline { title, key_points }
+        .unwrap_or_else(|| "Meeting notes".to_string())
 }
 
-/// The HEADLINE pass, with the fallback filling any gap (empty title, fewer
-/// than three points). A cancel or a failed call is the fallback alone.
-pub fn headline_pass(
-    client: &dyn SummaryClient,
-    narrative: &str,
-    actions: &[SummaryItem],
-    decisions: &[SummaryItem],
-) -> Headline {
-    let fallback = fallback_headline(narrative, actions, decisions);
-    if narrative.trim().is_empty() && actions.is_empty() && decisions.is_empty() {
-        return fallback;
-    }
-    let mut source = narrative.trim().to_string();
-    for (h, items) in [("Decisions:", decisions), ("Action items:", actions)] {
-        if !items.is_empty() {
-            source.push_str(&format!("\n\n{h}\n"));
-            for i in items {
-                source.push_str(&format!("- {}\n", i.text));
+/// What the HEADLINE pass reads: the transcript itself as `Speaker: text`
+/// lines (no ids — a point never needs one), or, when the transcript does not
+/// fit one pass, the chunk narratives MAP already wrote from it.
+pub fn headline_source(
+    lines: &[TranscriptLine],
+    narratives: &[String],
+    counter: &dyn TokenCounter,
+) -> String {
+    let plain = lines
+        .iter()
+        .map(|l| match &l.speaker {
+            Some(sp) => format!("{}: {}", sp.label(), one_line(&l.text)),
+            None => one_line(&l.text),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    match counter.count_tokens(&plain) {
+        Ok(n) if n <= REDUCE_CHUNK_TOKENS => plain,
+        _ => {
+            let joined = narratives
+                .iter()
+                .filter(|n| !n.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if joined.trim().is_empty() {
+                clamp_words(&plain, MAX_NARRATIVE_WORDS * 3)
+            } else {
+                clamp_words(&joined, MAX_NARRATIVE_WORDS * 3)
             }
         }
     }
+}
+
+/// The HEADLINE pass — KEY POINTS FIRST, from the transcript (R2-B1).
+///
+/// One grammar-shaped call returns the title, 3–6 key points and the summary
+/// paragraph written from those points. Points are validated against the
+/// transcript, deduped ONLY against each other ([`dedupe_key_points`]), and
+/// backfilled verbatim from the transcript's most informative sentences
+/// ([`backfill_key_points`]) when fewer than [`MIN_KEY_POINTS`] survive. A
+/// cancel or a failed call is the backfill alone (title and summary empty —
+/// the caller fills them from the narrative).
+pub fn headline_pass(
+    client: &dyn SummaryClient,
+    lines: &[TranscriptLine],
+    names: &[String],
+    narratives: &[String],
+) -> Headline {
+    let full_text = lines
+        .iter()
+        .map(TranscriptLine::render)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.is_empty() {
+        return Headline::default();
+    }
+    let source = headline_source(lines, narratives, client);
     let req = PolishRequest::summarize(
         next_id(),
         SUMMARIZE_HEADLINE,
         SUMMARY_HEADLINE_MAX_OUT,
         REDUCE_DEADLINE_MS,
-        source.clone(),
+        source,
         Some(HEADLINE_GRAMMAR.to_string()),
     );
-    let got = match client.generate(&req) {
-        Ok(answer) => parse_headline(&answer.text, &source),
-        Err(e) => {
-            log::warn!(
-                "summary: headline pass failed ({}) — using the mechanical headline",
-                e.tag()
-            );
-            None
+    let got = if client.cancelled() {
+        None
+    } else {
+        match client.generate(&req) {
+            Ok(answer) => parse_headline(&answer.text, &full_text),
+            Err(e) => {
+                log::warn!(
+                    "summary: headline pass failed ({}) — key points come from the transcript",
+                    e.tag()
+                );
+                None
+            }
         }
     };
     let mut h = got.unwrap_or_default();
-    if h.title.trim().is_empty() {
-        h.title = fallback.title.clone();
-    }
-    // A1: the model's points lose any echo of the Summary or a decision
-    // first; the fill then only takes a candidate that survives the same rule
-    // (in practice an action item — the Summary's own sentences never do).
-    h.key_points = dedupe_key_points(h.key_points, narrative, decisions);
-    let candidates = sentences(narrative)
-        .into_iter()
-        .chain(decisions.iter().map(|d| d.text.clone()))
-        .chain(actions.iter().map(|a| a.text.clone()));
-    for p in candidates {
-        if h.key_points.len() >= MIN_KEY_POINTS {
-            break;
-        }
-        let mut with = h.key_points.clone();
-        with.push(p);
-        let with = dedupe_key_points(with, narrative, decisions);
-        if with.len() > h.key_points.len() {
-            h.key_points = with;
-        }
-    }
+    h.key_points = backfill_key_points(h.key_points, lines, names, &full_text);
     h
 }
 
-/// #250 round 3 (A1) — key points that say something the notes do not
-/// already say. A point that IS a sentence of the Summary paragraph (by
-/// normalized words), or restates a Decision or an earlier point (the price
-/// twice), is dropped. Fewer than three honest points beats six echoes; none
-/// at all leaves the section out.
-pub fn dedupe_key_points(
-    points: Vec<String>,
-    narrative: &str,
-    decisions: &[SummaryItem],
-) -> Vec<String> {
-    let summary_sentences = sentences(narrative);
+/// Content-word overlap of two points: shared ÷ the smaller set. 1.0 when
+/// one point's facts are all in the other.
+pub fn point_overlap(a: &str, b: &str) -> f64 {
+    let set = |t: &str| {
+        let mut w = content_words(t);
+        w.sort();
+        w.dedup();
+        w
+    };
+    let (wa, wb) = (set(a), set(b));
+    let small = wa.len().min(wb.len());
+    if small == 0 {
+        return if wa.is_empty() && wb.is_empty() { 1.0 } else { 0.0 };
+    }
+    let shared = wa.iter().filter(|w| wb.contains(w)).count();
+    shared as f64 / small as f64
+}
+
+/// #250 round 4 (R2-B1) — key points that are each a different fact. A point
+/// is dropped ONLY when it is empty or overlaps an earlier KEY POINT by
+/// [`KEY_POINT_OVERLAP_MAX`] or more — never because the Summary, a decision
+/// or an action item says the same thing (the Summary is written from these).
+pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
     let mut kept: Vec<String> = Vec::new();
     for p in points {
-        let label_free = ["Decisions:", "Action items:", "Key points:", "Summary:"]
-            .iter()
-            .find_map(|l| p.strip_prefix(l))
-            .map_or(p.as_str(), str::trim_start)
-            .to_string();
-        let echoes_summary = summary_sentences.iter().any(|s| same_item(s, &label_free));
-        let restates = decisions.iter().any(|d| near_duplicate(&d.text, &label_free))
-            || kept.iter().any(|k| near_duplicate(k, &label_free));
-        if !echoes_summary && !restates && !label_free.trim().is_empty() {
-            kept.push(label_free);
+        let p = strip_section_label(&p);
+        if content_words(&p).is_empty() {
+            continue;
         }
+        if kept.iter().any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX) {
+            continue;
+        }
+        kept.push(p);
     }
     kept
 }
 
-/// Two lines that carry the same facts: equal by normalized words, or one's
-/// content words are (at least 3/4 of) the other's.
-fn near_duplicate(a: &str, b: &str) -> bool {
-    if same_item(a, b) {
-        return true;
+/// Day, month and relative-date words: a sentence carrying one says WHEN.
+const DATE_WORDS: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "june", "july", "august", "september", "october",
+    "november", "december", "today", "tomorrow", "tonight", "week", "month", "quarter", "year",
+];
+
+/// Number words count as numbers ("forty nine dollars").
+const NUMBER_WORDS: &[&str] = &[
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "billion", "percent", "dollars", "dollar",
+];
+
+/// How much a transcript sentence says: numbers, names, dates, length.
+fn information_score(sentence: &str, names: &[String]) -> usize {
+    let lower = sentence.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '$')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let numbers = crate::polish::digit_runs(sentence).len()
+        + words.iter().filter(|w| NUMBER_WORDS.contains(w)).count().min(2);
+    let dates = words.iter().filter(|w| DATE_WORDS.contains(w)).count().min(2);
+    let named = names
+        .iter()
+        .filter(|n| sentence.split(|c: char| !c.is_alphanumeric()).any(|w| w == n.as_str()))
+        .count()
+        .min(2);
+    3 * numbers + 2 * dates + 2 * named + usize::from(content_words(sentence).len() >= 5)
+}
+
+/// R2-B1 — top `points` up to [`MIN_KEY_POINTS`] with the transcript's
+/// highest-information sentences (numbers, names, dates), VERBATIM, each one
+/// distinct from every point already kept. Never a Summary sentence, never
+/// a model rewording — only what was said, through [`validate_item`].
+pub fn backfill_key_points(
+    points: Vec<String>,
+    lines: &[TranscriptLine],
+    names: &[String],
+    source: &str,
+) -> Vec<String> {
+    let mut kept = dedupe_key_points(points);
+    if kept.len() >= MIN_KEY_POINTS {
+        return kept;
     }
-    let mut wa = content_words(a);
-    let mut wb = content_words(b);
-    wa.sort();
-    wa.dedup();
-    wb.sort();
-    wb.dedup();
-    let small = wa.len().min(wb.len());
-    if small < 2 {
-        return false;
+    let mut candidates: Vec<(usize, usize, String)> = Vec::new();
+    for l in lines {
+        for s in sentences(&l.text) {
+            let s = s.trim().to_string();
+            let lower = s.to_lowercase();
+            if s.ends_with('?') || is_strong_question(&lower) {
+                continue;
+            }
+            if content_words(&s).len() < 3 {
+                continue;
+            }
+            let score = information_score(&s, names);
+            candidates.push((score, candidates.len(), s));
+        }
     }
-    let shared = wa.iter().filter(|w| wb.contains(w)).count();
-    shared * 4 >= small * 3
+    // Most informative first; the meeting's order breaks ties.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (_, _, s) in candidates {
+        if kept.len() >= MIN_KEY_POINTS {
+            break;
+        }
+        let Some(ok) = validate_item(source, &s) else { continue };
+        if kept.iter().any(|k| point_overlap(k, &ok) >= KEY_POINT_OVERLAP_MAX) {
+            continue;
+        }
+        kept.push(ok);
+    }
+    kept
 }
 
 /// "Owner" of an action item, ONLY when the item's own words name one at the
@@ -2311,11 +2410,7 @@ pub fn render_notes(
             // #250 round 2: the HEADLINE input carries "Decisions:" /
             // "Action items:" labels, and a 1.5B model sometimes echoes one
             // into a point. The label is ours, never the meeting's.
-            let p = ["Decisions:", "Action items:", "Key points:", "Summary:"]
-                .iter()
-                .find_map(|l| p.strip_prefix(l))
-                .map_or(p.as_str(), str::trim_start);
-            out.push_str(&format!("- {p}\n"));
+            out.push_str(&format!("- {}\n", strip_section_label(p)));
         }
         out.push('\n');
     }
