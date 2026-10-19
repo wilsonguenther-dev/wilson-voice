@@ -3025,3 +3025,24 @@ button.primary.big {
   flex-direction: column;
   gap: 8px;
 }
+
+/* yap-lifecycle — the one-time "Yap is still running" note after the first hide. */
+.hide-hint {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--accent-data-soft);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.hide-hint button {
+  margin-left: 6px;
+  font: inherit;
+  color: var(--accent-data-ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
