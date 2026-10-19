@@ -177,6 +177,8 @@ mod secure_input;
 // reading the same constants `run()` registers, not an eyeball over three
 // literals.
 pub mod shortcuts;
+// yap-p0-chord-deadlock — global shortcuts are routed in the plugin handler, acted on after it.
+mod shortcut_defer;
 // yap-p0-hotkeys-no-permission — the zero-TCC dictate chord, the one hotkey
 // arbiter and the truthful hotkey status.
 pub mod hotkeys;
@@ -2214,6 +2216,33 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let Some(active) = active else {
         return;
     };
+    // yap-ptt-capture-tail (D4): the release→clipboard clock starts AT the stop
+    // edge, so the context reads below are inside it.
+    let t_release = std::time::Instant::now();
+    // D4: end the capture NOW — before the context reads, which talk to the
+    // user's app over AX and can stall for seconds (see
+    // `record::end_at_stop_edge`). Off the main thread, so a wedged capture
+    // worker can never freeze the UI; the worker below joins it.
+    let (capture_stop, (source_app, source_bundle_id, cursor_context)) = record::end_at_stop_edge(
+        move || record::end_capture(active),
+        || {
+            (
+                // Capture focused app *before* we steal focus with notifications / main window.
+                focus::frontmost_app_name(),
+                // yap-format-structure: the paste target's bundle id picks the list
+                // syntax (Markdown / plain bullets / off). Captured with
+                // `source_app`, before Yap can take focus.
+                focus::frontmost_bundle_id(),
+                // YV50 context awareness — the text just before the caret while the
+                // user's app is still the focused one. Bounded to
+                // `focus::CONTEXT_CHAR_LIMIT` chars; `None` on AX denial or a secure
+                // field. PRIVACY: this string only ever steers the formatting
+                // decisions below — it is never logged, stored, or emitted (see the
+                // `cursor_context_is_never_logged_or_persisted` test).
+                focus::text_before_cursor(),
+            )
+        },
+    );
 
     *state.busy.lock() = true;
     emit_status(&app, &state);
@@ -2222,19 +2251,6 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     let db = state.db.clone();
     let app2 = app.clone();
     let state2 = state.clone();
-    // Capture focused app *before* we steal focus with notifications / main window.
-    let source_app = focus::frontmost_app_name();
-    // yap-format-structure: the paste target's bundle id picks the list syntax
-    // (Markdown / plain bullets / off). Captured with `source_app`, before Yap
-    // can take focus.
-    let source_bundle_id = focus::frontmost_bundle_id();
-    // YV50 context awareness — read the text just before the caret while the
-    // user's app is still the focused one, for the same reason as `source_app`.
-    // Bounded to `focus::CONTEXT_CHAR_LIMIT` chars; `None` on AX denial or a
-    // secure field. PRIVACY: this string only ever steers the formatting
-    // decisions below — it is never logged, stored, or emitted (see the
-    // `cursor_context_is_never_logged_or_persisted` test).
-    let cursor_context = focus::text_before_cursor();
     // YV49: `Some` means this take was a command press — the selection it is
     // about to edit was read at key-down. Taken (not read) so exactly one take
     // can ever consume it.
@@ -2243,7 +2259,6 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
     // the paste — a cancel during ASR bumps it and the transcript is copied
     // only, never pasted.
     let generation = state.paste_generation.load(Ordering::SeqCst);
-    let t_release = std::time::Instant::now();
 
     std::thread::spawn(move || {
         // Panic-safety: disarmed after the normal cleanup below (see [8]).
@@ -2271,7 +2286,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             } else {
                 None
             };
-            let rec = record::stop_recording(active, iso_vad.as_deref())?;
+            let ended = capture_stop
+                .join()
+                .map_err(|_| "the capture-stop thread panicked".to_string())??;
+            let rec = record::finish_recording(ended, iso_vad.as_deref())?;
             // YV20/M3: `rec.clip` unlinks the history wav on ANY exit of this
             // closure (success, the gates below, or the ASR/DB `?` failures) —
             // never leaked on error. YV37: that wav is written on a background
@@ -5622,6 +5640,46 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
 /// turns the stop into a no-op) and the PTT machine's own latch via
 /// `ptt_macos::end_hands_free` (or the next fn press is swallowed resetting it).
 /// tests/hotkey_stop.rs holds every call site to this function.
+/// yap-p0-chord-deadlock — the ACT half of every global shortcut, run on the
+/// main thread AFTER the plugin's handler returned (`shortcut_defer`), so the
+/// plugin's shortcut lock is free and `register_cancel_shortcut` /
+/// `unregister_cancel_shortcut` (and anything else calling `global_shortcut()`)
+/// cannot re-enter it.
+fn run_shortcut_job(app: &AppHandle, state: &Arc<AppState>, job: shortcut_defer::ShortcutJob) {
+    use shortcut_defer::ShortcutJob as J;
+    match job {
+        // yap-p0-hotkeys-no-permission — the zero-TCC dictate chord (default
+        // ⌃⌥⌘Space, rebindable) and the legacy ⌘⇧V: press and release both go
+        // to the ONE dispatcher.
+        J::Take(edge) => take_hotkey_edge(app, state, edge, HotkeySource::Carbon),
+        // YV95 ⌃⌘M — a TOGGLE on key-down, not a hold. The hotkey never asks:
+        // the picker is skipped (`unknown`).
+        J::MeetingToggle => {
+            log::info!("⌃⌘M pressed — toggle meeting");
+            toggle_meeting_off_thread(app, state, "⌃⌘M", meetings::MeetingKind::Unknown);
+        }
+        // Y3-D esc — registered only WHILE a take is in flight. Off the main
+        // thread: the cancel joins the recorder's stop.
+        J::Cancel => {
+            log::info!("esc pressed — cancel the take in flight");
+            let (st, h) = (state.clone(), app.clone());
+            std::thread::spawn(move || {
+                cancel_take(&h, &st);
+            });
+        }
+        // ⌃⌘V — Paste Last Transcript (Wispr-parity, always on).
+        J::PasteLast => {
+            log::info!("⌃⌘V pressed — paste last transcript");
+            paste_last_transcript(app, state);
+        }
+        // YV51 ⌃⌘Z — Undo AI edit: re-paste the raw take over the polished one.
+        J::UndoAiEdit => {
+            log::info!("⌃⌘Z pressed — undo ai edit (paste raw)");
+            paste_raw_last_transcript(app, state);
+        }
+    }
+}
+
 fn stop_take(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin) {
     *state.hands_free.lock() = false;
     #[cfg(target_os = "macos")]
@@ -6640,94 +6698,31 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler({
-                    let state = state.clone();
+                    // yap-p0-chord-deadlock — the plugin calls this with its
+                    // shortcut table LOCKED, and every `global_shortcut()` call
+                    // takes that lock, so the handler only ROUTES: the job runs
+                    // on the main thread after the handler returned (see
+                    // `shortcut_defer` and `run_shortcut_job`).
+                    let on_shortcut = shortcut_defer::handler(
+                        {
+                            let state = state.clone();
+                            move |app: AppHandle, job| {
+                                let (h, st) = (app.clone(), state.clone());
+                                if let Err(e) =
+                                    app.run_on_main_thread(move || run_shortcut_job(&h, &st, job))
+                                {
+                                    log::warn!("shortcut {job:?} dropped: main thread unavailable ({e})");
+                                }
+                            }
+                        },
+                        {
+                            let state = state.clone();
+                            move || state.settings.lock().keep_cmd_shift_v
+                        },
+                        || hotkeys::active_dictate().0,
+                    );
                     move |app, shortcut, event| {
-                        // yap-p0-hotkeys-no-permission — the zero-TCC dictate
-                        // chord (default ⌃⌥⌘Space, rebindable). Press and
-                        // release both go to the ONE dispatcher.
-                        if shortcut == &hotkeys::active_dictate().0 {
-                            let edge = if event.state == ShortcutState::Pressed {
-                                HotkeyEdge::Press
-                            } else {
-                                HotkeyEdge::Release
-                            };
-                            take_hotkey_edge(app, &state, edge, HotkeySource::Carbon);
-                            return;
-                        }
-                        // YV95 ⌃⌘M — start/stop a meeting. A TOGGLE on
-                        // key-down, not a hold: a meeting lasts an hour, and the
-                        // dictation-hold gesture is the one thing finding #6
-                        // says it must not be confused with.
-                        if shortcut == &shortcuts::MEETING_TOGGLE.shortcut() {
-                            if event.state == ShortcutState::Pressed {
-                                log::info!("⌃⌘M pressed — toggle meeting");
-                                // The hotkey is the fastest path to a
-                                // recording, so it never asks: the picker is
-                                // skipped (`unknown`), which is the branch that
-                                // clusters rather than the one that assumes.
-                                toggle_meeting_off_thread(
-                                    app,
-                                    &state,
-                                    "⌃⌘M",
-                                    meetings::MeetingKind::Unknown,
-                                );
-                            }
-                            return;
-                        }
-                        // Y3-D esc — cancel the take in flight. Registered
-                        // only WHILE a take is in flight (see
-                        // `shortcuts::CANCEL`), so this handler cannot fire at
-                        // an idle Yap: outside a take, Escape is not ours and
-                        // the event never reaches this closure at all.
-                        if shortcut == &shortcuts::CANCEL.shortcut() {
-                            if event.state == ShortcutState::Pressed {
-                                log::info!("esc pressed — cancel the take in flight");
-                                let st = state.clone();
-                                let h = app.clone();
-                                // Off the shortcut thread: the cancel joins the
-                                // recorder's stop, and blocking the global
-                                // shortcut handler blocks every other chord.
-                                std::thread::spawn(move || {
-                                    cancel_take(&h, &st);
-                                });
-                            }
-                            return;
-                        }
-                        // ⌃⌘V — Paste Last Transcript (Wispr-parity, always on,
-                        // independent of the ⌘⇧V dictation toggle below).
-                        let paste_last_sc = shortcuts::PASTE_LAST.shortcut();
-                        if shortcut == &paste_last_sc {
-                            if event.state == ShortcutState::Pressed {
-                                log::info!("⌃⌘V pressed — paste last transcript");
-                                paste_last_transcript(app, &state);
-                            }
-                            return;
-                        }
-                        // YV51 ⌃⌘Z — Undo AI edit: re-paste the raw take over
-                        // the polished one. Inert (logged no-op) when the raw
-                        // matches what was pasted.
-                        let undo_sc = shortcuts::UNDO_AI_EDIT.shortcut();
-                        if shortcut == &undo_sc {
-                            if event.state == ShortcutState::Pressed {
-                                log::info!("⌃⌘Z pressed — undo ai edit (paste raw)");
-                                paste_raw_last_transcript(app, &state);
-                            }
-                            return;
-                        }
-                        // Legacy secondary: ⌘⇧V (only if keep_cmd_shift_v)
-                        if !state.settings.lock().keep_cmd_shift_v {
-                            return;
-                        }
-                        log::debug!("shortcut event {shortcut:?} {:?}", event.state);
-                        // ⌘⇧V is a Carbon chord too: same dispatcher, so a
-                        // held ⌘⇧V is hold-to-talk and there is no second
-                        // start/stop path.
-                        let edge = if event.state == ShortcutState::Pressed {
-                            HotkeyEdge::Press
-                        } else {
-                            HotkeyEdge::Release
-                        };
-                        take_hotkey_edge(app, &state, edge, HotkeySource::Carbon);
+                        on_shortcut(app.clone(), shortcut, event.state == ShortcutState::Pressed)
                     }
                 })
                 .build(),
