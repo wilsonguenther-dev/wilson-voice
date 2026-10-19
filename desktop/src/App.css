@@ -1518,18 +1518,58 @@ button.star.on {
   color: var(--muted);
 }
 
+/* yap-uiux-2026-10-16-H5 — at 720x520 the rail became a top nav that WRAPPED
+   onto three rows (Settings alone on the last), ~150 of 520 px before any
+   content, on every screen. Narrow windows now get ONE row: brand mark, the
+   nav as a horizontally scrolling strip, the Dictate button. The shell gives
+   that row its height and the rest to the view, so nothing below it grows the
+   window past 100vh. */
 @media (max-width: 860px) {
   .shell {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): a bare 1fr column floors at the row's min-content, which
+       is the whole unscrolled nav — the strip must shrink and scroll instead. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .sidebar {
+    min-width: 0;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .brand-block {
+    flex: none;
+    padding: 0;
+  }
+  .brand-tag {
+    display: none;
   }
   .nav {
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+  .nav-item {
+    flex: none;
+    gap: 6px;
+    padding: 0.45rem 0.6rem;
+  }
+  .sidebar-foot {
+    flex: none;
+    padding-top: 0;
+  }
+  .dictate-side {
+    width: auto;
+    padding: 0.5rem 0.75rem;
   }
   .stats-row,
   .panel-grid,
@@ -1935,6 +1975,42 @@ button.star.on {
   font-size: 11px;
   font-weight: 400;
   color: var(--muted);
+}
+/* yap-uiux-2026-10-16-H3 — on a window under 800 px tall the full 300 px scene
+   plus the stat tiles filled the first screen and pushed search and every take
+   below the fold. Short windows get the room as a strip: same pixel art, same
+   nearest-neighbour scaling, cropped (cover) around Yappy's floor instead of
+   letterboxed, so the controls and the latest takes are on the first screen. */
+@media (max-height: 800px) {
+  .yappy-house {
+    margin: 4px auto 12px;
+  }
+  .yappy-house .yh-frame {
+    padding: 8px;
+  }
+  .yappy-house .yh-frame::after {
+    inset: 8px;
+  }
+  .yappy-house .yh-stage {
+    max-height: 112px;
+    object-fit: cover;
+    object-position: 50% 70%;
+  }
+  .yappy-house .yh-stats {
+    margin-top: 8px;
+    gap: 8px;
+  }
+  .yappy-house .yh-stat {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+  }
+  .yappy-house .yh-v {
+    margin-top: 0;
+    font-size: 15px;
+  }
 }
 @media (prefers-color-scheme: dark) {
   .yappy-house .yh-frame {
