@@ -7,24 +7,38 @@ loop/yap-p0-insertion-fallback-copy-card off origin/main 3569ce4, BEFORE any cod
 
 ## (a) yap.log since 2026-10-16 (read-only grep)
 
-File: ~/Library/Application Support/WilsonVoice/logs/yap.log (+ rotations), lines whose
-timestamp is >= 2026-10-16.
+File: ~/Library/Application Support/WilsonVoice/logs/yap.log, lines whose timestamp is >= 2026-10-16.
 
-    since 2026-10-16: 'pasted=false'          = 16
-    since 2026-10-16: 'paste not confirmed'   = 3
-    since 2026-10-16: 'Enable Accessibility'  = 0
-    since 2026-10-16: 'pasted=true'           = 42
-    since 2026-10-16: 'paste confirmed'       = 21
+CORRECTED in fix round 1 (PR #229 review): every take logs `pasted=` on TWO lines (`latency …` and
+`transcript ok …`), so the first draft of this table double-counted. Recount, per line kind, with
+exactly this command (run 2026-10-19 from that logs directory):
 
-Reading: 16 takes recorded pasted=false and only 3 of them logged "paste not confirmed" (a ⌘V that
-went out with no receipt). The other 13 took a branch that posts no keystroke, and the log does not
-say which (auto-paste off, no text control focused, a stale take, a wrong target, or Accessibility
-untrusted all look the same). "Enable Accessibility" = 0 is consistent with the code path on main:
-with Accessibility untrusted, focus::should_auto_paste() returns false BEFORE paste.rs is reached,
-so lib.rs passes want_paste=false and the take is a silent "Copied to clipboard (⌘V to paste)" —
-paste.rs's own AX-denied message can never be logged for a dictation. That silent no-attempt
-branch, plus the 3 receipt-less ⌘Vs that only produced a toast, is the insertion "bridge" this
-item fixes. NOT established from the log: how many of the 13 were AX-denied specifically.
+    for pat in "transcript ok.*pasted=false" "transcript ok.*pasted=true" "latency .*pasted=false" \
+               "latency .*pasted=true" "pasted=false" "pasted=true" "paste not confirmed" \
+               "paste confirmed" "Enable Accessibility"; do
+      n=$(cat yap.log* | awk -v p="$pat" '$1 >= "[2026-10-16" && $0 ~ p' | wc -l | tr -d ' ')
+      echo "since 2026-10-16: '$pat' = $n"; done
+
+    since 2026-10-16: 'transcript ok.*pasted=false' = 8
+    since 2026-10-16: 'transcript ok.*pasted=true' = 22
+    since 2026-10-16: 'latency .*pasted=false' = 8
+    since 2026-10-16: 'latency .*pasted=true' = 22
+    since 2026-10-16: 'pasted=false' = 16      (8 takes x 2 lines)
+    since 2026-10-16: 'pasted=true' = 44       (22 takes x 2 lines)
+    since 2026-10-16: 'paste not confirmed' = 3
+    since 2026-10-16: 'paste confirmed' = 22
+    since 2026-10-16: 'Enable Accessibility' = 0
+
+Reading: 8 TAKES recorded pasted=false (not 16) and 3 of them logged "paste not confirmed" (a ⌘V
+that went out with no receipt). The other 5 (not 13) took a branch that posts no keystroke, and the
+log does not say which (auto-paste off, no text control focused, a stale take, a wrong target, or
+Accessibility untrusted all look the same). "Enable Accessibility" = 0 is consistent with the code
+path on main: with Accessibility untrusted, focus::should_auto_paste() returns false BEFORE
+paste.rs is reached, so lib.rs passes want_paste=false and the take is a silent "Copied to
+clipboard (⌘V to paste)". On main a ⌘V is only posted with AX trusted, so the 3 receipt-less ⌘Vs
+happened WITH Accessibility granted — which is why, after fix round 1, a no-receipt card never
+offers Repair (paste.rs repair_service_for). NOT established from the log: how many of the 5 were
+AX-denied specifically.
 
 ## (b) "Bridge error" — the app shell, vitest on unmodified main
 
@@ -66,5 +80,9 @@ Accessibility, run desktop/target/qa/post-probe --post, read delivered=.
 
 - paste.rs: InsertPath { Ax, PasteBridge, CopyCard } chosen by choose_insert_path(&perm_probe::probe_all()).
 - focus::should_auto_paste says yes when AX is untrusted (it cannot see the focus), so the path decides.
-- CopyCard / no-receipt bridge: "insert-copy-card" -> the pill shows the text with Copy + Repair.
+- CopyCard / no-receipt bridge: "insert-copy-card" -> the pill shows the text with Copy (+ Repair ONLY on the
+  no-permission card; fix round 1).
+- Fix round 1: the YV21 guard compares NSWorkspace bundle ids (no AX needed) and a dictation take with an
+  unknown target posts nothing; an accepted-but-unverified AX set never falls through to ⌘V; dismissing the
+  card never hides the pill of a take in flight, and a new take clears an old card.
 - appShell.ts: Promise.allSettled; per-command bootErrors; "Bridge error" only when every command failed.

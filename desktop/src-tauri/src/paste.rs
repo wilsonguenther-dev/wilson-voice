@@ -157,6 +157,10 @@ pub const INSERT_COPY_CARD_EVENT: &str = "insert-copy-card";
 /// The card's one line, verbatim from the item spec.
 pub const COPY_CARD_MESSAGE: &str = "Copied — press ⌘V. Repair to auto-insert.";
 
+/// The card's line when no Repair is offered (a grant is working; see
+/// [`repair_service_for`]).
+pub const COPY_CARD_MESSAGE_NO_REPAIR: &str = "Copied — press ⌘V.";
+
 /// How a take reaches the focused app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -193,6 +197,40 @@ pub enum CopyCardReason {
     NoReceipt,
     /// The ⌘V chord itself could not be posted.
     PasteFailed,
+    /// The focused element accepted `kAXSelectedText` but its value never
+    /// read back changed. The text may already be there, so no ⌘V follows
+    /// (that would insert it twice); the card lets the user check and paste.
+    AxUnverified,
+}
+
+/// The permission the card's Repair button may reset, if any.
+///
+/// Repair runs `perm_probe::repair(Accessibility)`, whose plan is `tccutil
+/// reset Accessibility` AND `tccutil reset PostEvent`. That is only safe when
+/// neither grant is live — exactly the [`CopyCardReason::NoPermission`] card
+/// ([`choose_insert_path`] picks it only when neither probe says Granted). Every
+/// other card is raised while at least one of the two grants WORKS (AX for the
+/// AX path, PostEvent for the bridge), so offering Repair there would wipe a
+/// working grant: those cards carry no Repair at all.
+pub fn repair_service_for(reason: CopyCardReason) -> Option<&'static str> {
+    match reason {
+        CopyCardReason::NoPermission => Some(perm_probe::Service::Accessibility.key()),
+        CopyCardReason::NoReceipt | CopyCardReason::PasteFailed | CopyCardReason::AxUnverified => {
+            None
+        }
+    }
+}
+
+/// Who a take is meant for — the YV21 wrong-target guard's input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteTarget<'a> {
+    /// An explicit user re-paste (history, "paste last"): the current
+    /// frontmost app IS the intended target, so no guard applies.
+    Explicit,
+    /// A dictation take: the frontmost app's identity captured at record start
+    /// (NSWorkspace bundle id, readable without Accessibility). `None` = it
+    /// could not be read, and an unconfirmed target is never typed into.
+    Dictated(Option<&'a str>),
 }
 
 /// The `insert-copy-card` payload.
@@ -205,17 +243,23 @@ pub struct CopyCard {
     pub detail: String,
     /// The transcript is on the clipboard right now (⌘V works without Copy).
     pub copied: bool,
-    /// `repair_permission`'s argument for the card's Repair button.
-    pub repair_service: &'static str,
+    /// `repair_permission`'s argument for the card's Repair button; `None` =
+    /// no Repair button (see [`repair_service_for`]).
+    pub repair_service: Option<&'static str>,
 }
 
 /// What an AX insert attempt observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxInsert {
     Inserted,
-    /// The element refused (not settable, no readable value, the set errored,
-    /// or it claimed success and its value did not change).
+    /// The element refused BEFORE anything was written (not settable, no
+    /// readable value, the set itself errored). Safe to fall back to ⌘V.
     Refused(String),
+    /// The set returned success but the value never read back changed (an
+    /// async accessibility tree, a timed-out re-read, a selection replaced by
+    /// identical text). The text may have landed, so a ⌘V would risk a double
+    /// insert: copy + card instead.
+    Unverified(String),
 }
 
 /// What a paste-bridge transaction observed after ⌘V was posted.
@@ -283,15 +327,19 @@ fn copy_card_with(
         reason,
         detail,
         copied,
-        repair_service: perm_probe::Service::Accessibility.key(),
+        repair_service: repair_service_for(reason),
     });
+    let repair = repair_service_for(reason).is_some();
     PasteOutcome {
         copied,
         pasted: false,
-        message: if copied {
-            COPY_CARD_MESSAGE.into()
-        } else {
-            "Clipboard failed — use Copy on the card. Repair to auto-insert.".into()
+        message: match (copied, repair) {
+            (true, true) => COPY_CARD_MESSAGE.into(),
+            (true, false) => COPY_CARD_MESSAGE_NO_REPAIR.into(),
+            (false, true) => {
+                "Clipboard failed — use Copy on the card. Repair to auto-insert.".into()
+            }
+            (false, false) => "Clipboard failed — use Copy on the card.".into(),
         },
     }
 }
@@ -309,7 +357,7 @@ pub fn insert_with(
     path: InsertPath,
     text: &str,
     want_paste: bool,
-    source_app: Option<&str>,
+    target: PasteTarget<'_>,
 ) -> PasteOutcome {
     if !want_paste {
         return copy_only_with(b, text, "Copied to clipboard (⌘V to paste)");
@@ -322,12 +370,22 @@ pub fn insert_with(
             "Accessibility and PostEvent are both off for Yap".into(),
         );
     }
-    // YV21 (audit M1): `source_app` was frontmost at record start; if the user
-    // switched apps during the ASR delay nothing is inserted — the text is
-    // copied and never lands in a different app.
-    if let Some(dictated) = source_app {
+    // YV21 (audit M1): a dictation take is only inserted into the app that was
+    // frontmost at record start. If the user switched apps during the ASR
+    // delay — OR either identity is unknown — nothing is inserted: the text is
+    // copied and never lands in a different app. The identity is the
+    // NSWorkspace bundle id, which needs no Accessibility grant, so the guard
+    // runs on the PasteBridge path (AX denied) too.
+    if let PasteTarget::Dictated(dictated) = target {
+        if dictated.is_none() {
+            return copy_only_with(
+                b,
+                text,
+                "Copied — I couldn't tell which app you dictated into, so I didn't paste",
+            );
+        }
         let current = b.frontmost_app();
-        if !is_same_paste_target(Some(dictated), current.as_deref()) {
+        if !is_same_paste_target(dictated, current.as_deref()) {
             return copy_only_with(b, text, "Copied — you switched apps, so I didn't paste");
         }
     }
@@ -346,6 +404,10 @@ pub fn insert_with(
             }
             AxInsert::Refused(why) => {
                 log::info!("AX insert refused ({why}) — falling back to the paste bridge");
+            }
+            AxInsert::Unverified(why) => {
+                log::warn!("AX insert unverified ({why}) — no ⌘V (double-insert risk), showing the Copy card");
+                return copy_card_with(b, text, CopyCardReason::AxUnverified, why);
             }
         }
     }
@@ -381,7 +443,7 @@ pub fn insert_with(
                 reason: CopyCardReason::NoReceipt,
                 detail,
                 copied,
-                repair_service: perm_probe::Service::Accessibility.key(),
+                repair_service: repair_service_for(CopyCardReason::NoReceipt),
             });
             outcome_for_verdict(&PasteVerdict::NotPasted { reason }, recopy)
         }
@@ -446,11 +508,14 @@ impl InsertBackend for LiveInsert<'_> {
         copy_text(self.app, text)
     }
     fn frontmost_app(&mut self) -> Option<String> {
-        crate::focus::frontmost_app_name()
+        // The same NSWorkspace bundle id `PasteTarget::Dictated` carries —
+        // readable with Accessibility denied, so the guard never goes blind.
+        crate::focus::frontmost_bundle_id()
     }
     fn ax_insert(&mut self, text: &str) -> AxInsert {
         match crate::focus::insert_selected_text(text) {
-            Ok(()) => AxInsert::Inserted,
+            Ok(crate::focus::AxSet::Verified) => AxInsert::Inserted,
+            Ok(crate::focus::AxSet::Unverified(why)) => AxInsert::Unverified(why),
             Err(why) => AxInsert::Refused(why),
         }
     }
@@ -485,15 +550,46 @@ impl InsertBackend for LiveInsert<'_> {
 
 /// Insert one take into the frontmost app.
 ///
-/// `source_app` is the frontmost app captured at dictation time (record start);
-/// when it is `Some` the YV21 wrong-target guard is enforced. Pass `None` for
-/// explicit user re-pastes (e.g. `paste_entry`), where the current frontmost
-/// app IS the intended target.
+/// `source_app` `Some` enforces the YV21 wrong-target guard against that
+/// identity; `None` is an explicit user re-paste (e.g. `paste_entry`), where
+/// the current frontmost app IS the intended target. Dictation takes go
+/// through [`insert_dictated_take`], which never treats an unknown identity as
+/// "explicit".
 pub fn copy_and_maybe_paste(
     app: &AppHandle,
     text: &str,
     want_paste: bool,
     source_app: Option<&str>,
+) -> PasteOutcome {
+    let target = match source_app {
+        Some(s) => PasteTarget::Dictated(Some(s)),
+        None => PasteTarget::Explicit,
+    };
+    insert_take(app, text, want_paste, target)
+}
+
+/// A dictation take. `target_bundle_id` is `focus::frontmost_bundle_id()`
+/// captured at record start; `None` (unreadable) means the take is copied and
+/// never typed anywhere.
+pub fn insert_dictated_take(
+    app: &AppHandle,
+    text: &str,
+    want_paste: bool,
+    target_bundle_id: Option<&str>,
+) -> PasteOutcome {
+    insert_take(
+        app,
+        text,
+        want_paste,
+        PasteTarget::Dictated(target_bundle_id),
+    )
+}
+
+fn insert_take(
+    app: &AppHandle,
+    text: &str,
+    want_paste: bool,
+    target: PasteTarget<'_>,
 ) -> PasteOutcome {
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
     // happens to be frontmost on the developer's machine.
@@ -515,7 +611,7 @@ pub fn copy_and_maybe_paste(
         app,
         ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
     };
-    insert_with(&mut live, path, text, true, source_app)
+    insert_with(&mut live, path, text, true, target)
 }
 
 /// YV49 command mode: carry out "delete that" by pressing Delete on the

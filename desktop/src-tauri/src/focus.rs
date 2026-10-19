@@ -133,11 +133,13 @@ mod ax {
 
     /// yap-p0-insertion-bridge-fallback — insert `text` by setting
     /// `kAXSelectedText` on the focused element (replaces the selection, or
-    /// inserts at the caret). `Err` = the element refused, and the caller falls
-    /// back to the paste bridge, so this must never report a refusal for a set
-    /// that actually landed: an element whose value cannot be read is refused
-    /// BEFORE anything is set, and a set is only `Ok` once the value changed.
-    pub fn insert_selected_text(text: &str) -> Result<(), String> {
+    /// inserts at the caret). `Err` = the element refused BEFORE anything was
+    /// written, and only then may the caller fall back to the paste bridge.
+    /// Once the set returned success the answer is never `Err`: a value that
+    /// reads back changed is `Verified`, anything else (async accessibility
+    /// trees in Chromium/Electron, a timed-out re-read, identical replacement
+    /// text) is `Unverified` — the text may be there, so no ⌘V may follow.
+    pub fn insert_selected_text(text: &str) -> Result<super::AxSet, String> {
         unsafe {
             let system = AXUIElementCreateSystemWide();
             if system.is_null() {
@@ -177,12 +179,27 @@ mod ax {
                 CFRelease(focused);
                 return Err(format!("setting AXSelectedText failed (AX error {e})"));
             }
-            let after = attr_cfstring(el, "AXValue");
-            CFRelease(focused);
-            match after {
-                Some(a) if a != before => Ok(()),
-                _ => Err("the element accepted AXSelectedText but its value did not change".into()),
+            // Give an async accessibility tree a moment to catch up before
+            // calling the set unverified (5 reads over ~120 ms at most).
+            let mut changed = false;
+            for i in 0..5 {
+                if i > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                if matches!(attr_cfstring(el, "AXValue"), Some(a) if a != before) {
+                    changed = true;
+                    break;
+                }
             }
+            CFRelease(focused);
+            Ok(if changed {
+                super::AxSet::Verified
+            } else {
+                super::AxSet::Unverified(
+                    "the element accepted AXSelectedText but its value never read back changed"
+                        .into(),
+                )
+            })
         }
     }
 
@@ -390,8 +407,18 @@ pub fn frontmost_bundle_id() -> Option<String> {
     }
 }
 
+/// What a `kAXSelectedText` set that macOS ACCEPTED observed afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AxSet {
+    /// The focused element's value read back changed.
+    Verified,
+    /// Accepted, but no change was observed — the text may still have landed.
+    Unverified(String),
+}
+
 /// yap-p0-insertion-bridge-fallback — AX insertion (see [`ax::insert_selected_text`]).
-pub fn insert_selected_text(text: &str) -> Result<(), String> {
+/// `Err` only when nothing was written.
+pub fn insert_selected_text(text: &str) -> Result<AxSet, String> {
     #[cfg(target_os = "macos")]
     {
         ax::insert_selected_text(text)

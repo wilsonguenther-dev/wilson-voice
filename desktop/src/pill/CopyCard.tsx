@@ -5,8 +5,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { holdPillHitbox } from "./drag";
 import {
+  COPY_CARD_CLEAR_EVENT,
   COPY_CARD_TTL_MS,
   INSERT_COPY_CARD_EVENT,
+  canRepair,
   cardHint,
   cardPreview,
   isCopyCard,
@@ -28,6 +30,11 @@ export default function CopyCard() {
     let dead = false;
     const unsubs: Array<() => void> = [];
     listen<CopyCardPayload>(INSERT_COPY_CARD_EVENT, (e) => show(e.payload)).then((u) =>
+      dead ? u() : unsubs.push(u),
+    );
+    // A new take started: drop the card WITHOUT dismiss_copy_card (no hide),
+    // which also hands the hitbox back to the capsule.
+    listen(COPY_CARD_CLEAR_EVENT, () => setCard(null)).then((u) =>
       dead ? u() : unsubs.push(u),
     );
     // A pill webview that mounted after the emit still gets the card.
@@ -71,7 +78,11 @@ export default function CopyCard() {
       setCopied(false);
     }
   };
+  const repairable = canRepair(card);
   const repair = () => {
+    // Never reachable without a service: Rust only names one when neither
+    // Accessibility nor PostEvent is working (paste.rs repair_service_for).
+    if (!repairable) return;
     invoke("repair_permission", { service: card.repairService }).catch(() => {});
     dismiss();
   };
@@ -86,14 +97,16 @@ export default function CopyCard() {
       title={card.detail}
     >
       <p className="copy-card-text">{cardPreview(card.text)}</p>
-      <p className="copy-card-hint" role="status">{cardHint(copied)}</p>
+      <p className="copy-card-hint" role="status">{cardHint(copied, repairable, card.reason)}</p>
       <div className="copy-card-actions">
         <button type="button" className="copy-card-copy" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy"}
         </button>
-        <button type="button" className="copy-card-repair" onClick={repair}>
-          Repair
-        </button>
+        {repairable && (
+          <button type="button" className="copy-card-repair" onClick={repair}>
+            Repair
+          </button>
+        )}
         <button type="button" className="copy-card-close" aria-label="Dismiss" onClick={dismiss}>
           ×
         </button>

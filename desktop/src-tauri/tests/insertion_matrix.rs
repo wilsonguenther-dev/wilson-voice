@@ -10,7 +10,7 @@
 use wilson_voice_lib::mic_auth::MicAuth;
 use wilson_voice_lib::paste::{
     self, AxInsert, BridgeReceipt, CopyCard, CopyCardReason, InsertBackend, InsertPath,
-    COPY_CARD_MESSAGE, INSERT_COPY_CARD_EVENT,
+    PasteTarget, COPY_CARD_MESSAGE, COPY_CARD_MESSAGE_NO_REPAIR, INSERT_COPY_CARD_EVENT,
 };
 use wilson_voice_lib::perm_probe::{self, ProbeReport, ProbeState, RawProbes};
 use wilson_voice_lib::perm_truth::{SigningSignature, TrustLedger};
@@ -109,7 +109,13 @@ fn ax_trusted_uses_ax() {
     );
 
     let mut f = Fake::new();
-    let out = paste::insert_with(&mut f, InsertPath::Ax, TAKE, true, Some("TextEdit"));
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
     assert!(out.pasted, "an AX insert that landed is a paste");
     assert_eq!(f.ax_calls, 1);
     assert_eq!(f.posts, 0, "a landed AX insert posts no ⌘V");
@@ -119,7 +125,13 @@ fn ax_trusted_uses_ax() {
     // The element refuses → the paste bridge, receipt-checked.
     let mut f = Fake::new();
     f.ax_result = AxInsert::Refused("AXSelectedText is not settable".into());
-    let out = paste::insert_with(&mut f, InsertPath::Ax, TAKE, true, Some("TextEdit"));
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
     assert_eq!((f.ax_calls, f.posts), (1, 1));
     assert!(out.pasted, "the bridge's receipt earned it");
     assert_eq!(out.message, "Pasted into frontmost app");
@@ -153,7 +165,13 @@ fn ax_dead_post_event_granted_uses_paste_bridge() {
     assert_eq!(paste::choose_insert_path(&stale), InsertPath::PasteBridge);
 
     let mut f = Fake::new();
-    let out = paste::insert_with(&mut f, InsertPath::PasteBridge, TAKE, true, None);
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Explicit,
+    );
     assert_eq!(f.ax_calls, 0, "no AX attempt without Accessibility");
     assert_eq!(f.posts, 1, "exactly one ⌘V");
     assert!(out.pasted);
@@ -167,7 +185,13 @@ fn none_granted_shows_copy_card_and_posts_nothing() {
     assert_eq!(path, InsertPath::CopyCard);
 
     let mut f = Fake::new();
-    let out = paste::insert_with(&mut f, path, TAKE, true, Some("TextEdit"));
+    let out = paste::insert_with(
+        &mut f,
+        path,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
     // Delete-that under the same grants posts nothing either.
     let del = paste::delete_with(&mut f, path, Some("TextEdit"));
     println!(
@@ -184,7 +208,7 @@ fn none_granted_shows_copy_card_and_posts_nothing() {
     assert_eq!(f.cards.len(), 1, "the card is shown, once");
     assert_eq!(f.cards[0].text, TAKE);
     assert_eq!(f.cards[0].reason, CopyCardReason::NoPermission);
-    assert_eq!(f.cards[0].repair_service, "accessibility");
+    assert_eq!(f.cards[0].repair_service, Some("accessibility"));
     assert!(f.cards[0].copied);
     assert_eq!(out.message, COPY_CARD_MESSAGE);
     assert_eq!(INSERT_COPY_CARD_EVENT, "insert-copy-card");
@@ -197,7 +221,13 @@ fn paste_bridge_no_receipt_falls_to_copy_card() {
         reason: "no app read the clipboard within 1500ms of ⌘V".into(),
         clipboard_taken: false,
     });
-    let out = paste::insert_with(&mut f, InsertPath::PasteBridge, TAKE, true, None);
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Explicit,
+    );
     assert!(!out.pasted, "no receipt is never a paste");
     assert!(out.copied, "the transcript went back on the clipboard");
     assert_eq!(f.posts, 1);
@@ -213,7 +243,13 @@ fn paste_bridge_no_receipt_falls_to_copy_card() {
         reason: "the clipboard changed before the paste was read".into(),
         clipboard_taken: true,
     });
-    let out = paste::insert_with(&mut f, InsertPath::PasteBridge, TAKE, true, None);
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Explicit,
+    );
     assert!(!out.pasted && !out.copied);
     assert!(f.copies.is_empty(), "never copied over the user's own copy");
     assert_eq!(f.cards.len(), 1);
@@ -222,7 +258,13 @@ fn paste_bridge_no_receipt_falls_to_copy_card() {
     // The chord could not even be posted → card too.
     let mut f = Fake::new();
     f.bridge_result = Err("paste timed out waiting for main thread".into());
-    let out = paste::insert_with(&mut f, InsertPath::PasteBridge, TAKE, true, None);
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Explicit,
+    );
     assert!(!out.pasted);
     assert_eq!(f.cards.len(), 1);
     assert_eq!(f.cards[0].reason, CopyCardReason::PasteFailed);
@@ -233,7 +275,13 @@ fn wrong_target_copies_only() {
     for path in [InsertPath::Ax, InsertPath::PasteBridge] {
         let mut f = Fake::new();
         f.frontmost = Some("Messages".into());
-        let out = paste::insert_with(&mut f, path, TAKE, true, Some("Notes"));
+        let out = paste::insert_with(
+            &mut f,
+            path,
+            TAKE,
+            true,
+            PasteTarget::Dictated(Some("Notes")),
+        );
         assert_eq!(
             f.posts, 0,
             "{path:?}: no ⌘V into the app the user switched to"
@@ -251,7 +299,13 @@ fn wrong_target_copies_only() {
     // Unknown frontmost identity is not a confirmed match either.
     let mut f = Fake::new();
     f.frontmost = None;
-    paste::insert_with(&mut f, InsertPath::PasteBridge, TAKE, true, Some("Notes"));
+    paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("Notes")),
+    );
     assert_eq!(f.posts, 0);
 }
 
@@ -266,7 +320,13 @@ fn stale_take_copies_only() {
         InsertPath::CopyCard,
     ] {
         let mut f = Fake::new();
-        let out = paste::insert_with(&mut f, path, TAKE, want, Some("TextEdit"));
+        let out = paste::insert_with(
+            &mut f,
+            path,
+            TAKE,
+            want,
+            PasteTarget::Dictated(Some("TextEdit")),
+        );
         assert_eq!(f.posts, 0, "{path:?}");
         assert_eq!(f.ax_calls, 0, "{path:?}");
         assert!(
@@ -276,4 +336,133 @@ fn stale_take_copies_only() {
         assert_eq!(f.copies, vec![TAKE.to_string()]);
         assert!(!out.pasted);
     }
+}
+
+// ── fix round 1 (PR #229 review) ─────────────────────────────────────────────
+
+/// BLOCKING (both reviewers): AX denied + PostEvent granted, a dictation take
+/// whose target identity could not be read must post NOTHING — before this
+/// fix the guard was skipped whenever the identity was `None`.
+#[test]
+fn bridge_never_types_into_an_unconfirmed_target() {
+    let mut f = Fake::new();
+    f.frontmost = Some("com.apple.MobileSMS".into());
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Dictated(None),
+    );
+    println!(
+        "unconfirmed target: posts={} pasted={}",
+        f.posts, out.pasted
+    );
+    assert_eq!(f.posts, 0, "no ⌘V when the dictated app is unknown");
+    assert!(!out.pasted);
+    assert_eq!(f.copies, vec![TAKE.to_string()], "the text is still copied");
+
+    // Switched apps on the bridge path (bundle ids, which need no AX).
+    let mut f = Fake::new();
+    f.frontmost = Some("com.apple.MobileSMS".into());
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("com.apple.Notes")),
+    );
+    println!("switched target: posts={} pasted={}", f.posts, out.pasted);
+    assert_eq!(f.posts, 0);
+    assert!(!out.pasted);
+
+    // Same app: the bridge still works.
+    let mut f = Fake::new();
+    f.frontmost = Some("com.apple.Notes".into());
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("com.apple.Notes")),
+    );
+    assert_eq!(f.posts, 1);
+    assert!(out.pasted);
+}
+
+/// BLOCKING (both reviewers): a card raised while a grant WORKS must not offer
+/// Repair (whose plan resets Accessibility AND PostEvent).
+#[test]
+fn copy_card_repair_only_when_no_grant_works() {
+    assert_eq!(
+        paste::repair_service_for(CopyCardReason::NoPermission),
+        Some("accessibility")
+    );
+    for r in [
+        CopyCardReason::NoReceipt,
+        CopyCardReason::PasteFailed,
+        CopyCardReason::AxUnverified,
+    ] {
+        assert_eq!(paste::repair_service_for(r), None, "{r:?}");
+    }
+    // NoReceipt on the AX path (Accessibility granted, element refused, ⌘V unread).
+    let mut f = Fake::new();
+    f.ax_result = AxInsert::Refused("not settable".into());
+    f.bridge_result = Ok(BridgeReceipt::Missing {
+        reason: "no app read the clipboard".into(),
+        clipboard_taken: false,
+    });
+    paste::insert_with(
+        &mut f,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
+    println!(
+        "no-receipt card: reason={:?} repair_service={:?}",
+        f.cards[0].reason, f.cards[0].repair_service
+    );
+    assert_eq!(f.cards[0].reason, CopyCardReason::NoReceipt);
+    assert_eq!(f.cards[0].repair_service, None);
+    // PasteFailed on the bridge path (PostEvent granted).
+    let mut f = Fake::new();
+    f.bridge_result = Err("timed out".into());
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::PasteBridge,
+        TAKE,
+        true,
+        PasteTarget::Explicit,
+    );
+    assert_eq!(f.cards[0].repair_service, None);
+    assert_eq!(out.message, COPY_CARD_MESSAGE_NO_REPAIR);
+}
+
+/// BLOCKING (independent #2): an AX set macOS accepted but whose value was not
+/// seen to change is never followed by a ⌘V (double insert).
+#[test]
+fn ax_unverified_never_posts_cmd_v() {
+    let mut f = Fake::new();
+    f.ax_result = AxInsert::Unverified("value never read back changed".into());
+    let out = paste::insert_with(
+        &mut f,
+        InsertPath::Ax,
+        TAKE,
+        true,
+        PasteTarget::Dictated(Some("TextEdit")),
+    );
+    println!(
+        "ax unverified: ax_calls={} posts={} cards={}",
+        f.ax_calls,
+        f.posts,
+        f.cards.len()
+    );
+    assert_eq!(f.ax_calls, 1);
+    assert_eq!(f.posts, 0, "no ⌘V on top of a set that may have landed");
+    assert!(!out.pasted);
+    assert_eq!(f.cards.len(), 1);
+    assert_eq!(f.cards[0].reason, CopyCardReason::AxUnverified);
+    assert_eq!(f.cards[0].repair_service, None);
+    assert_eq!(f.copies, vec![TAKE.to_string()]);
 }

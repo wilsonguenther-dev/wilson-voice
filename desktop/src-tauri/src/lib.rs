@@ -1599,6 +1599,9 @@ fn start_recording(app: &AppHandle, state: &Arc<AppState>) {
             // YV95 — the pill's hover watch must keep its fast cadence for a
             // take even when a meeting is recording underneath it.
             float_pill::set_dictating(true);
+            // An earlier take's Copy card must not hold the pill (or its
+            // hitbox) through this one.
+            float_pill::clear_copy_card_for_new_take(app);
             *state.last_error.lock() = None;
             // YV28: silence the whole Mac so nothing plays over the user while
             // they talk. Restored the instant recording stops (see below).
@@ -2543,10 +2546,10 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 // pasting an empty string (a no-op in several apps), which also
                 // leaves the user's clipboard alone.
                 let outcome = if command == command_mode::Command::Delete {
-                    paste::delete_selection(&app2, source_app.as_deref())
+                    paste::delete_selection(&app2, source_bundle_id.as_deref())
                 } else {
                     let edited = command_mode::apply(&command, &selection);
-                    paste::copy_and_maybe_paste(&app2, &edited, true, source_app.as_deref())
+                    paste::insert_dictated_take(&app2, &edited, true, source_bundle_id.as_deref())
                 };
                 log::info!(
                     "command mode: {} ({} selected chars) → {}",
@@ -2659,8 +2662,8 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
                 settings.cleanup_level
             );
             // Always copy first (Wispr Flow: never lose text). The wrong-target
-            // guard (YV21) inside copy_and_maybe_paste re-checks the frontmost app
-            // against `source_app` immediately before ⌘V and falls back to
+            // guard (YV21) inside insert_dictated_take re-checks the frontmost app
+            // against `source_bundle_id` immediately before ⌘V and falls back to
             // clipboard-only if the user switched apps during the ASR delay.
             // YV39 cancellation guard: a stale take (cancelled while this one
             // was transcribing) is copied but NEVER pasted.
@@ -2686,7 +2689,7 @@ fn stop_and_transcribe(app: AppHandle, state: Arc<AppState>) {
             );
             let t_paste = std::time::Instant::now();
             let outcome =
-                paste::copy_and_maybe_paste(&app2, &text, want_paste, source_app.as_deref());
+                paste::insert_dictated_take(&app2, &text, want_paste, source_bundle_id.as_deref());
             let paste_ms = t_paste.elapsed().as_millis() as i64;
             // North-star metric: release hotkey → text on clipboard
             let pipeline_ms = t_release.elapsed().as_millis() as i64;
@@ -3579,8 +3582,10 @@ fn pending_copy_card() -> Option<paste::CopyCard> {
 /// `show_floating_pill`.
 #[tauri::command]
 fn dismiss_copy_card(app: AppHandle, state: State<'_, Arc<AppState>>) {
-    let keep = state.settings.lock().show_floating_pill;
-    float_pill::release_copy_card(&app, keep);
+    let show = state.settings.lock().show_floating_pill;
+    // A take recording or still processing keeps its pill, whatever the setting.
+    let in_flight = *state.recording.lock() || *state.busy.lock();
+    float_pill::release_copy_card(&app, show, in_flight);
 }
 
 #[tauri::command]
