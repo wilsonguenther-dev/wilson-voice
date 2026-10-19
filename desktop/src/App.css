@@ -3025,3 +3025,21 @@ button.primary.big {
   flex-direction: column;
   gap: 8px;
 }
+
+/* TC-1 — "TEST BUILD <sha> · <branch>" on a test-channel build only. */
+.test-build-chip {
+  position: fixed;
+  top: 8px;
+  right: 12px;
+  z-index: 50;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #1a1200;
+  background: #ffc940;
+  pointer-events: none;
+  white-space: nowrap;
+}

@@ -24,9 +24,16 @@ use std::sync::OnceLock;
 /// NEVER rename this directory: the SQLite history, the license file and every
 /// downloaded model live under it, and a rename orphans all of them.
 pub fn default_root() -> PathBuf {
+    root_for(crate::channel::CURRENT)
+}
+
+/// TC-1: the default state root for a given build channel. Production is
+/// `<Application Support>/WilsonVoice` (frozen); the test channel is
+/// `<Application Support>/WilsonVoice-Test`, a sibling — never inside it.
+pub fn root_for(channel: crate::channel::Channel) -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("WilsonVoice")
+        .join(channel.profile().data_dir_name)
 }
 
 /// Every directory and file path the app derives from its state root.
@@ -112,7 +119,10 @@ mod tests {
         let p = resolve(None);
         assert_eq!(p.root, default_root());
         assert!(!p.overridden);
-        assert!(p.root.ends_with("WilsonVoice"), "data dir name is frozen");
+        assert!(
+            p.root.ends_with(crate::channel::current().data_dir_name),
+            "data dir name is frozen"
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 include!("src/vocab_extract.rs");
 
 fn main() {
+    build_channel();
     build_vocab_corpus();
     weak_link_coreaudio();
     tauri_build::build()
@@ -69,6 +70,19 @@ fn main() {
 fn weak_link_coreaudio() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreAudio");
+    }
+}
+
+/// TC-1 — `YAP_CHANNEL=test` at build time compiles the "Yap Test" profile
+/// (`src/channel.rs`). A cfg, not a runtime read, so an installed production
+/// binary can never be flipped into the test channel by its environment.
+fn build_channel() {
+    println!("cargo:rustc-check-cfg=cfg(yap_channel_test)");
+    println!("cargo:rerun-if-env-changed=YAP_CHANNEL");
+    println!("cargo:rerun-if-env-changed=YAP_BUILD_SHA");
+    println!("cargo:rerun-if-env-changed=YAP_BUILD_BRANCH");
+    if std::env::var("YAP_CHANNEL").map(|v| v.trim() == "test").unwrap_or(false) {
+        println!("cargo:rustc-cfg=yap_channel_test");
     }
 }
 
