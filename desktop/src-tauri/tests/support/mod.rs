@@ -427,15 +427,18 @@ pub fn meeting_token_count(text: &str) -> usize {
         .sum()
 }
 
+/// The closure a [`StubModel`] answers each request with.
+type Responder = Box<
+    dyn Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Generated, SummaryError>
+        + Send
+        + Sync,
+>;
+
 /// A scripted stand-in for the sidecar: answers come from a closure over the
 /// request, and every request is recorded so a test can assert what was ASKED,
 /// not only what came back.
 pub struct StubModel {
-    responder: Box<
-        dyn Fn(&wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Generated, SummaryError>
-            + Send
-            + Sync,
-    >,
+    responder: Responder,
     requests: std::sync::Mutex<Vec<wilson_voice_lib::polish_protocol::PolishRequest>>,
     counts: AtomicU64,
 }

@@ -186,8 +186,10 @@ fn fixture_wav() -> Vec<f32> {
         if id == b"data" {
             let end = (body + size).min(bytes.len());
             return bytes[body..end]
-                .chunks_exact(2)
-                .map(|p| i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|p| i16::from_le_bytes(*p) as f32 / 32768.0)
                 .collect();
         }
         i = body + size + (size % 2);

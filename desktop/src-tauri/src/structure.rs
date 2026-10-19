@@ -343,13 +343,11 @@ fn place_pauses(flat: &str, sentences: &[(usize, usize)], pauses: &[StructurePau
                     marks.after[si] = Some(m);
                 }
             }
-            Some(&(_, Err((si, bi)))) => {
-                // The FIRST spoken colon of a sentence is the topic's.
-                if marks.topic_comma[si].is_none_or(|old| bi < old) {
-                    marks.topic_comma[si] = Some(bi);
-                }
+            // The FIRST spoken colon of a sentence is the topic's.
+            Some(&(_, Err((si, bi)))) if marks.topic_comma[si].is_none_or(|old| bi < old) => {
+                marks.topic_comma[si] = Some(bi);
             }
-            None => {}
+            Some(&(_, Err(_))) | None => {}
         }
     }
     marks

@@ -423,7 +423,7 @@ pub fn start_recording(
     // Y3 — the take's audio goes straight to `<id>.capture.wav` next to the
     // history wav as it is captured, so a long dictation costs a bounded window
     // of RAM instead of growing two Vecs for as long as the key is held.
-    let spill = SpillWriter::open(&wav_path, journal_dir);
+    let spill = SpillWriter::open(&wav_path, journal_dir).map(Box::new);
 
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     dispatch(CaptureCmd::Arm {
@@ -1221,8 +1221,10 @@ fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, Str
 
     let bytes = std::fs::read(&spill).unwrap_or_default();
     let samples: Vec<f32> = bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b) as f32 / i16::MAX as f32)
         .collect();
     // Same floor the live path uses: below it the "take" was a stray tap, and a
     // Retry row for it would be noise in History.
@@ -1493,8 +1495,8 @@ fn voiced_frames(samples: &[f32], sample_rate: u32) -> Option<(Vec<bool>, f64)> 
     let max_gap = (0.30 / frame_secs).round() as usize;
     let mut bridged = mask.clone();
     let mut last_voiced: Option<usize> = None;
-    for idx in 0..mask.len() {
-        if mask[idx] {
+    for (idx, &voiced) in mask.iter().enumerate() {
+        if voiced {
             if let Some(lv) = last_voiced {
                 if idx - lv <= max_gap + 1 {
                     for slot in bridged.iter_mut().take(idx).skip(lv + 1) {
@@ -1631,7 +1633,10 @@ enum CaptureCmd {
         journal: Option<CaptureJournal>,
         /// Y3 — this take's capture spill, opened by `start_recording` in the
         /// recordings dir so the capture worker never has to know a path.
-        spill: Option<SpillWriter>,
+        ///
+        /// Boxed: the writer is ~16x every other command, and every command
+        /// on this channel would otherwise pay for its size.
+        spill: Option<Box<SpillWriter>>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     /// Stop buffering and hand back the take. The stream STAYS open.
@@ -2120,7 +2125,7 @@ fn capture_worker_loop(rx: mpsc::Receiver<CaptureCmd>) {
                     if stream.is_capturing() {
                         log::warn!("arm while already capturing — dropping the orphaned take");
                     }
-                    stream.begin(journal, spill);
+                    stream.begin(journal, spill.map(|s| *s));
                     let _ = reply.send(Ok(()));
                 }
             }
@@ -3479,10 +3484,7 @@ fn agc_gain(rms: f32, peak: f32, target_dbfs: f32) -> f32 {
     // scale (peak-limit) → boost stays clip-free. Cap runaway gain on very quiet
     // input. Also refuses to invent signal (>0 always).
     let peak_ceiling = 0.99f32;
-    let gain = (target_rms / rms)
-        .min(peak_ceiling / peak)
-        .min(64.0)
-        .max(0.0);
+    let gain = (target_rms / rms).min(peak_ceiling / peak).clamp(0.0, 64.0);
     if !gain.is_finite() {
         return 1.0;
     }
@@ -4044,8 +4046,10 @@ mod tests {
     fn read_spill(path: &Path) -> Vec<i16> {
         std::fs::read(path)
             .unwrap()
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect()
     }
 

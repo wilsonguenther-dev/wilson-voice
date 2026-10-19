@@ -52,7 +52,7 @@ fn take_of(words: usize, per_para: usize) -> String {
         if made >= words {
             break;
         }
-        if sentence % per_para == 0 {
+        if sentence.is_multiple_of(per_para) {
             out.push_str("\n\n");
         } else {
             out.push(' ');
