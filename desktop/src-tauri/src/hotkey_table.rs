@@ -518,6 +518,35 @@ pub fn set_active_cancel(v: (Shortcut, String)) {
     *ACTIVE_CANCEL.lock() = Some(v);
 }
 
+/// fix-249 advisory (c): the cancel chord that is ACTUALLY registered right
+/// now. A rebind during a take changes `active_cancel` but not this, so the
+/// release always drops the key the take armed — Esc can never stay
+/// registered system-wide while idle.
+static REGISTERED_CANCEL: Mutex<Option<Shortcut>> = Mutex::new(None);
+
+/// The chord a (re-)register should use: the one already armed this take, else
+/// the active one. PURE.
+pub fn cancel_for_register(slot: &Option<Shortcut>, active: Shortcut) -> Shortcut {
+    slot.unwrap_or(active)
+}
+
+/// The chord a release must drop (and forget). PURE.
+pub fn cancel_for_release(slot: &mut Option<Shortcut>, active: Shortcut) -> Shortcut {
+    slot.take().unwrap_or(active)
+}
+
+pub fn cancel_to_register() -> Shortcut {
+    cancel_for_register(&REGISTERED_CANCEL.lock(), active_cancel().0)
+}
+
+pub fn note_cancel_registered(sc: Shortcut) {
+    *REGISTERED_CANCEL.lock() = Some(sc);
+}
+
+pub fn cancel_to_release() -> Shortcut {
+    cancel_for_release(&mut REGISTERED_CANCEL.lock(), active_cancel().0)
+}
+
 pub fn meeting_status() -> CarbonStatus {
     MEETING_STATUS.lock().clone()
 }
@@ -974,6 +1003,39 @@ mod tests {
             (BindingAction::Cancel, cancel, "⌃⌘M".into()),
         ])
         .is_ok());
+    }
+
+    /// fix-249 advisory (c): a cancel rebind that lands mid-take (the take
+    /// armed Esc, then the setting moved to F6) still releases Esc, and a
+    /// re-latch inside the take re-uses Esc instead of arming F6 too.
+    #[test]
+    fn cancel_rebind_mid_take_never_leaves_esc_registered_idle() {
+        let esc = shortcuts::CANCEL.shortcut();
+        let f6 = Shortcut::new(None, Code::F6);
+        let mut registry: Vec<Shortcut> = Vec::new();
+        let mut slot: Option<Shortcut> = None;
+        let mut active = esc;
+        // take starts: arm
+        let sc = cancel_for_register(&slot, active);
+        registry.push(sc);
+        slot = Some(sc);
+        // Settings rebinds the cancel key while the take runs
+        active = f6;
+        // hands-free re-latch inside the same take
+        let sc = cancel_for_register(&slot, active);
+        assert_eq!(sc, esc, "the re-latch keeps the key this take armed");
+        if !registry.contains(&sc) {
+            registry.push(sc);
+        }
+        // take ends: release
+        let sc = cancel_for_release(&mut slot, active);
+        registry.retain(|x| *x != sc);
+        assert!(registry.is_empty(), "idle with {registry:?} still registered");
+        assert_eq!(slot, None);
+        // the next take arms the new key
+        assert_eq!(cancel_for_register(&slot, active), f6);
+        // a second release with nothing armed targets the active key (no-op)
+        assert_eq!(cancel_for_release(&mut slot, active), f6);
     }
 
     #[test]

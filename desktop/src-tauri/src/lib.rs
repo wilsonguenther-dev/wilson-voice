@@ -1699,16 +1699,19 @@ fn register_cancel_shortcut(app: &AppHandle) {
     if !smoke::global_hotkeys_allowed() {
         return;
     }
-    let (sc, cancel_label) = hotkey_table::active_cancel();
+    // fix-249 advisory (c): re-arm the key this take already holds, if any.
+    let sc = hotkey_table::cancel_to_register();
+    let cancel_label = format!("{sc:?}");
     if app.global_shortcut().is_registered(sc) {
         log::debug!("{} cancel already registered", cancel_label);
+        hotkey_table::note_cancel_registered(sc);
         return;
     }
     match app.global_shortcut().register(sc) {
-        Ok(()) => log::info!(
-            "{} cancel registered for this take",
-            cancel_label
-        ),
+        Ok(()) => {
+            hotkey_table::note_cancel_registered(sc);
+            log::info!("{} cancel registered for this take", cancel_label)
+        }
         Err(e) => log::warn!("{} register failed: {e}", cancel_label),
     }
 }
@@ -1721,7 +1724,10 @@ fn unregister_cancel_shortcut(app: &AppHandle) {
     if !smoke::global_hotkeys_allowed() {
         return;
     }
-    let (sc, cancel_label) = hotkey_table::active_cancel();
+    // fix-249 advisory (c): drop the key the take ARMED, not whatever the
+    // setting says now — a mid-take rebind must not leave Esc registered.
+    let sc = hotkey_table::cancel_to_release();
+    let cancel_label = format!("{sc:?}");
     if !app.global_shortcut().is_registered(sc) {
         return;
     }
