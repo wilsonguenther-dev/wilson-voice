@@ -2676,7 +2676,14 @@ impl SidecarSession {
         Self::spawn(&binary, &path, &model.id)
     }
 
-    fn exchange(&mut self, req: &PolishRequest) -> Result<PolishResponse, SummaryError> {
+    /// One request/response. review-opus2 A4: the wait polls `cancel` every
+    /// 100 ms and a cancel KILLS the sidecar, so Cancel ends a 60–90 s model
+    /// pass at once instead of after it.
+    fn exchange(
+        &mut self,
+        req: &PolishRequest,
+        cancel: &crate::summary_jobs::CancelToken,
+    ) -> Result<PolishResponse, SummaryError> {
         let line = serde_json::to_string(req).map_err(|_| SummaryError::Protocol)?;
         writeln!(self.stdin, "{line}").map_err(|_| SummaryError::Unavailable)?;
         self.stdin.flush().map_err(|_| SummaryError::Unavailable)?;
@@ -2685,12 +2692,17 @@ impl SidecarSession {
             let left = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or(SummaryError::Protocol)?;
-            match self.lines.recv_timeout(left) {
+            if cancel.is_cancelled() {
+                let _ = self.child.kill();
+                return Err(SummaryError::Cancelled);
+            }
+            match self.lines.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(line) => {
                     if let Some(response) = parse_response_for(&line, req.id) {
                         return Ok(response);
                     }
                 }
+                Err(RecvTimeoutError::Timeout) if left > Duration::from_millis(100) => {}
                 Err(RecvTimeoutError::Timeout) => return Err(SummaryError::Protocol),
                 Err(RecvTimeoutError::Disconnected) => return Err(SummaryError::Unavailable),
             }
@@ -2729,7 +2741,7 @@ impl SidecarSummaryClient {
 
     fn call(&self, req: &PolishRequest) -> Result<PolishResponse, SummaryError> {
         let mut session = self.session.lock().map_err(|_| SummaryError::Protocol)?;
-        session.exchange(req)
+        session.exchange(req, &self.cancel)
     }
 }
 
