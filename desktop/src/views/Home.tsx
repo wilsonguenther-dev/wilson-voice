@@ -11,7 +11,7 @@ export default function Home() {
   const {
     bootError, bootErrors, booting, retryBoot, clearAll, clearing, copyText, diffId, refreshAll,
     failed, feedbackEdits, fixDraft, fixingId, history,
-    insights, loadHistory, pasteText, query, queryRef, refreshInsights,
+    insights, loadHistory, needsPerms, pasteText, query, queryRef, refreshInsights,
     retryFailed, retrying, setActiveNoteId, setCandidates, setDiffId, setFailed,
     setFeedbackEdits, setFixDraft, setFixingId, setHistory, setNav, setNoteBody,
     setNoteTitle, setQuery, setRetryId, setScratchComposing, settings, status, toast,
@@ -28,6 +28,8 @@ export default function Home() {
   const homeError =
     bootErrors?.get_history ?? bootErrors?.get_insights ?? (insights == null ? bootError : null);
   const state = viewState(history, booting || !insights, homeError);
+  // H2 — nothing dictated yet, no search typed, and a critical grant missing.
+  const permsGate = history.length === 0 && !query && !!needsPerms;
   async function removeEntry(id: string) {
     try {
       await invoke("delete_entry", { id });
@@ -117,6 +119,22 @@ export default function Home() {
                 companionTone={settings?.companionTone}
               />
 
+              {/* yap-uiux-2026-10-16-H2 — with Microphone or Accessibility
+                  ungranted, "hold fn" cannot work, so the empty Home's first
+                  card and its one action is the thing that unblocks it: the
+                  Permissions view. It sits ABOVE the record button, so the
+                  hotkey hint reads as the step that follows, not the first. */}
+              {permsGate && (
+                <EmptyState
+                  data-empty-state="home:history"
+                  glyph={<WaveGlyph />}
+                  title="Grant permissions to start dictating"
+                  body="Yap needs Microphone and Accessibility before it can hear you and type for you. Grant them, then hold fn⌃ and talk."
+                  actionLabel="Grant permissions"
+                  onAction={() => setNav("permissions")}
+                />
+              )}
+
               <button
                 className={
                   status.recording
@@ -161,9 +179,12 @@ export default function Home() {
               )}
 
               <div className="toolbar">
+                {/* yap-uiux-2026-10-16-H4 — the placeholder named the index
+                    ("SQLite FTS5"), which is how it works, not what it does. */}
                 <input
                   type="search"
-                  placeholder="Search transcripts (SQLite FTS5)…"
+                  aria-label="Search your dictations"
+                  placeholder="Search everything you've said…"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -255,7 +276,7 @@ export default function Home() {
                 </section>
               )}
 
-              {history.length === 0 ? (
+              {permsGate ? null : history.length === 0 ? (
                 <EmptyState
                   data-empty-state="home:history"
                   glyph={<WaveGlyph />}
