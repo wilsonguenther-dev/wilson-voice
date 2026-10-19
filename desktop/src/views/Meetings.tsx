@@ -296,7 +296,7 @@ export default function Meetings() {
                 {backlog?.offer && (
                   <div className="card notes-backlog" role="region" aria-label="Notes for past meetings">
                     <p className="meeting-title">
-                      Summarize {backlog.count} past {backlog.count === 1 ? "meeting" : "meetings"}?
+                      Summarize {backlog.count} past meeting{backlog.count === 1 ? "" : "s"}?
                     </p>
                     <p className="tiny muted">
                       Yap writes notes on this Mac, one meeting at a time. If the notes model isn't here yet, it
