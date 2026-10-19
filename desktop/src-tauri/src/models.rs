@@ -1118,13 +1118,29 @@ pub fn download_in_progress(dest: &Path) -> Option<(u64, u64)> {
         .then(|| (slot.done.load(SeqCst), slot.total.load(SeqCst)))
 }
 
+/// A4 — sleep `d`, waking every 50 ms to check `cancel`. `true` = cancelled.
+async fn sleep_or_cancel(d: Duration, cancel: &(dyn Fn() -> bool + Sync)) -> bool {
+    let deadline = tokio::time::Instant::now() + d;
+    loop {
+        if cancel() {
+            return true;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(50))).await;
+    }
+}
+
 /// #250 round 3 (B2) — the error a cancelled download returns. The `.partial`
 /// is kept, so the next attempt resumes where this one stopped.
 pub const DOWNLOAD_CANCELLED: &str = "download cancelled";
 
-/// [`download_file`], stoppable: `cancel` is checked before every attempt and
-/// between every chunk, and a cancel returns [`DOWNLOAD_CANCELLED`] at once —
-/// no retry, no backoff sleep.
+/// [`download_file`], stoppable: `cancel` is checked before every attempt,
+/// between every chunk, during the backoff sleep and while a chunk is slow to
+/// arrive (A4, every 50 ms), and a cancel returns [`DOWNLOAD_CANCELLED`] at
+/// once — no retry. One writer per `dest` (R2-B4): see [`DownloadSlot`].
 pub async fn download_file_cancellable<F>(
     urls: &[String],
     dest: &Path,
@@ -1178,9 +1194,9 @@ where
         if cancel() {
             return Err(DOWNLOAD_CANCELLED.to_string());
         }
-        if attempt > 0 {
-            // 1s, 2s, 4s … between full passes over the URL list.
-            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+        // 1s, 2s … between full passes over the URL list; a cancel wakes it.
+        if attempt > 0 && sleep_or_cancel(Duration::from_secs(1 << (attempt - 1)), cancel).await {
+            return Err(DOWNLOAD_CANCELLED.to_string());
         }
         for url in urls {
             if cancel() {
@@ -1259,10 +1275,25 @@ where
             let _ = file.sync_all();
             return Err(DOWNLOAD_CANCELLED.to_string());
         }
-        let chunk = tokio::time::timeout(STALL_TIMEOUT, resp.chunk())
-            .await
-            .map_err(|_| format!("download from {url} stalled at {downloaded} bytes"))?
-            .map_err(|e| format!("read from {url} failed: {e}"))?;
+        // A4: a slow chunk is waited on in 50 ms slices so a cancel lands
+        // within one slice, not after STALL_TIMEOUT.
+        let chunk = {
+            let mut fut = std::pin::pin!(resp.chunk());
+            let started = tokio::time::Instant::now();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(50), &mut fut).await {
+                    Ok(r) => break r.map_err(|e| format!("read from {url} failed: {e}"))?,
+                    Err(_) if cancel() => {
+                        let _ = file.sync_all();
+                        return Err(DOWNLOAD_CANCELLED.to_string());
+                    }
+                    Err(_) if started.elapsed() >= STALL_TIMEOUT => {
+                        return Err(format!("download from {url} stalled at {downloaded} bytes"));
+                    }
+                    Err(_) => {}
+                }
+            }
+        };
         let Some(bytes) = chunk else { break };
         file.write_all(&bytes)
             .map_err(|e| format!("write {}: {e}", partial.display()))?;
