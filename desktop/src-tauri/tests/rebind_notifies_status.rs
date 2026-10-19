@@ -124,7 +124,9 @@ fn save_settings_rebind_goes_through_rebind_and_activate() {
         .expect("rebind_dictate_toggle exists");
     let body = &body[..body.find("\n}\n").unwrap()];
     assert!(body.contains("hotkeys::rebind_and_activate("), "{body}");
-    assert!(LIB.contains("rebind_dictate_toggle(&app, &next)?;"));
+    // fix-249 advisory (b): save_settings applies the rebind after persisting
+    // and routes a refusal through its rollback.
+    assert!(LIB.contains("if let Err(e) = rebind_dictate_toggle(&app, &next) {"));
     let hook = LIB.split("hotkeys::on_status_change(").nth(1).unwrap();
     assert!(hook[..400].contains("emit_status(&h, &st)"));
 }
