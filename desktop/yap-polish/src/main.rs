@@ -154,7 +154,10 @@ RULES
    `decisions` are things that were settled. `questions` are things left
    open (\"whether ...\"). A question is not an action.
 5. Empty arrays are correct answers. Do not manufacture items to fill them.
-6. Keep each `text` to one short sentence.";
+6. Keep each `text` to one short sentence.
+7. `narrative`: only what was said. Never conclude, judge or add a status
+   nobody stated (never \"is complete\", \"is done\" or \"is final\" unless
+   someone said so).";
 
 /// REDUCE: the narrative, and only the narrative. Action items are NOT
 /// re-generated here — they are merged by dedup from the MAP results, so a
@@ -167,8 +170,9 @@ RULES
 1. Output ONLY the summary. No preamble, no headings, no bullet list, no
    markdown fences.
 2. At most 250 words of plain prose. Shorter is better.
-3. Use only what the notes contain. Never add a fact, name, number, date or
-   address that is not in them.
+3. Use only what was said. Never add a fact, name, number, date or address
+   that is not in the notes, and never add a conclusion or status nobody
+   stated (\"is complete\", \"is done\", \"was a success\").
 4. Do not list action items. They are collected separately.";
 
 /// HEADLINE (focus-2026-10-19): a title and the key points, over the finished

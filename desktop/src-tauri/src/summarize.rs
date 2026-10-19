@@ -1215,7 +1215,8 @@ pub fn validate_item(source: &str, item: &str) -> Option<String> {
 
 /// The same gate over the narrative, plus the summary-shaped length checks.
 pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
-    let narrative = narrative.trim();
+    let narrative = drop_unsaid_status(source, narrative.trim());
+    let narrative = narrative.as_str();
     if narrative.is_empty() {
         return reject("v1_empty");
     }
@@ -1231,6 +1232,43 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
     }
     common_gates(source, narrative)?;
     Some(clamp_words(narrative, MAX_NARRATIVE_WORDS))
+}
+
+/// #250 round 3 (A5) — status words a summary may only use when the meeting
+/// did: "The pricing review … is complete" from a transcript that said "this
+/// is the pricing review" claims more than was said.
+const STATUS_CLAIMS: &[&str] = &[
+    "is complete", "is completed", "was completed", "is done", "was done", "is finished",
+    "was finished", "is final", "was finalized", "is finalized", "was a success",
+    "is resolved", "was resolved", "went well", "is wrapped up", "was wrapped up",
+];
+
+/// Remove each narrative sentence that makes a [`STATUS_CLAIMS`] claim the
+/// source does not contain. Whole sentences only — never a reworded half.
+fn drop_unsaid_status(source: &str, narrative: &str) -> String {
+    let src = source.to_lowercase();
+    let unsaid = |s: &str| {
+        let l = s.to_lowercase();
+        STATUS_CLAIMS.iter().any(|c| l.contains(c) && !src.contains(c))
+    };
+    if !unsaid(narrative) {
+        return narrative.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in narrative.chars() {
+        cur.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            if !unsaid(&cur) {
+                out.push(cur.trim().to_string());
+            }
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() && !unsaid(&cur) {
+        out.push(cur.trim().to_string());
+    }
+    out.join(" ")
 }
 
 /// V3–V7, shared by both paths.
