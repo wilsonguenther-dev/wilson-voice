@@ -13,6 +13,7 @@ import { canRepair, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
+import HideHint from "./HideHint";
 import Home from "./views/Home";
 import Permissions from "./views/Permissions";
 import Meetings from "./views/Meetings";
@@ -73,7 +74,8 @@ export default function App() {
   }
 
   // YV9 — first-run onboarding gate: show once settings are loaded and the user
-  // has not completed it. Rendered over the app; the main UI stays mounted.
+  // has not completed it. This early return REPLACES the main UI, which is not
+  // mounted until onboarding finishes (so HideHint claims its hint on mount).
   if (settings && !settings.onboarded) {
     return (
       <Onboarding
@@ -303,6 +305,10 @@ export default function App() {
             running, so this is the same slim ribbon onboarding shows, and it
             retires itself the moment the engine is ready. */}
         <ModelRibbon setup={modelSetup} />
+
+        {/* yap-lifecycle — once per install, after the first red-X hide. It
+            claims the hint on mount, so a hide during onboarding still shows. */}
+        <HideHint />
 
         {/* PERM-E — the single permission surface. Renders NOTHING while all
             four grants are fine, which is why it sits unconditionally here
