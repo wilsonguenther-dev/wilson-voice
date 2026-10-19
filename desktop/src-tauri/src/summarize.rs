@@ -2600,6 +2600,25 @@ fn next_id() -> u64 {
 ///   dictation after a summary would pay a full prefill.
 ///
 /// So the summarizer brings its own process, and takes it down when it is done.
+/// review-opus2 A7 — the pids of every live summary sidecar, so app quit can
+/// stop them explicitly rather than trust a Drop that a quit may never run.
+fn live_sidecars() -> &'static std::sync::Mutex<Vec<u32>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<Vec<u32>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+/// Stop every live summary sidecar (app quit). Returns how many were signalled.
+pub fn stop_all_sidecars() -> usize {
+    let pids: Vec<u32> = std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
+    for pid in &pids {
+        // SAFETY: plain kill(2) on a pid this process spawned and still owns.
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    pids.len()
+}
+
 pub struct SidecarSession {
     child: Child,
     stdin: ChildStdin,
@@ -2646,6 +2665,10 @@ impl SidecarSession {
                 );
             }
         });
+        live_sidecars()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(child.id());
         let session = Self {
             child,
             stdin,
@@ -2712,6 +2735,11 @@ impl SidecarSession {
 
 impl Drop for SidecarSession {
     fn drop(&mut self) {
+        let pid = self.child.id();
+        live_sidecars()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|p| *p != pid);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

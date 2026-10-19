@@ -100,6 +100,9 @@ pub enum NotesError {
     DiskFull(String),
     /// The download finished but did not match its sha256.
     Checksum,
+    /// review-opus2 A7 — the download failed for a reason that is neither the
+    /// network nor the server nor the disk: never called "offline".
+    Download,
     /// A3 — the server answered with an HTTP error (403, 404, 5xx) while the
     /// Mac was online: not "offline", and not the checksum copy.
     Server(u16),
@@ -121,6 +124,9 @@ impl NotesError {
             Self::DiskFull(msg) => msg.clone(),
             Self::Checksum => {
                 "the notes model didn't download correctly. Retry to fetch it again.".to_string()
+            }
+            Self::Download => {
+                "the notes model download didn't finish. Retry to try again.".to_string()
             }
             Self::Server(code) => {
                 format!("Download failed (HTTP {code}). Retry in a little while.")
@@ -156,8 +162,16 @@ pub fn classify_download_error(msg: &str) -> NotesError {
         NotesError::Checksum
     } else if let Some(code) = http_status_in(&lower) {
         NotesError::Server(code)
-    } else {
+    } else if [
+        "timed out", "stalled", "error sending request", "connect", "dns", "network",
+        "unreachable", "offline", "read from", "short read", "failed to lookup",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+    {
         NotesError::Offline
+    } else {
+        NotesError::Download
     }
 }
 
@@ -854,6 +868,7 @@ mod tests {
             NotesError::DiskFull(String::from("stub disk")),
             NotesError::Checksum,
             NotesError::Server(503),
+            NotesError::Download,
             NotesError::ModelStart,
             NotesError::Summary(String::from("stub summary")),
             NotesError::Cancelled,
@@ -900,6 +915,19 @@ mod tests {
         // Retry is accepted: the slot was cleared.
         assert!(j.submit("boom"));
         assert!(j.wait_idle(Duration::from_secs(5)));
+    }
+
+
+    /// review-opus2 A7: only a network-shaped error reads "offline".
+    #[test]
+    fn unknown_download_errors_are_not_offline() {
+        assert_eq!(classify_download_error("rename a -> b failed: os error 1"), NotesError::Download);
+        assert_eq!(classify_download_error("no download URLs configured"), NotesError::Download);
+        assert_eq!(
+            classify_download_error("request to https://x/m failed: error sending request"),
+            NotesError::Offline
+        );
+        assert_eq!(classify_download_error("download from u stalled at 5 bytes"), NotesError::Offline);
     }
 
 }

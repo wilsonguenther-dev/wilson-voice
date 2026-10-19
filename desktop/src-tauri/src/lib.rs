@@ -7717,6 +7717,11 @@ pub fn run() {
             // restore, then the WAL checkpoint. Covers Cmd-Q / window-driven
             // exit; the tray Quit item also checkpoints before app.exit(0).
             if let tauri::RunEvent::Exit = event {
+                // review-opus2 A7: no summary sidecar outlives the app.
+                let stopped = summarize::stop_all_sidecars();
+                if stopped > 0 {
+                    log::info!("exit: stopped {stopped} notes sidecar(s)");
+                }
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let steps = teardown_for_exit(&state);
                     log::info!("exit teardown: {}", steps.join(" → "));
