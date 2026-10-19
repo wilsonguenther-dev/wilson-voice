@@ -84,3 +84,11 @@ kTCCServicePostEvent
 ```
 
 tccutil takes the name without the `kTCCService` prefix: Accessibility, ListenEvent (Input Monitoring), PostEvent, Microphone. These are exactly `perm_probe::Service::tcc_name()`.
+
+## 4. Fix round 2: the banner's ListenEvent row agrees with the Input Monitoring grant row
+
+Reviewer finding at db290b8: with Accessibility granted, IOHID ListenEvent Denied and the fn tap delivering, `report.input_monitoring` was Authorized but `report.probe.listen_event.state` was Denied, so the banner offered a ListenEvent Repair for a working path. `permissions::report_from_probe` now (a) feeds the grant row the same combined ListenEvent answer (CG OR IOHID) the probe uses, and (b) runs `reconcile_listen_event`: grant row Authorized makes the probe row Granted, and grant row Unknown (HID denied under live Accessibility) makes a repairable probe row Unknown. Only a Denied grant row keeps Denied / StaleIdentity. The raw answers (`raw`, `listen_event_cg`, `listen_event_hid`) are kept as they were.
+
+Tests in `tests/perm_repair.rs`, both RED on db290b8 and GREEN with the fix (`cargo test --features custom-protocol --test perm_repair`):
+- `working_tap_under_accessibility_is_not_a_listen_event_repair` (the reviewer's exact case). RED: `assertion left != right failed, left: Denied, right: Denied`.
+- `listen_event_banner_agrees_with_grant_row_for_every_input`: every combination of ax × cg × hid × tap × last-run signature. RED: `ax=true cg=true hid=Denied tap=false last=false: Granted vs Unknown`.

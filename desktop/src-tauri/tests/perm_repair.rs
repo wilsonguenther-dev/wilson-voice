@@ -443,3 +443,119 @@ fn listen_event_repair_says_relaunch() {
     assert_eq!(ev["phase"], "relaunch");
     assert_eq!(ev["service"], "listen_event");
 }
+
+/// Fix round 2 (PR #228 blocking finding): Accessibility granted, IOHID
+/// ListenEvent Denied, fn tap delivering. The health row says Input Monitoring
+/// is fine, so the banner must not offer a ListenEvent Repair.
+#[test]
+fn working_tap_under_accessibility_is_not_a_listen_event_repair() {
+    let raw = RawProbes {
+        accessibility: true,
+        listen_event_cg: false,
+        listen_event_hid: GrantState::Denied,
+        post_event: true,
+        microphone: MicAuth::Authorized,
+    };
+    let probe = build_probe_report(raw, &TrustLedger::default(), None, &dev_id());
+    assert_eq!(
+        probe.listen_event.state,
+        ProbeState::Denied,
+        "raw probe alone says denied"
+    );
+    for tap_delivering in [true, false] {
+        let report = permissions::report_from_probe(
+            probe.clone(),
+            tap_delivering,
+            GrantState::Unknown,
+            true,
+            "ok".into(),
+        );
+        let im_row = report
+            .grants
+            .iter()
+            .find(|g| g.key == permissions::GRANT_INPUT_MONITORING)
+            .expect("input monitoring row");
+        let expect_row = if tap_delivering {
+            GrantState::Authorized
+        } else {
+            GrantState::Unknown
+        };
+        assert_eq!(im_row.status, expect_row);
+        assert_ne!(report.probe.listen_event.state, ProbeState::Denied);
+        assert_ne!(report.probe.listen_event.state, ProbeState::StaleIdentity);
+        assert!(report.probe.listen_event.note.is_some());
+        // The raw answers are kept.
+        assert_eq!(report.probe.listen_event.raw, RawAnswer::Denied);
+        assert_eq!(report.probe.listen_event_hid, GrantState::Denied);
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert_ne!(json["probe"]["listenEvent"]["state"], "denied");
+    }
+}
+
+/// The claim "the grant rows and report.probe can never disagree", checked over
+/// every input: the banner offers a ListenEvent Repair exactly when the Input
+/// Monitoring grant row is Denied, and reads Granted exactly when it is
+/// Authorized.
+#[test]
+fn listen_event_banner_agrees_with_grant_row_for_every_input() {
+    let hids = [
+        GrantState::Authorized,
+        GrantState::Denied,
+        GrantState::Unknown,
+    ];
+    let lasts = [None, Some(apple_dev())];
+    for ax in [true, false] {
+        for cg in [true, false] {
+            for hid in hids {
+                for tap in [true, false] {
+                    for last in &lasts {
+                        let raw = RawProbes {
+                            accessibility: ax,
+                            listen_event_cg: cg,
+                            listen_event_hid: hid,
+                            post_event: ax,
+                            microphone: MicAuth::Authorized,
+                        };
+                        let probe = build_probe_report(
+                            raw,
+                            &TrustLedger::default(),
+                            last.as_ref(),
+                            &dev_id(),
+                        );
+                        let report = permissions::report_from_probe(
+                            probe,
+                            tap,
+                            GrantState::Unknown,
+                            true,
+                            "ok".into(),
+                        );
+                        let row = report
+                            .grants
+                            .iter()
+                            .find(|g| g.key == permissions::GRANT_INPUT_MONITORING)
+                            .expect("input monitoring row")
+                            .status;
+                        let state = report.probe.listen_event.state;
+                        let repairable =
+                            matches!(state, ProbeState::Denied | ProbeState::StaleIdentity);
+                        let case = format!(
+                            "ax={ax} cg={cg} hid={hid:?} tap={tap} last={}",
+                            last.is_some()
+                        );
+                        assert_eq!(
+                            repairable,
+                            row == GrantState::Denied,
+                            "{case}: {state:?} vs {row:?}"
+                        );
+                        assert_eq!(
+                            state == ProbeState::Granted,
+                            row == GrantState::Authorized,
+                            "{case}: {state:?} vs {row:?}"
+                        );
+                        assert_eq!(report.input_monitoring, row, "{case}");
+                    }
+                }
+            }
+        }
+    }
+}

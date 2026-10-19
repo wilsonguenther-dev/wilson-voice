@@ -218,8 +218,16 @@ pub fn report_from_probe(
     asr_detail: String,
 ) -> PermissionReport {
     let accessibility = probe.accessibility.state == crate::perm_probe::ProbeState::Granted;
-    let input_monitoring =
-        input_monitoring_state(probe.listen_event_hid, accessibility, tap_delivering);
+    // The grant row reads the SAME combined ListenEvent answer the banner reads
+    // (CGPreflightListenEventAccess OR IOHIDCheckAccess), not IOHID alone.
+    let listen_hid = if probe.listen_event.raw == crate::perm_probe::RawAnswer::Granted {
+        GrantState::Authorized
+    } else {
+        probe.listen_event_hid
+    };
+    let input_monitoring = input_monitoring_state(listen_hid, accessibility, tap_delivering);
+    let mut probe = probe;
+    reconcile_listen_event(&mut probe.listen_event, input_monitoring);
     let mut report = build_report_with_grants(
         accessibility,
         probe.microphone_auth,
@@ -230,6 +238,40 @@ pub fn report_from_probe(
     );
     report.probe = probe;
     report
+}
+
+/// Bring the banner's ListenEvent row into line with the Input Monitoring
+/// grant row, so the two surfaces can never disagree.
+///
+/// The grant row applies the pinned product rule (**a working tap is never
+/// reported blocked**; a HID denial under a live Accessibility grant is
+/// Unknown). The fn tap is listen-only and runs on Accessibility alone, so a
+/// raw ListenEvent "no" under either of those conditions is not a broken path
+/// and must not get a Repair button. Only a grant row of Denied keeps the
+/// probe's repairable state (Denied / StaleIdentity). The raw answers
+/// (`raw`, `listen_event_cg`, `listen_event_hid`) are left untouched.
+pub fn reconcile_listen_event(
+    listen: &mut crate::perm_probe::ServiceProbe,
+    input_monitoring: GrantState,
+) {
+    use crate::perm_probe::ProbeState;
+    let repairable = matches!(listen.state, ProbeState::Denied | ProbeState::StaleIdentity);
+    let (state, why) = match input_monitoring {
+        GrantState::Authorized if listen.state != ProbeState::Granted => (
+            ProbeState::Granted,
+            "the fn tap is delivering, so Input Monitoring is not blocking Yap",
+        ),
+        GrantState::Unknown if repairable => (
+            ProbeState::Unknown,
+            "Accessibility is on, which is enough for the listen-only fn tap",
+        ),
+        _ => return,
+    };
+    listen.state = state;
+    listen.note = Some(match listen.note.take() {
+        Some(n) => format!("{n}; {why}"),
+        None => why.to_string(),
+    });
 }
 
 /// The report, as a pure function of its four original inputs.
