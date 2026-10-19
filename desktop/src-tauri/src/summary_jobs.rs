@@ -617,26 +617,17 @@ mod tests {
     // Retry re-runs the job.
     #[test]
     fn failures_are_visible_and_retry_reruns() {
+        // Reasons are compared against `plain()` itself, never re-typed: a
+        // test literal must not duplicate shipped copy.
         let cases = [
-            (NotesError::Offline, true, OFFLINE_REASON.to_string()),
-            (
-                NotesError::DiskFull("not enough free space: 1.6 GB needed, 0.2 GB free".into()),
-                true,
-                "not enough free space: 1.6 GB needed, 0.2 GB free".into(),
-            ),
-            (
-                NotesError::Checksum,
-                true,
-                "the notes model didn't download correctly. Retry to fetch it again.".into(),
-            ),
-            (
-                NotesError::Summary("the model had nothing to say about this meeting".into()),
-                false,
-                "the model had nothing to say about this meeting".into(),
-            ),
-            (NotesError::ModelStart, false, "the notes model couldn't start on this Mac.".into()),
+            (NotesError::Offline, true),
+            (NotesError::DiskFull("stub: 1.6 GB needed, 0.2 GB free".into()), true),
+            (NotesError::Checksum, true),
+            (NotesError::Summary("stub: the summary refused".into()), false),
+            (NotesError::ModelStart, false),
         ];
-        for (err, in_download, reason) in cases {
+        for (err, in_download) in cases {
+            let reason = err.plain();
             let stub = Stub::new(!in_download);
             if in_download {
                 *stub.fetch_fail.lock().unwrap() = Some(err.clone());
