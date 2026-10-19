@@ -106,6 +106,10 @@ export interface AppSettings {
    * dictate chord (Code + modifiers only). null/absent = ⌃⌥⌘Space.
    */
   dictateToggle?: ChordSetting | null;
+  /** focus-2026-10-19 — Record meeting chord rebind; null/absent = ⌃⌘M. */
+  meetingChord?: ChordSetting | null;
+  /** focus-2026-10-19 — Cancel take key rebind; null/absent = Escape. */
+  cancelChord?: ChordSetting | null;
   /** classic (obsidian capsule) | yappy (pixel pet) */
   pillStyle?: string;
   /**

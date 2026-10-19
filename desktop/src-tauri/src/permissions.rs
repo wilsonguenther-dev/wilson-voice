@@ -339,7 +339,7 @@ pub fn build_report_with_grants(
             label: "Input Monitoring",
             status: input_monitoring,
             pane: "InputMonitoring",
-            detail: input_monitoring_detail(input_monitoring),
+            detail: input_monitoring_row_detail(input_monitoring),
         },
         GrantRow {
             key: GRANT_AUDIO_CAPTURE,
@@ -496,6 +496,26 @@ pub fn input_monitoring_state(
         GrantState::Denied if accessibility => GrantState::Unknown,
         other => other,
     }
+}
+
+/// focus-2026-10-19 — the Input Monitoring row for THIS bundle: the test
+/// channel has its own grant, so the row names the running product (#247's
+/// `perm_truth::product_name`), and a TCC row that says "allowed" while the live
+/// check says otherwise is called out as a stale grant with the remove + re-add
+/// fix — it never reads as a plain "off".
+pub fn input_monitoring_row_detail(state: GrantState) -> String {
+    let product = crate::perm_truth::product_name();
+    let row =
+        crate::hotkey_table::tcc_listen_event_row(&crate::perm_truth::running_identity().bundle_id);
+    let stale = row == Some(true) && state != GrantState::Authorized;
+    if stale || product != "Yap" {
+        return crate::hotkey_table::input_monitoring_detail_for(
+            state == GrantState::Authorized,
+            stale,
+            &product,
+        );
+    }
+    input_monitoring_detail(state)
 }
 
 pub fn input_monitoring_detail(state: GrantState) -> String {

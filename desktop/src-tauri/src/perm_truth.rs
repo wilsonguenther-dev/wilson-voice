@@ -400,6 +400,27 @@ mod sec {
 }
 
 /// The running process's identity. Computed once; it cannot change under us.
+/// The product name the UI says about permissions: the running bundle's file
+/// stem ("Yap Test" for `/Applications/Yap Test.app`), because that is the
+/// name System Settings lists the grant under. Pure. Anything that is not an
+/// `.app` path (an unbundled dev binary) is "Yap".
+pub fn product_name_from_bundle_path(bundle_path: &str) -> String {
+    let leaf = bundle_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    match leaf.strip_suffix(".app") {
+        Some(stem) if !stem.trim().is_empty() => stem.to_string(),
+        _ => "Yap".to_string(),
+    }
+}
+
+/// [`product_name_from_bundle_path`] for this process.
+pub fn product_name() -> String {
+    product_name_from_bundle_path(&running_identity().bundle_path)
+}
+
 pub fn running_identity() -> &'static RunningIdentity {
     static ID: OnceLock<RunningIdentity> = OnceLock::new();
     ID.get_or_init(|| {

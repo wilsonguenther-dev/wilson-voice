@@ -64,10 +64,10 @@ pub fn route(
         return Some(ShortcutJob::Take(edge));
     }
     let on_press = |job| pressed.then_some(job);
-    if shortcut == &shortcuts::MEETING_TOGGLE.shortcut() {
+    if shortcut == &crate::hotkey_table::active_meeting().0 {
         return on_press(ShortcutJob::MeetingToggle);
     }
-    if shortcut == &shortcuts::CANCEL.shortcut() {
+    if shortcut == &crate::hotkey_table::active_cancel().0 {
         return on_press(ShortcutJob::Cancel);
     }
     if shortcut == &shortcuts::PASTE_LAST.shortcut() {

@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import HotkeyRecorder from "../../HotkeyRow";
+import type { HotkeyBindingsReport } from "../../hotkeyRecorder";
 import { useAppCtx } from "../../appShell";
 import type { ChordSetting } from "../../appTypes";
 import { dictateLabel } from "../../hotkeyStatus";
@@ -28,6 +31,28 @@ export default function Shortcut() {
   } = useAppCtx();
   const [rebinding, setRebinding] = useState(false);
   const [rebindHint, setRebindHint] = useState<string | null>(null);
+  // focus-2026-10-19 — the live hotkey table: one row per action with its
+  // status chip and the key that works right now (re-read on every status).
+  const [report, setReport] = useState<HotkeyBindingsReport | null>(null);
+  const [tableError, setTableError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    invoke<HotkeyBindingsReport>("hotkey_bindings")
+      .then((r) => live && setReport(r))
+      .catch(() => live && setReport(null));
+    return () => {
+      live = false;
+    };
+  }, [status, settings]);
+  const rowFor = (a: string) => report?.rows.find((r) => r.action === a);
+  const save = async (next: typeof settings) => {
+    setTableError(null);
+    try {
+      await saveSettings(next!);
+    } catch (e) {
+      setTableError(String(e));
+    }
+  };
   useEffect(() => {
     if (!rebinding || !settings) return;
     const onKey = (e: KeyboardEvent) => {
@@ -97,6 +122,67 @@ export default function Shortcut() {
                         {rebindHint}
                       </p>
                     )}
+                  </div>
+                  {/* focus-2026-10-19 — every action: key, live status, recorder, reset. */}
+                  <div className="panel" data-testid="hotkey-table">
+                    <h3>Hotkeys</h3>
+                    {report?.liveDictateKey && rowFor("dictate_hold")?.fallback && (
+                      <p className="muted">
+                        The fn hold is not working right now — <strong>{report.liveDictateKey}</strong> starts a take instead.
+                      </p>
+                    )}
+                    <HotkeyRecorder
+                      title="Dictate (hold)"
+                      keyLabel={settings.hotkeyLabel ?? "fn⌃"}
+                      defaultLabel="fn⌃"
+                      isDefault={(settings.pttBinding ?? "fn_control") === "fn_control"}
+                      mode="hold"
+                      row={rowFor("dictate_hold")}
+                      onCapture={(s) => s.kind === "hold" && applyBinding(s.binding)}
+                      onReset={() => applyBinding("fn_control")}
+                    />
+                    <HotkeyRecorder
+                      title="Hands-free"
+                      keyLabel={`double-tap ${settings.hotkeyLabel ?? "fn⌃"}`}
+                      defaultLabel="fn⌃"
+                      isDefault
+                      mode="hold"
+                      row={rowFor("hands_free")}
+                      onCapture={(s) => s.kind === "hold" && applyBinding(s.binding)}
+                      onReset={() => applyBinding("fn_control")}
+                    />
+                    <HotkeyRecorder
+                      title="Dictate (toggle)"
+                      keyLabel={dictateLabel(status)}
+                      defaultLabel="⌃⌥⌘Space"
+                      isDefault={!settings.dictateToggle}
+                      mode="chord"
+                      row={rowFor("dictate_toggle")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, dictateToggle: s.chord })}
+                      onReset={() => save({ ...settings, dictateToggle: null })}
+                    />
+                    <HotkeyRecorder
+                      title="Cancel take"
+                      keyLabel={rowFor("cancel")?.key ?? "esc"}
+                      defaultLabel="esc"
+                      isDefault={!settings.cancelChord}
+                      mode="chord"
+                      allowBare
+                      row={rowFor("cancel")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, cancelChord: s.chord })}
+                      onReset={() => save({ ...settings, cancelChord: null })}
+                    />
+                    <HotkeyRecorder
+                      title="Record meeting"
+                      keyLabel={rowFor("record_meeting")?.key ?? "⌃⌘M"}
+                      defaultLabel="⌃⌘M"
+                      isDefault={!settings.meetingChord}
+                      mode="chord"
+                      row={rowFor("record_meeting")}
+                      onCapture={(s) => s.kind === "chord" && save({ ...settings, meetingChord: s.chord })}
+                      onReset={() => save({ ...settings, meetingChord: null })}
+                    />
+                    {tableError && <p className="error">{tableError}</p>}
                   </div>
                   <div className="panel">
                     <h3>Hold-to-talk key</h3>

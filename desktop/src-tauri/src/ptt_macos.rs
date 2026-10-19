@@ -1257,8 +1257,54 @@ fn spawn_re_arm_verifier(tap: ffi::CFMachPortRef) {
                 log::error!(
                     "FN PTT: {verdict} — CGEventTapIsEnabled still false {RE_ARM_VERIFY_MS} ms after CGEventTapEnable"
                 );
+                // focus-2026-10-19: a failed re-arm used to END here, leaving
+                // the stored status `Delivering` — nothing retried, every
+                // surface said fn works, and fn was dead until the next
+                // disable (which a disabled tap does not get). Say so, so the
+                // hotkey table falls back to the dictate chord, and keep
+                // re-enabling until macOS lets the tap back on.
+                set_fn_tap_status(FnTapStatus::Blocked(format!(
+                    "{} — re-arming",
+                    crate::hotkey_table::PAUSED_PREFIX
+                )));
+                keep_re_arming(tap);
             }
         });
+}
+
+/// Retry delays for a tap macOS will not re-enable yet (Secure Input up, a
+/// user-input flood still running). Short at first, then a steady 2 s.
+pub fn re_arm_retry_delay_ms(attempt: u32) -> u64 {
+    match attempt {
+        0..=9 => 250,
+        10..=29 => 1_000,
+        _ => 2_000,
+    }
+}
+
+/// Keep calling `CGEventTapEnable` on `tap` until it reads enabled, or until a
+/// recreate replaced the port (then the new tap's own verifier owns it).
+fn keep_re_arming(tap: ffi::CFMachPortRef) {
+    let mut attempt: u32 = 0;
+    loop {
+        thread::sleep(Duration::from_millis(re_arm_retry_delay_ms(attempt)));
+        attempt = attempt.saturating_add(1);
+        if TAP_PORT.load(Ordering::SeqCst) != tap {
+            log::info!("FN PTT: re-arm retry stopped — the tap was replaced");
+            return;
+        }
+        unsafe { ffi::CGEventTapEnable(tap, true) };
+        if unsafe { ffi::CGEventTapIsEnabled(tap) } {
+            RE_ARMS_VERIFIED.fetch_add(1, Ordering::SeqCst);
+            FIRST_EDGE_REPORTED.store(false, Ordering::SeqCst);
+            set_fn_tap_status(FnTapStatus::ArmedNoDelivery);
+            log::info!("FN PTT: re-arm retry #{attempt} took — fn listener back on");
+            return;
+        }
+        if attempt.is_multiple_of(30) {
+            log::warn!("FN PTT: tap still off after {attempt} re-arm retries (Secure Input or a stale grant?)");
+        }
+    }
 }
 
 /// Invalidate the current port and build a fresh tap on THIS thread's run loop
