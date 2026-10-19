@@ -291,6 +291,23 @@ self_test() {
   expect "Yap running without YAP_QA_DRIVE_RUNNING=1 -> refuses" 4 $? \
     "Yap is running (pid 4242); this walk posts fn into it — rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 when you are not dictating"
 
+  # fix-249 advisory (f): consent to drive a running Yap is NOT consent to
+  # post keys — YAP_QA_ALLOW_KEYS must be exactly 1, or the walk refuses.
+  env -u YAP_QA_ALLOW_KEYS YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 \
+    YAP_QA_DRIVE_RUNNING=1 YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
+  expect "YAP_QA_DRIVE_RUNNING=1 without YAP_QA_ALLOW_KEYS -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
+  YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=yes \
+    YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" >"$out" 2>&1
+  expect "YAP_QA_ALLOW_KEYS other than 1 -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
+  env -u YAP_QA_ALLOW_KEYS YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 \
+    YAP_QA_DRIVE_RUNNING=1 YAP_QA_FAKE_POST_ACCESS=1 YAP_QA_NO_POST=1 bash "$0" --chord >"$out" 2>&1
+  expect "--chord: YAP_QA_DRIVE_RUNNING=1 without YAP_QA_ALLOW_KEYS -> refuses to post keys" 4 $? \
+    "rerun with YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1"
+
   YAP_QA_APP=/System/Applications/Calculator.app YAP_QA_FAKE_PIDS=4242 YAP_QA_DRIVE_RUNNING=1 YAP_QA_ALLOW_KEYS=1 \
     YAP_QA_FAKE_POST_ACCESS=0 YAP_QA_NO_POST=1 TERM_PROGRAM=QA-Terminal bash "$0" >"$out" 2>&1
   expect "caller without Accessibility -> refuses" 3 $? \
