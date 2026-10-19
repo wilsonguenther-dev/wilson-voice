@@ -277,3 +277,66 @@ fn rss_growth_verdict_matches_the_soak_rule() {
     ));
     assert!(!lifecycle::rss_growth_exceeds(&[1000, 2000], 3, 10.0));
 }
+
+/// Wilson 2026-10-19 16:02:13Z: "stale instance — did not answer within 2003 ms"
+/// and Yap Test refused to start. A holder that never answers is now REPLACED:
+/// its socket is unlinked, this launch becomes the instance, and the next
+/// launch finds no stale holder at all.
+#[test]
+fn a_dead_holder_is_replaced_instead_of_refusing() {
+    use wilson_voice_lib::lifecycle::{handoff_action, replace_dead_holder, HandoffAction};
+    let d = tmpdir("replace");
+    let sock = d.join("si.sock");
+    let ack = d.join("si.ack");
+    std::fs::write(&ack, "4242 1\n").unwrap();
+    let _hung = UnixListener::bind(&sock).unwrap(); // accepts in the backlog, never acks
+    let v = handoff_to_running(
+        &sock,
+        &ack,
+        "/",
+        &["yap".into()],
+        Duration::from_millis(200),
+    );
+    assert!(matches!(v, HandoffVerdict::Stale { .. }), "{v:?}");
+    assert_eq!(handoff_action(&v), HandoffAction::ReplaceDeadHolder);
+    assert_eq!(lifecycle::ack_holder_pid(&ack), Some(4242));
+    assert!(replace_dead_holder(&sock).unwrap(), "socket removed");
+    assert!(!sock.exists());
+    let line = lifecycle::replaced_message(&sock, 2003, Some(4242));
+    assert!(
+        line.contains("replacing it") && line.contains("pid 4242"),
+        "{line}"
+    );
+    // The next launch sees no running instance and launches normally.
+    let again = handoff_to_running(
+        &sock,
+        &ack,
+        "/",
+        &["yap".into()],
+        Duration::from_millis(200),
+    );
+    assert_eq!(again, HandoffVerdict::NoRunningInstance);
+    assert_eq!(handoff_action(&again), HandoffAction::Launch);
+    // Idempotent on an already-gone socket.
+    assert!(!replace_dead_holder(&sock).unwrap());
+    assert_eq!(
+        handoff_action(&HandoffVerdict::Handed { ack_ms: 1 }),
+        HandoffAction::Exit
+    );
+}
+
+/// The socket is named after the RUNNING bundle id, so the test channel never
+/// hands off to production Yap. A unit-test binary is unbundled, so it falls
+/// back to the shipped id.
+#[test]
+fn handoff_identifier_falls_back_to_the_shipped_id_only_when_unbundled() {
+    let id = lifecycle::handoff_identifier();
+    match wilson_voice_lib::perm_truth::main_bundle_id() {
+        Some(b) => assert_eq!(id, b),
+        None => assert_eq!(id, wilson_voice_lib::BUNDLE_IDENTIFIER),
+    }
+    assert_ne!(
+        lifecycle::handoff_socket("com.wilsonguenther.wilson-voice.test"),
+        lifecycle::handoff_socket(wilson_voice_lib::BUNDLE_IDENTIFIER)
+    );
+}
