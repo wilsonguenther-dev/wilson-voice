@@ -1250,9 +1250,11 @@ where
         .await
         .map_err(|_| format!("request to {url} timed out"))?
         .map_err(|e| format!("request to {url} failed: {e}"))?;
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("{url} returned error status: {e}"))?;
+    // A3: the server's own status, spelled so the card can say it
+    // ("Download failed (HTTP 503)") rather than "offline".
+    if !resp.status().is_success() {
+        return Err(format!("{url} returned HTTP {}", resp.status().as_u16()));
+    }
 
     // Server honored the Range → append; anything else → restart from zero.
     let resuming = downloaded > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;

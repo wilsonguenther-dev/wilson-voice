@@ -100,6 +100,9 @@ pub enum NotesError {
     DiskFull(String),
     /// The download finished but did not match its sha256.
     Checksum,
+    /// A3 — the server answered with an HTTP error (403, 404, 5xx) while the
+    /// Mac was online: not "offline", and not the checksum copy.
+    Server(u16),
     /// The notes model is on disk but its sidecar would not start.
     ModelStart,
     /// The summary itself failed; plain words.
@@ -118,6 +121,9 @@ impl NotesError {
             Self::DiskFull(msg) => msg.clone(),
             Self::Checksum => {
                 "the notes model didn't download correctly. Retry to fetch it again.".to_string()
+            }
+            Self::Server(code) => {
+                format!("Download failed (HTTP {code}). Retry in a little while.")
             }
             Self::ModelStart => "the notes model couldn't start on this Mac.".to_string(),
             Self::Summary(msg) => msg.clone(),
@@ -141,11 +147,23 @@ pub fn classify_download_error(msg: &str) -> NotesError {
         } else {
             "there isn't enough free space on this Mac for the notes model.".to_string()
         })
-    } else if lower.contains("sha") || lower.contains("checksum") || lower.contains("verif") {
+    } else if lower.contains("sha256 mismatch") || lower.contains("checksum") {
+        // A3: never "verif" — TLS's "certificate verify failed" is a network
+        // problem, not a bad download.
         NotesError::Checksum
+    } else if let Some(code) = http_status_in(&lower) {
+        NotesError::Server(code)
     } else {
         NotesError::Offline
     }
+}
+
+/// The `NNN` of the last "returned HTTP NNN" in a download error.
+fn http_status_in(lower: &str) -> Option<u16> {
+    let at = lower.rfind("http ")?;
+    let digits: String = lower[at + 5..].chars().take_while(char::is_ascii_digit).collect();
+    let code: u16 = digits.parse().ok()?;
+    (400..600).contains(&code).then_some(code)
 }
 
 /// The work a job does. The app's implementation lives in `lib.rs`; the
