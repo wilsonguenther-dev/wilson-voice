@@ -62,7 +62,8 @@ fn the_real_runs_misfiled_lines_are_reclassified() {
         (Decisions, "Should we offer annual billing", Some(Questions)),
         (Actions, "Does annual billing get a discount?", Some(Questions)),
         // An "action item" with no commitment at all is not one.
-        (Actions, "Pricing for the Drivia consulting tier", None),
+        (Actions, "The pricing review for the Drivia consulting tier is complete", None),
+        (Actions, "Move the onboarding review", Some(Actions)),
         (Decisions, "Drop the free trial for enterprise accounts", Some(Decisions)),
     ] {
         assert_eq!(classify_item(from, text), want, "{text}");

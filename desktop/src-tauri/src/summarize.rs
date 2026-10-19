@@ -778,14 +778,26 @@ pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
     if is_strong_question(&lower) {
         return Some(Bucket::Questions);
     }
-    if owner_commitment(text) || starts_imperative(text) {
+    // An imperative keeps an item the model already called an action; only an
+    // owner + commitment moves one IN ("Drop the free trial" filed as a
+    // decision is a decision).
+    if owner_commitment(text) || (from == Bucket::Actions && starts_imperative(text)) {
         return Some(Bucket::Actions);
     }
     if is_weak_question(&lower) {
         return Some(Bucket::Questions);
     }
     match from {
-        Bucket::Actions => generic_commitment(&lower).then_some(Bucket::Actions),
+        // A statement ("The pricing review is complete") is not a task: its
+        // subject is a thing, and nothing in it commits anyone.
+        Bucket::Actions => {
+            let first = lower.split_whitespace().next().unwrap_or("");
+            let statement = matches!(
+                first,
+                "the" | "this" | "that" | "it" | "there" | "these" | "those" | "its" | "a" | "an"
+            );
+            (!statement || generic_commitment(&lower)).then_some(Bucket::Actions)
+        }
         other => Some(other),
     }
 }
@@ -810,10 +822,17 @@ fn passive_settled(lower: &str) -> bool {
         .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
 }
 
+/// Function words that two unrelated lines share ("the", "will"); they say
+/// nothing about which line an item came from.
+const CITE_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you",
+    "has", "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
+];
+
 fn content_words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
         .map(str::to_lowercase)
+        .filter(|w| w.len() >= 3 && !CITE_STOPWORDS.contains(&w.as_str()))
         .collect()
 }
 
@@ -829,8 +848,8 @@ fn overlap(item: &[String], line: &str) -> usize {
 /// prompt wording it skipped one of the plainly-said lines. Both are fixed
 /// mechanically, from the chunk's own lines, so nothing here can invent text:
 ///
-/// * **re-cite** — an item moves to the chunk line that shares the most of
-///   its content words, when that line beats the one it cited. The new id is
+/// * **re-cite** — an item whose cited line shares none of its content words
+///   moves to the chunk line that shares the most (two or more). The new id is
 ///   still one of THIS chunk's ids, so the provenance guarantee is unchanged.
 /// * **backfill** — a line no item cites, whose own words are an unambiguous
 ///   commitment by a NAMED owner ("Jeisil will send …"), an explicit decision
@@ -843,8 +862,14 @@ pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source
             let words = content_words(&item.text);
             let score = |l: &TranscriptLine| overlap(&words, &l.text);
             let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
+            // Only a citation that shares NO content word with its item moves,
+            // and only to a line that clearly matches (two words or more): the
+            // model's id stands whenever it is plausible at all.
+            if cited > 0 {
+                continue;
+            }
             if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
-                if score(best) > cited {
+                if score(best) >= 2 {
                     item.segment = best.label.clone();
                 }
             }
