@@ -6569,9 +6569,12 @@ pub fn run() {
     // plugin's handoff is a one-way write followed by a silent exit(0), so a
     // running Yap whose main thread is wedged swallowed every relaunch. Hand
     // off here first and wait (bounded) for the running app's ack.
+    let handoff_id = lifecycle::handoff_identifier();
+    let handoff_sock = lifecycle::handoff_socket(&handoff_id);
+    let handoff_ack = lifecycle::handoff_ack_file(&handoff_id);
     match lifecycle::handoff_to_running(
-        &lifecycle::handoff_socket(BUNDLE_IDENTIFIER),
-        &lifecycle::handoff_ack_file(BUNDLE_IDENTIFIER),
+        &handoff_sock,
+        &handoff_ack,
         &std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -6580,15 +6583,31 @@ pub fn run() {
     ) {
         lifecycle::HandoffVerdict::NoRunningInstance => {}
         lifecycle::HandoffVerdict::Handed { ack_ms } => {
-            log::info!("second launch: running Yap presented its window (ack {ack_ms}ms) — exiting");
+            log::info!(
+                "second launch: running Yap presented its window (ack {ack_ms}ms) — exiting"
+            );
             std::process::exit(0);
         }
         lifecycle::HandoffVerdict::Stale { waited_ms } => {
-            let msg = lifecycle::stale_message(waited_ms);
-            log::warn!("second launch: stale instance — {msg}");
-            eprintln!("{msg}");
-            notify_stale_instance(&msg);
-            std::process::exit(1);
+            // fix-ax-probe-refresh: a holder that does not answer is replaced,
+            // not obeyed. Refusing only when the socket cannot be removed.
+            match lifecycle::replace_dead_holder(&handoff_sock) {
+                Ok(_) => log::warn!(
+                    "second launch: stale instance — {}",
+                    lifecycle::replaced_message(
+                        &handoff_sock,
+                        waited_ms,
+                        lifecycle::ack_holder_pid(&handoff_ack)
+                    )
+                ),
+                Err(e) => {
+                    let msg = lifecycle::stale_message(waited_ms);
+                    log::warn!("second launch: stale instance, could not replace it ({e}) — {msg}");
+                    eprintln!("{msg}");
+                    notify_stale_instance(&msg);
+                    std::process::exit(1);
+                }
+            }
         }
         lifecycle::HandoffVerdict::Unknown(e) => {
             log::warn!("second launch: handoff probe inconclusive ({e}) — launching normally");
@@ -6849,7 +6868,7 @@ pub fn run() {
             let h = app.clone();
             let _ = app.run_on_main_thread(move || {
                 present_main_window(&h, lifecycle::ActivationSource::SecondInstance);
-                lifecycle::write_handoff_ack(&lifecycle::handoff_ack_file(BUNDLE_IDENTIFIER));
+                lifecycle::write_handoff_ack(&lifecycle::handoff_ack_file(&lifecycle::handoff_identifier()));
             });
         }))
         // YV42 launch at login. The LaunchAgent variant is the macOS-supported

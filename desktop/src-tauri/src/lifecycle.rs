@@ -438,6 +438,64 @@ pub fn handoff_to_running(
     }
 }
 
+/// The bundle id the handoff socket and ack file are named after: the RUNNING
+/// bundle's own id (`NSBundle.mainBundle`), falling back to the shipped id only
+/// for an unbundled dev binary. Hard-coding the shipped id made a Yap Test
+/// launch hand off to the PRODUCTION Yap's socket — production 0.9.2 never
+/// writes the ack, so Yap Test reported itself "stale" and refused to start.
+pub fn handoff_identifier() -> String {
+    crate::perm_truth::main_bundle_id().unwrap_or_else(|| crate::BUNDLE_IDENTIFIER.to_string())
+}
+
+/// What a launch does with a [`HandoffVerdict`]. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffAction {
+    /// Become the instance.
+    Launch,
+    /// The running Yap took it; this process exits 0.
+    Exit,
+    /// The holder accepted the connection but never answered within
+    /// [`HANDOFF_ACK_TIMEOUT`]: it is dead to the user. Replace it — unlink its
+    /// socket so this launch's single-instance plugin binds a fresh one — and
+    /// launch, instead of refusing and leaving the user with no Yap at all.
+    ReplaceDeadHolder,
+}
+
+pub fn handoff_action(verdict: &HandoffVerdict) -> HandoffAction {
+    match verdict {
+        HandoffVerdict::NoRunningInstance | HandoffVerdict::Unknown(_) => HandoffAction::Launch,
+        HandoffVerdict::Handed { .. } => HandoffAction::Exit,
+        HandoffVerdict::Stale { .. } => HandoffAction::ReplaceDeadHolder,
+    }
+}
+
+/// The pid the last ack was written by, if the ack file names one.
+pub fn ack_holder_pid(ack: &Path) -> Option<u32> {
+    ack_stamp(ack)?.split_whitespace().next()?.parse().ok()
+}
+
+/// Unlink a dead holder's socket. `Ok(true)` = removed, `Ok(false)` = already
+/// gone. The hung process keeps its (now unreachable) listener; every later
+/// launch talks to the new instance.
+pub fn replace_dead_holder(socket: &Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(socket) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// The log line for a replaced holder.
+pub fn replaced_message(socket: &Path, waited_ms: u128, holder: Option<u32>) -> String {
+    let who = holder
+        .map(|p| format!(" (last ack from pid {p})"))
+        .unwrap_or_default();
+    format!(
+        "the holder of {}{who} did not answer within {waited_ms} ms — replacing it: socket unlinked, this launch becomes the instance",
+        socket.display()
+    )
+}
+
 /// The words a stale handoff says, instead of the old silent exit.
 pub fn stale_message(waited_ms: u128) -> String {
     format!(
