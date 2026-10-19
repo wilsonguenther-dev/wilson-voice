@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { canRetry, meetingStateLabel, summaryTitle } from "../meetings/progress";
+import { useEffect, useState } from "react";
+import {
+  canCancelNotes, canRetry, canRetryNotes, meetingStateLabel, retryNotesLabel, summaryTitle,
+} from "../meetings/progress";
 import NotesView from "../meetings/NotesView";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
@@ -320,6 +323,7 @@ export default function Meetings() {
                             : "Delete"}
                         </button>
                       </div>
+                </>
                     </li>
                   ))}
                 </ul>
