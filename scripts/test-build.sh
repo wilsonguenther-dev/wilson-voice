@@ -166,7 +166,7 @@ GOT_ID="$(defaults read "$APP/Contents/Info" CFBundleIdentifier)"
 BIN="$APP/Contents/MacOS/$(defaults read "$APP/Contents/Info" CFBundleExecutable)"
 grep -aq "WilsonVoice-Test" "$BIN" || die "binary was not compiled with YAP_CHANNEL=test (no test data dir) — not installing"
 codesign --verify --deep --strict "$APP" || die "codesign verification failed"
-codesign -dv "$APP" 2>&1 | grep -E '^(Identifier|Authority=Developer|Authority=Apple Development|Signature)' | sed -E 's/\(([A-Z0-9]{10})\)/(TEAMID)/g' || true
+codesign -dvv "$APP" 2>&1 | grep -E '^(Identifier|Authority=Developer|Authority=Apple Development|Signature)' | sed -E 's/\(([A-Z0-9]{10})\)/(TEAMID)/g' || true
 
 # ---- 7. install, replacing only the previous test build --------------------
 osascript -e "tell application id \"$IDENTIFIER\" to quit" >/dev/null 2>&1 || true
