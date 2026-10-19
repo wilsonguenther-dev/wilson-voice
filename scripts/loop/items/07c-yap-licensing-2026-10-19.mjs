@@ -216,7 +216,7 @@ ITEMS.push({
   id: 'yap-lic-05-site-privacy-copy', prompt: 'yap-lic-05-site-privacy-copy', branch: 'loop/yap-lic-05-site-privacy-terms-copy', gated: null,
   title: 'Site, privacy and terms tell the truth for the launch: buying takes one email-code sign-in, activation needs the network once and re-checks, 60 days offline, Buy -> drivia[.]consulting/yap, updater -> yapvoice.app first; ships WITH the yap-lic-02/04 build',
   preflight: `
-    ( M=0; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs || M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/scripts/stripe/ensure-yap-live.mjs --silent >/dev/null 2>&1 || M=1; test "$(curl -s -o /dev/null -w '%{http_code}' https://drivia.$(printf consulting)/yap)" = 200 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-04-ui-states-and-buy (PURCHASE_URL) must be on main and drivia-consulting dc-yap-03 + dc-yap-04 must be live (/yap answers 200, ensure-yap-live.mjs on its main) — land them, then the build pass again"; exit 0; fi; ! git grep -qnE 'buy.stripe.com|refunded licenses|refunded-licenses|no login, no server|No sign-in, no email' -- site/dist PRIVACY.md TERMS.md && grep -q 'drivia\\.consulting/yap' site/dist/index.html && grep -q 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json && ! git grep -qinE 'involves no server at all|no device identifier|no account, no sign-in|revocation check|network call the licensing path makes' -- site/dist/privacy.html PRIVACY.md && grep -qiE 'IP( address)? prefix' site/dist/privacy.html && grep -qiE 'IP( address)? prefix' PRIVACY.md )
+    ( M=0; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs || M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/scripts/stripe/ensure-yap-live.mjs --silent >/dev/null 2>&1 || M=1; test "$(curl -s -o /dev/null -w '%{http_code}' https://drivia.$(printf consulting)/yap)" = 200 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-04-ui-states-and-buy (PURCHASE_URL) must be on main and drivia-consulting dc-yap-03 + dc-yap-04 must be live (/yap answers 200, ensure-yap-live.mjs on its main) — land them, then the build pass again"; exit 0; fi; ! git grep -qnE 'buy.stripe.com|refunded licenses|refunded-licenses|no login, no server|No sign-in, no email' -- site/dist PRIVACY.md TERMS.md && grep -q 'drivia\\.consulting/yap' site/dist/index.html && grep -q 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json && ! git grep -qinE 'involves no server at all|no device identifier|no account, no sign-in|revocation check|network call the licensing path makes' -- site/dist/privacy.html PRIVACY.md && ! git grep -qinE 'one-way hash of your email|not the address itself|without holding a list of who bought|none of them ever reach us|stored in a small file|re-verified from that file|crash reports, usage data, or personal information' -- site/dist/privacy.html PRIVACY.md && ! git grep -qinE 'update check, refund list|no subscription, no account' -- site/dist/index.html && grep -qi 'Keychain' site/dist/privacy.html && grep -qi 'Keychain' PRIVACY.md && grep -qiE 'email[- ]code' site/dist/privacy.html && grep -qiE 'email[- ]code' PRIVACY.md && grep -qiE 'IP( address)? prefix' site/dist/privacy.html && grep -qiE 'IP( address)? prefix' PRIVACY.md )
   `,
   spec: `
     Panel 2026-10-19: APPROVED-WITH-CHANGES — ships in the SAME launch as the yap-lic-02/04 build; scope adds site/dist/terms.html;
@@ -248,6 +248,32 @@ ITEMS.push({
                                      email-code sign-in, and activation talks to drivia[.]consulting). The ENTIRE old revocation-check
                                      paragraph goes: "The revocation check", "the only network call the licensing path makes", "involves no
                                      server at all" and "no license key, no email, no device identifier" are all false after yap-lic-02.
+      site/dist/privacy.html:43 and PRIVACY.md:24   purchase-record paragraph ("a one-way hash of your email address (not the address
+                                     itself) ... we can email your key back to you without holding a list of who bought Yap") -> "Buying takes
+                                     one email-code sign-in at drivia[.]consulting, and that email is your account. The server keeps the
+                                     purchase record against it: your email address, the license's own identifiers, the Stripe session and
+                                     payment identifiers, the plan and seat count, and the date. Your keys are shown in your account portal
+                                     and emailed to you, so a lost key is one sign-in away." (Decision 5. The hash-only claim is false after
+                                     launch: the license row references the account, drivia-consulting 20260924002400_licensing.sql:65.)
+      site/dist/privacy.html:44 and PRIVACY.md:26   "Your name, your address ... none of them ever reach us" -> "Your postal address, your
+                                     transcripts and anything you dictated never reach us. The Mac name sent at activation (below) can carry
+                                     your real name, and it is disclosed there." (the activation call sends the Mac name)
+      site/dist/privacy.html:53 and PRIVACY.md:36   "Yap sends no analytics, telemetry, crash reports, usage data, or personal information to
+                                     us or anyone else" -> keep "no analytics, telemetry, crash reports or usage data", but scope it: "Apart
+                                     from the license activation and re-check above, which carry the details listed there, Yap sends nothing
+                                     to us or anyone else." The crash-report-button sentence after it is UNCHANGED.
+      site/dist/privacy.html:59 and PRIVACY.md:42   "Your license key is stored in a small file alongside them, and is re-verified from that
+                                     file on every read" -> "Your license token is kept in the macOS Keychain (only the random install id is
+                                     mirrored in Yap's settings), and it is re-verified on your Mac against a public key built into the app.
+                                     Removing the license from a Mac is a button in Settings." (true once yap-lic-02 moves the token to the
+                                     Keychain)
+      site/dist/index.html:71        "<dt>Network</dt><dd>Model download, update check, refund list</dd>" -> "Model download, update check,
+                                     license activation" (there is no refund list after yap-lic-00/02)
+      site/dist/index.html:216       "One payment, no subscription, no account, no renewal date." -> drop "no account": "One payment, no
+                                     subscription, no renewal date. Buying takes one email-code sign-in; using the app needs no account."
+      UNCHANGED (still true at launch; they are about speech and the model, not licensing): index.html:11, :177 and :243 ("no server at
+                                     the other end" of transcription), terms.html:35 / TERMS.md:17 (the trial needs no account),
+                                     privacy.html:31 / PRIVACY.md:11, privacy.html:69 / PRIVACY.md:51.
       site/dist/terms.html and TERMS.md   Forge-era license terms -> lifetime license, 3 Macs, 60-day offline operation, a full refund or a
                                      lost dispute revokes the license.
       desktop/src-tauri/tauri.conf.json:67   updater endpoints: https://yapvoice.app/updates/latest.json FIRST, yap-lemon.vercel.app second.
@@ -262,6 +288,12 @@ ITEMS.push({
     grep -q 'drivia\\.consulting' site/dist/privacy.html
     grep -qi 'Mac' PRIVACY.md
     ! git grep -qinE 'involves no server at all|no device identifier|no account, no sign-in|revocation check|network call the licensing path makes' -- site/dist/privacy.html PRIVACY.md
+    ! git grep -qinE 'one-way hash of your email|not the address itself|without holding a list of who bought|none of them ever reach us|stored in a small file|re-verified from that file|crash reports, usage data, or personal information' -- site/dist/privacy.html PRIVACY.md
+    ! git grep -qinE 'update check, refund list|no subscription, no account' -- site/dist/index.html
+    grep -qi 'Keychain' site/dist/privacy.html
+    grep -qi 'Keychain' PRIVACY.md
+    grep -qiE 'email[- ]code' site/dist/privacy.html
+    grep -qiE 'email[- ]code' PRIVACY.md
     grep -qiE 'Mac(.{1,7}s)? name' site/dist/privacy.html
     grep -qiE 'Mac(.{1,7}s)? name' PRIVACY.md
     grep -qiE 'install(ation)? id' site/dist/privacy.html
