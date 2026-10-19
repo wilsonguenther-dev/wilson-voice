@@ -461,6 +461,7 @@ pub fn stop_recording(
 /// stop edge. There is NO trailing pad: capture ends at the `Disarm`, one
 /// channel round-trip to the capture worker, so the real tail is a thread
 /// spawn plus the device callback buffer in flight (~10 ms at 48 kHz).
+#[allow(dead_code)] // the D4 contract; held by capture_ends_within_budget_of_the_stop_edge_while_context_reads_stall
 pub const STOP_EDGE_BUDGET: Duration = Duration::from_millis(300);
 
 /// A take whose capture has ended (`end_capture`) but whose DSP has not run
