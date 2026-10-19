@@ -8,6 +8,8 @@
 #
 #   perm-probe.sh [--app PATH]                 default /Applications/Yap.app
 #   perm-probe.sh [--app PATH] --compare NEW   dr_change=yes|no between PATH and NEW
+#   perm-probe.sh [--app PATH] --repair-plan   the exact tccutil argv + pane the app's
+#                                              Repair would use (perm_probe.rs); runs NOTHING
 #   perm-probe.sh --self-test                  every code path, against Calculator
 #
 # Why it exists: 0.9.0 changed signing identity (Apple Development -> Developer
@@ -173,6 +175,33 @@ compare() { # $1 installed app, $2 new app
   fi
 }
 
+# yap-p0-perm-repair — mirrors perm_probe.rs repair_argv / repair_plan /
+# repair_pane_url. PRINTS the plan; never executes tccutil (a reset is a user
+# decision, made by clicking Repair in the app).
+TCCUTIL=/usr/bin/tccutil
+PANE_BASE="x-apple.systempreferences:com.apple.preference.security?"
+repair_plan() { # $1 app
+  local app bid svc key pane
+  app="$(resolve_dir "$1")" || die "no such app bundle: $1"
+  [ -f "$app/Contents/Info.plist" ] || die "not an app bundle (no Contents/Info.plist): $1"
+  bid="$(plist_value "$app" CFBundleIdentifier)" || die "no CFBundleIdentifier in $app"
+  [ -n "$bid" ] || die "empty CFBundleIdentifier in $app"
+  printf 'app_path=%s\n' "$app"
+  printf 'bundle_id=%s\n' "$bid"
+  for svc in Accessibility ListenEvent PostEvent Microphone; do
+    key="$(printf '%s' "$svc" | tr '[:upper:]' '[:lower:]')"
+    case "$svc" in
+      Accessibility | PostEvent) pane=Privacy_Accessibility ;;
+      ListenEvent) pane=Privacy_ListenEvent ;;
+      Microphone) pane=Privacy_Microphone ;;
+    esac
+    printf 'repair_cmd_%s=%s reset %s %s\n' "$key" "$TCCUTIL" "$svc" "$bid"
+    printf 'repair_pane_%s=%s%s\n' "$key" "$PANE_BASE" "$pane"
+  done
+  # Repairing Accessibility also resets PostEvent (the Cmd-V insertion bridge).
+  printf 'repair_also_accessibility=repair_cmd_postevent\n'
+}
+
 self_test() {
   local out rc fails=0 key
   out="$(mktemp -t yapqa)" || exit 1
@@ -206,6 +235,20 @@ self_test() {
     printf 'FAIL compare different app (rc=%d)\n' "$rc"; fails=$((fails + 1))
   fi
 
+  bash "$0" --app "$SELF_TEST_APP" --repair-plan >"$out" 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] || { printf 'FAIL repair-plan exited %d\n' "$rc"; fails=$((fails + 1)); }
+  for key in "repair_cmd_accessibility=/usr/bin/tccutil reset Accessibility com.apple.calculator" \
+    "repair_cmd_listenevent=/usr/bin/tccutil reset ListenEvent com.apple.calculator" \
+    "repair_cmd_postevent=/usr/bin/tccutil reset PostEvent com.apple.calculator" \
+    "repair_cmd_microphone=/usr/bin/tccutil reset Microphone com.apple.calculator" \
+    "repair_pane_accessibility=${PANE_BASE}Privacy_Accessibility" \
+    "repair_pane_listenevent=${PANE_BASE}Privacy_ListenEvent" \
+    "repair_pane_microphone=${PANE_BASE}Privacy_Microphone"; do
+    if grep -qxF "$key" "$out"; then printf 'ok   repair-plan %s\n' "${key%%=*}"; else printf 'FAIL repair-plan line missing: %s\n' "$key"; fails=$((fails + 1)); fi
+  done
+  if grep -q ' All\( \|$\)' "$out"; then printf 'FAIL repair-plan mentions All\n'; fails=$((fails + 1)); else printf 'ok   repair-plan never resets All\n'; fi
+
   bash "$0" --app /nonexistent/Yap.app >"$out" 2>&1
   rc=$?
   if [ "$rc" -eq 2 ]; then printf 'ok   missing app -> exit 2\n'; else printf 'FAIL missing app exited %d\n' "$rc"; fails=$((fails + 1)); fi
@@ -221,17 +264,21 @@ self_test() {
 
 APP=/Applications/Yap.app
 COMPARE=""
+REPAIR_PLAN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --app) [ $# -ge 2 ] || die "--app needs a path"; APP="$2"; shift 2 ;;
     --compare) [ $# -ge 2 ] || die "--compare needs a path"; COMPARE="$2"; shift 2 ;;
+    --repair-plan) REPAIR_PLAN=1; shift ;;
     --self-test) self_test ;;
-    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-if [ -n "$COMPARE" ]; then
+if [ "$REPAIR_PLAN" = 1 ]; then
+  repair_plan "$APP"
+elif [ -n "$COMPARE" ]; then
   compare "$APP" "$COMPARE"
 else
   probe "$APP"

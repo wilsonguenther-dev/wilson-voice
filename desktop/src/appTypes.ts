@@ -1,5 +1,6 @@
 // Y5-G — types and pure helpers lifted verbatim out of App.tsx so the shell
 // and the seven view modules can share them without importing from App.tsx.
+import type { ProbeReport } from "./permissionRepair";
 import type {
   FailingCondition,
   GrantStatus,
@@ -330,6 +331,8 @@ export interface PermissionReport {
   staleGrants?: StaleGrant[];
   /** Other bundles on disk with Yap's bundle id. */
   duplicateBundles?: string[];
+  /** yap-p0-perm-repair — the ONE live per-service probe (with StaleIdentity). */
+  probe?: ProbeReport;
 }
 
 export interface TranscriptEntry {

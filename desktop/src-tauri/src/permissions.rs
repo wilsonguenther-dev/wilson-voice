@@ -115,43 +115,13 @@ pub struct PermissionReport {
     pub stale_grants: Vec<crate::perm_truth::StaleGrant>,
     /// Other bundles on disk with our bundle id, any of which may hold the grant.
     pub duplicate_bundles: Vec<String>,
+    /// yap-p0-perm-repair — the live per-service probe, with StaleIdentity.
+    pub probe: crate::perm_probe::ProbeReport,
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
-    use core_foundation::base::TCFType;
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::CFDictionary;
-    use core_foundation::string::CFString;
-
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-        fn AXIsProcessTrustedWithOptions(
-            options: core_foundation::dictionary::CFDictionaryRef,
-        ) -> bool;
-    }
-
-    /// Check Accessibility trust. If `prompt`, macOS may show the system dialog.
-    pub fn accessibility_trusted(prompt: bool) -> bool {
-        if !prompt {
-            return unsafe { AXIsProcessTrusted() };
-        }
-        // kAXTrustedCheckOptionPrompt
-        let key = CFString::new("AXTrustedCheckOptionPrompt");
-        let val = CFBoolean::true_value();
-        let pairs = &[(key.as_CFType(), val.as_CFType())];
-        let dict = CFDictionary::from_CFType_pairs(pairs);
-        unsafe { AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef()) }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod macos {
-    pub fn accessibility_trusted(_prompt: bool) -> bool {
-        true
-    }
-}
+// yap-p0-perm-repair: every grant read goes through `perm_probe` — the ONE
+// module holding grant FFI (AX, CGPreflight*, IOHID). `permissions.rs` keeps
+// none of its own.
 
 /// The microphone answer, read from macOS rather than inferred from hardware.
 ///
@@ -208,15 +178,16 @@ pub fn asr_probe(native_ready: bool) -> (bool, String) {
 }
 
 pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionReport {
-    let accessibility = macos::accessibility_trusted(prompt_accessibility);
-    let status = crate::mic_auth::authorization_status();
+    if prompt_accessibility {
+        let _ = crate::perm_probe::request_accessibility_prompt();
+    }
+    // yap-p0-perm-repair: ONE probe per report. The banner, onboarding and the
+    // hotkey degraded line all read this same value.
+    let probe = crate::perm_probe::probe_all();
     let (asr_ok, asr_detail) = asr_probe(native_ready);
-    let hid_raw = hid::listen_event_access();
-    let input_monitoring = input_monitoring_state(hid_raw, accessibility, tap_is_delivering());
-    let mut report = build_report_with_grants(
-        accessibility,
-        status,
-        input_monitoring,
+    let mut report = report_from_probe(
+        probe,
+        tap_is_delivering(),
         audio_capture_state(),
         asr_ok,
         asr_detail,
@@ -226,13 +197,38 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     report.checked_bundle_path = me.bundle_path.clone();
     report.signing_authority = me.signature.authority.clone();
     report.failing_conditions =
-        crate::perm_truth::failing_conditions(accessibility, input_monitoring);
+        crate::perm_truth::failing_conditions(report.accessibility, report.input_monitoring);
     report.stale_grants = crate::perm_truth::observe(
-        accessibility,
-        hid_raw == GrantState::Authorized,
-        input_monitoring,
+        report.accessibility,
+        report.probe.listen_event_hid == GrantState::Authorized,
+        report.input_monitoring,
     );
     report.duplicate_bundles = crate::perm_truth::duplicate_bundles().to_vec();
+    report
+}
+
+/// The report from one [`crate::perm_probe::ProbeReport`], pure: the grant rows
+/// onboarding renders and the `probe` field the banner's Repair renders are the
+/// same reading, so the two can never disagree.
+pub fn report_from_probe(
+    probe: crate::perm_probe::ProbeReport,
+    tap_delivering: bool,
+    audio_capture: GrantState,
+    asr_ok: bool,
+    asr_detail: String,
+) -> PermissionReport {
+    let accessibility = probe.accessibility.state == crate::perm_probe::ProbeState::Granted;
+    let input_monitoring =
+        input_monitoring_state(probe.listen_event_hid, accessibility, tap_delivering);
+    let mut report = build_report_with_grants(
+        accessibility,
+        probe.microphone_auth,
+        input_monitoring,
+        audio_capture,
+        asr_ok,
+        asr_detail,
+    );
+    report.probe = probe;
     report
 }
 
@@ -367,7 +363,29 @@ pub fn build_report_with_grants(
         failing_conditions: Vec::new(),
         stale_grants: Vec::new(),
         duplicate_bundles: Vec::new(),
+        probe: unprobed(accessibility, status, input_monitoring),
     }
+}
+
+/// The probe a PURE report carries: the given answers, no identity history.
+fn unprobed(
+    accessibility: bool,
+    status: MicAuth,
+    input_monitoring: GrantState,
+) -> crate::perm_probe::ProbeReport {
+    let none = crate::perm_truth::SigningSignature::default();
+    crate::perm_probe::build_probe_report(
+        crate::perm_probe::RawProbes {
+            accessibility,
+            listen_event_cg: input_monitoring == GrantState::Authorized,
+            listen_event_hid: input_monitoring,
+            post_event: accessibility,
+            microphone: status,
+        },
+        &crate::perm_truth::TrustLedger::default(),
+        None,
+        &none,
+    )
 }
 
 /// The microphone's four TCC answers, collapsed onto the tri-state.
@@ -389,43 +407,6 @@ pub const ACCESSIBILITY_OFF_DETAIL: &str =
      Turn Yap on in System Settings → Privacy & Security → Accessibility.";
 
 // ── Input Monitoring ───────────────────────────────────────────────────────
-
-#[cfg(target_os = "macos")]
-mod hid {
-    use super::GrantState;
-
-    /// `kIOHIDRequestTypeListenEvent` — the first member of `IOHIDRequestType`.
-    /// Listening is what `ptt_macos.rs`'s `CGEventTap` does; posting (1) is a
-    /// different grant we never ask for here.
-    const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 0;
-    /// `IOHIDAccessType`: Granted, Denied, Unknown.
-    const K_IOHID_ACCESS_TYPE_GRANTED: u32 = 0;
-    const K_IOHID_ACCESS_TYPE_DENIED: u32 = 1;
-
-    #[link(name = "IOKit", kind = "framework")]
-    extern "C" {
-        fn IOHIDCheckAccess(request: u32) -> u32;
-    }
-
-    /// Read-only. `IOHIDCheckAccess` never prompts — `IOHIDRequestAccess` is
-    /// the one that does, and it is deliberately not bound here: this surface
-    /// reports, it does not provoke.
-    pub fn listen_event_access() -> GrantState {
-        match unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) } {
-            K_IOHID_ACCESS_TYPE_GRANTED => GrantState::Authorized,
-            K_IOHID_ACCESS_TYPE_DENIED => GrantState::Denied,
-            _ => GrantState::Unknown,
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod hid {
-    use super::GrantState;
-    pub fn listen_event_access() -> GrantState {
-        GrantState::Unknown
-    }
-}
 
 /// Is the push-to-talk tap actually delivering events right now?
 ///
@@ -459,7 +440,7 @@ fn tap_is_delivering() -> bool {
 /// The raw IOHIDCheckAccess(ListenEvent) answer — what the hotkey probe reads
 /// (yap-p0-hotkeys-no-permission). Informational: it never gates the tap.
 pub fn input_monitoring_hid() -> GrantState {
-    hid::listen_event_access()
+    crate::perm_probe::listen_event_hid()
 }
 
 pub fn input_monitoring_state(
@@ -685,6 +666,8 @@ pub enum WatchReason {
     Wake,
     /// A hotkey or a paste was refused for want of a grant.
     Refusal,
+    /// yap-p0-perm-repair — a Repair's re-probe saw the grant flip.
+    Repair,
     /// `NSApplicationDidBecomeActiveNotification` — Yap became the active app
     /// (Cmd-Tab back from System Settings, a Dock click, the menu bar). Window
     /// focus alone misses the case where the app activates without its main
@@ -901,9 +884,9 @@ pub fn open_privacy_pane_urls(pane: &str) -> &'static [&'static str] {
 
 /// Prompt user for Accessibility if not trusted (system dialog).
 pub fn request_accessibility_prompt() -> bool {
-    macos::accessibility_trusted(true)
+    crate::perm_probe::request_accessibility_prompt()
 }
 
 pub fn is_accessibility_trusted() -> bool {
-    macos::accessibility_trusted(false)
+    crate::perm_probe::accessibility_trusted()
 }

@@ -108,6 +108,7 @@ pub mod models;
 pub mod os_version_gate;
 mod paste;
 mod paste_tx;
+pub mod perm_probe;
 pub mod perm_truth;
 pub mod permissions;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
@@ -3739,6 +3740,50 @@ fn request_accessibility() -> bool {
     permissions::request_accessibility_prompt()
 }
 
+/// yap-p0-perm-repair — one-click Repair for a stale or denied grant:
+/// `tccutil reset <Service> <Yap's own bundle id>` (Accessibility also resets
+/// PostEvent), the system prompt, the exact pane, then a re-probe every 1 s for
+/// 120 s that publishes `permission_repair` on each phase change. `async` so the
+/// tccutil exec never runs on the main thread.
+#[tauri::command]
+async fn repair_permission(
+    app: AppHandle,
+    service: String,
+) -> Result<perm_probe::RepairOutcome, String> {
+    let svc = perm_probe::Service::parse(&service)
+        .ok_or_else(|| format!("unknown permission service: {service}"))?;
+    let outcome = perm_probe::repair(svc);
+    if outcome.ok {
+        let _ = std::thread::Builder::new()
+            .name("perm-repair-reprobe".into())
+            .spawn(move || {
+                perm_probe::reprobe(
+                    svc,
+                    || perm_probe::probe_service(svc),
+                    std::thread::sleep,
+                    |phase| {
+                        log::info!("perm-repair: {:?} -> {:?}", svc, phase);
+                        let _ = app.emit(
+                            perm_probe::REPAIR_EVENT,
+                            perm_probe::RepairEvent::new(svc, phase),
+                        );
+                        if phase != perm_probe::RepairPhase::Waiting {
+                            permissions::poke(permissions::WatchReason::Repair);
+                        }
+                    },
+                );
+            });
+    }
+    Ok(outcome)
+}
+
+/// yap-p0-perm-repair — Input Monitoring only takes effect after a quit and
+/// reopen; the Repair flow's Relaunch button lands here.
+#[tauri::command]
+fn relaunch_app(app: AppHandle) {
+    app.restart()
+}
+
 /// Ask macOS for the microphone — and RETURN, without waiting for the answer.
 ///
 /// PERM-A. `async` so Tauri runs it off the main thread, and non-blocking even
@@ -5456,14 +5501,15 @@ impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
 struct OsPermissionProbe;
 
 impl hotkeys::PermissionProbe for OsPermissionProbe {
+    // yap-p0-perm-repair: the degraded line reads the same live probe.
     fn accessibility(&self) -> bool {
-        permissions::is_accessibility_trusted()
+        perm_probe::accessibility_trusted()
     }
     fn input_monitoring(&self) -> bool {
         matches!(
             permissions::input_monitoring_state(
-                permissions::input_monitoring_hid(),
-                permissions::is_accessibility_trusted(),
+                perm_probe::listen_event_hid(),
+                perm_probe::accessibility_trusted(),
                 matches!(hotkeys::status().fn_tap, hotkeys::FnTapStatus::Delivering),
             ),
             permissions::GrantState::Authorized
@@ -6704,6 +6750,8 @@ pub fn run() {
             get_status,
             get_permissions,
             request_accessibility,
+            repair_permission,
+            relaunch_app,
             request_microphone,
             microphone_status,
             get_insights,
@@ -6876,6 +6924,8 @@ pub fn run() {
             // The running binary's signature and the duplicate-bundle scan,
             // computed once, off the main thread, before the banner needs them.
             perm_truth::prime();
+            // yap-p0-perm-repair: persist the last-run signature EVERY launch.
+            perm_probe::prime();
 
             // PERM-E — the ONE permission watcher. It re-reads all four grants
             // on launch, on window focus, on wake (Y1-B's publisher calls

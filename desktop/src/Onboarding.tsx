@@ -10,6 +10,8 @@ import {
 import { describePolishOffer } from "./polishOffer";
 import { errorText } from "./errors";
 import { awaitMicDecision } from "./micStatus";
+import { PermissionRepair } from "./PermissionRepairRow";
+import type { ProbeReport } from "./permissionRepair";
 import {
   deriveMicStatus,
   micIsUsable,
@@ -55,6 +57,8 @@ interface PermissionReport {
    *  checklist rows, built once in `permissions.rs`, so the onboarding list and
    *  the main window's health row can never disagree. */
   grants: PermissionGrantRow[];
+  /** yap-p0-perm-repair — the same live probe the main-window banner reads. */
+  probe?: ProbeReport;
   asrOk: boolean;
   asrDetail: string;
   summary: string;
@@ -466,6 +470,9 @@ export default function Onboarding({
                 </div>
               </li>
             </ul>
+            {/* yap-p0-perm-repair — a denied or stale grant gets Repair here
+                too, from the same probe the main-window banner reads. */}
+            <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} />
             {note && <p className="muted tiny">{note}</p>}
             <div className="onboard-actions">
               <button className="ghost" onClick={goBack}>

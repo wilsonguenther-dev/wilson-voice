@@ -3018,3 +3018,10 @@ button.primary.big {
   max-width: 60ch;
   word-break: break-word;
 }
+
+/* yap-p0-perm-repair — one Repair row per denied or stale grant. */
+.perm-repair {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
