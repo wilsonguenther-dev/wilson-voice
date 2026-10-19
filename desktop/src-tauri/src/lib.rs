@@ -3661,6 +3661,10 @@ fn save_settings(
         // Settings capture shows, never a silently dead chord.
         if let Some(c) = next.dictate_toggle.as_ref() {
             hotkeys::chord_from_setting(c)?;
+            // fix-249 BLOCKING 2: the dictate chord is system-wide too.
+            if let Some(why) = hotkey_table::reserved_chord_reason(c, false) {
+                return Err(why);
+            }
         }
     }
     // Register the new chord BEFORE persisting: a chord another app holds is

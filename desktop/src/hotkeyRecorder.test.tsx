@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { chipTone, formatChord, recorderStep } from "./hotkeyRecorder";
+import { chipTone, formatChord, recorderStep, RESERVED_CHORDS, reservedChordReason } from "./hotkeyRecorder";
 import HotkeyRecorder from "./HotkeyRow";
 
 const key = (code: string, mods: Partial<{ ctrl: boolean; alt: boolean; cmd: boolean; shift: boolean }> = {}, extra: Record<string, unknown> = {}) => ({
@@ -24,6 +24,34 @@ describe("hotkey recorder", () => {
     expect(recorderStep(key("KeyM"), "chord").kind).toBe("hint");
     expect(recorderStep(key("F6"), "chord", true)).toMatchObject({ kind: "chord", label: "F6" });
     expect(recorderStep(key("Escape"), "chord", true)).toMatchObject({ kind: "chord", label: "Escape" });
+  });
+
+  it("refuses every macOS reserved / system chord and says why (fix-249 BLOCKING 2)", () => {
+    for (const [ctrl, alt, shift, cmd, code, what] of RESERVED_CHORDS) {
+      for (const allowBare of [false, true]) {
+        const s = recorderStep(key(code, { ctrl, alt, shift, cmd }), "chord", allowBare);
+        expect(s.kind, `${code} ${what}`).toBe("hint");
+        if (s.kind === "hint") expect(s.text).toContain(what);
+      }
+    }
+    for (const [code, mods] of [
+      ["KeyQ", { cmd: true }], ["KeyW", { cmd: true }], ["KeyC", { cmd: true }], ["KeyV", { cmd: true }],
+      ["KeyX", { cmd: true }], ["KeyZ", { cmd: true }], ["KeyA", { cmd: true }], ["KeyS", { cmd: true }],
+      ["Tab", { cmd: true }], ["Space", { cmd: true }], ["KeyH", { cmd: true }], ["KeyM", { cmd: true }],
+      ["KeyQ", { ctrl: true, cmd: true }], ["Escape", { alt: true, cmd: true }], ["Backquote", { cmd: true }],
+      ["KeyN", { cmd: true }], ["KeyN", { cmd: true, shift: true }], ["KeyR", {}], ["KeyR", { shift: true }],
+    ] as const) {
+      expect(recorderStep(key(code, mods), "chord").kind, code).toBe("hint");
+    }
+    const q = recorderStep(key("KeyQ", { cmd: true }), "chord");
+    expect(q).toEqual({ kind: "hint", text: "⌘Q is macOS's Quit — pick another chord" });
+    // Cancel: bare Esc / F-keys only.
+    expect(recorderStep(key("KeyR"), "chord", true).kind).toBe("hint");
+    expect(recorderStep(key("F13"), "chord", true).kind).toBe("chord");
+    expect(reservedChordReason({ code: "F13", ctrl: false, alt: false, shift: false, cmd: false }, false)).toContain("needs ⌃, ⌥ or ⌘");
+    // Ordinary chords pass.
+    expect(recorderStep(key("KeyR", { ctrl: true, cmd: true }), "chord").kind).toBe("chord");
+    expect(recorderStep(key("KeyR", { ctrl: true, alt: true, cmd: true }), "chord").kind).toBe("chord");
   });
 
   it("Esc cancels a normal recorder; modifier-only presses ask for a key", () => {

@@ -317,6 +317,83 @@ pub fn parse_chord(label: &str) -> Result<ChordSetting, String> {
     Ok(c)
 }
 
+/// macOS / system chords a rebind may never take (fix-249 BLOCKING 2): Yap
+/// registers its chords system-wide, so one stray press in the recorder would
+/// otherwise kill ⌘C / ⌘Q in every app or steal the lock-screen chord.
+/// `(ctrl, alt, shift, cmd, code, what it does)`. Mirrored in
+/// `desktop/src/hotkeyRecorder.ts` (`RESERVED_CHORDS`) — keep both in step.
+pub const RESERVED_CHORDS: &[(bool, bool, bool, bool, &str, &str)] = &[
+    (false, false, false, true, "KeyQ", "Quit"),
+    (false, false, false, true, "KeyW", "Close Window"),
+    (false, false, false, true, "KeyC", "Copy"),
+    (false, false, false, true, "KeyV", "Paste"),
+    (false, false, false, true, "KeyX", "Cut"),
+    (false, false, false, true, "KeyZ", "Undo"),
+    (false, false, false, true, "KeyA", "Select All"),
+    (false, false, false, true, "KeyS", "Save"),
+    (false, false, false, true, "KeyH", "Hide"),
+    (false, false, false, true, "KeyM", "Minimize"),
+    (false, false, false, true, "Tab", "the app switcher"),
+    (false, false, false, true, "Space", "Spotlight"),
+    (false, false, false, true, "Backquote", "next window"),
+    (false, false, true, true, "KeyQ", "Log Out"),
+    (false, false, true, true, "Digit3", "screenshot"),
+    (false, false, true, true, "Digit4", "screenshot selection"),
+    (false, false, true, true, "Digit5", "the screenshot toolbar"),
+    (true, false, false, true, "KeyQ", "Lock Screen"),
+    (true, false, false, true, "KeyF", "full screen"),
+    (true, false, false, true, "Space", "the emoji picker"),
+    (false, true, false, true, "Escape", "Force Quit"),
+    (false, true, false, true, "KeyD", "show / hide the Dock"),
+    (false, true, false, true, "Space", "Finder search"),
+    (true, false, false, false, "Space", "input-source switching"),
+    (true, true, false, false, "Space", "input-source switching"),
+    (true, false, false, false, "ArrowUp", "Mission Control"),
+    (true, false, false, false, "ArrowDown", "App Exposé"),
+    (true, false, false, false, "ArrowLeft", "the previous Space"),
+    (true, false, false, false, "ArrowRight", "the next Space"),
+];
+
+fn bare_cancel_key_ok(code: &str) -> bool {
+    code == "Escape"
+        || code
+            .strip_prefix('F')
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=20).contains(&n))
+}
+
+/// Why `c` may not be rebound to, or `None` when it may. Rules: never a
+/// [`RESERVED_CHORDS`] entry; never ⌘ (or ⌘⇧) as the only modifier — that is
+/// every app's menu shortcut space; never no modifier or only ⇧ — except the
+/// Cancel key (`allow_bare`), which is registered only while a take runs and
+/// may be bare Esc or F1–F20.
+pub fn reserved_chord_reason(c: &ChordSetting, allow_bare: bool) -> Option<String> {
+    let label = Code::from_str(&c.code)
+        .map(|code| chord_label(c.ctrl, c.alt, c.shift, c.cmd, code))
+        .unwrap_or_else(|_| c.code.clone());
+    if let Some((.., what)) = RESERVED_CHORDS.iter().find(|(ctrl, alt, shift, cmd, code, _)| {
+        (*ctrl, *alt, *shift, *cmd) == (c.ctrl, c.alt, c.shift, c.cmd) && *code == c.code
+    }) {
+        return Some(format!("{label} is macOS's {what} — pick another chord"));
+    }
+    if !(c.ctrl || c.alt || c.cmd) {
+        if allow_bare && !c.shift && bare_cancel_key_ok(&c.code) {
+            return None;
+        }
+        return Some(if allow_bare {
+            format!("{label} would stop typing that key in every app during a take — use Esc, an F-key, or add ⌃, ⌥ or ⌘")
+        } else {
+            format!("{label} needs ⌃, ⌥ or ⌘ — Yap holds it in every app")
+        });
+    }
+    if c.cmd && !c.ctrl && !c.alt {
+        return Some(format!(
+            "{label} is an app menu shortcut in every app — add ⌃ or ⌥"
+        ));
+    }
+    None
+}
+
 /// Validate a rebind for `action` and turn it into a chord + label. Meeting
 /// needs ⌃/⌥/⌘ (it is held system-wide while idle); Cancel may be a bare key
 /// because it is registered only while a take runs. Neither may collide with
@@ -347,8 +424,8 @@ pub fn chord_for_action(
         BindingAction::Cancel => shortcuts::CANCEL.id,
         _ => return Err("only Record meeting and Cancel take are rebound here".into()),
     };
-    if action == BindingAction::RecordMeeting && !(c.ctrl || c.alt || c.cmd) {
-        return Err("the chord needs ⌃, ⌥ or ⌘".into());
+    if let Some(why) = reserved_chord_reason(c, action == BindingAction::Cancel) {
+        return Err(why);
     }
     let chord = (c.ctrl, c.cmd, c.shift, c.alt, code);
     if let Some(b) = shortcuts::ALL
@@ -775,6 +852,69 @@ mod tests {
             ..Default::default()
         };
         assert!(chord_for_action(BindingAction::RecordMeeting, &fnk).is_err());
+    }
+
+    /// fix-249 BLOCKING 2 — every reserved / system chord is refused for both
+    /// rebindable actions, with the reason; ordinary chords still pass.
+    #[test]
+    fn reserved_and_system_chords_are_refused() {
+        let ch = |code: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool| ChordSetting {
+            code: code.into(),
+            ctrl,
+            alt,
+            shift,
+            cmd,
+        };
+        for &(ctrl, alt, shift, cmd, code, what) in RESERVED_CHORDS {
+            let c = ch(code, ctrl, alt, shift, cmd);
+            for action in [BindingAction::RecordMeeting, BindingAction::Cancel] {
+                let e = chord_for_action(action, &c).unwrap_err();
+                assert!(e.contains(what), "{action:?} {c:?}: {e}");
+            }
+        }
+        // The named minimum list, spelled out.
+        for c in [
+            ch("KeyQ", false, false, false, true),
+            ch("KeyW", false, false, false, true),
+            ch("KeyC", false, false, false, true),
+            ch("KeyV", false, false, false, true),
+            ch("KeyX", false, false, false, true),
+            ch("KeyZ", false, false, false, true),
+            ch("KeyA", false, false, false, true),
+            ch("KeyS", false, false, false, true),
+            ch("Tab", false, false, false, true),
+            ch("Space", false, false, false, true),
+            ch("KeyH", false, false, false, true),
+            ch("KeyM", false, false, false, true),
+            ch("KeyQ", true, false, false, true),
+            ch("Escape", false, true, false, true),
+            ch("Backquote", false, false, false, true),
+            // any ⌘-only chord, no modifier, only ⇧
+            ch("KeyN", false, false, false, true),
+            ch("KeyN", false, false, true, true),
+            ch("KeyR", false, false, false, false),
+            ch("KeyR", false, false, true, false),
+            ch("Space", false, false, false, false),
+        ] {
+            assert!(
+                chord_for_action(BindingAction::RecordMeeting, &c).is_err(),
+                "meeting {c:?}"
+            );
+            assert!(chord_for_action(BindingAction::Cancel, &c).is_err(), "cancel {c:?}");
+        }
+        // Cancel: bare Esc / F-keys only; ⇧Esc and bare letters refused.
+        assert!(chord_for_action(BindingAction::Cancel, &ch("Escape", false, false, false, false)).is_ok());
+        assert!(chord_for_action(BindingAction::Cancel, &ch("F13", false, false, false, false)).is_ok());
+        assert!(chord_for_action(BindingAction::Cancel, &ch("Escape", false, false, true, false)).is_err());
+        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("F13", false, false, false, false)).is_err());
+        // Ordinary chords pass.
+        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, true, false, true)).is_ok());
+        assert!(chord_for_action(BindingAction::RecordMeeting, &ch("KeyR", true, false, false, true)).is_ok());
+        assert!(chord_for_action(BindingAction::Cancel, &ch("Period", true, false, false, true)).is_ok());
+        assert_eq!(
+            reserved_chord_reason(&ch("KeyQ", false, false, false, true), false).unwrap(),
+            "⌘Q is macOS's Quit — pick another chord"
+        );
     }
 
     #[test]
