@@ -5050,6 +5050,7 @@ async fn summarize_meeting(state: State<'_, Arc<AppState>>, id: String) -> Resul
         let jobs = SUMMARY_JOBS
             .get()
             .ok_or_else(|| "the notes worker is not running — restart Yap".to_string())?;
+        summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, false);
         jobs.submit(&id);
         let st = jobs
             .wait_for(&id, std::time::Duration::from_secs(60 * 60))
@@ -5177,6 +5178,8 @@ impl summary_jobs::NotesBackend for AppNotes {
 #[tauri::command]
 fn cancel_meeting_summary(id: String) -> bool {
     let cancelled = SUMMARY_JOBS.get().is_some_and(|j| j.cancel(&id));
+    // review-opus2 A6: the cancel outlives a relaunch.
+    summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, true);
     log::info!("summary: cancel requested for meeting {id} (in flight: {cancelled})");
     cancelled
 }
@@ -5187,6 +5190,7 @@ fn retry_meeting_summary(id: String) -> Result<bool, String> {
     let jobs = SUMMARY_JOBS
         .get()
         .ok_or_else(|| "the notes worker is not running — restart Yap".to_string())?;
+    summary_jobs::NotesLedger::set_cancelled(&notes_ledger_path(), &id, false);
     Ok(jobs.submit(&id))
 }
 
@@ -6835,6 +6839,7 @@ pub fn run() {
                 resume_pending_summaries(&resume_state);
             })
             .ok();
+        let hook_state = state.clone();
         let deps = meeting_pipeline::PipelineDeps {
             db: state.db.clone(),
             progress_dir: meetings_dir(),
@@ -6867,6 +6872,22 @@ pub fn run() {
             // B3: hand the meeting to the notes worker and return at once — the
             // next queued meeting transcribes while this one's notes are made.
             after_transcript: Some(Arc::new(move |id: &str| {
+                // review-opus2 A6: the hook honours the upgrade ledger and a
+                // persisted cancel, exactly as the launch resume does.
+                let ledger = summary_jobs::NotesLedger::load_or_create(
+                    &notes_ledger_path(),
+                    chrono::Utc::now(),
+                );
+                let allowed = hook_state
+                    .db
+                    .get_meeting(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|m| ledger.allows_auto(id, m.started_at));
+                if !allowed {
+                    log::info!("summary: meeting {id} waits for the backlog banner or a Retry");
+                    return;
+                }
                 if let Some(jobs) = SUMMARY_JOBS.get() {
                     jobs.submit(id);
                 }

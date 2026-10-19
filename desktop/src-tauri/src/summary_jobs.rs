@@ -450,6 +450,11 @@ pub struct NotesLedger {
     pub since: DateTime<Utc>,
     #[serde(default)]
     pub backlog: BacklogChoice,
+    /// review-opus2 A6 — meetings whose notes the person cancelled. A cancel
+    /// outlives a relaunch: the launch resume never restarts these; the
+    /// card's Retry / Write notes (or the backlog's Summarize) clears it.
+    #[serde(default)]
+    pub cancelled: Vec<String>,
 }
 
 impl NotesLedger {
@@ -466,9 +471,30 @@ impl NotesLedger {
         let l = NotesLedger {
             since: now,
             backlog: BacklogChoice::Pending,
+            cancelled: Vec::new(),
         };
         l.save(path);
         l
+    }
+
+    /// Record (or clear) a person's cancel of `id`'s notes, on disk.
+    pub fn set_cancelled(path: &std::path::Path, id: &str, cancelled: bool) {
+        let mut l = Self::load_or_create(path, Utc::now());
+        l.cancelled.retain(|c| c != id);
+        if cancelled {
+            l.cancelled.push(id.to_string());
+        }
+        l.save(path);
+    }
+
+    /// May the AUTOMATIC paths (the after-transcript hook, the launch resume)
+    /// start notes for a meeting recorded at `started_at`? Not for one the
+    /// person cancelled, and not for a pre-upgrade meeting unless the backlog
+    /// was accepted — a stranded old meeting finishing its transcript is no
+    /// consent to a 1.1 GB download.
+    pub fn allows_auto(&self, id: &str, started_at: DateTime<Utc>) -> bool {
+        !self.cancelled.iter().any(|c| c == id)
+            && (started_at >= self.since || self.backlog == BacklogChoice::Accepted)
     }
 
     pub fn save(&self, path: &std::path::Path) {
@@ -508,7 +534,10 @@ pub fn plan_resume(rows: &[NeedsNotes], ledger: &NotesLedger) -> (Vec<String>, V
     let mut resume = Vec::new();
     let mut backlog = Vec::new();
     for r in rows {
-        if r.started_at >= ledger.since || ledger.backlog == BacklogChoice::Accepted {
+        if ledger.cancelled.iter().any(|c| c == &r.id) {
+            continue;
+        }
+        if ledger.allows_auto(&r.id, r.started_at) {
             resume.push(r.id.clone());
         } else {
             backlog.push(r.id.clone());
@@ -817,7 +846,7 @@ mod tests {
             row("old2", "2026-10-18T10:00:00Z"),
             row("new1", "2026-10-19T13:00:00Z"),
         ];
-        let mut ledger = NotesLedger { since, backlog: BacklogChoice::Pending };
+        let mut ledger = NotesLedger { since, backlog: BacklogChoice::Pending, cancelled: Vec::new() };
         let (resume, backlog) = plan_resume(&rows, &ledger);
         assert_eq!(resume, vec!["new1"]);
         assert_eq!(backlog, vec!["old1", "old2"]);
@@ -928,6 +957,32 @@ mod tests {
             NotesError::Offline
         );
         assert_eq!(classify_download_error("download from u stalled at 5 bytes"), NotesError::Offline);
+    }
+
+
+    /// review-opus2 A6: a cancel survives a relaunch; an old meeting is never
+    /// started by the automatic paths unless the backlog was accepted.
+    #[test]
+    fn a_cancel_persists_and_old_meetings_need_the_backlog_click() {
+        let dir = std::env::temp_dir().join(format!("yap-ledger-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("notes-jobs.json");
+        let _ = std::fs::remove_file(&path);
+        let since = Utc::now();
+        let l = NotesLedger::load_or_create(&path, since);
+        let new = since + chrono::Duration::minutes(5);
+        let old = since - chrono::Duration::days(3);
+        assert!(l.allows_auto("a", new));
+        assert!(!l.allows_auto("b", old), "a stranded old meeting needs the banner");
+        NotesLedger::set_cancelled(&path, "a", true);
+        let l = NotesLedger::load_or_create(&path, Utc::now());
+        assert!(!l.allows_auto("a", new), "the cancel survived the relaunch");
+        let rows = vec![NeedsNotes { id: "a".into(), started_at: new }];
+        assert_eq!(plan_resume(&rows, &l), (vec![], vec![]));
+        NotesLedger::set_cancelled(&path, "a", false);
+        let l = NotesLedger::load_or_create(&path, Utc::now());
+        assert!(l.allows_auto("a", new), "Retry clears it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 }
