@@ -2,6 +2,7 @@
 // host and the global modals. Every screen lives in ./views/<Name>.tsx and the
 // eight settings panels in ./views/settings/. Shell state lives in ./appShell.
 import { AppContext, useAppShell } from "./appShell";
+import { TEST_CHIP } from "./buildChannel";
 import { invoke } from "@tauri-apps/api/core";
 import { repairPane } from "./hotkeyStatus";
 import Onboarding from "./Onboarding";
@@ -129,6 +130,11 @@ export default function App() {
 
       <section className="main">
         <header className="main-head">
+          {TEST_CHIP && (
+            <div className="test-build-chip" role="note" title="Local test build — not a release">
+              {TEST_CHIP}
+            </div>
+          )}
           <div>
             <h1>
               {nav === "home" && (userName ? `Welcome back, ${userName}` : "Welcome back")}

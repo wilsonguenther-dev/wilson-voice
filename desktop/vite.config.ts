@@ -32,6 +32,8 @@ const host = process.env.TAURI_DEV_HOST;
  */
 // @ts-expect-error process is a nodejs global
 const devTooling = process.env.YAP_DEV_TOOLING === "1";
+// @ts-expect-error process is a nodejs global
+const yapEnv: Record<string, string | undefined> = process.env;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -41,7 +43,17 @@ export default defineConfig(async () => ({
   // lockstep with tauri.conf.json and Cargo.toml at every release. It was a
   // hand-typed string, and it was still claiming v0.7.0 after the tree had
   // moved on — a version a user reads off the header has to be the real one.
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  //
+  // TC-1 — the build channel (`scripts/test-build.sh` sets these three; a
+  // release build leaves them unset, so `channel` is "" and no chip renders).
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __YAP_BUILD__: JSON.stringify({
+      channel: yapEnv.YAP_CHANNEL ?? "",
+      sha: yapEnv.YAP_BUILD_SHA ?? "",
+      branch: yapEnv.YAP_BUILD_BRANCH ?? "",
+    }),
+  },
 
   // Y5-D — vitest stubs every CSS module to the empty string by default, which
   // silently turns a stylesheet assertion into a test of "". `pill/motion.test`

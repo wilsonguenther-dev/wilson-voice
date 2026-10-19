@@ -15,7 +15,9 @@
     "desktop:build": "npm run sidecar && bash ../scripts/sign-local.sh --tauri-build",
     "loop:build": "node ../scripts/loop/build.mjs",
     "loop:validate": "node ../scripts/loop/build.mjs --validate-only",
-    "smoke:windowed": "bash ../scripts/smoke-windowed.sh"
+    "smoke:windowed": "bash ../scripts/smoke-windowed.sh",
+    "test-build": "bash ../scripts/test-build.sh",
+    "test-build:test": "bash ../scripts/test-build.test.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
