@@ -63,8 +63,8 @@ use llama_cpp_2::token::LlamaToken;
 
 use polish_protocol::{
     fit_to_budget, max_out_for, sampler_plan, PolishReady, PolishRequest, PolishResponse,
-    SamplerPlan, KIND_COUNT_TOKENS, KIND_POLISH, KIND_SUMMARIZE, SUMMARIZE_MAP, SUMMARIZE_REDUCE,
-    SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
+    SamplerPlan, KIND_COUNT_TOKENS, KIND_POLISH, KIND_SUMMARIZE, SUMMARIZE_HEADLINE, SUMMARIZE_MAP,
+    SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT,
 };
 
 /// Static base prompt — byte-identical for every request so its KV survives
@@ -170,11 +170,26 @@ RULES
    address that is not in them.
 4. Do not list action items. They are collected separately.";
 
+/// HEADLINE (focus-2026-10-19): a title and the key points, over the finished
+/// narrative and items. The parent's grammar fixes the JSON shape (3–6 points);
+/// its validators drop anything the notes do not support.
+const SUMMARIZE_HEADLINE_SYSTEM: &str = "You write the title and key points for a meeting's notes.
+
+The input is the meeting's summary, then its decisions and action items.
+
+RULES
+1. Output ONLY a JSON object: {\"title\": ..., \"key_points\": [...]}.
+2. `title`: 3 to 8 words naming what the meeting was about. No date, no quotes.
+3. `key_points`: 3 to 6 short sentences, the most important things said, in order.
+4. Use only what the input contains. Never add a fact, name, number, date or
+   address that is not in it.";
+
 /// The system turn for a summarize request, by stage.
 fn summarize_prompt(stage: &str) -> Option<String> {
     Some(match stage {
         SUMMARIZE_MAP => SUMMARIZE_MAP_SYSTEM.to_string(),
         SUMMARIZE_REDUCE => SUMMARIZE_REDUCE_SYSTEM.to_string(),
+        SUMMARIZE_HEADLINE => SUMMARIZE_HEADLINE_SYSTEM.to_string(),
         _ => return None,
     })
 }
@@ -194,6 +209,7 @@ fn default_max_out(req: &PolishRequest) -> u32 {
         // Finding #35: a summary never inherits the rewriter's input-scaled
         // budget — that would give the summary more room than its input.
         (KIND_SUMMARIZE, SUMMARIZE_MAP) => SUMMARY_MAP_MAX_OUT,
+        (KIND_SUMMARIZE, SUMMARIZE_HEADLINE) => SUMMARY_HEADLINE_MAX_OUT,
         (KIND_SUMMARIZE, _) => SUMMARY_REDUCE_MAX_OUT,
         _ => max_out_for(&req.text),
     }

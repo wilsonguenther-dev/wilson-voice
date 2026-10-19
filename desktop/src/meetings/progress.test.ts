@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canRetry, foldProgress, meetingStateLabel, type MeetingProgressEvent } from "./progress";
+import { summaryTitle, canRetry, foldProgress, meetingStateLabel, type MeetingProgressEvent } from "./progress";
 
 const ev = (percent: number, state = "transcribing"): MeetingProgressEvent => ({
   id: "m1",
@@ -22,9 +22,27 @@ describe("meeting progress", () => {
     m = foldProgress(m, ev(100, "complete"));
     expect(m.m1.state).toBe("complete");
   });
-  it("complete says Notes ready, or names the missing summary model as a state", () => {
+  it("complete says Notes ready, and never asks for a summary model", () => {
     expect(meetingStateLabel("complete", undefined, true)).toBe("Notes ready");
-    expect(meetingStateLabel("complete", undefined, false)).toContain("Add a summary model in Settings");
+    expect(meetingStateLabel("complete", undefined, false)).toBe("Transcript ready · Notes on the way");
+  });
+  it("card walks transcript-ready → (model fetch) → summarizing → summary shown", () => {
+    const p = (state: string, percent: number) => ({ id: "m1", state, percent, processedThroughSeconds: 0, durationSeconds: 60, error: null });
+    const labels = [
+      meetingStateLabel("complete", undefined, false),
+      meetingStateLabel("complete", p("preparing_notes", 42) as never, false),
+      meetingStateLabel("summarizing", p("summarizing", 0) as never, false),
+      meetingStateLabel("complete", p("complete", 100) as never, true),
+    ];
+    expect(labels).toEqual([
+      "Transcript ready · Notes on the way",
+      "Transcript ready · Getting the notes model 42%",
+      "Writing notes",
+      "Notes ready",
+    ]);
+    for (const l of labels) expect(l.toLowerCase()).not.toContain("add a summary model");
+    expect(summaryTitle("## Pricing review\n\n### Summary\n\nWe met.")).toBe("Pricing review");
+    expect(summaryTitle("plain")).toBeNull();
   });
   it("failed and partial rows offer Retry", () => {
     expect(canRetry("failed")).toBe(true);

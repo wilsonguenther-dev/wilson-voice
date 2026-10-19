@@ -78,8 +78,8 @@ use crate::meetings::{
     MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_MAP,
-    SUMMARIZE_REDUCE, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_HEADLINE,
+    SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
@@ -1185,7 +1185,12 @@ pub fn summarize_segments_with(
     let actions = resolve(&merged.actions);
     let decisions = resolve(&merged.decisions);
     let questions = resolve(&merged.questions);
-    let markdown = render_summary(
+    // focus-2026-10-19 — title + key points: one grammar-shaped pass over
+    // what is already validated; a failed / rejected pass falls back to a
+    // mechanical headline from the narrative, never to nothing.
+    let headline = headline_pass(client, &narrative, &actions, &decisions);
+    let markdown = render_notes(
+        &headline,
         &narrative,
         &actions,
         &decisions,
@@ -1444,6 +1449,278 @@ pub fn render_summary(
     out.trim_end().to_string()
 }
 
+// ── focus-2026-10-19: zero-setup notes — headline, owners, model plan, cancel ─
+
+/// The model a meeting summary uses when the user picked none: the catalog's
+/// rank-1 polish model (Qwen2.5 1.5B Instruct Q4_K_M, 1.04 GiB GGUF, run by
+/// the bundled llama.cpp sidecar). 0.5B was tried for the role and is too weak
+/// on multi-speaker extraction; the bigger choice stays in Settings.
+pub const DEFAULT_SUMMARY_MODEL: &str = "qwen2.5-1.5b-instruct-q4_k_m";
+
+/// What the summary must do about its model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryModelPlan {
+    /// This model is on disk — use it.
+    Use(String),
+    /// Nothing usable is on disk — fetch this one (managed, into the app's
+    /// own models dir, with a progress row), then use it.
+    Download(String),
+}
+
+/// PURE. The user's polish model wins when it is on disk; else the default
+/// when it is; else download the default. Never "no model".
+pub fn plan_summary_model(chosen: &str, on_disk: &dyn Fn(&str) -> bool) -> SummaryModelPlan {
+    let chosen = chosen.trim();
+    if !chosen.is_empty() && on_disk(chosen) {
+        return SummaryModelPlan::Use(chosen.to_string());
+    }
+    if on_disk(DEFAULT_SUMMARY_MODEL) {
+        return SummaryModelPlan::Use(DEFAULT_SUMMARY_MODEL.to_string());
+    }
+    SummaryModelPlan::Download(DEFAULT_SUMMARY_MODEL.to_string())
+}
+
+static SUMMARY_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the running summary to stop at its next model call.
+pub fn request_cancel() {
+    SUMMARY_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// Clear a cancel before a new summary starts.
+pub fn clear_cancel() {
+    SUMMARY_CANCEL.store(false, Ordering::SeqCst);
+}
+
+pub fn cancel_requested() -> bool {
+    SUMMARY_CANCEL.load(Ordering::SeqCst)
+}
+
+/// A meeting's title and key points.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Headline {
+    pub title: String,
+    pub key_points: Vec<String>,
+}
+
+pub const MIN_KEY_POINTS: usize = 3;
+pub const MAX_KEY_POINTS: usize = 6;
+const MAX_TITLE_WORDS: usize = 10;
+
+/// The HEADLINE grammar: exactly the JSON shape, 3–6 key points.
+pub const HEADLINE_GRAMMAR: &str = r#"root ::= "{" ws "\"title\":" ws str "," ws "\"key_points\":" ws "[" ws str ws "," ws str ws "," ws str (ws "," ws str)? (ws "," ws str)? (ws "," ws str)? ws "]" ws "}"
+str ::= "\"" [^"\\\n]+ "\""
+ws ::= [ \t\n]*"#;
+
+#[derive(Deserialize)]
+struct RawHeadline {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    key_points: Vec<String>,
+}
+
+/// Parse + validate a HEADLINE answer against `source` (the narrative and
+/// items it was written from). `None` when nothing usable survived.
+pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
+    let cleaned = strip_fences(raw);
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    let parsed: RawHeadline = serde_json::from_str(cleaned.get(start..=end)?).ok()?;
+    let title = parsed.title.trim().trim_matches('"').trim_end_matches('.').to_string();
+    let title_ok = !title.is_empty()
+        && title.split_whitespace().count() <= MAX_TITLE_WORDS
+        && common_gates(source, &title).is_some();
+    let mut key_points: Vec<String> = Vec::new();
+    for p in parsed.key_points {
+        if let Some(ok) = validate_item(source, &p) {
+            if !key_points.iter().any(|k| same_item(k, &ok)) {
+                key_points.push(ok);
+            }
+        }
+        if key_points.len() == MAX_KEY_POINTS {
+            break;
+        }
+    }
+    if !title_ok && key_points.is_empty() {
+        return None;
+    }
+    Some(Headline {
+        title: if title_ok { title } else { String::new() },
+        key_points,
+    })
+}
+
+fn sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        cur.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            let s = cur.trim().to_string();
+            if s.split_whitespace().count() >= 3 {
+                out.push(s);
+            }
+            cur.clear();
+        }
+    }
+    let tail = cur.trim();
+    if tail.split_whitespace().count() >= 3 {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+/// The mechanical headline: a title from the narrative's first sentence, key
+/// points from its sentences then the decisions and actions. Used to fill
+/// whatever the model's pass did not supply.
+pub fn fallback_headline(narrative: &str, actions: &[SummaryItem], decisions: &[SummaryItem]) -> Headline {
+    let sents = sentences(narrative);
+    let title = sents
+        .first()
+        .map(|s| {
+            let words: Vec<&str> = s.trim_end_matches(['.', '!', '?']).split_whitespace().take(8).collect();
+            words.join(" ")
+        })
+        .unwrap_or_else(|| "Meeting notes".to_string());
+    let mut key_points: Vec<String> = Vec::new();
+    for p in sents
+        .into_iter()
+        .chain(decisions.iter().map(|d| d.text.clone()))
+        .chain(actions.iter().map(|a| a.text.clone()))
+    {
+        if !key_points.iter().any(|k| same_item(k, &p)) {
+            key_points.push(p);
+        }
+        if key_points.len() == MAX_KEY_POINTS {
+            break;
+        }
+    }
+    Headline { title, key_points }
+}
+
+/// The HEADLINE pass, with the fallback filling any gap (empty title, fewer
+/// than three points). A cancel or a failed call is the fallback alone.
+pub fn headline_pass(
+    client: &dyn SummaryClient,
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+) -> Headline {
+    let fallback = fallback_headline(narrative, actions, decisions);
+    if narrative.trim().is_empty() && actions.is_empty() && decisions.is_empty() {
+        return fallback;
+    }
+    let mut source = narrative.trim().to_string();
+    for (h, items) in [("Decisions:", decisions), ("Action items:", actions)] {
+        if !items.is_empty() {
+            source.push_str(&format!("\n\n{h}\n"));
+            for i in items {
+                source.push_str(&format!("- {}\n", i.text));
+            }
+        }
+    }
+    let req = PolishRequest::summarize(
+        next_id(),
+        SUMMARIZE_HEADLINE,
+        SUMMARY_HEADLINE_MAX_OUT,
+        REDUCE_DEADLINE_MS,
+        source.clone(),
+        Some(HEADLINE_GRAMMAR.to_string()),
+    );
+    let got = match client.generate(&req) {
+        Ok(answer) => parse_headline(&answer.text, &source),
+        Err(e) => {
+            log::warn!("summary: headline pass failed ({}) — using the mechanical headline", e.tag());
+            None
+        }
+    };
+    let mut h = got.unwrap_or_default();
+    if h.title.trim().is_empty() {
+        h.title = fallback.title.clone();
+    }
+    for p in fallback.key_points {
+        if h.key_points.len() >= MIN_KEY_POINTS {
+            break;
+        }
+        if !h.key_points.iter().any(|k| same_item(k, &p)) {
+            h.key_points.push(p);
+        }
+    }
+    h
+}
+
+/// "Owner" of an action item, ONLY when the item's own words name one at the
+/// front ("Jeisil will send …", "Wilson to book …"). Never inferred.
+pub fn action_owner(text: &str) -> Option<String> {
+    let mut words = text.split_whitespace();
+    let first = words.next()?.trim_matches(|c: char| !c.is_alphanumeric());
+    let second = words.next()?.to_lowercase();
+    let is_name = first.chars().next()?.is_uppercase()
+        && first.chars().skip(1).all(|c| c.is_lowercase())
+        && !matches!(first, "We" | "They" | "The" | "Someone" | "Everyone" | "I" | "You" | "He" | "She" | "It" | "This" | "That");
+    let commits = matches!(second.as_str(), "will" | "to" | "should" | "needs" | "is" | "owns" | "agreed");
+    (is_name && commits).then(|| first.to_string())
+}
+
+/// The stored notes: title, one-paragraph summary, key points, decisions,
+/// action items (owner when said), open questions. Markdown — what the card,
+/// Open transcript and Export Markdown all show.
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes(
+    headline: &Headline,
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    truncated_chunks: usize,
+    chunks: usize,
+    truncated: bool,
+) -> String {
+    let body = render_summary(narrative, &[], decisions, questions, truncated_chunks, chunks, truncated);
+    let mut out = String::new();
+    if !headline.title.trim().is_empty() {
+        out.push_str(&format!("## {}\n\n", headline.title.trim()));
+    }
+    let (summary_para, rest) = if narrative.trim().is_empty() {
+        (String::new(), body.as_str())
+    } else {
+        (narrative.trim().to_string(), body.strip_prefix(narrative.trim()).unwrap_or(&body))
+    };
+    if !summary_para.is_empty() {
+        out.push_str("### Summary\n\n");
+        out.push_str(&summary_para);
+        out.push_str("\n\n");
+    }
+    if !headline.key_points.is_empty() {
+        out.push_str("### Key points\n\n");
+        for p in &headline.key_points {
+            out.push_str(&format!("- {p}\n"));
+        }
+        out.push('\n');
+    }
+    if !actions.is_empty() {
+        out.push_str("### Action items\n\n");
+        for item in actions {
+            let at = format_offset(item.start_seconds);
+            let owner = action_owner(&item.text).map(|o| format!("**{o}** — ")).unwrap_or_default();
+            match &item.speaker {
+                Some(who) => out.push_str(&format!("- {owner}{} ({who}, {at})\n", item.text)),
+                None => out.push_str(&format!("- {owner}{} ({at})\n", item.text)),
+            }
+        }
+        out.push('\n');
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() && !rest.starts_with("_No summary could be produced") {
+        out.push_str(rest);
+    }
+    if out.trim().is_empty() {
+        return "_No summary could be produced for this meeting._".to_string();
+    }
+    out.trim_end().to_string()
+}
+
 // ── the sidecar session ─────────────────────────────────────────────────────
 
 /// Request ids for this process's summarize sessions.
@@ -1604,6 +1881,10 @@ impl TokenCounter for SidecarSummaryClient {
 
 impl SummaryClient for SidecarSummaryClient {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError> {
+        // focus-2026-10-19: Cancel stops the summary at its next model call.
+        if cancel_requested() {
+            return Err(SummaryError::Unavailable);
+        }
         let response = self.call(req)?;
         let truncated = response.was_truncated();
         if truncated {

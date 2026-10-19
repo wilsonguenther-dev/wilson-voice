@@ -44,7 +44,13 @@ export function meetingStateLabel(
     case "summarizing":
       return "Writing notes";
     case "complete":
-      return hasSummary ? "Notes ready" : "Transcript ready · Add a summary model in Settings";
+      // focus-2026-10-19: notes always come — no setup step to name.
+      if (hasSummary) return "Notes ready";
+      if (progress && progress.state === "preparing_notes") {
+        return `Transcript ready · Getting the notes model ${Math.max(0, Math.min(100, Math.round(progress.percent)))}%`;
+      }
+      if (progress && progress.state === "summarizing") return "Writing notes";
+      return "Transcript ready · Notes on the way";
     case "partial":
       return "Partly transcribed";
     case "failed":
@@ -57,4 +63,10 @@ export function meetingStateLabel(
 /** A failed or partial meeting can be run through the pipeline again. */
 export function canRetry(state: string): boolean {
   return state === "failed" || state === "partial";
+}
+
+/** focus-2026-10-19 — the notes' title (the `## ` line the summary opens with). */
+export function summaryTitle(summary: string | null | undefined): string | null {
+  const line = (summary ?? "").split("\n").find((l) => l.startsWith("## "));
+  return line ? line.slice(3).trim() || null : null;
 }

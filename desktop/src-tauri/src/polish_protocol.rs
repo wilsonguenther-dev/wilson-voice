@@ -72,6 +72,9 @@ pub const KIND_COUNT_TOKENS: &str = "count_tokens";
 pub const SUMMARIZE_MAP: &str = "map";
 /// REDUCE stage of a summarize request.
 pub const SUMMARIZE_REDUCE: &str = "reduce";
+/// focus-2026-10-19 — HEADLINE stage: a title and 3–6 key points over the
+/// finished narrative + extracted items (one small pass, grammar-shaped).
+pub const SUMMARIZE_HEADLINE: &str = "headline";
 
 /// Output budget for one MAP pass, in tokens (finding #35).
 ///
@@ -84,6 +87,8 @@ pub const SUMMARY_MAP_MAX_OUT: u32 = 288;
 /// Output budget for the REDUCE narrative, in tokens. One paragraph or three,
 /// never a re-transcript.
 pub const SUMMARY_REDUCE_MAX_OUT: u32 = 384;
+/// Output budget for the HEADLINE pass: a title and at most six short points.
+pub const SUMMARY_HEADLINE_MAX_OUT: u32 = 224;
 
 /// The GBNF start symbol every generated grammar uses.
 pub const GRAMMAR_ROOT: &str = "root";

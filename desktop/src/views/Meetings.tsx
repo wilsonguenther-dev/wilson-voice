@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { canRetry, meetingStateLabel } from "../meetings/progress";
+import { canRetry, meetingStateLabel, summaryTitle } from "../meetings/progress";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -284,6 +284,9 @@ export default function Meetings() {
                           {meetingStateLabel(m.state, progress[m.id], Boolean(m.summary))}
                         </span>
                       </p>
+                      {summaryTitle(m.summary) && (
+                        <p className="muted meeting-notes-title">{summaryTitle(m.summary)}</p>
+                      )}
                       {m.error && <p className="tiny bad">{m.error}</p>}
                       <div className="actions">
                         {canRetry(m.state) && (
@@ -378,8 +381,8 @@ export default function Meetings() {
 
               {openMeeting.meeting.summary && (
                 <div className="panel">
-                  <h3>Summary</h3>
-                  <p>{openMeeting.meeting.summary}</p>
+                  <h3>Notes</h3>
+                  <p style={{ whiteSpace: "pre-wrap" }}>{openMeeting.meeting.summary}</p>
                 </div>
               )}
 
