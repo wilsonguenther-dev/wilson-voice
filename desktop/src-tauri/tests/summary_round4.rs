@@ -215,3 +215,30 @@ fn sentences_split_only_at_real_ends() {
     );
     assert_eq!(split_sentences("Version 1.2.3 ships"), vec!["Version 1.2.3 ships"]);
 }
+
+/// review-opus2 N1's probe set: none is an owner, none is backfilled, none
+/// classifies as an action.
+#[test]
+fn review_opus2_n1_words_are_never_owners() {
+    let lines_in = [
+        "Everything will be ready",
+        "Friday will be tight",
+        "Lunch will be late",
+        "Pricing will change next quarter",
+        "Monday should be quiet",
+        "Nobody will mind",
+        "Revenue is going to climb",
+    ];
+    let lines = transcript_lines(&segments_from(&lines_in));
+    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let names = transcript_names(&lines);
+    let mut extract = MapExtract::default();
+    ground_extract(&mut extract, &lines, &source);
+    assert!(extract.actions.is_empty(), "{:?}", extract.actions);
+    for line in lines_in {
+        let first = vec![line.split_whitespace().next().unwrap().to_string()];
+        assert_eq!(action_owner(line, &names), None, "{line}");
+        assert_eq!(action_owner(line, &first), None, "{line}");
+        assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
+    }
+}

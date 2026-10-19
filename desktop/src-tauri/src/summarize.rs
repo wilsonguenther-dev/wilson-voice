@@ -711,6 +711,11 @@ const COMMON_WORDS: &[&str] = &[
     "over", "under", "about", "again", "still", "even", "only", "never", "always", "often",
     "sometimes", "usually", "soon", "later", "earlier", "otherwise", "instead", "anyway",
     "meanwhile", "though", "however", "therefore", "plus", "or", "nor", "yet", "not",
+    // review-opus2 N1: the everyday nouns of a work meeting are not people.
+    "pricing", "price", "prices", "product", "design", "support", "finance", "legal",
+    "customer", "customers", "client", "clients", "launch", "release", "deadline", "meeting",
+    "call", "plan", "project", "demo", "deck", "doc", "report", "update", "marketing",
+    "engineering", "hiring", "onboarding", "billing", "growth", "progress", "nobody",
 ];
 
 /// Is `lower` (already lowercased) one of [`COMMON_WORDS`]?
