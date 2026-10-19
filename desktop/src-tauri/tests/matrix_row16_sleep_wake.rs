@@ -15,44 +15,338 @@
 //! a sleep after the user already stopped) are ones a lid cannot produce on
 //! demand.
 //!
-//! **What these tests do NOT prove, stated first so nobody has to infer it.**
-//! Nothing in this repository registers `NSWorkspaceWillSleepNotification`, so
-//! nothing calls [`SleepPolicy::observe`] and closing a lid mid-meeting still
-//! does whatever it did before. Nothing owns that call site — `power.rs`
-//! mentions the notification in a comment and registers nothing. That is
-//! why row 16 is published as `Coverage::PolicyOnly` and not `Coverage::Test`,
-//! and `the_row_is_published_as_unwired` below is the assertion that keeps the
-//! published table honest while this stays true.
+//! **The observer exists since Y1-B, and the first tests below drive it.**
+//! `power::SleepWakeObserver` registers `NSWorkspaceWillSleepNotification` and
+//! `NSWorkspaceDidWakeNotification` on the workspace notification centre and
+//! publishes ONE [`SleepEvent`] to a `power::SleepWakeHub`, which fans it out
+//! to the three consumers `lib.rs` subscribes: dictation, meetings (this row's
+//! [`SleepPolicy`], via `SleepPolicy::drive`) and PERM-E's permission re-read.
+//! The tests post the real notifications on the real centre — the same objects
+//! macOS posts — so they exercise the shipping registration, not a stand-in.
+//!
+//! **What these tests do NOT prove.** They do not close a lid: macOS posting
+//! the notification on a real sleep is AppKit's contract, not something an
+//! in-process test can trigger. And the `lib.rs` closures that act on the
+//! controller (stopping the meeting, cancelling the take) need a Tauri host;
+//! the fan-out test drives the same decision functions those closures call and
+//! checks the source subscribes all three, rather than booting the app.
+
+use std::sync::{Arc, Mutex};
 
 use wilson_voice_lib::meeting_matrix::{
     Coverage, SleepAction, SleepEvent, SleepPolicy, PAUSED_BY_SLEEP, ROWS,
 };
+use wilson_voice_lib::permissions::{self, WatchReason};
+use wilson_voice_lib::power::{
+    self, SleepWakeHub, SleepWakeObserver, CONSUMER_DICTATION, CONSUMER_MEETINGS,
+    CONSUMER_PERMISSIONS, SLEEP_WAKE_CONSUMERS,
+};
 
-/// The claim this whole file is allowed to make, checked rather than trusted.
-///
-/// A tested policy with no caller reads exactly like a shipped feature to
-/// anyone skimming `docs/yap22a-error-matrix.md`. The state machine below is
-/// complete and correct; the app does not consult it yet; the row has to say
-/// so. `matrix_coverage.rs` holds the other end — it fails the day the call
-/// site appears, which is the day this row becomes a real `Test` row.
+/// Every test that posts on the shared workspace centre takes this, so one
+/// test's post never lands in another test's observer.
+static CENTRE: Mutex<()> = Mutex::new(());
+
+fn centre_lock() -> std::sync::MutexGuard<'static, ()> {
+    CENTRE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Post one of the two notifications on `NSWorkspace.sharedWorkspace
+/// .notificationCenter` — the centre macOS itself posts them on.
+#[cfg(target_os = "macos")]
+fn post(event: SleepEvent) {
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    };
+    let centre = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: framework constant names; no sender object.
+    unsafe {
+        let name = match event {
+            SleepEvent::WillSleep => NSWorkspaceWillSleepNotification,
+            SleepEvent::DidWake => NSWorkspaceDidWakeNotification,
+        };
+        centre.postNotificationName_object(name, None);
+    }
+}
+
+fn src(file: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(file);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// The source with comment lines and string literals removed — a comment
+/// naming a call site is not a call site (that is how row 16 was misread).
+fn code_of(body: &str) -> String {
+    let mut out = String::new();
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+            continue;
+        }
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut prev_slash = false;
+        for c in t.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if c == '/' && prev_slash {
+                out.pop();
+                break;
+            }
+            prev_slash = c == '/';
+            if c == '"' {
+                in_string = true;
+            } else {
+                out.push(c);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The row and the code agree: row 16 is a `Test` row anchored to the shipping
+/// observer in `power.rs`, and its cell no longer says NOT WIRED.
 #[test]
-fn the_row_is_published_as_unwired_because_nothing_registers_the_notification() {
+fn row16_is_no_longer_policy_only() {
     let row = ROWS.iter().find(|r| r.id == "16").expect("row 16");
     assert!(
-        matches!(
-            row.coverage,
-            Coverage::PolicyOnly {
-                wiring_pr: None,
-                absent_call_site: "NSWorkspaceWillSleepNotification",
-                ..
-            }
-        ),
-        "row 16 must not claim end-to-end coverage while no call site exists: {:?}",
+        !matches!(row.coverage, Coverage::PolicyOnly { .. }),
+        "row 16 still published as PolicyOnly: {:?}",
         row.coverage
     );
+    assert_eq!(
+        row.coverage,
+        Coverage::Test {
+            test: "matrix_row16_sleep_wake.rs",
+            subject: "SleepWakeObserver",
+            subject_module: "power.rs",
+        }
+    );
     let cell = row.coverage.cell();
-    assert!(cell.contains("NOT WIRED"), "{cell}");
-    assert!(cell.contains("nothing calls"), "{cell}");
+    assert!(!cell.contains("NOT WIRED"), "{cell}");
+    // …and the code backs the cell: power.rs registers both notifications as
+    // CODE, not in a comment.
+    let power_code = code_of(&src("power.rs"));
+    for name in [
+        "NSWorkspaceWillSleepNotification",
+        "NSWorkspaceDidWakeNotification",
+        "addObserverForName_object_queue_usingBlock",
+        "removeObserver",
+    ] {
+        assert!(
+            power_code.contains(name),
+            "power.rs does not call `{name}` as code"
+        );
+    }
+}
+
+/// ONE observer, registered in `power.rs` and nowhere else, fans each event
+/// out to dictation, meetings and permissions.
+#[cfg(target_os = "macos")]
+#[test]
+fn one_observer_fans_out_to_dictation_meetings_and_permissions() {
+    let _centre = centre_lock();
+
+    // The three consumers, each calling the same decision function its
+    // production closure in lib.rs calls.
+    let dictation: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let meetings: Arc<Mutex<Vec<SleepAction>>> = Arc::default();
+    let perms: Arc<Mutex<Vec<Option<WatchReason>>>> = Arc::default();
+    let meeting_recording = Arc::new(Mutex::new(true));
+
+    let hub = Arc::new(SleepWakeHub::new());
+    {
+        let d = Arc::clone(&dictation);
+        hub.subscribe(CONSUMER_DICTATION, move |e| {
+            d.lock()
+                .unwrap()
+                .push(power::dictation_should_park_take(e, true));
+        });
+        let m = Arc::clone(&meetings);
+        let rec = Arc::clone(&meeting_recording);
+        let policy = Mutex::new(SleepPolicy::new());
+        hub.subscribe(CONSUMER_MEETINGS, move |e| {
+            let now = *rec.lock().unwrap();
+            let action = policy.lock().unwrap().drive(now, e);
+            if action == SleepAction::FinalizeAndPause {
+                // what lib.rs does: controller.stop(PAUSED_BY_SLEEP)
+                *rec.lock().unwrap() = false;
+            }
+            m.lock().unwrap().push(action);
+        });
+        let p = Arc::clone(&perms);
+        hub.subscribe(CONSUMER_PERMISSIONS, move |e| {
+            p.lock().unwrap().push(permissions::on_sleep_wake(e));
+        });
+        // A duplicate consumer is refused rather than doubling its actions.
+        hub.subscribe(CONSUMER_PERMISSIONS, |_| {
+            panic!("second permissions consumer ran")
+        });
+    }
+    assert_eq!(hub.consumers(), SLEEP_WAKE_CONSUMERS.to_vec());
+
+    let observer = SleepWakeObserver::register(Arc::clone(&hub));
+    assert_eq!(observer.registered(), 2, "will-sleep and did-wake");
+
+    post(SleepEvent::WillSleep);
+    post(SleepEvent::DidWake);
+
+    assert_eq!(
+        *dictation.lock().unwrap(),
+        vec![true, false],
+        "park on sleep only"
+    );
+    assert_eq!(
+        *meetings.lock().unwrap(),
+        vec![
+            SleepAction::FinalizeAndPause,
+            SleepAction::OfferResumeAsNewSegment
+        ]
+    );
+    assert!(
+        !*meeting_recording.lock().unwrap(),
+        "meeting stopped {PAUSED_BY_SLEEP}"
+    );
+    assert_eq!(*perms.lock().unwrap(), vec![None, Some(WatchReason::Wake)]);
+    observer.unregister();
+
+    // The production wiring: lib.rs subscribes exactly these three to the one
+    // hub and installs it once; no other file registers the notifications.
+    let lib = code_of(&src("lib.rs"));
+    for consumer in [
+        "CONSUMER_DICTATION",
+        "CONSUMER_MEETINGS",
+        "CONSUMER_PERMISSIONS",
+    ] {
+        assert!(
+            lib.contains(&format!("hub.subscribe(power::{consumer}")),
+            "lib.rs does not subscribe power::{consumer}"
+        );
+    }
+    assert!(lib.contains(".drive(controller.is_recording(), event)"));
+    assert!(lib.contains("permissions::on_sleep_wake(event)"));
+    assert!(lib.contains("power::dictation_should_park_take(event, in_flight)"));
+    assert_eq!(
+        lib.matches("power::install_sleep_wake_observer(").count(),
+        1
+    );
+
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src_dir];
+    let mut scanned = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read src").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("power.rs") {
+                continue;
+            }
+            scanned += 1;
+            let code = code_of(&std::fs::read_to_string(&path).unwrap_or_default());
+            for name in [
+                "NSWorkspaceWillSleepNotification",
+                "NSWorkspaceDidWakeNotification",
+            ] {
+                assert!(
+                    !code.contains(name),
+                    "{} registers `{name}` — power.rs owns the ONE observer",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(scanned > 10, "src scan found almost nothing");
+}
+
+/// An observer that outlives the app is a crash. After unregister, a posted
+/// notification reaches nobody; a second install is refused while one is live.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_observer_is_unregistered_on_shutdown() {
+    let _centre = centre_lock();
+
+    let heard: Arc<Mutex<Vec<SleepEvent>>> = Arc::default();
+    let hub = Arc::new(SleepWakeHub::new());
+    let h = Arc::clone(&heard);
+    hub.subscribe(CONSUMER_MEETINGS, move |e| h.lock().unwrap().push(e));
+
+    assert!(!power::sleep_wake_observer_installed());
+    assert!(power::install_sleep_wake_observer(Arc::clone(&hub)));
+    assert!(power::sleep_wake_observer_installed());
+    assert!(
+        !power::install_sleep_wake_observer(Arc::new(SleepWakeHub::new())),
+        "never a second observer"
+    );
+
+    post(SleepEvent::WillSleep);
+    assert_eq!(*heard.lock().unwrap(), vec![SleepEvent::WillSleep]);
+
+    assert!(
+        power::unregister_sleep_wake_observer(),
+        "shutdown removes it"
+    );
+    assert!(!power::sleep_wake_observer_installed());
+    post(SleepEvent::DidWake);
+    post(SleepEvent::WillSleep);
+    assert_eq!(
+        *heard.lock().unwrap(),
+        vec![SleepEvent::WillSleep],
+        "a removed observer must hear nothing"
+    );
+    assert!(!power::unregister_sleep_wake_observer(), "idempotent");
+
+    // Dropping a locally registered observer removes it too.
+    let local = SleepWakeObserver::register(Arc::clone(&hub));
+    drop(local);
+    post(SleepEvent::WillSleep);
+    assert_eq!(heard.lock().unwrap().len(), 1, "Drop unregisters");
+
+    // And the app calls it: RunEvent::Exit unregisters.
+    let lib = code_of(&src("lib.rs"));
+    let exit = lib
+        .find("tauri::RunEvent::Exit")
+        .expect("lib.rs handles RunEvent::Exit");
+    assert!(
+        lib[exit..].contains("power::unregister_sleep_wake_observer()"),
+        "RunEvent::Exit does not unregister the sleep/wake observer"
+    );
+}
+
+/// `drive` syncs the policy to the controller before deciding.
+#[test]
+fn drive_follows_the_controller_not_a_second_copy_of_its_state() {
+    let mut p = SleepPolicy::new();
+    // Idle policy, controller recording → the meeting is finalized on sleep.
+    assert_eq!(
+        p.drive(true, SleepEvent::WillSleep),
+        SleepAction::FinalizeAndPause
+    );
+    assert_eq!(
+        p.drive(false, SleepEvent::DidWake),
+        SleepAction::OfferResumeAsNewSegment
+    );
+    // A new meeting started while the offer was outstanding supersedes it.
+    assert_eq!(
+        p.drive(true, SleepEvent::WillSleep),
+        SleepAction::FinalizeAndPause
+    );
+    // The user stopped the meeting before sleeping → nothing to do.
+    let mut q = SleepPolicy::new();
+    q.meeting_started();
+    assert_eq!(q.drive(false, SleepEvent::WillSleep), SleepAction::Ignore);
 }
 
 fn recording() -> SleepPolicy {

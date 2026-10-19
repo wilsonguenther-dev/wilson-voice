@@ -721,10 +721,10 @@ impl TransitionGate {
 pub enum WatchReason {
     Launch,
     Focus,
-    /// Wake from sleep. **Yap registers no sleep/wake observer here.** Y1-B owns
-    /// the `NSWorkspaceWillSleepNotification` / `NSWorkspaceDidWakeNotification`
-    /// call site (`meeting_matrix.rs` records it as the absent one today); this
-    /// is the entry point it calls, and a second observer is never added.
+    /// Wake from sleep. **Yap registers no sleep/wake observer here.** The one
+    /// observer lives in `power.rs` (Y1-B, `power::SleepWakeObserver`); its
+    /// `"permissions"` consumer calls [`on_sleep_wake`], which pokes with this
+    /// reason. A second observer is never added.
     Wake,
     /// A hotkey or a paste was refused for want of a grant.
     Refusal,
@@ -796,6 +796,20 @@ static WATCH: OnceLock<PermissionWatch> = OnceLock::new();
 pub fn poke(reason: WatchReason) {
     if let Some(w) = WATCH.get() {
         w.poke(reason);
+    }
+}
+
+/// Y1-B — PERM-E's consumer of the one sleep/wake publisher in `power.rs`.
+/// A wake is the single most common moment a TCC grant or an audio device
+/// changed under a laptop user, so it re-reads; going to sleep changes nothing
+/// worth reading. Returns the reason it poked with, if any.
+pub fn on_sleep_wake(event: crate::meeting_matrix::SleepEvent) -> Option<WatchReason> {
+    match event {
+        crate::meeting_matrix::SleepEvent::DidWake => {
+            poke(WatchReason::Wake);
+            Some(WatchReason::Wake)
+        }
+        crate::meeting_matrix::SleepEvent::WillSleep => None,
     }
 }
 
