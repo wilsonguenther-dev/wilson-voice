@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { canRetry, meetingStateLabel, summaryTitle } from "../meetings/progress";
+import NotesView from "../meetings/NotesView";
 import { errorText } from "../errors";
 import { disabledReason, elapsedLabel, systemAudioBadge, recordLabel, type MeetingStatus } from "../pill/meeting";
 import TranscriptList from "../meetings/TranscriptList";
@@ -382,7 +383,7 @@ export default function Meetings() {
               {openMeeting.meeting.summary && (
                 <div className="panel">
                   <h3>Notes</h3>
-                  <p style={{ whiteSpace: "pre-wrap" }}>{openMeeting.meeting.summary}</p>
+                  <NotesView markdown={openMeeting.meeting.summary} />
                 </div>
               )}
 
