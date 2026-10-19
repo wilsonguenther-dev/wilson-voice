@@ -143,80 +143,25 @@ export default function Insights() {
                 </div>
               )}
 
-              <div className="panel-grid">
-                <div className="panel">
-                  <h3>Last 7 days</h3>
-                  <div className="bars">
-                    {insights.wordsLast7.map((d) => (
-                      <div key={d.date} className="bar-row">
-                        <span className="bar-label">{formatDay(d.date)}</span>
-                        <div className="bar-track">
-                          <div
-                            className="bar-fill"
-                            style={{
-                              width: `${(d.words / maxWeek) * 100}%`,
-                            }}
-                          />
-                        </div>
-                        <span className="bar-n">
-                          {d.words.toLocaleString()}
-                        </span>
+              <div className="panel">
+                <h3>Last 7 days</h3>
+                <div className="bars">
+                  {insights.wordsLast7.map((d) => (
+                    <div key={d.date} className="bar-row">
+                      <span className="bar-label">{formatDay(d.date)}</span>
+                      <div className="bar-track">
+                        <div
+                          className="bar-fill"
+                          style={{
+                            width: `${(d.words / maxWeek) * 100}%`,
+                          }}
+                        />
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="panel">
-                  <h3>Engine & latency</h3>
-                  <ul className="kv">
-                    <li>
-                      <span>Avg ASR (model)</span>
-                      <strong>{insights.avgAsrSeconds.toFixed(2)}s</strong>
-                    </li>
-                    <li>
-                      <span>p50 hold→clipboard</span>
-                      <strong>
-                        {insights.p50PipelineMs
-                          ? `${insights.p50PipelineMs}ms`
-                          : "—"}
-                      </strong>
-                    </li>
-                    <li>
-                      <span>p95 hold→clipboard</span>
-                      <strong>
-                        {insights.p95PipelineMs
-                          ? `${insights.p95PipelineMs}ms`
-                          : "—"}
-                      </strong>
-                    </li>
-                    <li>
-                      <span>Speech sample</span>
-                      <strong>
-                        {(insights.speechSecondsTotal ?? 0).toFixed(0)}s ·{" "}
-                        {insights.wpmSampleSessions ?? 0} utt
-                      </strong>
-                    </li>
-                    <li>
-                      <span>Hotkey</span>
-                      <strong
-                        className={carbonRegistered(status) ? "ok" : "bad"}
-                      >
-                        {carbonRegistered(status)
-                          ? `${dictateLabel(status)}${fnDelivering(status) ? ` · ${settings?.hotkeyLabel || "fn"}` : " · fn off"}`
-                          : "not registered"}
-                      </strong>
-                    </li>
-                    <li>
-                      <span>Accessibility</span>
-                      <strong className={status.accessibility ? "ok" : "bad"}>
-                        {status.accessibility ? "trusted" : "denied"}
-                      </strong>
-                    </li>
-                  </ul>
-                  <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
-                    WPM uses audio duration only — never model latency. Base ASR
-                    is OpenAI Whisper weights via MLX (not three proprietary
-                    models). Target: p50 hold→clipboard &lt; 800ms on Fast.
-                  </p>
+                      <span className="bar-n">
+                        {d.words.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -382,6 +327,71 @@ export default function Insights() {
                   </div>
                 </div>
               )}
+              {/* yap-uiux-2026-10-16-I1 — the old "Engine & latency" panel sat
+                  beside the week chart and spoke in percentiles, "utt" and a
+                  paragraph about MLX. It is reference, not the point of the
+                  screen: it now lives last, closed, in plain words, and its
+                  summary line carries the one number worth seeing shut. */}
+              <details className="panel speed-setup" data-speed-setup style={{ marginTop: 16 }}>
+                <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.95rem" }}>
+                  Speed and setup
+                  {insights.p50PipelineMs ? (
+                    <span className="muted" style={{ fontWeight: 400 }}>
+                      {" "}· text usually lands in {seconds(insights.p50PipelineMs)}
+                    </span>
+                  ) : null}
+                </summary>
+                <ul className="kv" style={{ marginTop: 12 }}>
+                  <li>
+                    <span>Usual wait for text</span>
+                    <strong>{insights.p50PipelineMs ? seconds(insights.p50PipelineMs) : "—"}</strong>
+                  </li>
+                  <li>
+                    <span>Slowest takes (1 in 20)</span>
+                    <strong>{insights.p95PipelineMs ? seconds(insights.p95PipelineMs) : "—"}</strong>
+                  </li>
+                  <li>
+                    <span>Turning speech into words</span>
+                    <strong>{insights.avgAsrSeconds.toFixed(1)} s per take</strong>
+                  </li>
+                  <li>
+                    <span>Speech measured</span>
+                    <strong>
+                      {spoken(insights.speechSecondsTotal ?? 0)} across{" "}
+                      {(insights.wpmSampleSessions ?? 0).toLocaleString()}{" "}
+                      {(insights.wpmSampleSessions ?? 0) === 1 ? "take" : "takes"}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Dictation key</span>
+                    <strong className={carbonRegistered(status) ? "ok" : "bad"}>
+                      {carbonRegistered(status)
+                        ? `${dictateLabel(status)}${fnDelivering(status) ? ` · ${settings?.hotkeyLabel || "fn"}` : " · fn off"}`
+                        : "not set up"}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Accessibility (lets Yap paste)</span>
+                    <strong className={status.accessibility ? "ok" : "bad"}>
+                      {status.accessibility ? "allowed" : "not allowed"}
+                    </strong>
+                  </li>
+                </ul>
+              </details>
             </div>
   );
+}
+
+/** 640 -> "0.64 s"; 1840 -> "1.8 s". Plain seconds read faster than ms. */
+function seconds(ms: number): string {
+  return ms < 1000 ? `${(ms / 1000).toFixed(2)} s` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** Total speech as a person says it: "45 s", "12 min", "2 h 5 min". */
+function spoken(totalSeconds: number): string {
+  const s = Math.round(totalSeconds);
+  if (s < 60) return `${s} s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
