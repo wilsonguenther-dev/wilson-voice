@@ -30,7 +30,8 @@ pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "model_download_progress";
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Full passes over the URL list before giving up (the `.partial` file is kept
 /// so a later call resumes where this one died).
-const MAX_ATTEMPTS: u32 = 4;
+/// #250 round 4 (R2-B4): capped at 3 full passes (1 s, 2 s backoff between).
+const MAX_ATTEMPTS: u32 = 3;
 /// Progress events are throttled to one per this many bytes (plus the final one).
 const PROGRESS_EMIT_STEP: u64 = 1024 * 1024;
 
@@ -906,6 +907,7 @@ pub fn sha256_hex(path: &Path) -> Result<String, String> {
 
 /// Verify a file's sha256 against the catalog's expected hex digest.
 pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), String> {
+    SHA_PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let actual = sha256_hex(path)?;
     if actual.eq_ignore_ascii_case(expected_hex) {
         Ok(())
@@ -1035,6 +1037,87 @@ where
     download_file_cancellable(urls, dest, size_bytes, expected_sha256, progress, &|| false).await
 }
 
+/// How many full sha256 passes this process has run (R2-B4's test reads it:
+/// two callers of one download must cost ONE pass, not two).
+static SHA_PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn sha_passes() -> u64 {
+    SHA_PASSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// #250 round 4 (R2-B4) — one writer per destination, process-wide. The
+/// Settings "Download" button and the notes worker fetch the same model to
+/// the same `.partial`; both go through [`download_file_cancellable`], which
+/// takes this slot first. A second caller waits (mirroring the writer's
+/// progress to its own callback, so Settings shows the notes job's percent
+/// and the card shows Settings'), then gets the verified file without
+/// hashing it again.
+#[derive(Default)]
+struct DownloadSlot {
+    busy: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicU64,
+    total: std::sync::atomic::AtomicU64,
+}
+
+fn download_slot(dest: &Path) -> std::sync::Arc<DownloadSlot> {
+    static SLOTS: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<DownloadSlot>>>> =
+        OnceLock::new();
+    let mut map = SLOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    map.entry(dest.to_path_buf()).or_default().clone()
+}
+
+/// Releases the slot on every exit path, panics included.
+struct SlotGuard(std::sync::Arc<DownloadSlot>);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Files this process has already hashed and found intact, by (length,
+/// mtime) — so the caller that waited on a download does not re-hash 1.1 GB.
+fn verified_files() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime)>> {
+    static V: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime)>>> =
+        OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+fn file_stamp(p: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+fn mark_verified(p: &Path) {
+    if let Some(stamp) = file_stamp(p) {
+        verified_files()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(p.to_path_buf(), stamp);
+    }
+}
+
+fn known_verified(p: &Path) -> bool {
+    let Some(stamp) = file_stamp(p) else { return false };
+    verified_files()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(p)
+        .is_some_and(|s| *s == stamp)
+}
+
+/// Is a download to `dest` running in this process right now? `(done, total)`.
+pub fn download_in_progress(dest: &Path) -> Option<(u64, u64)> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let slot = download_slot(dest);
+    slot.busy
+        .load(SeqCst)
+        .then(|| (slot.done.load(SeqCst), slot.total.load(SeqCst)))
+}
+
 /// #250 round 3 (B2) — the error a cancelled download returns. The `.partial`
 /// is kept, so the next attempt resumes where this one stopped.
 pub const DOWNLOAD_CANCELLED: &str = "download cancelled";
@@ -1053,11 +1136,37 @@ pub async fn download_file_cancellable<F>(
 where
     F: FnMut(u64, u64),
 {
-    // Already downloaded and intact — done (guards double-clicks and re-runs).
-    if dest.is_file() && verify_sha256(dest, expected_sha256).is_ok() {
+    use std::sync::atomic::Ordering::SeqCst;
+    // R2-B4: take the destination's slot, or wait for the writer that holds
+    // it — showing ITS progress — and then use what it verified.
+    let slot = download_slot(dest);
+    let _guard = loop {
+        if slot.busy.compare_exchange(false, true, SeqCst, SeqCst).is_ok() {
+            break SlotGuard(slot.clone());
+        }
+        if cancel() {
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
+        let (done, total) = (slot.done.load(SeqCst), slot.total.load(SeqCst));
+        if total > 0 {
+            progress(done, total);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    slot.done.store(0, SeqCst);
+    slot.total.store(size_bytes, SeqCst);
+    // Already downloaded and intact — done (guards double-clicks, re-runs and
+    // the caller that waited above, which never re-hashes what was verified).
+    if dest.is_file() && (known_verified(dest) || verify_sha256(dest, expected_sha256).is_ok()) {
+        mark_verified(dest);
         progress(size_bytes, size_bytes);
         return Ok(dest.to_path_buf());
     }
+    let mut progress = |done: u64, total: u64| {
+        slot.done.store(done, SeqCst);
+        slot.total.store(total, SeqCst);
+        progress(done, total);
+    };
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
@@ -1079,7 +1188,10 @@ where
             }
             match download_attempt(&client, url, &partial, size_bytes, &mut progress, cancel).await {
                 Ok(()) => match finalize_download(&partial, dest, expected_sha256) {
-                    Ok(()) => return Ok(dest.to_path_buf()),
+                    Ok(()) => {
+                        mark_verified(dest);
+                        return Ok(dest.to_path_buf());
+                    }
                     // Verification failure (finalize deleted the partial) counts as a
                     // failed attempt — fall back to the remaining URLs/attempts.
                     Err(e) => {

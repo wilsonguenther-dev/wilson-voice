@@ -6221,6 +6221,10 @@ async fn download_polish_model(
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     models::check_polish_free_space(model, meeting::free_disk_bytes(&dir))?;
 
+    // R2-B4: the same code path — and the same per-destination download
+    // slot — as the notes worker's model fetch. If a notes job is already
+    // downloading this model, this call waits on it and its progress events
+    // carry that job's percent; it never starts a second writer.
     let path = models::download_polish_model(&app, &id).await?;
 
     // The gate. `verified_polish_selection` is the only producer of a non-empty
