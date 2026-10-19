@@ -42,7 +42,7 @@ fn answer(req: &wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Stri
 }
 
 fn stub() -> StubModel {
-    StubModel::new(answer)
+    StubModel::with_headline(answer)
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn fixture_transcript_becomes_full_notes() {
 #[test]
 fn a_failed_headline_pass_still_yields_title_and_three_points() {
     clear_cancel();
-    let model = StubModel::new(|req| match req.mode.as_str() {
+    let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "headline" => Err(SummaryError::Protocol),
         _ => answer(req),
     });
@@ -127,7 +127,8 @@ fn the_model_plan_never_says_no_model() {
 
 #[test]
 fn headline_parse_drops_invented_points_and_owner_needs_a_name_up_front() {
-    let source = "The starter package stays at forty nine dollars a month.";
+    let source =
+        "The team reviewed pricing. The starter package stays at forty nine dollars a month.";
     let h = parse_headline(
         r#"```json
 {"title":"Pricing review","key_points":["The starter package stays at forty nine dollars a month.","Revenue hit 2 million dollars in 2025."]}
@@ -137,6 +138,19 @@ fn headline_parse_drops_invented_points_and_owner_needs_a_name_up_front() {
     .expect("parsed");
     assert_eq!(h.title, "Pricing review");
     assert_eq!(h.key_points.len(), 1, "{:?}", h.key_points);
+    // A title is held to the notes too: a topic they never mention is dropped
+    // (the mechanical title fills in later), and so is an invented number.
+    let off_topic = parse_headline(
+        r#"{"title":"Quarterly hiring forecast","key_points":["The starter package stays at forty nine dollars a month."]}"#,
+        source,
+    )
+    .expect("the point survives");
+    assert_eq!(off_topic.title, "", "an ungrounded title is not kept");
+    let invented = parse_headline(r#"{"title":"Pricing review 2025","key_points":[]}"#, source);
+    assert_eq!(
+        invented, None,
+        "a title with a number the notes lack is not kept"
+    );
     assert_eq!(
         action_owner("Jeisil will send the doc"),
         Some("Jeisil".into())
@@ -178,5 +192,51 @@ fn real_model_fixture_run() {
         t0.elapsed().as_millis(),
         s.markdown
     );
+    // The raw HEADLINE answer for the same notes, so a run shows whether the
+    // title + key points came from the model or from the mechanical fallback.
+    let raw = wilson_voice_lib::summarize::SummaryClient::generate(
+        &client,
+        &wilson_voice_lib::polish_protocol::PolishRequest::summarize(
+            900_001,
+            "headline",
+            wilson_voice_lib::polish_protocol::SUMMARY_HEADLINE_MAX_OUT,
+            120_000,
+            s.markdown.clone(),
+            Some(HEADLINE_GRAMMAR.to_string()),
+        ),
+    );
+    match raw {
+        Ok(g) => println!("RAW_HEADLINE truncated={} {}", g.truncated, g.text),
+        Err(e) => println!("RAW_HEADLINE error {}", e.tag()),
+    }
     assert!(s.markdown.starts_with("## "));
+
+    // Memory: the sidecar (and the GGUF it mapped) lives only for the job.
+    // Alive while the client is held, gone the moment it is dropped — which is
+    // what `summarize_meeting_blocking` does when it returns.
+    let sidecars = || -> Vec<(u32, u64)> {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-ax", "-o", "pid=,rss=,command="])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let pid = f.next()?.parse().ok()?;
+                let rss = f.next()?.parse().ok()?;
+                (f.next()? == bin).then_some((pid, rss))
+            })
+            .collect()
+    };
+    let during = sidecars();
+    println!("SIDECAR_DURING {during:?} (pid, rss KiB)");
+    assert_eq!(during.len(), 1, "one sidecar for the job: {during:?}");
+    drop(client);
+    let after = sidecars();
+    println!("SIDECAR_AFTER {after:?}");
+    assert!(
+        after.is_empty(),
+        "the sidecar exits with the job: {after:?}"
+    );
 }

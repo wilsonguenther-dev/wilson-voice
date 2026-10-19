@@ -217,6 +217,9 @@ fn default_max_out(req: &PolishRequest) -> u32 {
 
 /// The user turn: `{topic_line?}\n---\n{text}` (spec §2.4). Never the AX cursor
 /// context — that never leaves the app process.
+/// Test-only since the overflow path builds every turn through
+/// [`user_prompt_with`]; kept as the spec §2.4 reference shape.
+#[cfg(test)]
 fn user_prompt(req: &PolishRequest) -> String {
     user_prompt_with(req, &req.text)
 }

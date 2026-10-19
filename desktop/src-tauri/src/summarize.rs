@@ -78,8 +78,9 @@ use crate::meetings::{
     MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse, SUMMARIZE_HEADLINE,
-    SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT, SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
+    SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
+    SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
@@ -813,6 +814,12 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
     if grounded(source, output) < GROUNDEDNESS_FLOOR {
         return reject("v3_ungrounded").map(|_| ());
     }
+    content_gates(source, output)
+}
+
+/// V4–V7: the gates that hold for every piece of stored text, whatever its
+/// groundedness floor (an item's, the narrative's, or a title's).
+fn content_gates(source: &str, output: &str) -> Option<()> {
     // V4 — invented numbers, times, dates, prices.
     let known_digits = crate::polish::digit_runs(source);
     if crate::polish::digit_runs(output)
@@ -1520,6 +1527,30 @@ struct RawHeadline {
     key_points: Vec<String>,
 }
 
+/// Share of a TITLE's content words that must be in the notes. Lower than an
+/// item's [`GROUNDEDNESS_FLOOR`] on purpose: a title names the topic, so one
+/// abstracting word ("review", "sync") per grounded one is the job, not an
+/// invention — "Drivia consulting pricing review" over notes that say "reviewed
+/// pricing for the Drivia consulting tier" is 3 of 4. V4–V7 still apply in
+/// full: a title never carries a number, contact or template the notes lack.
+pub const TITLE_GROUNDEDNESS_FLOOR: f64 = 0.5;
+
+/// A title the notes support, or `None`.
+pub fn validate_title(source: &str, title: &str) -> Option<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return reject("v1_empty");
+    }
+    if title.split_whitespace().count() > MAX_TITLE_WORDS {
+        return reject("v2_runaway");
+    }
+    if grounded(source, title) < TITLE_GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded");
+    }
+    content_gates(source, title)?;
+    Some(title.to_string())
+}
+
 /// Parse + validate a HEADLINE answer against `source` (the narrative and
 /// items it was written from). `None` when nothing usable survived.
 pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
@@ -1527,10 +1558,13 @@ pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
     let start = cleaned.find('{')?;
     let end = cleaned.rfind('}')?;
     let parsed: RawHeadline = serde_json::from_str(cleaned.get(start..=end)?).ok()?;
-    let title = parsed.title.trim().trim_matches('"').trim_end_matches('.').to_string();
-    let title_ok = !title.is_empty()
-        && title.split_whitespace().count() <= MAX_TITLE_WORDS
-        && common_gates(source, &title).is_some();
+    let title = parsed
+        .title
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches('.')
+        .to_string();
+    let title_ok = validate_title(source, &title).is_some();
     let mut key_points: Vec<String> = Vec::new();
     for p in parsed.key_points {
         if let Some(ok) = validate_item(source, &p) {
@@ -1574,12 +1608,20 @@ fn sentences(text: &str) -> Vec<String> {
 /// The mechanical headline: a title from the narrative's first sentence, key
 /// points from its sentences then the decisions and actions. Used to fill
 /// whatever the model's pass did not supply.
-pub fn fallback_headline(narrative: &str, actions: &[SummaryItem], decisions: &[SummaryItem]) -> Headline {
+pub fn fallback_headline(
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+) -> Headline {
     let sents = sentences(narrative);
     let title = sents
         .first()
         .map(|s| {
-            let words: Vec<&str> = s.trim_end_matches(['.', '!', '?']).split_whitespace().take(8).collect();
+            let words: Vec<&str> = s
+                .trim_end_matches(['.', '!', '?'])
+                .split_whitespace()
+                .take(8)
+                .collect();
             words.join(" ")
         })
         .unwrap_or_else(|| "Meeting notes".to_string());
@@ -1631,7 +1673,10 @@ pub fn headline_pass(
     let got = match client.generate(&req) {
         Ok(answer) => parse_headline(&answer.text, &source),
         Err(e) => {
-            log::warn!("summary: headline pass failed ({}) — using the mechanical headline", e.tag());
+            log::warn!(
+                "summary: headline pass failed ({}) — using the mechanical headline",
+                e.tag()
+            );
             None
         }
     };
@@ -1658,8 +1703,24 @@ pub fn action_owner(text: &str) -> Option<String> {
     let second = words.next()?.to_lowercase();
     let is_name = first.chars().next()?.is_uppercase()
         && first.chars().skip(1).all(|c| c.is_lowercase())
-        && !matches!(first, "We" | "They" | "The" | "Someone" | "Everyone" | "I" | "You" | "He" | "She" | "It" | "This" | "That");
-    let commits = matches!(second.as_str(), "will" | "to" | "should" | "needs" | "is" | "owns" | "agreed");
+        && !matches!(
+            first,
+            "We" | "They"
+                | "The"
+                | "Someone"
+                | "Everyone"
+                | "I"
+                | "You"
+                | "He"
+                | "She"
+                | "It"
+                | "This"
+                | "That"
+        );
+    let commits = matches!(
+        second.as_str(),
+        "will" | "to" | "should" | "needs" | "is" | "owns" | "agreed"
+    );
     (is_name && commits).then(|| first.to_string())
 }
 
@@ -1677,7 +1738,15 @@ pub fn render_notes(
     chunks: usize,
     truncated: bool,
 ) -> String {
-    let body = render_summary(narrative, &[], decisions, questions, truncated_chunks, chunks, truncated);
+    let body = render_summary(
+        narrative,
+        &[],
+        decisions,
+        questions,
+        truncated_chunks,
+        chunks,
+        truncated,
+    );
     let mut out = String::new();
     if !headline.title.trim().is_empty() {
         out.push_str(&format!("## {}\n\n", headline.title.trim()));
@@ -1685,7 +1754,10 @@ pub fn render_notes(
     let (summary_para, rest) = if narrative.trim().is_empty() {
         (String::new(), body.as_str())
     } else {
-        (narrative.trim().to_string(), body.strip_prefix(narrative.trim()).unwrap_or(&body))
+        (
+            narrative.trim().to_string(),
+            body.strip_prefix(narrative.trim()).unwrap_or(&body),
+        )
     };
     if !summary_para.is_empty() {
         out.push_str("### Summary\n\n");
@@ -1703,7 +1775,9 @@ pub fn render_notes(
         out.push_str("### Action items\n\n");
         for item in actions {
             let at = format_offset(item.start_seconds);
-            let owner = action_owner(&item.text).map(|o| format!("**{o}** — ")).unwrap_or_default();
+            let owner = action_owner(&item.text)
+                .map(|o| format!("**{o}** — "))
+                .unwrap_or_default();
             match &item.speaker {
                 Some(who) => out.push_str(&format!("- {owner}{} ({who}, {at})\n", item.text)),
                 None => out.push_str(&format!("- {owner}{} ({at})\n", item.text)),

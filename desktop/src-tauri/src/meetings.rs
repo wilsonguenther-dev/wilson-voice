@@ -1113,7 +1113,7 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
 
     if let Some(summary) = meeting.summary.as_deref().filter(|s| !s.trim().is_empty()) {
         out.push_str("## Summary\n\n");
-        out.push_str(summary.trim());
+        out.push_str(&export_notes_body(summary));
         out.push_str("\n\n");
     }
 
@@ -1129,6 +1129,33 @@ pub fn render_markdown(meeting: &Meeting, segments: &[MeetingSegment]) -> String
         ));
     }
     out
+}
+
+/// focus-2026-10-19 — the stored notes as they sit under the export's
+/// `## Summary` heading. The notes open with `## <title>` and a `### Summary`
+/// paragraph heading; nested under the export's own `## Summary` those would
+/// read as a second document and a doubled heading. So the title becomes a
+/// bold lead line and the inner `### Summary` heading is dropped — the export
+/// keeps its `# title / ## Summary / ## Transcript` shape, with the paragraph
+/// first and the `###` sections after it, exactly as before the notes layout.
+/// A summary in the old layout (no `## ` title) passes through unchanged.
+pub fn export_notes_body(summary: &str) -> String {
+    let s = summary.trim();
+    let Some(rest) = s.strip_prefix("## ") else {
+        return s.to_string();
+    };
+    let (title, body) = rest.split_once('\n').unwrap_or((rest, ""));
+    let body = body.trim_start();
+    let body = body
+        .strip_prefix("### Summary\n")
+        .map(str::trim_start)
+        .unwrap_or(body);
+    let title = title.trim();
+    match (title.is_empty(), body.is_empty()) {
+        (true, _) => body.to_string(),
+        (false, true) => format!("**{title}**"),
+        (false, false) => format!("**{title}**\n\n{body}"),
+    }
 }
 
 /// Collapse any whitespace (including the newlines a transcript should never
@@ -1240,6 +1267,31 @@ mod tests {
             md.lines().filter(|l| l.starts_with("# ")).count(),
             1,
             "only the title may be an h1:\n{md}"
+        );
+    }
+
+    #[test]
+    fn notes_layout_exports_under_one_summary_heading() {
+        let mut m = meeting();
+        m.summary = Some(
+            "## Pricing review\n\n### Summary\n\nWe kept the price.\n\n### Key points\n\n- Price stays.\n\n### Decisions\n\n- Keep it (00:00:05)".into(),
+        );
+        let md = render_markdown(&m, &[]);
+        assert!(
+            md.contains("## Summary\n\n**Pricing review**\n\nWe kept the price.\n\n### Key points\n\n- Price stays.\n\n### Decisions\n\n- Keep it (00:00:05)\n\n## Transcript"),
+            "{md}"
+        );
+        assert_eq!(md.matches("## Summary").count(), 1, "{md}");
+        assert!(!md.contains("### Summary"), "{md}");
+        assert_eq!(
+            md.lines().filter(|l| l.starts_with("## ")).count(),
+            2,
+            "{md}"
+        );
+        // An old-layout summary is untouched.
+        assert_eq!(
+            export_notes_body("We agreed.\n\n### Decisions\n\n- x"),
+            "We agreed.\n\n### Decisions\n\n- x"
         );
     }
 
