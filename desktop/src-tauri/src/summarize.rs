@@ -170,6 +170,9 @@ pub enum SummaryError {
     /// different things to whoever is reading the log: `protocol` means the
     /// sidecar is broken, `empty` means it answered and had nothing to say.
     Empty,
+    /// The person pressed Cancel (#250 round 3, B2). Nothing is stored: a
+    /// cancelled run is never a partial summary passed off as the final one.
+    Cancelled,
 }
 
 impl SummaryError {
@@ -179,6 +182,7 @@ impl SummaryError {
             Self::Unavailable => "unavailable",
             Self::Protocol => "protocol",
             Self::Empty => "empty",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -1280,6 +1284,12 @@ pub trait SummaryClient: TokenCounter {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError>;
     /// A stable id for what produced the summary, stored beside it.
     fn model_id(&self) -> String;
+    /// Has this run been cancelled? Checked between stages so a cancel that
+    /// landed inside a pass whose error was swallowed (REDUCE, HEADLINE)
+    /// still stores nothing. A client with no cancel says `false`.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// One finished summary.
@@ -1438,8 +1448,14 @@ pub fn summarize_segments_with(
                     validate_narrative(&source, &extract.narrative).unwrap_or_default();
                 extracts.push(extract);
             }
+            // B2: a cancel is not a failed chunk to skip past — the run stops
+            // and stores nothing.
+            Err(SummaryError::Cancelled) => return Err(SummaryError::Cancelled),
             Err(e) => log::warn!("summary: a MAP pass failed ({}) — continuing", e.tag()),
         }
+    }
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
     }
     // One failed chunk is survivable — the others still carry the meeting. ZERO
     // surviving chunks is not a thin summary, it is no summary: the narrative
@@ -1459,6 +1475,9 @@ pub fn summarize_segments_with(
 
     let (narrative, reduce_truncated) = reduce_narrative(&merged.narratives, &full_text, client);
     truncated |= reduce_truncated;
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
     // The evidence table: for every citable id, the two facts about it that are
     // already known here — when it was said, and (YV133) who said it. Both are
     // looked up by the SAME key, the id the grammar constrained the model to
@@ -1497,6 +1516,9 @@ pub fn summarize_segments_with(
     // what is already validated; a failed / rejected pass falls back to a
     // mechanical headline from the narrative, never to nothing.
     let headline = headline_pass(client, &narrative, &actions, &decisions);
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
     let markdown = render_notes(
         &headline,
         &narrative,
@@ -1788,21 +1810,9 @@ pub fn plan_summary_model(chosen: &str, on_disk: &dyn Fn(&str) -> bool) -> Summa
     SummaryModelPlan::Download(DEFAULT_SUMMARY_MODEL.to_string())
 }
 
-static SUMMARY_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Ask the running summary to stop at its next model call.
-pub fn request_cancel() {
-    SUMMARY_CANCEL.store(true, Ordering::SeqCst);
-}
-
-/// Clear a cancel before a new summary starts.
-pub fn clear_cancel() {
-    SUMMARY_CANCEL.store(false, Ordering::SeqCst);
-}
-
-pub fn cancel_requested() -> bool {
-    SUMMARY_CANCEL.load(Ordering::SeqCst)
-}
+// #250 round 3 (B2, A4): the cancel is per job — a
+// `summary_jobs::CancelToken` handed to the client — never a process-global
+// flag that a new summary's start would wipe.
 
 /// A meeting's title and key points.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2234,14 +2244,21 @@ impl Drop for SidecarSession {
 pub struct SidecarSummaryClient {
     session: std::sync::Mutex<SidecarSession>,
     model: String,
+    cancel: crate::summary_jobs::CancelToken,
 }
 
 impl SidecarSummaryClient {
     pub fn new(session: SidecarSession) -> Self {
+        Self::with_cancel(session, crate::summary_jobs::CancelToken::new())
+    }
+
+    /// The client a notes job uses: every model call checks `cancel` first.
+    pub fn with_cancel(session: SidecarSession, cancel: crate::summary_jobs::CancelToken) -> Self {
         let model = session.model.clone();
         Self {
             session: std::sync::Mutex::new(session),
             model,
+            cancel,
         }
     }
 
@@ -2253,6 +2270,9 @@ impl SidecarSummaryClient {
 
 impl TokenCounter for SidecarSummaryClient {
     fn count_tokens(&self, text: &str) -> Result<usize, SummaryError> {
+        if self.cancel.is_cancelled() {
+            return Err(SummaryError::Cancelled);
+        }
         let req = PolishRequest::count_tokens(next_id(), COUNT_DEADLINE_MS, text.to_string());
         self.call(&req)?
             .token_count()
@@ -2263,9 +2283,10 @@ impl TokenCounter for SidecarSummaryClient {
 
 impl SummaryClient for SidecarSummaryClient {
     fn generate(&self, req: &PolishRequest) -> Result<Generated, SummaryError> {
-        // focus-2026-10-19: Cancel stops the summary at its next model call.
-        if cancel_requested() {
-            return Err(SummaryError::Unavailable);
+        // Cancel stops the summary at its next model call (B2: as Cancelled,
+        // which the pipeline turns into "store nothing", not a skipped chunk).
+        if self.cancel.is_cancelled() {
+            return Err(SummaryError::Cancelled);
         }
         let response = self.call(req)?;
         let truncated = response.was_truncated();
@@ -2286,6 +2307,10 @@ impl SummaryClient for SidecarSummaryClient {
 
     fn model_id(&self) -> String {
         self.model.clone()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }
 

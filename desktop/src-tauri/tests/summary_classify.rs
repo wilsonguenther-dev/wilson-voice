@@ -7,7 +7,7 @@ mod support;
 
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::polish_protocol::PolishRequest;
-use wilson_voice_lib::summarize::{classify_item, clear_cancel, summarize_segments, Bucket};
+use wilson_voice_lib::summarize::{classify_item, summarize_segments, Bucket};
 
 const FIXTURE: &[&str] = &[
     "Okay, this is the pricing review for the Drivia consulting tier.",
@@ -72,7 +72,6 @@ fn the_real_runs_misfiled_lines_are_reclassified() {
 
 #[test]
 fn the_fixture_notes_file_each_line_under_the_right_heading() {
-    clear_cancel();
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| misfiled_map(req)))
     });
@@ -126,7 +125,6 @@ fn round2_real_map(req: &PolishRequest) -> String {
 
 #[test]
 fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
-    clear_cancel();
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| round2_real_map(req)))
     });
@@ -155,7 +153,6 @@ fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
 
 #[test]
 fn backfill_never_adds_a_line_without_a_clear_marker() {
-    clear_cancel();
     let quiet: &[&str] = &[
         "I will say the numbers looked fine this quarter.",
         "Pricing came up again for the consulting tier.",

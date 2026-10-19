@@ -11,7 +11,7 @@ use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::polish_protocol::{
     summary_map_max_out, PolishRequest, SUMMARY_MAP_MAX_OUT, SUMMARY_MAP_MAX_OUT_CEILING,
 };
-use wilson_voice_lib::summarize::{clear_cancel, summarize_segments, Generated, MAP_CHUNK_TOKENS};
+use wilson_voice_lib::summarize::{summarize_segments, Generated, MAP_CHUNK_TOKENS};
 
 const FIXTURE: &[&str] = &[
     "Okay, this is the pricing review for the Drivia consulting tier.",
@@ -51,7 +51,6 @@ const NOTE: &str = "did not fit the model";
 
 #[test]
 fn map_output_budget_is_sized_to_the_chunk_and_fits_the_context() {
-    clear_cancel();
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| misfiled_map(req)))
     });
@@ -75,7 +74,6 @@ fn map_output_budget_is_sized_to_the_chunk_and_fits_the_context() {
 
 #[test]
 fn an_output_capped_map_answer_keeps_its_items_and_shows_no_note() {
-    clear_cancel();
     // What a pass that hit its OUTPUT budget looks like to the parent: the
     // JSON stops mid-array, and nothing of the input was dropped
     // (`truncated:false`; the sidecar now reports the cap as `out_capped`).
@@ -95,7 +93,6 @@ fn an_output_capped_map_answer_keeps_its_items_and_shows_no_note() {
 
 #[test]
 fn an_input_truncated_pass_still_shows_the_note() {
-    clear_cancel();
     let model = StubModel::truncating(|req| {
         if let Some(a) = reduce_or_headline(req) {
             return Ok(Generated::whole(a));

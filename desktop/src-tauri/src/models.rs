@@ -223,6 +223,29 @@ where
     .await
 }
 
+/// [`download_polish_model_with`], stoppable between chunks (#250 round 3, B2).
+pub async fn download_polish_model_cancellable<F>(
+    id: &str,
+    progress: F,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    let model = polish_model(id).ok_or_else(|| format!("unknown polish model '{id}'"))?;
+    let urls = polish_download_urls(model);
+    let dest = polish_model_path(model);
+    download_file_cancellable(
+        &urls,
+        &dest,
+        model.file.size_bytes,
+        &model.file.sha256,
+        progress,
+        cancel,
+    )
+    .await
+}
+
 /// SEC-C — the fast tier is NOT offered. Measured (Y4-I): the 0.5B returns
 /// `err=max_out` at 100, 150, 200, 300 and 400 words, i.e. it is worse than no
 /// model at all. The catalog still carries it so the measurement has something
@@ -1004,7 +1027,28 @@ pub async fn download_file<F>(
     dest: &Path,
     size_bytes: u64,
     expected_sha256: &str,
+    progress: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(u64, u64),
+{
+    download_file_cancellable(urls, dest, size_bytes, expected_sha256, progress, &|| false).await
+}
+
+/// #250 round 3 (B2) — the error a cancelled download returns. The `.partial`
+/// is kept, so the next attempt resumes where this one stopped.
+pub const DOWNLOAD_CANCELLED: &str = "download cancelled";
+
+/// [`download_file`], stoppable: `cancel` is checked before every attempt and
+/// between every chunk, and a cancel returns [`DOWNLOAD_CANCELLED`] at once —
+/// no retry, no backoff sleep.
+pub async fn download_file_cancellable<F>(
+    urls: &[String],
+    dest: &Path,
+    size_bytes: u64,
+    expected_sha256: &str,
     mut progress: F,
+    cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<PathBuf, String>
 where
     F: FnMut(u64, u64),
@@ -1022,12 +1066,18 @@ where
     let mut last_err = "no download URLs configured".to_string();
 
     for attempt in 0..MAX_ATTEMPTS {
+        if cancel() {
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
         if attempt > 0 {
             // 1s, 2s, 4s … between full passes over the URL list.
             tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
         }
         for url in urls {
-            match download_attempt(&client, url, &partial, size_bytes, &mut progress).await {
+            if cancel() {
+                return Err(DOWNLOAD_CANCELLED.to_string());
+            }
+            match download_attempt(&client, url, &partial, size_bytes, &mut progress, cancel).await {
                 Ok(()) => match finalize_download(&partial, dest, expected_sha256) {
                     Ok(()) => return Ok(dest.to_path_buf()),
                     // Verification failure (finalize deleted the partial) counts as a
@@ -1037,6 +1087,7 @@ where
                         last_err = e;
                     }
                 },
+                Err(e) if e == DOWNLOAD_CANCELLED => return Err(e),
                 Err(e) => {
                     log::warn!("model download attempt failed ({url}): {e}");
                     last_err = e;
@@ -1057,6 +1108,7 @@ async fn download_attempt<F>(
     partial: &Path,
     total: u64,
     progress: &mut F,
+    cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), String>
 where
     F: FnMut(u64, u64),
@@ -1090,6 +1142,11 @@ where
     progress(downloaded, total);
     let mut resp = resp;
     loop {
+        // B2: between chunks, so a 1.1 GB fetch stops within one chunk.
+        if cancel() {
+            let _ = file.sync_all();
+            return Err(DOWNLOAD_CANCELLED.to_string());
+        }
         let chunk = tokio::time::timeout(STALL_TIMEOUT, resp.chunk())
             .await
             .map_err(|_| format!("download from {url} stalled at {downloaded} bytes"))?

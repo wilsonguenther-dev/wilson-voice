@@ -9,8 +9,8 @@ mod support;
 
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::summarize::{
-    action_owner, cancel_requested, clear_cancel, parse_headline, plan_summary_model,
-    request_cancel, summarize_segments, SummaryError, SummaryModelPlan, DEFAULT_SUMMARY_MODEL,
+    action_owner, parse_headline, plan_summary_model,
+    summarize_segments, SummaryError, SummaryModelPlan, DEFAULT_SUMMARY_MODEL,
     HEADLINE_GRAMMAR,
 };
 
@@ -47,7 +47,6 @@ fn stub() -> StubModel {
 
 #[test]
 fn fixture_transcript_becomes_full_notes() {
-    clear_cancel();
     let segments = segments_from(FIXTURE);
     let model = stub();
     let s = summarize_segments(&segments, &model).expect("a summary");
@@ -84,7 +83,6 @@ fn fixture_transcript_becomes_full_notes() {
 
 #[test]
 fn a_failed_headline_pass_still_yields_title_and_three_points() {
-    clear_cancel();
     let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "headline" => Err(SummaryError::Protocol),
         _ => answer(req),
@@ -159,13 +157,16 @@ fn headline_parse_drops_invented_points_and_owner_needs_a_name_up_front() {
     assert_eq!(action_owner("send the doc"), None);
 }
 
+/// A4: the old process-global flag is gone; a cancel is a per-job token, so
+/// this test shares no mutable state with any other test in the binary.
 #[test]
-fn cancel_flag_round_trips() {
-    clear_cancel();
-    assert!(!cancel_requested());
-    request_cancel();
-    assert!(cancel_requested());
-    clear_cancel();
+fn cancel_token_is_per_job() {
+    let job = wilson_voice_lib::summary_jobs::CancelToken::new();
+    let other = wilson_voice_lib::summary_jobs::CancelToken::new();
+    assert!(!job.is_cancelled());
+    job.clone().cancel();
+    assert!(job.is_cancelled());
+    assert!(!other.is_cancelled());
 }
 
 /// The real run: the fixture through the REAL sidecar and the REAL default

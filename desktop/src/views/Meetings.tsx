@@ -20,7 +20,7 @@ export default function Meetings() {
     setMeetingBusy, setMeetingKind, setMeetingQuery, setMeetingStatus, setOpenMeeting, 
     toast,
   } = useAppCtx();
-  const { meetingProgress: progress, retryMeeting: retry } = useAppCtx();
+  const { meetingProgress: progress, retryMeeting: retry, retryNotes, cancelNotes } = useAppCtx();
   const retryMeeting = async (id: string) => {
     try {
       await retry(id);
@@ -295,6 +295,18 @@ export default function Meetings() {
                       <div className="actions">
                         {canRetry(m.state) && (
                           <button onClick={() => void retryMeeting(m.id)}>Retry</button>
+                        )}
+                        {canCancelNotes(progress[m.id]) && (
+                          <button className="ghost" onClick={() => void notesAction(cancelNotes, m.id)}>
+                            Cancel notes
+                          </button>
+                        )}
+                        {canRetryNotes(m.state, progress[m.id], Boolean(m.summary)) && (
+                          <button onClick={() => void notesAction(retryNotes, m.id)}>
+                            {canRetry(m.state) && retryNotesLabel(progress[m.id]) === "Retry"
+                              ? "Retry notes"
+                              : retryNotesLabel(progress[m.id])}
+                          </button>
                         )}
                         <button
                           className="primary"
