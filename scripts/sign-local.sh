@@ -27,7 +27,16 @@
 #                                            sign nothing (build preflight)
 #   scripts/sign-local.sh --tauri-build ...  resolve the identity, hand it to
 #                                            `tauri build` as APPLE_SIGNING_IDENTITY,
-#                                            then verify what came out
+#                                            verify what came out, then run the
+#                                            MANDATORY release smoke on the signed
+#                                            .app + .dmg (yap-p0-release-smoke):
+#                                            scripts/qa/release-smoke.sh --app --dmg
+#                                            (signature, dr_change, launch). Its exit
+#                                            status is this script's exit status.
+#     YAP_SMOKE_COMPARE=<app>   the installed / last-release app for dr_change
+#                               (default /Applications/Yap.app when present)
+#     YAP_ALLOW_DR_CHANGE=1 YAP_RELEASE_NOTE="<line>"   both required to ship a
+#                               designated-requirement change (docs/RELEASING.md)
 #   scripts/sign-local.sh --which-app        print the bundle the default/--tauri-build
 #                                            modes would sign/verify, sign nothing
 #
@@ -166,16 +175,32 @@ if [[ "$MODE" == "identity" ]]; then
 fi
 
 if [[ "$MODE" == "build" ]]; then
+  # The release smoke is the LAST step: after tauri build has signed (and, with
+  # the Apple secrets present, notarized + stapled) the bundle, and after
+  # verify_bundle's codesign read-back of it just below.
   export APPLE_SIGNING_IDENTITY="$IDENTITY"
   echo "${PROFILE} profile — tauri build will sign with: ${IDENTITY_CLASS}"
   cd "$DESKTOP"
   npx tauri build "$@"
   # CARGO_TARGET_DIR first: that is where the workspace build writes, and a
   # stale bundle under src-tauri/target must not stand in for the fresh one.
+  # release_app() selects "<productName>.app" by EXACT name and checks the
+  # production bundle id — never "Yap Test.app" from scripts/test-build.sh.
   APP="$(release_app "${CARGO_TARGET_DIR:-}" "$SRC/target")"
   [[ -n "$APP" ]] || die "tauri build produced no $PRODUCT_NAME.app to verify."
+  # The DMG sits next to the bundle release_app() chose: <bundle>/macos/X.app -> <bundle>/dmg.
+  BUNDLE="$(dirname "$(dirname "$APP")")"
+  DMG="$(ls "$BUNDLE/dmg/"*.dmg 2>/dev/null | head -1 || true)"
+  [[ -n "$DMG" ]] || die "tauri build produced no .dmg — the release smoke checks the app inside it."
   verify_bundle "$APP"
-  exit 0
+
+  SMOKE_ARGS=(--app "$APP" --dmg "$DMG")
+  [[ -n "${YAP_SMOKE_COMPARE:-}" ]] && SMOKE_ARGS+=(--compare "$YAP_SMOKE_COMPARE")
+  [[ "${YAP_ALLOW_DR_CHANGE:-}" == "1" ]] && SMOKE_ARGS+=(--allow-dr-change)
+  [[ -n "${YAP_RELEASE_NOTE:-}" ]] && SMOKE_ARGS+=(--release-note "$YAP_RELEASE_NOTE")
+  echo "release smoke (mandatory): scripts/qa/release-smoke.sh ${SMOKE_ARGS[*]}"
+  # Bare exit propagation: exec hands release-smoke.sh's status straight back.
+  exec bash "$ROOT/scripts/qa/release-smoke.sh" "${SMOKE_ARGS[@]}"
 fi
 
 APP="${1:-}"

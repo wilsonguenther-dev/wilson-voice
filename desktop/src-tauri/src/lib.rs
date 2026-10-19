@@ -6685,6 +6685,17 @@ pub fn run() {
         Ok(true) => smoke::arm(),
         Ok(false) => {}
     }
+    // yap-p0-release-smoke: `--release-smoke` registers the hotkeys, probes every
+    // service, makes ONE insertion into TextEdit and quits — under the same
+    // scratch-root rule as `--smoke`.
+    match smoke::release_preflight(&argv, std::env::var(DATA_DIR_ENV).ok().as_deref()) {
+        Err(refusal) => {
+            eprintln!("{}", refusal.message());
+            std::process::exit(refusal.exit_code());
+        }
+        Ok(true) => smoke::arm_release(),
+        Ok(false) => {}
+    }
 
     // YV7: structured rotating file logging under data_dir()/logs/ (yap.log) +
     // a panic hook — keeps the console output and mirrors it to disk for support.
@@ -7692,6 +7703,11 @@ pub fn run() {
                             &mut FnTapSource { app: &h, state: &st },
                             &mut AppHotkeySink,
                         );
+                    }
+                    // yap-p0-release-smoke: the run starts only once the
+                    // launch-time registration above has reported.
+                    if smoke::release_armed() {
+                        smoke::spawn_release_smoke(h.clone());
                     }
                     // ⌃⌘V — Paste Last Transcript, registered unconditionally so
                     // the tray item's accelerator fires system-wide (Wispr-parity).
