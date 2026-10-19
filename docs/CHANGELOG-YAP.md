@@ -1,5 +1,14 @@
 # Yap Changelog
 
+## v0.9.2
+
+- **Hotkeys work with zero permissions.** ⌃⌥⌘Space starts and stops a take on a fresh install before you grant anything, because it is registered as a system hotkey that needs no Accessibility or Input Monitoring grant. The fn key is now the extra, and when macOS has switched it off Yap says so instead of showing it as working.
+- **The chord no longer freezes the app.** Pressing ⌃⌥⌘Space could lock up Yap's main window; it cannot any more.
+- **A take stops when you let go.** Capture ends within 300 ms of releasing the hotkey, so words after you let go are not recorded.
+- **The Permissions screen tells the truth, and Repair fixes it in one click.** Every grant is checked by asking macOS directly, a grant that belongs to an older copy of Yap is shown as stale instead of granted, and Repair resets Yap's own entries, opens the exact Settings pane and re-checks until the grant is back.
+- **Insertion never fails silently.** When Yap cannot type into the app you are in, the text goes through the clipboard, and when that is not allowed either an instant Copy card appears with your words, so a take is never lost. One failing call can no longer blank the window as "Bridge error".
+- **Meetings judges system audio by other apps' sound.** The system-audio verdict looks only at audio other processes are playing, so a quiet call is never mistaken for a denied permission, and Stop always produces a transcript and a summary.
+
 ## v0.9.1
 
 - **The hotkey that started a take stops it.** Releasing fn ends the take from any app, a tap macOS disabled is re-armed within 100 ms, a second HID-state check backs it up, and a take still recording after 90 seconds asks whether you meant it.
