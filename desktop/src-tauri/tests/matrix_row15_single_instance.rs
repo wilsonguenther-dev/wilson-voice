@@ -66,7 +66,8 @@ fn the_duplicate_focuses_the_running_app_instead_of_recording() {
     let body = &handler[..handler.find("}))").expect("handler body ends")];
 
     assert!(
-        body.contains("focus_main_window"),
+        // yap-lifecycle renamed focus_main_window to the one shared presenter.
+        body.contains("present_main_window"),
         "row 15: the second launch must be handed to the running app: {body}"
     );
     // Whatever else the handler grows, it must never start capture: that is the

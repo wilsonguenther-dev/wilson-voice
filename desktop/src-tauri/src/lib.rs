@@ -71,6 +71,8 @@ pub mod meeting_pipeline;
 // YP2 — offline Ed25519 license verification, the 14-day trial, and the single
 // gate that stands in front of a NEW dictation (and nothing else).
 pub mod license;
+// yap-lifecycle — Dock reopen, one Quit, bounded teardown, stale-instance probe.
+pub mod lifecycle;
 mod logging;
 // YV91 — the meeting capture session: bounded memory, an RT-safe capture
 // callback, host-time anchors, the idle-sleep power assertion and the
@@ -1225,10 +1227,10 @@ fn restore_system_output(state: &AppState) {
 
 /// How long the exit teardown waits for an in-flight transcription to hand the
 /// ASR engine back (YV70) before quitting with it still live.
-const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(900);
 /// How long the exit teardown then waits for that take's worker to land its
 /// result — the transcript row, or the recoverable failed-dictation row (YV70).
-const EXIT_TAKE_TIMEOUT: Duration = Duration::from_secs(3);
+const EXIT_TAKE_TIMEOUT: Duration = Duration::from_millis(600);
 /// Poll interval for both waits above.
 const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
 
@@ -1249,25 +1251,35 @@ const EXIT_WAIT_POLL: Duration = Duration::from_millis(10);
 /// a take (the engine is leased out) and the crash survived for exactly that
 /// case. The first step now DRAINS the lease, and a second step waits for the
 /// drained take to land, both bounded — see `teardown_for_exit_with`.
+#[cfg(test)]
 fn teardown_for_exit(state: &Arc<AppState>) -> Vec<&'static str> {
     teardown_for_exit_with(state, EXIT_DRAIN_TIMEOUT, EXIT_TAKE_TIMEOUT)
 }
 
 /// The teardown with its two waits as parameters — the seam the YV70 tests use
 /// so a stuck-lease case is exercised in milliseconds instead of seconds.
+#[cfg(test)]
 fn teardown_for_exit_with(
     state: &Arc<AppState>,
     drain: Duration,
     take: Duration,
 ) -> Vec<&'static str> {
     let mut steps = Vec::new();
-    // 1. Release the ASR Metal device while ObjC is still standing.
-    //
-    //    YV70: `unload()` alone frees NOTHING during a take — the engine is
-    //    leased out to the transcription thread and the slot is empty, so the
-    //    device survived into `exit()` and ggml's static destructor aborted on
-    //    it exactly as before YV69. The drain cancels the in-flight decode and
-    //    waits (bounded) for the lease to come home first.
+    exit_step_asr_drain(state, drain, &mut steps);
+    exit_step_await_take(state, take, &mut steps);
+    exit_step_restore_output(state, &mut steps);
+    exit_step_db_checkpoint(state, &mut steps);
+    steps
+}
+
+/// Step 1 — release the ASR Metal device while ObjC is still standing.
+///
+/// YV70: `unload()` alone frees NOTHING during a take — the engine is leased
+/// out to the transcription thread and the slot is empty, so the device
+/// survived into `exit()` and ggml's static destructor aborted on it exactly as
+/// before YV69. The drain cancels the in-flight decode and waits (bounded) for
+/// the lease to come home first.
+fn exit_step_asr_drain(state: &AppState, drain: Duration, steps: &mut Vec<&'static str>) {
     // yap-meetings-fix — a meeting job stands down at its next window instead
     // of re-loading the engine this drain is about to take away.
     meeting_pipeline::request_quit();
@@ -1277,11 +1289,12 @@ fn teardown_for_exit_with(
         transcription::DrainOutcome::TimedOut => steps.push("asr_drain_timeout"),
     }
     steps.push("asr_unload");
-    // 2. YV70: the drained take is still mid-flight in its worker thread —
-    //    between the decode and the row it writes. Give it a bounded moment to
-    //    land, so quitting can't make a take the user already spoke vanish: the
-    //    worker either inserts the transcript or keeps the wav as a recoverable
-    //    failed dictation, and both are done before `busy` clears.
+}
+
+/// Step 2 — YV70: the drained take is still mid-flight in its worker thread,
+/// between the decode and the row it writes. Give it a bounded moment to land,
+/// so quitting can't make a take the user already spoke vanish.
+fn exit_step_await_take(state: &AppState, take: Duration, steps: &mut Vec<&'static str>) {
     if *state.busy.lock() {
         if await_in_flight_take(state, take) {
             steps.push("await_take");
@@ -1293,16 +1306,78 @@ fn teardown_for_exit_with(
             steps.push("await_take_timeout");
         }
     }
-    // 3. YV28 safety net: never leave the Mac muted if we exit mid-take.
-    //    Restores the saved output state (no-op otherwise).
+}
+
+/// Step 3 — YV28 safety net: never leave the Mac muted if we exit mid-take.
+fn exit_step_restore_output(state: &AppState, steps: &mut Vec<&'static str>) {
     restore_system_output(state);
     steps.push("restore_output");
-    // 4. Checkpoint the WAL so it never grows unbounded and the .db isn't left
-    //    a deceptive 4 KB stub. Runs last, so the row step 2 waited for is in
-    //    the checkpoint too.
+}
+
+/// Step 4 — checkpoint the WAL so it never grows unbounded and the .db isn't
+/// left a deceptive 4 KB stub. Last, so every row an earlier step wrote is in it.
+fn exit_step_db_checkpoint(state: &AppState, steps: &mut Vec<&'static str>) {
     state.db.checkpoint();
     steps.push("db_checkpoint");
-    steps
+}
+
+/// yap-lifecycle — THE quit. Every quit path (Cmd-Q from the app menu, the
+/// Dock's Quit, the tray's "Quit Yap" via `app.exit(0)`) ends in
+/// `RunEvent::Exit`, and that arm calls this and nothing else. The order is
+/// `lifecycle::quit_plan()`: the pill is ordered out FIRST (inline, on the
+/// main thread the Exit arm runs on), then the meeting stop, the ASR drain, the
+/// in-flight take, the output restore and the WAL checkpoint — each on a worker
+/// thread with its own deadline inside `lifecycle::QUIT_BUDGET`. A step that
+/// misses its deadline is logged and skipped; the process exits regardless.
+fn quit_teardown(app: &AppHandle, state: &Arc<AppState>) -> lifecycle::TeardownReport {
+    use lifecycle::{BoundedStep, QuitStep};
+    let steps = lifecycle::quit_plan()
+        .into_iter()
+        .map(|step| {
+            let run: Box<dyn FnOnce() + Send> = match step {
+                QuitStep::PillOrderOut => {
+                    let app = app.clone();
+                    Box::new(move || float_pill::hide_float(&app))
+                }
+                QuitStep::MeetingStop => {
+                    let state = state.clone();
+                    Box::new(move || {
+                        // YV95 — a live meeting is finalized, not abandoned.
+                        if let Some(c) = state.meeting() {
+                            c.stop_if_running("app quit");
+                        }
+                    })
+                }
+                QuitStep::AsrDrain => {
+                    let state = state.clone();
+                    Box::new(move || {
+                        exit_step_asr_drain(&state, EXIT_DRAIN_TIMEOUT, &mut Vec::new())
+                    })
+                }
+                QuitStep::AwaitTake => {
+                    let state = state.clone();
+                    Box::new(move || {
+                        exit_step_await_take(&state, EXIT_TAKE_TIMEOUT, &mut Vec::new())
+                    })
+                }
+                QuitStep::RestoreOutput => {
+                    let state = state.clone();
+                    Box::new(move || exit_step_restore_output(&state, &mut Vec::new()))
+                }
+                QuitStep::DbCheckpoint => {
+                    let state = state.clone();
+                    Box::new(move || exit_step_db_checkpoint(&state, &mut Vec::new()))
+                }
+            };
+            BoundedStep {
+                name: step.name(),
+                deadline: step.deadline(),
+                inline: step.on_main_thread(),
+                run,
+            }
+        })
+        .collect();
+    lifecycle::run_bounded(steps, lifecycle::QUIT_BUDGET)
 }
 
 /// Wait (bounded) for the dictation worker to finish the take it is on. `busy`
@@ -5711,19 +5786,57 @@ fn stop_take(app: &AppHandle, state: &Arc<AppState>, origin: StopOrigin) {
     }
 }
 
-/// Bring the main window forward. Shared by the `show_main` command and the
-/// YV42 single-instance handler (a second launch focuses this window instead of
-/// starting a rival process).
-fn focus_main_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.set_focus();
+/// Bring the main window forward — THE presenter for every activation path:
+/// `RunEvent::Reopen` (Dock click, Finder double-click, `open -a Yap`), the
+/// YV42 single-instance handler, the tray's "Open Yap"/"Settings" and the
+/// `show_main` command. The decision is `lifecycle::activation_action`; this
+/// only reads the window's state and carries the answer out. Main thread only.
+fn present_main_window(app: &AppHandle, source: lifecycle::ActivationSource) {
+    let Some(w) = app.get_webview_window("main") else {
+        log::warn!("activation {source:?}: no main window to present");
+        return;
+    };
+    let state = lifecycle::MainWindowState {
+        exists: true,
+        visible: w.is_visible().unwrap_or(false),
+        minimized: w.is_minimized().unwrap_or(false),
+        focused: w.is_focused().unwrap_or(false),
+    };
+    match lifecycle::activation_action(source, state) {
+        lifecycle::WindowAction::Nothing => {}
+        lifecycle::WindowAction::Present { unminimize } => {
+            if unminimize {
+                let _ = w.unminimize();
+            }
+            let _ = w.show();
+            let _ = w.set_focus();
+            log::info!("activation {source:?}: presented main window ({state:?})");
+        }
     }
 }
 
+/// Say a stale handoff out loud. The Tauri app (and its notification plugin)
+/// never starts in a launch that hands off, so this goes through
+/// `osascript display notification` — non-modal, nothing to dismiss.
+fn notify_stale_instance(msg: &str) {
+    let script = format!(
+        "display notification \"{}\" with title \"Yap\"",
+        msg.replace('\\', "").replace('"', "'")
+    );
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .status();
+}
+
+/// The ONE bundle identifier, for the stale-instance probe that runs before the
+/// Tauri config is loaded. NEVER change it (TCC grants are keyed to it); the
+/// lifecycle test pins it to tauri.conf.json so the two cannot drift.
+pub const BUNDLE_IDENTIFIER: &str = "com.wilsonguenther.wilson-voice";
+
 #[tauri::command]
 fn show_main(app: AppHandle) {
-    focus_main_window(&app);
+    present_main_window(&app, lifecycle::ActivationSource::TrayOpen);
 }
 
 // ─── YP2 licensing commands ──────────────────────────────────────────
@@ -6452,6 +6565,36 @@ pub fn run() {
     // a panic hook — keeps the console output and mirrors it to disk for support.
     logging::init(&data_dir());
 
+    // yap-lifecycle DO 5 — the stale-instance probe. The single-instance
+    // plugin's handoff is a one-way write followed by a silent exit(0), so a
+    // running Yap whose main thread is wedged swallowed every relaunch. Hand
+    // off here first and wait (bounded) for the running app's ack.
+    match lifecycle::handoff_to_running(
+        &lifecycle::handoff_socket(BUNDLE_IDENTIFIER),
+        &lifecycle::handoff_ack_file(BUNDLE_IDENTIFIER),
+        &std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        &std::env::args().collect::<Vec<_>>(),
+        lifecycle::HANDOFF_ACK_TIMEOUT,
+    ) {
+        lifecycle::HandoffVerdict::NoRunningInstance => {}
+        lifecycle::HandoffVerdict::Handed { ack_ms } => {
+            log::info!("second launch: running Yap presented its window (ack {ack_ms}ms) — exiting");
+            std::process::exit(0);
+        }
+        lifecycle::HandoffVerdict::Stale { waited_ms } => {
+            let msg = lifecycle::stale_message(waited_ms);
+            log::warn!("second launch: stale instance — {msg}");
+            eprintln!("{msg}");
+            notify_stale_instance(&msg);
+            std::process::exit(1);
+        }
+        lifecycle::HandoffVerdict::Unknown(e) => {
+            log::warn!("second launch: handoff probe inconclusive ({e}) — launching normally");
+        }
+    }
+
     // YV20/M3: sweep any stale voice WAVs left by a prior crash / hard-kill (the
     // happy path deletes its own clip, but a SIGKILL mid-transcribe can't). No
     // recording is in flight at startup, so every *.wav here is safe to remove.
@@ -6699,7 +6842,15 @@ pub fn run() {
         // works while the app is open.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             log::info!("second instance launched — focusing the running app");
-            focus_main_window(app);
+            // The callback runs on the async runtime; AppKit wants the main
+            // thread. The ack is written only AFTER the window was presented,
+            // so a launch waiting on it (lifecycle::handoff_to_running) learns
+            // that the main thread is alive, not merely the socket.
+            let h = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                present_main_window(&h, lifecycle::ActivationSource::SecondInstance);
+                lifecycle::write_handoff_ack(&lifecycle::handoff_ack_file(BUNDLE_IDENTIFIER));
+            });
         }))
         // YV42 launch at login. The LaunchAgent variant is the macOS-supported
         // one (no deprecated login-item AppleScript); the `autostart` setting is
@@ -6917,8 +7068,16 @@ pub fn run() {
                 let w = win.clone();
                 win.on_window_event(move |e| match e {
                     WindowEvent::CloseRequested { api, .. } => {
+                        // The red X hides: Yap is a menu-bar utility and keeps
+                        // listening for the hotkey. The FIRST hide ever tells the
+                        // window's own surface to say where Yap went and how to
+                        // quit; the webview keeps running while hidden, so the
+                        // note is there the next time the window shows.
                         api.prevent_close();
                         let _ = w.hide();
+                        if lifecycle::take_hide_hint(&data_dir()) {
+                            let _ = w.emit(lifecycle::HIDE_HINT_EVENT, ());
+                        }
                     }
                     // PERM-E: coming back to the window is the moment a grant
                     // flipped in System Settings becomes worth re-reading. The
@@ -7170,27 +7329,19 @@ pub fn run() {
                     let state = state.clone();
                     move |app, event| match event.id.as_ref() {
                         "quit" => {
-                            // YV95 — a live meeting is finalized, not abandoned:
-                            // quitting must never be the reason an hour of audio
-                            // has no row pointing at it.
-                            if let Some(c) = state.meeting() {
-                                c.stop_if_running("app quit");
-                            }
-                            state.db.checkpoint(); // flush WAL before we exit
+                            // yap-lifecycle — the SAME quit as Cmd-Q and the
+                            // Dock's Quit: app.exit(0) reaches RunEvent::Exit,
+                            // whose quit_teardown orders the pill out first and
+                            // then stops a live meeting (YV95) and checkpoints
+                            // the WAL, every step bounded.
                             app.exit(0);
                         }
                         "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
+                            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
                         }
                         "settings" => {
                             // Open the app AND jump it to the Settings view.
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
+                            present_main_window(app, lifecycle::ActivationSource::TrayOpen);
                             let _ = app.emit("navigate", "settings");
                         }
                         "paste_last" => {
@@ -7433,16 +7584,32 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building Wilson Voice")
-        .run(|app_handle, event| {
-            // The ordered shutdown (YV69) — ASR engine first, then the audio
-            // restore, then the WAL checkpoint. Covers Cmd-Q / window-driven
-            // exit; the tray Quit item also checkpoints before app.exit(0).
-            if let tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            // yap-lifecycle — a Dock click / Finder double-click / `open -a
+            // Yap` on a running Yap. The arm only dispatches; the decision is
+            // lifecycle::activation_action (which deliberately ignores
+            // has_visible_windows: the pill counts as one).
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                present_main_window(
+                    app_handle,
+                    lifecycle::ActivationSource::DockReopen {
+                        has_visible_windows,
+                    },
+                );
+            }
+            // The ONE quit teardown for Cmd-Q, the Dock's Quit and the tray's
+            // Quit Yap (YV69 order behind the pill; every step bounded).
+            tauri::RunEvent::Exit => {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
-                    let steps = teardown_for_exit(&state);
-                    log::info!("exit teardown: {}", steps.join(" → "));
+                    let report = quit_teardown(app_handle, &state);
+                    log::info!("{}", report.log_line());
                 }
             }
+            _ => {}
         });
 }
 

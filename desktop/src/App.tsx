@@ -12,6 +12,7 @@ import { canRepair, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
+import HideHint from "./HideHint";
 import Home from "./views/Home";
 import Permissions from "./views/Permissions";
 import Meetings from "./views/Meetings";
@@ -267,6 +268,9 @@ export default function App() {
             running, so this is the same slim ribbon onboarding shows, and it
             retires itself the moment the engine is ready. */}
         <ModelRibbon setup={modelSetup} />
+
+        {/* yap-lifecycle — once per install, after the first red-X hide. */}
+        <HideHint />
 
         {/* PERM-E — the single permission surface. Renders NOTHING while all
             four grants are fine, which is why it sits unconditionally here
