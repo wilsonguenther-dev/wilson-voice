@@ -369,11 +369,16 @@ fn worker_loop(inner: &Arc<Inner>) {
                 reason: Some(INTERNAL_ERROR_REASON.to_string()),
             }
         });
+        // A2: the slot is cleared and the end status written under ONE lock,
+        // so a submit (Retry, the live hook, resume) cannot land between the
+        // two and have its Queued status overwritten by this job's end.
         {
             let mut q = inner.q.lock().unwrap_or_else(|p| p.into_inner());
             q.running = None;
+            q.status.insert(end.id.clone(), end.clone());
         }
-        inner.set(end);
+        inner.cv.notify_all();
+        (inner.report)(&end);
     }
 }
 
