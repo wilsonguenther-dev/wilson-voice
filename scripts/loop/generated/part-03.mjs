@@ -224,7 +224,7 @@ const PART = 'part-03'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y5-G":1,"Y5-A":1,"Y5-B":1,"Y5-C":1,"Y5-D":1,"Y5-E":1,"Y5-F":1,"Y5-J":1,"Y5-I":1,"Y5-K":1,"UPD-A":0,"UPD-B":0,"Y6-A":0,"PRIV-A":0,"Y6-B":0,"Y6-C":0,"DB-C":0,"PRIV-B":0,"Y6-D":0,"Y6-E":0,"Y7-A":1,"Y7-B":1,"Y7-C":1,"Y7-D":1,"Y7-E":1,"Y8-A":0,"DB-D":0,"Y8-B":0,"Y8-C":0,"Y8-D":0,"Y9-A":1,"Y9-B":1,"Y9-C":1,"PERM-F":1,"PERM-G":1,"Y9-D":1,"Y9-E":1,"Y10-A":0,"PERM-H":0,"Y10-B":0,"Y10-D":0,"Y10-E":0,"Y10-F":0,"Y11-A":1,"Y11-B":1,"DB-E":1,"Y11-C":1,"Y11-D":1,"Y11-E":1,"Y11-F":1,"yap24-PKG1":0,"yap24-PKG2":0,"yap24-X1":1,"yap24-X2":1,"yap24-X3":1}
+const LANE_BY_ID = {"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0,"yap24-PKG1":1,"yap24-PKG2":1,"yap24-X1":0,"yap24-X2":0,"yap24-X3":0}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -2967,11 +2967,10 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'PRIV-A', prompt: 'Y6', branch: 'loop/priv-a-crash-reporting-stays-local-and-says-so', gated: null,
-  notes: `STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
+  notes: `SUPERSEDED IN PART 2026-10-19 by yap-lic-00-kill-forge-fetch (07b, SECURITY): the revocation list refresh is DELETED, so Yap has TWO network call sites (the model download and the updater check), not three. The allowlist test pins exactly those two and must fail on any revocation or licensing fetch anywhere in the crate; PRIVACY.md names two. Never assert, document or restore a revocation refresh. The preflight holds this item (dependency not on main) until yap-lic-00 has landed. PRIOR NOTES: STATUS 2026-09-26: NOT STARTED as of the 2026-09-15 stop.`,
   title: 'Crash reporting is local, complete and provably offline — no Sentry, no PostHog, ever',
   preflight: `
-    test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test no_outbound
+    ( M=0; git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh|revoked\\.json' -- desktop/src-tauri/src && M=1; grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-00-kill-forge-fetch has not landed (the revocation refresh is still in desktop/src-tauri/src, or license.rs lacks launch_license_init_makes_no_network_call) — PRIV-A must not pin a call that item deletes; run the review pass to land it, then the build pass again"; exit 0; fi; test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs && grep -q 'only_two_network_call_sites_exist' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs && cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test no_outbound_on_the_dictation_path )
   `,
   spec: `
     \`src-tauri/src/crash.rs\` (777 lines, YV64) is local crash capture with a
@@ -2999,9 +2998,14 @@ ITEMS.push({
           crate graph makes that unprovable by grep, state so and assert the
           narrower thing you CAN prove, naming the gap.
         - an assertion that the ONLY network call sites in the whole crate are
-          the model download, the revocation list refresh and the updater
-          check — an explicit allowlist by file and function that a new call
-          site forces you to update.
+          the model download and the updater check — an explicit allowlist by
+          file and function that a new call site forces you to update. The
+          revocation list refresh was DELETED by yap-lic-00-kill-forge-fetch
+          (SECURITY); it is NOT on the allowlist, and the sweep covers the WHOLE
+          crate (every file under desktop/src-tauri/src, not only license.rs),
+          so a revocation or licensing fetch re-added in lib.rs or in a new
+          module fails this test. Licensing returns to the network only through
+          the yap-lic-01..06 items, which update this allowlist themselves.
       * \`crash.rs\` completeness: a crash report must never contain transcript
         text, a file path inside the user's home beyond the app's data dir, or a
         license key. Extend the redaction tests with a report synthesized to
@@ -3010,19 +3014,25 @@ ITEMS.push({
         USER to send; assert there is no send path.
       * Update PRIVACY.md to state the claim in the exact words the test proves,
         and add the test's name to the doc so the claim is traceable. Do not
-        soften the claim and do not overstate it: the model download, the
-        revocation refresh and the updater DO talk to the network, and PRIVACY.md
-        must say which three and that none of them carry audio or text.
+        soften the claim and do not overstate it: the model download and the
+        updater DO talk to the network, and PRIVACY.md must say which two and
+        that neither carries audio or text. The licensing path makes NO network
+        call (yap-lic-00 deleted the revocation refresh); never describe, assert
+        or restore one.
 
     What NOT to do:
       - Do NOT add Sentry, PostHog, Segment or any analytics SDK.
       - Do NOT add an opt-in telemetry toggle. There is no telemetry to toggle.
-      - Do NOT claim in PRIVACY.md that Yap makes no network calls at all. Three
+      - Do NOT claim in PRIVACY.md that Yap makes no network calls at all. Two
         calls exist and naming them is what makes the rest credible.
+      - Do NOT re-add, allowlist or document a revocation list refresh or any
+        licensing network call. yap-lic-00 removed it as a SECURITY fix.
   `,
   acceptance: `
     test -f desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
-    grep -q 'only_three_network_call_sites_exist' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    grep -q 'only_two_network_call_sites_exist' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
+    ! git grep -nE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh|revoked\\.json' -- desktop/src-tauri/src desktop/src
+    ! grep -niE 'revocation (check|list|refresh|download)|refunded or charged back|three network' PRIVACY.md
     grep -q 'the_take_path_has_no_url_literal' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
     grep -q 'no_send_path_in_crash_or_support' desktop/src-tauri/tests/no_outbound_on_the_dictation_path.rs
     grep -q 'no_outbound_on_the_dictation_path' PRIVACY.md
@@ -3427,7 +3437,9 @@ ITEMS.push({
         documents at length, and the two escape hatches
         (\`SHERPA_ONNX_ARCHIVE_DIR\`, \`SHERPA_ONNX_LIB_DIR\`).
       * PRODUCT.md: one honest feature list at 0.8.0 including the notetaker and
-        the license model, and the three network calls PRIV-A names.
+        the license model, and the two network calls PRIV-A names (the model
+        download and the updater check; the licensing path makes none since
+        yap-lic-00).
       * A test that keeps them honest:
         \`tests/docs_match_the_app.rs\` asserting the version in ARCHITECTURE.md
         matches tauri.conf.json, the default binding named in README matches

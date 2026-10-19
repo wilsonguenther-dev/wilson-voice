@@ -88,7 +88,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-02",
   description:
-    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 46 items (yap-qa-harness..SEC-B), 1 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 02 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 46 items (yap-qa-harness..SEC-B), 2 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "yap-qa-harness", detail: "Real permission + hotkey QA tools: scripts/qa/perm-probe.sh (signature, duplicates, LaunchServices, a labelled helper probe) and scripts/qa/hotkey-walk.sh (a real fn take on the installed Yap)" },
@@ -215,7 +215,7 @@ const PART = 'part-02'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"yap-qa-harness":1,"yap-perm-truth":1,"yap-hotkey-stop":1,"yap-format-structure":1,"yap-meetings-fix":1,"yap-uiux-2026-10-16-W0":1,"yap-uiux-2026-10-16-HOME":1,"yap-uiux-2026-10-16-DICT":1,"yap-uiux-2026-10-16-INSIGHTS":1,"yap-uiux-2026-10-16-MEETINGS":1,"yap-uiux-2026-10-16-SCRATCH":1,"yap-uiux-2026-10-16-SETTINGS":1,"yap-uiux-2026-10-16-ONBOARD":1,"yap-uiux-2026-10-16-Z":1,"yap-notetaker-onboard":1,"yap-notetaker-detect":1,"yap-notetaker-notes":1,"yap-structure-followups":1,"yap-recovery-followups":1,"yap-land-gate-pass-required":1,"yap-tests-hermetic-power":1,"Y4-A":0,"Y4-I":0,"SEC-C":0,"Y4-C":0,"Y4-D":0,"Y4-E":0,"Y4-F":0,"Y4-G":0,"Y4-H":0,"Y3-A":1,"Y3-B":1,"Y3-C":1,"Y3-D":1,"DB-B":1,"Y3-F":1,"Y3-G":1,"LIC-A":0,"Y2-A":0,"Y2-B":0,"Y2-C":0,"Y2-F":0,"Y2-D":0,"Y2-E":0,"DB-A":0,"SEC-B":0}
+const LANE_BY_ID = {"yap-qa-harness":0,"yap-perm-truth":0,"yap-hotkey-stop":0,"yap-format-structure":0,"yap-meetings-fix":0,"yap-uiux-2026-10-16-W0":0,"yap-uiux-2026-10-16-HOME":0,"yap-uiux-2026-10-16-DICT":0,"yap-uiux-2026-10-16-INSIGHTS":0,"yap-uiux-2026-10-16-MEETINGS":0,"yap-uiux-2026-10-16-SCRATCH":0,"yap-uiux-2026-10-16-SETTINGS":0,"yap-uiux-2026-10-16-ONBOARD":0,"yap-uiux-2026-10-16-Z":0,"yap-notetaker-onboard":0,"yap-notetaker-detect":0,"yap-notetaker-notes":0,"yap-structure-followups":0,"yap-recovery-followups":0,"yap-land-gate-pass-required":0,"yap-tests-hermetic-power":0,"Y4-A":1,"Y4-I":1,"SEC-C":1,"Y4-C":1,"Y4-D":1,"Y4-E":1,"Y4-F":1,"Y4-G":1,"Y4-H":1,"Y3-A":0,"Y3-B":0,"Y3-C":0,"Y3-D":0,"DB-B":0,"Y3-F":0,"Y3-G":0,"LIC-A":1,"Y2-A":1,"Y2-B":1,"Y2-C":1,"Y2-F":1,"Y2-D":1,"Y2-E":1,"DB-A":1,"SEC-B":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -4591,8 +4591,8 @@ ITEMS.push({
 // SHARED PREAMBLE + STANDARD GATE: see 00-y0-harness-and-gates.mjs.
 
 ITEMS.push({
-  id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: null,
-  notes: `STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it) — Panel revision 2026-09-26T17:35:00Z: DO NOT LAND #183 AS-IS. It targets "a dedicated Yap Supabase project," which the product ledger (2026-09-26 panel) now overrides: issuance moves to the Drivia Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and already licensing other products) — see the Panel revisions block in the spec below. Relabel #183 needs-human until that redirect is done; a scoped notetaker-only loop pass must never merge it as written (see the LAND-scope fix in scripts/loop/template.mjs). RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key, AND every launch still sends an unauthenticated GET to a hostname resolving to an IP Wilson no longer controls, accepting whatever unsigned {kids:[]} revocation list comes back with no signature check (license.rs:1100-1124) — ship the one-line mitigation in the Panel revisions block FIRST, independent of the rest of this item.`,
+  id: 'LIC-A', prompt: 'Y2', branch: 'loop/lic-a-stripe-to-supabase-issuer-purchase-to-working-dictation', gated: 'panel',
+  notes: `RETIRED 2026-10-19 — gated:'panel' so no builder dispatches. Superseded by yap-lic-00-kill-forge-fetch (07b) and yap-lic-01..06 (Projects/Yap/licensing-migration-plan-2026-10-19.md: the dedicated-Supabase/Edge-Function design is superseded and PR #183 is CLOSED). Its spec step 4 (repoint REVOCATION_URL / ISSUER_HOST) and the Panel line "make REVOCATION_URL an Option" are VOID: yap-lic-00 deletes both symbols and guards license.rs with license_rs_has_no_http_client; never re-add them. Do not panel-approve this id; file a yap-lic-* item instead. PRIOR NOTES: STATUS 2026-09-26: BUILT, PR #183 OPEN and stale (main moved 30+ times under it) — Panel revision 2026-09-26T17:35:00Z: DO NOT LAND #183 AS-IS. It targets "a dedicated Yap Supabase project," which the product ledger (2026-09-26 panel) now overrides: issuance moves to the Drivia Consulting app's Supabase DB #2 (the products licensing backend, already provisioned and already licensing other products) — see the Panel revisions block in the spec below. Relabel #183 needs-human until that redirect is done; a scoped notetaker-only loop pass must never merge it as written (see the LAND-scope fix in scripts/loop/template.mjs). RE-VERIFIED 2026-09-26: the revocation host license.rs:117 (forge sslip.io) does not answer (curl HTTP 000) and Wilson's yap.log shows "revocation refresh skipped" on every launch; with Forge off there is NO issuer, so a new purchase cannot receive a key, AND every launch still sends an unauthenticated GET to a hostname resolving to an IP Wilson no longer controls, accepting whatever unsigned {kids:[]} revocation list comes back with no signature check (license.rs:1100-1124) — ship the one-line mitigation in the Panel revisions block FIRST, independent of the rest of this item.`,
   title: 'Payment to working dictation, on a Supabase issuer this repo owns — the leg no item owned',
   preflight: `
     test -f supabase/functions/yap-license/index.ts
@@ -4602,6 +4602,11 @@ ITEMS.push({
     cd ${APP} && npm ci && cd src-tauri && cargo test --features custom-protocol --test activation_e2e
   `,
   spec: `
+    RETIRED 2026-10-19 — SUPERSEDED by yap-lic-00-kill-forge-fetch and yap-lic-01..06. Do NOT build
+    this item. Step 4 below and the Panel revision "make REVOCATION_URL an Option" are VOID: after
+    yap-lic-00, license.rs has no REVOCATION_URL, ISSUER_HOST, fetch_revocations or any HTTP client,
+    and license_rs_has_no_http_client enforces it. Kept for history only.
+
     OWNER DECISION 2026-09-13 (Wilson). The panel gated this on "automated or
     manual?". The answer is neither of the panel's two options as written:
     issuance is ALREADY automated, and it lives somewhere this repo does not

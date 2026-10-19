@@ -298,6 +298,20 @@ for (const file of itemFiles) {
 if (problems.length) die()
 
 // ── 3. VALIDATE THE ITEMS ───────────────────────────────────────────────────
+// LITERAL DEPENDENCY MARKER (walk D7, 2026-10-19). template.mjs runBuild treats DEPENDENCY-NOT-ON-MAIN
+// in the pre-flight result as "skipped: dependency not on main". A preflight that carries the marker
+// LITERALLY (e.g. echo "DEPENDENCY-NOT-ON-MAIN ...") can be matched from the command text a seat
+// echoes back, so a passing item is skipped forever. Assemble it at run time instead:
+// "DEPENDENCY-NOT-ON-$(printf MAIN)".
+for (let i = 0; i < ITEMS.length; i++) {
+  const it = ITEMS[i]
+  if (it && typeof it.preflight === 'string' && /DEPENDENCY-NOT-ON-MAIN/.test(it.preflight)) {
+    fail(
+      `${origin[i]}: item ${it.id} preflight contains the LITERAL marker DEPENDENCY-NOT-ON-MAIN — assemble it at run time ` +
+        `("DEPENDENCY-NOT-ON-$(printf MAIN)") so echoed command text can never trip the dependency hold`
+    )
+  }
+}
 const seenIds = new Map()
 const seenBranches = new Map()
 for (const [i, item] of ITEMS.entries()) {
