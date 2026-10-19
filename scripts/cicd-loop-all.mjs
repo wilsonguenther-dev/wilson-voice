@@ -58,12 +58,12 @@ let halted = null
 if (halted) {
   log("part-01 — SKIPPED, the run halted earlier: " + halted.reason)
   results.push({ part: "part-01", status: 'skipped: run halted', items: 47 })
-} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","yap-flakes-2026-10-16","yap-lifecycle-2026-10-16","yap-p0-hotkeys-no-permission","yap-p0-perm-repair","yap-p0-insertion-bridge-fallback","yap-p0-release-smoke","yap-qa-hotkey-walk-binding","yap-license-revocation-dead-host","yap-dev-perm-probe-attribution","loop-dependency-marker-stdout-only"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
+} else if (ONLY_PREFIXES && !["Y0-A","Y0-D","Y0-E","Y0-B","Y0-C","yap24-NT0","yap24-NT1","yap24-NT2","yap24-NT3","yap24-NT4","yap24-NT5","yap24-NT6","yap24-NT7","yap24-NT8","yap24-NT9","yap24-NT10","yap24-NT11","yap24-PILL1","yap24-PILL2","yap24-PILL3","yap24-PILL4","yap24-OS1","yap24-OS2","yap24-OS3","yap24-OS4","yap24-OS5","yap24-UI1","yap24-UI2","yap24-UI3","PERM-A","PERM-B","PERM-C","Y1-A","PERM-D","SEC-A","Y1-B","PERM-E","yap-flakes-2026-10-16","yap-lifecycle-2026-10-16","yap-p0-hotkeys-no-permission","yap-p0-perm-repair","yap-p0-insertion-bridge-fallback","yap-p0-release-smoke","yap-qa-hotkey-walk-binding","yap-lic-00-kill-forge-fetch","yap-dev-perm-probe-attribution","loop-dependency-marker-stdout-only"].some((id) => ONLY_PREFIXES.some((prefix) => id.startsWith(prefix)))) {
   log("part-01 — SKIPPED: no item in this part matches args.only [" + ONLY_PREFIXES.join(', ') + ']. Recon, Drain and Reflect of this part do not run; its worktrees (if any) stay standing for the next run.')
   results.push({ part: "part-01", status: 'skipped: no item matches args.only', items: 47 })
 } else {
   phase("part-01")
-  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (427511 bytes)")
+  log("START part-01 — 47 item(s), Y0-A..loop-dependency-marker-stdout-only — /Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs (428818 bytes)")
   try {
     const result = await workflow({ scriptPath: "/Users/wilsonguenther/code/wilson-voice/scripts/loop/generated/part-01.mjs" }, args)
     log("END part-01 — " + (result && result.halted ? 'halted' : 'finished') + " (47 item(s))")

@@ -135,7 +135,7 @@ export const meta = {
     { title: "yap-p0-insertion-bridge-fallback", detail: "Insertion never silently fails: AX insertion only when the probe says trusted, a clipboard + ⌘V bridge when PostEvent is granted, an instant Copy card when neither is, and one failing backend call can no longer blank the app as \"Bridge error\"" },
     { title: "yap-p0-release-smoke", detail: "Every DMG build runs a signed-app smoke after signing (codesign --strict on app + DMG with the pinned Developer ID team, a designated-requirement change gate, launch, probe every service, register hotkeys, insert into TextEdit) and the release FAILS when any step fails, including a stale-identity grant" },
     { title: "yap-qa-hotkey-walk-binding", detail: "hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding's modifier" },
-    { title: "yap-license-revocation-dead-host", detail: "The license revocation refresh stops calling the decommissioned Forge box on every launch: point it at a live, cited endpoint or turn it off cleanly, offline-safe on the cached list, and no error line at launch" },
+    { title: "yap-lic-00-kill-forge-fetch", detail: "SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands" },
     { title: "yap-dev-perm-probe-attribution", detail: "A dev build's permission probe says \"dev build: permissions are the host terminal's\" instead of showing the launching terminal's TCC grants as Yap's green rows" },
     { title: "loop-dependency-marker-stdout-only", detail: "The harness's dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat's JSON" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
@@ -216,7 +216,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0,"yap-qa-hotkey-walk-binding":1,"yap-license-revocation-dead-host":1,"yap-dev-perm-probe-attribution":1,"loop-dependency-marker-stdout-only":1}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0,"yap-qa-hotkey-walk-binding":1,"yap-lic-00-kill-forge-fetch":1,"yap-dev-perm-probe-attribution":1,"loop-dependency-marker-stdout-only":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -5359,34 +5359,46 @@ ITEMS.push({
 })
 
 ITEMS.push({
-  id: 'yap-license-revocation-dead-host', prompt: 'yap-license-revocation-dead-host', branch: 'loop/yap-license-revocation-offline-safe', gated: null,
-  title: 'The license revocation refresh stops calling the decommissioned Forge box on every launch: point it at a live, cited endpoint or turn it off cleanly, offline-safe on the cached list, and no error line at launch',
+  id: 'yap-lic-00-kill-forge-fetch', prompt: 'yap-lic-00-kill-forge-fetch', branch: 'loop/yap-lic-00-kill-forge-revocation-fetch', gated: null,
+  title: 'SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands',
   preflight: `
-    ! grep -q 'sslip.io' desktop/src-tauri/src/license.rs && grep -q 'revocation_refresh_without_endpoint_keeps_cached_list' desktop/src-tauri/src/license.rs
+    ! git grep -qnE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs && ! git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs
   `,
   spec: `
-    Panel: not required — FIX (walk D3, P1).
-    Root cause (walk yap.log 2026-10-19T03:19:57Z): "license: revocation refresh skipped (error sending
-    request for url (https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json))". license.rs
-    ISSUER_HOST / REVOCATION_URL (license.rs:154/156) name the Forge box, which is DECOMMISSIONED.
-    DO — if a live revocation endpoint is CITED in this repo or in drivia-forge docs/YAP-LICENSING.md
-    (quote the line in the PR body), point REVOCATION_URL at it. Otherwise make the endpoint an
-    Option that is None, and the refresh a logged-once debug no-op that keeps the cached list. Either
-    way: a failed or absent refresh keeps the cached list (never clears it), never logs at info/warn
-    on a normal launch, and the "ONLY host this module ever contacts" doc stays true. No new network
-    call anywhere else.
-    Tests: revocation_refresh_without_endpoint_keeps_cached_list (None endpoint -> cached kids kept,
-    no request built) and revocation_refresh_failure_keeps_cached_list (fake fetch error -> cached
-    kids kept).
+    Panel: not required — FIX, class SECURITY (walk D3; supersedes the earlier yap-license-revocation-dead-host
+    draft). Spec source: Projects/Yap/licensing-migration-plan-2026-10-19.md "## Items (draft, not yet filed)"
+    -> yap-lic-00.
+    Root cause (walk yap.log 2026-10-19T03:19:57Z): "license: revocation refresh skipped (error sending request
+    for url (https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json))". Every launch (and every activation)
+    sends a GET to the decommissioned Forge box: license.rs ISSUER_HOST / REVOCATION_URL (:151-156) and the
+    fetch at :1467-1479; callers lib.rs spawn_revocation_refresh (:5672 in activate_license, :5724-5736 the fn,
+    :6891-6895 at launch). A dead sslip.io name that anybody can later answer for is a licensing input the app
+    trusts — security class, not cosmetics.
+    DO — remove REVOCATION_URL, ISSUER_HOST, fetch_revocations and spawn_revocation_refresh and both call
+    sites. NO replacement endpoint: licensing moves to the consulting app's existing /api/v1/licensing (sibling repo) in later
+    items yap-lic-01..06 — do NOT implement any of those here. Keep READING any cached revoked_kids, so an
+    install that has a cached list behaves exactly as before. Local licence verification (Ed25519 claims,
+    trial, grace) is unchanged. Remove the host from every config and doc mention, and correct
+    docs/ARCHITECTURE-AUDIT-2026-09-26.md §9 ("harmless no-op" was wrong: it was a live GET every launch).
+    Legitimate unrelated "forge" words stay: forget/forged/forgeable, and the issuer-repo citations
+    "drivia-forge" and the signing-key path.
+    Tests: (1) launch_license_init_makes_no_network_call — the launch-time licence init takes an injected
+    transport/client; a recording fake asserts zero requests across init + status + a cached revoked_kids load.
+    (2) license_rs_has_no_http_client — reads license.rs via include_str! and fails on "sslip.io", "reqwest",
+    "ureq" or "http://"/"https://" outside the PAYMENT_LINK_URL constant. (3) existing licence tests green.
+    Can ship alone in the next release.
   `,
   acceptance: `
-    ! grep -q 'sslip.io' desktop/src-tauri/src/license.rs
-    ! grep -rq '87-99-149-214' desktop/src-tauri/src
-    (cd desktop/src-tauri && cargo test --features custom-protocol --lib revocation_refresh_) > desktop/target/qa-revocation.txt 2>&1
-    grep -q 'revocation_refresh_without_endpoint_keeps_cached_list ... ok' desktop/target/qa-revocation.txt
-    grep -q 'revocation_refresh_failure_keeps_cached_list ... ok' desktop/target/qa-revocation.txt
-    test -s docs/loop/evidence/yap-license-revocation-dead-host.md
-    head -1 docs/loop/evidence/yap-license-revocation-dead-host.md | grep -qx 'ROOT-CAUSE-PROBE yap-license-revocation-dead-host'
+    ! git grep -nE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs
+    ! git grep -nE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src desktop/src
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib license) > desktop/target/qa-lic00.txt 2>&1
+    grep -q 'launch_license_init_makes_no_network_call ... ok' desktop/target/qa-lic00.txt
+    grep -q 'license_rs_has_no_http_client ... ok' desktop/target/qa-lic00.txt
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-lic00.txt
+    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_gate)
+    test -s docs/loop/evidence/yap-lic-00-kill-forge-fetch.md
+    head -1 docs/loop/evidence/yap-lic-00-kill-forge-fetch.md | grep -qx 'ROOT-CAUSE-PROBE yap-lic-00-kill-forge-fetch'
+    (cd desktop && npm run loop:validate)
   `,
 })
 
