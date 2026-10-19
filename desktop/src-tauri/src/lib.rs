@@ -3692,57 +3692,116 @@ fn save_settings(
             (hotkey_table::BindingAction::Cancel, cc, cl),
         ])?;
     }
-    // Register the new chord BEFORE persisting: a chord another app holds is
-    // an Err the Settings capture toasts, the old chord stays live, and the
-    // refused setting is never written.
-    if dictate_changed && smoke::global_hotkeys_allowed() {
-        rebind_dictate_toggle(&app, &next)?;
-    }
-    // focus-2026-10-19 — Record meeting and Cancel take are rebindable and
-    // apply without a relaunch. Validate first (a refusal is the capture's
-    // error), then swap atomically: new registered BEFORE old is dropped. This
-    // runs on the command thread, never inside the shortcut plugin's handler
-    // (yap-p0-chord-deadlock).
+    // fix-249 advisory (b): VALIDATE everything first (nothing mutated yet),
+    // PERSIST, then APPLY the chords; an apply that fails rolls back every
+    // chord this save already swapped AND the persisted file, so the live
+    // chords always match the stored settings.
     let (meeting_changed, cancel_changed) = {
         let live = state.settings.lock();
         (live.meeting_chord != next.meeting_chord, live.cancel_chord != next.cancel_chord)
     };
-    if meeting_changed {
-        let (new_chord, new_label) = match next.meeting_chord.as_ref() {
+    let new_meeting = if meeting_changed {
+        Some(match next.meeting_chord.as_ref() {
             Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::RecordMeeting, c)?,
             None => hotkey_table::resolve(hotkey_table::BindingAction::RecordMeeting, None),
-        };
+        })
+    } else {
+        None
+    };
+    let new_cancel = if cancel_changed {
+        Some(match next.cancel_chord.as_ref() {
+            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)?,
+            None => hotkey_table::resolve(hotkey_table::BindingAction::Cancel, None),
+        })
+    } else {
+        None
+    };
+    if new_cancel.is_some() && *state.recording.lock() {
+        return Err("finish the current take, then change the cancel key".into());
+    }
+    let prev = state.settings.lock().clone();
+    persist_settings(&next)?;
+    *state.settings.lock() = next.clone();
+    let rollback = |why: String, dictate_applied: bool, meeting_applied: Option<(tauri_plugin_global_shortcut::Shortcut, String)>| -> String {
+        if let Some((old_chord, old_label)) = meeting_applied {
+            let new_chord = hotkey_table::active_meeting().0;
+            let gs = app.global_shortcut();
+            if let Err(e) = hotkey_table::swap_chord(
+                new_chord,
+                old_chord,
+                &|s| gs.is_registered(s),
+                &mut |s| gs.register(s).map_err(|e| e.to_string()),
+                &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
+            ) {
+                log::warn!("record-meeting rollback to {old_label} failed: {e}");
+            }
+            hotkey_table::set_active_meeting((old_chord, old_label));
+        }
+        if dictate_applied {
+            if let Err(e) = rebind_dictate_toggle(&app, &prev) {
+                log::warn!("dictate chord rollback failed: {e}");
+            }
+        }
+        if let Err(e) = persist_settings(&prev) {
+            log::warn!("settings rollback persist failed: {e}");
+        }
+        *state.settings.lock() = prev.clone();
+        why
+    };
+    // 1. dictate chord — new registered BEFORE the old is dropped.
+    let mut dictate_applied = false;
+    if dictate_changed && smoke::global_hotkeys_allowed() {
+        if let Err(e) = rebind_dictate_toggle(&app, &next) {
+            return Err(rollback(e, false, None));
+        }
+        dictate_applied = true;
+    }
+    // 2. Record meeting — atomic swap; runs on the command thread, never
+    // inside the shortcut plugin's handler (yap-p0-chord-deadlock).
+    let mut meeting_applied = None;
+    if let Some((new_chord, new_label)) = new_meeting {
+        let old = hotkey_table::active_meeting();
         if smoke::global_hotkeys_allowed() {
-            let (old_chord, _) = hotkey_table::active_meeting();
             let gs = app.global_shortcut();
             let r = hotkey_table::swap_chord(
-                old_chord,
+                old.0,
                 new_chord,
                 &|s| gs.is_registered(s),
                 &mut |s| gs.register(s).map_err(|e| e.to_string()),
                 &mut |s| gs.unregister(s).map_err(|e| e.to_string()),
             );
-            r.map_err(|e| format!("{new_label} could not be registered ({e}) — the old chord stays"))?;
+            if let Err(e) = r {
+                return Err(rollback(
+                    format!("{new_label} could not be registered ({e}) — the old chord stays"),
+                    dictate_applied,
+                    None,
+                ));
+            }
             hotkey_table::set_meeting_status(hotkeys::CarbonStatus::Registered);
         }
         log::info!("record-meeting chord → {new_label}");
         hotkey_table::set_active_meeting((new_chord, new_label));
+        meeting_applied = Some(old);
     }
-    if cancel_changed {
-        let v = match next.cancel_chord.as_ref() {
-            Some(c) => hotkey_table::chord_for_action(hotkey_table::BindingAction::Cancel, c)?,
-            None => hotkey_table::resolve(hotkey_table::BindingAction::Cancel, None),
-        };
-        // Registered per take; a take in flight keeps the key it armed with.
-        if !*state.recording.lock() {
-            log::info!("cancel key → {}", v.1);
-            hotkey_table::set_active_cancel(v);
-        } else {
-            return Err("finish the current take, then change the cancel key".into());
+    // 3. Cancel — registered per take. fix-249 advisory (c): the recording
+    // lock is HELD across the check and the set, so a take cannot start in
+    // between; and the release drops the key a take actually armed
+    // (`hotkey_table::cancel_to_release`), so a rebind can never leave Esc
+    // registered while idle.
+    if let Some(v) = new_cancel {
+        let recording = state.recording.lock();
+        if *recording {
+            drop(recording);
+            return Err(rollback(
+                "finish the current take, then change the cancel key".into(),
+                dictate_applied,
+                meeting_applied,
+            ));
         }
+        log::info!("cancel key → {}", v.1);
+        hotkey_table::set_active_cancel(v);
+        drop(recording);
     }
-    *state.settings.lock() = next.clone();
-    persist_settings(&next)?;
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
     let _ = app.emit("settings", &next);
