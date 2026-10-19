@@ -324,6 +324,7 @@ export function grantNags(status: GrantStatus): boolean {
  */
 export function permissionHealth(report: ({
   grants?: PermissionGrantRow[] | null;
+  productName?: string | null;
 } & PermissionTruth) | null | undefined): PermissionHealth {
   const grants = report?.grants ?? [];
   const denied = grants.filter((g) => grantNags(g.status));
@@ -339,7 +340,7 @@ export function permissionHealth(report: ({
   const line =
     denied.length === 1
       ? firstDetail
-      : `${denied.map((g) => g.label).join(" and ")} are off for Yap. ${firstDetail}`;
+      : `${denied.map((g) => g.label).join(" and ")} are off for ${report?.productName || "Yap"}. ${firstDetail}`;
 
   return {
     visible: true,

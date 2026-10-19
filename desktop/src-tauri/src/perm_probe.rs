@@ -77,6 +77,19 @@ impl Service {
     /// As System Settings names the list the grant lives in.
     pub fn label(self) -> &'static str {
         match self {
+            // fix-ax-probe-refresh: PostEvent is NOT Accessibility. Labelling it
+            // "Accessibility" is how a PostEvent row read "Accessibility is off"
+            // while Accessibility was granted, and its Repair reset PostEvent.
+            Service::Accessibility => "Accessibility",
+            Service::PostEvent => "Event posting (⌘V)",
+            Service::ListenEvent => "Input Monitoring",
+            Service::Microphone => "Microphone",
+        }
+    }
+
+    /// The System Settings list the grant appears in (user-facing words).
+    pub fn settings_list(self) -> &'static str {
+        match self {
             Service::Accessibility | Service::PostEvent => "Accessibility",
             Service::ListenEvent => "Input Monitoring",
             Service::Microphone => "Microphone",
@@ -359,6 +372,7 @@ mod ffi {
     extern "C" {
         fn CGPreflightListenEventAccess() -> bool;
         fn CGPreflightPostEventAccess() -> bool;
+        fn CGRequestPostEventAccess() -> bool;
     }
 
     /// `kIOHIDRequestTypeListenEvent`.
@@ -407,6 +421,12 @@ mod ffi {
         }
     }
 
+    /// May draw the PostEvent dialog (which adds the app to Accessibility).
+    pub fn post_event_request() -> bool {
+        // SAFETY: no arguments, C bool out.
+        unsafe { CGRequestPostEventAccess() }
+    }
+
     /// May draw the Input Monitoring dialog (which adds Yap to the list).
     pub fn listen_event_request() -> bool {
         // SAFETY: plain enum in, C bool out.
@@ -433,6 +453,9 @@ mod ffi {
         GrantState::Unknown
     }
     pub fn listen_event_request() -> bool {
+        false
+    }
+    pub fn post_event_request() -> bool {
         false
     }
 }
@@ -566,6 +589,22 @@ pub fn repair_plan(service: Service, bundle_id: &str) -> Vec<Vec<String>> {
     }
 }
 
+/// The `kTCCService*` names one Repair of `service` resets, in plan order.
+/// The row's OWN service is always first: a row never resets only somebody
+/// else's grant (the 0.9.2 Accessibility-titled row reset only PostEvent).
+pub fn reset_services(service: Service) -> Vec<String> {
+    repair_plan(service, "_")
+        .iter()
+        .map(|argv| format!("kTCCService{}", argv[2]))
+        .collect()
+}
+
+/// What a Repair says it did: "Reset kTCCServiceAccessibility and
+/// kTCCServicePostEvent for Yap Test."
+pub fn repair_summary(service: Service, product: &str) -> String {
+    format!("Reset {} for {product}.", reset_services(service).join(" and "))
+}
+
 /// The deep link the Repair opens, through the `open_privacy_pane` allow-list.
 pub fn repair_pane_url(service: Service) -> &'static str {
     crate::permissions::open_privacy_pane_urls(service.pane_name())[0]
@@ -578,9 +617,14 @@ pub fn needs_relaunch(service: Service) -> bool {
 
 /// The manual steps shown when tccutil fails.
 pub fn manual_steps(service: Service, bundle_path: &str) -> String {
-    let label = service.label();
+    manual_steps_for(service, bundle_path, "Yap")
+}
+
+/// [`manual_steps`], naming the running product ("Yap Test" on the test channel).
+pub fn manual_steps_for(service: Service, bundle_path: &str, product: &str) -> String {
+    let pane = service.settings_list();
     format!(
-        "Open System Settings → Privacy & Security → {label}, select Yap, click the minus button, \
+        "Open System Settings → Privacy & Security → {pane}, select {product}, click the minus button, \
          then click plus, choose {bundle_path} and switch it on."
     )
 }
@@ -599,25 +643,35 @@ pub struct RepairOutcome {
     pub manual_steps: String,
     pub pane_url: &'static str,
     pub needs_relaunch: bool,
+    /// The `kTCCService*` names this Repair reset, in order.
+    pub reset: Vec<String>,
+    /// The product the UI names ("Yap" / "Yap Test").
+    pub product: String,
+    /// [`repair_summary`]: which services were reset, for whom.
+    pub summary: String,
 }
 
 /// Run one Repair: tccutil reset for our own bundle id, the prompt, the pane.
 pub fn repair(service: Service) -> RepairOutcome {
     let me = crate::perm_truth::running_identity();
+    let product = crate::perm_truth::product_name();
     let mut outcome = RepairOutcome {
         service,
         commands: Vec::new(),
         ok: false,
         stderr: String::new(),
-        manual_steps: manual_steps(service, &me.bundle_path),
+        manual_steps: manual_steps_for(service, &me.bundle_path, &product),
         pane_url: repair_pane_url(service),
         needs_relaunch: needs_relaunch(service),
+        reset: reset_services(service),
+        summary: repair_summary(service, &product),
+        product: product.clone(),
     };
     // NEVER fall back to the shipped id: an unbundled dev binary resetting the
     // installed app's grants would be repairing somebody else.
     let Some(bundle_id) = crate::perm_truth::main_bundle_id() else {
         outcome.stderr =
-            "Yap is not running from an app bundle, so it has no bundle id to reset.".into();
+            format!("{product} is not running from an app bundle, so it has no bundle id to reset.");
         return outcome;
     };
     for argv in repair_plan(service, &bundle_id) {
@@ -644,10 +698,21 @@ pub fn repair(service: Service) -> RepairOutcome {
             }
         }
     }
-    log::info!("perm-repair: reset {:?}: {:?}", service, outcome.commands);
+    log::info!(
+        "perm-repair: {} row ({:?}) reset {}: {:?}",
+        service.label(),
+        service,
+        outcome.reset.join(" + "),
+        outcome.commands
+    );
     match service {
-        Service::Accessibility | Service::PostEvent => {
+        Service::Accessibility => {
             let _ = request_accessibility_prompt();
+        }
+        // The reset PostEvent entry only comes back through ITS OWN request;
+        // the AX prompt never re-adds it.
+        Service::PostEvent => {
+            let _ = ffi::post_event_request();
         }
         Service::ListenEvent => {
             let _ = ffi::listen_event_request();
@@ -695,13 +760,18 @@ pub fn granted_phase(service: Service) -> RepairPhase {
 /// The English line for a phase (logs; the frontend renders its own copy of
 /// the same words from `permissionRepair.ts`).
 pub fn phase_message(service: Service, phase: RepairPhase) -> String {
+    phase_message_for(service, phase, "Yap")
+}
+
+/// [`phase_message`], naming the running product ("Yap Test" on the test channel).
+pub fn phase_message_for(service: Service, phase: RepairPhase, product: &str) -> String {
     match phase {
-        RepairPhase::Waiting => "Waiting for you to switch Yap on…".into(),
+        RepairPhase::Waiting => format!("Waiting for you to switch {product} on…"),
         RepairPhase::Fixed => "Fixed".into(),
-        RepairPhase::Relaunch => "Granted — quit and reopen Yap to finish".into(),
+        RepairPhase::Relaunch => format!("Granted — quit and reopen {product} to finish"),
         RepairPhase::TimedOut => format!(
-            "Yap is still not allowed in {}. Switch Yap on there, then click Repair again.",
-            service.label()
+            "{product} is still not allowed in {}. Switch {product} on there, then click Repair again.",
+            service.settings_list()
         ),
     }
 }
@@ -719,7 +789,7 @@ impl RepairEvent {
         Self {
             service,
             phase,
-            message: phase_message(service, phase),
+            message: phase_message_for(service, phase, &crate::perm_truth::product_name()),
         }
     }
 }

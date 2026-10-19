@@ -7637,7 +7637,8 @@ pub fn run() {
 
             if !permissions::is_accessibility_trusted() {
                 log::info!(
-                    "Accessibility not trusted — fn⌃ needs it. Enable Wilson Voice in Privacy → Accessibility"
+                    "Accessibility not trusted (AXIsProcessTrusted = false) — fn⌃ needs it. Enable {} in Privacy → Accessibility",
+                    perm_truth::product_name()
                 );
                 // PERM-E: a hotkey that cannot arm IS a refusal. Tell the
                 // watcher so the health row is right before the user tries.

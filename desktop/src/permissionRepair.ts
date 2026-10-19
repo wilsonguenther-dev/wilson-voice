@@ -38,6 +38,15 @@ export interface ProbeReport {
   signatureChanged: boolean;
 }
 
+/**
+ * fix-ax-probe-refresh — permission copy names the running product ("Yap Test"
+ * on the test channel), because that is the name System Settings lists. Pure.
+ */
+export function nameProduct(text: string, product?: string | null): string {
+  const p = product?.trim();
+  return p && p !== "Yap" ? text.replace(/\bYap\b(?! Test)/g, p) : text;
+}
+
 /** What one Repair click did (`perm_probe::RepairOutcome`). */
 export interface RepairOutcome {
   service: RepairService;
@@ -47,6 +56,12 @@ export interface RepairOutcome {
   manualSteps: string;
   paneUrl: string;
   needsRelaunch: boolean;
+  /** The `kTCCService*` names this Repair reset, row's own service first. */
+  reset?: string[];
+  /** "Yap" / "Yap Test". */
+  product?: string;
+  /** "Reset kTCCServiceAccessibility and kTCCServicePostEvent for Yap Test." */
+  summary?: string;
 }
 
 /** The `permission_repair` event payload. */
@@ -74,16 +89,36 @@ export interface RepairCopy {
   body: string;
 }
 
-export function serviceCopy(probe: ServiceProbe): RepairCopy {
+/** The System Settings list a service's grant lives in. */
+export function settingsList(service: RepairService): string {
+  switch (service) {
+    case "accessibility":
+    case "post_event":
+      return "Accessibility";
+    case "listen_event":
+      return "Input Monitoring";
+    case "microphone":
+      return "Microphone";
+  }
+}
+
+export function serviceCopy(probe: ServiceProbe, product?: string | null): RepairCopy {
+  const list = settingsList(probe.service);
   if (probe.state === "stale_identity") {
     return {
-      title: `${probe.label}: ${STALE_IDENTITY_LINE}.`,
-      body: `The switch you see in System Settings was given to a differently signed Yap, so it does nothing for this one. Repair clears Yap's own entry and opens ${probe.label} — switch Yap on there.`,
+      title: nameProduct(`${probe.label}: ${STALE_IDENTITY_LINE}.`, product),
+      body: nameProduct(
+        `The switch you see in System Settings was given to a differently signed Yap, so it does nothing for this one. Repair clears Yap's own entry and opens ${list} — switch Yap on there.`,
+        product,
+      ),
     };
   }
   return {
-    title: `${probe.label} is off for Yap.`,
-    body: `${probe.api} answered no. Repair clears Yap's own entry and opens ${probe.label} — switch Yap on there.`,
+    title: nameProduct(`${probe.label} is off for Yap.`, product),
+    body: nameProduct(
+      `${probe.api} answered no. Repair clears Yap's own entry and opens ${list} — switch Yap on there.`,
+      product,
+    ),
   };
 }
 
@@ -97,7 +132,14 @@ export function repairRows(probe: ProbeReport | null | undefined): ServiceProbe[
   const rows = [probe.accessibility, probe.listenEvent, probe.microphone].filter((p) =>
     canRepair(p.state),
   );
-  if (canRepair(probe.postEvent.state) && !canRepair(probe.accessibility.state)) {
+  // fix-ax-probe-refresh: never under a live Accessibility grant — text goes in
+  // through AX then, and a PostEvent "no" breaks nothing (paste.rs
+  // choose_insert_path). The Rust report already reconciles this; belt and braces.
+  if (
+    canRepair(probe.postEvent.state) &&
+    !canRepair(probe.accessibility.state) &&
+    probe.accessibility.state !== "granted"
+  ) {
     rows.splice(1, 0, probe.postEvent);
   }
   return rows;
@@ -122,7 +164,7 @@ export interface RepairView {
 export const IDLE: RepairView = { phase: "idle", line: "" };
 
 export type RepairInput =
-  | { kind: "started" }
+  | { kind: "started"; product?: string | null }
   | { kind: "outcome"; outcome: RepairOutcome }
   | { kind: "event"; event: RepairEvent }
   | { kind: "error"; message: string };
@@ -131,7 +173,7 @@ export type RepairInput =
 export function reduceRepair(prev: RepairView, input: RepairInput): RepairView {
   switch (input.kind) {
     case "started":
-      return { phase: "running", line: "Resetting Yap's entry…" };
+      return { phase: "running", line: nameProduct("Resetting Yap's entry…", input.product) };
     case "error":
       return { phase: "failed", line: "Repair could not run.", detail: input.message };
     case "outcome":
@@ -144,18 +186,24 @@ export function reduceRepair(prev: RepairView, input: RepairInput): RepairView {
       }
       // The re-probe's first event may already have arrived.
       return prev.phase === "running" || prev.phase === "idle"
-        ? { phase: "waiting", line: WAITING_LINE }
+        ? {
+            phase: "waiting",
+            line: nameProduct(WAITING_LINE, input.outcome.product),
+            // Say which services were reset, so a row can never silently
+            // reset somebody else's grant again.
+            ...(input.outcome.summary ? { detail: input.outcome.summary } : {}),
+          }
         : prev;
     case "event":
       switch (input.event.phase) {
         case "waiting":
-          return prev.phase === "fixed" || prev.phase === "relaunch"
+          return prev.phase === "fixed" || prev.phase === "relaunch" || prev.phase === "waiting"
             ? prev
-            : { phase: "waiting", line: WAITING_LINE };
+            : { phase: "waiting", line: input.event.message || WAITING_LINE };
         case "fixed":
           return { phase: "fixed", line: FIXED_LINE };
         case "relaunch":
-          return { phase: "relaunch", line: RELAUNCH_LINE };
+          return { phase: "relaunch", line: input.event.message || RELAUNCH_LINE };
         case "timed_out":
           return {
             phase: "timed_out",
