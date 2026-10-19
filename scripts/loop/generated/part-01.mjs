@@ -88,7 +88,7 @@
 export const meta = {
   name: "yap-overhaul-all-part-01",
   description:
-    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 43 items (Y0-A..yap-p0-release-smoke), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
+    "Part 01 of the Yap (wilson-voice) overhaul, two builder lanes: land whatever is already gate-green, pre-flight on unmodified main (already-done items are skipped), build, open a labelled PR. The adversarial review, the independent second-Opus gate and the merge bar run afterwards in the same script with args {mode:'review'}. 47 items (Y0-A..loop-dependency-marker-stdout-only), 24 awaiting the Senior Panel. The gate is local (Actions is disabled by the account spending limit); the DMG is not in it.",
   phases: [
     { title: "Recon", detail: "two lane worktrees, one npm ci + one warm cargo build each, the loop-build label, ci-mode measured" },
     { title: "Y0-A", detail: "Clippy becomes a blocking CI gate instead of `|| true` decoration (rustfmt stays informational — ledger)" },
@@ -134,6 +134,10 @@ export const meta = {
     { title: "yap-p0-perm-repair", detail: "One truthful grant probe per service (live API, never the Settings list) in perm_probe.rs, a detected \"stale identity\" state, and a one-click Repair: tccutil reset for Yap's own bundle id, open the exact pane, re-probe until granted" },
     { title: "yap-p0-insertion-bridge-fallback", detail: "Insertion never silently fails: AX insertion only when the probe says trusted, a clipboard + ⌘V bridge when PostEvent is granted, an instant Copy card when neither is, and one failing backend call can no longer blank the app as \"Bridge error\"" },
     { title: "yap-p0-release-smoke", detail: "Every DMG build runs a signed-app smoke after signing (codesign --strict on app + DMG with the pinned Developer ID team, a designated-requirement change gate, launch, probe every service, register hotkeys, insert into TextEdit) and the release FAILS when any step fails, including a stale-identity grant" },
+    { title: "yap-qa-hotkey-walk-binding", detail: "hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding's modifier" },
+    { title: "yap-license-revocation-dead-host", detail: "The license revocation refresh stops calling the decommissioned Forge box on every launch: point it at a live, cited endpoint or turn it off cleanly, offline-safe on the cached list, and no error line at launch" },
+    { title: "yap-dev-perm-probe-attribution", detail: "A dev build's permission probe says \"dev build: permissions are the host terminal's\" instead of showing the launching terminal's TCC grants as Yap's green rows" },
+    { title: "loop-dependency-marker-stdout-only", detail: "The harness's dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat's JSON" },
     { title: "Drain", detail: "triage every open PR (the stale feat/yv1xx ones included), sweep dead branches, tear down both worktrees and both cargo target dirs" },
     { title: "Reflect", detail: "count outcomes, reconcile against gh, append telemetry" },
   ],
@@ -212,7 +216,7 @@ const PART = 'part-01'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0}
+const LANE_BY_ID = {"Y0-A":0,"Y0-D":0,"Y0-E":0,"Y0-B":0,"Y0-C":0,"yap24-NT0":1,"yap24-NT1":1,"yap24-NT2":1,"yap24-NT3":1,"yap24-NT4":1,"yap24-NT5":1,"yap24-NT6":1,"yap24-NT7":1,"yap24-NT8":1,"yap24-NT9":1,"yap24-NT10":1,"yap24-NT11":1,"yap24-PILL1":0,"yap24-PILL2":0,"yap24-PILL3":0,"yap24-PILL4":0,"yap24-OS1":1,"yap24-OS2":1,"yap24-OS3":1,"yap24-OS4":1,"yap24-OS5":1,"yap24-UI1":0,"yap24-UI2":0,"yap24-UI3":0,"PERM-A":1,"PERM-B":1,"PERM-C":1,"Y1-A":1,"PERM-D":1,"SEC-A":1,"Y1-B":1,"PERM-E":1,"yap-flakes-2026-10-16":0,"yap-lifecycle-2026-10-16":1,"yap-p0-hotkeys-no-permission":0,"yap-p0-perm-repair":0,"yap-p0-insertion-bridge-fallback":0,"yap-p0-release-smoke":0,"yap-qa-hotkey-walk-binding":1,"yap-license-revocation-dead-host":1,"yap-dev-perm-probe-attribution":1,"loop-dependency-marker-stdout-only":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
@@ -5300,6 +5304,146 @@ ITEMS.push({
     (cd desktop/src-tauri && cargo test --features custom-protocol --test release_smoke_lines)
     git diff --exit-code -- scripts/qa/fixtures/release-smoke-matrix
     (cd desktop/src-tauri && cargo test --features custom-protocol --lib smoke)
+  `,
+})
+
+// ── 07b-yap-walk-defects-2026-10-19.mjs ───────────────────────────────────
+// yap-walk-defects-2026-10-19 — the defects the live walk of main 3569ce4 + installed 0.9.1 found
+// (Projects/Loop-Logs/yap-live-walk-2026-10-19.md, seat yap-live-walk, 03:14Z-03:22Z). Sorted after
+// 07-yap-p0-broken so this lane runs after the P0 lane. D1 (Carbon chord deadlock), D4 (capture tail)
+// and D6 (RSS) are fixed or answered in PR fix/chord-deadlock-and-take-length, not here.
+//
+// HAZARD (same as 07): no seat launches the GUI app, posts events into, signals or quits Wilson's
+// running /Applications/Yap.app, or writes TCC on this machine. Every automated proof is a cargo test,
+// a vitest, or a script self-test. SHARED PREAMBLE + STANDARD GATE: 00-y0-harness-and-gates.mjs.
+// NO GUESSING: the root-cause probe goes into the PR body under "Root cause, proven" AND into
+// docs/loop/evidence/<item id>.md, first line exactly "ROOT-CAUSE-PROBE <item id>".
+
+ITEMS.push({
+  id: 'yap-qa-hotkey-walk-binding', prompt: 'yap-qa-hotkey-walk-binding', branch: 'loop/yap-qa-hotkey-walk-configured-chord', gated: null,
+  title: 'hotkey-walk presses the CONFIGURED push-to-talk chord (fn, fn⌃, …) read from settings.json, has a dev-build flag, and the app shows a hint when fn is held without the binding\'s modifier',
+  preflight: `
+    grep -q 'pttBinding' scripts/qa/hotkey-walk.sh && grep -q -- '--dev-build' scripts/qa/hotkey-walk.sh && grep -q 'FN_WITHOUT_MODIFIER_HINT' desktop/src-tauri/src/ptt_macos.rs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D2, P1).
+    Root cause (walk): scripts/qa/fn-post.swift "down" sets only maskSecondaryFn and HOLD_STEPS in
+    scripts/qa/hotkey-walk.sh assumes binding "fn"; Wilson's binding (and the default) is
+    pttBinding: "fn_control", so the walk's fn-only post never matches and the walk FAILS on a
+    working app. Product side: the UI says "Hold fn⌃"; a user holding fn alone gets nothing and no
+    reason.
+    DO 1 — hotkey-walk.sh reads pttBinding from Yap's settings.json (same data dir the app uses;
+    --settings <path> override for tests) and posts the matching chord through fn-post.swift (ctrl
+    down, then fn down; release in reverse). Unknown binding -> refuse with a named error, post
+    nothing. --self-test covers fn, fn_control and an unknown value against fixture settings files
+    and prints one line per case "binding=<value> chord=<keys>".
+    DO 2 — --dev-build flag for an unbundled dev binary (matches the process by its target path
+    instead of the bundle), replacing the YAP_QA_FAKE_PIDS workaround for live dev walks
+    (YAP_QA_FAKE_PIDS stays self-test-only).
+    DO 3 — ptt_macos: when fn goes down and up (or is held > 400 ms) WITHOUT the binding's modifier,
+    emit one hint event (constant FN_WITHOUT_MODIFIER_HINT, e.g. "Hold fn⌃ — fn alone does nothing
+    with this binding"), throttled to once per 30 s, shown on the pill. Pure decision function
+    fn_hint_due(binding, fn_down, ctrl_down, held_ms, last_hint_ms, now_ms) -> bool with unit tests.
+  `,
+  acceptance: `
+    bash scripts/qa/hotkey-walk.sh --self-test > desktop/target/qa-walk-binding.txt 2>&1
+    grep -q '^binding=fn_control chord=ctrl+fn$' desktop/target/qa-walk-binding.txt
+    grep -q '^binding=fn chord=fn$' desktop/target/qa-walk-binding.txt
+    grep -q 'unknown binding' desktop/target/qa-walk-binding.txt
+    shellcheck scripts/qa/hotkey-walk.sh
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib fn_hint_due) > desktop/target/qa-fn-hint.txt 2>&1
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-fn-hint.txt
+    test -s docs/loop/evidence/yap-qa-hotkey-walk-binding.md
+    head -1 docs/loop/evidence/yap-qa-hotkey-walk-binding.md | grep -qx 'ROOT-CAUSE-PROBE yap-qa-hotkey-walk-binding'
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-license-revocation-dead-host', prompt: 'yap-license-revocation-dead-host', branch: 'loop/yap-license-revocation-offline-safe', gated: null,
+  title: 'The license revocation refresh stops calling the decommissioned Forge box on every launch: point it at a live, cited endpoint or turn it off cleanly, offline-safe on the cached list, and no error line at launch',
+  preflight: `
+    ! grep -q 'sslip.io' desktop/src-tauri/src/license.rs && grep -q 'revocation_refresh_without_endpoint_keeps_cached_list' desktop/src-tauri/src/license.rs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D3, P1).
+    Root cause (walk yap.log 2026-10-19T03:19:57Z): "license: revocation refresh skipped (error sending
+    request for url (https://forge.87-99-149-214.sslip.io/v1/yap/revoked.json))". license.rs
+    ISSUER_HOST / REVOCATION_URL (license.rs:154/156) name the Forge box, which is DECOMMISSIONED.
+    DO — if a live revocation endpoint is CITED in this repo or in drivia-forge docs/YAP-LICENSING.md
+    (quote the line in the PR body), point REVOCATION_URL at it. Otherwise make the endpoint an
+    Option that is None, and the refresh a logged-once debug no-op that keeps the cached list. Either
+    way: a failed or absent refresh keeps the cached list (never clears it), never logs at info/warn
+    on a normal launch, and the "ONLY host this module ever contacts" doc stays true. No new network
+    call anywhere else.
+    Tests: revocation_refresh_without_endpoint_keeps_cached_list (None endpoint -> cached kids kept,
+    no request built) and revocation_refresh_failure_keeps_cached_list (fake fetch error -> cached
+    kids kept).
+  `,
+  acceptance: `
+    ! grep -q 'sslip.io' desktop/src-tauri/src/license.rs
+    ! grep -rq '87-99-149-214' desktop/src-tauri/src
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib revocation_refresh_) > desktop/target/qa-revocation.txt 2>&1
+    grep -q 'revocation_refresh_without_endpoint_keeps_cached_list ... ok' desktop/target/qa-revocation.txt
+    grep -q 'revocation_refresh_failure_keeps_cached_list ... ok' desktop/target/qa-revocation.txt
+    test -s docs/loop/evidence/yap-license-revocation-dead-host.md
+    head -1 docs/loop/evidence/yap-license-revocation-dead-host.md | grep -qx 'ROOT-CAUSE-PROBE yap-license-revocation-dead-host'
+  `,
+})
+
+ITEMS.push({
+  id: 'yap-dev-perm-probe-attribution', prompt: 'yap-dev-perm-probe-attribution', branch: 'loop/yap-dev-perm-probe-host-terminal', gated: null,
+  title: 'A dev build\'s permission probe says "dev build: permissions are the host terminal\'s" instead of showing the launching terminal\'s TCC grants as Yap\'s green rows',
+  preflight: `
+    grep -q 'pub fn running_as_bundle' desktop/src-tauri/src/perm_probe.rs && grep -q 'DevHostAttributed' desktop/src-tauri/src/perm_probe.rs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D5, P2).
+    Root cause (walk step 2c): the dev binary is ad hoc signed and unbundled, so TCC attributes it to
+    the RESPONSIBLE process (the launching terminal) and answered accessibility=true
+    input_monitoring=true — the terminal's grants, shown as Yap's.
+    DO — perm_probe gets pub fn running_as_bundle(exe_path, bundle_id_of_main_bundle,
+    code_signature) -> bool (pure, unit-tested: /Applications/Yap.app/Contents/MacOS/wilson-voice with
+    the Developer ID -> true; desktop/target/debug/wilson-voice ad hoc -> false). When false,
+    probe_all marks every service ProbeState::DevHostAttributed (new variant) and the Permissions
+    screen shows ONE line "dev build: permissions are the host terminal's" with no green rows and no
+    Repair button (Repair would reset the wrong identity). The installed build is unchanged.
+    Frontend: a vitest for the Permissions screen rendering DevHostAttributed.
+  `,
+  acceptance: `
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib running_as_bundle) > desktop/target/qa-dev-attrib.txt 2>&1
+    grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-dev-attrib.txt
+    grep -rq "dev build: permissions are the host terminal's" desktop/src
+    (cd desktop && npx vitest run --reporter=dot) 
+    test -s docs/loop/evidence/yap-dev-perm-probe-attribution.md
+    head -1 docs/loop/evidence/yap-dev-perm-probe-attribution.md | grep -qx 'ROOT-CAUSE-PROBE yap-dev-perm-probe-attribution'
+  `,
+})
+
+ITEMS.push({
+  id: 'loop-dependency-marker-stdout-only', prompt: 'loop-dependency-marker-stdout-only', branch: 'loop/harness-dependency-marker-executed-output-only', gated: null,
+  title: 'The harness\'s dependency hold matches DEPENDENCY-NOT-ON-MAIN only as a line the EXECUTED preflight printed, never anywhere in the runner seat\'s JSON',
+  preflight: `
+    grep -q 'dependencyMarkerPrinted' scripts/loop/template.mjs && grep -q 'dependencyMarkerPrinted' scripts/loop/review-gate.test.mjs
+  `,
+  spec: `
+    Panel: not required — FIX (walk D7, harness).
+    Root cause: on main 3569ce4 the harness recorded yap-p0-perm-repair as "skipped: dependency not
+    on main" although #228 is merged and its preflight passed. Every item preflight already assembles
+    the marker at run time ("DEPENDENCY-NOT-ON-$(printf MAIN)"; build.mjs now REFUSES a literal one),
+    but template.mjs runBuild tests /DEPENDENCY-NOT-ON-MAIN/ against asText(pre) — the WHOLE runner
+    result JSON, including any free text the seat wrote (a note such as "no DEPENDENCY-NOT-ON-MAIN
+    printed" trips it). Prove which field carried it from that run's log before changing code.
+    DO — export a pure dependencyMarkerPrinted(pre) that looks only at the executed commands' captured
+    stdout and matches /^DEPENDENCY-NOT-ON-MAIN:/m, and use it in runBuild. Tests (node --test, in
+    review-gate.test.mjs or a sibling): marker line in stdout -> true; marker only in a notes/summary
+    field -> false; marker text inside the echoed command string -> false.
+  `,
+  acceptance: `
+    grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs
+    ! grep -q '/DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))' scripts/loop/template.mjs
+    node --test scripts/loop/ > desktop/target/qa-dep-marker.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-dep-marker.txt
+    (cd desktop && npm run loop:build && npm run loop:validate)
   `,
 })
 
