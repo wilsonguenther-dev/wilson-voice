@@ -851,10 +851,8 @@ fn toggle_meeting(
         notify(
             app,
             "Recording this meeting",
-            format!(
-                "Stop with {} or the menu bar.",
-                shortcuts::MEETING_TOGGLE.label
-            ),
+            // fix-249 advisory (e): the LIVE chord, not the literal ⌃⌘M.
+            hotkey_table::meeting_started_body(&hotkey_table::active_meeting().1),
         );
     } else if !status.recording && was_recording {
         // Never yank the pill out from under a dictation that is still running.
@@ -3801,6 +3799,16 @@ fn save_settings(
         log::info!("cancel key → {}", v.1);
         hotkey_table::set_active_cancel(v);
         drop(recording);
+    }
+    // fix-249 advisory (e): the tray item shows the live Record meeting chord.
+    if meeting_applied.is_some() {
+        if let Some(item) = state.tray_meeting.lock().as_ref() {
+            if let Err(e) = item.set_accelerator(Some(hotkey_table::meeting_accelerator(
+                next.meeting_chord.as_ref(),
+            ))) {
+                log::warn!("tray meeting accelerator update failed: {e}");
+            }
+        }
     }
     // Tell the floating pill to re-read (e.g. switch classic ↔ yappy live, or
     // re-align itself to a new dock edge).
@@ -7238,7 +7246,10 @@ pub fn run() {
                     format!("{MEETING_TRAY_START_LABEL} (unavailable)")
                 },
                 meeting_available,
-                Some(shortcuts::MEETING_TOGGLE.accelerator),
+                // fix-249 advisory (e): the rebound chord, not the literal ⌃⌘M.
+                Some(hotkey_table::meeting_accelerator(
+                    state.settings.lock().meeting_chord.as_ref(),
+                )),
             )?;
             // YV125 — the kind picker, as the qualified variant of the item
             // directly above it (the "Open" / "Open With ▸" shape macOS menus

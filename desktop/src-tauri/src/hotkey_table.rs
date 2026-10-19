@@ -469,6 +469,37 @@ pub fn check_distinct(chords: &[(BindingAction, Shortcut, String)]) -> Result<()
     Ok(())
 }
 
+/// fix-249 advisory (e): the tray item's accelerator for the Record meeting
+/// chord a setting resolves to (muda tokens: `Ctrl+Alt+Shift+Cmd+KEYR`), so
+/// the menu shows the LIVE chord, not the literal ⌃⌘M. PURE.
+pub fn meeting_accelerator(setting: Option<&ChordSetting>) -> String {
+    match setting {
+        Some(c) if chord_for_action(BindingAction::RecordMeeting, c).is_ok() => {
+            let mut parts: Vec<&str> = Vec::new();
+            if c.ctrl {
+                parts.push("Ctrl");
+            }
+            if c.alt {
+                parts.push("Alt");
+            }
+            if c.shift {
+                parts.push("Shift");
+            }
+            if c.cmd {
+                parts.push("Cmd");
+            }
+            parts.push(&c.code);
+            parts.join("+")
+        }
+        _ => shortcuts::MEETING_TOGGLE.accelerator.to_string(),
+    }
+}
+
+/// The meeting-start notification body, naming the live chord.
+pub fn meeting_started_body(live_label: &str) -> String {
+    format!("Stop with {live_label} or the menu bar.")
+}
+
 fn shortcut_of(c: &ChordSetting, code: Code) -> Shortcut {
     let mut m = Modifiers::empty();
     if c.ctrl {
@@ -1036,6 +1067,28 @@ mod tests {
         assert_eq!(cancel_for_register(&slot, active), f6);
         // a second release with nothing armed targets the active key (no-op)
         assert_eq!(cancel_for_release(&mut slot, active), f6);
+    }
+
+    /// fix-249 advisory (e): tray + notification follow the rebind.
+    #[test]
+    fn tray_and_notification_name_the_live_meeting_chord() {
+        assert_eq!(meeting_accelerator(None), shortcuts::MEETING_TOGGLE.accelerator);
+        let r = ChordSetting {
+            code: "KeyR".into(),
+            ctrl: true,
+            alt: true,
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(meeting_accelerator(Some(&r)), "Ctrl+Alt+Cmd+KeyR");
+        // A refused setting falls back to the default, exactly like `resolve`.
+        let q = ChordSetting {
+            code: "KeyQ".into(),
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(meeting_accelerator(Some(&q)), shortcuts::MEETING_TOGGLE.accelerator);
+        assert_eq!(meeting_started_body("⌃⌥⌘R"), "Stop with ⌃⌥⌘R or the menu bar.");
     }
 
     #[test]
