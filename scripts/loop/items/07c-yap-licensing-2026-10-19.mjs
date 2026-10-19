@@ -216,7 +216,7 @@ ITEMS.push({
   id: 'yap-lic-05-site-privacy-copy', prompt: 'yap-lic-05-site-privacy-copy', branch: 'loop/yap-lic-05-site-privacy-terms-copy', gated: null,
   title: 'Site, privacy and terms tell the truth for the launch: buying takes one email-code sign-in, activation needs the network once and re-checks, 60 days offline, Buy -> drivia[.]consulting/yap, updater -> yapvoice.app first; ships WITH the yap-lic-02/04 build',
   preflight: `
-    ( M=0; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs || M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/scripts/stripe/ensure-yap-live.mjs --silent >/dev/null 2>&1 || M=1; test "$(curl -s -o /dev/null -w '%{http_code}' https://drivia.$(printf consulting)/yap)" = 200 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-04-ui-states-and-buy (PURCHASE_URL) must be on main and drivia-consulting dc-yap-03 + dc-yap-04 must be live (/yap answers 200, ensure-yap-live.mjs on its main) — land them, then the build pass again"; exit 0; fi; ! git grep -qnE 'buy.stripe.com|refunded licenses|refunded-licenses|no login, no server|No sign-in, no email' -- site/dist PRIVACY.md TERMS.md && grep -q 'drivia\\.consulting/yap' site/dist/index.html && grep -q 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json )
+    ( M=0; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs || M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/scripts/stripe/ensure-yap-live.mjs --silent >/dev/null 2>&1 || M=1; test "$(curl -s -o /dev/null -w '%{http_code}' https://drivia.$(printf consulting)/yap)" = 200 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-04-ui-states-and-buy (PURCHASE_URL) must be on main and drivia-consulting dc-yap-03 + dc-yap-04 must be live (/yap answers 200, ensure-yap-live.mjs on its main) — land them, then the build pass again"; exit 0; fi; ! git grep -qnE 'buy.stripe.com|refunded licenses|refunded-licenses|no login, no server|No sign-in, no email' -- site/dist PRIVACY.md TERMS.md && grep -q 'drivia\\.consulting/yap' site/dist/index.html && grep -q 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json && ! git grep -qinE 'involves no server at all|no device identifier|no account, no sign-in|revocation check|network call the licensing path makes' -- site/dist/privacy.html PRIVACY.md && grep -qiE 'IP( address)? prefix' site/dist/privacy.html && grep -qiE 'IP( address)? prefix' PRIVACY.md )
   `,
   spec: `
     Panel 2026-10-19: APPROVED-WITH-CHANGES — ships in the SAME launch as the yap-lic-02/04 build; scope adds site/dist/terms.html;
@@ -243,6 +243,11 @@ ITEMS.push({
                                      install id, your Mac's name and the app/macOS version to drivia[.]consulting. We keep your email, a
                                      salted device hash, the Mac name and a coarse IP prefix. Nothing from your dictation."
                                      (Panel Security: device_name is often the user's real name, and the IP prefix is stored — disclose both.)
+      site/dist/privacy.html:30 and PRIVACY.md:9    "Yap has no account, no sign-in, and no server that receives your speech…" -> keep the sense
+                                     "nothing about your dictation reaches a server", but drop "no account, no sign-in" (buying takes one
+                                     email-code sign-in, and activation talks to drivia[.]consulting). The ENTIRE old revocation-check
+                                     paragraph goes: "The revocation check", "the only network call the licensing path makes", "involves no
+                                     server at all" and "no license key, no email, no device identifier" are all false after yap-lic-02.
       site/dist/terms.html and TERMS.md   Forge-era license terms -> lifetime license, 3 Macs, 60-day offline operation, a full refund or a
                                      lost dispute revokes the license.
       desktop/src-tauri/tauri.conf.json:67   updater endpoints: https://yapvoice.app/updates/latest.json FIRST, yap-lemon.vercel.app second.
@@ -256,6 +261,13 @@ ITEMS.push({
     grep -q 'drivia\\.consulting/yap' site/dist/index.html
     grep -q 'drivia\\.consulting' site/dist/privacy.html
     grep -qi 'Mac' PRIVACY.md
+    ! git grep -qinE 'involves no server at all|no device identifier|no account, no sign-in|revocation check|network call the licensing path makes' -- site/dist/privacy.html PRIVACY.md
+    grep -qiE 'Mac(.{1,7}s)? name' site/dist/privacy.html
+    grep -qiE 'Mac(.{1,7}s)? name' PRIVACY.md
+    grep -qiE 'install(ation)? id' site/dist/privacy.html
+    grep -qiE 'install(ation)? id' PRIVACY.md
+    grep -qiE 'IP( address)? prefix' site/dist/privacy.html
+    grep -qiE 'IP( address)? prefix' PRIVACY.md
     grep -qi '60' site/dist/terms.html
     grep -qi '60' TERMS.md
     test "$(grep -c 'https://yapvoice.app/updates/latest.json' desktop/src-tauri/tauri.conf.json)" = 1
