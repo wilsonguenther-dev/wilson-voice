@@ -48,3 +48,4 @@ docs/smoke-shots/
 
 # yap-qa-harness: hotkey-walk.sh self-test fixtures are hand-checked synthetic logs, never captured user logs
 !scripts/qa/fixtures/*.log
+!scripts/qa/fixtures/release-smoke-matrix/*.log

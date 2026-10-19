@@ -27,7 +27,16 @@
 #                                            sign nothing (build preflight)
 #   scripts/sign-local.sh --tauri-build ...  resolve the identity, hand it to
 #                                            `tauri build` as APPLE_SIGNING_IDENTITY,
-#                                            then verify what came out
+#                                            verify what came out, then run the
+#                                            MANDATORY release smoke on the signed
+#                                            .app + .dmg (yap-p0-release-smoke):
+#                                            scripts/qa/release-smoke.sh --app --dmg
+#                                            (signature, dr_change, launch). Its exit
+#                                            status is this script's exit status.
+#     YAP_SMOKE_COMPARE=<app>   the installed / last-release app for dr_change
+#                               (default /Applications/Yap.app when present)
+#     YAP_ALLOW_DR_CHANGE=1 YAP_RELEASE_NOTE="<line>"   both required to ship a
+#                               designated-requirement change (docs/RELEASING.md)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -125,29 +134,43 @@ if [[ "$MODE" == "identity" ]]; then
   exit 0
 fi
 
-if [[ "$MODE" == "build" ]]; then
-  export APPLE_SIGNING_IDENTITY="$IDENTITY"
-  echo "${PROFILE} profile — tauri build will sign with: ${IDENTITY_CLASS}"
-  cd "$DESKTOP"
-  npx tauri build "$@"
-  APP="$(ls -d "$SRC/target/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || APP="$(ls -d "${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || die "tauri build produced no .app to verify."
+if [[ "$MODE" == "sign" ]]; then
+  APP="${1:-}"
+  if [[ -z "$APP" ]]; then
+    APP="$(ls -d "${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
+    [[ -n "$APP" ]] || APP="$(ls -d "$SRC/target/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
+  fi
+  [[ -n "$APP" && -d "$APP" ]] || die "no .app bundle to sign (pass one explicitly: scripts/sign-local.sh '/path/to/Yap.app')"
+  [[ -f "$ENT" ]] || die "entitlements not found at $ENT"
+
+  echo "${PROFILE} profile — signing $(basename "$APP") with: ${IDENTITY_CLASS}"
+  # Resource-fork / quarantine detritus makes `codesign --deep` flake with
+  # "resource fork, Finder information, or similar detritus not allowed".
+  xattr -cr "$APP"
+  codesign --force --deep --entitlements "$ENT" --sign "$IDENTITY" "$APP"
   verify_bundle "$APP"
   exit 0
 fi
 
-APP="${1:-}"
-if [[ -z "$APP" ]]; then
-  APP="$(ls -d "${CARGO_TARGET_DIR:-$SRC/target}/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-  [[ -n "$APP" ]] || APP="$(ls -d "$SRC/target/release/bundle/macos/"*.app 2>/dev/null | head -1 || true)"
-fi
-[[ -n "$APP" && -d "$APP" ]] || die "no .app bundle to sign (pass one explicitly: scripts/sign-local.sh '/path/to/Yap.app')"
-[[ -f "$ENT" ]] || die "entitlements not found at $ENT"
-
-echo "${PROFILE} profile — signing $(basename "$APP") with: ${IDENTITY_CLASS}"
-# Resource-fork / quarantine detritus makes `codesign --deep` flake with
-# "resource fork, Finder information, or similar detritus not allowed".
-xattr -cr "$APP"
-codesign --force --deep --entitlements "$ENT" --sign "$IDENTITY" "$APP"
+# MODE == build. The release smoke is the LAST step: after tauri build has
+# signed (and, with the Apple secrets present, notarized + stapled) the bundle,
+# and after verify_bundle's codesign read-back of it just below.
+export APPLE_SIGNING_IDENTITY="$IDENTITY"
+echo "${PROFILE} profile — tauri build will sign with: ${IDENTITY_CLASS}"
+cd "$DESKTOP"
+npx tauri build "$@"
+BUNDLE="${CARGO_TARGET_DIR:-$SRC/target}/release/bundle"
+[[ -d "$BUNDLE/macos" ]] || BUNDLE="$SRC/target/release/bundle"
+APP="$(ls -d "$BUNDLE/macos/"*.app 2>/dev/null | head -1 || true)"
+[[ -n "$APP" ]] || die "tauri build produced no .app to verify."
+DMG="$(ls "$BUNDLE/dmg/"*.dmg 2>/dev/null | head -1 || true)"
+[[ -n "$DMG" ]] || die "tauri build produced no .dmg — the release smoke checks the app inside it."
 verify_bundle "$APP"
+
+SMOKE_ARGS=(--app "$APP" --dmg "$DMG")
+[[ -n "${YAP_SMOKE_COMPARE:-}" ]] && SMOKE_ARGS+=(--compare "$YAP_SMOKE_COMPARE")
+[[ "${YAP_ALLOW_DR_CHANGE:-}" == "1" ]] && SMOKE_ARGS+=(--allow-dr-change)
+[[ -n "${YAP_RELEASE_NOTE:-}" ]] && SMOKE_ARGS+=(--release-note "$YAP_RELEASE_NOTE")
+echo "release smoke (mandatory): scripts/qa/release-smoke.sh ${SMOKE_ARGS[*]}"
+# Bare exit propagation: exec hands release-smoke.sh's status straight back.
+exec bash "$ROOT/scripts/qa/release-smoke.sh" "${SMOKE_ARGS[@]}"
