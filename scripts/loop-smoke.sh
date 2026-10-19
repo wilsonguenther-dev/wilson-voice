@@ -61,8 +61,9 @@
 #     root (measured 2026-10-19, fix round for Y0-B): on a dev box that HAS
 #     ~/yap-eval-corpus and ~/yap-diarize-models, stage [11] ran
 #     tests/meeting_eval.rs's real-weights sweeps through a DEBUG yap-diarize
-#     and was still running after the acceptance seat's 600 s window — the
-#     smoke test could not answer its own question in a usable time. And with
+#     and the whole run overran the acceptance seat's 600 s window (stage [11]
+#     alone: 10 min 50 s on host assets, meeting_eval.rs 312 s of it; the full
+#     hermetic run: 7 min 10 s including npm ci). And with
 #     ONLY the state root emptied (the 2026-09-14 probe) six meeting_eval
 #     tests go red, because the corpus is found but the models are not:
 #         meeting_eval_anti_alias_eer_regression                            <- needs sherpa-onnx-pyannote-segmentation-3-0
@@ -197,7 +198,8 @@ stage_provenance() {
     STATE_MODE="HOST ASSETS (YAP_SMOKE_HOST_ASSETS=1) — machine state root, ~/yap-eval-corpus, ~/yap-diarize-models"
     printf '  host assets:      YAP_SMOKE_HOST_ASSETS=1 — tests may find THIS machine%ss models, eval corpus and\n' "'"
     printf '                    diarize models. On a machine that has them, stage [11] runs the real-weights\n'
-    printf '                    eval sweeps in a debug build: HOURS, not minutes. This is not a fresh clone.\n'
+    printf '                    eval sweeps in a debug build (~11 min for that stage alone, measured\n'
+    printf '                    2026-10-19, vs ~1 min hermetic). This is not a fresh clone.\n'
     if [ "${YAP_SMOKE_EMPTY_STATE:-0}" = "1" ]; then
       SMOKE_STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yap-smoke-state.XXXXXX")"
       export YAP_DATA_DIR="$SMOKE_STATE_ROOT"
@@ -211,8 +213,8 @@ stage_provenance() {
   # test makes is pointed somewhere EMPTY or ABSENT. This is what makes
   # "cargo test passes with an empty application-support dir" ENFORCED rather
   # than claimed, and it is why this script finishes in minutes on a dev box
-  # that does have ~/yap-eval-corpus (where stage [11] otherwise spends hours
-  # in debug-build real-weights eval sweeps — measured 2026-10-19).
+  # that does have ~/yap-eval-corpus (where stage [11] otherwise spends its time
+  # in debug-build real-weights eval sweeps, ~11 min — measured 2026-10-19).
   SMOKE_STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/yap-smoke-state.XXXXXX")"
   if [ -n "$(ls -A "$SMOKE_STATE_ROOT" 2>/dev/null)" ]; then
     printf '  the smoke state root is not empty — refusing to claim a model-free test run.\n' >&2
