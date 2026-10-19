@@ -6517,7 +6517,10 @@ async fn check_for_update(
         (s.check_updates, s.skipped_update_version.clone())
     };
     if !channel::current().updater_enabled {
-        log::info!("update check skipped: updater DISABLED in the {} channel", channel::CURRENT.name());
+        log::info!(
+            "update check skipped: updater DISABLED in the {} channel",
+            channel::CURRENT.name()
+        );
         return Ok(None);
     }
     if !enabled {
