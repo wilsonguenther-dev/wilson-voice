@@ -3667,6 +3667,25 @@ fn save_settings(
             }
         }
     }
+    // fix-249 advisory (d): the three rebindable chords' NEW values must all
+    // differ — refused here, before anything is registered or saved.
+    {
+        // `resolve` = the chord each action would actually hold (an invalid
+        // stored value falls back to its default); a CHANGED invalid value is
+        // refused with its own reason by `chord_for_action` below.
+        let (dc, dl) = dictate_toggle_chord(&next);
+        let (mc, ml) = hotkey_table::resolve(
+            hotkey_table::BindingAction::RecordMeeting,
+            next.meeting_chord.as_ref(),
+        );
+        let (cc, cl) =
+            hotkey_table::resolve(hotkey_table::BindingAction::Cancel, next.cancel_chord.as_ref());
+        hotkey_table::check_distinct(&[
+            (hotkey_table::BindingAction::DictateToggle, dc, dl),
+            (hotkey_table::BindingAction::RecordMeeting, mc, ml),
+            (hotkey_table::BindingAction::Cancel, cc, cl),
+        ])?;
+    }
     // Register the new chord BEFORE persisting: a chord another app holds is
     // an Err the Settings capture toasts, the old chord stays live, and the
     // refused setting is never written.

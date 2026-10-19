@@ -427,23 +427,46 @@ pub fn chord_for_action(
     if let Some(why) = reserved_chord_reason(c, action == BindingAction::Cancel) {
         return Err(why);
     }
+    // fix-249 advisory (d): only the FIXED Yap chords block here. The three
+    // rebindable ones (dictate toggle, Record meeting, Cancel) are checked
+    // against each other's NEW values by [`check_distinct`], so ⌃⌘M is free
+    // for Cancel once Record meeting moved off it.
+    const REBINDABLE: [&str; 3] = [
+        shortcuts::DICTATE_TOGGLE.id,
+        shortcuts::MEETING_TOGGLE.id,
+        shortcuts::CANCEL.id,
+    ];
+    let _ = own_id;
     let chord = (c.ctrl, c.cmd, c.shift, c.alt, code);
     if let Some(b) = shortcuts::ALL
         .iter()
-        .find(|b| b.id != own_id && b.chord() == chord)
+        .find(|b| !REBINDABLE.contains(&b.id) && b.chord() == chord)
     {
         return Err(format!(
             "{} is already a Yap shortcut ({}) — pick another chord",
             b.label, b.id
         ));
     }
-    if crate::hotkeys::active_dictate().0 == shortcut_of(c, code) {
-        return Err("that chord is your dictate chord — pick another".into());
-    }
     Ok((
         shortcut_of(c, code),
         chord_label(c.ctrl, c.alt, c.shift, c.cmd, code),
     ))
+}
+
+/// fix-249 advisory (d): no two actions on one chord. `chords` are the
+/// rebindable actions' NEW chords (dictate toggle, Record meeting, Cancel);
+/// a clash is refused with both names, before anything is saved or registered.
+pub fn check_distinct(chords: &[(BindingAction, Shortcut, String)]) -> Result<(), String> {
+    for (i, (a, sa, label)) in chords.iter().enumerate() {
+        if let Some((b, ..)) = chords[i + 1..].iter().find(|(_, sb, _)| sb == sa) {
+            return Err(format!(
+                "{label} would be both {} and {} — pick a different chord for one of them",
+                a.title(),
+                b.title()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn shortcut_of(c: &ChordSetting, code: Code) -> Shortcut {
@@ -915,6 +938,42 @@ mod tests {
             reserved_chord_reason(&ch("KeyQ", false, false, false, true), false).unwrap(),
             "⌘Q is macOS's Quit — pick another chord"
         );
+    }
+
+    /// fix-249 advisory (d): two actions on one chord are refused; a default
+    /// chord another rebind vacated is free.
+    #[test]
+    fn two_actions_on_one_chord_are_refused() {
+        let r = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyR);
+        let m = shortcuts::MEETING_TOGGLE.shortcut();
+        let d = shortcuts::DICTATE_TOGGLE.shortcut();
+        let e = check_distinct(&[
+            (BindingAction::DictateToggle, d, "⌃⌥⌘Space".into()),
+            (BindingAction::RecordMeeting, r, "⌃⌘R".into()),
+            (BindingAction::Cancel, r, "⌃⌘R".into()),
+        ])
+        .unwrap_err();
+        assert!(e.contains("Record meeting") && e.contains("Cancel take"), "{e}");
+        assert!(check_distinct(&[
+            (BindingAction::DictateToggle, d, "⌃⌥⌘Space".into()),
+            (BindingAction::RecordMeeting, d, "⌃⌥⌘Space".into()),
+        ])
+        .is_err());
+        // Meeting moved to ⌃⌘R → ⌃⌘M is free for Cancel.
+        let cm = ChordSetting {
+            code: "KeyM".into(),
+            ctrl: true,
+            cmd: true,
+            ..Default::default()
+        };
+        let (cancel, _) = chord_for_action(BindingAction::Cancel, &cm).unwrap();
+        assert_eq!(cancel, m);
+        assert!(check_distinct(&[
+            (BindingAction::DictateToggle, d, "⌃⌥⌘Space".into()),
+            (BindingAction::RecordMeeting, r, "⌃⌘R".into()),
+            (BindingAction::Cancel, cancel, "⌃⌘M".into()),
+        ])
+        .is_ok());
     }
 
     #[test]
