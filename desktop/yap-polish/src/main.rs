@@ -182,6 +182,8 @@ RULES
 1. Output ONLY a JSON object: {\"title\": ..., \"key_points\": [...]}.
 2. `title`: 3 to 8 words naming what the meeting was about. No date, no quotes.
 3. `key_points`: 3 to 6 short sentences, the most important things said, in order.
+   Do not copy a sentence of the summary word for word, and do not say the
+   same thing twice.
 4. Use only what the input contains. Never add a fact, name, number, date or
    address that is not in it.";
 

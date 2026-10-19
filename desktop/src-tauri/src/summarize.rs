@@ -2122,15 +2122,74 @@ pub fn headline_pass(
     if h.title.trim().is_empty() {
         h.title = fallback.title.clone();
     }
-    for p in fallback.key_points {
+    // A1: the model's points lose any echo of the Summary or a decision
+    // first; the fill then only takes a candidate that survives the same rule
+    // (in practice an action item — the Summary's own sentences never do).
+    h.key_points = dedupe_key_points(h.key_points, narrative, decisions);
+    let candidates = sentences(narrative)
+        .into_iter()
+        .chain(decisions.iter().map(|d| d.text.clone()))
+        .chain(actions.iter().map(|a| a.text.clone()));
+    for p in candidates {
         if h.key_points.len() >= MIN_KEY_POINTS {
             break;
         }
-        if !h.key_points.iter().any(|k| same_item(k, &p)) {
-            h.key_points.push(p);
+        let mut with = h.key_points.clone();
+        with.push(p);
+        let with = dedupe_key_points(with, narrative, decisions);
+        if with.len() > h.key_points.len() {
+            h.key_points = with;
         }
     }
     h
+}
+
+/// #250 round 3 (A1) — key points that say something the notes do not
+/// already say. A point that IS a sentence of the Summary paragraph (by
+/// normalized words), or restates a Decision or an earlier point (the price
+/// twice), is dropped. Fewer than three honest points beats six echoes; none
+/// at all leaves the section out.
+pub fn dedupe_key_points(
+    points: Vec<String>,
+    narrative: &str,
+    decisions: &[SummaryItem],
+) -> Vec<String> {
+    let summary_sentences = sentences(narrative);
+    let mut kept: Vec<String> = Vec::new();
+    for p in points {
+        let label_free = ["Decisions:", "Action items:", "Key points:", "Summary:"]
+            .iter()
+            .find_map(|l| p.strip_prefix(l))
+            .map_or(p.as_str(), str::trim_start)
+            .to_string();
+        let echoes_summary = summary_sentences.iter().any(|s| same_item(s, &label_free));
+        let restates = decisions.iter().any(|d| near_duplicate(&d.text, &label_free))
+            || kept.iter().any(|k| near_duplicate(k, &label_free));
+        if !echoes_summary && !restates && !label_free.trim().is_empty() {
+            kept.push(label_free);
+        }
+    }
+    kept
+}
+
+/// Two lines that carry the same facts: equal by normalized words, or one's
+/// content words are (at least 3/4 of) the other's.
+fn near_duplicate(a: &str, b: &str) -> bool {
+    if same_item(a, b) {
+        return true;
+    }
+    let mut wa = content_words(a);
+    let mut wb = content_words(b);
+    wa.sort();
+    wa.dedup();
+    wb.sort();
+    wb.dedup();
+    let small = wa.len().min(wb.len());
+    if small < 2 {
+        return false;
+    }
+    let shared = wa.iter().filter(|w| wb.contains(w)).count();
+    shared * 4 >= small * 3
 }
 
 /// "Owner" of an action item, ONLY when the item's own words name one at the

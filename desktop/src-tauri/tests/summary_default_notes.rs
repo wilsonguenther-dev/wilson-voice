@@ -35,7 +35,7 @@ fn answer(req: &wilson_voice_lib::polish_protocol::PolishRequest) -> Result<Stri
                 )
             }
             "reduce" => "The team reviewed pricing for the Drivia consulting tier.".to_string(),
-            "headline" => r#"{"title":"Drivia consulting pricing review","key_points":["The starter package stays at forty nine dollars a month.","The free trial is dropped for enterprise accounts.","Jeisil will send the updated pricing doc by Friday.","Annual billing discount is still open."]}"#.to_string(),
+            "headline" => r#"{"title":"Drivia consulting pricing review","key_points":["The starter package stays at forty nine dollars a month.","The free trial is dropped for enterprise accounts.","Jeisil will send the updated pricing doc by Friday.","Wilson will book the Liberty University demo next week.","Annual billing discount is still open."]}"#.to_string(),
             other => panic!("unexpected stage {other}"),
         })
     }
@@ -68,7 +68,13 @@ fn fixture_transcript_becomes_full_notes() {
         .next()
         .unwrap();
     let n = kp.lines().filter(|l| l.starts_with("- ")).count();
-    assert!((3..=6).contains(&n), "{n} key points: {kp}");
+    // #250 round 3 (A1): the stub's points that restate a decision ("stays at
+    // forty nine dollars", "the free trial is dropped") are gone; the ones
+    // that add something stay.
+    assert!((1..=6).contains(&n), "{n} key points: {kp}");
+    assert!(!kp.contains("forty nine dollars"), "a decision echoed as a key point: {kp}");
+    assert!(!kp.contains("free trial"), "a decision echoed as a key point: {kp}");
+    assert!(kp.contains("- Jeisil will send the updated pricing doc by Friday."), "{kp}");
     assert!(md.contains("### Decisions"), "{md}");
     assert!(md.contains("- **Jeisil** — Jeisil will send"), "{md}");
     assert!(md.contains("- **Wilson** — Wilson to book"), "{md}");
@@ -94,10 +100,13 @@ fn a_failed_headline_pass_still_yields_title_and_three_points() {
         .split("### Key points\n\n")
         .nth(1)
         .expect("key points");
-    assert!(
-        kp.lines().take_while(|l| l.starts_with("- ")).count() >= 3,
-        "{kp}"
-    );
+    let points: Vec<&str> = kp.lines().take_while(|l| l.starts_with("- ")).collect();
+    assert!(!points.is_empty(), "{kp}");
+    // A1: the mechanical fallback never echoes the Summary paragraph.
+    let summary = s.markdown.split("### Summary\n\n").nth(1).unwrap().split("\n\n").next().unwrap();
+    for p in &points {
+        assert!(!summary.contains(p.trim_start_matches("- ")), "{p} echoes the Summary");
+    }
 }
 
 #[test]
