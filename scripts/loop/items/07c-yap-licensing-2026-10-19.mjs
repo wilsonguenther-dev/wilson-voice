@@ -38,7 +38,7 @@ ITEMS.push({
   id: 'yap-lic-01-jws-verifier', prompt: 'yap-lic-01-jws-verifier', branch: 'loop/yap-lic-01-jws-verifier-embedded-keys', gated: null,
   title: 'Offline verifier for drivia[.]consulting license tokens: compact JWS, alg EdDSA + typ JWT pinned, kid looked up in EMBEDDED keys only (never a fetched key set), prd yap, ent.dictation, plan lifetime, exp + 30-day grace, rollback ratchet reused',
   preflight: `
-    ( M=0; grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs || M=1; git grep -qnE 'REVOCATION_URL|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-00-kill-forge-fetch has not landed (07b, PR #230: the revocation fetch is still in license.rs) — land it, then the build pass again"; exit 0; fi; test -f desktop/src-tauri/src/license_v2.rs && grep -q 'pub const EMBEDDED_KEYS' desktop/src-tauri/src/license_v2.rs && grep -q 'pub fn verify_token' desktop/src-tauri/src/license_v2.rs && grep -q 'fn non_embedded_key_fails_even_when_cached' desktop/src-tauri/tests/license_v2.rs )
+    ( M=0; grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs || M=1; git grep -qnE 'REVOCATION_URL|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-00-kill-forge-fetch has not landed (07b, PR #230: the revocation fetch is still in license.rs) — land it, then the build pass again"; exit 0; fi; test -f desktop/src-tauri/src/license_v2.rs && grep -q 'pub const EMBEDDED_KEYS' desktop/src-tauri/src/license_v2.rs && grep -q 'pub fn verify_token' desktop/src-tauri/src/license_v2.rs && grep -q 'fn non_embedded_key_fails_even_when_cached' desktop/src-tauri/src/license_v2.rs )
   `,
   spec: `
     Panel 2026-10-19: APPROVED-WITH-CHANGES (BLOCKING) — embedded keys only; grace constant 30 d; reuse the trial ratchet.
@@ -48,8 +48,9 @@ ITEMS.push({
     DO (names are contract)
       1. NEW module desktop/src-tauri/src/license_v2.rs (declared in lib.rs). pub const EMBEDDED_KEYS: &[(&str, [u8; 32])] holding
          kid "dcl-2026-09-24" with x = NTXQamoM4o9K1MkQrZ_bWPRL7659nEDHaIssiCWodHs (base64url, decoded at compile time or in a
-         const fn / test-checked literal). A test asserts the constant equals the key in drivia-consulting docs/licensing/client-config.json
-         (copy the value into a fixture file in this repo; no network in tests). Uses the ed25519-dalek already in Cargo.toml (no new crate).
+         const fn / test-checked literal). A test (embedded_key_matches_server_seed) asserts the constant equals the public_jwk of kid
+         dcl-2026-09-24 seeded at drivia-consulting supabase/migrations/20260924002500_licensing_api.sql:258. Copy that JWK into
+         desktop/src-tauri/tests/fixtures/dcl-signing-keys.json, with no network. Uses the ed25519-dalek already in Cargo.toml (no new crate).
       2. pub fn verify_token(token: &str, now_ms: i64) -> Result<TokenClaims, TokenError>: exactly 3 dot-separated parts; header alg ==
          "EdDSA" and typ == "JWT" (anything else refused, incl. "none" and "HS256"); kid looked up in EMBEDDED_KEYS ONLY — an unknown
          kid returns TokenError::UnknownKid, whose UI meaning is "re-activate"; the signature is checked over the exact
@@ -58,13 +59,14 @@ ITEMS.push({
          constant here). Stable error codes: bad_format, bad_alg, bad_typ, unknown_kid, bad_signature, wrong_product, no_entitlement,
          wrong_plan, expired.
       3. NO KEY FETCH (Panel BLOCKING): there is no code path that adds a key to the trusted set at runtime: no reqwest, no JWKS URL,
-         no cache of keys on disk. The verifier signature takes no key-set argument.
+         no cache of keys on disk. The public verifier signature takes no key-set argument.
       4. ROLLBACK: reuse the existing trial ratchet in license.rs (the max(wall, monotonic, floor) clock and DB_KEY_CLOCK_FLOOR
          "license.max_seen_wall_ms", ~:114-:183) for "now"; also record the highest token iat seen (maxIat) in license.json AND the
          SQLite corroborating row, and refuse a token with iat below it. Do not write a second ratchet.
       5. Wire into license.rs entitlement as the v2 path (the Forge path is removed in yap-lic-02, not here).
-    TESTS: desktop/src-tauri/tests/license_v2.rs with throwaway-key vectors (the test temporarily swaps the key table through a
-    #[cfg(test)] seam that is NOT compiled into release builds): valid, tampered payload, tampered signature, alg none, alg HS256,
+    TESTS live in #[cfg(test)] mod tests inside license_v2.rs. pub fn verify_token calls a private fn verify_with(keys, token, now_ms)
+    with EMBEDDED_KEYS, and only the in-module tests call verify_with with throwaway keys. Vectors: embedded_key_matches_server_seed
+    (reads the fixture), valid, tampered payload, tampered signature, alg none, alg HS256,
     typ missing, unknown kid, wrong prd, no ent.dictation, plan not lifetime, expired-in-grace (accepted), past-grace (refused),
     clock rollback (refused), iat below maxIat (refused), and non_embedded_key_fails_even_when_cached: a token signed by a key that
     is present in a would-be cache file on disk is still refused because only EMBEDDED_KEYS are consulted.`,
@@ -75,16 +77,17 @@ ITEMS.push({
     (cd desktop && cargo build -p yap-diarize --release)
     T="$CARGO_TARGET_DIR"; test -n "$T" || T="$PWD/desktop/target"; mkdir -p desktop/src-tauri/binaries && cp "$T/release/yap-polish" "desktop/src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')" && cp "$T/release/yap-diarize" "desktop/src-tauri/binaries/yap-diarize-$(rustc -vV | awk '/^host:/ {print $2}')"
     mkdir -p desktop/target
-    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_v2 -- --list) > desktop/target/lic01-list.txt 2>/dev/null
-    grep -q '^non_embedded_key_fails_even_when_cached: test$' desktop/target/lic01-list.txt
-    grep -q '^alg_none_refused: test$' desktop/target/lic01-list.txt
-    grep -q '^alg_hs256_refused: test$' desktop/target/lic01-list.txt
-    grep -q '^unknown_kid_means_reactivate: test$' desktop/target/lic01-list.txt
-    grep -q '^expired_in_grace_accepted: test$' desktop/target/lic01-list.txt
-    grep -q '^past_grace_refused: test$' desktop/target/lic01-list.txt
-    grep -q '^clock_rollback_refused: test$' desktop/target/lic01-list.txt
-    grep -q '^embedded_key_matches_client_config: test$' desktop/target/lic01-list.txt
-    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_v2)
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib -- --list) > desktop/target/lic01-list.txt 2>/dev/null
+    grep -q '^license_v2::tests::non_embedded_key_fails_even_when_cached: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::alg_none_refused: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::alg_hs256_refused: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::unknown_kid_means_reactivate: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::expired_in_grace_accepted: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::past_grace_refused: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::clock_rollback_refused: test$' desktop/target/lic01-list.txt
+    grep -q '^license_v2::tests::embedded_key_matches_server_seed: test$' desktop/target/lic01-list.txt
+    test -f desktop/src-tauri/tests/fixtures/dcl-signing-keys.json
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib license_v2::)
     (cd desktop/src-tauri && cargo test --features custom-protocol --lib license)
     ! git grep -qnE 'reqwest|https?://' -- desktop/src-tauri/src/license_v2.rs
     grep -q 'pub const GRACE_S' desktop/src-tauri/src/license_v2.rs
@@ -126,9 +129,13 @@ ITEMS.push({
          429 honours Retry-After. Deactivate frees the seat server-side BEFORE clearing locally.
       6. lib.rs: activate_license / deactivate_license commands call license_client.
       7. FORGE REMOVAL (decision 4): delete ISSUER_PUBLIC_KEY_SPKI_B64, ISSUER_SKID, GRACE_PLAN and its grace path,
-         PRODUCTION_SIGNED_FIXTURE and the test that verifies it, and the legacy branch of decide_entitlement in license.rs. KEEP the
-         license tests: retarget desktop/src-tauri/tests/license_gate.rs and tests/tray_license.rs to v2 tokens signed with throwaway keys.
-    TESTS: desktop/src-tauri/tests/license_client.rs against a local stub HTTP server (no internet): 200, 404 invalid_key, 409 seat_limit,
+         PRODUCTION_SIGNED_FIXTURE and the test that verifies it, and the legacy branch of decide_entitlement in license.rs, and every
+         drivia-forge citation (license.rs:14, :164, :1576; desktop/src/license/status.ts:61). KEEP the license tests: retarget
+         desktop/src-tauri/tests/license_gate.rs and tests/tray_license.rs to the v2 entitlement path (license_gate.rs reads source
+         through include_str and tray_license.rs builds LicenseStatus values; neither one signs tokens).
+    TESTS live in #[cfg(test)] mod tests inside license_client.rs, against a local stub HTTP server. The client core takes (base, keys)
+    privately, and release code has no runtime base or key override (the core reaches license_v2's verify_with crate-privately, never
+    pub). No internet. Cases: 200, 404 invalid_key, 409 seat_limit,
     403 revoked deletes token, 403 disputed keeps it, 403 blocked keeps it, 400 keeps it, 413 keeps it, 503/timeout keeps it, 429 honours
     Retry-After, refresh skipped inside 24 h, refresh forced under 7 d, keychain_delete_reactivates_same_seat (deletes the throwaway
     Keychain item, re-activation sends the mirrored device_id).
@@ -141,20 +148,19 @@ ITEMS.push({
     (cd desktop && cargo build -p yap-diarize --release)
     T="$CARGO_TARGET_DIR"; test -n "$T" || T="$PWD/desktop/target"; mkdir -p desktop/src-tauri/binaries && cp "$T/release/yap-polish" "desktop/src-tauri/binaries/yap-polish-$(rustc -vV | awk '/^host:/ {print $2}')" && cp "$T/release/yap-diarize" "desktop/src-tauri/binaries/yap-diarize-$(rustc -vV | awk '/^host:/ {print $2}')"
     mkdir -p desktop/target
-    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_client -- --list) > desktop/target/lic02-list.txt 2>/dev/null
-    grep -q '^disputed_403_keeps_token: test$' desktop/target/lic02-list.txt
-    grep -q '^revoked_403_deletes_token: test$' desktop/target/lic02-list.txt
-    grep -q '^blocked_403_keeps_token: test$' desktop/target/lic02-list.txt
-    grep -q '^too_large_413_keeps_token: test$' desktop/target/lic02-list.txt
-    grep -q '^retry_after_429_honoured: test$' desktop/target/lic02-list.txt
-    grep -q '^refresh_skipped_inside_24h: test$' desktop/target/lic02-list.txt
-    grep -q '^keychain_delete_reactivates_same_seat: test$' desktop/target/lic02-list.txt
-    (cd desktop/src-tauri && cargo test --features custom-protocol --test license_client)
+    (cd desktop/src-tauri && cargo test --features custom-protocol --lib -- --list) > desktop/target/lic02-list.txt 2>/dev/null
+    grep -q '^license_client::tests::disputed_403_keeps_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::revoked_403_deletes_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::blocked_403_keeps_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::too_large_413_keeps_token: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::retry_after_429_honoured: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::refresh_skipped_inside_24h: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::keychain_delete_reactivates_same_seat: test$' desktop/target/lic02-list.txt
     (cd desktop/src-tauri && cargo test --features custom-protocol --test license_gate)
     (cd desktop/src-tauri && cargo test --features custom-protocol --test tray_license)
     (cd desktop/src-tauri && cargo test --features custom-protocol --lib license)
     ! git grep -qn 'vercel.app' -- desktop/src-tauri/src/license_client.rs
-    ! git grep -qniE 'well-known/jwks|jwks.json' -- desktop/src-tauri/src
+    ! git grep -qniE 'well-known|licensing-keys|jwks' -- desktop/src-tauri/src
     ! git grep -qnE 'ISSUER_SKID|GRACE_PLAN|PRODUCTION_SIGNED_FIXTURE|ISSUER_PUBLIC_KEY_SPKI_B64|drivia-forge' -- desktop/src-tauri/src desktop/src
     grep -q 'device_id' desktop/src-tauri/src/license_client.rs
     (cd desktop && npm run loop:validate)
