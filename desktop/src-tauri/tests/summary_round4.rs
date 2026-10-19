@@ -242,3 +242,14 @@ fn review_opus2_n1_words_are_never_owners() {
         assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
     }
 }
+
+#[test]
+fn key_points_hide_when_fewer_than_two() {
+    use wilson_voice_lib::summarize::{render_notes, Headline};
+    let one = Headline { title: "T".into(), key_points: vec!["Only one point here.".into()], summary: String::new() };
+    let md = render_notes(&one, &[], "A summary.", &[], &[], &[], 0, 1, false);
+    assert!(!md.contains("### Key points"), "{md}");
+    let two = Headline { key_points: vec!["One point here.".into(), "Another fact entirely.".into()], ..one };
+    let md = render_notes(&two, &[], "A summary.", &[], &[], &[], 0, 1, false);
+    assert!(md.contains("### Key points"), "{md}");
+}

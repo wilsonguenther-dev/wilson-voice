@@ -2542,7 +2542,9 @@ pub fn render_notes(
         out.push_str(&summary_para);
         out.push_str("\n\n");
     }
-    if !headline.key_points.is_empty() {
+    // review-opus2: one lone point is not a section — fewer than two and
+    // the Key points heading is left out.
+    if headline.key_points.len() >= 2 {
         out.push_str("### Key points\n\n");
         for p in &headline.key_points {
             // #250 round 2: the HEADLINE input carries "Decisions:" /
