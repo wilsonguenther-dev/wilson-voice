@@ -323,6 +323,8 @@ export interface PermissionReport {
   allCriticalOk: boolean;
   /** yap-perm-truth — the bundle path of the process that asked macOS. */
   checkedBundlePath?: string;
+  /** fix-ax-probe-refresh — "Yap" / "Yap Test": the name permission copy uses. */
+  productName?: string;
   /** Leaf certificate summary of the running binary's signature. */
   signingAuthority?: string;
   /** Each OS call that answered no. */
