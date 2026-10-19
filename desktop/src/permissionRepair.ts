@@ -2,8 +2,11 @@
 //
 // 0.9.0 changed signing identity. System Settings kept showing Yap ON, every
 // live API said no, and the switch Wilson could see belonged to an older Yap.
-// `perm_probe.rs` now classifies that as `stale_identity`; this module decides
-// what a row says about it, and what Repair does. Copy and phase transitions
+// `perm_probe.rs` classifies a denial as `stale_identity` only when it has
+// evidence of an identity change (a ledger entry under another authority /
+// team, or a last-run file written by an earlier build of THIS code), so the
+// 0.9.0 change itself reads as plain `denied`. Both are repairable. This
+// module decides what a row says about each, and what Repair does. Copy and phase transitions
 // are pure; the only side effects are the two invokes at the bottom.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -176,6 +179,44 @@ export function offersRelaunch(service: RepairService, view: RepairView): boolea
 /** Repair one service. The Rust side owns the argv, the bundle id and the pane. */
 export function requestRepair(service: RepairService): Promise<RepairOutcome> {
   return invoke("repair_permission", { service });
+}
+
+/** What a failed Repair tells the user: tccutil's stderr and the manual steps. */
+export function repairFailureMessage(outcome: RepairOutcome): string {
+  const detail = [outcome.stderr, outcome.manualSteps].filter(Boolean).join(" ");
+  return detail ? `Repair could not reset the permission. ${detail}` : "Repair could not reset the permission.";
+}
+
+export interface PillRepairDeps {
+  toast: (message: string) => void;
+  /** The pre-repair behaviour: open the privacy pane. */
+  openPane: () => Promise<unknown>;
+  refresh: () => unknown;
+}
+
+/**
+ * The degraded-pill Repair. The Rust side returns BEFORE opening the pane on
+ * every failure path, so an ok=false outcome is shown (stderr + manual steps)
+ * and the pane is opened here — the button never fails silently. A rejected
+ * invoke also falls back to the pane and is rethrown for the caller's toast.
+ */
+export async function repairFromPill(
+  service: RepairService,
+  deps: PillRepairDeps,
+): Promise<RepairOutcome> {
+  let outcome: RepairOutcome;
+  try {
+    outcome = await requestRepair(service);
+  } catch (e) {
+    await deps.openPane().catch(() => undefined);
+    throw e;
+  }
+  if (!outcome.ok) {
+    deps.toast(repairFailureMessage(outcome));
+    await deps.openPane().catch((e) => deps.toast(String(e)));
+  }
+  deps.refresh();
+  return outcome;
 }
 
 /** Quit and reopen (Input Monitoring only takes effect after a relaunch). */

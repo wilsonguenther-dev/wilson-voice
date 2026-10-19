@@ -8,7 +8,7 @@ import Onboarding from "./Onboarding";
 import { ModelRibbon } from "./ModelSetup";
 import { PermissionHealthRow } from "./PermissionHealthRow";
 import { PermissionRepair } from "./PermissionRepairRow";
-import { canRepair, requestRepair } from "./permissionRepair";
+import { canRepair, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
@@ -244,7 +244,12 @@ export default function App() {
                   // bundle id + the pane + re-probe). A grant the probe reads
                   // as fine is never reset — that only opens the pane.
                   (perms?.probe && canRepair(perms.probe.listenEvent.state)
-                    ? requestRepair("listen_event").then(() => refreshPerms())
+                    ? repairFromPill("listen_event", {
+                        toast,
+                        openPane: () =>
+                          invoke("open_privacy_settings", { pane: repairPane(status) }),
+                        refresh: refreshPerms,
+                      })
                     : invoke("open_privacy_settings", {
                         pane: repairPane(status),
                       })

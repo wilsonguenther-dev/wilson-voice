@@ -31,7 +31,9 @@ The helper_* lines describe the ad-hoc QA helper (answered for the launching ter
 
 ## 2. A cargo test that FAILS on main: no ledger entry + denied probe -> stale_grants() is empty
 
-Wilson's real state: the perm_truth ledger (#211) shipped after 0.9.0, so it never saw a grant work under the old signature. Scratch test `tests/zz_red_on_main.rs` (run on main, then deleted; never committed):
+CORRECTION (fix round 1): the original text here said this was "Wilson's real state". It is not, and the evidence never read the ledger. A read-only `cat ~/Library/Application Support/WilsonVoice/permission-signature.json` (mtime 17 Oct 02:51) shows accessibility AND inputMonitoring both recorded under `Developer ID Application: Wilson Guenther (VHYV8C2JNU)`, cdhash `ca745694f2cc18904b90ea372ab28b8204dffd1f`, version 0.9.1 — the installed /Applications/Yap.app in section 1. `last-run-signature.json` does not exist there: this PR introduces it. So the Apple Development -> Developer ID change that already happened can NEVER be classified StaleIdentity on his machine; on this branch `classify(Denied, None, None, running)` is still `Denied` (the red test below is NOT turned green). What this PR does for his machine: any denied grant reads Denied and gets the same one-click Repair (`canRepair` includes `denied`). StaleIdentity covers only identity changes that happen AFTER a build with this PR has launched once (last-run file), or a ledger entry under a different authority / team. A same-team Developer ID update (new cdhash / version) is NOT a different identity: `ledger_same_team_update_denied_is_denied_not_stale` pins that, using his real ledger values.
+
+Original (incorrect) premise: the perm_truth ledger (#211) shipped after 0.9.0, so it never saw a grant work under the old signature. Scratch test `tests/zz_red_on_main.rs` (run on main, then deleted; never committed):
 
 ```rust
 let stale = stale_grants(&TrustLedger::default(), false, GrantState::Denied, &running, "/Applications/Yap.app");
@@ -59,7 +61,7 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 error: test failed, to rerun pass `--test zz_red_on_main`
 ```
 
-On this branch the same situation (ledger none, last-run signature changed, probe denied) is `stale_identity_without_ledger_after_signature_change` in tests/perm_repair.rs, which prints `perm_repair: ledger=none last_run=changed probe=denied state=StaleIdentity` and passes.
+On this branch `stale_identity_without_ledger_after_signature_change` in tests/perm_repair.rs is NOT the same situation: it adds `last_run=changed`, a state that needs a last-run file an earlier build of this PR wrote, so it covers future identity changes only. It prints `perm_repair: ledger=none last_run=changed probe=denied state=StaleIdentity` and passes.
 
 ## 3. tccutil service names on this macOS (tccutil itself was NEVER run with reset)
 

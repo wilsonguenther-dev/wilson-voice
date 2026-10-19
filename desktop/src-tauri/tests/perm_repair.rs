@@ -117,8 +117,15 @@ fn probe_matrix_maps_every_combination() {
 
 #[test]
 fn stale_identity_without_ledger_after_signature_change() {
-    // Wilson's real state: #211's ledger shipped after 0.9.0, so it is EMPTY,
-    // and the last launch ran under Apple Development.
+    // A FUTURE identity change, caught by the last-run file: some launch of a
+    // build that carries this PR ran under Apple Development, and the next one
+    // runs under Developer ID, with no ledger entry. This is NOT Wilson's
+    // current state: his ledger (permission-signature.json) already records
+    // both grants under Developer ID 0.9.1, and last-run-signature.json does
+    // not exist until a build with this PR has launched once, so the
+    // Apple Development -> Developer ID change that already happened can
+    // never be classified StaleIdentity. On his machine a denial reads Denied
+    // and Repair is still offered (canRepair includes "denied").
     let raw = RawProbes {
         accessibility: false,
         listen_event_cg: false,
@@ -135,6 +142,65 @@ fn stale_identity_without_ledger_after_signature_change() {
     // A granted service is never stale, whatever the identity history.
     assert_eq!(report.microphone.state, ProbeState::Granted);
     assert!(report.signature_changed);
+}
+
+#[test]
+fn ledger_same_team_update_denied_is_denied_not_stale() {
+    // Wilson's REAL ledger (permission-signature.json, read 2026-10-18): both
+    // grants recorded under Developer ID 0.9.1, cdhash ca7456…. A later build
+    // under the SAME Developer ID has a new cdhash and version, but TCC pins a
+    // Developer ID grant to identifier + team (the designated requirement), so
+    // a denial after the update is a real denial — never "an older Yap".
+    let running = sig(
+        &dev_id().authority,
+        "3333333333333333333333333333333333333333",
+        "0.9.2",
+    );
+    let ledger = TrustLedger {
+        accessibility: Some(dev_id()),
+        input_monitoring: Some(dev_id()),
+    };
+    for last_run in [None, Some(dev_id()), Some(running.clone())] {
+        for service in [Service::Accessibility, Service::ListenEvent] {
+            let state = classify(
+                RawAnswer::Denied,
+                ledger_entry(&ledger, service),
+                last_run.as_ref(),
+                &running,
+            );
+            println!("perm_repair: same-team update ledger=0.9.1 running=0.9.2 {service:?} probe=denied state={state:?}");
+            assert_eq!(
+                state,
+                ProbeState::Denied,
+                "{service:?} last_run={last_run:?}"
+            );
+        }
+    }
+    // A ledger under a different authority / team is still a stale identity.
+    assert_eq!(
+        classify(RawAnswer::Denied, Some(&apple_dev()), None, &running),
+        ProbeState::StaleIdentity
+    );
+    // Ad-hoc signatures have no team: their designated requirement IS the
+    // cdhash, so a cdhash change under "ad-hoc" is an identity change.
+    let adhoc_old = sig(
+        "ad-hoc",
+        "4444444444444444444444444444444444444444",
+        "0.9.1",
+    );
+    let adhoc_new = sig(
+        "ad-hoc",
+        "5555555555555555555555555555555555555555",
+        "0.9.1",
+    );
+    assert_eq!(
+        classify(RawAnswer::Denied, Some(&adhoc_old), None, &adhoc_new),
+        ProbeState::StaleIdentity
+    );
+    assert_eq!(
+        classify(RawAnswer::Denied, Some(&adhoc_new), None, &adhoc_new),
+        ProbeState::Denied
+    );
 }
 
 #[test]

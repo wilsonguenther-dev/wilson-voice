@@ -12,6 +12,7 @@ import {
   offersRelaunch,
   reduceRepair,
   repairRows,
+  repairFromPill,
   requestRepair,
   serviceCopy,
   type ProbeReport,
@@ -116,5 +117,51 @@ describe("permission repair", () => {
     expect(v.phase).toBe("failed");
     expect(v.detail).toContain("No such bundle");
     expect(v.detail).toContain("Open System Settings");
+  });
+});
+
+describe("the degraded-pill Repair (App.tsx) never swallows a failed Repair", () => {
+  const deps = () => ({
+    toast: vi.fn(),
+    openPane: vi.fn(() => Promise.resolve()),
+    refresh: vi.fn(),
+  });
+  beforeEach(() => invoke.mockReset());
+
+  it("ok=false: shows stderr + manual steps, and still opens the pane", async () => {
+    invoke.mockResolvedValueOnce({
+      ...OK,
+      service: "listen_event",
+      ok: false,
+      stderr: "tccutil exited 1: No such bundle",
+      manualSteps: "Open System Settings → Privacy & Security → Input Monitoring.",
+    });
+    const d = deps();
+    const out = await repairFromPill("listen_event", d);
+    expect(invoke).toHaveBeenCalledWith("repair_permission", { service: "listen_event" });
+    expect(out.ok).toBe(false);
+    expect(d.toast).toHaveBeenCalledTimes(1);
+    const msg = String(d.toast.mock.calls[0][0]);
+    expect(msg).toContain("No such bundle");
+    expect(msg).toContain("Input Monitoring");
+    // The pre-PR behaviour (open the pane) is the fallback, never lost.
+    expect(d.openPane).toHaveBeenCalledTimes(1);
+    expect(d.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("ok=true: no failure toast and no second pane (Rust already opened it)", async () => {
+    invoke.mockResolvedValueOnce({ ...OK, service: "listen_event", ok: true });
+    const d = deps();
+    await repairFromPill("listen_event", d);
+    expect(d.toast).not.toHaveBeenCalled();
+    expect(d.openPane).not.toHaveBeenCalled();
+    expect(d.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("an invoke rejection is surfaced and falls back to the pane", async () => {
+    invoke.mockRejectedValueOnce(new Error("repair_permission not allowed"));
+    const d = deps();
+    await expect(repairFromPill("listen_event", d)).rejects.toThrow("not allowed");
+    expect(d.openPane).toHaveBeenCalledTimes(1);
   });
 });

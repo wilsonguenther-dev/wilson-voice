@@ -161,11 +161,25 @@ pub fn identity_changed(last_run: &SigningSignature, running: &SigningSignature)
         || team_of(&last_run.authority) != team_of(&running.authority)
 }
 
+/// Is a grant the ledger recorded under `ledger` pinned to a different identity
+/// from `running`? TCC pins a certificate-signed grant to the designated
+/// requirement (identifier + team), which survives a version bump and a new
+/// cdhash — so only an authority / team change counts, exactly as
+/// [`identity_changed`] decides. An ad-hoc or unsigned build has no team and
+/// its requirement IS the cdhash, so for those a cdhash change counts too.
+pub fn grant_identity_changed(ledger: &SigningSignature, running: &SigningSignature) -> bool {
+    if identity_changed(ledger, running) {
+        return true;
+    }
+    team_of(&running.authority).is_none() && ledger.cdhash != running.cdhash
+}
+
 /// THE classification, pure.
 ///
 /// - Granted is Granted, whatever any record says: the live API is the truth.
 /// - Denied becomes StaleIdentity when the ledger saw this grant work under a
-///   different signature, OR the last launch ran under a different authority /
+///   different authority / team ([`grant_identity_changed`]; a same-team
+///   update is NOT a different identity), OR the last launch ran under a different authority /
 ///   team (the 0.9.0 case: no ledger, because the ledger shipped after it).
 /// - NotDetermined and Unknown pass through: nobody refused anything.
 pub fn classify(
@@ -179,7 +193,7 @@ pub fn classify(
         RawAnswer::NotDetermined => ProbeState::NotDetermined,
         RawAnswer::Unknown => ProbeState::Unknown,
         RawAnswer::Denied => {
-            let ledger_other = ledger.is_some_and(|l| l != running);
+            let ledger_other = ledger.is_some_and(|l| grant_identity_changed(l, running));
             let last_run_other = last_run.is_some_and(|l| identity_changed(l, running));
             if ledger_other || last_run_other {
                 ProbeState::StaleIdentity
