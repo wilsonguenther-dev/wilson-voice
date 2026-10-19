@@ -3,6 +3,7 @@
 //! R2-B1: key points come FIRST, from the transcript — 3–6 distinct facts —
 //!        and the Summary paragraph is written from them.
 //! R2-B2: an owner is a name the meeting uses; small talk is never a task.
+//! R2-B3: a true status sentence survives; prices and decimals are intact.
 
 mod support;
 
@@ -10,7 +11,8 @@ use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::polish_protocol::PolishRequest;
 use wilson_voice_lib::summarize::{
     action_owner, classify_item, ground_extract, point_overlap, summarize_segments,
-    transcript_lines, transcript_names, Bucket, MapExtract, SummaryError,
+    split_sentences, transcript_lines, transcript_names, validate_narrative, Bucket, MapExtract,
+    SummaryError,
 };
 
 const FIXTURE: &[&str] = &[
@@ -173,4 +175,43 @@ fn a_real_owner_is_a_name_the_meeting_uses() {
     assert_eq!(texts, vec!["Jeisil will send the pricing doc by Friday"]);
     assert_eq!(action_owner(texts[0], &names), Some("Jeisil".into()));
     assert_eq!(action_owner("Priya will draft the follow up", &names), None);
+}
+
+#[test]
+fn a_status_the_meeting_stated_is_kept_and_prices_stay_whole() {
+    let source = "seg_0001: We finished the migration yesterday.\nseg_0002: We're done with the import too.\nseg_0003: Jeisil will send the pricing doc by Friday at $49.99 a seat.";
+    let narrative = "The migration is finished. The import is done. Jeisil will send the pricing doc by Friday at $49.99 a seat.";
+    assert_eq!(validate_narrative(source, narrative).as_deref(), Some(narrative));
+    // One true sentence is a summary, never a rejection.
+    let one = "seg_0001: We finished the migration yesterday.";
+    assert_eq!(
+        validate_narrative(one, "The migration is finished.").as_deref(),
+        Some("The migration is finished.")
+    );
+    // Still dropped: a status nobody stated, next to a price that stays whole.
+    let src = "seg_0001: Okay, this is the pricing review.\nseg_0002: Dr. Britt said the seat price is $49.99, e.g. for the starter tier, from 3.30pm today.";
+    let got = validate_narrative(
+        src,
+        "The pricing review is complete. Dr. Britt said the seat price is $49.99, e.g. for the starter tier, from 3.30pm today.",
+    );
+    assert_eq!(
+        got.as_deref(),
+        Some("Dr. Britt said the seat price is $49.99, e.g. for the starter tier, from 3.30pm today.")
+    );
+}
+
+#[test]
+fn sentences_split_only_at_real_ends() {
+    assert_eq!(
+        split_sentences("It costs $49.99 a seat. Dr. Britt agreed, e.g. for Liberty. We meet at 3.30pm. Then 9 a.m. tomorrow works. Done! Really?"),
+        vec![
+            "It costs $49.99 a seat.",
+            "Dr. Britt agreed, e.g. for Liberty.",
+            "We meet at 3.30pm.",
+            "Then 9 a.m. tomorrow works.",
+            "Done!",
+            "Really?",
+        ]
+    );
+    assert_eq!(split_sentences("Version 1.2.3 ships"), vec!["Version 1.2.3 ships"]);
 }

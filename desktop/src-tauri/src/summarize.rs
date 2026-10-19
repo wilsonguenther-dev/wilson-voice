@@ -1285,32 +1285,128 @@ const STATUS_CLAIMS: &[&str] = &[
     "is resolved", "was resolved", "went well", "is wrapped up", "was wrapped up",
 ];
 
-/// Remove each narrative sentence that makes a [`STATUS_CLAIMS`] claim the
-/// source does not contain. Whole sentences only — never a reworded half.
-fn drop_unsaid_status(source: &str, narrative: &str) -> String {
-    let src = source.to_lowercase();
-    let unsaid = |s: &str| {
-        let l = s.to_lowercase();
-        STATUS_CLAIMS.iter().any(|c| l.contains(c) && !src.contains(c))
+/// Word stems that say something is finished, as a person would say it:
+/// "we finished", "it's complete", "we're done with", "wrapped up", "resolved".
+const COMPLETION_STEMS: &[&str] = &["finish", "complet", "final", "resolv", "wrap", "success"];
+
+fn says_completion(lower_sentence: &str) -> bool {
+    lower_sentence.contains("went well")
+        || lower_sentence
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == "done" || COMPLETION_STEMS.iter().any(|s| w.starts_with(s)))
+}
+
+/// Same word, allowing a suffix ("migration" / "migrations", "import" /
+/// "imported") — a five-letter shared prefix when both are that long.
+fn same_stem(a: &str, b: &str) -> bool {
+    a == b || (a.len() >= 5 && b.len() >= 5 && a.as_bytes()[..5] == b.as_bytes()[..5])
+}
+
+/// #250 round 4 (R2-B3) — is a status claim in `sentence` something the
+/// meeting said? A sentence with no [`STATUS_CLAIMS`] claim always is. One
+/// with a claim is supported when SOME source sentence says a completion
+/// (stem match: finish / complete / done / final / resolve / wrap / success)
+/// about the same noun phrase — the content words before the claim ("The
+/// migration is finished" ← "We finished the migration yesterday").
+pub fn status_supported(source: &str, sentence: &str) -> bool {
+    let l = sentence.to_lowercase();
+    let Some(at) = STATUS_CLAIMS.iter().filter_map(|c| l.find(c)).min() else {
+        return true;
     };
-    if !unsaid(narrative) {
+    let mut np = content_words(&l[..at]);
+    if np.is_empty() {
+        np = content_words(&l)
+            .into_iter()
+            .filter(|w| !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str())))
+            .collect();
+    }
+    split_sentences(source).iter().any(|src| {
+        let src = src.to_lowercase();
+        if !says_completion(&src) {
+            return false;
+        }
+        let words = content_words(&src);
+        np.iter().all(|w| words.iter().any(|sw| same_stem(sw, w)))
+    })
+}
+
+/// Abbreviations whose period never ends a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "e.g", "i.e", "eg", "ie", "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "vs", "approx",
+    "cf", "ca", "mt",
+];
+
+/// #250 round 4 (R2-B3) — split prose at REAL sentence ends only: a `.`/`!`/`?`
+/// followed by whitespace or the end. Never between digits ("$49.99",
+/// "3.30pm", "v1.2"), never after an abbreviation ("e.g.", "Dr."), and never
+/// after "a.m." / "p.m." when the next word goes on in lower case.
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        cur.push(ch);
+        if !matches!(ch, '.' | '!' | '?') {
+            continue;
+        }
+        let next = chars.get(i + 1).copied();
+        if next.is_some_and(|c| !c.is_whitespace()) {
+            continue;
+        }
+        if ch == '.' {
+            let last = cur
+                .trim_end_matches('.')
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or("")
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
+            if ABBREVIATIONS.contains(&last.as_str()) {
+                continue;
+            }
+            let next_word = chars[i + 1..]
+                .iter()
+                .skip_while(|c| c.is_whitespace())
+                .next()
+                .copied();
+            if matches!(last.as_str(), "a.m" | "p.m")
+                && next_word.is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
+            {
+                continue;
+            }
+        }
+        let s = cur.trim().to_string();
+        if !s.is_empty() {
+            out.push(s);
+        }
+        cur.clear();
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+/// Remove each narrative sentence whose status claim the source does not
+/// support ([`status_supported`]). Whole sentences only — never a reworded
+/// half — split at real sentence ends ([`split_sentences`]) so "$49.99"
+/// stays "$49.99". R2-B3: never empties a summary — when every sentence would
+/// go, the narrative is returned as it was and the other gates decide.
+fn drop_unsaid_status(source: &str, narrative: &str) -> String {
+    let parts = split_sentences(narrative);
+    if parts.iter().all(|s| status_supported(source, s)) {
         return narrative.to_string();
     }
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for ch in narrative.chars() {
-        cur.push(ch);
-        if matches!(ch, '.' | '!' | '?') {
-            if !unsaid(&cur) {
-                out.push(cur.trim().to_string());
-            }
-            cur.clear();
-        }
+    let kept: Vec<String> = parts
+        .into_iter()
+        .filter(|s| status_supported(source, s))
+        .collect();
+    if kept.is_empty() {
+        log::warn!("summary: every sentence claims a status the meeting never stated — kept as written");
+        return narrative.to_string();
     }
-    if !cur.trim().is_empty() && !unsaid(&cur) {
-        out.push(cur.trim().to_string());
-    }
-    out.join(" ")
+    kept.join(" ")
 }
 
 /// V3–V7, shared by both paths.
@@ -2126,6 +2222,8 @@ pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
         .key_points
         .iter()
         .map(|p| strip_section_label(p))
+        // R2-B3: a key point is held to the same status rule as the Summary.
+        .filter(|p| status_supported(source, p))
         .filter_map(|p| validate_item(source, &p))
         .collect();
     let mut key_points = dedupe_key_points(valid);
@@ -2146,23 +2244,10 @@ pub fn parse_headline(raw: &str, source: &str) -> Option<Headline> {
 }
 
 fn sentences(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in text.chars() {
-        cur.push(ch);
-        if matches!(ch, '.' | '!' | '?') {
-            let s = cur.trim().to_string();
-            if s.split_whitespace().count() >= 3 {
-                out.push(s);
-            }
-            cur.clear();
-        }
-    }
-    let tail = cur.trim();
-    if tail.split_whitespace().count() >= 3 {
-        out.push(tail.to_string());
-    }
-    out
+    split_sentences(text)
+        .into_iter()
+        .filter(|s| s.split_whitespace().count() >= 3)
+        .collect()
 }
 
 /// The mechanical title: the narrative's first sentence, cut to 8 words.
