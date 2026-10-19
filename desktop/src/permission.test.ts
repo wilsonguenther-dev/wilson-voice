@@ -89,6 +89,22 @@ describe("permissionAction", () => {
       );
     }
   });
+
+  it("no file under desktop/src holds the deep-link URL, fixtures included", () => {
+    // PERM-B acceptance: the URL is a compile-time constant in permissions.rs.
+    // The needle is assembled so this file cannot match itself.
+    const needle = ["x-apple", "systempreferences"].join(".");
+    const sources = import.meta.glob<string>("./**/*.{ts,tsx}", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    });
+    expect(Object.keys(sources).length).toBeGreaterThan(10);
+    const offenders = Object.entries(sources)
+      .filter(([, text]) => text.includes(needle))
+      .map(([path]) => path);
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("deriveMicStatus", () => {
