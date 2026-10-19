@@ -80,14 +80,14 @@ use crate::meetings::{
 use crate::polish_protocol::{
     fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
     SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
-    SUMMARY_MAP_MAX_OUT, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    summary_map_max_out, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
 /// vocabulary.
 ///
 /// Sized against the sidecar's 4096-token context with room for the system turn,
-/// the chat template and [`SUMMARY_MAP_MAX_OUT`] of output. It is a budget for
+/// the chat template and up to [`SUMMARY_MAP_MAX_OUT_CEILING`](crate::polish_protocol::SUMMARY_MAP_MAX_OUT_CEILING) of output. It is a budget for
 /// the transcript body only — the sidecar re-checks the assembled prompt and
 /// truncates-and-warns if it still does not fit, so a wrong guess here degrades
 /// rather than fails.
@@ -1118,8 +1118,8 @@ pub fn summarize_segments_with(
         let req = PolishRequest::summarize(
             next_id(),
             SUMMARIZE_MAP,
-            SUMMARY_MAP_MAX_OUT,
-            MAP_DEADLINE_MS,
+            max_out,
+            MAP_DEADLINE_MS.max(u64::from(max_out) * 80),
             source.clone(),
             Some(grammar),
         );
@@ -1383,6 +1383,10 @@ fn reduce_narrative(
         if next.len() == 1 {
             return (clamp_words(&next[0], MAX_NARRATIVE_WORDS), truncated);
         }
+        // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
+        // ran out on a six-line meeting), and the deadline grows with it so a
+        // bigger budget can never turn into a `deadline` failure instead.
+        let max_out = summary_map_max_out(chunk.tokens);
         level = next;
     }
     // Levels exhausted, or a fold that could not converge. Keep the front of what
@@ -2084,3 +2088,9 @@ mod tests {
         assert_eq!(clamp_words(text, 5), "One two three.");
     }
 }
+        // #250 round 2: an answer that reached its output budget dropped none of
+        // the INPUT, so it is not `truncated` and earns no reader-facing note —
+        // the partial answer is parsed defensively and keeps every closed item.
+        if response.was_out_capped() {
+            log::warn!("summary: a pass reached its output budget; keeping the closed items");
+        }

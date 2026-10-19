@@ -457,6 +457,10 @@ fn handle(
     let budget = (n_ctx as usize).saturating_sub(max_out as usize + 1);
     let mut truncated = false;
     let tokens = match tokenize(&req.text) {
+    // #250 round 2: output reaching `max_out` is its OWN flag. Folding it into
+    // `truncated` (= input dropped) made the app tell readers part of their
+    // meeting "did not fit" whenever a MAP answer simply ran long.
+    let mut out_capped = false;
         Some(tokens) if tokens.len() <= budget => tokens,
         other => {
             // A rewrite that does not fit is refused: the parent has the rules
@@ -578,8 +582,9 @@ fn handle(
             // A summary that hits its budget is cut, not lost: the parent parses
             // partial output defensively and keeps the complete items. Flagged,
             // so "the model ran out of room" is never mistaken for "the meeting
-            // had nothing else in it".
-            truncated = true;
+            // had nothing else in it" — and flagged as `out_capped`, never as
+            // `truncated`, because no input was dropped.
+            out_capped = true;
             break;
         }
         batch.clear();
@@ -615,6 +620,9 @@ fn handle(
     } else {
         PolishResponse::ok(req.id, text, out_tokens, ms)
     }
+    };
+    if out_capped {
+        response.out_capped = Some(true);
 }
 
 #[cfg(test)]
