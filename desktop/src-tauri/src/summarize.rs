@@ -675,6 +675,69 @@ const DECISION_MARKERS: &[&str] = &[
     "going with", "go with", "approved", "signed off", "is final",
 ];
 
+/// #250 round 3 (B4) — words that open a sentence capitalized only because
+/// they open it: interjections, sentence adverbs, adjectives of small talk
+/// ("Nice to meet you", "Happy to help", "Hard to say", "Honestly can we…").
+/// None of them is ever an owner, whatever follows.
+const NOT_A_NAME: &[&str] = &[
+    "nice", "happy", "thanks", "thank", "good", "great", "hard", "easy", "yes", "no", "yeah",
+    "yep", "nope", "honestly", "sure", "okay", "ok", "well", "glad", "fine", "right", "sorry",
+    "hopefully", "actually", "basically", "really", "maybe", "perhaps", "probably",
+    "definitely", "certainly", "clearly", "obviously", "please", "hi", "hello", "hey",
+    "welcome", "cool", "awesome", "fair", "true", "important", "worth", "free", "ready",
+    "next", "first", "last", "just", "now", "today", "tomorrow", "here", "excited", "safe",
+    "likely", "unlikely", "able", "quick", "back", "lovely", "fun", "interesting", "funny",
+    "weird", "strange", "sad", "tough", "impossible", "possible", "better", "best", "kind",
+    "time", "nothing", "everybody", "anybody", "anyone", "somebody", "you", "he", "she",
+    "his", "her", "their", "your", "let's", "lets", "oh", "um", "uh", "so", "and", "but",
+    "also", "then", "quite", "very", "too", "exactly", "absolutely", "totally", "agreed",
+];
+
+/// A capitalized single word that is not a pronoun, a determiner or a
+/// small-talk opener — the only shape a NAME may have.
+fn is_name_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    let lower = w.to_lowercase();
+    let mut chars = w.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&lower.as_str())
+        && !matches!(
+            lower.as_str(),
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "i" | "we" | "me" | "them" | "these" | "those"
+        )
+}
+
+/// #250 round 3 (B4) — the names this transcript itself uses: its speaker
+/// labels, and every capitalized word that sits INSIDE a sentence ("Thanks to
+/// Priya …" names Priya; it does not name "Thanks"). A sentence-initial word
+/// is not evidence of a name — every sentence starts with a capital.
+pub fn transcript_names(lines: &[TranscriptLine]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut add = |n: &str| {
+        if !n.is_empty() && !names.iter().any(|k| k.eq_ignore_ascii_case(n)) {
+            names.push(n.to_string());
+        }
+    };
+    for l in lines {
+        if let Some(sp) = &l.speaker {
+            add(sp.label().trim());
+        }
+        let mut prev_ends_sentence = true;
+        for raw in l.text.split_whitespace() {
+            let w = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            let w = w.strip_suffix("'s").or(w.strip_suffix("'ll")).unwrap_or(w);
+            if !prev_ends_sentence && is_name_word(w) {
+                add(w);
+            }
+            prev_ends_sentence = raw.ends_with(['.', '!', '?', ':']);
+        }
+    }
+    names
+}
+
 fn is_owner_word(word: &str) -> bool {
     let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
     let lower = w.to_lowercase();
@@ -684,6 +747,7 @@ fn is_owner_word(word: &str) -> bool {
     let mut chars = w.chars();
     chars.next().is_some_and(char::is_uppercase)
         && chars.all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&lower.as_str())
         && !matches!(
             lower.as_str(),
             "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
@@ -712,6 +776,51 @@ fn owner_commitment(text: &str) -> bool {
         return false;
     }
     COMMIT_AFTER_OWNER.iter().any(|c| rest.starts_with(c))
+}
+
+/// #250 round 3 (B4) — the backfill's owner rule, stricter than
+/// [`owner_commitment`] because a backfilled line is one the model did NOT
+/// pick. The owner must be a name from `names` (the transcript's speakers and
+/// mid-sentence names) followed by an explicit commitment verb, or an unknown
+/// capitalized word (never a [`NOT_A_NAME`] opener) followed by `will`,
+/// `should` or `is going to`. "Can", "owns", "is on", a bare adjective + "to"
+/// — none of them commits anyone.
+fn backfill_commitment(text: &str, names: &[String]) -> bool {
+    let t = text.trim();
+    let Some((first, rest)) = t.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let rest = rest.trim_start().to_lowercase();
+    let bare = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}');
+    let known = |w: &str| names.iter().any(|n| n.eq_ignore_ascii_case(w));
+    if let Some(owner) = bare.strip_suffix("'ll").or(bare.strip_suffix("\u{2019}ll")) {
+        return is_name_word(owner) && known(owner);
+    }
+    if !is_name_word(bare) {
+        return false;
+    }
+    const EXPLICIT: &[&str] = &[
+        "will ", "is going to ", "agreed to ", "offered to ", "promised to ", "needs to ",
+        "has to ", "should ",
+    ];
+    if known(bare) {
+        EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to ")
+    } else {
+        ["will ", "should ", "is going to "].iter().any(|c| rest.starts_with(c))
+    }
+}
+
+/// #250 round 3 (A2) — a line ABOUT whether something was decided is an open
+/// question, not a decision: "Jeisil asked whether we decided", "Nobody
+/// decided whether to keep it". Checked before the decision markers.
+fn open_about_decision(lower: &str) -> bool {
+    [
+        "asked whether", "asked if", "decided whether", "decide whether", "nobody decided",
+        "no one decided", "not decided", "haven't decided", "hasn't decided", "didn't decide",
+        "did not decide", "not yet decided", "undecided", "still deciding",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
 }
 
 fn starts_imperative(text: &str) -> bool {
@@ -796,10 +905,13 @@ pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
         // subject is a thing, and nothing in it commits anyone.
         Bucket::Actions => {
             let first = lower.split_whitespace().next().unwrap_or("");
+            let first = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            // B4: a small-talk opener ("Happy to help", "Honestly can we
+            // move on") is no more a task than a statement is.
             let statement = matches!(
                 first,
                 "the" | "this" | "that" | "it" | "there" | "these" | "those" | "its" | "a" | "an"
-            );
+            ) || NOT_A_NAME.contains(&first);
             (!statement || generic_commitment(&lower)).then_some(Bucket::Actions)
         }
         other => Some(other),
@@ -861,6 +973,18 @@ fn overlap(item: &[String], line: &str) -> usize {
 ///   question", "…?"), is added verbatim, through the same [`validate_item`].
 /// * each list is put back in meeting order.
 pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source: &str) {
+    ground_extract_with(extract, lines, source, &transcript_names(lines));
+}
+
+/// [`ground_extract`] with the meeting-wide name list (B4): the backfill's
+/// owner must be one of `names`, or a capitalized word followed by
+/// `will`/`should`/`is going to` that is not a small-talk opener.
+pub fn ground_extract_with(
+    extract: &mut MapExtract,
+    lines: &[TranscriptLine],
+    source: &str,
+    names: &[String],
+) {
     for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
         for item in list.iter_mut() {
             let words = content_words(&item.text);
@@ -896,7 +1020,9 @@ pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source
             Bucket::Decisions
         } else if is_strong_question(&lower) {
             Bucket::Questions
-        } else if owner_commitment(text) && !matches!(first.as_str(), "i" | "we" | "i'll" | "we'll") {
+        } else if backfill_commitment(text, names)
+            && !matches!(first.as_str(), "i" | "we" | "i'll" | "we'll")
+        {
             Bucket::Actions
         } else {
             continue;
@@ -1400,6 +1526,7 @@ pub fn summarize_segments_with(
         return Err(SummaryError::NoSegments);
     }
     let chunks = plan_chunks(&lines, MAP_CHUNK_TOKENS, client)?;
+    let names = transcript_names(&lines);
     let full_text = lines
         .iter()
         .map(TranscriptLine::render)
@@ -1439,7 +1566,7 @@ pub fn summarize_segments_with(
                 // #250 round 2: the model's bucket is a suggestion; the line's
                 // own words decide (a question is never an action item).
                 classify_extract(&mut extract);
-                ground_extract(&mut extract, &chunk.lines, &source);
+                ground_extract_with(&mut extract, &chunk.lines, &source, &names);
                 // The chunk narrative goes through the same gate the items do.
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
@@ -2014,6 +2141,7 @@ pub fn action_owner(text: &str) -> Option<String> {
     let second = words.next()?.to_lowercase();
     let is_name = first.chars().next()?.is_uppercase()
         && first.chars().skip(1).all(|c| c.is_lowercase())
+        && !NOT_A_NAME.contains(&first.to_lowercase().as_str())
         && !matches!(
             first,
             "We" | "They"
