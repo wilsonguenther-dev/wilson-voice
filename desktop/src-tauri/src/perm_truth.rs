@@ -405,11 +405,7 @@ mod sec {
 /// name System Settings lists the grant under. Pure. Anything that is not an
 /// `.app` path (an unbundled dev binary) is "Yap".
 pub fn product_name_from_bundle_path(bundle_path: &str) -> String {
-    let leaf = bundle_path
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or("");
+    let leaf = bundle_path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
     match leaf.strip_suffix(".app") {
         Some(stem) if !stem.trim().is_empty() => stem.to_string(),
         _ => "Yap".to_string(),
