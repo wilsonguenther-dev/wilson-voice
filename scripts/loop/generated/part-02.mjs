@@ -1951,14 +1951,17 @@ ITEMS.push({
          device_id = random UUID created once. MIRROR device_id into license.json (it is not a secret) so a Keychain read failure after a
          signing-identity change re-activates the SAME seat instead of burning one. On any Keychain failure fall back to re-activation,
          never lock out.
-      3. REFRESH: at most once every 24 h, and always when under 7 days remain to exp. No per-launch refresh beyond that rule.
+      3. REFRESH: at most once every 24 h, and always when under 7 days remain to exp. No per-launch refresh beyond that rule,
+         except a HELD (403 disputed) license: it refreshes every launch (:123).
       4. NO KEY-LIST FETCH (Panel BLOCKING): no JWKS URL, no key download, no merge into a cached set. Trust = license_v2::EMBEDDED_KEYS.
          An UnknownKid from verify_token triggers re-activation, not a fetch.
       5. RESPONSES: 200 stores the token; 404 invalid_key and 409 seat_limit are shown (409 lists the devices, links the portal);
          FAIL CLOSED (CLIENT-INTEGRATION.md:122): 403 revoked, 403 expired, 403 deactivated, 401 reactivate_required and 401
          device_mismatch delete the token and show activation with the reason. Refresh returns 403 deactivated for a seat freed in
          the portal or a staff-blocked device (licensing_api.sql:149); keeping the token would let seat-cycling exceed 3 Macs.
-         403 disputed (:123) keeps the token but is NOT entitled: dictation stops, its message shows, retry next launch.
+         403 disputed (:123) keeps the token but is NOT entitled: PERSIST the hold (license.json +
+         settings_kv) across relaunch and offline: a valid token never re-entitles it; only a 200 refresh clears it. Dictation
+         stops, its message shows.
          403 blocked (activate only) and 400 / 413 never downgrade a valid stored token; 401 invalid_token per CLIENT-INTEGRATION.md;
          5xx / timeout / offline keep the token; 429 honours Retry-After. Deactivate frees the seat server-side BEFORE clearing locally.
       6. lib.rs: activate_license / deactivate_license commands call license_client.
@@ -1971,7 +1974,7 @@ ITEMS.push({
     privately, and release code has no runtime base or key override (the core reaches license_v2's verify_with crate-privately, never
     pub). No internet. Cases: 200, 404 invalid_key, 409 seat_limit,
     403 revoked/expired/deactivated and 401 reactivate_required/device_mismatch delete token, 403 disputed keeps it but not
-    entitled, 403 blocked keeps it, 400 keeps it, 413 keeps it, 503/timeout keeps it, 429 honours
+    entitled, the three disputed_hold_* tests in the acceptance, 403 blocked keeps it, 400 keeps it, 413 keeps it, 503/timeout keeps it, 429 honours
     Retry-After, refresh skipped inside 24 h, refresh forced under 7 d, keychain_delete_reactivates_same_seat (deletes the throwaway
     Keychain item, re-activation sends the mirrored device_id).
     MANUAL PROOF (PR body): activate a test-mode key from dc-yap-05 in a clean YAP_DATA_DIR with a dev build (never the installed app),
@@ -1989,6 +1992,9 @@ ITEMS.push({
     grep -q '^license_client::tests::expired_403_deletes_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::deactivated_403_deletes_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::disputed_403_not_entitled: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::disputed_hold_survives_relaunch_offline: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::disputed_hold_retries_inside_24h: test$' desktop/target/lic02-list.txt
+    grep -q '^license_client::tests::disputed_hold_cleared_by_200: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::reactivate_required_401_deletes_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::device_mismatch_401_deletes_token: test$' desktop/target/lic02-list.txt
     grep -q '^license_client::tests::blocked_403_keeps_token: test$' desktop/target/lic02-list.txt
