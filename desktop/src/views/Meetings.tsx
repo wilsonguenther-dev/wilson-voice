@@ -28,6 +28,30 @@ export default function Meetings() {
       toast(errorText(e));
     }
   };
+  const notesAction = async (run: (id: string) => Promise<void>, id: string) => {
+    try {
+      await run(id);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  };
+  // #250 round 3 (A3) — past meetings are summarized only on this one click;
+  // an upgrade never starts the notes-model download on its own.
+  const [backlog, setBacklog] = useState<{ count: number; offer: boolean } | null>(null);
+  useEffect(() => {
+    invoke<{ count: number; offer: boolean }>("notes_backlog")
+      .then(setBacklog)
+      .catch(() => setBacklog(null));
+  }, [meetings.length]);
+  async function answerBacklog(accept: boolean) {
+    try {
+      if (accept) await invoke<number>("summarize_notes_backlog");
+      else await invoke("dismiss_notes_backlog");
+      setBacklog(null);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  }
   // Y5-B — a third `return null` blank page, and the worst of them: the read
   // that feeds it (loadMeetings) swallowed its own rejection, so a failed
   // meetings query rendered as "No meetings yet" — Yap telling a user their
@@ -268,6 +292,22 @@ export default function Meetings() {
                   )}
                 </div>
               ) : (
+                <>
+                {backlog?.offer && (
+                  <div className="card notes-backlog" role="region" aria-label="Notes for past meetings">
+                    <p className="meeting-title">
+                      Summarize {backlog.count} past {backlog.count === 1 ? "meeting" : "meetings"}?
+                    </p>
+                    <p className="tiny muted">
+                      Yap writes notes on this Mac, one meeting at a time. If the notes model isn't here yet, it
+                      downloads once first (about 1.1 GB).
+                    </p>
+                    <div className="actions">
+                      <button className="primary" onClick={() => void answerBacklog(true)}>Summarize</button>
+                      <button className="ghost" onClick={() => void answerBacklog(false)}>Not now</button>
+                    </div>
+                  </div>
+                )}
                 <ul className="feed">
                   {meetings.map((m) => (
                     <li key={m.id} className="card">
@@ -335,10 +375,10 @@ export default function Meetings() {
                             : "Delete"}
                         </button>
                       </div>
-                </>
                     </li>
                   ))}
                 </ul>
+                </>
               )}
             </>
       )}
