@@ -117,6 +117,9 @@ pub struct PermissionReport {
     pub duplicate_bundles: Vec<String>,
     /// yap-p0-perm-repair — the live per-service probe, with StaleIdentity.
     pub probe: crate::perm_probe::ProbeReport,
+    /// fix-ax-probe-refresh — the name every permission line uses ("Yap Test"
+    /// on the test channel): the running bundle's name, as System Settings lists it.
+    pub product_name: String,
 }
 
 // yap-p0-perm-repair: every grant read goes through `perm_probe` — the ONE
@@ -195,6 +198,9 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     // yap-perm-truth: WHICH binary was asked, and what exactly it was told.
     let me = crate::perm_truth::running_identity();
     report.checked_bundle_path = me.bundle_path.clone();
+    report.product_name = crate::perm_truth::product_name();
+    let product = report.product_name.clone();
+    name_product_in_report(&mut report, &product);
     report.signing_authority = me.signature.authority.clone();
     report.failing_conditions =
         crate::perm_truth::failing_conditions(report.accessibility, report.input_monitoring);
@@ -205,6 +211,20 @@ pub fn report(prompt_accessibility: bool, native_ready: bool) -> PermissionRepor
     );
     report.duplicate_bundles = crate::perm_truth::duplicate_bundles().to_vec();
     report
+}
+
+/// fix-ax-probe-refresh — every user-facing permission line says the running
+/// product ("Yap Test" on the test channel), not "Yap". Pure; a no-op for "Yap".
+pub fn name_product_in_report(report: &mut PermissionReport, product: &str) {
+    report.product_name = product.to_string();
+    if product.trim().is_empty() || product == "Yap" {
+        return;
+    }
+    let name = |s: &str| s.replace("Yap", product);
+    report.summary = name(&report.summary);
+    for g in report.grants.iter_mut() {
+        g.detail = name(&g.detail);
+    }
 }
 
 /// The report from one [`crate::perm_probe::ProbeReport`], pure: the grant rows
@@ -228,6 +248,7 @@ pub fn report_from_probe(
     let input_monitoring = input_monitoring_state(listen_hid, accessibility, tap_delivering);
     let mut probe = probe;
     reconcile_listen_event(&mut probe.listen_event, input_monitoring);
+    reconcile_post_event(&mut probe.post_event, accessibility);
     let mut report = build_report_with_grants(
         accessibility,
         probe.microphone_auth,
@@ -238,6 +259,24 @@ pub fn report_from_probe(
     );
     report.probe = probe;
     report
+}
+
+/// fix-ax-probe-refresh — PostEvent is the ⌘V bridge's grant, and the bridge is
+/// only the insertion path when Accessibility is NOT granted
+/// (`paste::choose_insert_path`). Under a live Accessibility grant a PostEvent
+/// "no" breaks nothing, so it must not raise a Repair row: in 0.9.2 that row was
+/// titled "Accessibility is off" and stayed up after Accessibility was switched
+/// on. Only the banner's state changes; `raw` keeps the API's answer.
+pub fn reconcile_post_event(post: &mut crate::perm_probe::ServiceProbe, accessibility: bool) {
+    use crate::perm_probe::ProbeState;
+    if accessibility && matches!(post.state, ProbeState::Denied | ProbeState::StaleIdentity) {
+        post.state = ProbeState::Unknown;
+        post.note = Some(
+            "Accessibility is granted, so text goes in through it; CGPreflightPostEventAccess = false \
+             only matters when Accessibility is off."
+                .into(),
+        );
+    }
 }
 
 /// Bring the banner's ListenEvent row into line with the Input Monitoring
@@ -406,6 +445,7 @@ pub fn build_report_with_grants(
         stale_grants: Vec::new(),
         duplicate_bundles: Vec::new(),
         probe: unprobed(accessibility, status, input_monitoring),
+        product_name: "Yap".to_string(),
     }
 }
 
@@ -616,6 +656,26 @@ pub struct GrantSnapshot {
     pub accessibility: GrantState,
     pub input_monitoring: GrantState,
     pub audio_capture: GrantState,
+    /// fix-ax-probe-refresh — a bit per service the banner shows a Repair row
+    /// for ([`repair_row_bits`]). Without it a row the four grants do not carry
+    /// (PostEvent) never caused a transition, so the banner never re-read.
+    pub repair_rows: u8,
+}
+
+/// The services with a repairable (Denied / StaleIdentity) probe, as bits in
+/// `Service::ALL` order. Pure.
+pub fn repair_row_bits(probe: &crate::perm_probe::ProbeReport) -> u8 {
+    use crate::perm_probe::{ProbeState, Service};
+    Service::ALL
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            matches!(
+                probe.get(**s).state,
+                ProbeState::Denied | ProbeState::StaleIdentity
+            )
+        })
+        .fold(0u8, |bits, (i, _)| bits | (1 << i))
 }
 
 impl GrantSnapshot {
@@ -634,6 +694,7 @@ impl GrantSnapshot {
             },
             input_monitoring: report.input_monitoring,
             audio_capture: report.audio_capture,
+            repair_rows: repair_row_bits(&report.probe),
         }
     }
 
@@ -650,6 +711,8 @@ impl GrantSnapshot {
             || self.accessibility.nags()
             || self.input_monitoring.nags()
             || self.audio_capture.nags()
+            // A shown Repair row is a denial the user is fixing: keep reading.
+            || self.repair_rows != 0
     }
 }
 

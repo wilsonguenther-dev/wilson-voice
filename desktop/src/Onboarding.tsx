@@ -45,6 +45,8 @@ import {
 type Step = "welcome" | "permissions" | "calibration" | "done";
 
 interface PermissionReport {
+  /** fix-ax-probe-refresh — "Yap" / "Yap Test". */
+  productName?: string;
   accessibility: boolean;
   microphone: boolean;
   /**
@@ -472,7 +474,7 @@ export default function Onboarding({
             </ul>
             {/* yap-p0-perm-repair — a denied or stale grant gets Repair here
                 too, from the same probe the main-window banner reads. */}
-            <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} />
+            <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} productName={perms?.productName} />
             {note && <p className="muted tiny">{note}</p>}
             <div className="onboard-actions">
               <button className="ghost" onClick={goBack}>
