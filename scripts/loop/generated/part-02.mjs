@@ -2002,7 +2002,7 @@ ITEMS.push({
   id: 'yap-lic-04-ui-states-and-buy', prompt: 'yap-lic-04-ui-states-and-buy', branch: 'loop/yap-lic-04-license-panel-buy-drivia', gated: null,
   title: 'One license panel plus the existing tray state: key prefix, "Manage Macs" link to the portal, grace copy with the 60-day date, seat-limit lists devices; Buy opens https://drivia[.]consulting/yap (PAYMENT_LINK_URL -> PURCHASE_URL); no legacy state',
   preflight: `
-    ( M=0; test -f desktop/src-tauri/src/license_client.rs || M=1; grep -q 'pub const LICENSING_BASE' desktop/src-tauri/src/license_client.rs || M=1; git grep -qn 'GRACE_PLAN' -- desktop/src-tauri/src && M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api 'repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/src/app/%28site%29/yap/page.tsx' --silent >/dev/null 2>&1 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-02-activation-client (license_client.rs, Forge format gone) and drivia-consulting dc-yap-03-yap-buy-page (src/app/(site)/yap/page.tsx) must both be on main — land them, then the build pass again"; exit 0; fi; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs && ! git grep -qn 'buy.stripe.com' -- desktop/src-tauri/src desktop/src )
+    ( M=0; test -f desktop/src-tauri/src/license_client.rs || M=1; grep -q 'pub const LICENSING_BASE' desktop/src-tauri/src/license_client.rs || M=1; git grep -qn 'GRACE_PLAN' -- desktop/src-tauri/src && M=1; GH_PAGER=cat GH_PROMPT_DISABLED=1 gh api "repos/wilsonguenther-dev/$(printf drivia)-consulting/contents/src/app/%28site%29/yap/page.tsx" --silent >/dev/null 2>&1 || M=1; if [ "$M" = 1 ]; then echo "DEPENDENCY-NOT-ON-$(printf MAIN): yap-lic-02-activation-client (license_client.rs, Forge format gone) and drivia-consulting dc-yap-03-yap-buy-page (src/app/(site)/yap/page.tsx) must both be on main — land them, then the build pass again"; exit 0; fi; grep -q 'pub const PURCHASE_URL: &str = "https://drivia\\.consulting/yap"' desktop/src-tauri/src/license.rs && ! git grep -qn 'buy.stripe.com' -- desktop/src-tauri/src desktop/src )
   `,
   spec: `
     Panel 2026-10-19: APPROVED-WITH-CHANGES — no legacy state; ONE license panel plus the EXISTING tray state (the pill and tray copy
@@ -2081,7 +2081,8 @@ ITEMS.push({
     add the updates/latest.json route to the site deploy in this item and prove it on a preview, never swap to a 404.`,
   acceptance: `
     ! git grep -qnE 'buy.stripe.com|refunded licenses|refunded-licenses|no login, no server|No sign-in, no email' -- site/dist PRIVACY.md TERMS.md
-    ! git grep -qn '<dd>None</dd>' -- site/dist/index.html
+    ! git grep -qn '<dt>Account</dt><dd>None</dd>' -- site/dist/index.html
+    grep -q '<dt>Telemetry</dt><dd>None</dd>' site/dist/index.html
     grep -q 'drivia\\.consulting/yap' site/dist/index.html
     grep -q 'drivia\\.consulting' site/dist/privacy.html
     grep -qi 'Mac' PRIVACY.md
