@@ -24,6 +24,8 @@ const FIXTURE: &[&str] = &[
     // R2-B2: a bold owner must be a name the meeting uses mid-sentence twice.
     "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
     "I'll sync with Jeisil and Wilson after the call.",
+    // Round 4: a decimal price must come through whole.
+    "The enterprise add-on is $12.50 a seat, and the setup fee is $49.99.",
 ];
 
 fn answer(req: &wilson_voice_lib::polish_protocol::PolishRequest) -> Result<String, SummaryError> {
@@ -223,12 +225,30 @@ fn real_model_fixture_run() {
         ),
     );
     match raw {
-        Ok(g) => println!("RAW_HEADLINE truncated={} {}", g.truncated, g.text),
+        Ok(g) => println!("RAW_HEADLINE(over markdown) truncated={} {}", g.truncated, g.text),
         Err(e) => println!("RAW_HEADLINE error {}", e.tag()),
     }
     // #250 round 2: the raw MAP answer too, so a run shows what the model
     // bucketed before the post-parse classifier re-filed it.
     let lines = wilson_voice_lib::summarize::transcript_lines(&segments_from(FIXTURE));
+    // Round 4 (R2-B1): the HEADLINE pass exactly as the pipeline sends it —
+    // over the transcript — and what survives validation.
+    let hsrc = wilson_voice_lib::summarize::headline_source(&lines, &[], &client);
+    let full = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    if let Ok(g) = wilson_voice_lib::summarize::SummaryClient::generate(
+        &client,
+        &wilson_voice_lib::polish_protocol::PolishRequest::summarize(
+            900_003,
+            "headline",
+            wilson_voice_lib::polish_protocol::SUMMARY_HEADLINE_MAX_OUT,
+            120_000,
+            hsrc,
+            Some(HEADLINE_GRAMMAR.to_string()),
+        ),
+    ) {
+        println!("RAW_HEADLINE(transcript) {}", g.text);
+        println!("PARSED {:?}", wilson_voice_lib::summarize::parse_headline(&g.text, &full));
+    }
     let labels: Vec<String> = lines.iter().map(|l| l.label.clone()).collect();
     let chunk = lines
         .iter()
