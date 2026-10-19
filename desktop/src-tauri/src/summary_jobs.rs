@@ -132,6 +132,9 @@ impl NotesError {
     }
 }
 
+/// A1 — the reason a job that panicked shows: "Notes failed — internal error".
+pub const INTERNAL_ERROR_REASON: &str = "internal error";
+
 /// Sort a `models::download_file` error into the reason a person can act on.
 pub fn classify_download_error(msg: &str) -> NotesError {
     let lower = msg.to_lowercase();
@@ -351,7 +354,21 @@ fn worker_loop(inner: &Arc<Inner>) {
                 q = inner.cv.wait(q).unwrap_or_else(|p| p.into_inner());
             }
         };
-        let end = run_one(inner, &id, &token);
+        // A1: a panic in the model fetch or the summary ends THIS job as
+        // failed (with Retry) — it never kills the worker or leaves
+        // `running` set, which would park every later meeting at "queued".
+        let end = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_one(inner, &id, &token)
+        }))
+        .unwrap_or_else(|_| {
+            log::error!("summary: the notes job for meeting {id} panicked — marked failed");
+            NotesStatus {
+                id: id.clone(),
+                phase: NotesPhase::Failed,
+                percent: 0,
+                reason: Some(INTERNAL_ERROR_REASON.to_string()),
+            }
+        });
         {
             let mut q = inner.q.lock().unwrap_or_else(|p| p.into_inner());
             q.running = None;
