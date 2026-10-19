@@ -143,8 +143,9 @@ ITEMS.push({
   acceptance: `
     grep -q 'dependencyMarkerPrinted(pre)' scripts/loop/template.mjs
     ! grep -q '/DEPENDENCY-NOT-ON-MAIN/.test(asText(pre))' scripts/loop/template.mjs
-    node --test scripts/loop/ > desktop/target/qa-dep-marker.txt 2>&1
+    mkdir -p desktop/target && node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-dep-marker.txt 2>&1
     grep -q '^# fail 0$' desktop/target/qa-dep-marker.txt
+    grep -Eq '^# pass [1-9][0-9]*$' desktop/target/qa-dep-marker.txt
     (cd desktop && npm run loop:build && npm run loop:validate)
   `,
 })
