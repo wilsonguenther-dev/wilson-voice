@@ -999,8 +999,11 @@ fn build_status(state: &AppState) -> AppStatus {
     // yap-p0-hotkeys-no-permission DO 4/5: truthful hotkey status + the
     // explicit degraded-mode line. Secure Input outranks the stored tap state.
     let mut hotkeys_now = hotkeys::status();
-    hotkeys_now.fn_tap =
-        hotkeys::effective_fn_tap(&hotkeys_now.fn_tap, secure.blocked, secure.culprit.as_deref());
+    hotkeys_now.fn_tap = hotkeys::effective_fn_tap(
+        &hotkeys_now.fn_tap,
+        secure.blocked,
+        secure.culprit.as_deref(),
+    );
     let (_, dictate_toggle_label) = hotkeys::active_dictate();
     let probe = OsPermissionProbe;
     let hotkey_degraded = hotkeys::degraded_line(
@@ -5480,7 +5483,9 @@ fn rebind_dictate_toggle(app: &AppHandle, settings: &AppSettings) -> Result<(), 
 
 /// The registered dictate chord: the Settings rebind when it is valid, else
 /// `shortcuts::DICTATE_TOGGLE`.
-fn dictate_toggle_chord(settings: &AppSettings) -> (tauri_plugin_global_shortcut::Shortcut, String) {
+fn dictate_toggle_chord(
+    settings: &AppSettings,
+) -> (tauri_plugin_global_shortcut::Shortcut, String) {
     if let Some(c) = settings.dictate_toggle.as_ref() {
         match hotkeys::chord_from_setting(c) {
             Ok(v) => return v,
@@ -5517,18 +5522,29 @@ impl hotkeys::CarbonRegistrar for TauriCarbonRegistrar<'_> {
             return Err(e);
         }
         let r = if chord == shortcuts::DICTATE_TOGGLE.shortcut() {
-            self.app.global_shortcut().register(shortcuts::DICTATE_TOGGLE.shortcut())
+            self.app
+                .global_shortcut()
+                .register(shortcuts::DICTATE_TOGGLE.shortcut())
         } else {
             self.app.global_shortcut().register(chord)
         };
         match &r {
-            Ok(()) => log::info!("{} dictate-toggle registered (carbon)", hotkeys::active_dictate().1),
-            Err(e) => log::warn!("{} dictate-toggle register failed: {e}", hotkeys::active_dictate().1),
+            Ok(()) => log::info!(
+                "{} dictate-toggle registered (carbon)",
+                hotkeys::active_dictate().1
+            ),
+            Err(e) => log::warn!(
+                "{} dictate-toggle register failed: {e}",
+                hotkeys::active_dictate().1
+            ),
         }
         r.map_err(|e| e.to_string())
     }
     fn unregister(&mut self, chord: tauri_plugin_global_shortcut::Shortcut) -> Result<(), String> {
-        self.app.global_shortcut().unregister(chord).map_err(|e| e.to_string())
+        self.app
+            .global_shortcut()
+            .unregister(chord)
+            .map_err(|e| e.to_string())
     }
     fn is_registered(&self, chord: tauri_plugin_global_shortcut::Shortcut) -> bool {
         self.app.global_shortcut().is_registered(chord)
@@ -5563,45 +5579,42 @@ struct FnTapSource<'a> {
 }
 
 impl hotkeys::TapEventSource for FnTapSource<'_> {
-fn install(&mut self) -> Result<hotkeys::TapAttempt, String> {
-    #[cfg(target_os = "macos")]
-    {
-        start_fn_tap(self.app, self.state);
-        Ok(hotkeys::TapAttempt::Dispatched)
+    fn install(&mut self) -> Result<hotkeys::TapAttempt, String> {
+        #[cfg(target_os = "macos")]
+        {
+            start_fn_tap(self.app, self.state);
+            Ok(hotkeys::TapAttempt::Dispatched)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self.app, self.state);
+            Err("fn tap is macOS-only".into())
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (self.app, self.state);
-        Err("fn tap is macOS-only".into())
-    }
-}
 }
 
 /// Writes arming results into the process-wide hotkey status.
 struct AppHotkeySink;
 
 impl hotkeys::StatusSink for AppHotkeySink {
-fn carbon(&mut self, s: hotkeys::CarbonStatus) {
-    hotkeys::set_carbon_status(s);
-}
-fn fn_tap(&mut self, s: hotkeys::FnTapStatus) {
-    hotkeys::set_fn_tap_status(s);
-}
-fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
-    hotkeys::status().fn_tap
-}
+    fn carbon(&mut self, s: hotkeys::CarbonStatus) {
+        hotkeys::set_carbon_status(s);
+    }
+    fn fn_tap(&mut self, s: hotkeys::FnTapStatus) {
+        hotkeys::set_fn_tap_status(s);
+    }
+    fn current_fn_tap(&self) -> hotkeys::FnTapStatus {
+        hotkeys::status().fn_tap
+    }
 }
 
 /// Start (or retry) the fn⌃ hybrid tap. Safe to call again: `ptt_macos::start`
 /// only rebinds while a tap is running, and re-spawns after a failed install.
 #[cfg(target_os = "macos")]
 fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
-    let binding = ptt_macos::PttBinding::from_settings(
-        &state.settings.lock().ptt_binding,
-    );
-    let command_binding = ptt_macos::CommandBinding::from_settings(
-        &state.settings.lock().command_binding,
-    );
+    let binding = ptt_macos::PttBinding::from_settings(&state.settings.lock().ptt_binding);
+    let command_binding =
+        ptt_macos::CommandBinding::from_settings(&state.settings.lock().command_binding);
     let st = state.clone();
     let h = app.clone();
     ptt_macos::start(
@@ -5618,39 +5631,37 @@ fn start_fn_tap(app: &AppHandle, state: &Arc<AppState>) {
                     take_hotkey_edge(&h, &st, HotkeyEdge::Release, HotkeySource::FnTap);
                 }
                 ptt_macos::PttEvent::StillRecording => {
-                        // yap-hotkey-stop DO 4: the status event carries
-                        // `still_recording`; the pill swaps its line.
-                        emit_status(&h, &st);
-                        float_pill::show_for_recording(&h);
-                        log::warn!(
-                            "take still recording — pill asks for fn or stop"
-                        );
-                    }
-                    ptt_macos::PttEvent::Interrupted => {
-                        *st.hands_free.lock() = false;
-                        cancel_recording(&h, &st);
-                    }
-                    ptt_macos::PttEvent::HandsFreeOn => {
-                        *st.hands_free.lock() = true;
-                        emit_status(&h, &st);
-                        float_pill::show_for_recording(&h);
-                        log::info!("hands-free ON");
-                    }
-                    ptt_macos::PttEvent::HandsFreeOff => {
-                        *st.hands_free.lock() = false;
-                        emit_status(&h, &st);
-                        log::info!("hands-free OFF");
-                    }
-                }) {
-                    log::error!("PTT main-thread hop failed: {e}");
+                    // yap-hotkey-stop DO 4: the status event carries
+                    // `still_recording`; the pill swaps its line.
+                    emit_status(&h, &st);
+                    float_pill::show_for_recording(&h);
+                    log::warn!("take still recording — pill asks for fn or stop");
                 }
-            }),
-        );
-        log::info!(
-            "PTT hybrid started ({} · command mode {})",
-            binding.label(),
-            command_binding.label()
-        );
+                ptt_macos::PttEvent::Interrupted => {
+                    *st.hands_free.lock() = false;
+                    cancel_recording(&h, &st);
+                }
+                ptt_macos::PttEvent::HandsFreeOn => {
+                    *st.hands_free.lock() = true;
+                    emit_status(&h, &st);
+                    float_pill::show_for_recording(&h);
+                    log::info!("hands-free ON");
+                }
+                ptt_macos::PttEvent::HandsFreeOff => {
+                    *st.hands_free.lock() = false;
+                    emit_status(&h, &st);
+                    log::info!("hands-free OFF");
+                }
+            }) {
+                log::error!("PTT main-thread hop failed: {e}");
+            }
+        }),
+    );
+    log::info!(
+        "PTT hybrid started ({} · command mode {})",
+        binding.label(),
+        command_binding.label()
+    );
 }
 
 /// yap-hotkey-stop DO 5 — THE stop for a live dictation. The hotkey (fn
@@ -6605,7 +6616,10 @@ pub fn run() {
             meeting_pipeline::enqueue(id);
         });
         if !reconciled.is_empty() {
-            log::info!("reconcile: {} stranded meeting(s) handled", reconciled.len());
+            log::info!(
+                "reconcile: {} stranded meeting(s) handled",
+                reconciled.len()
+            );
         }
     }
 

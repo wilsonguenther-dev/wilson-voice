@@ -532,10 +532,9 @@ pub fn chord_from_setting(c: &ChordSetting) -> Result<(Shortcut, String), String
     if !(c.ctrl || c.alt || c.cmd) {
         return Err("the chord needs ⌃, ⌥ or ⌘".into());
     }
-    if let Some(b) = shortcuts::ALL
-        .iter()
-        .find(|b| b.id != shortcuts::DICTATE_TOGGLE.id && b.chord() == (c.ctrl, c.cmd, c.shift, c.alt, code))
-    {
+    if let Some(b) = shortcuts::ALL.iter().find(|b| {
+        b.id != shortcuts::DICTATE_TOGGLE.id && b.chord() == (c.ctrl, c.cmd, c.shift, c.alt, code)
+    }) {
         return Err(format!(
             "{} is already a Yap shortcut ({}) — pick another chord",
             b.label, b.id
@@ -618,23 +617,57 @@ mod tests {
 
     #[test]
     fn rebind_accepts_code_plus_modifiers_only() {
-        let ok = ChordSetting { code: "KeyD".into(), ctrl: true, alt: true, cmd: true, shift: false };
+        let ok = ChordSetting {
+            code: "KeyD".into(),
+            ctrl: true,
+            alt: true,
+            cmd: true,
+            shift: false,
+        };
         let (sc, label) = chord_from_setting(&ok).unwrap();
         assert_eq!(label, "⌃⌥⌘D");
-        assert_eq!(sc, Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER), Code::KeyD));
-        let bare = ChordSetting { code: "KeyD".into(), ..Default::default() };
+        assert_eq!(
+            sc,
+            Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER),
+                Code::KeyD
+            )
+        );
+        let bare = ChordSetting {
+            code: "KeyD".into(),
+            ..Default::default()
+        };
         assert!(chord_from_setting(&bare).is_err());
-        let modifier_only = ChordSetting { code: "ShiftLeft".into(), cmd: true, ..Default::default() };
+        let modifier_only = ChordSetting {
+            code: "ShiftLeft".into(),
+            cmd: true,
+            ..Default::default()
+        };
         assert!(chord_from_setting(&modifier_only).is_err());
-        let default = ChordSetting { code: "Space".into(), ctrl: true, alt: true, cmd: true, shift: false };
-        assert_eq!(chord_from_setting(&default).unwrap().0, shortcuts::DICTATE_TOGGLE.shortcut());
-        assert_eq!(chord_from_setting(&default).unwrap().1, shortcuts::DICTATE_TOGGLE.label);
+        let default = ChordSetting {
+            code: "Space".into(),
+            ctrl: true,
+            alt: true,
+            cmd: true,
+            shift: false,
+        };
+        assert_eq!(
+            chord_from_setting(&default).unwrap().0,
+            shortcuts::DICTATE_TOGGLE.shortcut()
+        );
+        assert_eq!(
+            chord_from_setting(&default).unwrap().1,
+            shortcuts::DICTATE_TOGGLE.label
+        );
     }
 
     #[test]
     fn rebind_refuses_every_other_yap_chord() {
         let mut refused = 0;
-        for b in shortcuts::ALL.iter().filter(|b| b.id != shortcuts::DICTATE_TOGGLE.id) {
+        for b in shortcuts::ALL
+            .iter()
+            .filter(|b| b.id != shortcuts::DICTATE_TOGGLE.id)
+        {
             let c = ChordSetting {
                 code: format!("{:?}", b.code),
                 ctrl: b.ctrl,
@@ -648,7 +681,11 @@ mod tests {
                 assert!(e.contains(b.id), "{e}");
                 refused += 1;
             } else {
-                assert!(r.is_err(), "{} has no ⌃/⌥/⌘ and must be refused anyway", b.id);
+                assert!(
+                    r.is_err(),
+                    "{} has no ⌃/⌥/⌘ and must be refused anyway",
+                    b.id
+                );
             }
         }
         // ⌃⌘V, ⌃⌘Z, ⌘⇧V, ⌃⌘M (Escape is refused for having no ⌃/⌥/⌘).

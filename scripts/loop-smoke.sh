@@ -79,8 +79,13 @@
 # this script red on an unmodified tree, which is a smoke test that tells you
 # nothing. Set YAP_SMOKE_CLIPPY_STRICT=1 to gate on `-D warnings` once that item
 # lands. Never silence a lint to make this green.
-# `cargo fmt --all -- --check` IS blocking here and it passes on origin/main
-# today (measured, exit 0).
+# `cargo fmt --all -- --check` IS blocking here. It was green on origin/main
+# when this script landed (#163), then drifted RED (exit 1, seven files) at
+# ca50beb on 2026-10-19 because ci.yml still runs it as `|| true`, so nothing
+# stopped #218/#227/#229/#231 from merging unformatted. That drift is exactly
+# what this stage exists to catch: a red here is a real finding about the tree,
+# not noise. Restored to green mechanically with `cargo fmt --all` (no semantic
+# change); making the CI step blocking too is Y0-A's item (#234), not this one.
 
 set -euo pipefail
 
