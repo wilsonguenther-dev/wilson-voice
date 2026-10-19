@@ -6945,8 +6945,8 @@ pub fn run() {
             perm_probe::prime();
 
             // PERM-E — the ONE permission watcher. It re-reads all four grants
-            // on launch, on window focus, on wake (Y1-B's publisher calls
-            // `permissions::poke(WatchReason::Wake)`; no second sleep/wake
+            // on launch, on window focus, on wake (Y1-B's publisher, wired
+            // below, calls `permissions::on_sleep_wake`; no second sleep/wake
             // observer is registered here) and on every hotkey/paste refusal,
             // and emits `permission_changed` only when something actually
             // changed. While nothing is denied it parks on a condvar with no
@@ -6985,6 +6985,75 @@ pub fn run() {
                         }
                     },
                 );
+            }
+
+            // Y1-B — the ONE sleep/wake observer (`power.rs`), fanned out to its
+            // three consumers. One publisher, three subscribers; nothing else in
+            // `src/` registers NSWorkspace sleep/wake. Unregistered in
+            // `RunEvent::Exit` below — an observer that outlives the app is a
+            // crash on the next lid close.
+            {
+                let hub = Arc::new(power::SleepWakeHub::new());
+
+                // Dictation (Y6-D): a take in flight when the lid closes is
+                // parked through the cancel path — Y3-D keeps its clip
+                // recoverable in History — so nothing pastes into whatever is
+                // frontmost after wake, and nothing is lost either.
+                let dict_app = app.handle().clone();
+                let dict_state = state.clone();
+                hub.subscribe(power::CONSUMER_DICTATION, move |event| {
+                    let in_flight = *dict_state.recording.lock();
+                    if power::dictation_should_park_take(event, in_flight) {
+                        log::info!("sleep mid-take — parking the dictation take");
+                        // Same path as a PTT interrupt; it settles the pill.
+                        cancel_recording(&dict_app, &dict_state);
+                    }
+                });
+
+                // Meetings (matrix row 16): the controller's truth drives
+                // `SleepPolicy`; will-sleep finalizes the journal and stops the
+                // meeting with the `paused_by_sleep` reason before the machine
+                // goes down.
+                let meet_app = app.handle().clone();
+                let meet_state = state.clone();
+                let policy = std::sync::Mutex::new(meeting_matrix::SleepPolicy::new());
+                hub.subscribe(power::CONSUMER_MEETINGS, move |event| {
+                    let Some(controller) = meet_state.meeting() else {
+                        return;
+                    };
+                    let action = policy
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .drive(controller.is_recording(), event);
+                    match action {
+                        meeting_matrix::SleepAction::FinalizeAndPause
+                        | meeting_matrix::SleepAction::FinalizeMissedSleepAndOfferResume => {
+                            if controller.is_recording() {
+                                match controller.stop(meeting_matrix::PAUSED_BY_SLEEP) {
+                                    Ok(_) => log::info!("meeting finalized on {event:?} ({action:?})"),
+                                    Err(e) => log::warn!("meeting stop on {event:?}: {e}"),
+                                }
+                                if !*meet_state.recording.lock() {
+                                    float_pill::after_recording(
+                                        &meet_app,
+                                        meet_state.settings.lock().show_floating_pill,
+                                    );
+                                }
+                            }
+                        }
+                        meeting_matrix::SleepAction::OfferResumeAsNewSegment => {
+                            log::info!("woke after a sleep-paused meeting — resume is a new segment");
+                        }
+                        meeting_matrix::SleepAction::Ignore => {}
+                    }
+                });
+
+                // PERM-E: re-read every grant on wake.
+                hub.subscribe(power::CONSUMER_PERMISSIONS, |event| {
+                    permissions::on_sleep_wake(event);
+                });
+
+                power::install_sleep_wake_observer(hub);
             }
 
             // Menu-bar dropdown (Wispr parity): a full control surface so Yap is
@@ -7438,6 +7507,11 @@ pub fn run() {
             // restore, then the WAL checkpoint. Covers Cmd-Q / window-driven
             // exit; the tray Quit item also checkpoints before app.exit(0).
             if let tauri::RunEvent::Exit = event {
+                // Y1-B: remove the sleep/wake observer before anything it calls
+                // into is torn down.
+                if power::unregister_sleep_wake_observer() {
+                    log::info!("exit: sleep/wake observer unregistered");
+                }
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     let steps = teardown_for_exit(&state);
                     log::info!("exit teardown: {}", steps.join(" → "));

@@ -49,7 +49,7 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `NSWorkspaceWillSleepNotification`**, so the app does not do this yet |
+| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
@@ -69,7 +69,7 @@ itself.
 | 5b | Journal write falls behind — and the meeting never says what it cost | `dropped > 0` becomes an honest quality note on the meeting detail: how many seconds of audio the disk cost, and that they are missing | **Policy only, NOT WIRED** — `cargo test --test matrix_row5_journal_backpressure` covers the decision; **nothing calls `quality_note`**, so the app does not do this yet |
 | 6 | App killed or crashes mid-meeting | An orphan `.in_progress.json` + `.spill.pcm` found at startup finalizes into a wav; the meeting row becomes `partial` with a Resume-processing affordance | `cargo test --test matrix_row6_orphan_recovery` — drives `recover_orphaned_meetings` in `meeting.rs` |
 | 15 | A second Yap instance is launched during a meeting | `tauri-plugin-single-instance`, registered as the FIRST plugin, hands the argv to the running app and exits the duplicate — no second recorder, no second SQLite writer | Manual repro — `docs/yap22a-phase-demo.md` |
-| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | **Policy only, NOT WIRED** — `cargo test --test matrix_row16_sleep_wake` covers the decision; **nothing calls `NSWorkspaceWillSleepNotification`**, so the app does not do this yet |
+| 16 | Sleep or lid close mid-meeting | Finalize the journal, mark `paused_by_sleep`; on wake OFFER resume as a new segment rather than pretending the gap did not happen | `cargo test --test matrix_row16_sleep_wake` — drives `SleepWakeObserver` in `power.rs` |
 | 17 | Meeting exceeds the 3 h cap | Warn once at 2 h 45 m; hard-stop once at 3 h, cleanly finalized | `cargo test --test matrix_row17_meeting_cap` — drives `watchdog_tick` in `meeting.rs` |
 | 17b | …and the recording that was still going has nowhere to carry on | A continuation meeting is created and linked to the one the cap stopped, titled so a 9 h session reads as three meetings rather than three copies of one | **Policy only, NOT WIRED** — `cargo test --test matrix_row17_meeting_cap` covers the decision; **nothing calls `continuation_title`**, so the app does not do this yet |
 | 3a | User quits mid-processing (finding #3) | Resume from `processed_through_seconds`, never re-decode from zero | `cargo test --test matrix_new_quit_mid_processing` — drives `JsonProgressStore` in `meeting_asr.rs` |
@@ -191,14 +191,17 @@ changes no UI. It does at least take what the caller will have —
 rate rather than a block count nothing measures. The never-block half of the same
 failure — row 5 — *is* wired, which is why the two halves are two cells.
 
-**Row 16 — sleep / lid close. Nobody owns this.** The state machine
-(`meeting_matrix::SleepPolicy`) is written and tested;
-`NSWorkspaceWillSleepNotification` is registered by nothing — `power.rs` names it
-in a comment and registers nothing — so `SleepPolicy::observe` has zero callers
-and closing a lid mid-meeting today does whatever it did before YV99. This is one
-of 22-A's three gaps that are not waiting on a queue: **somebody still has to
-build it**, and until they do, the honest reading of row 16 is "we know what the
-app should do and it does not do it."
+**Row 16 — sleep / lid close. Wired by Y1-B.** The state machine
+(`meeting_matrix::SleepPolicy`) was written and tested by YV99 and had no caller:
+`power.rs` named `NSWorkspaceWillSleepNotification` in a comment and registered
+nothing. Y1-B registered the one observer in `power.rs` (`SleepWakeObserver`, a
+block observer for will-sleep and did-wake on the NSWorkspace notification
+centre) and fans each event out through `SleepWakeHub` to three consumers:
+dictation (a take in flight is parked), meetings (`SleepPolicy::drive`, which
+stops the meeting with the `paused_by_sleep` reason on will-sleep) and PERM-E's
+permission re-read on wake. The observer is removed in `RunEvent::Exit`. The
+row is now a `Test` row; the resume prompt itself has no UI yet, so on wake the
+offer is logged and the next meeting the user starts supersedes it.
 
 **Row `17b` — the meeting that carries on. Nobody owns this.** The watchdog stops
 a recording at three hours and stops there. `continuation_title` decides what the
@@ -218,11 +221,11 @@ nothing calls it, so a denied microphone today still ends the meeting rather
 than recording the lecture stream. The change that would wire it is a change to
 the capture session, which is YV106's.
 
-All four are tripwired in the opposite direction to a `Test` row: the row's
-named call site (`meeting_start_plan`, `quality_note`,
-`NSWorkspaceWillSleepNotification`, `continuation_title`) must stay ABSENT from
-`src/` as code — a comment does not count, and `power.rs` has one — so a row
-cannot stay `PolicyOnly` after its wiring lands.
+The unowned rows are tripwired in the opposite direction to a `Test` row: the
+row's named call site (`meeting_start_plan`, `quality_note`,
+`continuation_title`) must stay ABSENT from `src/` as code — a comment does not
+count — so a row cannot stay `PolicyOnly` after its wiring lands. Row 16 is the
+one that fired and was promoted (Y1-B).
 
 That device is the same one `tests/meeting_event_contract.rs` uses for YV95's
 emitter, and it exists for the same reason: a comment saying "somebody should
