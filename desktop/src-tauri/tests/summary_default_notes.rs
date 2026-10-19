@@ -209,6 +209,30 @@ fn real_model_fixture_run() {
         Ok(g) => println!("RAW_HEADLINE truncated={} {}", g.truncated, g.text),
         Err(e) => println!("RAW_HEADLINE error {}", e.tag()),
     }
+    // #250 round 2: the raw MAP answer too, so a run shows what the model
+    // bucketed before the post-parse classifier re-filed it.
+    let lines = wilson_voice_lib::summarize::transcript_lines(&segments_from(FIXTURE));
+    let labels: Vec<String> = lines.iter().map(|l| l.label.clone()).collect();
+    let chunk = lines
+        .iter()
+        .map(wilson_voice_lib::summarize::TranscriptLine::render)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let raw_map = wilson_voice_lib::summarize::SummaryClient::generate(
+        &client,
+        &wilson_voice_lib::polish_protocol::PolishRequest::summarize(
+            900_002,
+            "map",
+            wilson_voice_lib::polish_protocol::summary_map_max_out(chunk.len() / 3),
+            120_000,
+            chunk,
+            wilson_voice_lib::summarize::map_grammar(&labels),
+        ),
+    );
+    match raw_map {
+        Ok(g) => println!("RAW_MAP truncated={} {}", g.truncated, g.text),
+        Err(e) => println!("RAW_MAP error {}", e.tag()),
+    }
     assert!(s.markdown.starts_with("## "));
 
     // Memory: the sidecar (and the GGUF it mapped) lives only for the job.

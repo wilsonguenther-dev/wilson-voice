@@ -150,8 +150,9 @@ RULES
    that appear in this input. Never invent an id.
 3. Copy names, numbers, dates, times and addresses exactly as they appear.
    Never add one that is not in the input.
-4. `actions` are things someone committed to do. `decisions` are things that
-   were settled. `questions` are things left open.
+4. `actions` are things someone committed to do (\"<name> will ...\").
+   `decisions` are things that were settled. `questions` are things left
+   open (\"whether ...\"). A question is not an action.
 5. Empty arrays are correct answers. Do not manufacture items to fill them.
 6. Keep each `text` to one short sentence.";
 
@@ -456,11 +457,11 @@ fn handle(
 
     let budget = (n_ctx as usize).saturating_sub(max_out as usize + 1);
     let mut truncated = false;
-    let tokens = match tokenize(&req.text) {
     // #250 round 2: output reaching `max_out` is its OWN flag. Folding it into
     // `truncated` (= input dropped) made the app tell readers part of their
     // meeting "did not fit" whenever a MAP answer simply ran long.
     let mut out_capped = false;
+    let tokens = match tokenize(&req.text) {
         Some(tokens) if tokens.len() <= budget => tokens,
         other => {
             // A rewrite that does not fit is refused: the parent has the rules
@@ -615,14 +616,15 @@ fn handle(
         text
     };
     let ms = started.elapsed().as_millis() as u64;
-    if truncated {
+    let mut response = if truncated {
         PolishResponse::ok_truncated(req.id, text, out_tokens, ms)
     } else {
         PolishResponse::ok(req.id, text, out_tokens, ms)
-    }
     };
     if out_capped {
         response.out_capped = Some(true);
+    }
+    response
 }
 
 #[cfg(test)]

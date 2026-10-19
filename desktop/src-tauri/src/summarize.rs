@@ -639,11 +639,279 @@ pub fn parse_map_output(raw: &str, labels: &[String], source: &str) -> MapExtrac
     out
 }
 
+/// Which list an extracted line goes in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bucket {
+pub enum Bucket {
     Actions,
     Decisions,
     Questions,
+}
+
+// ── #250 round 2: the post-parse classifier ─────────────────────────────────
+
+/// Words that open an imperative action item ("Send the deck to Priya").
+const IMPERATIVE_VERBS: &[&str] = &[
+    "send", "book", "schedule", "email", "call", "share", "draft", "write", "update",
+    "review", "check", "prepare", "finish", "fix", "ship", "file", "create", "add",
+    "confirm", "ask", "invite", "circulate", "post", "follow", "set", "reach", "get",
+    "find", "look", "test", "submit", "sign", "order", "contact", "loop",
+];
+
+/// Owner-led commitments: `<owner> will …`, `<owner> to …`, `I'll …`.
+const COMMIT_AFTER_OWNER: &[&str] = &[
+    "will ", "to ", "should ", "must ", "needs to ", "has to ", "is going to ",
+    "agreed to ", "offered to ", "promised to ", "owns ", "can ", "is on ",
+];
+
+/// Settled things. Checked first: "we also decided to drop X" carries a
+/// `to <verb>` that would otherwise read as a commitment.
+const DECISION_MARKERS: &[&str] = &[
+    "decided", "decision", "we agreed", "agreed that", "agreed the", "settled",
+    "will remain", "will stay", "stays at", "remains at", "stay at", "remain at",
+    "going with", "go with", "approved", "signed off", "is final",
+];
+
+fn is_owner_word(word: &str) -> bool {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    let lower = w.to_lowercase();
+    if matches!(lower.as_str(), "i" | "we") {
+        return true;
+    }
+    let mut chars = w.chars();
+    chars.next().is_some_and(char::is_uppercase)
+        && chars.all(|c| c.is_lowercase())
+        && !matches!(
+            lower.as_str(),
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "also" | "and" | "so" | "then"
+        )
+}
+
+/// `<owner> will/to/…` at the front, or a contracted `I'll` / `We'll` /
+/// `Jeisil'll`. The owner + verb shape the action-item rule asks for.
+fn owner_commitment(text: &str) -> bool {
+    let t = text.trim();
+    let Some((first, rest)) = t.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let rest = rest.trim_start().to_lowercase();
+    let lower_first = first.to_lowercase();
+    if let Some(owner) = lower_first.strip_suffix("'ll").or(lower_first.strip_suffix("\u{2019}ll")) {
+        return !owner.is_empty();
+    }
+    if !is_owner_word(first) {
+        return false;
+    }
+    // "We agreed to keep the price" is a decision, not a task.
+    if lower_first == "we" && rest.starts_with("agreed") {
+        return false;
+    }
+    COMMIT_AFTER_OWNER.iter().any(|c| rest.starts_with(c))
+}
+
+fn starts_imperative(text: &str) -> bool {
+    let first = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    IMPERATIVE_VERBS.contains(&first.as_str())
+}
+
+fn is_strong_question(lower: &str) -> bool {
+    lower.trim_end().ends_with('?')
+        || lower.contains("open question")
+        || lower.contains("still open")
+        || lower.contains("unresolved")
+        || lower.contains("undecided")
+        || lower.contains("not yet decided")
+        || lower.contains("still unclear")
+}
+
+fn is_weak_question(lower: &str) -> bool {
+    [
+        "whether ", "should we ", "do we ", "does anyone ", "can we ", "are we ", "is it ",
+        "how do we ", "what if ",
+    ]
+    .iter()
+    .any(|q| lower.starts_with(q))
+        || lower.contains(" is whether ")
+        || lower.contains(" was whether ")
+        || lower.contains(" asked whether ")
+        || lower.contains(" asked if ")
+}
+
+fn generic_commitment(lower: &str) -> bool {
+    [
+        " will ", "'ll ", " need to ", " needs to ", " has to ", " have to ", " must ",
+        " should ", " to do", "follow up", "going to ", " by friday", " by monday",
+    ]
+    .iter()
+    .any(|c| format!(" {lower} ").contains(c))
+}
+
+/// Which list `text` belongs in, judged from its own words; `None` when it
+/// was offered as an action item and carries no commitment at all.
+///
+/// The 1.5B MAP model buckets by topic, not by speech act — the real run on
+/// PR #250 filed "The open question is whether annual billing gets a
+/// discount" and "We also decided to drop the free trial" under Action
+/// items. Grounding was right; the bucket was wrong. Order matters:
+///
+/// 1. a settled marker ("decided", "stays at", "will remain") → Decisions;
+/// 2. an explicit open marker ("?", "open question") → Open questions;
+/// 3. an owner + commitment ("Jeisil will send", "Wilson to book") or an
+///    imperative ("Send the deck") → Action items;
+/// 4. a softer question shape ("whether …", "should we …") → Open questions;
+/// 5. otherwise the model's bucket stands — except Action items, which must
+///    carry a commitment ("will", "need to", "follow up", …) or are dropped:
+///    an action item without one is a statement the narrative already holds.
+pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
+    let lower = text.trim().to_lowercase();
+    if (DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower))
+        && !owner_commits_strongly(text)
+    {
+        return Some(Bucket::Decisions);
+    }
+    if is_strong_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    if owner_commitment(text) || starts_imperative(text) {
+        return Some(Bucket::Actions);
+    }
+    if is_weak_question(&lower) {
+        return Some(Bucket::Questions);
+    }
+    match from {
+        Bucket::Actions => generic_commitment(&lower).then_some(Bucket::Actions),
+        other => Some(other),
+    }
+}
+
+/// A named owner who will DO something outranks a decision word later in the
+/// line: "Jeisil will send the doc we decided on" is Jeisil's task.
+fn owner_commits_strongly(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or("");
+    let lower = first.to_lowercase();
+    owner_commitment(text) && lower != "we" && !lower.starts_with("we'")
+        && !text.to_lowercase().contains(" will remain")
+        && !text.to_lowercase().contains(" will stay")
+}
+
+/// "The free trial will be dropped" — a settled change in the passive voice,
+/// which has no owner and so is a decision, not a task.
+fn passive_settled(lower: &str) -> bool {
+    lower
+        .split(" will be ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
+}
+
+fn content_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn overlap(item: &[String], line: &str) -> usize {
+    let line = content_words(line);
+    item.iter().filter(|w| line.contains(w)).count()
+}
+
+/// #250 round 2 — make one MAP extract's citations and coverage hold up.
+///
+/// The real 1.5B run cited the question's line for the "drop the free trial"
+/// decision and vice versa (so both timestamps were wrong), and with any
+/// prompt wording it skipped one of the plainly-said lines. Both are fixed
+/// mechanically, from the chunk's own lines, so nothing here can invent text:
+///
+/// * **re-cite** — an item moves to the chunk line that shares the most of
+///   its content words, when that line beats the one it cited. The new id is
+///   still one of THIS chunk's ids, so the provenance guarantee is unchanged.
+/// * **backfill** — a line no item cites, whose own words are an unambiguous
+///   commitment by a NAMED owner ("Jeisil will send …"), an explicit decision
+///   ("we decided", "we agreed") or an explicit open question ("open
+///   question", "…?"), is added verbatim, through the same [`validate_item`].
+/// * each list is put back in meeting order.
+pub fn ground_extract(extract: &mut MapExtract, lines: &[TranscriptLine], source: &str) {
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        for item in list.iter_mut() {
+            let words = content_words(&item.text);
+            let score = |l: &TranscriptLine| overlap(&words, &l.text);
+            let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
+            if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
+                if score(best) > cited {
+                    item.segment = best.label.clone();
+                }
+            }
+        }
+    }
+    for line in lines {
+        let cited = [&extract.actions, &extract.decisions, &extract.questions]
+            .iter()
+            .any(|list| list.iter().any(|i| i.segment == line.label));
+        if cited {
+            continue;
+        }
+        let text = line.text.trim();
+        let lower = text.to_lowercase();
+        let first = text.split_whitespace().next().unwrap_or("").to_lowercase();
+        let bucket = if ["decided", "we agreed", "agreed that", "agreed the"]
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            Bucket::Decisions
+        } else if is_strong_question(&lower) {
+            Bucket::Questions
+        } else if owner_commitment(text) && !matches!(first.as_str(), "i" | "we" | "i'll" | "we'll") {
+            Bucket::Actions
+        } else {
+            continue;
+        };
+        let Some(text) = validate_item(source, text.trim_end_matches('.')) else {
+            continue;
+        };
+        let item = ExtractedItem { text, segment: line.label.clone() };
+        match bucket {
+            Bucket::Actions => extract.actions.push(item),
+            Bucket::Decisions => extract.decisions.push(item),
+            Bucket::Questions => extract.questions.push(item),
+        }
+    }
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+        list.sort_by(|a, b| a.segment.cmp(&b.segment));
+        let mut kept: Vec<ExtractedItem> = Vec::with_capacity(list.len());
+        for item in list.drain(..) {
+            if !kept.iter().any(|k| same_item(&k.text, &item.text)) {
+                kept.push(item);
+            }
+        }
+        *list = kept;
+    }
+}
+
+/// Re-bucket one MAP extract with [`classify_item`]. Order inside each list is
+/// kept; a dropped action counts toward [`MapExtract::dropped`].
+pub fn classify_extract(extract: &mut MapExtract) {
+    let all = [
+        (Bucket::Actions, std::mem::take(&mut extract.actions)),
+        (Bucket::Decisions, std::mem::take(&mut extract.decisions)),
+        (Bucket::Questions, std::mem::take(&mut extract.questions)),
+    ];
+    for (from, items) in all {
+        for item in items {
+            match classify_item(from, &item.text) {
+                Some(Bucket::Actions) => extract.actions.push(item),
+                Some(Bucket::Decisions) => extract.decisions.push(item),
+                Some(Bucket::Questions) => extract.questions.push(item),
+                None => extract.dropped += 1,
+            }
+        }
+    }
 }
 
 /// Strip a markdown fence a model wrapped its JSON in. The grammar forbids one;
@@ -1115,6 +1383,10 @@ pub fn summarize_segments_with(
         let Some(grammar) = map_grammar(&labels) else {
             continue;
         };
+        // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
+        // ran out on a six-line meeting), and the deadline grows with it so a
+        // bigger budget can never turn into a `deadline` failure instead.
+        let max_out = summary_map_max_out(chunk.tokens);
         let req = PolishRequest::summarize(
             next_id(),
             SUMMARIZE_MAP,
@@ -1129,6 +1401,10 @@ pub fn summarize_segments_with(
             Ok(answer) => {
                 truncated |= answer.truncated;
                 let mut extract = parse_map_output(&answer.text, &labels, &source);
+                // #250 round 2: the model's bucket is a suggestion; the line's
+                // own words decide (a question is never an action item).
+                classify_extract(&mut extract);
+                ground_extract(&mut extract, &chunk.lines, &source);
                 // The chunk narrative goes through the same gate the items do.
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
@@ -1383,10 +1659,6 @@ fn reduce_narrative(
         if next.len() == 1 {
             return (clamp_words(&next[0], MAX_NARRATIVE_WORDS), truncated);
         }
-        // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
-        // ran out on a six-line meeting), and the deadline grows with it so a
-        // bigger budget can never turn into a `deadline` failure instead.
-        let max_out = summary_map_max_out(chunk.tokens);
         level = next;
     }
     // Levels exhausted, or a fold that could not converge. Keep the front of what
@@ -1771,6 +2043,13 @@ pub fn render_notes(
     if !headline.key_points.is_empty() {
         out.push_str("### Key points\n\n");
         for p in &headline.key_points {
+            // #250 round 2: the HEADLINE input carries "Decisions:" /
+            // "Action items:" labels, and a 1.5B model sometimes echoes one
+            // into a point. The label is ours, never the meeting's.
+            let p = ["Decisions:", "Action items:", "Key points:", "Summary:"]
+                .iter()
+                .find_map(|l| p.strip_prefix(l))
+                .map_or(p.as_str(), str::trim_start);
             out.push_str(&format!("- {p}\n"));
         }
         out.push('\n');
@@ -1968,6 +2247,12 @@ impl SummaryClient for SidecarSummaryClient {
         if truncated {
             log::warn!("summary: the sidecar truncated a pass to fit its context");
         }
+        // #250 round 2: an answer that reached its output budget dropped none of
+        // the INPUT, so it is not `truncated` and earns no reader-facing note —
+        // the partial answer is parsed defensively and keeps every closed item.
+        if response.was_out_capped() {
+            log::warn!("summary: a pass reached its output budget; keeping the closed items");
+        }
         response
             .into_text()
             .map(|text| Generated { text, truncated })
@@ -2088,9 +2373,3 @@ mod tests {
         assert_eq!(clamp_words(text, 5), "One two three.");
     }
 }
-        // #250 round 2: an answer that reached its output budget dropped none of
-        // the INPUT, so it is not `truncated` and earns no reader-facing note —
-        // the partial answer is parsed defensively and keeps every closed item.
-        if response.was_out_capped() {
-            log::warn!("summary: a pass reached its output budget; keeping the closed items");
-        }
