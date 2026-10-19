@@ -844,4 +844,29 @@ mod tests {
         assert_eq!(stale_summarizing(&rows, &active), vec!["old".to_string()]);
     }
 
+
+    /// A6: every reason a card can show is real copy — non-empty and
+    /// distinct per variant — without re-typing any shipped string here.
+    #[test]
+    fn every_failure_reason_is_non_empty_and_distinct() {
+        let variants = [
+            NotesError::Offline,
+            NotesError::DiskFull(String::from("stub disk")),
+            NotesError::Checksum,
+            NotesError::Server(503),
+            NotesError::ModelStart,
+            NotesError::Summary(String::from("stub summary")),
+            NotesError::Cancelled,
+        ];
+        let reasons: Vec<String> = variants.iter().map(NotesError::plain).collect();
+        for (i, r) in reasons.iter().enumerate() {
+            assert!(r.trim().len() > 3, "empty reason for {:?}", variants[i]);
+            for (j, other) in reasons.iter().enumerate().skip(i + 1) {
+                assert_ne!(r, other, "{:?} and {:?} read the same", variants[i], variants[j]);
+            }
+        }
+        assert!(NotesError::Server(503).plain().contains("503"));
+        assert_ne!(NotesError::Server(404).plain(), NotesError::Server(503).plain());
+    }
+
 }
