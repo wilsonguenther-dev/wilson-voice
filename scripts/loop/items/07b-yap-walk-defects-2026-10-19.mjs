@@ -52,7 +52,7 @@ ITEMS.push({
   id: 'yap-lic-00-kill-forge-fetch', prompt: 'yap-lic-00-kill-forge-fetch', branch: 'loop/yap-lic-00-kill-forge-revocation-fetch', gated: null,
   title: 'SECURITY: delete the launch-time revocation GET to the dead Forge sslip.io host entirely; no licensing network call at all until the new client lands',
   preflight: `
-    ! git grep -qnE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs && ! git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs
+    ! git grep -qnE 'sslip\\.io|forge\\.87|87-99-149-214' -- desktop/src-tauri/src desktop/src site docs && ! git grep -qnE 'REVOCATION_URL|ISSUER_HOST|fetch_revocations|spawn_revocation_refresh' -- desktop/src-tauri/src && grep -q 'launch_license_init_makes_no_network_call' desktop/src-tauri/src/license.rs && ! grep -qiE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
   `,
   spec: `
     Panel: not required — FIX, class SECURITY (walk D3; supersedes the earlier yap-license-revocation-dead-host
@@ -70,6 +70,12 @@ ITEMS.push({
     install that has a cached list behaves exactly as before. Local licence verification (Ed25519 claims,
     trial, grace) is unchanged. Remove the host from every config and doc mention, and correct
     docs/ARCHITECTURE-AUDIT-2026-09-26.md §9 ("harmless no-op" was wrong: it was a live GET every launch).
+    PRIVACY.md (repo root, outside the grep scope above, so it is named here): delete list item 3 "The
+    revocation check" from "The only times Yap uses the network" — the list becomes the model download and
+    the update check, TWO calls — and say plainly that the licensing path makes no network call: a licence
+    is verified on the Mac against the compiled-in public key. The acceptance refuses PRIVACY.md text
+    matching revocation (check|list|refresh|download) or "refunded or charged back", so do not phrase the
+    removal as "no longer downloads a revocation list". PRIV-A (30-y6) pins the same two call sites.
     Legitimate unrelated "forge" words stay: forget/forged/forgeable, and the issuer-repo citations
     "drivia-forge" and the signing-key path.
     Tests: (1) launch_license_init_makes_no_network_call — the launch-time licence init takes an injected
@@ -86,6 +92,7 @@ ITEMS.push({
     grep -q 'license_rs_has_no_http_client ... ok' desktop/target/qa-lic00.txt
     grep -Eq 'test result: ok. [1-9][0-9]* passed' desktop/target/qa-lic00.txt
     (cd desktop/src-tauri && cargo test --features custom-protocol --test license_gate)
+    ! grep -niE 'revocation (check|list|refresh|download)|refunded or charged back' PRIVACY.md
     test -s docs/loop/evidence/yap-lic-00-kill-forge-fetch.md
     head -1 docs/loop/evidence/yap-lic-00-kill-forge-fetch.md | grep -qx 'ROOT-CAUSE-PROBE yap-lic-00-kill-forge-fetch'
     (cd desktop && npm run loop:validate)
