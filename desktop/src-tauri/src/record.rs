@@ -1221,8 +1221,10 @@ fn finalize_orphaned_journal(marker: &Path) -> Result<Option<RecoveredTake>, Str
 
     let bytes = std::fs::read(&spill).unwrap_or_default();
     let samples: Vec<f32> = bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b) as f32 / i16::MAX as f32)
         .collect();
     // Same floor the live path uses: below it the "take" was a stray tap, and a
     // Retry row for it would be noise in History.
@@ -4044,8 +4046,10 @@ mod tests {
     fn read_spill(path: &Path) -> Vec<i16> {
         std::fs::read(path)
             .unwrap()
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect()
     }
 

@@ -37,7 +37,12 @@ jobs:
       - name: Frontend tests (vitest)
         run: npm test
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Y0-A: the toolchain is PINNED, never `@stable`. With `-D warnings` on
+      # clippy, an unpinned toolchain turns main red on the day a Rust release
+      # adds a lint, whatever the diff. The pin lives in desktop/rust-toolchain.toml
+      # so the loop lanes and this job run the SAME clippy; keep this tag equal
+      # to its `channel`. Bump both in one commit, with the new lints fixed.
+      - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: clippy, rustfmt
       # YV60 made `desktop/` a Cargo workspace (src-tauri + yap-polish), so the
