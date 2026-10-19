@@ -17,6 +17,47 @@ import { watchMeetingConsent } from "./meetings/consentWatch";
 import { chipFor, shouldWarnTrial, trialWarningText, daysLeft as trialDaysLeft, type LicenseStatus } from "./license/status";
 import { type Nav, type SettingsTab, readTrialWarnedFor, writeTrialWarnedFor, HISTORY_LIMIT, type AppSettings, type AppStatus, type PermissionReport, type TranscriptEntry, type FailedDictation, type CrashEvent, type EngineStatus, type Insights, type Meeting, type KindChoice, type MeetingDetail, type DayCount, monthName, type DictEntry, type DictCandidate, type Snippet, type ScratchNote } from "./appTypes";
 
+/**
+ * yap-p0-insertion-bridge-fallback DO 3 — the boot batch, one entry per backend
+ * command. `refreshAll` settles them with Promise.allSettled, so one failing
+ * command costs exactly its own data: the error is recorded against that
+ * command (`bootErrors`) and the view that needs it shows it inline with a
+ * retry. Only `get_settings` failing is the full-screen "UI failed to load
+ * backend bridge" (App.tsx), and the status line says "Bridge error" only when
+ * EVERY command failed — before this, one rejected `list_crash_events` blanked
+ * the whole app (evidence: docs/loop/evidence/yap-p0-insertion-bridge-fallback.md).
+ */
+export const BOOT_COMMANDS = [
+  { cmd: "get_settings" },
+  { cmd: "get_status" },
+  { cmd: "get_insights" },
+  { cmd: "daily_series", args: { days: 365 } },
+  { cmd: "monthly_series", args: { months: 12 } },
+  { cmd: "list_dictionary" },
+  { cmd: "list_dict_candidates" },
+  { cmd: "list_snippets" },
+  { cmd: "list_scratch" },
+  { cmd: "list_failed_dictations" },
+  { cmd: "list_crash_events" },
+] as const satisfies readonly { cmd: string; args?: Record<string, unknown> }[];
+
+/** A boot command, plus the history read that follows the batch. */
+export type BootKey = (typeof BOOT_COMMANDS)[number]["cmd"] | "get_history";
+export type BootErrors = Partial<Record<BootKey, string>>;
+
+/** Replace the attempted keys' errors with this pass's; keep the rest. */
+export function mergeBootErrors(prev: BootErrors, attempted: readonly BootKey[], errors: BootErrors): BootErrors {
+  const next: BootErrors = { ...prev };
+  for (const k of attempted) delete next[k];
+  return { ...next, ...errors };
+}
+
+/** The status line's "Bridge error" — only when every attempted command failed. */
+export function bootStatusLine(attempted: readonly BootKey[], errors: BootErrors): string | null {
+  if (attempted.length === 0 || !attempted.every((k) => errors[k] !== undefined)) return null;
+  return `Bridge error: ${errors[attempted[0]]}`;
+}
+
 export function useAppShell() {
   const [nav, setNav] = useState<Nav>("home");
   const [userName, setUserName] = useState("");
@@ -177,7 +218,10 @@ export function useAppShell() {
   const [signatureDraft, setSignatureDraft] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
-  const [bootError, setBootError] = useState<string | null>(null);
+  // DO 3 — one error per boot command; `bootError` is get_settings' alone (the
+  // full-screen trigger in App.tsx).
+  const [bootErrors, setBootErrors] = useState<BootErrors>({});
+  const bootError = bootErrors.get_settings ?? null;
   // Y5-B — per-view load state. Before this, `null` data meant both "still
   // loading" and "failed", and the views rendered both as nothing.
   // `booting` is true until the first refreshAll settles, either way.
@@ -346,61 +390,62 @@ export function useAppShell() {
     }
   }, []);
 
+  const loadBoot = useCallback(async (only?: readonly BootKey[]) => {
+    const specs = only ? BOOT_COMMANDS.filter((c) => only.includes(c.cmd)) : BOOT_COMMANDS;
+    const results = await Promise.allSettled(
+      specs.map((c) => invoke<unknown>(c.cmd, "args" in c ? c.args : undefined)),
+    );
+    const errors: BootErrors = {};
+    results.forEach((r, i) => {
+      const cmd = specs[i].cmd;
+      if (r.status === "rejected") {
+        console.error(`${cmd} failed`, r.reason);
+        errors[cmd] = String(r.reason);
+        return;
+      }
+      const v = r.value;
+      switch (cmd) {
+        case "get_settings": setSettings(v as AppSettings); break;
+        case "get_status": setStatus(v as AppStatus); break;
+        case "get_insights": setInsights(v as Insights); break;
+        case "daily_series": setDailySeries(v as DayCount[]); break;
+        case "monthly_series": setMonthlySeries(v as DayCount[]); break;
+        case "list_dictionary": setDictionary(v as DictEntry[]); break;
+        case "list_dict_candidates": setCandidates(v as DictCandidate[]); break;
+        case "list_snippets": setSnippets(v as Snippet[]); break;
+        case "list_scratch": setScratch(v as ScratchNote[]); break;
+        case "list_failed_dictations": setFailed(v as FailedDictation[]); break;
+        case "list_crash_events": setCrashes(v as CrashEvent[]); break;
+      }
+    });
+    const attempted: BootKey[] = specs.map((c) => c.cmd);
+    if (!only || only.includes("get_history")) {
+      attempted.push("get_history");
+      try {
+        await loadHistory(queryRef.current);
+      } catch (e) {
+        errors.get_history = String(e);
+      }
+    }
+    setBootErrors((prev) => mergeBootErrors(prev, attempted, errors));
+    const line = bootStatusLine(attempted, errors);
+    if (line) setStatus((p) => ({ ...p, message: line, lastError: line }));
+    if (!only) await refreshPerms();
+  }, [loadHistory, refreshPerms]);
+
   const refreshAll = useCallback(async () => {
     try {
-      const [
-        s,
-        st,
-        ins,
-        daily,
-        monthly,
-        dict,
-        cands,
-        snips,
-        notes,
-        fails,
-        crashRows,
-      ] = await Promise.all([
-          invoke<AppSettings>("get_settings"),
-          invoke<AppStatus>("get_status"),
-          invoke<Insights>("get_insights"),
-          invoke<DayCount[]>("daily_series", { days: 365 }),
-          invoke<DayCount[]>("monthly_series", { months: 12 }),
-          invoke<DictEntry[]>("list_dictionary"),
-          invoke<DictCandidate[]>("list_dict_candidates"),
-          invoke<Snippet[]>("list_snippets"),
-          invoke<ScratchNote[]>("list_scratch"),
-          invoke<FailedDictation[]>("list_failed_dictations"),
-          invoke<CrashEvent[]>("list_crash_events"),
-        ]);
-      setSettings(s);
-      setStatus(st);
-      setInsights(ins);
-      setDailySeries(daily);
-      setMonthlySeries(monthly);
-      setDictionary(dict);
-      setCandidates(cands);
-      setSnippets(snips);
-      setScratch(notes);
-      setFailed(fails);
-      setCrashes(crashRows);
-      setBootError(null);
-      await loadHistory(queryRef.current);
-      await refreshPerms();
-    } catch (e) {
-      setBootError(String(e));
-      setStatus((p) => ({
-        ...p,
-        message: `Bridge error: ${e}`,
-        lastError: String(e),
-      }));
+      await loadBoot();
     } finally {
       // Y5-B — the first pass has settled, success or failure. Until this
       // flips, every view renders its loading state instead of its empty one:
       // "you have nothing" is a claim you may only make after you looked.
       setBooting(false);
     }
-  }, [loadHistory, refreshPerms]);
+  }, [loadBoot]);
+
+  /** DO 3 — a view's inline Retry: re-run only the commands it needs. */
+  const retryBoot = useCallback((keys: readonly BootKey[]) => loadBoot(keys), [loadBoot]);
 
   // YV94 — load (and search) the Meetings list only while that tab is open. The
   // 200 ms debounce is the same shape History's search uses: one query per pause
@@ -1247,7 +1292,7 @@ export function useAppShell() {
 
   return {
     meetingProgress, retryMeeting,
-    activeNoteId, applyBinding, booting, bootError, buyPrompt, buyYap, candidates,
+    activeNoteId, applyBinding, booting, bootError, bootErrors, retryBoot, buyPrompt, buyYap, candidates,
     captureHint, capturing, clearAll, clearing, closeConsentNotice, confirmDeleteMeeting,
     consent, consentOpen, consentRef, copyAgainId, copyText, crashToastShown,
     crashes, daily30, dailySeries, dictionary, diffId, editExpansion,
@@ -1263,7 +1308,7 @@ export function useAppShell() {
     openMeeting, openMeetingDetail, openModelSettings, pasteText, perms, pillClass,
     polishSetup, query, queryRef, refreshAll, refreshInsights, refreshPerms,
     refreshSystemAudio, replayOnboarding, retryFailed, retryId, retrying, runSystemAudioSetup,
-    saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBootError, setBuyPrompt,
+    saveSettings, scratch, scratchComposing, sendSupportBundle, setActiveNoteId, setBuyPrompt,
     setCandidates, setCaptureHint, setCapturing, setClearing, setConfirmDeleteMeeting, setConsent,
     setConsentOpen, setCopyAgainId, setCrashes, setDailySeries, setDictionary, setDiffId,
     setEditExpansion, setEditPreferred, setEditTerm, setEditTrigger, setEditingSnippetId, setEditingTermId,

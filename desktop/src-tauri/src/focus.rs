@@ -33,6 +33,17 @@ mod ax {
         ) -> i32;
         /// Unwraps an AXValue (here: kAXValueTypeCFRange) into a plain C struct.
         fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
+        fn AXUIElementSetAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFStringRef,
+            value: CFTypeRef,
+        ) -> i32;
+        fn AXUIElementIsAttributeSettable(
+            element: AXUIElementRef,
+            attribute: CFStringRef,
+            settable: *mut u8,
+        ) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
     }
 
     const AX_OK: i32 = 0;
@@ -117,6 +128,61 @@ mod ax {
             let selection = attr_string(el, "AXSelectedText").filter(|s| !s.trim().is_empty());
             CFRelease(focused);
             selection
+        }
+    }
+
+    /// yap-p0-insertion-bridge-fallback — insert `text` by setting
+    /// `kAXSelectedText` on the focused element (replaces the selection, or
+    /// inserts at the caret). `Err` = the element refused, and the caller falls
+    /// back to the paste bridge, so this must never report a refusal for a set
+    /// that actually landed: an element whose value cannot be read is refused
+    /// BEFORE anything is set, and a set is only `Ok` once the value changed.
+    pub fn insert_selected_text(text: &str) -> Result<(), String> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return Err("AXUIElementCreateSystemWide failed".into());
+            }
+            let key = CFString::new("AXFocusedUIElement");
+            let mut focused: CFTypeRef = std::ptr::null_mut();
+            let err =
+                AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut focused);
+            CFRelease(system as CFTypeRef);
+            if err != AX_OK || focused.is_null() {
+                return Err(format!("no focused element (AX error {err})"));
+            }
+            let el = focused as AXUIElementRef;
+            // Per-element bound: a hung target must not hold the take for the
+            // system default of 6 s. Never set on the system-wide element (that
+            // would change every AX call Yap makes).
+            let _ = AXUIElementSetMessagingTimeout(el, 1.0);
+            let sel = CFString::new("AXSelectedText");
+            let mut settable: u8 = 0;
+            let e = AXUIElementIsAttributeSettable(el, sel.as_concrete_TypeRef(), &mut settable);
+            if e != AX_OK || settable == 0 {
+                CFRelease(focused);
+                return Err(format!("AXSelectedText is not settable (AX error {e})"));
+            }
+            let Some(before) = attr_cfstring(el, "AXValue") else {
+                CFRelease(focused);
+                return Err("AXValue is unreadable, so an AX insert could not be verified".into());
+            };
+            let value = CFString::new(text);
+            let e = AXUIElementSetAttributeValue(
+                el,
+                sel.as_concrete_TypeRef(),
+                value.as_concrete_TypeRef() as CFTypeRef,
+            );
+            if e != AX_OK {
+                CFRelease(focused);
+                return Err(format!("setting AXSelectedText failed (AX error {e})"));
+            }
+            let after = attr_cfstring(el, "AXValue");
+            CFRelease(focused);
+            match after {
+                Some(a) if a != before => Ok(()),
+                _ => Err("the element accepted AXSelectedText but its value did not change".into()),
+            }
         }
     }
 
@@ -229,11 +295,14 @@ mod ax {
     }
 }
 
-/// Should we auto-paste? Requires Accessibility trust + a focused text control.
-/// Always return false if AX not trusted (caller still copies to clipboard).
+/// Should we try to insert? With Accessibility, only when a text control is
+/// focused. WITHOUT it the focused element is invisible to Yap, so this says
+/// yes and `paste::choose_insert_path` decides: a receipt-checked paste bridge
+/// when PostEvent is granted, the Copy card otherwise (yap-p0-insertion-bridge-
+/// fallback — answering "no" here was the silent clipboard-only take).
 pub fn should_auto_paste() -> bool {
     if !crate::permissions::is_accessibility_trusted() {
-        return false;
+        return true;
     }
     #[cfg(target_os = "macos")]
     {
@@ -318,6 +387,19 @@ pub fn frontmost_bundle_id() -> Option<String> {
     #[cfg(not(target_os = "macos"))]
     {
         None
+    }
+}
+
+/// yap-p0-insertion-bridge-fallback — AX insertion (see [`ax::insert_selected_text`]).
+pub fn insert_selected_text(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ax::insert_selected_text(text)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = text;
+        Err("AX insertion is macOS-only".into())
     }
 }
 

@@ -5,10 +5,12 @@
 //! All synthetic keystrokes must run on the **main thread**, and we use raw
 //! virtual keycodes (ANSI V + Command) so we never touch the input-source APIs.
 
-use tauri::AppHandle;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::paste_tx;
+use crate::perm_probe;
 use crate::permissions;
 
 pub fn copy_text(app: &AppHandle, text: &str) -> Result<(), String> {
@@ -123,9 +125,8 @@ pub fn should_paste(
     auto_paste && take_generation == current_generation && focus_ok
 }
 
-/// Clipboard-only outcome: write the transcript as plain text and say why we
-/// did not paste. Keeps the "never lose text" guarantee on every non-paste
-/// path (auto-paste off, Accessibility missing, wrong target, paste failure).
+/// Clipboard-only outcome for the paths that never reach an [`InsertBackend`]
+/// (a `--smoke` refusal, auto-paste off).
 fn copy_only(app: &AppHandle, text: &str, message: &str) -> PasteOutcome {
     match copy_text(app, text) {
         Ok(()) => PasteOutcome {
@@ -141,30 +142,353 @@ fn copy_only(app: &AppHandle, text: &str, message: &str) -> PasteOutcome {
     }
 }
 
-/// Always copy. Paste only when Accessibility is granted, **on the main thread**.
+// ── yap-p0-insertion-bridge-fallback — the insertion path ───────────────────
+//
+// Wilson 2026-10-17: "the bridges ... nothing's working". Until this item every
+// insertion asked the old Accessibility-only trust check and, on a no, copied
+// the take and said so in a toast nobody saw — a silent `pasted=false`. The
+// decision now reads THE probe (`perm_probe::probe_all`, the one place Yap asks
+// macOS about a grant) once per take and picks one of three paths, and the only
+// path that cannot insert by itself puts the text in front of the user at once.
+
+/// The Tauri event the pill's Copy card listens for (desktop/src/pill/copyCardModel.ts, desktop/src/pill/CopyCard.tsx).
+pub const INSERT_COPY_CARD_EVENT: &str = "insert-copy-card";
+
+/// The card's one line, verbatim from the item spec.
+pub const COPY_CARD_MESSAGE: &str = "Copied — press ⌘V. Repair to auto-insert.";
+
+/// How a take reaches the focused app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsertPath {
+    /// Accessibility is granted: set `kAXSelectedText` on the focused element
+    /// (falling back to [`InsertPath::PasteBridge`] when the element refuses).
+    Ax,
+    /// PostEvent is granted (Accessibility is not): pasteboard + CGEventPost ⌘V,
+    /// receipt-checked by `paste_tx` exactly as before.
+    PasteBridge,
+    /// Neither grant: no keystroke is attempted; the Copy card shows the text.
+    CopyCard,
+}
+
+/// THE decision, pure. Only a live `Granted` counts — Denied, NotDetermined,
+/// StaleIdentity and Unknown all mean "this grant will not work right now".
+pub fn choose_insert_path(probe: &perm_probe::ProbeReport) -> InsertPath {
+    if probe.accessibility.state == perm_probe::ProbeState::Granted {
+        InsertPath::Ax
+    } else if probe.post_event.state == perm_probe::ProbeState::Granted {
+        InsertPath::PasteBridge
+    } else {
+        InsertPath::CopyCard
+    }
+}
+
+/// Why the card is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyCardReason {
+    /// Neither Accessibility nor PostEvent is granted.
+    NoPermission,
+    /// ⌘V went out but nothing read the pasteboard inside `RECEIPT_WINDOW`.
+    NoReceipt,
+    /// The ⌘V chord itself could not be posted.
+    PasteFailed,
+}
+
+/// The `insert-copy-card` payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyCard {
+    pub text: String,
+    pub reason: CopyCardReason,
+    /// What went wrong, for the log and the card's title attribute.
+    pub detail: String,
+    /// The transcript is on the clipboard right now (⌘V works without Copy).
+    pub copied: bool,
+    /// `repair_permission`'s argument for the card's Repair button.
+    pub repair_service: &'static str,
+}
+
+/// What an AX insert attempt observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AxInsert {
+    Inserted,
+    /// The element refused (not settable, no readable value, the set errored,
+    /// or it claimed success and its value did not change).
+    Refused(String),
+}
+
+/// What a paste-bridge transaction observed after ⌘V was posted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeReceipt {
+    Confirmed {
+        after_ms: u128,
+    },
+    Missing {
+        reason: String,
+        clipboard_taken: bool,
+    },
+}
+
+/// Every side effect an insertion can have, so the whole decision is testable
+/// with a counting fake (tests/insertion_matrix.rs) and the live app runs the
+/// same code through [`LiveInsert`].
+pub trait InsertBackend {
+    /// Put the text on the clipboard as plain text.
+    fn copy(&mut self, text: &str) -> Result<(), String>;
+    /// The frontmost app right now (the YV21 wrong-target guard).
+    fn frontmost_app(&mut self) -> Option<String>;
+    /// `kAXSelectedText` on the focused element.
+    fn ax_insert(&mut self, text: &str) -> AxInsert;
+    /// Publish + CGEventPost ⌘V + wait for the read receipt. `Err` = the chord
+    /// never went out.
+    fn paste_bridge(&mut self, text: &str) -> Result<BridgeReceipt, String>;
+    /// CGEventPost a bare Delete (YV49 "delete that").
+    fn post_delete(&mut self) -> Result<(), String>;
+    /// Emit `insert-copy-card`.
+    fn show_copy_card(&mut self, card: CopyCard);
+    /// A ⌘V with no receipt: the detail line for the card (the live backend
+    /// also pokes the permission watcher so the health row agrees).
+    fn no_receipt_detail(&mut self, reason: &str) -> String {
+        reason.to_string()
+    }
+}
+
+fn copy_only_with(b: &mut dyn InsertBackend, text: &str, message: &str) -> PasteOutcome {
+    match b.copy(text) {
+        Ok(()) => PasteOutcome {
+            copied: true,
+            pasted: false,
+            message: message.into(),
+        },
+        Err(e) => PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: format!("Clipboard failed: {e}"),
+        },
+    }
+}
+
+/// Copy, then show the card — whether or not the copy worked (the card carries
+/// its own Copy button, so the text is never only in a toast).
+fn copy_card_with(
+    b: &mut dyn InsertBackend,
+    text: &str,
+    reason: CopyCardReason,
+    detail: String,
+) -> PasteOutcome {
+    let copied = b.copy(text).is_ok();
+    b.show_copy_card(CopyCard {
+        text: text.to_string(),
+        reason,
+        detail,
+        copied,
+        repair_service: perm_probe::Service::Accessibility.key(),
+    });
+    PasteOutcome {
+        copied,
+        pasted: false,
+        message: if copied {
+            COPY_CARD_MESSAGE.into()
+        } else {
+            "Clipboard failed — use Copy on the card. Repair to auto-insert.".into()
+        },
+    }
+}
+
+/// The whole insertion decision for one take, side effects behind `b`.
 ///
-/// YV39: the paste itself is receipt-sequenced (`paste_tx`) — the transcript is
-/// published as a lazy pasteboard promise, ⌘V is injected, and the user's prior
-/// clipboard is restored only once the target app has demonstrably READ the
-/// pasteboard (with a bounded timeout), instead of after a fixed sleep that
-/// could restore before a busy target ever read it. On paste failure the
-/// transcript is left on the clipboard so they can ⌘V manually, and the reason
-/// is logged at ERROR (the audit found a `pasted=false` with no diagnostic).
+/// - `want_paste == false` (auto-paste off, a stale/cancelled take, no text
+///   target): copy only, never a keystroke and never a card.
+/// - [`InsertPath::CopyCard`]: copy + card, zero keystrokes.
+/// - Ax / PasteBridge: the YV21 wrong-target guard first (copy only on a
+///   switch), then AX → bridge, and a bridge with no receipt ends on the card —
+///   never a silent `pasted=false`.
+pub fn insert_with(
+    b: &mut dyn InsertBackend,
+    path: InsertPath,
+    text: &str,
+    want_paste: bool,
+    source_app: Option<&str>,
+) -> PasteOutcome {
+    if !want_paste {
+        return copy_only_with(b, text, "Copied to clipboard (⌘V to paste)");
+    }
+    if path == InsertPath::CopyCard {
+        return copy_card_with(
+            b,
+            text,
+            CopyCardReason::NoPermission,
+            "Accessibility and PostEvent are both off for Yap".into(),
+        );
+    }
+    // YV21 (audit M1): `source_app` was frontmost at record start; if the user
+    // switched apps during the ASR delay nothing is inserted — the text is
+    // copied and never lands in a different app.
+    if let Some(dictated) = source_app {
+        let current = b.frontmost_app();
+        if !is_same_paste_target(Some(dictated), current.as_deref()) {
+            return copy_only_with(b, text, "Copied — you switched apps, so I didn't paste");
+        }
+    }
+    if path == InsertPath::Ax {
+        match b.ax_insert(text) {
+            // `copied` is the "the text was not lost" bit every consumer reads
+            // (paste_entry's Ok/Err, the take's last_error) — an AX insert
+            // delivered it, and left the user's clipboard alone.
+            AxInsert::Inserted => {
+                log::info!("insert confirmed: AXSelectedText set on the focused element");
+                return PasteOutcome {
+                    copied: true,
+                    pasted: true,
+                    message: "Inserted into frontmost app".into(),
+                };
+            }
+            AxInsert::Refused(why) => {
+                log::info!("AX insert refused ({why}) — falling back to the paste bridge");
+            }
+        }
+    }
+    match b.paste_bridge(text) {
+        Ok(BridgeReceipt::Confirmed { after_ms }) => {
+            log::info!("paste confirmed: clipboard read {after_ms}ms after ⌘V");
+            outcome_for_verdict(&PasteVerdict::Pasted { after_ms }, Recopy::Kept)
+        }
+        Ok(BridgeReceipt::Missing {
+            reason,
+            clipboard_taken,
+        }) => {
+            log::error!(
+                "paste not confirmed: {reason} (window={}ms) — showing the Copy card",
+                paste_tx::RECEIPT_WINDOW.as_millis()
+            );
+            // Never lose text: the promise died with the transaction, so the
+            // transcript goes back as plain text — unless the user copied
+            // something of their own while we waited (their copy wins; the
+            // card's Copy button is how they take the transcript back).
+            let recopy = if clipboard_taken {
+                Recopy::UserCopyWins
+            } else {
+                match b.copy(text) {
+                    Ok(()) => Recopy::Kept,
+                    Err(e) => Recopy::Failed(e),
+                }
+            };
+            let copied = recopy == Recopy::Kept;
+            let detail = b.no_receipt_detail(&reason);
+            b.show_copy_card(CopyCard {
+                text: text.to_string(),
+                reason: CopyCardReason::NoReceipt,
+                detail,
+                copied,
+                repair_service: perm_probe::Service::Accessibility.key(),
+            });
+            outcome_for_verdict(&PasteVerdict::NotPasted { reason }, recopy)
+        }
+        Err(e) => {
+            log::error!("paste failed: {e} — showing the Copy card");
+            copy_card_with(b, text, CopyCardReason::PasteFailed, e)
+        }
+    }
+}
+
+/// YV49 "delete that", side effects behind `b`. CopyCard posts nothing (there
+/// is no grant to post a Delete with, and nothing to copy); otherwise the same
+/// wrong-target guard as insertion, then one Delete keystroke.
+pub fn delete_with(
+    b: &mut dyn InsertBackend,
+    path: InsertPath,
+    source_app: Option<&str>,
+) -> PasteOutcome {
+    if path == InsertPath::CopyCard {
+        return PasteOutcome {
+            copied: false,
+            pasted: false,
+            message: "Accessibility is off for Yap — Repair to let me edit your selection.".into(),
+        };
+    }
+    if let Some(started_in) = source_app {
+        let current = b.frontmost_app();
+        if !is_same_paste_target(Some(started_in), current.as_deref()) {
+            return PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: "You switched apps, so I didn't delete anything".into(),
+            };
+        }
+    }
+    match b.post_delete() {
+        Ok(()) => PasteOutcome {
+            copied: false,
+            pasted: true,
+            message: "Deleted in frontmost app".into(),
+        },
+        Err(e) => {
+            log::error!("delete failed: {e}");
+            PasteOutcome {
+                copied: false,
+                pasted: false,
+                message: format!("Couldn't delete ({e})."),
+            }
+        }
+    }
+}
+
+/// The live backend: the real clipboard, AX, `paste_tx`, CGEvent and the pill.
+struct LiveInsert<'a> {
+    app: &'a AppHandle,
+    /// From the take's one probe — never a second grant check.
+    ax_granted: bool,
+}
+
+impl InsertBackend for LiveInsert<'_> {
+    fn copy(&mut self, text: &str) -> Result<(), String> {
+        copy_text(self.app, text)
+    }
+    fn frontmost_app(&mut self) -> Option<String> {
+        crate::focus::frontmost_app_name()
+    }
+    fn ax_insert(&mut self, text: &str) -> AxInsert {
+        match crate::focus::insert_selected_text(text) {
+            Ok(()) => AxInsert::Inserted,
+            Err(why) => AxInsert::Refused(why),
+        }
+    }
+    fn paste_bridge(&mut self, text: &str) -> Result<BridgeReceipt, String> {
+        // YV39: publish → ⌘V → restore on the READ RECEIPT; YV74: the receipt
+        // is also what earns `pasted: true`.
+        let handle = paste_tx::publish_and_paste(self.app, text)?;
+        Ok(match handle.await_receipt(paste_tx::RECEIPT_WINDOW) {
+            Ok(after) => BridgeReceipt::Confirmed {
+                after_ms: after.as_millis(),
+            },
+            Err(n) => BridgeReceipt::Missing {
+                reason: n.reason,
+                clipboard_taken: n.clipboard_taken,
+            },
+        })
+    }
+    fn post_delete(&mut self) -> Result<(), String> {
+        post_delete_on_main(self.app)
+    }
+    fn show_copy_card(&mut self, card: CopyCard) {
+        crate::float_pill::hold_copy_card(self.app, card.clone());
+        if let Err(e) = self.app.emit(INSERT_COPY_CARD_EVENT, card) {
+            log::warn!("emit {INSERT_COPY_CARD_EVENT}: {e}");
+        }
+    }
+    fn no_receipt_detail(&mut self, reason: &str) -> String {
+        permissions::poke(permissions::WatchReason::Refusal);
+        permissions::paste_failure_detail(self.ax_granted, reason)
+    }
+}
+
+/// Insert one take into the frontmost app.
 ///
-/// YV74: that receipt now also gates what we CLAIM. Until this item, success
-/// was recorded as soon as the chord was posted — the caller never looked at
-/// the receipt, so a paste that landed nowhere still wrote "Pasted into
-/// frontmost app" into the history row, the toast and the latency line. We now
-/// block for up to `paste_tx::RECEIPT_WINDOW` (1.5s) waiting for a real
-/// post-⌘V read; only then is `pasted: true` produced. Without one the reason
-/// is logged at ERROR and the transcript goes back on the clipboard as plain
-/// text so nothing is ever lost.
-///
-/// `source_app` is the frontmost app captured at dictation time (record start).
-/// When it is `Some`, the wrong-target guard (YV21) is enforced: we sample the
-/// current frontmost app immediately before ⌘V and only paste if it still
-/// matches. Pass `None` for explicit user re-pastes (e.g. `paste_entry`), where
-/// the current frontmost app IS the intended target and no guard applies.
+/// `source_app` is the frontmost app captured at dictation time (record start);
+/// when it is `Some` the YV21 wrong-target guard is enforced. Pass `None` for
+/// explicit user re-pastes (e.g. `paste_entry`), where the current frontmost
+/// app IS the intended target.
 pub fn copy_and_maybe_paste(
     app: &AppHandle,
     text: &str,
@@ -172,8 +496,7 @@ pub fn copy_and_maybe_paste(
     source_app: Option<&str>,
 ) -> PasteOutcome {
     // Y0-D: a `--smoke` launch never synthesizes a keystroke into whatever window
-    // happens to be frontmost on the developer's machine. The transcript still
-    // goes on the clipboard, so this is a refusal, not a lost take.
+    // happens to be frontmost on the developer's machine.
     if want_paste && !crate::smoke::paste_allowed() {
         log::warn!("{}", crate::smoke::PASTE_REFUSAL);
         return copy_only(app, text, crate::smoke::PASTE_REFUSAL);
@@ -181,118 +504,23 @@ pub fn copy_and_maybe_paste(
     if !want_paste {
         return copy_only(app, text, "Copied to clipboard (⌘V to paste)");
     }
-    if !permissions::is_accessibility_trusted() {
-        return copy_only(
-            app,
-            text,
-            "Copied. Enable Accessibility for Yap to auto-paste.",
-        );
-    }
-
-    // YV21 (audit M1): guard against a wrong-target paste. `source_app` was the
-    // frontmost app at record start; sample the CURRENT frontmost app right
-    // before synthesizing ⌘V. If the user switched apps during the ASR delay,
-    // fall back to clipboard-only — the text is already copied, so nothing is
-    // lost and it never lands in a different app.
-    if let Some(dictated) = source_app {
-        let current = crate::focus::frontmost_app_name();
-        if !is_same_paste_target(Some(dictated), current.as_deref()) {
-            return copy_only(app, text, "Copied — you switched apps, so I didn't paste");
-        }
-    }
-
-    // YV39: publish → ⌘V → restore on the READ RECEIPT (see paste_tx). The
-    // prior clipboard is snapshotted inside, on the main thread, right after
-    // any still-open transaction is settled — so it is the user's clipboard,
-    // never a previous transcript promise.
-    let handle = match paste_tx::publish_and_paste(app, text) {
-        Ok(handle) => handle,
-        Err(e) => {
-            // The audit (yap-logs finding 3) found a pasted=false transcript
-            // whose cause was unrecoverable from the log: the paste path only
-            // recorded the boolean. Log the actual reason + the app we aimed at.
-            log::error!(
-                "paste failed: {e} (frontmost={})",
-                crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into())
-            );
-            // Leave the transcript on the clipboard so ⌘V still works by hand.
-            return copy_only(app, text, &format!("Copied, but paste failed ({e})."));
-        }
+    let probe = perm_probe::probe_all();
+    let path = choose_insert_path(&probe);
+    log::info!(
+        "insert path={path:?} (ax={:?} post={:?})",
+        probe.accessibility.state,
+        probe.post_event.state
+    );
+    let mut live = LiveInsert {
+        app,
+        ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
     };
-
-    // YV74 — the honest bit. Nothing below may report success without this.
-    match handle.await_receipt(paste_tx::RECEIPT_WINDOW) {
-        Ok(after) => {
-            log::info!(
-                "paste confirmed: clipboard read {}ms after ⌘V",
-                after.as_millis()
-            );
-            outcome_for_verdict(
-                &PasteVerdict::Pasted {
-                    after_ms: after.as_millis(),
-                },
-                Recopy::Kept,
-            )
-        }
-        Err(no_receipt) => {
-            // PERM-E — a take that SUCCEEDED and a paste that did not land has
-            // a different cause from a take that heard nothing, and the user
-            // must not read it as a transcription failure. The one grant that
-            // produces exactly this shape is Accessibility: it was trusted when
-            // we checked at the top of this function and revoked (or never
-            // really granted) by the time enigo tried to post ⌘V. Re-read it
-            // here, name it in the message, and poke the watcher so the health
-            // row agrees with the toast.
-            if !permissions::is_accessibility_trusted() {
-                permissions::poke(permissions::WatchReason::Refusal);
-                log::error!(
-                    "paste not confirmed AND Accessibility is no longer trusted — reporting the grant, not the transcript"
-                );
-                return copy_only(
-                    app,
-                    text,
-                    &permissions::paste_failure_detail(false, &no_receipt.reason),
-                );
-            }
-            log::error!(
-                "paste not confirmed: {} (frontmost={}, window={}ms)",
-                no_receipt.reason,
-                crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into()),
-                paste_tx::RECEIPT_WINDOW.as_millis()
-            );
-            // Never lose text. The promise on the pasteboard dies with the
-            // transaction, so put the transcript back as plain text — unless
-            // the user copied something themselves while we waited, in which
-            // case their clipboard wins and the toast's "Copy again" is how
-            // they take the transcript back.
-            let recopy = if no_receipt.clipboard_taken {
-                Recopy::UserCopyWins
-            } else {
-                match copy_text(app, text) {
-                    Ok(()) => Recopy::Kept,
-                    Err(e) => Recopy::Failed(e),
-                }
-            };
-            outcome_for_verdict(
-                &PasteVerdict::NotPasted {
-                    reason: no_receipt.reason,
-                },
-                recopy,
-            )
-        }
-    }
+    insert_with(&mut live, path, text, true, source_app)
 }
 
 /// YV49 command mode: carry out "delete that" by pressing Delete on the
-/// frontmost app, NOT by pasting an empty string.
-///
-/// Two reasons this is a keystroke instead of a paste: an empty pasteboard is a
-/// no-op in several apps (so the selection would survive a "delete that"), and
-/// a delete has no business overwriting whatever the user has on their
-/// clipboard. It reuses the same two guards as the paste path — Accessibility
-/// must be granted, and the app that was frontmost when the command started
-/// must still be frontmost — because a stray Delete in the WRONG app destroys
-/// text just as effectively as a wrong paste.
+/// frontmost app, NOT by pasting an empty string (a no-op in several apps, and
+/// a delete has no business overwriting the user's clipboard).
 pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutcome {
     // Y0-D: same rule as the paste path — a smoke run posts no Delete chord.
     if !crate::smoke::paste_allowed() {
@@ -303,41 +531,12 @@ pub fn delete_selection(app: &AppHandle, source_app: Option<&str>) -> PasteOutco
             message: crate::smoke::DELETE_REFUSAL.into(),
         };
     }
-    if !permissions::is_accessibility_trusted() {
-        return PasteOutcome {
-            copied: false,
-            pasted: false,
-            message: "Enable Accessibility for Yap to edit your selection.".into(),
-        };
-    }
-    if let Some(started_in) = source_app {
-        let current = crate::focus::frontmost_app_name();
-        if !is_same_paste_target(Some(started_in), current.as_deref()) {
-            return PasteOutcome {
-                copied: false,
-                pasted: false,
-                message: "You switched apps, so I didn't delete anything".into(),
-            };
-        }
-    }
-    match post_delete_on_main(app) {
-        Ok(()) => PasteOutcome {
-            copied: false,
-            pasted: true,
-            message: "Deleted in frontmost app".into(),
-        },
-        Err(e) => {
-            log::error!(
-                "delete failed: {e} (frontmost={})",
-                crate::focus::frontmost_app_name().unwrap_or_else(|| "unknown".into())
-            );
-            PasteOutcome {
-                copied: false,
-                pasted: false,
-                message: format!("Couldn't delete ({e})."),
-            }
-        }
-    }
+    let probe = perm_probe::probe_all();
+    let mut live = LiveInsert {
+        app,
+        ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
+    };
+    delete_with(&mut live, choose_insert_path(&probe), source_app)
 }
 
 /// Synthetic keystrokes are main-thread-only (see the SIGTRAP note at the top),

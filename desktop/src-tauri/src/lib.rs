@@ -106,7 +106,7 @@ pub mod models;
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
 pub mod os_version_gate;
-mod paste;
+pub mod paste;
 mod paste_tx;
 pub mod perm_probe;
 pub mod perm_truth;
@@ -3568,6 +3568,21 @@ pub fn apply_settings_migrations(settings: &mut AppSettings, stored: &serde_json
     true
 }
 
+/// yap-p0-insertion-bridge-fallback — the Copy card the pill should show (a
+/// pill webview that mounts after `insert-copy-card` was emitted reads it here).
+#[tauri::command]
+fn pending_copy_card() -> Option<paste::CopyCard> {
+    float_pill::pending_copy_card()
+}
+
+/// The pill's Copy card was dismissed: the pill goes back to following
+/// `show_floating_pill`.
+#[tauri::command]
+fn dismiss_copy_card(app: AppHandle, state: State<'_, Arc<AppState>>) {
+    let keep = state.settings.lock().show_floating_pill;
+    float_pill::release_copy_card(&app, keep);
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, Arc<AppState>>) -> AppSettings {
     state.settings.lock().clone()
@@ -6741,6 +6756,8 @@ pub fn run() {
             formatting_options,
             save_settings,
             pill_set_hitbox,
+            pending_copy_card,
+            dismiss_copy_card,
             pill_drag_start,
             pill_drag_move,
             pill_drag_end,

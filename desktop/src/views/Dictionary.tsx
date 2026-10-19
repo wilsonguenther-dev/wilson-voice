@@ -6,7 +6,7 @@ import { EmptyState, ErrorState, LoadingState, WordGlyph } from "../ViewStates";
 
 export default function Dictionary() {
   const {
-    bootError, booting, candidates, dictionary, editPreferred, editTerm, editingTermId, newPreferred,
+    bootError, bootErrors, booting, candidates, retryBoot, dictionary, editPreferred, editTerm, editingTermId, newPreferred,
     refreshAll,
     newTerm, setCandidates, setDictionary, setEditPreferred, setEditTerm, setEditingTermId,
     setNewPreferred, setNewTerm, settings, toast,
@@ -95,15 +95,18 @@ export default function Dictionary() {
   // This list starts as [] so it cannot say "never loaded"; settings lands in
   // the same refreshAll batch (all setters run together), so null settings is
   // that signal.
-  const state = viewState(dictionary, booting, settings == null ? bootError : null);
+  // DO 3 — this view's own commands first; settings-null is the old signal.
+  const dictError =
+    bootErrors?.list_dictionary ?? bootErrors?.list_dict_candidates ?? (settings == null ? bootError : null);
+  const state = viewState(dictionary, booting, dictError);
   if (state === "error")
     return (
       <ErrorState
         data-error-state="dictionary"
         view="dictionary"
-        error={bootError}
+        error={dictError}
         actionLabel="Open the dictionary again"
-        onAction={() => void refreshAll()}
+        onAction={() => void (settings == null ? refreshAll() : retryBoot(["list_dictionary", "list_dict_candidates"]))}
       />
     );
   if (state === "loading")
