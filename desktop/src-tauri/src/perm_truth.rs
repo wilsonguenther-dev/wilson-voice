@@ -461,6 +461,32 @@ fn ledger_path() -> PathBuf {
     crate::data_dir().join(LEDGER_FILE)
 }
 
+static LEDGER: Mutex<Option<TrustLedger>> = Mutex::new(None);
+
+fn load_ledger() -> TrustLedger {
+    std::fs::read(ledger_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// The ledger as it stands now (loaded once per process). `perm_probe` reads
+/// it to classify a denied grant as StaleIdentity.
+pub fn ledger_snapshot() -> TrustLedger {
+    let mut guard = match LEDGER.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    guard.get_or_insert_with(load_ledger).clone()
+}
+
+/// `NSBundle.mainBundle.bundleIdentifier` at runtime — `None` for an unbundled
+/// binary. Never defaulted to [`BUNDLE_ID`]: a repair must only ever target the
+/// bundle that is actually running.
+pub fn main_bundle_id() -> Option<String> {
+    sec::main_bundle().1
+}
+
 /// Fold one fresh grant reading into the persisted ledger and return the stale
 /// grants it reveals. The ledger is loaded once and written only on change, so
 /// a 5 s poll never touches the disk while nothing moves.
@@ -469,18 +495,12 @@ pub fn observe(
     input_monitoring_authorized: bool,
     input_monitoring: GrantState,
 ) -> Vec<StaleGrant> {
-    static LEDGER: Mutex<Option<TrustLedger>> = Mutex::new(None);
     let me = running_identity();
     let mut guard = match LEDGER.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    let ledger = guard.get_or_insert_with(|| {
-        std::fs::read(ledger_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
-    });
+    let ledger = guard.get_or_insert_with(load_ledger);
     // Stale is decided against the ledger as it stood BEFORE this reading, then
     // the reading is recorded (a true read makes the running signature current).
     let stale = stale_grants(

@@ -7,6 +7,8 @@ import { repairPane } from "./hotkeyStatus";
 import Onboarding from "./Onboarding";
 import { ModelRibbon } from "./ModelSetup";
 import { PermissionHealthRow } from "./PermissionHealthRow";
+import { PermissionRepair } from "./PermissionRepairRow";
+import { canRepair, repairFromPill } from "./permissionRepair";
 import PurchasePrompt from "./license/PurchasePrompt";
 import MeetingConsentNotice from "./meetings/MeetingConsentNotice";
 import SupportBundleSheet from "./support/SupportBundleSheet";
@@ -26,7 +28,7 @@ export default function App() {
     copyText, dictionary, finishOnboarding, flash,
     history, installUpdateNow, installedVersion, installing, 
     licenseChip, meetings, modelSetup, nav, needsPerms, openLicenseTab,
-    perms, pillClass, refreshAll, retryFailed, retryId, retrying,
+    perms, pillClass, refreshAll, refreshPerms, retryFailed, retryId, retrying,
     scratch, sendSupportBundle, setBuyPrompt, setCopyAgainId, setNav, setSettingsTab,
     setSupportOpen, setSupportPreview, setUpdate, settings, skipUpdateVersion, status,
     supportBusy, supportOpen, supportPreview, toast, toggleRecord, update,
@@ -237,9 +239,21 @@ export default function App() {
               <button
                 type="button"
                 onClick={() =>
-                  invoke("open_privacy_settings", {
-                    pane: repairPane(status),
-                  }).catch((e) => toast(String(e)))
+                  // yap-p0-perm-repair: a denied or stale Input Monitoring
+                  // grant gets the real Repair (tccutil reset for Yap's own
+                  // bundle id + the pane + re-probe). A grant the probe reads
+                  // as fine is never reset — that only opens the pane.
+                  (perms?.probe && canRepair(perms.probe.listenEvent.state)
+                    ? repairFromPill("listen_event", {
+                        toast,
+                        openPane: () =>
+                          invoke("open_privacy_settings", { pane: repairPane(status) }),
+                        refresh: refreshPerms,
+                      })
+                    : invoke("open_privacy_settings", {
+                        pane: repairPane(status),
+                      })
+                  ).catch((e) => toast(String(e)))
                 }
               >
                 Repair
@@ -258,6 +272,9 @@ export default function App() {
             four grants are fine, which is why it sits unconditionally here
             rather than behind a nav check: it is its own visibility rule. */}
         <PermissionHealthRow report={perms} />
+        {/* yap-p0-perm-repair — Repair for each denied or stale grant, from
+            the same probe onboarding renders. */}
+        <PermissionRepair probe={perms?.probe} onChanged={refreshPerms} />
 
         {status.modelReady && needsPerms && nav === "home" && (
           <div className="banner warn" onClick={() => setNav("permissions")}>
