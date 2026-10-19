@@ -883,6 +883,9 @@ fn generic_commitment(lower: &str) -> bool {
 ///    an action item without one is a statement the narrative already holds.
 pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
     let lower = text.trim().to_lowercase();
+    if open_about_decision(&lower) {
+        return Some(Bucket::Questions);
+    }
     if (DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower))
         && !owner_commits_strongly(text)
     {
@@ -1013,7 +1016,9 @@ pub fn ground_extract_with(
         let text = line.text.trim();
         let lower = text.to_lowercase();
         let first = text.split_whitespace().next().unwrap_or("").to_lowercase();
-        let bucket = if ["decided", "we agreed", "agreed that", "agreed the"]
+        let bucket = if open_about_decision(&lower) {
+            Bucket::Questions
+        } else if ["decided", "we agreed", "agreed that", "agreed the"]
             .iter()
             .any(|m| lower.contains(m))
         {
