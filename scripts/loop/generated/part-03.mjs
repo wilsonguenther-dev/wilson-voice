@@ -224,7 +224,7 @@ const PART = 'part-03'
  * Stamped by build.mjs: item id -> lane index, round-robin over the SOURCE ITEM FILES so that a
  * whole prompt group (whose items often depend on one another) stays sequential on one lane.
  */
-const LANE_BY_ID = {"Y5-G":0,"Y5-A":0,"Y5-B":0,"Y5-C":0,"Y5-D":0,"Y5-E":0,"Y5-F":0,"Y5-J":0,"Y5-I":0,"Y5-K":0,"UPD-A":1,"UPD-B":1,"Y6-A":1,"PRIV-A":1,"Y6-B":1,"Y6-C":1,"DB-C":1,"PRIV-B":1,"Y6-D":1,"Y6-E":1,"Y7-A":0,"Y7-B":0,"Y7-C":0,"Y7-D":0,"Y7-E":0,"Y8-A":1,"DB-D":1,"Y8-B":1,"Y8-C":1,"Y8-D":1,"Y9-A":0,"Y9-B":0,"Y9-C":0,"PERM-F":0,"PERM-G":0,"Y9-D":0,"Y9-E":0,"Y10-A":1,"PERM-H":1,"Y10-B":1,"Y10-D":1,"Y10-E":1,"Y10-F":1,"Y11-A":0,"Y11-B":0,"DB-E":0,"Y11-C":0,"Y11-D":0,"Y11-E":0,"Y11-F":0,"yap24-PKG1":1,"yap24-PKG2":1,"yap24-X1":0,"yap24-X2":0,"yap24-X3":0}
+const LANE_BY_ID = {"Y5-G":1,"Y5-A":1,"Y5-B":1,"Y5-C":1,"Y5-D":1,"Y5-E":1,"Y5-F":1,"Y5-J":1,"Y5-I":1,"Y5-K":1,"UPD-A":0,"UPD-B":0,"Y6-A":0,"PRIV-A":0,"Y6-B":0,"Y6-C":0,"DB-C":0,"PRIV-B":0,"Y6-D":0,"Y6-E":0,"Y7-A":1,"Y7-B":1,"Y7-C":1,"Y7-D":1,"Y7-E":1,"Y8-A":0,"DB-D":0,"Y8-B":0,"Y8-C":0,"Y8-D":0,"Y9-A":1,"Y9-B":1,"Y9-C":1,"PERM-F":1,"PERM-G":1,"Y9-D":1,"Y9-E":1,"Y10-A":0,"PERM-H":0,"Y10-B":0,"Y10-D":0,"Y10-E":0,"Y10-F":0,"Y11-A":1,"Y11-B":1,"DB-E":1,"Y11-C":1,"Y11-D":1,"Y11-E":1,"Y11-F":1,"yap24-PKG1":0,"yap24-PKG2":0,"yap24-X1":1,"yap24-X2":1,"yap24-X3":1}
 const laneOf = (item) => (LANE_BY_ID[item.id] === 1 ? 1 : 0)
 /**
  * THE PASS. 'build' (the default) dispatches builders only — no reviewer, no fix, no merge agent.
