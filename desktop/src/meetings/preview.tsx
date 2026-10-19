@@ -82,7 +82,7 @@ function Preview() {
             <p className="lede">
               {scene === "settings"
                 ? "Your companion, dictation, shortcut, and privacy — all in plain language."
-                : "Recorded meetings, searchable and exportable. Audio is kept for 7 days; the transcript stays."}
+                : "Every meeting you record, searchable and exportable."}
             </p>
           </div>
           <div className="head-state">

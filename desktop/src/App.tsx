@@ -145,7 +145,7 @@ export default function App() {
               {nav === "permissions" &&
                 "macOS must grant these to Yap itself. Without them, dictation or paste fails."}
               {nav === "meetings" &&
-                "Recorded meetings, searchable and exportable. Audio is kept for 7 days; the transcript stays."}
+                "Every meeting you record, searchable and exportable."}
               {nav === "insights" &&
                 "Local analytics from your SQLite history — nothing leaves this Mac."}
               {nav === "dictionary" &&
