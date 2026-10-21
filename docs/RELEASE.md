@@ -275,3 +275,7 @@ either one announces, so neither endpoint can shadow the other. The GitHub URL
 needs no auth only while the repo is public. When paid distribution lands, the endpoint
 moves to a licence-checking server that returns the same `latest.json` shape —
 the manifest contract above does not change, only who serves it.
+
+## Test channel
+
+To run an unreviewed head next to the real Yap without touching its TCC grants, see [TEST-CHANNEL.md](TEST-CHANNEL.md) (`npm run test-build -- --pr N` → `/Applications/Yap Test.app`).
