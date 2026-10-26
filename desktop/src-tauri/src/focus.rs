@@ -171,6 +171,9 @@ mod ax {
                 CFRelease(focused);
                 return Err("AXValue is unreadable, so an AX insert could not be verified".into());
             };
+            // yap-insert-bridge-2026-10-26: the caret state BEFORE the set, so an
+            // unverified set can be settled by whether anything moved.
+            let caret_before = caret_snapshot(el);
             let value = CFString::new(text);
             let e = AXUIElementSetAttributeValue(
                 el,
@@ -198,15 +201,87 @@ mod ax {
                     break;
                 }
             }
+            if changed {
+                CFRelease(focused);
+                return Ok(super::AxSet::Verified);
+            }
+            // yap-insert-bridge-2026-10-26 DO 3: AXValue never read back changed
+            // (Chromium/Electron). Re-read the caret for ~400 ms: a real change
+            // moves AXNumberOfCharacters or AXSelectedTextRange (Inserted, zero
+            // ⌘V); neither moving means nothing landed — a refusal, so the paste
+            // bridge runs exactly once instead of stranding the take on the card.
+            let step = 50u64;
+            let mut rereads = Vec::new();
+            for _ in 0..(crate::paste::AX_REREAD_WINDOW_MS / step) {
+                std::thread::sleep(std::time::Duration::from_millis(step));
+                let now = caret_snapshot(el);
+                let moved = now.moved_from(&caret_before);
+                rereads.push(now);
+                if moved {
+                    break;
+                }
+            }
             CFRelease(focused);
-            Ok(if changed {
-                super::AxSet::Verified
-            } else {
-                super::AxSet::Unverified(
-                    "the element accepted AXSelectedText but its value never read back changed"
-                        .into(),
-                )
-            })
+            match crate::paste::settle_unverified(
+                "the element accepted AXSelectedText but its value never read back changed",
+                &caret_before,
+                &rereads,
+            ) {
+                crate::paste::AxInsert::Inserted => Ok(super::AxSet::Verified),
+                crate::paste::AxInsert::Refused(why) => Err(why),
+                crate::paste::AxInsert::Unverified(why) => Ok(super::AxSet::Unverified(why)),
+            }
+        }
+    }
+
+    /// `AXNumberOfCharacters` as an integer (type-checked CFNumber).
+    fn attr_i64(element: AXUIElementRef, name: &str) -> Option<i64> {
+        use core_foundation::number::{CFNumber, CFNumberRef};
+        unsafe {
+            let key = CFString::new(name);
+            let mut val: CFTypeRef = std::ptr::null_mut();
+            let err = AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &mut val);
+            if err != AX_OK || val.is_null() {
+                return None;
+            }
+            if CFGetTypeID(val) != CFNumber::type_id() {
+                CFRelease(val);
+                return None;
+            }
+            CFNumber::wrap_under_create_rule(val as CFNumberRef).to_i64()
+        }
+    }
+
+    /// `AXSelectedTextRange` as (location, length).
+    fn selected_range(element: AXUIElementRef) -> Option<(i64, i64)> {
+        unsafe {
+            let key = CFString::new("AXSelectedTextRange");
+            let mut val: CFTypeRef = std::ptr::null_mut();
+            let err = AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &mut val);
+            if err != AX_OK || val.is_null() {
+                return None;
+            }
+            let mut range = CFRange {
+                location: 0,
+                length: 0,
+            };
+            let ok = AXValueGetValue(
+                val,
+                AX_VALUE_CF_RANGE,
+                &mut range as *mut CFRange as *mut c_void,
+            );
+            CFRelease(val);
+            if ok == 0 {
+                return None;
+            }
+            Some((range.location as i64, range.length as i64))
+        }
+    }
+
+    fn caret_snapshot(element: AXUIElementRef) -> crate::paste::AxCaretSnapshot {
+        crate::paste::AxCaretSnapshot {
+            chars: attr_i64(element, "AXNumberOfCharacters"),
+            range: selected_range(element),
         }
     }
 
@@ -407,6 +482,23 @@ pub fn frontmost_bundle_id() -> Option<String> {
         let app = workspace.frontmostApplication()?;
         let id = app.bundleIdentifier()?;
         Some(id.to_string()).filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// yap-insert-bridge-2026-10-26 — the frontmost app's bundle path (NSWorkspace,
+/// no Accessibility needed), for the Electron check in `paste`.
+pub fn frontmost_bundle_path() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = workspace.frontmostApplication()?;
+        let url = app.bundleURL()?;
+        let path = url.path()?;
+        Some(path.to_string()).filter(|s| !s.is_empty())
     }
     #[cfg(not(target_os = "macos"))]
     {

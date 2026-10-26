@@ -9,10 +9,12 @@ import {
   COPY_CARD_HINT,
   COPY_CARD_HINT_NO_REPAIR,
   INSERT_COPY_CARD_EVENT,
+  blockedLine,
   canRepair,
   cardHint,
   cardPreview,
   isCopyCard,
+  settingsPaneFor,
 } from "./copyCardModel";
 
 describe("copy card contract", () => {
@@ -46,5 +48,27 @@ describe("copy card contract", () => {
     expect(cardHint(false)).not.toBe(cardHint(true));
     expect(cardPreview("a  b\n c")).toBe("a b c");
     expect(cardPreview("x".repeat(200), 10)).toHaveLength(10);
+  });
+});
+
+describe("yap-insert-bridge-2026-10-26 — the card names the blocked permission", () => {
+  it("pins the Rust field and the names it sends", () => {
+    expect(pasteRs).toContain("pub blocked_permissions: Vec<&'static str>,");
+    expect(pasteRs).toContain('CopyCardReason::NoPermission => vec!["PostEvent", "Accessibility"],');
+  });
+
+  it("says which permission is off and offers Open Settings", () => {
+    const both = { blockedPermissions: ["PostEvent", "Accessibility"] };
+    expect(blockedLine(both)).toBe("Yap can't type here: PostEvent and Accessibility are off.");
+    expect(settingsPaneFor(both)).toBe("Accessibility");
+    expect(blockedLine({ blockedPermissions: ["PostEvent"] })).toBe("Yap can't type here: PostEvent is off.");
+  });
+
+  it("names nothing (and offers no Settings) when a grant works", () => {
+    expect(blockedLine({ blockedPermissions: [] })).toBeNull();
+    expect(blockedLine({})).toBeNull();
+    expect(settingsPaneFor({ blockedPermissions: [] })).toBeNull();
+    const noReceipt = { text: "t", reason: "no_receipt", detail: "x", copied: true, repairService: null, blockedPermissions: [] };
+    expect(isCopyCard(noReceipt)).toBe(true);
   });
 });

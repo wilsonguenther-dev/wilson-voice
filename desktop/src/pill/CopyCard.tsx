@@ -8,10 +8,12 @@ import {
   COPY_CARD_CLEAR_EVENT,
   COPY_CARD_TTL_MS,
   INSERT_COPY_CARD_EVENT,
+  blockedLine,
   canRepair,
   cardHint,
   cardPreview,
   isCopyCard,
+  settingsPaneFor,
   type CopyCardPayload,
 } from "./copyCardModel";
 
@@ -87,6 +89,13 @@ export default function CopyCard() {
     dismiss();
   };
 
+  const blocked = blockedLine(card);
+  const pane = settingsPaneFor(card);
+  const openSettings = () => {
+    if (!pane) return;
+    invoke("open_privacy_settings", { pane }).catch(() => {});
+  };
+
   return (
     <div
       ref={ref}
@@ -96,12 +105,22 @@ export default function CopyCard() {
       data-copy-card={card.reason}
       title={card.detail}
     >
+      {blocked && (
+        <p className="copy-card-blocked" role="alert" data-blocked={card.blockedPermissions?.join(",")}>
+          {blocked}
+        </p>
+      )}
       <p className="copy-card-text">{cardPreview(card.text)}</p>
       <p className="copy-card-hint" role="status">{cardHint(copied, repairable, card.reason)}</p>
       <div className="copy-card-actions">
         <button type="button" className="copy-card-copy" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy"}
         </button>
+        {pane && (
+          <button type="button" className="copy-card-settings" onClick={openSettings}>
+            Open Settings
+          </button>
+        )}
         {repairable && (
           <button type="button" className="copy-card-repair" onClick={repair}>
             Repair

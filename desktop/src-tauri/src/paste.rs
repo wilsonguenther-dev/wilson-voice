@@ -161,29 +161,202 @@ pub const COPY_CARD_MESSAGE: &str = "Copied — press ⌘V. Repair to auto-inser
 /// [`repair_service_for`]).
 pub const COPY_CARD_MESSAGE_NO_REPAIR: &str = "Copied — press ⌘V.";
 
+// yap-insert-bridge-2026-10-26 — Wilson: "dictation no longer lands in the
+// focused text box". #229 made AX `kAXSelectedText` the FIRST path whenever
+// Accessibility was granted. Chromium/Electron (the Claude desktop app, Chrome,
+// Slack, VS Code, Discord) accept the set and never read it back changed, so
+// every take there ended `Unverified` → Copy card → `pasted=false` (Claude app:
+// 41/41 pasted before #229, 29/29 not after). The receipt-checked paste bridge
+// is the path that worked (0.9.1: 41/41 Claude, 181/182 Terminal), so it is
+// first again; AX is only the path when ⌘V cannot be posted.
+
 /// How a take reaches the focused app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsertPath {
-    /// Accessibility is granted: set `kAXSelectedText` on the focused element
-    /// (falling back to [`InsertPath::PasteBridge`] when the element refuses).
+    /// PostEvent is NOT granted but Accessibility is: set `kAXSelectedText` on
+    /// the focused element (falling back to [`InsertPath::PasteBridge`] when
+    /// the element refuses, or when the set is never seen to land).
     Ax,
-    /// PostEvent is granted (Accessibility is not): pasteboard + CGEventPost ⌘V,
-    /// receipt-checked by `paste_tx` exactly as before.
+    /// PostEvent is granted (whatever Accessibility says): pasteboard +
+    /// CGEventPost ⌘V, receipt-checked by `paste_tx`, prior clipboard restored.
     PasteBridge,
-    /// Neither grant: no keystroke is attempted; the Copy card shows the text.
+    /// Neither grant: no keystroke is attempted; the Copy card shows the text
+    /// and names the blocked permissions.
     CopyCard,
 }
 
 /// THE decision, pure. Only a live `Granted` counts — Denied, NotDetermined,
 /// StaleIdentity and Unknown all mean "this grant will not work right now".
+/// PostEvent granted → the paste bridge, regardless of Accessibility.
 pub fn choose_insert_path(probe: &perm_probe::ProbeReport) -> InsertPath {
-    if probe.accessibility.state == perm_probe::ProbeState::Granted {
-        InsertPath::Ax
-    } else if probe.post_event.state == perm_probe::ProbeState::Granted {
+    if probe.post_event.state == perm_probe::ProbeState::Granted {
         InsertPath::PasteBridge
+    } else if probe.accessibility.state == perm_probe::ProbeState::Granted {
+        InsertPath::Ax
     } else {
         InsertPath::CopyCard
+    }
+}
+
+/// Apps whose accessibility tree applies `kAXSelectedText` asynchronously (or
+/// not at all) while reporting success: an AX attempt there can only end
+/// unverified. They never get an AX attempt — they go to the paste bridge.
+pub const AX_ASYNC_DENYLIST: &[&str] = &[
+    "com.anthropic.claudefordesktop",
+    "com.google.Chrome",
+    "com.tinyspeck.slackmacgap",
+    "com.microsoft.VSCode",
+    "com.hnc.Discord",
+];
+
+/// Any frontmost app whose bundle ships this framework is Electron, and is
+/// treated exactly like an [`AX_ASYNC_DENYLIST`] entry.
+pub const ELECTRON_FRAMEWORK: &str = "Electron Framework.framework";
+
+/// Does `<bundle>/Contents/Frameworks/Electron Framework.framework` exist?
+pub fn bundle_has_electron_framework(bundle_path: &str) -> bool {
+    std::path::Path::new(bundle_path)
+        .join("Contents/Frameworks")
+        .join(ELECTRON_FRAMEWORK)
+        .exists()
+}
+
+/// Pure: may this frontmost app get an AX insert attempt at all?
+pub fn is_ax_async_app(bundle_id: Option<&str>, has_electron_framework: bool) -> bool {
+    has_electron_framework
+        || bundle_id.is_some_and(|id| {
+            AX_ASYNC_DENYLIST
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(id.trim()))
+        })
+}
+
+/// Why a take did not end on the default path (a confirmed paste bridge).
+/// The `as_str` words are what `insert path=… fallback=…` logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsertFallback {
+    None,
+    /// PostEvent is not granted, so AX (not the bridge) carried the take.
+    PostEventDenied,
+    /// The AX path was chosen but the frontmost app is denylisted/Electron.
+    ElectronDenylist,
+    /// The focused element refused `kAXSelectedText` → bridge.
+    AxRefused,
+    /// The set was accepted, nothing moved in the re-read window → bridge.
+    AxUnverifiedUnchanged,
+    /// The set timed out (may still land) → card, zero ⌘V.
+    AxUnverified,
+    /// ⌘V went out, nothing read the pasteboard → card.
+    NoReceipt,
+    /// The ⌘V chord could not be posted → card.
+    PasteFailed,
+    /// Neither PostEvent nor Accessibility is granted → card.
+    NoPermission,
+    /// The user switched apps during transcription → copied, nothing typed.
+    WrongTarget,
+    /// The dictated app's identity was unreadable → copied, nothing typed.
+    UnknownTarget,
+}
+
+impl InsertFallback {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InsertFallback::None => "none",
+            InsertFallback::PostEventDenied => "post_event_denied",
+            InsertFallback::ElectronDenylist => "electron_denylist",
+            InsertFallback::AxRefused => "ax_refused",
+            InsertFallback::AxUnverifiedUnchanged => AX_UNVERIFIED_UNCHANGED,
+            InsertFallback::AxUnverified => "ax_unverified",
+            InsertFallback::NoReceipt => "no_receipt",
+            InsertFallback::PasteFailed => "paste_failed",
+            InsertFallback::NoPermission => "no_permission",
+            InsertFallback::WrongTarget => "wrong_target",
+            InsertFallback::UnknownTarget => "unknown_target",
+        }
+    }
+}
+
+/// Where one take ended up — the input of the take's single log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertTrace {
+    /// The path that finished the take (a bridge with no receipt ends on
+    /// [`InsertPath::CopyCard`]).
+    pub path: InsertPath,
+    /// The frontmost/dictated app's bundle id.
+    pub app: Option<String>,
+    pub fallback: InsertFallback,
+}
+
+/// THE one log line per take: `insert path=<Ax|PasteBridge|CopyCard>
+/// app=<bundle id> fallback=<none|reason>`.
+pub fn insert_log_line(trace: &InsertTrace) -> String {
+    format!(
+        "insert path={:?} app={} fallback={}",
+        trace.path,
+        trace.app.as_deref().unwrap_or("unknown"),
+        trace.fallback.as_str()
+    )
+}
+
+/// Prefix of the `AxInsert::Refused` reason produced by [`settle_unverified`].
+pub const AX_UNVERIFIED_UNCHANGED: &str = "ax_unverified_unchanged";
+
+/// How long an unverified AX set is re-read before it is called unchanged.
+pub const AX_REREAD_WINDOW_MS: u64 = 400;
+
+/// The caret state of the focused element: `AXNumberOfCharacters` and
+/// `AXSelectedTextRange` (location, length). `None` = unreadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AxCaretSnapshot {
+    pub chars: Option<i64>,
+    pub range: Option<(i64, i64)>,
+}
+
+impl AxCaretSnapshot {
+    /// A readable attribute that differs from its readable value before the
+    /// set. An attribute unreadable on either side proves nothing.
+    pub fn moved_from(&self, before: &AxCaretSnapshot) -> bool {
+        let chars = matches!((before.chars, self.chars), (Some(a), Some(b)) if a != b);
+        let range = matches!((before.range, self.range), (Some(a), Some(b)) if a != b);
+        chars || range
+    }
+
+    /// At least one caret attribute is readable both here and in `before`, so
+    /// "did not move" is an actual reading rather than a missing one.
+    pub fn comparable_with(&self, before: &AxCaretSnapshot) -> bool {
+        (before.chars.is_some() && self.chars.is_some())
+            || (before.range.is_some() && self.range.is_some())
+    }
+}
+
+/// An AX set macOS accepted whose `AXValue` never read back changed: the
+/// `~400 ms` re-read decides. Either caret attribute moved → the text landed
+/// ([`AxInsert::Inserted`], zero ⌘V). Neither moved AND the last re-read had a
+/// caret attribute readable on both sides → proven unchanged, so it is a
+/// refusal ([`AxInsert::Refused`], reason prefixed [`AX_UNVERIFIED_UNCHANGED`])
+/// and the paste bridge runs exactly once. Anything else — no re-read, or a
+/// caret unreadable before or at the end — proves nothing about a set macOS
+/// accepted, so it stays [`AxInsert::Unverified`]: the Copy card, zero ⌘V
+/// (a ⌘V on top of a set that may have landed inserts the take twice).
+pub fn settle_unverified(
+    why: &str,
+    before: &AxCaretSnapshot,
+    rereads: &[AxCaretSnapshot],
+) -> AxInsert {
+    if rereads.iter().any(|s| s.moved_from(before)) {
+        AxInsert::Inserted
+    } else if rereads.last().is_some_and(|s| s.comparable_with(before)) {
+        AxInsert::Refused(format!(
+            "{AX_UNVERIFIED_UNCHANGED}: {why}; neither AXNumberOfCharacters nor \
+             AXSelectedTextRange moved within {AX_REREAD_WINDOW_MS}ms"
+        ))
+    } else {
+        AxInsert::Unverified(format!(
+            "{why}; AXNumberOfCharacters/AXSelectedTextRange unreadable, so the \
+             re-read cannot prove nothing landed"
+        ))
     }
 }
 
@@ -246,6 +419,20 @@ pub struct CopyCard {
     /// `repair_permission`'s argument for the card's Repair button; `None` =
     /// no Repair button (see [`repair_service_for`]).
     pub repair_service: Option<&'static str>,
+    /// The permissions that made insertion impossible, by their System
+    /// Settings names — the pill says which and offers Open Settings. Empty
+    /// when a grant works (the card is up for another reason).
+    pub blocked_permissions: Vec<&'static str>,
+}
+
+/// What [`CopyCard::blocked_permissions`] names for a card `reason`.
+pub fn blocked_permissions_for(reason: CopyCardReason) -> Vec<&'static str> {
+    match reason {
+        CopyCardReason::NoPermission => vec!["PostEvent", "Accessibility"],
+        CopyCardReason::NoReceipt | CopyCardReason::PasteFailed | CopyCardReason::AxUnverified => {
+            Vec::new()
+        }
+    }
 }
 
 /// What an AX insert attempt observed.
@@ -282,6 +469,10 @@ pub trait InsertBackend {
     fn copy(&mut self, text: &str) -> Result<(), String>;
     /// The frontmost app right now (the YV21 wrong-target guard).
     fn frontmost_app(&mut self) -> Option<String>;
+    /// Does the frontmost app's bundle ship [`ELECTRON_FRAMEWORK`]?
+    fn frontmost_has_electron(&mut self) -> bool {
+        false
+    }
     /// `kAXSelectedText` on the focused element.
     fn ax_insert(&mut self, text: &str) -> AxInsert;
     /// Publish + CGEventPost ⌘V + wait for the read receipt. `Err` = the chord
@@ -328,6 +519,7 @@ fn copy_card_with(
         detail,
         copied,
         repair_service: repair_service_for(reason),
+        blocked_permissions: blocked_permissions_for(reason),
     });
     let repair = repair_service_for(reason).is_some();
     PasteOutcome {
@@ -344,14 +536,7 @@ fn copy_card_with(
     }
 }
 
-/// The whole insertion decision for one take, side effects behind `b`.
-///
-/// - `want_paste == false` (auto-paste off, a stale/cancelled take, no text
-///   target): copy only, never a keystroke and never a card.
-/// - [`InsertPath::CopyCard`]: copy + card, zero keystrokes.
-/// - Ax / PasteBridge: the YV21 wrong-target guard first (copy only on a
-///   switch), then AX → bridge, and a bridge with no receipt ends on the card —
-///   never a silent `pasted=false`.
+/// [`insert_traced`] without the trace (the matrix's original entry point).
 pub fn insert_with(
     b: &mut dyn InsertBackend,
     path: InsertPath,
@@ -359,16 +544,60 @@ pub fn insert_with(
     want_paste: bool,
     target: PasteTarget<'_>,
 ) -> PasteOutcome {
+    insert_traced(b, path, text, want_paste, target).0
+}
+
+/// The whole insertion decision for one take, side effects behind `b`, plus
+/// the [`InsertTrace`] its one log line is written from.
+///
+/// - `want_paste == false` (auto-paste off, a stale/cancelled take, no text
+///   target): copy only, never a keystroke and never a card.
+/// - [`InsertPath::CopyCard`]: copy + card naming both blocked permissions,
+///   zero keystrokes.
+/// - Ax / PasteBridge: the YV21 wrong-target guard first (copy only on a
+///   switch). An Ax path into an [`AX_ASYNC_DENYLIST`] / Electron app goes
+///   straight to the bridge. A refused AX set — including one that was
+///   accepted but moved nothing ([`settle_unverified`]) — falls back to the
+///   bridge exactly once; only an AX set that timed out (it may still land)
+///   ends on the card with zero ⌘V. A bridge with no receipt ends on the card —
+///   never a silent `pasted=false`.
+pub fn insert_traced(
+    b: &mut dyn InsertBackend,
+    path: InsertPath,
+    text: &str,
+    want_paste: bool,
+    target: PasteTarget<'_>,
+) -> (PasteOutcome, InsertTrace) {
+    let mut trace = InsertTrace {
+        path,
+        app: None,
+        fallback: match path {
+            InsertPath::Ax => InsertFallback::PostEventDenied,
+            InsertPath::PasteBridge => InsertFallback::None,
+            InsertPath::CopyCard => InsertFallback::NoPermission,
+        },
+    };
     if !want_paste {
-        return copy_only_with(b, text, "Copied to clipboard (⌘V to paste)");
+        return (
+            copy_only_with(b, text, "Copied to clipboard (⌘V to paste)"),
+            trace,
+        );
     }
+    // The app the take is FOR: the identity captured at record start, else
+    // whatever is frontmost (an explicit re-paste).
+    trace.app = match target {
+        PasteTarget::Dictated(Some(id)) => Some(id.to_string()),
+        _ => b.frontmost_app(),
+    };
     if path == InsertPath::CopyCard {
-        return copy_card_with(
+        let out = copy_card_with(
             b,
             text,
             CopyCardReason::NoPermission,
-            "Accessibility and PostEvent are both off for Yap".into(),
+            "PostEvent and Accessibility are both off for Yap, so it cannot type into this app"
+                .into(),
         );
+        return (out, trace);
     }
     // YV21 (audit M1): a dictation take is only inserted into the app that was
     // frontmost at record start. If the user switched apps during the ASR
@@ -378,43 +607,73 @@ pub fn insert_with(
     // runs on the PasteBridge path (AX denied) too.
     if let PasteTarget::Dictated(dictated) = target {
         if dictated.is_none() {
-            return copy_only_with(
-                b,
-                text,
-                "Copied — I couldn't tell which app you dictated into, so I didn't paste",
+            trace.fallback = InsertFallback::UnknownTarget;
+            return (
+                copy_only_with(
+                    b,
+                    text,
+                    "Copied — I couldn't tell which app you dictated into, so I didn't paste",
+                ),
+                trace,
             );
         }
         let current = b.frontmost_app();
         if !is_same_paste_target(dictated, current.as_deref()) {
-            return copy_only_with(b, text, "Copied — you switched apps, so I didn't paste");
+            trace.fallback = InsertFallback::WrongTarget;
+            return (
+                copy_only_with(b, text, "Copied — you switched apps, so I didn't paste"),
+                trace,
+            );
         }
     }
     if path == InsertPath::Ax {
-        match b.ax_insert(text) {
-            // `copied` is the "the text was not lost" bit every consumer reads
-            // (paste_entry's Ok/Err, the take's last_error) — an AX insert
-            // delivered it, and left the user's clipboard alone.
-            AxInsert::Inserted => {
-                log::info!("insert confirmed: AXSelectedText set on the focused element");
-                return PasteOutcome {
-                    copied: true,
-                    pasted: true,
-                    message: "Inserted into frontmost app".into(),
-                };
-            }
-            AxInsert::Refused(why) => {
-                log::info!("AX insert refused ({why}) — falling back to the paste bridge");
-            }
-            AxInsert::Unverified(why) => {
-                log::warn!("AX insert unverified ({why}) — no ⌘V (double-insert risk), showing the Copy card");
-                return copy_card_with(b, text, CopyCardReason::AxUnverified, why);
+        if is_ax_async_app(trace.app.as_deref(), b.frontmost_has_electron()) {
+            log::info!("AX skipped: the frontmost app is on the AX async denylist or Electron");
+            trace.fallback = InsertFallback::ElectronDenylist;
+        } else {
+            match b.ax_insert(text) {
+                // `copied` is the "the text was not lost" bit every consumer
+                // reads (paste_entry's Ok/Err, the take's last_error) — an AX
+                // insert delivered it, and left the user's clipboard alone.
+                AxInsert::Inserted => {
+                    log::info!("insert confirmed: AXSelectedText set on the focused element");
+                    return (
+                        PasteOutcome {
+                            copied: true,
+                            pasted: true,
+                            message: "Inserted into frontmost app".into(),
+                        },
+                        trace,
+                    );
+                }
+                AxInsert::Refused(why) => {
+                    trace.fallback = if why.starts_with(AX_UNVERIFIED_UNCHANGED) {
+                        InsertFallback::AxUnverifiedUnchanged
+                    } else {
+                        InsertFallback::AxRefused
+                    };
+                    log::info!("AX insert refused ({why}) — falling back to the paste bridge");
+                }
+                AxInsert::Unverified(why) => {
+                    log::warn!("AX insert unverified ({why}) — no ⌘V (double-insert risk), showing the Copy card");
+                    trace.path = InsertPath::CopyCard;
+                    trace.fallback = InsertFallback::AxUnverified;
+                    return (
+                        copy_card_with(b, text, CopyCardReason::AxUnverified, why),
+                        trace,
+                    );
+                }
             }
         }
     }
+    trace.path = InsertPath::PasteBridge;
     match b.paste_bridge(text) {
         Ok(BridgeReceipt::Confirmed { after_ms }) => {
             log::info!("paste confirmed: clipboard read {after_ms}ms after ⌘V");
-            outcome_for_verdict(&PasteVerdict::Pasted { after_ms }, Recopy::Kept)
+            (
+                outcome_for_verdict(&PasteVerdict::Pasted { after_ms }, Recopy::Kept),
+                trace,
+            )
         }
         Ok(BridgeReceipt::Missing {
             reason,
@@ -444,12 +703,23 @@ pub fn insert_with(
                 detail,
                 copied,
                 repair_service: repair_service_for(CopyCardReason::NoReceipt),
+                blocked_permissions: blocked_permissions_for(CopyCardReason::NoReceipt),
             });
-            outcome_for_verdict(&PasteVerdict::NotPasted { reason }, recopy)
+            trace.path = InsertPath::CopyCard;
+            trace.fallback = InsertFallback::NoReceipt;
+            (
+                outcome_for_verdict(&PasteVerdict::NotPasted { reason }, recopy),
+                trace,
+            )
         }
         Err(e) => {
             log::error!("paste failed: {e} — showing the Copy card");
-            copy_card_with(b, text, CopyCardReason::PasteFailed, e)
+            trace.path = InsertPath::CopyCard;
+            trace.fallback = InsertFallback::PasteFailed;
+            (
+                copy_card_with(b, text, CopyCardReason::PasteFailed, e),
+                trace,
+            )
         }
     }
 }
@@ -527,6 +797,9 @@ impl InsertBackend for LiveInsert<'_> {
         // The same NSWorkspace bundle id `PasteTarget::Dictated` carries —
         // readable with Accessibility denied, so the guard never goes blind.
         crate::focus::frontmost_bundle_id()
+    }
+    fn frontmost_has_electron(&mut self) -> bool {
+        crate::focus::frontmost_bundle_path().is_some_and(|p| bundle_has_electron_framework(&p))
     }
     fn ax_insert(&mut self, text: &str) -> AxInsert {
         ax_insert_from(crate::focus::insert_selected_text(text))
@@ -614,8 +887,8 @@ fn insert_take(
     }
     let probe = perm_probe::probe_all();
     let path = choose_insert_path(&probe);
-    log::info!(
-        "insert path={path:?} (ax={:?} post={:?})",
+    log::debug!(
+        "insert probe: ax={:?} post={:?}",
         probe.accessibility.state,
         probe.post_event.state
     );
@@ -623,7 +896,12 @@ fn insert_take(
         app,
         ax_granted: probe.accessibility.state == perm_probe::ProbeState::Granted,
     };
-    insert_with(&mut live, path, text, true, target)
+    let (outcome, trace) = insert_traced(&mut live, path, text, true, target);
+    // yap-insert-bridge-2026-10-26: ONE line per take, written once the take
+    // has ended, naming the path that finished it and why it was not the
+    // default (a confirmed paste bridge).
+    log::info!("{}", insert_log_line(&trace));
+    outcome
 }
 
 /// YV49 command mode: carry out "delete that" by pressing Delete on the
