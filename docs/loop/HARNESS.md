@@ -168,6 +168,34 @@ titled exactly `Local gate (CI unavailable)`, bound to the sha it measured, then
 `gh pr merge -R wilsonguenther-dev/wilson-voice <n> --squash --delete-branch --admin`. Every board
 row and merge comment carries `ci=local`.
 
+### Notetaker eval inputs
+
+The model-backed notetaker gates (yap24-NT2 WER/RTF, yap24-NT9 e2e) never read Wilson's real
+install and never skip. A throwaway `YAP_DATA_DIR` has no `models/` of its own, so the two inputs are
+provisioned ONCE, at fixed paths, verified by hash, and every gate points at them explicitly:
+
+| Input | Fixed path | Env var that means it |
+| --- | --- | --- |
+| Parakeet Unified EN 0.6B, Q8_0 | `$HOME/code/wilson-voice-loop/cache/models/parakeet-unified-en-0.6b-Q8_0.gguf` | `YAP_MODEL_DIR` = `$HOME/code/wilson-voice-loop/cache/models` |
+| Meeting eval corpus | `$HOME/yap-eval-corpus/meetings` (the `meeting_eval.rs` default) | `YAP_EVAL_CORPUS` |
+
+```bash
+bash scripts/provision-notetaker-eval.sh   # idempotent; prints "model ok" / "corpus ok" and both paths
+```
+
+- The pin (id, revision, Q8_0 filename, size, sha256) is read from `desktop/src-tauri/src/catalog.json`;
+  the script holds no second copy of the hash.
+- Model source order: the cache if it verifies; else an APFS clone (`cp -c`) of the installed copy in
+  `~/Library/Application Support/WilsonVoice/models/` if it verifies (read only, never moved or
+  modified); else Hugging Face `resolve/<revision>`, then each catalog mirror (the `models.rs`
+  `download_urls` order) into `<file>.partial`, sha256-verified before the atomic rename.
+- Corpus: verified with `shasum -a 256 -c desktop/src-tauri/tests/fixtures/meeting_eval_manifest.sha256`
+  from the corpus dir; if it fails, the shipped generator (`meeting_eval_generate_corpus`) regrows it.
+  The generator rewrites both committed manifests, so the script snapshots and restores them and
+  verifies against the committed copy: a regrown corpus that disagrees (another macOS `say` voice
+  build) is a hard failure, never a manifest rewrite. Regrowing needs both sidecars staged.
+- `cache/` survives Drain (Drain removes only the `target-*` dirs and the worktrees).
+
 ## Work dirs and teardown
 
 | | lane A | lane B | review R1 | review R2 |
