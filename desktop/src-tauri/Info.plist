@@ -13,6 +13,6 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Yap pastes transcribed text into the app you're typing in.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Yap listens only while you hold the dictation key or record a meeting, and transcribes on this Mac.</string>
+	<string>Yap uses the microphone when you start dictation or record a meeting, and transcribes on this Mac.</string>
 </dict>
 </plist>

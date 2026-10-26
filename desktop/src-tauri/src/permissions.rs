@@ -1158,7 +1158,7 @@ mod copy_table_tests {
     const PURPOSE_STRINGS: &[(&str, &str)] = &[
         (
             "NSMicrophoneUsageDescription",
-            "Yap listens only while you hold the dictation key or record a meeting, and transcribes on this Mac.",
+            "Yap uses the microphone when you start dictation or record a meeting, and transcribes on this Mac.",
         ),
         (
             "NSAudioCaptureUsageDescription",
@@ -1226,8 +1226,15 @@ mod copy_table_tests {
     fn permissions_mic_purpose_covers_dictation_and_meetings() {
         let mic = usage_string(INFO_PLIST, "NSMicrophoneUsageDescription").unwrap_or_default();
         assert!(
-            mic.contains("dictation key"),
+            mic.contains("dictation"),
             "mic copy must name dictation: {mic:?}"
+        );
+        // Takes also start hands-free, from the tray, the pill, the Home
+        // button and onboarding calibration, none of which hold a key, so the
+        // prompt must not claim the mic is live "only" while a key is held.
+        assert!(
+            !mic.contains("only") && !mic.contains("hold"),
+            "mic copy must not claim key-held exclusivity: {mic:?}"
         );
         assert!(
             mic.contains("meeting"),
