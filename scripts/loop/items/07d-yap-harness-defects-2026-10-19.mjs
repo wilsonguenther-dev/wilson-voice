@@ -188,14 +188,26 @@ ITEMS.push({
     "<cmd> > <tmp> 2>&1; echo exit=$?; tail -n 1 <tmp>" — bare exit, no pipe on the command itself).
     dependencyMarkerPrinted(pre) becomes: true only when SOME exits[i] has exit 0 AND its lastLine
     starts with "DEPENDENCY-NOT-ON-MAIN:"; output, command, notes and every other field are never
-    consulted. A payload without lastLine fields is never a hold (fall through to the normal
-    preflight verdict and log "runner returned no lastLine"). build.mjs: refuse an item preflight
+    consulted. FAIL CLOSED ON MISSING EVIDENCE (fix round 1, independent reviewer BLOCKING 1): every
+    hold preflight echoes the marker and then exits 0, so runPassed(pre) is TRUE for a held item and
+    the normal verdict for it is already-done (template.mjs:989-992). Therefore, whenever
+    runPassed(pre) is true and ANY exits[i] with exit 0 has a lastLine that is missing, not a string,
+    empty, or contains a newline (ambiguous), the item is INCONCLUSIVE: return status
+    'held: preflight inconclusive (no lastLine)', log "runner returned no usable lastLine — held,
+    never already-done", dispatch no builder, and let the next pass re-run the preflight. A missing
+    or mangled lastLine can NEVER yield already-done, whether or not the marker text appears
+    anywhere else in the payload. already-done requires runPassed(pre) AND a usable lastLine on
+    every exit-0 command AND none of them starting with the marker. build.mjs: refuse an item preflight
     whose marker echo is not immediately followed by "exit 0" inside the same subshell (the shape
     every hold uses), so the marker is always that command's last line.
     Tests (harness-defects.test.mjs): "dependency marker counts only as the last stdout line"
     (lastLine marker + exit 0 -> true); "marker on a non-final stdout line is ignored" (marker only in
     output tail, lastLine something else -> false); "marker in command text or notes is ignored";
-    "loop:validate refuses a marker echo not followed by exit 0".
+    "loop:validate refuses a marker echo not followed by exit 0";
+    "missing lastLine with the marker in output is held, never already-done" (all exit 0, marker in
+    output, no lastLine -> status starts with 'held:', not 'already-done');
+    "missing lastLine without the marker is held, never already-done" (all exit 0, no marker
+    anywhere, one exits[i] without lastLine -> 'held:'); "multi-line lastLine is ambiguous and held".
   `,
   acceptance: `
     mkdir -p desktop/target
@@ -205,6 +217,10 @@ ITEMS.push({
     grep -Eq '^ *ok [0-9]+ - marker on a non-final stdout line is ignored$' desktop/target/qa-hx-marker.txt
     grep -Eq '^ *ok [0-9]+ - marker in command text or notes is ignored$' desktop/target/qa-hx-marker.txt
     grep -Eq '^ *ok [0-9]+ - loop:validate refuses a marker echo not followed by exit 0$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - missing lastLine with the marker in output is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - missing lastLine without the marker is held, never already-done$' desktop/target/qa-hx-marker.txt
+    grep -Eq '^ *ok [0-9]+ - multi-line lastLine is ambiguous and held$' desktop/target/qa-hx-marker.txt
+    grep -q 'preflight inconclusive (no lastLine)' scripts/loop/template.mjs
     grep -q 'lastLine' scripts/loop/template.mjs
     ! grep -q 'DEPENDENCY-NOT-ON-MAIN/.test(asText' scripts/loop/template.mjs
     test -s docs/loop/evidence/yap-hx-dependency-marker-scan.md
@@ -245,9 +261,9 @@ ITEMS.push({
 
 ITEMS.push({
   id: 'yap-hx-flaky-timing-under-load', prompt: 'yap-hx-flaky-timing-under-load', branch: 'loop/yap-hx-long-take-budget-load-aware', gated: null,
-  title: 'long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it skips with the measured load printed, so a loaded host stops failing main-verify on a timing ratio',
+  title: 'long_take_budget::chunk_decode_wall_per_audio_second is load-aware: above one runnable task per core it reports NOT-MEASURED (never green) and the harness re-runs it serially, so a loaded host neither fails main-verify on a timing ratio nor passes it unmeasured',
   preflight: `
-    grep -q 'fn load_gate' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'YAP_BUDGET_LOAD_OVERRIDE' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'fn load_gate' desktop/src-tauri/tests/long_take_budget.rs && grep -q 'LOAD-AWARE NOT-MEASURED' scripts/loop/template.mjs
   `,
   spec: `
     Panel: not required — FIX (test flake).
@@ -260,20 +276,42 @@ ITEMS.push({
     DO — pure fn load_gate(load1: f64, cores: usize) -> Option<String> in the test file: Some(reason)
     when load1 > cores as f64 (one runnable task per core), else None. Read load1 with
     libc::getloadavg (libc is already a dependency) and cores with
-    std::thread::available_parallelism; YAP_BUDGET_LOAD_OVERRIDE=<f64> overrides load1 for tests.
-    The gate runs FIRST in the test, before the model-present check, and on Some prints exactly one
-    line "LOAD-AWARE skip: 1-min load <load1 .2> > <cores> cores — chunk_decode ratio not measured"
-    and returns (passes). Below the gate the 1.60 ceiling is unchanged — do not widen it. Unit tests
-    load_gate_skips_above_core_count / load_gate_runs_at_or_below_core_count. Note it in
-    docs/BUDGETS.md next to the ceiling.
+    std::thread::available_parallelism. NO environment override of the load (fix round 1,
+    independent reviewer BLOCKING 2: an env var that turns the gate off fails open); the unit tests
+    call the pure fn with literal values instead.
+    FAIL CLOSED — A SKIP IS NEVER GREEN (fix round 1, BLOCKING 2: this host has 12 cores and loop
+    loads of 19-55, so a skip-as-pass would leave the 1.60 budget unmeasured in every gate). The gate
+    runs FIRST in the test, before the model-present check. On Some it re-reads the load up to 3
+    times, 20 s apart (not holding HEAVY), and measures as soon as load1 <= cores. If the host is
+    still loaded it prints exactly one line
+    "LOAD-AWARE NOT-MEASURED: 1-min load <load1 .2> > <cores> cores — chunk_decode ratio not measured"
+    and returns. That line is NOT a pass: the harness treats it as not-measured.
+    HARNESS (scripts/loop/template.mjs): add an exported pure fn budgetMeasured(text) -> false when
+    the text contains "LOAD-AWARE NOT-MEASURED", else true. Every gate block that runs
+    "cargo test --features custom-protocol" (the build gate near :474, the review/fix gates, and
+    MAIN VERIFY near :2212) redirects that run to a file and adds: if the file contains
+    "LOAD-AWARE NOT-MEASURED", re-run ONLY that test serially,
+    "cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --test-threads=1 --nocapture",
+    at most 2 more times; report "budget=measured" or "budget=not-measured" beside cargotest=.
+    budget=not-measured is NOT green: a land seat does not merge on it (status review-pending,
+    reason "budget not measured"), and main-verify lists it as a not-measured row, never inside
+    "all exit 0". Below the gate the 1.60 ceiling is unchanged — do not widen it. Rust unit tests
+    load_gate_skips_above_core_count / load_gate_runs_at_or_below_core_count; node test (in
+    scripts/loop/harness-defects.test.mjs) "a LOAD-AWARE NOT-MEASURED cargo test is never green".
+    Note it in docs/BUDGETS.md next to the ceiling.
   `,
   acceptance: `
     mkdir -p desktop/target
     (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget load_gate) > desktop/target/qa-hx-loadgate.txt 2>&1
     grep -q 'load_gate_skips_above_core_count ... ok' desktop/target/qa-hx-loadgate.txt
     grep -q 'load_gate_runs_at_or_below_core_count ... ok' desktop/target/qa-hx-loadgate.txt
-    (cd desktop/src-tauri && YAP_BUDGET_LOAD_OVERRIDE=999 cargo test --features custom-protocol --test long_take_budget chunk_decode_wall_per_audio_second -- --nocapture) > desktop/target/qa-hx-loadskip.txt 2>&1
-    grep -q 'LOAD-AWARE skip: 1-min load 999.00 >' desktop/target/qa-hx-loadskip.txt
+    ! grep -q 'YAP_BUDGET_LOAD_OVERRIDE' desktop/src-tauri/tests/long_take_budget.rs
+    grep -q 'LOAD-AWARE NOT-MEASURED: 1-min load' desktop/src-tauri/tests/long_take_budget.rs
+    ! grep -q 'LOAD-AWARE skip' desktop/src-tauri/tests/long_take_budget.rs
+    node --test --test-reporter=tap 'scripts/loop/*.test.mjs' > desktop/target/qa-hx-budget.txt 2>&1
+    grep -q '^# fail 0$' desktop/target/qa-hx-budget.txt
+    grep -Eq '^ *ok [0-9]+ - a LOAD-AWARE NOT-MEASURED cargo test is never green$' desktop/target/qa-hx-budget.txt
+    grep -q 'budget=not-measured' scripts/loop/template.mjs
     grep -q 'LOAD-AWARE' docs/BUDGETS.md
     grep -q 'RATIO_CEILING: f64 = 1.60;' desktop/src-tauri/tests/long_take_budget.rs
   `,
