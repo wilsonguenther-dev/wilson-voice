@@ -132,14 +132,12 @@ export function repairRows(probe: ProbeReport | null | undefined): ServiceProbe[
   const rows = [probe.accessibility, probe.listenEvent, probe.microphone].filter((p) =>
     canRepair(p.state),
   );
-  // fix-ax-probe-refresh: never under a live Accessibility grant — text goes in
-  // through AX then, and a PostEvent "no" breaks nothing (paste.rs
-  // choose_insert_path). The Rust report already reconciles this; belt and braces.
-  if (
-    canRepair(probe.postEvent.state) &&
-    !canRepair(probe.accessibility.state) &&
-    probe.accessibility.state !== "granted"
-  ) {
+  // A PostEvent denial shows even under a live Accessibility grant: an element
+  // that refuses the AX insert falls back to the ⌘V bridge (paste.rs
+  // InsertPath::Ax), which needs PostEvent. The row is titled "Event posting
+  // (⌘V)", never "Accessibility". Hidden only while the Accessibility row is up,
+  // because that row's Repair resets PostEvent too.
+  if (canRepair(probe.postEvent.state) && !canRepair(probe.accessibility.state)) {
     rows.splice(1, 0, probe.postEvent);
   }
   return rows;

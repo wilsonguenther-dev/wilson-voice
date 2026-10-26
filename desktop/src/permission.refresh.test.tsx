@@ -41,23 +41,31 @@ const probe = (ax: ProbeState, post: ProbeState): ProbeReport => ({
 });
 
 describe("the banner follows the live probe", () => {
-  it("flipping Accessibility to granted clears the row (re-render with the new report)", () => {
+  it("flipping Accessibility to granted clears the Accessibility row (re-render with the new report)", () => {
     const before = renderToStaticMarkup(
       <PermissionRepair probe={probe("denied", "denied")} productName="Yap Test" />,
     );
     expect(before).toContain("Accessibility is off for Yap Test.");
     expect(before).toContain('data-repair-service="accessibility"');
     expect(before).not.toContain('data-repair-service="post_event"');
-    // The 16:08:20Z state: AX granted, CGPreflightPostEventAccess still false.
+    // Both granted: nothing to repair.
     const after = renderToStaticMarkup(
-      <PermissionRepair probe={probe("granted", "denied")} productName="Yap Test" />,
+      <PermissionRepair probe={probe("granted", "granted")} productName="Yap Test" />,
     );
     expect(after).toBe("");
   });
 
-  it("never shows a PostEvent row under a live Accessibility grant", () => {
-    expect(repairRows(probe("granted", "denied"))).toEqual([]);
-    expect(repairRows(probe("granted", "stale_identity"))).toEqual([]);
+  it("the 16:08:20Z state keeps the PostEvent row, never titled Accessibility", () => {
+    // AX granted, CGPreflightPostEventAccess false: an element that refuses the
+    // AX insert falls back to ⌘V, so the denial is real and stays repairable.
+    const html = renderToStaticMarkup(
+      <PermissionRepair probe={probe("granted", "denied")} productName="Yap Test" />,
+    );
+    expect(html).toContain('data-repair-service="post_event"');
+    expect(html).not.toContain('data-repair-service="accessibility"');
+    expect(html).not.toContain("Accessibility is off");
+    expect(repairRows(probe("granted", "denied")).map((r) => r.service)).toEqual(["post_event"]);
+    expect(repairRows(probe("granted", "stale_identity")).map((r) => r.service)).toEqual(["post_event"]);
     // Accessibility refused: ONE row, the Accessibility one, whose Repair resets both.
     expect(repairRows(probe("denied", "denied")).map((r) => r.service)).toEqual(["accessibility"]);
   });

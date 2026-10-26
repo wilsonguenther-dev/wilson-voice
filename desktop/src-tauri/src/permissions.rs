@@ -220,11 +220,45 @@ pub fn name_product_in_report(report: &mut PermissionReport, product: &str) {
     if product.trim().is_empty() || product == "Yap" {
         return;
     }
-    let name = |s: &str| s.replace("Yap", product);
-    report.summary = name(&report.summary);
+    report.summary = name_product(&report.summary, product);
     for g in report.grants.iter_mut() {
-        g.detail = name(&g.detail);
+        g.detail = name_product(&g.detail, product);
     }
+}
+
+/// Replace every whole-word "Yap" in `text` with `product`, idempotently: an
+/// occurrence that already reads as `product` (main's #249 names Input
+/// Monitoring and stale-grant lines at the source, "Yap Test") is left as-is,
+/// so "Yap Test" never becomes "Yap Test Test". Pure; a no-op for "Yap".
+pub fn name_product(text: &str, product: &str) -> String {
+    let product = product.trim();
+    if product.is_empty() || product == "Yap" {
+        return text.to_string();
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut i = 0;
+    while let Some(off) = text[i..].find("Yap") {
+        let at = i + off;
+        out.push_str(&text[i..at]);
+        let rest = &text[at..];
+        let before = text[..at].chars().next_back();
+        let after = rest["Yap".len()..].chars().next();
+        if rest.starts_with(product) {
+            // Already named: copy the product through untouched.
+            out.push_str(product);
+            i = at + product.len();
+        } else if word(before) || word(after) {
+            // Part of a longer word ("Yapper"): not the product name.
+            out.push_str("Yap");
+            i = at + "Yap".len();
+        } else {
+            out.push_str(product);
+            i = at + "Yap".len();
+        }
+    }
+    out.push_str(&text[i..]);
+    out
 }
 
 /// The report from one [`crate::perm_probe::ProbeReport`], pure: the grant rows
@@ -248,7 +282,6 @@ pub fn report_from_probe(
     let input_monitoring = input_monitoring_state(listen_hid, accessibility, tap_delivering);
     let mut probe = probe;
     reconcile_listen_event(&mut probe.listen_event, input_monitoring);
-    reconcile_post_event(&mut probe.post_event, accessibility);
     let mut report = build_report_with_grants(
         accessibility,
         probe.microphone_auth,
@@ -259,24 +292,6 @@ pub fn report_from_probe(
     );
     report.probe = probe;
     report
-}
-
-/// fix-ax-probe-refresh — PostEvent is the ⌘V bridge's grant, and the bridge is
-/// only the insertion path when Accessibility is NOT granted
-/// (`paste::choose_insert_path`). Under a live Accessibility grant a PostEvent
-/// "no" breaks nothing, so it must not raise a Repair row: in 0.9.2 that row was
-/// titled "Accessibility is off" and stayed up after Accessibility was switched
-/// on. Only the banner's state changes; `raw` keeps the API's answer.
-pub fn reconcile_post_event(post: &mut crate::perm_probe::ServiceProbe, accessibility: bool) {
-    use crate::perm_probe::ProbeState;
-    if accessibility && matches!(post.state, ProbeState::Denied | ProbeState::StaleIdentity) {
-        post.state = ProbeState::Unknown;
-        post.note = Some(
-            "Accessibility is granted, so text goes in through it; CGPreflightPostEventAccess = false \
-             only matters when Accessibility is off."
-                .into(),
-        );
-    }
 }
 
 /// Bring the banner's ListenEvent row into line with the Input Monitoring
