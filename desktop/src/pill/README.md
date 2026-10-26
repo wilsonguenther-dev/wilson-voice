@@ -20,3 +20,14 @@ reacts while you talk). Product vision: `docs/OPEN-SOURCE-ROADMAP.md` §3b–3d.
 > The origami fold engine (a baked crease-pattern player) was prototyped and
 > retired — the switchable Classic/Yappy pills replaced it. See the roadmap for
 > the history.
+
+## Visual QA: the pill matrix (yap24-UI3)
+
+A green gate cannot see a pill. `node scripts/pill-matrix.mjs --out <scratch dir>`
+photographs float.html in every phase x dock {bottom,left,right} x character
+{classic,yappy} in headless Chrome (never the app, never a visible window) and
+fails on empty text, clipped text and overflow. A PILL item runs
+`--only <its phase>` and attaches the PNGs (plus `contact-sheet.png`) to its PR —
+never commits them. Phases come from `matrixPhases()` in `forced.ts`, so a new
+phase is photographed with no edit to the script. `forced.ts` is the DEV-ONLY
+`?phase=&pill=&dock=` handle; a release build compiles it out.

@@ -53,6 +53,10 @@ export default defineConfig(async () => ({
       sha: yapEnv.YAP_BUILD_SHA ?? "",
       branch: yapEnv.YAP_BUILD_BRANCH ?? "",
     }),
+    // yap24-UI3 — `scripts/pill-matrix.mjs` builds with YAP_PILL_MATRIX=1 so
+    // float.html honours `?phase=&pill=&dock=` (src/pill/forced.ts). Every
+    // other build defines it false and rollup drops that branch entirely.
+    __YAP_PILL_MATRIX__: JSON.stringify(yapEnv.YAP_PILL_MATRIX === "1"),
   },
 
   // Y5-D — vitest stubs every CSS module to the empty string by default, which
